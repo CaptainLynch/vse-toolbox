@@ -1,0 +1,12 @@
+{
+  "text_report_title": {"font_size": 32, "color": "#d4af37", "bold": true},
+  "text_week_range": {"font_size": 14, "color": "#8a8f98"},
+  "text_author": {"font_size": 12, "color": "#8a8f98"},
+  "text_open_count": {"font_size": 36, "color": "#ffffff", "bold": true},
+  "text_new_count": {"font_size": 36, "color": "#d4af37", "bold": true},
+  "text_closed_count": {"font_size": 36, "color": "#4ade80", "bold": true},
+  "text_p0_count": {"font_size": 36, "color": "#ff4d4d", "bold": true},
+  "table_default": {"header_size": 10, "body_size": 9},
+  "table_issues": {"header_size": 10, "body_size": 9},
+  "table_milestones": {"header_size": 10, "body_size": 9}
+}

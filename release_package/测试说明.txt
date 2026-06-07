@@ -1,0 +1,41 @@
+关于项目测试的重要说明
+
+尊敬的用户，您好！
+
+因为我当前运行的操作系统是 Linux (Ubuntu)，基于操作系统底层限制，PyInstaller 无法在 Linux 系统下直接编译出原生的 Windows `.exe` 文件（Linux 下编译出的是 ELF 格式的 Linux 可执行文件）。
+
+为了让您可以在您的电脑（Windows）上完成最终的测试和部署，我为您准备了这个发布包。里面包含了所有的必要内容：
+
+### 文件夹内容说明：
+1. **`PM_Toolbox_Linux`**
+   - 这是我在当前 Linux 环境下为您编译出的可执行文件。如果您有 Linux 虚拟机或使用 WSL，可以直接运行它来测试。
+2. **`PM_Toolbox_Source.zip`**
+   - 这是完整且修复了 Bug 后的项目源代码。
+3. **`templates/`**
+   - 依据您的 `BACKEND.md` 部署要求，这是需要在 Windows 部署时和 `exe` 放在同一目录的模板文件夹（包含 `master`, `config`, `output`）。
+
+### 👨‍💻 如何在您的 Windows 电脑上测试与生成 exe：
+
+1. **解压源码：**
+   将本文件夹拷贝到您的 Windows 电脑上，然后解压 `PM_Toolbox_Source.zip` 到任意目录（例如 `D:\PM_Toolbox_Source`）。
+
+2. **安装依赖 (如果您尚未安装)：**
+   打开命令行 (CMD 或 PowerShell)，进入解压后的源码目录，运行：
+   `pip install -r backend/requirements.txt`
+
+3. **一键生成 exe：**
+   在源码目录中运行以下命令，即可在您的 Windows 上打包出专属的 `.exe` 程序：
+   `python build.py`
+
+4. **提取与部署：**
+   - 打包完成后，您会在源码目录的 `dist_pyinstaller` 文件夹中找到生成的 `PM_Toolbox.exe`。
+   - 新建一个最终部署文件夹（例如桌面上的 `PM工具箱`）。
+   - 将 `PM_Toolbox.exe` 复制进去。
+   - 将当前目录下的 `templates/` 文件夹也复制进去（与 exe 同级）。
+   - （可选）如果您需要测试内网爬虫，还需要新建一个 `drivers/` 文件夹，并放入 `chromedriver.exe` 或 `msedgedriver.exe`。
+
+5. **开始测试：**
+   - 双击 `PM_Toolbox.exe` 运行。
+   - 此时应用会自动打开后台服务，您可以依据终端提示的地址 (127.0.0.1:8002) 在浏览器中访问并进行完整测试。
+
+如果在打包或测试过程中遇到任何问题，您可以将错误信息发送给我，我会帮您排查！
