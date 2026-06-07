@@ -30,13 +30,13 @@
 
 ---
 
-## 3. 数据库 Schema（8张表）
+## 3. 数据库 Schema（11张表）
 
 ```sql
--- 问题追踪表
+-- 问题追踪表（已扩展：零件总成/子系统/原因分析/措施/断点/行动计划/source）
 CREATE TABLE IF NOT EXISTS issues (...);
 
--- 里程碑进度表
+-- 里程碑进度表（已扩展：actual_date / actual_percentage）
 CREATE TABLE IF NOT EXISTS milestones (...);
 
 -- 飞书邮件缓存表
@@ -51,11 +51,20 @@ CREATE TABLE IF NOT EXISTS deliverable_categories (...);
 -- Dashboard卡片布局表
 CREATE TABLE IF NOT EXISTS dashboard_layouts (...);
 
--- EWO/NCR记录表
+-- EWO/NCR记录表（已扩展：source / source_file）
 CREATE TABLE IF NOT EXISTS ewo_ncr (...);
 
--- TIR记录表
+-- TIR记录表（已扩展：source / source_file）
 CREATE TABLE IF NOT EXISTS tir (...);
+
+-- 零件总成→子系统映射表
+CREATE TABLE IF NOT EXISTS lookup_part_system (...);
+
+-- 工程师→科室映射表
+CREATE TABLE IF NOT EXISTS lookup_engineer (...);
+
+-- 应用配置表
+CREATE TABLE IF NOT EXISTS app_settings (...);
 ```
 
 > 完整 Schema 见 backend/services/db.py 的 SCHEMA_SQL 常量。
@@ -100,11 +109,20 @@ CREATE TABLE IF NOT EXISTS tir (...);
 | POST | /api/ewo | 创建EWO/NCR |
 | PUT | /api/ewo/{id} | 更新EWO/NCR |
 | DELETE | /api/ewo/{id} | 删除EWO/NCR |
+| POST | /api/ewo/import-excel | EWO Excel导入 |
 | GET | /api/tir | TIR列表 |
 | GET | /api/tir/stats | TIR统计 |
 | POST | /api/tir | 创建TIR |
 | PUT | /api/tir/{id} | 更新TIR |
 | DELETE | /api/tir/{id} | 删除TIR |
+| POST | /api/tir/import-excel | TIR Excel导入 |
+| POST | /api/issues/import-excel | 造车问题 Excel导入 |
+| GET | /api/lookup/part-system | 零件总成查询 |
+| POST | /api/lookup/part-system | 新增零件总成映射 |
+| GET | /api/lookup/engineer | 工程师查询 |
+| POST | /api/lookup/engineer | 新增工程师映射 |
+| GET | /api/settings | 获取全部设置 |
+| PUT | /api/settings/{key} | 更新单个设置 |
 
 ---
 
@@ -115,19 +133,22 @@ backend/
 ├── main.py              # FastAPI入口（port 8002）
 ├── config.py            # 共享配置、目录常量、路径安全
 ├── api/
-│   ├── issues.py        # 问题追踪 CRUD + 统计
+│   ├── issues.py        # 问题追踪 CRUD + 统计 + Excel导入
 │   ├── milestones.py    # 里程碑 CRUD
 │   ├── excel.py         # Excel工具
 │   ├── ppt.py           # PPT生成
 │   ├── crawler.py       # 爬虫
 │   ├── feishu.py        # 飞书
 │   ├── dashboard.py     # Dashboard聚合+布局+分类
-│   ├── ewo_ncr.py       # EWO/NCR CRUD
-│   ├── tir.py           # TIR CRUD
+│   ├── ewo_ncr.py       # EWO/NCR CRUD + Excel导入
+│   ├── tir.py           # TIR CRUD + Excel导入
+│   ├── lookup.py        # 零件总成/工程师自动关联
+│   ├── settings.py      # 应用配置
 │   └── response.py      # 统一响应封装
 ├── services/
-│   ├── db.py            # SQLite（8张表+全部CRUD）
+│   ├── db.py            # SQLite（11张表+全部CRUD）
 │   ├── excel_service.py
+│   ├── excel_import_service.py  # 交付物Excel导入引擎
 │   ├── ppt_service.py
 │   ├── crawler_service.py
 │   └── feishu_service.py
@@ -142,11 +163,16 @@ backend/
 
 ## 6. 开发进度
 
-全部 Phase 1-7 完成。后端已实现全部 API 端点，包括前端重构新增的 dashboard/ewo/tir 端点。
+| 阶段 | 状态 | 说明 |
+|------|------|------|
+| Phase 1-7 | DONE | 基础框架+问题追踪+Excel+PPT+爬虫+飞书+打包 |
+| Phase 8 | DONE | 前端重构后端扩展（dashboard/ewo/tir） |
+| Phase 9 | DONE | 交付物管理与Excel导入（B-24~B-38）+ 两轮代码审计（24项修复22项） |
+| API集成测试 | DONE | 37项API测试全部通过（2026-06-07） |
 
 ---
 
 ## 7. 最后更新
 
 - 创建时间：2026-05-27
-- 最后更新：2026-06-07（新增 dashboard/ewo/tir 端点，端口改为 8002）
+- 最后更新：2026-06-07（后端代码审计修复完毕 + API集成测试 37项全部通过 + 前端 F-20~F-26 完成+两轮审计）

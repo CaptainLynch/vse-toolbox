@@ -8,9 +8,9 @@
 
 ## 最后更新
 
-- 版本：v1.1
+- 版本：v1.2
 - 更新时间：2026-06-07
-- 状态：已确认（新增 dashboard/ewo/tir 端点）
+- 状态：已确认（新增 import-excel / lookup / settings 端点；dashboard/overview 重写；前端 F-20~F-26 完成+审计）
 
 ---
 
@@ -253,9 +253,172 @@ GET /api/dashboard/overview
 
 ---
 
-## 12. 变更记录
+## 12. Excel 导入 API
+
+### 12.1 造车问题 Excel 导入
+
+```
+POST /api/issues/import-excel
+Content-Type: multipart/form-data
+```
+
+**请求**：`files` 字段（单个 Excel 文件）
+
+**响应**：
+```json
+{
+  "success": true,
+  "data": {
+    "created": 12,
+    "updated": 3,
+    "errors": ["第5行：责任科室为空"]
+  },
+  "message": null
+}
+```
+
+### 12.2 EWO Excel 导入
+
+```
+POST /api/ewo/import-excel
+```
+
+### 12.3 TIR Excel 导入
+
+```
+POST /api/tir/import-excel
+```
+
+---
+
+## 13. Lookup 自动关联 API
+
+### 13.1 零件总成查询
+
+```
+GET /api/lookup/part-system?q=前保
+```
+
+**响应**：
+```json
+{
+  "success": true,
+  "data": [
+    {"part_system": "前保险杠", "sub_system": "外饰系统"}
+  ],
+  "message": null
+}
+```
+
+### 13.2 新增零件总成映射
+
+```
+POST /api/lookup/part-system
+Content-Type: application/json
+
+{"part_system": "前保险杠", "sub_system": "外饰系统"}
+```
+
+### 13.3 工程师查询
+
+```
+GET /api/lookup/engineer?q=张三
+```
+
+**响应**：
+```json
+{
+  "success": true,
+  "data": [
+    {"name": "张三", "department": "车身科"}
+  ],
+  "message": null
+}
+```
+
+### 13.4 新增工程师映射
+
+```
+POST /api/lookup/engineer
+Content-Type: application/json
+
+{"name": "张三", "department": "车身科"}
+```
+
+---
+
+## 14. Settings API
+
+### 14.1 获取全部设置
+
+```
+GET /api/settings
+```
+
+**响应**：
+```json
+{
+  "success": true,
+  "data": {
+    "folder_issues": "C:/Users/xxx/issues",
+    "folder_ewo": "C:/Users/xxx/ewo",
+    "folder_ncr": "C:/Users/xxx/ncr",
+    "folder_tir": "C:/Users/xxx/tir"
+  },
+  "message": null
+}
+```
+
+### 14.2 更新单个设置
+
+```
+PUT /api/settings/{key}
+Content-Type: application/json
+
+{"value": "C:/Users/xxx/issues"}
+```
+
+---
+
+## 15. Dashboard Overview 重写
+
+`GET /api/dashboard/overview` 响应格式更新为：
+
+```json
+{
+  "success": true,
+  "data": {
+    "milestone_progress": [
+      {
+        "name": "车身钣金合装",
+        "percentage": 85,
+        "actual_percentage": 80,
+        "target_date": "2026-06-15",
+        "actual_date": "2026-06-18",
+        "category": "车身科"
+      }
+    ],
+    "completion_pie": [
+      {"name": "已关闭", "value": 27, "color": "#4ade80"},
+      {"name": "进行中", "value": 10, "color": "#d4af37"},
+      {"name": "待处理", "value": 5, "color": "#ff4d4d"}
+    ],
+    "department_bar": [
+      {"department": "车身科", "total": 12, "closed": 9},
+      {"department": "外饰工程科", "total": 8, "closed": 5}
+    ],
+    "deliverable_counts": {"issues": 42, "ewo": 8, "tir": 15}
+  },
+  "message": null
+}
+```
+
+---
+
+## 16. 变更记录
 
 | 版本 | 日期 | 变更内容 | 确认 |
 |------|------|----------|------|
 | v1.0 | 2026-05-27 | 初始版本 | 已确认 |
 | v1.1 | 2026-06-07 | 新增 dashboard/ewo/tir 端点，端口改为 8002 | 已确认 |
+| v1.2 | 2026-06-07 | 新增 import-excel / lookup / settings 端点；dashboard/overview 重写 | 已确认 |

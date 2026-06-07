@@ -86,9 +86,16 @@ export const api = {
     window.open(`${API_BASE}/download?path=${encodeURIComponent(filePath)}`, '_blank');
   },
 
+  /** Excel 导入（issues / ewo / tir 共用） */
+  async importExcel<T>(endpoint: string, file: File, timeout = 120000): Promise<ApiResponse<T>> {
+    const fd = new FormData();
+    fd.append('files', file);
+    return this.upload<T>(endpoint, fd, timeout);
+  },
+
   /** 检测后端是否可达 */
   async healthCheck(): Promise<boolean> {
-    const res = await request('GET', '/issues/stats', undefined, 3000);
+    const res = await request<unknown>('GET', '/issues/stats', undefined, 3000);
     return res.success;
   },
 };
@@ -105,6 +112,15 @@ export interface IssueOut {
   department: string;
   status: 'open' | 'in_progress' | 'resolved' | 'closed';
   assignee: string | null;
+  part_system: string | null;
+  sub_system: string | null;
+  root_cause: string | null;
+  short_term_action: string | null;
+  long_term_action: string | null;
+  cutoff_point: string | null;
+  action_plan: string | null;
+  source: string | null;
+  source_file: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -124,6 +140,8 @@ export interface MilestoneOut {
   category: string;
   percentage: number;
   target_date: string | null;
+  actual_date: string | null;
+  actual_percentage: number | null;
 }
 
 export interface MailOut {
@@ -227,8 +245,9 @@ export interface DashboardOverviewOut {
   high_risk_count: number;
   new_this_week: number;
   closed_this_week: number;
-  milestone_progress: { name: string; percentage: number; category: string }[];
-  department_stats: { department: string; totalIssues: number; closedRate: number }[];
+  milestone_progress: { name: string; percentage: number; actual_percentage: number | null; target_date: string | null; actual_date: string | null; category: string }[];
+  completion_pie: { name: string; value: number; color: string }[];
+  department_bar: { department: string; total: number; closed: number }[];
   trend: { date: string; count: number }[];
   deliverable_counts: Record<string, number>;
 }
@@ -260,6 +279,8 @@ export interface EWOOut {
   assignee: string | null;
   raised_date: string | null;
   target_date: string | null;
+  source: string | null;
+  source_file: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -285,6 +306,8 @@ export interface TIROut {
   assignee: string | null;
   test_date: string | null;
   result: string | null;
+  source: string | null;
+  source_file: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -294,4 +317,28 @@ export interface TIRStatsOut {
   approved: number;
   pending: number;
   by_category: Record<string, number>;
+}
+
+// ---------------------------------------------------------------------------
+// Excel Import
+// ---------------------------------------------------------------------------
+
+export interface ExcelImportResult {
+  created: number;
+  updated: number;
+  errors: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Lookup - 零件总成 / 工程师
+// ---------------------------------------------------------------------------
+
+export interface PartSystemOut {
+  part_system: string;
+  sub_system: string;
+}
+
+export interface EngineerOut {
+  name: string;
+  department: string;
 }

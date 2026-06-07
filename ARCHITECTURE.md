@@ -29,6 +29,7 @@
 |  |  /api/issues  /api/excel  /api/ppt  /api/crawler      |    |
 |  |  /api/feishu  /api/download  /api/milestones           |    |
 |  |  /api/dashboard  /api/ewo  /api/tir                    |    |
+|  |  /api/lookup  /api/settings  /api/*/import-excel       |    |
 |  +---------------------------+---------------------------+    |
 |                              |                                |
 |  +---------------------------+---------------------------+    |
@@ -156,12 +157,20 @@
 | component TEXT|      | category TEXT|       | subject TEXT |       | source TEXT  |
 | description TEXT     | percentage INT       | preview TEXT |       | deadline TEXT|
 | department TEXT|     | target_date TEXT     | content TEXT |       | completed INT|
-| status TEXT  |       +--------------+       | category TEXT|       | created_at TEXT
-| assignee TEXT|                              | is_read INT  |       +--------------+
-| created_at TEXT                             | is_starred INT
-| updated_at TEXT                             | has_attachment INT
-+--------------+                              | received_at TEXT
-                                              +--------------+
+| status TEXT  |       | actual_date TEXT     | category TEXT|       | created_at TEXT
+| assignee TEXT|       | actual_pct INT       | is_read INT  |       +--------------+
+| part_system  |       +--------------+       | is_starred INT
+| sub_system   |                              | has_attachment INT
+| root_cause   |                              | received_at TEXT
+| short_term   |                              +--------------+
+| long_term    |
+| cutoff_point |
+| action_plan  |
+| source       |
+| source_file  |
+| created_at   |
+| updated_at   |
++--------------+
 
 +---------------------+       +---------------------+       +--------------+
 | deliverable_        |       | dashboard_          |       |  ewo_ncr     |
@@ -176,24 +185,28 @@
 +---------------------+       | w INT, h INT        |       | assignee     |
                               | config TEXT         |       | raised_date  |
                               | created_at TEXT     |       | target_date  |
-                              | updated_at TEXT     |       | created_at   |
-                              +---------------------+       | updated_at   |
+                              | updated_at TEXT     |       | source       |
+                              +---------------------+       | source_file  |
+                                                            | created_at   |
+                                                            | updated_at   |
                                                             +--------------+
 
-+--------------+
-|    tir       |
-+--------------+
-| id PK TEXT   |
-| title TEXT   |
-| description  |
-| category TEXT|
-| status TEXT  |
++--------------+       +--------------------+       +--------------------+
+|    tir       |       | lookup_part_system |       | lookup_engineer    |
++--------------+       +--------------------+       +--------------------+
+| id PK TEXT   |       | id PK INT          |       | id PK INT          |
+| title TEXT   |       | part_system TEXT   |       | name TEXT          |
+| description  |       | sub_system TEXT    |       | department TEXT    |
+| category TEXT|       | created_at TEXT    |       | created_at TEXT    |
+| status TEXT  |       +--------------------+       +--------------------+
 | department   |
-| assignee     |
-| test_date    |
-| result TEXT  |
-| created_at   |
-| updated_at   |
+| assignee     |       +--------------------+
+| test_date    |       | app_settings       |
+| result TEXT  |       +--------------------+
+| source       |       | key PK TEXT        |
+| source_file  |       | value TEXT         |
+| created_at   |       | updated_at TEXT    |
+| updated_at   |       +--------------------+
 +--------------+
 ```
 
@@ -206,9 +219,18 @@ CREATE TABLE IF NOT EXISTS issues (
     priority TEXT CHECK(priority IN ('P0','P1','P2','P3')),
     component TEXT NOT NULL,                       -- 零部件名称
     description TEXT NOT NULL,
-    department TEXT NOT NULL,                      -- 车身钣金/内外饰件/灯具
+    department TEXT NOT NULL,                      -- 责任科室
     status TEXT CHECK(status IN ('open','in_progress','resolved','closed')),
-    assignee TEXT,
+    assignee TEXT,                                 -- 责任工程师
+    part_system TEXT,                              -- 零件总成
+    sub_system TEXT,                               -- 子系统
+    root_cause TEXT,                               -- 问题原因分析
+    short_term_action TEXT,                        -- 短期措施
+    long_term_action TEXT,                         -- 长期措施
+    cutoff_point TEXT,                             -- 断点时间
+    action_plan TEXT,                              -- 行动计划
+    source TEXT DEFAULT 'manual',                  -- manual / excel_import
+    source_file TEXT,                              -- 来源Excel文件名
     created_at TEXT,                               -- ISO-8601
     updated_at TEXT
 );
@@ -221,7 +243,9 @@ CREATE TABLE IF NOT EXISTS milestones (
     name TEXT NOT NULL,
     category TEXT NOT NULL,
     percentage INTEGER DEFAULT 0 CHECK(percentage BETWEEN 0 AND 100),
-    target_date TEXT
+    target_date TEXT,                              -- 计划完成日期
+    actual_date TEXT,                              -- 实际完成日期
+    actual_percentage INTEGER DEFAULT 0 CHECK(actual_percentage BETWEEN 0 AND 100)
 );
 ```
 
@@ -298,6 +322,8 @@ CREATE TABLE IF NOT EXISTS ewo_ncr (
     assignee TEXT,
     raised_date TEXT,
     target_date TEXT,
+    source TEXT DEFAULT 'manual',
+    source_file TEXT,
     created_at TEXT,
     updated_at TEXT
 );
@@ -315,7 +341,38 @@ CREATE TABLE IF NOT EXISTS tir (
     assignee TEXT,
     test_date TEXT,
     result TEXT,
+    source TEXT DEFAULT 'manual',
+    source_file TEXT,
     created_at TEXT,
+    updated_at TEXT
+);
+```
+
+**lookup_part_system**（零件总成→子系统映射）
+```sql
+CREATE TABLE IF NOT EXISTS lookup_part_system (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    part_system TEXT NOT NULL UNIQUE,
+    sub_system TEXT NOT NULL,
+    created_at TEXT
+);
+```
+
+**lookup_engineer**（工程师→科室映射）
+```sql
+CREATE TABLE IF NOT EXISTS lookup_engineer (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    department TEXT NOT NULL,
+    created_at TEXT
+);
+```
+
+**app_settings**（应用配置持久化）
+```sql
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
     updated_at TEXT
 );
 ```
@@ -360,11 +417,20 @@ CREATE TABLE IF NOT EXISTS tir (
 | POST | /api/ewo | 创建EWO/NCR |
 | PUT | /api/ewo/{id} | 更新EWO/NCR |
 | DELETE | /api/ewo/{id} | 删除EWO/NCR |
+| POST | /api/ewo/import-excel | EWO Excel导入（multipart） |
 | GET | /api/tir | TIR列表（page,size,status,category） |
 | GET | /api/tir/stats | TIR统计 |
 | POST | /api/tir | 创建TIR |
 | PUT | /api/tir/{id} | 更新TIR |
 | DELETE | /api/tir/{id} | 删除TIR |
+| POST | /api/tir/import-excel | TIR Excel导入（multipart） |
+| POST | /api/issues/import-excel | 造车问题 Excel导入（multipart） |
+| GET | /api/lookup/part-system?q=xxx | 零件总成模糊查询 |
+| POST | /api/lookup/part-system | 新增零件总成映射 |
+| GET | /api/lookup/engineer?q=xxx | 工程师模糊查询 |
+| POST | /api/lookup/engineer | 新增工程师映射 |
+| GET | /api/settings | 获取全部设置项 |
+| PUT | /api/settings/{key} | 更新单个设置项 |
 
 ---
 
@@ -383,19 +449,22 @@ VSE_TOOLBOX/
 │   ├── main.py             # FastAPI入口（port 8002）
 │   ├── config.py           # 共享配置、目录常量、路径安全
 │   ├── api/
-│   │   ├── issues.py       # 问题追踪
+│   │   ├── issues.py       # 问题追踪 + Excel导入
 │   │   ├── milestones.py   # 里程碑
 │   │   ├── excel.py        # Excel工具
 │   │   ├── ppt.py          # PPT生成
 │   │   ├── crawler.py      # 爬虫
 │   │   ├── feishu.py       # 飞书
 │   │   ├── dashboard.py    # Dashboard聚合+布局+分类
-│   │   ├── ewo_ncr.py      # EWO/NCR CRUD
-│   │   ├── tir.py          # TIR CRUD
+│   │   ├── ewo_ncr.py      # EWO/NCR CRUD + Excel导入
+│   │   ├── tir.py          # TIR CRUD + Excel导入
+│   │   ├── lookup.py       # 零件总成/工程师自动关联
+│   │   ├── settings.py     # 应用配置
 │   │   └── response.py     # 统一响应封装
 │   ├── services/
-│   │   ├── db.py           # SQLite（8张表）
+│   │   ├── db.py           # SQLite（11张表）
 │   │   ├── excel_service.py
+│   │   ├── excel_import_service.py  # 交付物Excel导入引擎
 │   │   ├── ppt_service.py  # TemplateEngine+DataAdapter+ChartGenerator
 │   │   ├── crawler_service.py  # DriverManager+PageExtractor
 │   │   └── feishu_service.py
@@ -497,4 +566,4 @@ URL含feishu.cn或larksuite.com -> msedgedriver.exe (Edge)
 
 ---
 
-最后更新：2026-06-07（前端重构完成：品牌更名+导航精简+子页面体系+拖拽卡片+EWO/NCR+TIR数据层）
+最后更新：2026-06-07（追加 Phase 5：交付物管理与 Excel 导入 — 数据库扩展至11张表 + lookup/settings/import-excel API + 前端Settings/Overview/Issues重写）

@@ -1,13 +1,19 @@
-﻿from fastapi import APIRouter
+﻿import logging
+import tempfile
+from pathlib import Path
+
+from fastapi import APIRouter, UploadFile, File
 from api.response import success_response, error_response
 from services.db import DBManager
-from models.schemas import EWOCreate, EWOUpdate
+from models.schemas import EWOCreate, EWOUpdate, ExcelImportResult
+
+logger = logging.getLogger("VSE_TOOLBOX.api.ewo")
 
 router = APIRouter(prefix="/ewo", tags=["ewo"])
 
 
 @router.get("")
-def list_ewos(page: int = 1, size: int = 20, status: str = None, severity: str = None):
+def list_ewos(page: int = 1, size: int = 20, status: str | None = None, severity: str | None = None):
     try:
         items, total = DBManager.list_ewos(page, size, status, severity)
         return success_response({"items": items, "total": total, "page": page, "size": size})
@@ -52,3 +58,29 @@ def delete_ewo(ewo_id: str):
         return success_response({"deleted": True})
     except Exception as e:
         return error_response(str(e), status_code=400)
+
+
+@router.post("/import-excel")
+async def import_ewo_excel(files: UploadFile = File(...)):
+    """从 Excel 导入 EWO/NCR。R-03: 使用 with 语句管理文件。"""
+    from services.excel_import_service import import_ewo_from_excel
+
+    tmp_path = None
+    try:
+        suffix = Path(files.filename).suffix if files.filename else ".xlsx"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            content = await files.read()
+            tmp.write(content)
+            tmp_path = Path(tmp.name)
+
+        result = import_ewo_from_excel(tmp_path, source_file=files.filename)
+        return success_response(ExcelImportResult(**result).model_dump())
+    except Exception as e:
+        logger.exception("Import EWO Excel failed")
+        return error_response("导入失败，请检查文件格式", status_code=500)
+    finally:
+        if tmp_path and tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass

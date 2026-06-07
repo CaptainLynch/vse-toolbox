@@ -19,7 +19,3 @@ config_file = ".codex/agents/reviewer.toml"
 [agents.explorer]
 description = "VSE TOOLBOX 探索员：代码浏览、定位、结构理解"
 config_file = ".codex/agents/explorer.toml"
-
-[agents.monitor]
-description = "VSE TOOLBOX 测试工程师：测试执行、验证监控"
-config_file = ".codex/agents/monitor.toml"

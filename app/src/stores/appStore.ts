@@ -6,6 +6,7 @@ import type {
 } from '@/types';
 import type {
   MailOut, TodoOut, PaginatedData, EWOOut, TIROut,
+  ExcelImportResult,
 } from '@/services/api';
 import { api } from '@/services/api';
 import { toIssue, toStats, toMilestone, toMail, toTodo, toEWO, toTIR } from '@/services/converters';
@@ -37,9 +38,10 @@ interface AppState {
   issuePage: number;
   setIssuePage: (p: number) => void;
   fetchIssues: (opts?: { page?: number; size?: number; priority?: string; status?: string; department?: string }) => Promise<void>;
-  createIssue: (data: { priority: string; component: string; description: string; department: string; assignee?: string }) => Promise<boolean>;
+  createIssue: (data: { priority: string; component: string; description: string; department: string; assignee?: string; part_system?: string; sub_system?: string; root_cause?: string; short_term_action?: string; long_term_action?: string; cutoff_point?: string; action_plan?: string }) => Promise<boolean>;
   updateIssue: (id: string, data: Partial<Issue>) => Promise<boolean>;
   deleteIssue: (id: string) => Promise<boolean>;
+  importIssuesExcel: (file: File) => Promise<ExcelImportResult | null>;
 
   // Stats
   stats: IssueStats | null;
@@ -95,26 +97,35 @@ interface AppState {
   fetchTirs: (opts?: { page?: number; size?: number; status?: string; category?: string }) => Promise<void>;
   createTir: (data: { title: string; description?: string; category?: string; department?: string; assignee?: string }) => Promise<boolean>;
   deleteTir: (id: string) => Promise<boolean>;
+  importTirsExcel: (file: File) => Promise<ExcelImportResult | null>;
+
+  // EWO Excel import
+  importEwosExcel: (file: File) => Promise<ExcelImportResult | null>;
+
+  // Settings
+  settings: Record<string, string>;
+  fetchSettings: () => Promise<void>;
+  updateSetting: (key: string, value: string) => Promise<boolean>;
 }
 
 const mockIssues = [
-  { id: 'ISS-2024-001', priority: 'P0' as const, component: '前保险杠', description: '前保险杠与翼子板间隙超差 2.5mm', department: '车身钣金', status: 'open' as const, createdAt: '2024-01-15', assignee: '张伟', updatedAt: '2024-01-15' },
-  { id: 'ISS-2024-002', priority: 'P1' as const, component: '仪表板', description: '仪表板表面缩痕明显，需优化注塑工艺', department: '内外饰件', status: 'in_progress' as const, createdAt: '2024-01-14', assignee: '李芳', updatedAt: '2024-01-14' },
-  { id: 'ISS-2024-003', priority: 'P2' as const, component: '前大灯', description: 'LED 日行灯色温偏移，与设计确认中', department: '灯具', status: 'open' as const, createdAt: '2024-01-13', assignee: '王磊', updatedAt: '2024-01-13' },
-  { id: 'ISS-2024-004', priority: 'P1' as const, component: '车门密封条', description: '密封条压缩负荷不满足防水要求', department: '车身钣金', status: 'resolved' as const, createdAt: '2024-01-12', assignee: '赵敏', updatedAt: '2024-01-12' },
-  { id: 'ISS-2024-005', priority: 'P0' as const, component: '后尾灯', description: '尾灯密封失效，进水起雾严重', department: '灯具', status: 'open' as const, createdAt: '2024-01-11', assignee: '孙涛', updatedAt: '2024-01-11' },
-  { id: 'ISS-2024-006', priority: 'P3' as const, component: '座椅骨架', description: '座椅调节异响，需加润滑脂', department: '内外饰件', status: 'closed' as const, createdAt: '2024-01-10', assignee: '周琳', updatedAt: '2024-01-10' },
-  { id: 'ISS-2024-007', priority: 'P2' as const, component: '引擎盖', description: '引擎盖关闭后与翼子板面差不一致', department: '车身钣金', status: 'in_progress' as const, createdAt: '2024-01-09', assignee: '吴刚', updatedAt: '2024-01-09' },
-  { id: 'ISS-2024-008', priority: 'P1' as const, component: '后视镜', description: '后视镜折叠时电机过热保护', department: '内外饰件', status: 'open' as const, createdAt: '2024-01-08', assignee: '郑辉', updatedAt: '2024-01-08' },
-  { id: 'ISS-2024-009', priority: 'P2' as const, component: '雾灯', description: '雾灯安装角度与设计不符', department: '灯具', status: 'resolved' as const, createdAt: '2024-01-07', assignee: '陈静', updatedAt: '2024-01-07' },
-  { id: 'ISS-2024-010', priority: 'P3' as const, component: '门板饰条', description: '门板饰条安装孔位偏移2mm', department: '车身钣金', status: 'closed' as const, createdAt: '2024-01-06', assignee: '林峰', updatedAt: '2024-01-06' },
+  { id: 'ISS-2024-001', priority: 'P0' as const, component: '前保险杠', description: '前保险杠与翼子板间隙超差 2.5mm', department: '车身钣金', status: 'open' as const, createdAt: '2024-01-15', assignee: '张伟', updatedAt: '2024-01-15', partSystem: '前保险杠总成', subSystem: '外饰系统', rootCause: null, shortTermAction: null, longTermAction: null, cutoffPoint: null, actionPlan: null, source: 'manual', sourceFile: null },
+  { id: 'ISS-2024-002', priority: 'P1' as const, component: '仪表板', description: '仪表板表面缩痕明显，需优化注塑工艺', department: '内外饰件', status: 'in_progress' as const, createdAt: '2024-01-14', assignee: '李芳', updatedAt: '2024-01-14', partSystem: '仪表板总成', subSystem: '内饰系统', rootCause: null, shortTermAction: null, longTermAction: null, cutoffPoint: null, actionPlan: null, source: 'manual', sourceFile: null },
+  { id: 'ISS-2024-003', priority: 'P2' as const, component: '前大灯', description: 'LED 日行灯色温偏移，与设计确认中', department: '灯具', status: 'open' as const, createdAt: '2024-01-13', assignee: '王磊', updatedAt: '2024-01-13', partSystem: '前大灯总成', subSystem: '灯具系统', rootCause: null, shortTermAction: null, longTermAction: null, cutoffPoint: null, actionPlan: null, source: 'manual', sourceFile: null },
+  { id: 'ISS-2024-004', priority: 'P1' as const, component: '车门密封条', description: '密封条压缩负荷不满足防水要求', department: '车身钣金', status: 'resolved' as const, createdAt: '2024-01-12', assignee: '赵敏', updatedAt: '2024-01-12', partSystem: '车门密封条', subSystem: '车身系统', rootCause: null, shortTermAction: null, longTermAction: null, cutoffPoint: null, actionPlan: null, source: 'manual', sourceFile: null },
+  { id: 'ISS-2024-005', priority: 'P0' as const, component: '后尾灯', description: '尾灯密封失效，进水起雾严重', department: '灯具', status: 'open' as const, createdAt: '2024-01-11', assignee: '孙涛', updatedAt: '2024-01-11', partSystem: '后尾灯总成', subSystem: '灯具系统', rootCause: null, shortTermAction: null, longTermAction: null, cutoffPoint: null, actionPlan: null, source: 'manual', sourceFile: null },
+  { id: 'ISS-2024-006', priority: 'P3' as const, component: '座椅骨架', description: '座椅调节异响，需加润滑脂', department: '内外饰件', status: 'closed' as const, createdAt: '2024-01-10', assignee: '周琳', updatedAt: '2024-01-10', partSystem: '座椅骨架', subSystem: '内饰系统', rootCause: null, shortTermAction: null, longTermAction: null, cutoffPoint: null, actionPlan: null, source: 'manual', sourceFile: null },
+  { id: 'ISS-2024-007', priority: 'P2' as const, component: '引擎盖', description: '引擎盖关闭后与翼子板面差不一致', department: '车身钣金', status: 'in_progress' as const, createdAt: '2024-01-09', assignee: '吴刚', updatedAt: '2024-01-09', partSystem: '引擎盖总成', subSystem: '车身系统', rootCause: null, shortTermAction: null, longTermAction: null, cutoffPoint: null, actionPlan: null, source: 'manual', sourceFile: null },
+  { id: 'ISS-2024-008', priority: 'P1' as const, component: '后视镜', description: '后视镜折叠时电机过热保护', department: '内外饰件', status: 'open' as const, createdAt: '2024-01-08', assignee: '郑辉', updatedAt: '2024-01-08', partSystem: '后视镜总成', subSystem: '外饰系统', rootCause: null, shortTermAction: null, longTermAction: null, cutoffPoint: null, actionPlan: null, source: 'manual', sourceFile: null },
+  { id: 'ISS-2024-009', priority: 'P2' as const, component: '雾灯', description: '雾灯安装角度与设计不符', department: '灯具', status: 'resolved' as const, createdAt: '2024-01-07', assignee: '陈静', updatedAt: '2024-01-07', partSystem: '雾灯总成', subSystem: '灯具系统', rootCause: null, shortTermAction: null, longTermAction: null, cutoffPoint: null, actionPlan: null, source: 'manual', sourceFile: null },
+  { id: 'ISS-2024-010', priority: 'P3' as const, component: '门板饰条', description: '门板饰条安装孔位偏移2mm', department: '车身钣金', status: 'closed' as const, createdAt: '2024-01-06', assignee: '林峰', updatedAt: '2024-01-06', partSystem: '门板饰条', subSystem: '车身系统', rootCause: null, shortTermAction: null, longTermAction: null, cutoffPoint: null, actionPlan: null, source: 'manual', sourceFile: null },
 ];
 const mockMilestones = [
-  { id: 1, name: '车身钣金合装', percentage: 85, category: '车身钣金', targetDate: null },
-  { id: 2, name: '内外饰件匹配', percentage: 62, category: '内外饰件', targetDate: null },
-  { id: 3, name: '灯具点亮验证', percentage: 78, category: '灯具', targetDate: null },
-  { id: 4, name: '整车密封性测试', percentage: 45, category: '综合', targetDate: null },
-  { id: 5, name: 'NVH 性能评估', percentage: 30, category: '综合', targetDate: null },
+  { id: 1, name: '车身钣金合装', percentage: 85, category: '车身钣金', targetDate: '2024-03-15', actualDate: '2024-03-12', actualPercentage: 90 },
+  { id: 2, name: '内外饰件匹配', percentage: 62, category: '内外饰件', targetDate: '2024-04-01', actualDate: null, actualPercentage: null },
+  { id: 3, name: '灯具点亮验证', percentage: 78, category: '灯具', targetDate: '2024-03-20', actualDate: '2024-03-18', actualPercentage: 82 },
+  { id: 4, name: '整车密封性测试', percentage: 45, category: '综合', targetDate: '2024-04-15', actualDate: null, actualPercentage: null },
+  { id: 5, name: 'NVH 性能评估', percentage: 30, category: '综合', targetDate: '2024-05-01', actualDate: null, actualPercentage: null },
 ];
 const mockStats = {
   totalOpen: 5, newThisWeek: 5, closedThisWeek: 0, highRiskCount: 2,
@@ -183,12 +194,21 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   updateIssue: async (id, data) => {
     const body: Record<string, unknown> = {};
-    if (data.priority) body.priority = data.priority;
-    if (data.component) body.component = data.component;
-    if (data.description) body.description = data.description;
-    if (data.department) body.department = data.department;
-    if (data.status) body.status = data.status;
+    if (data.priority !== undefined) body.priority = data.priority;
+    if (data.component !== undefined) body.component = data.component;
+    if (data.description !== undefined) body.description = data.description;
+    if (data.department !== undefined) body.department = data.department;
+    if (data.status !== undefined) body.status = data.status;
     if (data.assignee !== undefined) body.assignee = data.assignee;
+    if (data.partSystem !== undefined) body.part_system = data.partSystem;
+    if (data.subSystem !== undefined) body.sub_system = data.subSystem;
+    if (data.rootCause !== undefined) body.root_cause = data.rootCause;
+    if (data.shortTermAction !== undefined) body.short_term_action = data.shortTermAction;
+    if (data.longTermAction !== undefined) body.long_term_action = data.longTermAction;
+    if (data.cutoffPoint !== undefined) body.cutoff_point = data.cutoffPoint;
+    if (data.actionPlan !== undefined) body.action_plan = data.actionPlan;
+    if (data.source !== undefined) body.source = data.source;
+    if (data.sourceFile !== undefined) body.source_file = data.sourceFile;
     const res = await api.put<import('@/services/api').IssueOut>('/issues/' + id, body);
     if (res.success && res.data) { set((s) => ({ issues: s.issues.map((i) => i.id === id ? toIssue(res.data!) : i) })); return true; }
     return false;
@@ -197,6 +217,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     const res = await api.del('/issues/' + id);
     if (res.success) { set((s) => ({ issues: s.issues.filter((i) => i.id !== id) })); return true; }
     return false;
+  },
+  importIssuesExcel: async (file) => {
+    const res = await api.importExcel<ExcelImportResult>('/issues/import-excel', file);
+    if (res.success && res.data) {
+      await get().fetchIssues({ page: 1, size: 10 });
+      await get().fetchStats();
+      return res.data;
+    }
+    return null;
   },
   stats: mockStats,
   fetchStats: async () => {
@@ -207,6 +236,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   fetchMilestones: async () => {
     const res = await api.get<import('@/services/api').MilestoneOut[]>('/milestones');
     if (res.success && res.data) { set({ milestones: res.data.map(toMilestone), isOnline: true }); }
+    else { set({ isOnline: false }); }
   },
   createMilestone: async (data) => {
     const res = await api.post<import('@/services/api').MilestoneOut>('/milestones', data);
@@ -215,10 +245,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   updateMilestone: async (id, data) => {
     const body: Record<string, unknown> = {};
-    if (data.name) body.name = data.name;
-    if (data.category) body.category = data.category;
+    if (data.name !== undefined) body.name = data.name;
+    if (data.category !== undefined) body.category = data.category;
     if (data.percentage !== undefined) body.percentage = data.percentage;
     if (data.targetDate !== undefined) body.target_date = data.targetDate;
+    if (data.actualDate !== undefined) body.actual_date = data.actualDate;
+    if (data.actualPercentage !== undefined) body.actual_percentage = data.actualPercentage;
     const res = await api.put<import('@/services/api').MilestoneOut>('/milestones/' + id, body);
     if (res.success && res.data) { set((s) => ({ milestones: s.milestones.map((m) => m.id === id ? toMilestone(res.data!) : m) })); return true; }
     return false;
@@ -235,27 +267,35 @@ export const useAppStore = create<AppState>((set, get) => ({
   fetchMails: async (opts) => {
     const page = opts?.page ?? 1;
     const size = opts?.size ?? 20;
-    const res = await api.get('/feishu/mails?page=' + page + '&size=' + size);
+    const res = await api.get<{ items: MailOut[]; total: number }>('/feishu/mails?page=' + page + '&size=' + size);
     if (res.success && res.data) { set({ mails: res.data.items.map(toMail), mailTotal: res.data.total, isOnline: true }); }
+    else { set({ isOnline: false }); }
   },
   syncMails: async () => {
-    const res = await api.post('/feishu/sync');
+    const res = await api.post<{ synced_count: number; new_count: number; demo: boolean }>('/feishu/sync');
     if (res.success && res.data) { await get().fetchMails(); return { synced: res.data.synced_count, fresh: res.data.new_count, demo: res.data.demo }; }
     return null;
   },
   fetchTodos: async () => {
-    const res = await api.get('/feishu/todos');
+    const res = await api.get<TodoOut[]>('/feishu/todos');
     if (res.success && res.data) { set({ todos: res.data.map(toTodo), isOnline: true }); }
+    else { set({ isOnline: false }); }
   },
   toggleTodo: async (id) => {
-    const res = await api.post('/feishu/todo-toggle', { id });
-    if (res.success && res.data) { set((s) => ({ todos: s.todos.map((t) => t.id === id ? { ...t, completed: res.data.completed } : t) })); return true; }
+    const res = await api.post<{ completed: boolean }>('/feishu/todo-toggle', { id });
+    if (res.success && res.data) { set((s) => ({ todos: s.todos.map((t) => t.id === id ? { ...t, completed: res.data!.completed } : t) })); return true; }
     return false;
   },
   deliverableCategories: [],
   fetchDeliverableCategories: async () => {
-    const res = await api.get('/dashboard/deliverable-categories');
-    if (res.success && res.data) { set({ deliverableCategories: res.data.map((c: DeliverableCategory) => ({ id: c.id, name: c.name, icon: c.icon, sortOrder: c.sort_order, isVisible: c.is_visible })) }); }
+    const res = await api.get<import('@/services/api').DeliverableCategoryOut[]>('/dashboard/deliverable-categories');
+    if (res.success && res.data) {
+      set({
+        deliverableCategories: res.data.map((c) => ({
+          id: c.id, name: c.name, icon: c.icon, sortOrder: c.sort_order, isVisible: c.is_visible,
+        })),
+      });
+    }
   },
   createDeliverableCategory: async (data) => {
     const res = await api.post('/dashboard/deliverable-categories', data);
@@ -264,28 +304,37 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   dashboardOverview: null,
   fetchDashboardOverview: async () => {
-    const res = await api.get('/dashboard/overview');
+    const res = await api.get<import('@/services/api').DashboardOverviewOut>('/dashboard/overview');
     if (res.success && res.data) {
       set({
         dashboardOverview: {
           totalIssues: res.data.total_issues, openIssues: res.data.open_issues,
           closedRate: res.data.closed_rate, highRiskCount: res.data.high_risk_count,
           newThisWeek: res.data.new_this_week, closedThisWeek: res.data.closed_this_week,
-          milestoneProgress: res.data.milestone_progress, departmentStats: res.data.department_stats,
+          milestoneProgress: (res.data.milestone_progress ?? []).map((m) => ({
+            name: m.name, percentage: m.percentage,
+            actualPercentage: m.actual_percentage ?? null,
+            targetDate: m.target_date ?? null, actualDate: m.actual_date ?? null,
+            category: m.category,
+          })),
+          completionPie: res.data.completion_pie ?? [],
+          departmentBar: res.data.department_bar ?? [],
           trend: res.data.trend, deliverableCounts: res.data.deliverable_counts,
         },
         isOnline: true,
       });
+    } else {
+      set({ isOnline: false });
     }
   },
   layouts: {},
   fetchLayouts: async (pageKey) => {
-    const res = await api.get('/dashboard/layouts?page_key=' + pageKey);
+    const res = await api.get<import('@/services/api').LayoutCardOut[]>('/dashboard/layouts?page_key=' + pageKey);
     if (res.success && res.data) {
       set((s) => ({
         layouts: {
           ...s.layouts,
-          [pageKey]: res.data.map((c: import('@/services/api').LayoutCardOut) => ({
+          [pageKey]: res.data!.map((c) => ({
             id: c.id, pageKey: c.page_key, cardId: c.card_id, cardType: c.card_type,
             x: c.x, y: c.y, w: c.w, h: c.h, config: c.config ?? undefined,
           })),
@@ -358,6 +407,43 @@ export const useAppStore = create<AppState>((set, get) => ({
   deleteTir: async (id) => {
     const res = await api.del('/tir/' + id);
     if (res.success) { set((s) => ({ tirs: s.tirs.filter((t) => t.id !== id) })); return true; }
+    return false;
+  },
+  importTirsExcel: async (file) => {
+    const res = await api.importExcel<ExcelImportResult>('/tir/import-excel', file);
+    if (res.success && res.data) {
+      await get().fetchTirs({ page: 1, size: 20 });
+      return res.data;
+    }
+    return null;
+  },
+
+  // ---------------------------------------------------------------------------
+  // EWO Excel import
+  // ---------------------------------------------------------------------------
+  importEwosExcel: async (file) => {
+    const res = await api.importExcel<ExcelImportResult>('/ewo/import-excel', file);
+    if (res.success && res.data) {
+      await get().fetchEwos({ page: 1, size: 20 });
+      return res.data;
+    }
+    return null;
+  },
+
+  // ---------------------------------------------------------------------------
+  // Settings
+  // ---------------------------------------------------------------------------
+  settings: {},
+  fetchSettings: async () => {
+    const res = await api.get<Record<string, string>>('/settings');
+    if (res.success && res.data) { set({ settings: res.data, isOnline: true }); }
+  },
+  updateSetting: async (key, value) => {
+    const res = await api.put('/settings/' + key, { value });
+    if (res.success) {
+      set((s) => ({ settings: { ...s.settings, [key]: value } }));
+      return true;
+    }
     return false;
   },
 }));

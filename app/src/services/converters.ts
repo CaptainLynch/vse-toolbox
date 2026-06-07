@@ -26,6 +26,15 @@ export function toIssue(o: IssueOut): Issue {
     department: o.department,
     status: o.status,
     assignee: o.assignee,
+    partSystem: o.part_system ?? null,
+    subSystem: o.sub_system ?? null,
+    rootCause: o.root_cause ?? null,
+    shortTermAction: o.short_term_action ?? null,
+    longTermAction: o.long_term_action ?? null,
+    cutoffPoint: o.cutoff_point ?? null,
+    actionPlan: o.action_plan ?? null,
+    source: o.source ?? null,
+    sourceFile: o.source_file ?? null,
     createdAt: fmtDate(o.created_at),
     updatedAt: fmtDate(o.updated_at),
   };
@@ -52,7 +61,9 @@ export function toMilestone(m: MilestoneOut): Milestone {
     name: m.name,
     category: m.category,
     percentage: m.percentage,
-    targetDate: m.target_date,
+    targetDate: m.target_date ?? null,
+    actualDate: m.actual_date ?? null,
+    actualPercentage: m.actual_percentage ?? null,
   };
 }
 
@@ -93,6 +104,8 @@ export function toEWO(e: EWOOut): EWOItem {
     assignee: e.assignee,
     raisedDate: fmtDate(e.raised_date),
     targetDate: fmtDate(e.target_date),
+    source: e.source ?? null,
+    sourceFile: e.source_file ?? null,
     createdAt: fmtDate(e.created_at),
     updatedAt: fmtDate(e.updated_at),
   };
@@ -109,6 +122,8 @@ export function toTIR(t: TIROut): TIRItem {
     assignee: t.assignee,
     testDate: fmtDate(t.test_date),
     result: t.result,
+    source: t.source ?? null,
+    sourceFile: t.source_file ?? null,
     createdAt: fmtDate(t.created_at),
     updatedAt: fmtDate(t.updated_at),
   };

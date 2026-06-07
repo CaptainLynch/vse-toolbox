@@ -16,7 +16,7 @@ from config import DATA_DIR
 DB_PATH = DATA_DIR / "VSE_TOOLBOX.db"
 
 SCHEMA_SQL = """
--- 问题追踪表
+-- 问题追踪表（含零件总成/子系统/原因分析/措施/断点/行动计划/source）
 CREATE TABLE IF NOT EXISTS issues (
     id TEXT PRIMARY KEY,
     priority TEXT CHECK(priority IN ('P0','P1','P2','P3')),
@@ -25,17 +25,28 @@ CREATE TABLE IF NOT EXISTS issues (
     department TEXT NOT NULL,
     status TEXT CHECK(status IN ('open','in_progress','resolved','closed')),
     assignee TEXT,
+    part_system TEXT,
+    sub_system TEXT,
+    root_cause TEXT,
+    short_term_action TEXT,
+    long_term_action TEXT,
+    cutoff_point TEXT,
+    action_plan TEXT,
+    source TEXT DEFAULT 'manual',
+    source_file TEXT,
     created_at TEXT,
     updated_at TEXT
 );
 
--- 里程碑进度表
+-- 里程碑进度表（含实际完成节点）
 CREATE TABLE IF NOT EXISTS milestones (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     category TEXT NOT NULL,
     percentage INTEGER DEFAULT 0,
-    target_date TEXT
+    target_date TEXT,
+    actual_date TEXT,
+    actual_percentage INTEGER DEFAULT 0
 );
 
 -- 飞书邮件缓存表
@@ -95,7 +106,7 @@ CREATE TABLE IF NOT EXISTS dashboard_layouts (
     UNIQUE(user_id, page_key, card_id)
 );
 
--- EWO/NCR records
+-- EWO/NCR records（含 source/source_file）
 CREATE TABLE IF NOT EXISTS ewo_ncr (
     id TEXT PRIMARY KEY,
     type TEXT CHECK(type IN ('EWO','NCR')),
@@ -107,11 +118,13 @@ CREATE TABLE IF NOT EXISTS ewo_ncr (
     assignee TEXT,
     raised_date TEXT,
     target_date TEXT,
+    source TEXT DEFAULT 'manual',
+    source_file TEXT,
     created_at TEXT,
     updated_at TEXT
 );
 
--- TIR records
+-- TIR records（含 source/source_file）
 CREATE TABLE IF NOT EXISTS tir (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
@@ -122,7 +135,32 @@ CREATE TABLE IF NOT EXISTS tir (
     assignee TEXT,
     test_date TEXT,
     result TEXT,
+    source TEXT DEFAULT 'manual',
+    source_file TEXT,
     created_at TEXT,
+    updated_at TEXT
+);
+
+-- 零件总成→子系统映射表
+CREATE TABLE IF NOT EXISTS lookup_part_system (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    part_system TEXT NOT NULL UNIQUE,
+    sub_system TEXT NOT NULL,
+    created_at TEXT
+);
+
+-- 工程师→科室映射表
+CREATE TABLE IF NOT EXISTS lookup_engineer (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    department TEXT NOT NULL,
+    created_at TEXT
+);
+
+-- 应用配置表
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
     updated_at TEXT
 );
 """
@@ -147,12 +185,94 @@ def get_connection():
             conn.close()
 
 
+_VALID_TABLES = {"issues", "milestones", "ewo_ncr", "tir", "feishu_mails", "todos",
+                  "deliverable_categories", "dashboard_layouts",
+                  "lookup_part_system", "lookup_engineer", "app_settings"}
+
+_VALID_COLUMN_DEFS = {"TEXT", "TEXT DEFAULT 'manual'", "INTEGER DEFAULT 0", "INTEGER"}
+
+
+def _validate_identifier(name: str):
+    """验证 SQL 标识符仅含安全字符。"""
+    if not name.replace("_", "").isalnum():
+        raise ValueError(f"Invalid SQL identifier: {name}")
+
+
+def _table_columns(conn, table_name: str) -> set[str]:
+    """获取指定表的已有列名集合。"""
+    _validate_identifier(table_name)
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {row[1] for row in rows}
+
+
+def _add_column_if_missing(conn, table: str, column: str, col_def: str):
+    """安全添加列：仅当列不存在时执行 ALTER TABLE。"""
+    _validate_identifier(table)
+    _validate_identifier(column)
+    if col_def not in _VALID_COLUMN_DEFS:
+        raise ValueError(f"Invalid column definition: {col_def}")
+    existing = _table_columns(conn, table)
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}")
+        logger.info("Migration: added %s.%s (%s)", table, column, col_def)
+
+
+def evolve_schema():
+    """增量迁移：为已有数据库安全添加新列和新表。"""
+    with get_connection() as conn:
+        # --- B-24: issues 表新增 9 列 ---
+        _add_column_if_missing(conn, "issues", "part_system", "TEXT")
+        _add_column_if_missing(conn, "issues", "sub_system", "TEXT")
+        _add_column_if_missing(conn, "issues", "root_cause", "TEXT")
+        _add_column_if_missing(conn, "issues", "short_term_action", "TEXT")
+        _add_column_if_missing(conn, "issues", "long_term_action", "TEXT")
+        _add_column_if_missing(conn, "issues", "cutoff_point", "TEXT")
+        _add_column_if_missing(conn, "issues", "action_plan", "TEXT")
+        _add_column_if_missing(conn, "issues", "source", "TEXT DEFAULT 'manual'")
+        _add_column_if_missing(conn, "issues", "source_file", "TEXT")
+
+        # --- B-25: milestones 表新增 actual_date / actual_percentage ---
+        _add_column_if_missing(conn, "milestones", "actual_date", "TEXT")
+        _add_column_if_missing(conn, "milestones", "actual_percentage", "INTEGER DEFAULT 0")
+
+        # --- B-26: ewo_ncr / tir 表新增 source / source_file ---
+        _add_column_if_missing(conn, "ewo_ncr", "source", "TEXT DEFAULT 'manual'")
+        _add_column_if_missing(conn, "ewo_ncr", "source_file", "TEXT")
+        _add_column_if_missing(conn, "tir", "source", "TEXT DEFAULT 'manual'")
+        _add_column_if_missing(conn, "tir", "source_file", "TEXT")
+
+        # --- B-27: 新增 3 张表 ---
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS lookup_part_system (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                part_system TEXT NOT NULL UNIQUE,
+                sub_system TEXT NOT NULL,
+                created_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS lookup_engineer (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                department TEXT NOT NULL,
+                created_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT
+            );
+        """)
+
+        conn.commit()
+    logger.info("Schema evolution completed")
+
+
 def init_schema():
-    """初始化数据库 Schema。"""
+    """初始化数据库 Schema，然后执行增量迁移。"""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     with get_connection() as conn:
         conn.executescript(SCHEMA_SQL)
         conn.commit()
+    evolve_schema()
     logger.info("Database schema initialized at %s", DB_PATH)
 
 
@@ -176,8 +296,10 @@ class DBManager:
         with get_connection() as conn:
             conn.execute(
                 """
-                INSERT INTO issues (id, priority, component, description, department, status, assignee, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO issues (id, priority, component, description, department, status, assignee,
+                    part_system, sub_system, root_cause, short_term_action, long_term_action,
+                    cutoff_point, action_plan, source, source_file, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     issue_id,
@@ -185,8 +307,17 @@ class DBManager:
                     data["component"],
                     data["description"],
                     data["department"],
-                    "open",
+                    data.get("status", "open"),
                     data.get("assignee"),
+                    data.get("part_system"),
+                    data.get("sub_system"),
+                    data.get("root_cause"),
+                    data.get("short_term_action"),
+                    data.get("long_term_action"),
+                    data.get("cutoff_point"),
+                    data.get("action_plan"),
+                    data.get("source", "manual"),
+                    data.get("source_file"),
                     now,
                     now,
                 ),
@@ -246,7 +377,11 @@ class DBManager:
 
     @staticmethod
     def update_issue(issue_id: str, data: dict) -> dict | None:
-        allowed = {"priority", "component", "description", "department", "status", "assignee"}
+        allowed = {
+            "priority", "component", "description", "department", "status", "assignee",
+            "part_system", "sub_system", "root_cause", "short_term_action", "long_term_action",
+            "cutoff_point", "action_plan", "source", "source_file",
+        }
         updates = {k: v for k, v in data.items() if k in allowed and v is not None}
         if not updates:
             return DBManager.get_issue_by_id(issue_id)
@@ -359,14 +494,16 @@ class DBManager:
         with get_connection() as conn:
             cursor = conn.execute(
                 """
-                INSERT INTO milestones (name, category, percentage, target_date)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO milestones (name, category, percentage, target_date, actual_date, actual_percentage)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     data["name"],
                     data["category"],
                     data.get("percentage", 0),
                     data.get("target_date"),
+                    data.get("actual_date"),
+                    data.get("actual_percentage", 0),
                 ),
             )
             conn.commit()
@@ -378,7 +515,7 @@ class DBManager:
 
     @staticmethod
     def update_milestone(milestone_id: int, data: dict) -> dict | None:
-        allowed = {"name", "category", "percentage", "target_date"}
+        allowed = {"name", "category", "percentage", "target_date", "actual_date", "actual_percentage"}
         updates = {k: v for k, v in data.items() if k in allowed and v is not None}
         if not updates:
             return None
@@ -661,11 +798,13 @@ class DBManager:
         now = datetime.now().isoformat()
         with get_connection() as conn:
             conn.execute(
-                """INSERT INTO ewo_ncr (id, type, title, description, severity, status, department, assignee, raised_date, target_date, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO ewo_ncr (id, type, title, description, severity, status, department, assignee,
+                    raised_date, target_date, source, source_file, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (ewo_id, data.get("type", "EWO"), data["title"], data.get("description"),
                  data.get("severity", "minor"), data.get("status", "open"), data.get("department"),
-                 data.get("assignee"), data.get("raised_date"), data.get("target_date"), now, now),
+                 data.get("assignee"), data.get("raised_date"), data.get("target_date"),
+                 data.get("source", "manual"), data.get("source_file"), now, now),
             )
             conn.commit()
         return DBManager.get_ewo_by_id(ewo_id)
@@ -694,7 +833,8 @@ class DBManager:
 
     @staticmethod
     def update_ewo(ewo_id: str, data: dict) -> dict | None:
-        allowed = {"type", "title", "description", "severity", "status", "department", "assignee", "raised_date", "target_date"}
+        allowed = {"type", "title", "description", "severity", "status", "department", "assignee",
+                    "raised_date", "target_date", "source", "source_file"}
         updates = {k: v for k, v in data.items() if k in allowed and v is not None}
         if not updates:
             return DBManager.get_ewo_by_id(ewo_id)
@@ -737,11 +877,13 @@ class DBManager:
         now = datetime.now().isoformat()
         with get_connection() as conn:
             conn.execute(
-                """INSERT INTO tir (id, title, description, category, status, department, assignee, test_date, result, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO tir (id, title, description, category, status, department, assignee,
+                    test_date, result, source, source_file, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (tir_id, data["title"], data.get("description"), data.get("category"),
                  data.get("status", "draft"), data.get("department"), data.get("assignee"),
-                 data.get("test_date"), data.get("result"), now, now),
+                 data.get("test_date"), data.get("result"),
+                 data.get("source", "manual"), data.get("source_file"), now, now),
             )
             conn.commit()
         return DBManager.get_tir_by_id(tir_id)
@@ -770,7 +912,8 @@ class DBManager:
 
     @staticmethod
     def update_tir(tir_id: str, data: dict) -> dict | None:
-        allowed = {"title", "description", "category", "status", "department", "assignee", "test_date", "result"}
+        allowed = {"title", "description", "category", "status", "department", "assignee",
+                    "test_date", "result", "source", "source_file"}
         updates = {k: v for k, v in data.items() if k in allowed and v is not None}
         if not updates:
             return DBManager.get_tir_by_id(tir_id)
@@ -796,3 +939,103 @@ class DBManager:
             pending = conn.execute("SELECT COUNT(*) FROM tir WHERE status IN ('draft','submitted')").fetchone()[0]
             by_cat = conn.execute("SELECT category, COUNT(*) as cnt FROM tir GROUP BY category").fetchall()
         return {"total": total, "approved": approved, "pending": pending, "by_category": {r[0]: r[1] for r in by_cat}}
+
+    # ------------------------------------------------------------------
+    # lookup_part_system
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def search_part_system(query: str) -> list[dict]:
+        """模糊搜索零件总成→子系统映射。转义 LIKE 通配符防止注入。"""
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        with get_connection() as conn:
+            rows = conn.execute(
+                "SELECT part_system, sub_system FROM lookup_part_system WHERE part_system LIKE ? ESCAPE '\\' ORDER BY part_system LIMIT 20",
+                (f"%{escaped}%",),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    @staticmethod
+    def get_part_system(part_system: str) -> dict | None:
+        """精确查询零件总成映射。"""
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT part_system, sub_system FROM lookup_part_system WHERE part_system = ?",
+                (part_system,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    @staticmethod
+    def create_part_system(data: dict) -> dict:
+        now = datetime.now().isoformat()
+        with get_connection() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO lookup_part_system (part_system, sub_system, created_at) VALUES (?, ?, ?)",
+                (data["part_system"], data["sub_system"], now),
+            )
+            conn.commit()
+        return {"part_system": data["part_system"], "sub_system": data["sub_system"]}
+
+    # ------------------------------------------------------------------
+    # lookup_engineer
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def search_engineer(query: str) -> list[dict]:
+        """模糊搜索工程师→科室映射。转义 LIKE 通配符防止注入。"""
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        with get_connection() as conn:
+            rows = conn.execute(
+                "SELECT name, department FROM lookup_engineer WHERE name LIKE ? ESCAPE '\\' ORDER BY name LIMIT 20",
+                (f"%{escaped}%",),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    @staticmethod
+    def get_engineer(name: str) -> dict | None:
+        """精确查询工程师映射。"""
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT name, department FROM lookup_engineer WHERE name = ?",
+                (name,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    @staticmethod
+    def create_engineer(data: dict) -> dict:
+        now = datetime.now().isoformat()
+        with get_connection() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO lookup_engineer (name, department, created_at) VALUES (?, ?, ?)",
+                (data["name"], data["department"], now),
+            )
+            conn.commit()
+        return {"name": data["name"], "department": data["department"]}
+
+    # ------------------------------------------------------------------
+    # app_settings
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def get_all_settings() -> dict:
+        """获取全部设置项，返回 {key: value} 字典。"""
+        with get_connection() as conn:
+            rows = conn.execute("SELECT key, value FROM app_settings").fetchall()
+        return {row[0]: row[1] for row in rows}
+
+    @staticmethod
+    def get_setting(key: str) -> str | None:
+        with get_connection() as conn:
+            row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (key,)).fetchone()
+        return row[0] if row else None
+
+    @staticmethod
+    def set_setting(key: str, value: str) -> dict:
+        now = datetime.now().isoformat()
+        with get_connection() as conn:
+            conn.execute(
+                "INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                (key, value, now),
+            )
+            conn.commit()
+        return {"key": key, "value": value, "updated_at": now}

@@ -1,10 +1,12 @@
 import React from 'react';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import GridLayout from 'react-grid-layout';
+import type { Layout } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 import { useAppStore } from '@/stores/appStore';
 import { defaultLayouts } from '@/config/defaultLayouts';
+import { verticalCompactor } from 'react-grid-layout';
 
 interface DraggableGridProps {
   pageKey: string;
@@ -36,7 +38,7 @@ export function DraggableGrid({ pageKey, children, cols = 4, rowHeight = 120 }: 
 
   const currentLayout = layouts[pageKey] ?? defaultLayouts[pageKey] ?? [];
 
-  const toGrid = currentLayout.map((c) => ({
+  const toGrid: Layout = currentLayout.map((c) => ({
     i: c.cardId,
     x: c.x,
     y: c.y,
@@ -45,7 +47,7 @@ export function DraggableGrid({ pageKey, children, cols = 4, rowHeight = 120 }: 
   }));
 
   const handleLayoutChange = useCallback(
-    (newLayout: GridLayout.Layout[]) => {
+    (newLayout: Layout) => {
       clearTimeout(saveTimer);
       saveTimer = setTimeout(() => {
         const updated = newLayout.map((l) => ({
@@ -68,15 +70,12 @@ export function DraggableGrid({ pageKey, children, cols = 4, rowHeight = 120 }: 
       <GridLayout
         className="layout"
         layout={toGrid}
-        cols={cols}
-        rowHeight={rowHeight}
+        gridConfig={{ cols, rowHeight, margin: [12, 12] as const, containerPadding: null, maxRows: Infinity }}
         width={width}
         onLayoutChange={handleLayoutChange}
-        isDraggable={true}
-        isResizable={true}
-        compactType="vertical"
-        margin={[12, 12]}
-        draggableHandle=".drag-handle"
+        dragConfig={{ enabled: true, bounded: false, handle: '.drag-handle', cancel: '', threshold: 3 }}
+        resizeConfig={{ enabled: true, handles: ['se'] as const }}
+        compactor={verticalCompactor}
       >
         {children}
       </GridLayout>

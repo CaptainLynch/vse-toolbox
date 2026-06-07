@@ -41,7 +41,18 @@
       "mcp__tavily__tavily_search",
       "Bash(curl -sL \"https://googlechromelabs.github.io/chrome-for-testing/known-good-versions-with-downloads.json\")",
       "Bash(curl *)",
-      "Read(//home/lynch/.wdm/drivers/edgedriver/linux64/147.0.3912.72/**)"
+      "Read(//home/lynch/.wdm/drivers/edgedriver/linux64/147.0.3912.72/**)",
+      "Bash(npm list *)",
+      "Bash(where claude *)",
+      "Bash(npx -y @modelcontextprotocol/server-time --help)",
+      "Bash(uvx mcp-server-fetch *)",
+      "Bash(where uv *)",
+      "Bash(npm *)",
+      "Bash(npx -y @anthropic-ai/mcp-server-fetch --help)",
+      "Bash(Get-ChildItem -Path \"E:\\\\project\\\\vse-toolbox\" -Filter \"*.md\" -File)",
+      "Bash(Select-Object Name)",
+      "Bash(timeout 5)",
+      "Bash(Start-Sleep -Seconds 5)"
     ]
   }
 }

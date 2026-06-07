@@ -22,7 +22,7 @@ app/dist/
 .env.local
 
 # Data (runtime)
-data/VSE_TOOLBOX.db
+data/*.db
 logs/
 temp/
 templates/output/*.pptx

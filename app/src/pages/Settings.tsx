@@ -1,5 +1,6 @@
-﻿import { useState } from 'react';
+﻿import { useState, useEffect } from 'react';
 import { cn } from '@/lib/utils';
+import { useAppStore } from '@/stores/appStore';
 import {
   Shield,
   Lock,
@@ -15,6 +16,7 @@ import {
   Presentation,
   Monitor,
   User,
+  FolderOpen,
 } from 'lucide-react';
 
 interface SecurityConfig {
@@ -89,12 +91,45 @@ const browserPolicy = [
 
 export function Settings() {
   const [config, setConfig] = useState<SecurityConfig>(defaultConfig);
-  const [activeTab, setActiveTab] = useState<'security' | 'network' | 'tools' | 'deploy'>('security');
+  const [activeTab, setActiveTab] = useState<'security' | 'network' | 'tools' | 'deploy' | 'deliverable'>('security');
   const [saved, setSaved] = useState(false);
+  const { settings, fetchSettings, updateSetting } = useAppStore();
+
+  // Deliverable folder paths (controlled inputs)
+  const [folderPaths, setFolderPaths] = useState({
+    issues_folder: '',
+    ewo_folder: '',
+    tir_folder: '',
+  });
+
+  useEffect(() => { fetchSettings(); }, []);
+
+  // Sync folder paths when settings load from store
+  useEffect(() => {
+    setFolderPaths({
+      issues_folder: settings.issues_folder ?? '',
+      ewo_folder: settings.ewo_folder ?? '',
+      tir_folder: settings.tir_folder ?? '',
+    });
+  }, [settings]);
 
   const handleSave = () => {
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
+  };
+
+  const handleDeliverableSave = async () => {
+    let ok = true;
+    for (const [key, value] of Object.entries(folderPaths)) {
+      const success = await updateSetting(key, value);
+      if (!success) ok = false;
+    }
+    // Re-fetch to sync local state with store (handles partial failure)
+    await fetchSettings();
+    if (ok) {
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    }
   };
 
   const tabs = [
@@ -102,6 +137,7 @@ export function Settings() {
     { id: 'network' as const, label: '网络环境', icon: Globe },
     { id: 'tools' as const, label: '工具适配', icon: Shield },
     { id: 'deploy' as const, label: '部署要求', icon: Monitor },
+    { id: 'deliverable' as const, label: '交付物配置', icon: FolderOpen },
   ];
 
   return (
@@ -548,10 +584,85 @@ export function Settings() {
         </div>
       )}
 
+      {/* Deliverable Config Tab */}
+      {activeTab === 'deliverable' && (
+        <div className="space-y-4 max-w-[720px]">
+          <div className="bg-[#141416] border border-[#2a2a2e] rounded-[4px] p-5">
+            <div className="flex items-center gap-2 mb-4">
+              <FolderOpen className="w-4 h-4 text-[#d4af37]" />
+              <h3 className="text-white text-sm font-semibold">交付物默认文件夹</h3>
+            </div>
+            <p className="text-xs text-[#8a8f98] mb-4">
+              设置各交付物 Excel 文件的默认存放路径，导入时将优先从对应文件夹读取
+            </p>
+
+            <div className="space-y-4">
+              {[
+                { key: 'issues_folder' as const, label: '造车问题清单', placeholder: '例如：D:\\交付物\\造车问题' },
+                { key: 'ewo_folder' as const, label: 'EWO/NCR 文件夹', placeholder: '例如：D:\\交付物\\EWO_NCR' },
+                { key: 'tir_folder' as const, label: 'TIR 文件夹', placeholder: '例如：D:\\交付物\\TIR' },
+              ].map((item) => (
+                <div key={item.key} className="flex items-center justify-between py-3 border-b border-[#1e1e20] last:border-0">
+                  <div className="flex-1">
+                    <div className="text-sm text-white mb-0.5">{item.label}</div>
+                    <div className="text-xs text-[#8a8f98]">
+                      {item.key === 'issues_folder' && '飞书多维表格导出的造车问题 Excel 存放位置'}
+                      {item.key === 'ewo_folder' && '公司内网 EWO/NCR 系统导出的 Excel 存放位置'}
+                      {item.key === 'tir_folder' && '公司内网 TIR 系统导出的 Excel 存放位置'}
+                    </div>
+                  </div>
+                  <input
+                    value={folderPaths[item.key]}
+                    onChange={(e) => setFolderPaths({ ...folderPaths, [item.key]: e.target.value })}
+                    placeholder={item.placeholder}
+                    className="w-[320px] h-9 px-3 bg-[#0f0f11] border border-[#2a2a2e] rounded-[4px] text-sm text-white placeholder-[#8a8f98] focus:outline-none focus:border-[#d4af37]"
+                  />
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-4 p-3 bg-[#3b3015]/30 border border-[#d4af37]/20 rounded-[4px]">
+              <div className="flex items-start gap-2">
+                <Info className="w-3.5 h-3.5 text-[#d4af37] flex-shrink-0 mt-0.5" />
+                <span className="text-xs text-[#d4af37]">
+                  配置后，在各交付物子页面点击「导入 Excel」时将自动定位到对应文件夹。
+                  路径支持 Windows 格式（如 D:\folder）和 UNC 路径（如 \\server\share）。
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-[#141416] border border-[#2a2a2e] rounded-[4px] p-5">
+            <div className="flex items-center gap-2 mb-4">
+              <Info className="w-4 h-4 text-[#8a8f98]" />
+              <h3 className="text-white text-sm font-semibold">导入说明</h3>
+            </div>
+            <div className="space-y-2 text-xs text-[#8a8f98] leading-relaxed">
+              <div className="flex items-start gap-2">
+                <CheckCircle2 className="w-3.5 h-3.5 text-green-400 flex-shrink-0 mt-0.5" />
+                <span>造车问题：支持从飞书多维表格导出的 Excel，自动识别列名并映射到对应字段</span>
+              </div>
+              <div className="flex items-start gap-2">
+                <CheckCircle2 className="w-3.5 h-3.5 text-green-400 flex-shrink-0 mt-0.5" />
+                <span>EWO/NCR：支持从公司内网 EWO 系统导出的 Excel，自动匹配类型和严重度</span>
+              </div>
+              <div className="flex items-start gap-2">
+                <CheckCircle2 className="w-3.5 h-3.5 text-green-400 flex-shrink-0 mt-0.5" />
+                <span>TIR：支持从公司内网 TIR 系统导出的 Excel，自动匹配试验类型和状态</span>
+              </div>
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="w-3.5 h-3.5 text-[#ff9f4d] flex-shrink-0 mt-0.5" />
+                <span>导入时已存在的记录（按编号匹配）将自动更新，新记录将创建</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Save Button */}
       <div className="mt-6 flex items-center gap-3">
         <button
-          onClick={handleSave}
+          onClick={activeTab === 'deliverable' ? handleDeliverableSave : handleSave}
           className="h-9 px-6 bg-[#d4af37] text-[#0a0a0c] text-sm font-semibold rounded-[4px] hover:brightness-110 transition-all flex items-center gap-2"
         >
           <Save className="w-4 h-4" />

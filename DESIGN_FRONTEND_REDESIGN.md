@@ -1,4 +1,4 @@
-﻿# 前端界面重构 - 功能设计文档
+# 前端界面重构 - 功能设计文档
 
 > **版本**: v1.0
 > **日期**: 2026-06-06
@@ -804,4 +804,68 @@ Phase 4 依赖 Phase 3 完成
 
 ---
 
-**最后更新**: 2026-06-06
+---
+
+## 9. Phase 5: 交付物管理与 Excel 导入（2026-06-07 架构设计）
+
+### 9.1 需求背景
+- EWO/NCR/TIR 部署在公司内网，可导出明细 Excel
+- 造车问题清单部署在飞书多维表格，可导出明细 Excel
+- 五个科室：车体架构集成科、车身科、车体科、外饰工程科、内饰工程科
+
+### 9.2 数据库变更（后端）
+- **issues 表扩展**：part_system, sub_system, root_cause, short_term_action, long_term_action, cutoff_point, action_plan, source, source_file
+- **milestones 表扩展**：actual_date, actual_percentage
+- **ewo_ncr / tir 表扩展**：source, source_file
+- **新增 lookup_part_system 表**：零件总成→子系统映射
+- **新增 lookup_engineer 表**：工程师→科室映射
+- **新增 app_settings 表**：应用配置持久化
+
+### 9.3 后端 API 新增
+- `POST /api/issues/import-excel` — 造车问题 Excel 导入
+- `POST /api/ewo/import-excel` — EWO Excel 导入
+- `POST /api/tir/import-excel` — TIR Excel 导入
+- `GET/POST /api/lookup/part-system` — 零件总成查询与映射
+- `GET/POST /api/lookup/engineer` — 工程师查询与映射
+- `GET/PUT /api/settings` — 应用配置读写
+- `GET /api/dashboard/overview` — 重写（里程碑实际节点+饼图+柱状图）
+
+### 9.4 前端改造点
+- **Settings.tsx**：新增「交付物配置」Tab，设置各交付物默认本地文件夹地址
+- **AnalyticsOverview.tsx**：重写为里程碑横向卡片（计划+实际）+ 饼图 + 柱状图
+- **DeliverableIssues.tsx**：Excel 导入按钮 + 10 列字段扩展 + 新建问题单自动关联（零件总成→子系统、工程师→科室）
+- **DeliverableEWO.tsx / DeliverableTIR.tsx**：Excel 导入按钮 + 手动添加明细
+
+### 9.5 实现顺序
+
+```
+Phase 1: 数据库重构（B-24~B-29）✅ DONE
+  └─ issues/milestones/ewo/tir 表扩展 + lookup/settings 新表 + Schema 扩展
+
+Phase 2: 后端 API（B-30~B-38）✅ DONE
+  ├─ excel_import_service.py
+  ├─ issues/ewo/tir import-excel 端点
+  ├─ lookup API
+  ├─ settings API
+  ├─ dashboard overview 重写
+  └─ milestones 扩展
+
+Phase 3: 前端改造（F-20~F-26）✅ DONE
+  ├─ api.ts / types.ts 扩展（importExcel/lookup/settings API + Issue 9字段 + Milestone actual字段）
+  ├─ Settings.tsx 交付物配置Tab（controlled inputs + settings 读写）
+  ├─ AnalyticsOverview.tsx 重写（饼图+柱状图+里程碑计划/实际卡片）
+  ├─ DeliverableIssues.tsx Excel导入+10列+零件总成/工程师自动关联
+  └─ DeliverableEWO/TIR Excel导入+分页
+```
+
+### 9.6 代码审计（2026-06-07 两轮）
+
+**第一轮修复（20项）：** 类型补全（DashboardOverviewOut/EWOOut/TIROut）、字段映射补全（updateMilestone/updateIssue）、错误处理补全（fetchMails/fetchTodos/fetchMilestones isOnline）、useLookup unmount cleanup、Settings controlled inputs、KPI trend 语义、EWO/TIR 分页+表单reset
+
+**第二轮修复（3项）：** KPI 图标颜色修正、Settings 保存后 re-fetch 同步、CreateIssuePayload 接口定义
+
+**最终状态：** tsc 零错误，vite build 通过
+
+---
+
+**最后更新**: 2026-06-07（Phase 5 全部完成 + 两轮代码审计）

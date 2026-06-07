@@ -1,4 +1,3 @@
-import React from 'react';
 import { useState } from 'react';
 import { BarChart3, ClipboardList, AlertTriangle, FileText, Plus } from 'lucide-react';
 import { useAppStore } from '@/stores/appStore';
@@ -18,7 +17,7 @@ const iconMap: Record<string, React.ComponentType<{ className?: string }>> = {
 };
 
 export function SubPageNav({ pages, active, onChange }: SubPageNavProps) {
-  const { deliverableCategories, createDeliverableCategory } = useAppStore();
+  const { createDeliverableCategory } = useAppStore();
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [newCategory, setNewCategory] = useState({ id: '', name: '', icon: '' });
 

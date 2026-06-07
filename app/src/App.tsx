@@ -5,20 +5,15 @@ import { Sidebar } from '@/components/Sidebar';
 import { TopBar } from '@/components/TopBar';
 import { OfflineBanner } from '@/components/OfflineBanner';
 import { AnalyticsLayout } from '@/pages/AnalyticsLayout';
-import { AnalyticsOverview } from '@/pages/AnalyticsOverview';
-import { DeliverableIssues } from '@/pages/DeliverableIssues';
-import { DeliverableEWO } from '@/pages/DeliverableEWO';
-import { DeliverableTIR } from '@/pages/DeliverableTIR';
 import { ExcelToolbox } from '@/pages/ExcelToolbox';
 import { Toolbox } from '@/pages/Toolbox';
-import { Analytics } from '@/pages/Analytics';
 import { FeishuMail } from '@/pages/FeishuMail';
 import { Settings } from '@/pages/Settings';
 import { cn } from '@/lib/utils';
 import { Toaster } from 'sonner';
 
 function App() {
-  const { isLoading, setIsLoading, isOnline, setOnline, currentPage, isSidebarOpen, setIsLoading: _sl } = useAppStore();
+  const { isLoading, setIsLoading, isOnline, setOnline, currentPage, isSidebarOpen } = useAppStore();
 
   // 启动动画 + 后端健康检查
   useEffect(() => {
@@ -41,14 +36,6 @@ function App() {
     switch (currentPage) {
       case 'analytics':
         return <AnalyticsLayout />;
-      case 'analytics-overview':
-        return <AnalyticsOverview />;
-      case 'analytics-issues':
-        return <DeliverableIssues />;
-      case 'analytics-ewo':
-        return <DeliverableEWO />;
-      case 'analytics-tir':
-        return <DeliverableTIR />;
       case 'excel':
         return <ExcelToolbox />;
       case 'toolbox':

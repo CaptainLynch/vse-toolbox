@@ -17,6 +17,15 @@ export interface Issue {
   department: string;
   status: 'open' | 'in_progress' | 'resolved' | 'closed';
   assignee: string | null;
+  partSystem: string | null;
+  subSystem: string | null;
+  rootCause: string | null;
+  shortTermAction: string | null;
+  longTermAction: string | null;
+  cutoffPoint: string | null;
+  actionPlan: string | null;
+  source: string | null;
+  sourceFile: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -51,6 +60,8 @@ export interface Milestone {
   category: string;
   percentage: number;
   targetDate: string | null;
+  actualDate: string | null;
+  actualPercentage: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -141,8 +152,9 @@ export interface DashboardOverview {
   highRiskCount: number;
   newThisWeek: number;
   closedThisWeek: number;
-  milestoneProgress: { name: string; percentage: number; category: string }[];
-  departmentStats: { department: string; totalIssues: number; closedRate: number }[];
+  milestoneProgress: { name: string; percentage: number; actualPercentage: number | null; targetDate: string | null; actualDate: string | null; category: string }[];
+  completionPie: { name: string; value: number; color: string }[];
+  departmentBar: { department: string; total: number; closed: number }[];
   trend: { date: string; count: number }[];
   deliverableCounts: Record<string, number>;
 }
@@ -162,6 +174,8 @@ export interface EWOItem {
   assignee: string | null;
   raisedDate: string | null;
   targetDate: string | null;
+  source: string | null;
+  sourceFile: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -180,6 +194,17 @@ export interface TIRItem {
   assignee: string | null;
   testDate: string | null;
   result: string | null;
+  source: string | null;
+  sourceFile: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
+export interface Setting {
+  key: string;
+  value: string;
 }

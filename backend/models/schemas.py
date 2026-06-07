@@ -30,6 +30,15 @@ class IssueCreate(BaseModel):
     description: str = Field(..., min_length=1, max_length=2000)
     department: str = Field(..., min_length=1, max_length=100)
     assignee: str | None = Field(default=None, max_length=50)
+    part_system: str | None = Field(default=None, max_length=200)
+    sub_system: str | None = Field(default=None, max_length=200)
+    root_cause: str | None = None
+    short_term_action: str | None = None
+    long_term_action: str | None = None
+    cutoff_point: str | None = None
+    action_plan: str | None = None
+    source: str | None = "manual"
+    source_file: str | None = None
 
 
 class IssueUpdate(BaseModel):
@@ -39,6 +48,15 @@ class IssueUpdate(BaseModel):
     department: str | None = Field(default=None, min_length=1, max_length=100)
     status: Literal["open", "in_progress", "resolved", "closed"] | None = None
     assignee: str | None = Field(default=None, max_length=50)
+    part_system: str | None = Field(default=None, max_length=200)
+    sub_system: str | None = Field(default=None, max_length=200)
+    root_cause: str | None = None
+    short_term_action: str | None = None
+    long_term_action: str | None = None
+    cutoff_point: str | None = None
+    action_plan: str | None = None
+    source: str | None = None
+    source_file: str | None = None
 
 
 class IssueOut(BaseModel):
@@ -48,7 +66,16 @@ class IssueOut(BaseModel):
     description: str
     department: str
     status: str
-    assignee: str | None
+    assignee: str | None = None
+    part_system: str | None = None
+    sub_system: str | None = None
+    root_cause: str | None = None
+    short_term_action: str | None = None
+    long_term_action: str | None = None
+    cutoff_point: str | None = None
+    action_plan: str | None = None
+    source: str | None = "manual"
+    source_file: str | None = None
     created_at: str
     updated_at: str
 
@@ -87,6 +114,8 @@ class Milestone(BaseModel):
     category: str = Field(..., min_length=1, max_length=100)
     percentage: int = Field(default=0, ge=0, le=100)
     target_date: str | None = None
+    actual_date: str | None = None
+    actual_percentage: int = Field(default=0, ge=0, le=100)
 
 
 class MilestoneCreate(BaseModel):
@@ -94,6 +123,8 @@ class MilestoneCreate(BaseModel):
     category: str = Field(..., min_length=1, max_length=100)
     percentage: int = Field(default=0, ge=0, le=100)
     target_date: str | None = None
+    actual_date: str | None = None
+    actual_percentage: int = Field(default=0, ge=0, le=100)
 
 
 class MilestoneUpdate(BaseModel):
@@ -101,6 +132,8 @@ class MilestoneUpdate(BaseModel):
     category: str | None = Field(default=None, min_length=1, max_length=100)
     percentage: int | None = Field(default=None, ge=0, le=100)
     target_date: str | None = None
+    actual_date: str | None = None
+    actual_percentage: int | None = Field(default=None, ge=0, le=100)
 
 
 # ---------------------------------------------------------------------------
@@ -307,6 +340,13 @@ class DeliverableCategoryCreate(BaseModel):
     sort_order: int = 0
 
 
+class DeliverableCategoryUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    icon: str | None = None
+    sort_order: int | None = None
+    is_visible: bool | None = None
+
+
 # ---------------------------------------------------------------------------
 # Dashboard Layouts
 # ---------------------------------------------------------------------------
@@ -338,7 +378,8 @@ class DashboardOverviewOut(BaseModel):
     new_this_week: int
     closed_this_week: int
     milestone_progress: list
-    department_stats: list
+    completion_pie: list
+    department_bar: list
     trend: list
     deliverable_counts: dict
 
@@ -357,6 +398,8 @@ class EWOCreate(BaseModel):
     assignee: str | None = None
     raised_date: str | None = None
     target_date: str | None = None
+    source: str | None = "manual"
+    source_file: str | None = None
 
 
 class EWOUpdate(BaseModel):
@@ -369,6 +412,8 @@ class EWOUpdate(BaseModel):
     assignee: str | None = None
     raised_date: str | None = None
     target_date: str | None = None
+    source: str | None = None
+    source_file: str | None = None
 
 
 class EWOOut(BaseModel):
@@ -382,6 +427,8 @@ class EWOOut(BaseModel):
     assignee: str | None = None
     raised_date: str | None = None
     target_date: str | None = None
+    source: str | None = "manual"
+    source_file: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
 
@@ -399,6 +446,8 @@ class TIRCreate(BaseModel):
     assignee: str | None = None
     test_date: str | None = None
     result: str | None = None
+    source: str | None = "manual"
+    source_file: str | None = None
 
 
 class TIRUpdate(BaseModel):
@@ -410,6 +459,8 @@ class TIRUpdate(BaseModel):
     assignee: str | None = None
     test_date: str | None = None
     result: str | None = None
+    source: str | None = None
+    source_file: str | None = None
 
 
 class TIROut(BaseModel):
@@ -422,5 +473,53 @@ class TIROut(BaseModel):
     assignee: str | None = None
     test_date: str | None = None
     result: str | None = None
+    source: str | None = "manual"
+    source_file: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Lookup - 零件总成
+# ---------------------------------------------------------------------------
+
+class PartSystemOut(BaseModel):
+    part_system: str
+    sub_system: str
+
+
+class PartSystemCreate(BaseModel):
+    part_system: str = Field(..., min_length=1, max_length=200)
+    sub_system: str = Field(..., min_length=1, max_length=200)
+
+
+# ---------------------------------------------------------------------------
+# Lookup - 工程师
+# ---------------------------------------------------------------------------
+
+class EngineerOut(BaseModel):
+    name: str
+    department: str
+
+
+class EngineerCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    department: str = Field(..., min_length=1, max_length=100)
+
+
+# ---------------------------------------------------------------------------
+# Settings
+# ---------------------------------------------------------------------------
+
+class SettingUpdate(BaseModel):
+    value: str = Field(..., min_length=1, max_length=500)
+
+
+# ---------------------------------------------------------------------------
+# Excel Import Result
+# ---------------------------------------------------------------------------
+
+class ExcelImportResult(BaseModel):
+    created: int = 0
+    skipped: int = 0
+    errors: list[str] = []

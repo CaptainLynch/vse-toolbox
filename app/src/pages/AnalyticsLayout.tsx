@@ -1,5 +1,3 @@
-import React from 'react';
-import { useState } from 'react';
 import { useAppStore } from '@/stores/appStore';
 import { AnalyticsOverview } from './AnalyticsOverview';
 import { DeliverableIssues } from './DeliverableIssues';
@@ -32,14 +30,14 @@ export function AnalyticsLayout() {
 
   return (
     <div className="flex flex-col h-[calc(100vh-56px)]">
-      <div className="flex-1 overflow-auto">
-        {renderSubPage()}
-      </div>
       <SubPageNav
         pages={subPages}
         active={activeSubPage}
         onChange={setActiveSubPage}
       />
+      <div className="flex-1 overflow-auto">
+        {renderSubPage()}
+      </div>
     </div>
   );
 }

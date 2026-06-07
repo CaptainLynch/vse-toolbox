@@ -162,6 +162,9 @@ interface AppState {
   tirs: TIRItem[];
   tirTotal: number;
   tirPage: number;
+
+  // Settings
+  settings: Record<string, string>;
 }
 ```
 
@@ -175,16 +178,16 @@ interface AppState {
 | Sidebar.tsx | 完成 | 侧边栏导航（3个主菜单 + 设置 + 用户信息），品牌名 VSE TOOLBOX |
 | TopBar.tsx | 完成 | 面包屑 + 搜索 + 通知 + 设置图标 |
 | SubPageNav.tsx | 完成 | 底部子页面导航栏（overview/issues/ewo/tir + 添加按钮） |
-| DraggableGrid.tsx | 完成 | react-grid-layout 封装，支持拖拽+resize+磁吸+防抖保存 |
+| DraggableGrid.tsx | 完成 | react-grid-layout v2 封装（gridConfig/dragConfig/resizeConfig/compactor） |
 | DraggableCard.tsx | 完成 | 可拖拽卡片组件（标题+拖拽手柄+内容区） |
 | AnalyticsLayout.tsx | 完成 | 数据分析看板容器，子页面路由 |
-| AnalyticsOverview.tsx | 完成 | 项目总览首页（KPI+趋势图+里程碑+部门统计+交付物导航） |
-| DeliverableIssues.tsx | 完成 | 造车问题子页面（KPI+表格+筛选+分页+里程碑面板） |
-| DeliverableEWO.tsx | 完成 | EWO/NCR 子页面（KPI+列表+创建对话框，已对接后端API） |
-| DeliverableTIR.tsx | 完成 | TIR 子页面（KPI+列表+创建对话框，已对接后端API） |
+| AnalyticsOverview.tsx | 完成 | 项目总览（KPI+趋势图+饼图+柱状图+里程碑计划/实际+交付物导航） |
+| DeliverableIssues.tsx | 完成 | 造车问题（KPI+10列表格+筛选+分页+Excel导入+零件总成/工程师自动关联） |
+| DeliverableEWO.tsx | 完成 | EWO/NCR（KPI+列表+分页+创建+Excel导入，已对接后端API） |
+| DeliverableTIR.tsx | 完成 | TIR（KPI+列表+分页+创建+Excel导入，已对接后端API） |
 | Toolbox.tsx | 完成 | 工具矩阵（Excel/爬虫/PPT/飞书工具卡片+对话框） |
 | FeishuMail.tsx | 完成 | 三栏布局邮件客户端 + 同步 + 分类标签 + 待办勾选 |
-| Settings.tsx | 完成 | 配置展示页面（安全/网络/工具/部署四Tab） |
+| Settings.tsx | 完成 | 环境设置（安全/网络/工具/部署/交付物配置 五Tab） |
 | Dashboard.tsx | 保留 | 旧版造车问题追踪页面（内容已迁移到 DeliverableIssues） |
 | Analytics.tsx | 保留 | 旧版数据分析页面（内容已迁移到 AnalyticsOverview） |
 | ExcelToolbox.tsx | 保留 | Excel工具箱（从工具矩阵跳转可达） |
@@ -194,5 +197,5 @@ interface AppState {
 ## 7. 最后更新
 
 - 创建时间：2026-05-27
-- 最后更新：2026-06-07（前端重构 Phase 1-3 完成：品牌更名+导航精简+子页面体系+拖拽卡片+EWO/TIR数据层）
-- 当前状态：全部功能完成，待端到端联调测试
+- 最后更新：2026-06-07（F-20~F-26 开发完成 + 两轮代码审计修复完毕 + API集成测试37项全部通过）
+- 当前状态：前端全部开发完成，API集成测试通过，待前端UI测试
