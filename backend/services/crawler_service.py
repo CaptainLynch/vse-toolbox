@@ -1,9 +1,10 @@
-﻿import atexit
+import atexit
 import json
 import logging
-import os
 import sys
 import time
+import threading
+from urllib.parse import urlparse, urlunparse
 from pathlib import Path
 
 logger = logging.getLogger("VSE_TOOLBOX.crawler")
@@ -109,6 +110,215 @@ class DriverManager:
             "row_count": len(rows),
         }
 
+
+    # ------------------------------------------------------------------
+    # Aras Innovator EWO / NCR 报表解析
+    # ------------------------------------------------------------------
+
+    # EWO 表格列映射 (data-index → 字段含义)
+    # 0: 复选框/图标 (跳过)  1: EWO编号  2: 二级WO类别  3: 责任工程师
+    # 4: TDC专业科室  5: 主题  6: 车型信息  7: 创建时间
+    _EWO_COL_MAP = {
+        1: "_aras_id",
+        2: "description",
+        3: "assignee",
+        4: "department",
+        5: "title",
+        6: "_vehicle",
+        7: "raised_date",
+    }
+
+    # NCR 表格列映射 (data-index → 字段含义)
+    # 0: 复选框/图标 (跳过)  1: NCR编号  2: 创建时间  3: 提交日期
+    # 4: 提交人  5: 关联NCR项目  6: NCR状态  7: 当前节点
+    # 8: 阶段滞留天数  9: NCR更改类别  10: 主题
+    _NCR_COL_MAP = {
+        1: "_aras_id",
+        2: "raised_date",
+        3: "target_date",
+        4: "assignee",
+        5: "description",
+        6: "_raw_status",
+        7: "_current_node",
+        8: "_stage_days",
+        9: "department",
+        10: "title",
+    }
+
+    # NCR 状态 → ewo_ncr 表 status 枚举映射
+    _NCR_STATUS_MAP = {
+        "open": "open",
+        "opened": "open",
+        "新建": "open",
+        "进行中": "investigating",
+        "in progress": "investigating",
+        "investigating": "investigating",
+        "已解决": "resolved",
+        "resolved": "resolved",
+        "closed": "closed",
+        "已关闭": "closed",
+        "已完成": "closed",
+    }
+
+    def _parse_aras_grid(
+        self,
+        driver,
+        url: str,
+        col_map: dict,
+        record_type: str,
+        wait_timeout: int = 30,
+    ) -> list[dict]:
+        """通用 Aras Innovator .aras-grid-viewport 表格解析器。
+
+        Args:
+            driver: 已导航到目标页的 WebDriver 实例。
+            url: 当前页面 URL（记录到 source_file）。
+            col_map: {data-index: field_name} 列映射。
+            record_type: 'EWO' 或 'NCR'。
+            wait_timeout: 等待表格加载的最大秒数。
+
+        Returns:
+            list[dict] — 每条记录对应一个字典。
+        """
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+
+        # 等待数据表格出现
+        try:
+            WebDriverWait(driver, wait_timeout).until(
+                EC.presence_of_element_located(
+                    (By.CSS_SELECTOR, "table.aras-grid-viewport")
+                )
+            )
+        except Exception:
+            logger.warning("Aras grid not found: %s", url)
+            return []
+
+        # --- 提取表头（用于日志调试） ---
+        head_cells = driver.find_elements(
+            By.CSS_SELECTOR, "table.aras-grid-head th.aras-grid-head-cell"
+        )
+        if head_cells:
+            head_names = [c.text.strip() for c in head_cells if c.text.strip()]
+            logger.debug("Aras %s 表头: %s", record_type, head_names)
+
+        # --- 提取数据行 ---
+        row_elements = driver.find_elements(
+            By.CSS_SELECTOR, "table.aras-grid-viewport tr.aras-grid-row"
+        )
+
+        records = []
+        for row_el in row_elements:
+            cells = row_el.find_elements(
+                By.CSS_SELECTOR, "td.aras-grid-row-cell"
+            )
+            if not cells:
+                continue
+
+            # 按 data-index 收集各列纯文本
+            cell_texts = {}
+            for cell in cells:
+                idx_str = cell.get_attribute("data-index")
+                if idx_str is None:
+                    continue
+                try:
+                    idx = int(idx_str)
+                except (ValueError, TypeError):
+                    continue
+                # .text 自动剥离嵌套 <span> 等标签
+                cell_texts[idx] = cell.text.strip()
+
+            # 过滤空白行：所有映射列都为空则跳过
+            mapped_values = [
+                cell_texts.get(i, "")
+                for i in col_map
+                if i != 0
+            ]
+            if not any(mapped_values):
+                continue
+
+            # 组装记录
+            record = {
+                "type": record_type,
+                "severity": "minor",
+                "status": "open",
+                "source": "aras_crawler",
+                "source_file": self._sanitize_url(url),
+            }
+            for col_idx, field_name in col_map.items():
+                record[field_name] = cell_texts.get(col_idx, "")
+
+            records.append(record)
+
+        logger.info(
+            "Aras %s 解析完成: %d 行（空白行已过滤）", record_type, len(records)
+        )
+        return records
+
+    def extract_ewo_list(self, url: str, wait_timeout: int = 30) -> list[dict]:
+        """从 Aras Innovator EWO 报表页面提取列表数据。
+
+        导航到指定 URL，解析 .aras-grid-viewport 表格，
+        按 EWO 列定义映射为 ewo_ncr 表兼容的字典列表。
+
+        Args:
+            url: EWO 报表页面 URL（需已登录或有 Cookie）。
+            wait_timeout: 等待表格加载的最大秒数，默认 30。
+
+        Returns:
+            list[dict] — 每条 EWO 记录，key 对应 ewo_ncr 表字段。
+            额外字段 _aras_id（EWO编号）、_vehicle（车型信息）保留原始数据。
+        """
+        driver = self.get(url)
+        driver.get(url)
+        time.sleep(2)
+        self._save_cookies(driver)
+
+        records = self._parse_aras_grid(
+            driver, url, self._EWO_COL_MAP, "EWO", wait_timeout
+        )
+
+        # EWO status 默认 open（EWO 报表通常无状态列）
+        for r in records:
+            r["status"] = "open"
+
+        return records
+
+    def extract_ncr_list(self, url: str, wait_timeout: int = 30) -> list[dict]:
+        """从 Aras Innovator NCR 报表页面提取列表数据。
+
+        导航到指定 URL，解析 .aras-grid-viewport 表格，
+        按 NCR 列定义映射为 ewo_ncr 表兼容的字典列表。
+
+        NCR 表格中人名含嵌套 <span class="aras-grid-link">，
+        使用 .text 属性自动剥离嵌套标签获取纯文本。
+
+        Args:
+            url: NCR 报表页面 URL（需已登录或有 Cookie）。
+            wait_timeout: 等待表格加载的最大秒数，默认 30。
+
+        Returns:
+            list[dict] — 每条 NCR 记录，key 对应 ewo_ncr 表字段。
+            额外字段 _aras_id（NCR编号）、_current_node、_stage_days 保留原始数据。
+            status 已映射为 open/investigating/resolved/closed。
+        """
+        driver = self.get(url)
+        driver.get(url)
+        time.sleep(2)
+        self._save_cookies(driver)
+
+        records = self._parse_aras_grid(
+            driver, url, self._NCR_COL_MAP, "NCR", wait_timeout
+        )
+
+        # NCR status 映射
+        for r in records:
+            raw = r.pop("_raw_status", "").lower().strip()
+            r["status"] = self._NCR_STATUS_MAP.get(raw, "open")
+
+        return records
+
     def quit_all(self):
         """安全退出所有 WebDriver 实例。"""
         for d, name in [(self._chrome, "chrome"), (self._edge, "edge")]:
@@ -123,16 +333,46 @@ class DriverManager:
     # 内部方法
     # ------------------------------------------------------------------
 
+
+    @staticmethod
+    def _sanitize_url(url: str) -> str:
+        """剥离 URL 中的 query/fragment，防止敏感参数泄露 (R-07)。"""
+        parsed = urlparse(url)
+        return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
+
     @staticmethod
     def _is_edge_target(url: str) -> bool:
-        return "feishu.cn" in url or "larksuite.com" in url
+        """精确域名匹配，防止子串绕过（如 evil-feishu.cn.attacker.com）。"""
+        host = (urlparse(url).hostname or "").lower()
+        return (
+            host == "feishu.cn" or host.endswith(".feishu.cn")
+            or host == "larksuite.com" or host.endswith(".larksuite.com")
+        )
 
     def _chrome_driver(self):
+        if self._chrome is not None:
+            try:
+                _ = self._chrome.title  # 存活检测
+            except Exception:
+                try:
+                    self._chrome.quit()
+                except Exception:
+                    pass
+                self._chrome = None
         if self._chrome is None:
             self._chrome = self._create_driver("chrome")
         return self._chrome
 
     def _edge_driver(self):
+        if self._edge is not None:
+            try:
+                _ = self._edge.title  # 存活检测
+            except Exception:
+                try:
+                    self._edge.quit()
+                except Exception:
+                    pass
+                self._edge = None
         if self._edge is None:
             self._edge = self._create_driver("edge")
         return self._edge
@@ -146,7 +386,10 @@ class DriverManager:
             from selenium.webdriver.chrome.service import Service
 
             opts = Options()
+            opts.add_argument(r"--user-data-dir=C:\Users\Lynch\AppData\Local\Google\Chrome\User Data")
             opts.add_argument("--disable-blink-features=AutomationControlled")
+            opts.add_argument("--auth-server-whitelist=*sgmw.com.cn")
+            opts.add_argument("--auth-negotiate-delegate-whitelist=*sgmw.com.cn")
             opts.add_experimental_option("excludeSwitches", ["enable-automation"])
             opts.add_experimental_option("useAutomationExtension", False)
 
@@ -160,6 +403,8 @@ class DriverManager:
 
             opts = Options()
             opts.add_argument("--disable-blink-features=AutomationControlled")
+            opts.add_argument("--auth-server-whitelist=*sgmw.com.cn")
+            opts.add_argument("--auth-negotiate-delegate-whitelist=*sgmw.com.cn")
             opts.add_experimental_option("excludeSwitches", ["enable-automation"])
             opts.add_experimental_option("useAutomationExtension", False)
 
@@ -214,8 +459,12 @@ class DriverManager:
             for cookie in cookies:
                 try:
                     # 跳过可能导致问题的字段
-                    cookie.pop("sameSite", None)
-                    cookie.pop("httpOnly", None)
+                    removed = []
+                    for key in ("sameSite", "httpOnly"):
+                        if cookie.pop(key, None) is not None:
+                            removed.append(key)
+                    if removed:
+                        logger.debug("Cookie security fields removed: %s for %s", removed, cookie.get("name", "?"))
                     driver.add_cookie(cookie)
                 except Exception:
                     pass
@@ -226,10 +475,13 @@ class DriverManager:
 
 # 模块级单例
 _driver_manager: DriverManager | None = None
+_driver_manager_lock = threading.Lock()
 
 
 def get_driver_manager() -> DriverManager:
     global _driver_manager
     if _driver_manager is None:
-        _driver_manager = DriverManager()
+        with _driver_manager_lock:
+            if _driver_manager is None:
+                _driver_manager = DriverManager()
     return _driver_manager

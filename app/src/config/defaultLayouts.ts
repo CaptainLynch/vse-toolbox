@@ -1,4 +1,4 @@
-﻿import type { LayoutCard } from '@/types';
+import type { LayoutCard } from '@/types';
 
 export const defaultLayouts: Record<string, LayoutCard[]> = {
   overview: [
@@ -6,9 +6,9 @@ export const defaultLayouts: Record<string, LayoutCard[]> = {
     { pageKey: 'overview', cardId: 'kpi-new', cardType: 'kpi', x: 1, y: 0, w: 1, h: 1 },
     { pageKey: 'overview', cardId: 'kpi-closed', cardType: 'kpi', x: 2, y: 0, w: 1, h: 1 },
     { pageKey: 'overview', cardId: 'kpi-risk', cardType: 'kpi', x: 3, y: 0, w: 1, h: 1 },
-    { pageKey: 'overview', cardId: 'deliverable-nav', cardType: 'custom', x: 0, y: 1, w: 2, h: 2 },
     { pageKey: 'overview', cardId: 'trend-chart', cardType: 'area', x: 2, y: 1, w: 2, h: 2 },
-    { pageKey: 'overview', cardId: 'dept-stats', cardType: 'bar', x: 2, y: 3, w: 2, h: 2 },
+    { pageKey: 'overview', cardId: 'completion-pie', cardType: 'pie', x: 0, y: 3, w: 2, h: 2 },
+    { pageKey: 'overview', cardId: 'dept-bar', cardType: 'bar', x: 2, y: 3, w: 2, h: 2 },
   ],
   issues: [
     { pageKey: 'issues', cardId: 'issue-kpi', cardType: 'kpi', x: 0, y: 0, w: 4, h: 1 },
@@ -22,4 +22,5 @@ export const defaultLayouts: Record<string, LayoutCard[]> = {
     { pageKey: 'tir', cardId: 'tir-kpi', cardType: 'kpi', x: 0, y: 0, w: 4, h: 1 },
     { pageKey: 'tir', cardId: 'tir-table', cardType: 'table', x: 0, y: 1, w: 4, h: 3 },
   ],
+  milestones: [],
 };

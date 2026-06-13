@@ -523,3 +523,104 @@ class ExcelImportResult(BaseModel):
     created: int = 0
     skipped: int = 0
     errors: list[str] = []
+
+# Timeline Node
+
+class TimelineNodeCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    target_date: str | None = None
+    actual_date: str | None = None
+    description: str | None = None
+    sort_order: int = 0
+    status: Literal["pending", "in_progress", "completed", "delayed"] = "pending"
+
+
+class TimelineNodeUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    target_date: str | None = None
+    actual_date: str | None = None
+    description: str | None = None
+    sort_order: int | None = None
+    status: Literal["pending", "in_progress", "completed", "delayed"] | None = None
+
+
+class TimelineNodeOut(BaseModel):
+    id: int
+    name: str
+    target_date: str | None = None
+    actual_date: str | None = None
+    description: str | None = None
+    sort_order: int
+    status: str
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+# Timeline Reorder
+
+class TimelineReorderItem(BaseModel):
+    id: int
+    sort_order: int
+
+
+class TimelineReorderRequest(BaseModel):
+    items: list[TimelineReorderItem]
+
+
+# Milestone Rule
+
+class MilestoneRuleCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    timeline_node_id: int | None = None
+    category: str = Field(..., min_length=1, max_length=100)
+    condition_type: Literal["count_threshold", "status_match", "manual"] = "manual"
+    condition_config: dict | None = None
+    target_value: int = 0
+    sort_order: int = 0
+    is_active: bool = True
+
+
+class MilestoneRuleUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    timeline_node_id: int | None = None
+    category: str | None = None
+    condition_type: str | None = None
+    condition_config: dict | None = None
+    target_value: int | None = None
+    sort_order: int | None = None
+    is_active: bool | None = None
+
+
+class MilestoneRuleOut(BaseModel):
+    id: int
+    name: str
+    timeline_node_id: int | None = None
+    category: str
+    condition_type: str
+    condition_config: dict | None = None
+    target_value: int
+    sort_order: int
+    is_active: bool
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+# Milestone Evaluation
+
+class MilestoneEvaluationOut(BaseModel):
+    evaluation_id: int
+    rule_id: int
+    rule_name: str
+    timeline_node_name: str | None = None
+    category: str
+    condition_type: str
+    current_value: float
+    target_value: float
+    status: str
+    notes: str | None = None
+    evaluated_at: str | None = None
+
+
+class MilestoneEvaluationUpdate(BaseModel):
+    notes: str | None = None
+    status: Literal["not_started", "in_progress", "completed", "blocked"] | None = None

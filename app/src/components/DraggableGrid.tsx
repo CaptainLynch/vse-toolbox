@@ -36,7 +36,10 @@ export function DraggableGrid({ pageKey, children, cols = 4, rowHeight = 120 }: 
     fetchLayouts(pageKey);
   }, [pageKey]);
 
-  const currentLayout = layouts[pageKey] ?? defaultLayouts[pageKey] ?? [];
+  const dbLayout = layouts[pageKey];
+  const currentLayout = (dbLayout && dbLayout.length > 0)
+    ? dbLayout
+    : (defaultLayouts[pageKey] ?? []);
 
   const toGrid: Layout = currentLayout.map((c) => ({
     i: c.cardId,
@@ -73,11 +76,18 @@ export function DraggableGrid({ pageKey, children, cols = 4, rowHeight = 120 }: 
         gridConfig={{ cols, rowHeight, margin: [12, 12] as const, containerPadding: null, maxRows: Infinity }}
         width={width}
         onLayoutChange={handleLayoutChange}
-        dragConfig={{ enabled: true, bounded: false, handle: '.drag-handle', cancel: '', threshold: 3 }}
-        resizeConfig={{ enabled: true, handles: ['se'] as const }}
+        dragConfig={{ enabled: true, bounded: false, handle: '.drag-handle', cancel: 'button,input,textarea,select,option,.no-drag', threshold: 3 }}
+        resizeConfig={{ enabled: true, handles: ['nw', 'ne', 'sw', 'se'] as const }}
         compactor={verticalCompactor}
       >
-        {children}
+        {React.Children.map(children, (child) => {
+          if (!React.isValidElement(child)) return child;
+          return (
+            <div key={child.key}>
+              {child}
+            </div>
+          );
+        })}
       </GridLayout>
     </div>
   );

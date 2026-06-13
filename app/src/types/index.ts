@@ -1,9 +1,6 @@
 /**
- * 前端类型定义 - 与后端 Pydantic schemas 对齐。
- *
- * 命名约定：后端用 snake_case，前端 UI 组件内部用 camelCase。
- * 此文件定义前端内部使用的 camelCase 类型。
- */
+ * 前端类型定义 - 与后�?Pydantic schemas 对齐�? *
+ * 命名约定：后端用 snake_case，前�?UI 组件内部�?camelCase�? * 此文件定义前端内部使用的 camelCase 类型�? */
 
 // ---------------------------------------------------------------------------
 // 问题追踪
@@ -51,8 +48,7 @@ export interface TrendPoint {
 }
 
 // ---------------------------------------------------------------------------
-// 里程碑
-// ---------------------------------------------------------------------------
+// 里程�?// ---------------------------------------------------------------------------
 
 export interface Milestone {
   id: number;
@@ -207,4 +203,55 @@ export interface TIRItem {
 export interface Setting {
   key: string;
   value: string;
+}
+// ---------------------------------------------------------------------------
+// Timeline Nodes
+// ---------------------------------------------------------------------------
+
+export interface TimelineNode {
+  id: number;
+  name: string;
+  targetDate: string | null;
+  actualDate: string | null;
+  description: string | null;
+  sortOrder: number;
+  status: 'pending' | 'in_progress' | 'completed' | 'delayed';
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Milestone Rules
+// ---------------------------------------------------------------------------
+
+export interface MilestoneRule {
+  id: number;
+  name: string;
+  timelineNodeId: number | null;
+  category: string;
+  conditionType: 'count_threshold' | 'status_match' | 'manual';
+  conditionConfig: Record<string, unknown> | null;
+  targetValue: number;
+  sortOrder: number;
+  isActive: boolean;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Milestone Evaluations
+// ---------------------------------------------------------------------------
+
+export interface MilestoneEvaluation {
+  evaluationId: number;
+  ruleId: number;
+  ruleName: string;
+  timelineNodeName: string | null;
+  category: string;
+  conditionType: string;
+  currentValue: number;
+  targetValue: number;
+  status: 'not_started' | 'in_progress' | 'completed' | 'blocked';
+  notes: string | null;
+  evaluatedAt: string | null;
 }

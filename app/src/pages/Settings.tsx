@@ -1,4 +1,4 @@
-﻿import { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { cn } from '@/lib/utils';
 import { useAppStore } from '@/stores/appStore';
 import {
@@ -17,6 +17,9 @@ import {
   Monitor,
   User,
   FolderOpen,
+  Target,
+  Plus,
+  Trash2,
 } from 'lucide-react';
 
 interface SecurityConfig {
@@ -91,7 +94,7 @@ const browserPolicy = [
 
 export function Settings() {
   const [config, setConfig] = useState<SecurityConfig>(defaultConfig);
-  const [activeTab, setActiveTab] = useState<'security' | 'network' | 'tools' | 'deploy' | 'deliverable'>('security');
+  const [activeTab, setActiveTab] = useState<'security' | 'network' | 'tools' | 'deploy' | 'deliverable' | 'milestone'>('security');
   const [saved, setSaved] = useState(false);
   const { settings, fetchSettings, updateSetting } = useAppStore();
 
@@ -103,6 +106,19 @@ export function Settings() {
   });
 
   useEffect(() => { fetchSettings(); }, []);
+  // Milestone rules state
+  const { milestoneRules, fetchMilestoneRules, createMilestoneRule, deleteMilestoneRule, timelineNodes, fetchTimelineNodes } = useAppStore();
+  const [showRuleForm, setShowRuleForm] = useState(false);
+  const [ruleForm, setRuleForm] = useState({
+    name: '',
+    category: '',
+    conditionType: 'manual' as string,
+    targetValue: 100,
+    timelineNodeId: null as number | null,
+  });
+
+  useEffect(() => { fetchMilestoneRules(); fetchTimelineNodes(); }, []);
+
 
   // Sync folder paths when settings load from store
   useEffect(() => {
@@ -138,6 +154,7 @@ export function Settings() {
     { id: 'tools' as const, label: '工具适配', icon: Shield },
     { id: 'deploy' as const, label: '部署要求', icon: Monitor },
     { id: 'deliverable' as const, label: '交付物配置', icon: FolderOpen },
+    { id: 'milestone' as const, label: '里程碑配置', icon: Target },
   ];
 
   return (
@@ -659,6 +676,196 @@ export function Settings() {
         </div>
       )}
 
+
+      {/* Milestone Configuration Tab */}
+      {activeTab === 'milestone' && (
+        <div className="space-y-5">
+          <div className="bg-[#141416] border border-[#2a2a2e] rounded-[4px] p-5">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <Target className="w-4 h-4 text-[#d4af37]" />
+                <h3 className="text-white text-sm font-semibold">里程碑规则配置</h3>
+              </div>
+              <button
+                onClick={() => setShowRuleForm(true)}
+                className="flex items-center gap-1 px-3 py-1.5 text-xs bg-[#1a1a1e] border border-[#2a2a2e] rounded-[4px] text-[#d4af37] hover:border-[#d4af37] transition-colors"
+              >
+                <Plus className="w-3 h-3" />
+                新增规则
+              </button>
+            </div>
+            <p className="text-xs text-[#8a8f98] mb-4">
+              配置里程碑评估规则，系统将根据规则自动评估当前进度
+            </p>
+
+            {milestoneRules.length === 0 ? (
+              <div className="text-center py-8">
+                <p className="text-[#8a8f98] text-sm">暂无里程碑规则</p>
+                <p className="text-[#5a5f68] text-xs mt-1">点击上方按钮添加第一条规则</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {milestoneRules.map((rule) => {
+                  const node = timelineNodes.find((n) => n.id === rule.timelineNodeId);
+                  return (
+                    <div
+                      key={rule.id}
+                      className="flex items-center justify-between py-3 px-4 bg-[#0f0f11] border border-[#2a2a2e] rounded-[4px]"
+                    >
+                      <div className="flex-1">
+                        <div className="flex items-center gap-3">
+                          <span className="text-sm text-white font-medium">{rule.name}</span>
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-sm bg-[#d4af37]/10 text-[#d4af37]">
+                            {rule.category}
+                          </span>
+                          <span className="text-[10px] text-[#8a8f98]">
+                            {rule.conditionType === 'count_threshold' ? '数量阈值' : rule.conditionType === 'status_match' ? '状态匹配' : '手动'}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-3 mt-1">
+                          <span className="text-[11px] text-[#8a8f98]">
+                            目标值: {rule.targetValue}%
+                          </span>
+                          {node && (
+                            <span className="text-[11px] text-[#8a8f98]">
+                              关联节点: {node.name}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span
+                          className="text-[10px] px-1.5 py-0.5 rounded-sm"
+                          style={{
+                            backgroundColor: rule.isActive ? '#4ade8020' : '#8a8f9820',
+                            color: rule.isActive ? '#4ade80' : '#8a8f98',
+                          }}
+                        >
+                          {rule.isActive ? '启用' : '禁用'}
+                        </span>
+                        <button
+                          onClick={async () => {
+                            if (confirm('确定删除该规则？')) {
+                              await deleteMilestoneRule(rule.id);
+                            }
+                          }}
+                          className="p-1.5 text-[#8a8f98] hover:text-red-400 transition-colors"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Rule Form Dialog */}
+          {showRuleForm && (
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+              onClick={() => setShowRuleForm(false)}
+            >
+              <div
+                className="bg-[#141416] border border-[#2a2a2e] rounded-[6px] p-6 w-[420px] shadow-xl"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <h3 className="text-white font-semibold mb-4">新增里程碑规则</h3>
+                <div className="space-y-3">
+                  <div>
+                    <label className="text-xs text-[#8a8f98] mb-1 block">规则名称 *</label>
+                    <input
+                      value={ruleForm.name}
+                      onChange={(e) => setRuleForm({ ...ruleForm, name: e.target.value })}
+                      className="w-full bg-[#0a0a0c] border border-[#2a2a2e] rounded-[4px] px-3 py-2 text-sm text-white outline-none focus:border-[#d4af37]"
+                      placeholder="如: 冲压件完成率"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-[#8a8f98] mb-1 block">分类</label>
+                    <input
+                      value={ruleForm.category}
+                      onChange={(e) => setRuleForm({ ...ruleForm, category: e.target.value })}
+                      className="w-full bg-[#0a0a0c] border border-[#2a2a2e] rounded-[4px] px-3 py-2 text-sm text-white outline-none focus:border-[#d4af37]"
+                      placeholder="如: 零件, 试验, 文件"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs text-[#8a8f98] mb-1 block">条件类型</label>
+                      <select
+                        value={ruleForm.conditionType}
+                        onChange={(e) => setRuleForm({ ...ruleForm, conditionType: e.target.value })}
+                        className="w-full bg-[#0a0a0c] border border-[#2a2a2e] rounded-[4px] px-3 py-2 text-sm text-white outline-none focus:border-[#d4af37]"
+                      >
+                        <option value="manual">手动</option>
+                        <option value="count_threshold">数量阈值</option>
+                        <option value="status_match">状态匹配</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-xs text-[#8a8f98] mb-1 block">目标值 (%)</label>
+                      <input
+                        type="number"
+                        value={ruleForm.targetValue}
+                        onChange={(e) => setRuleForm({ ...ruleForm, targetValue: Number(e.target.value) })}
+                        className="w-full bg-[#0a0a0c] border border-[#2a2a2e] rounded-[4px] px-3 py-2 text-sm text-white outline-none focus:border-[#d4af37]"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-xs text-[#8a8f98] mb-1 block">关联时间节点</label>
+                    <select
+                      value={ruleForm.timelineNodeId ?? ''}
+                      onChange={(e) =>
+                        setRuleForm({
+                          ...ruleForm,
+                          timelineNodeId: e.target.value ? Number(e.target.value) : null,
+                        })
+                      }
+                      className="w-full bg-[#0a0a0c] border border-[#2a2a2e] rounded-[4px] px-3 py-2 text-sm text-white outline-none focus:border-[#d4af37]"
+                    >
+                      <option value="">无</option>
+                      {timelineNodes.map((node) => (
+                        <option key={node.id} value={node.id}>
+                          {node.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <div className="flex justify-end gap-2 mt-5">
+                  <button
+                    onClick={() => setShowRuleForm(false)}
+                    className="px-4 py-1.5 text-xs bg-[#1a1a1e] border border-[#2a2a2e] rounded-[4px] text-[#8a8f98] hover:text-white"
+                  >
+                    取消
+                  </button>
+                  <button
+                    onClick={async () => {
+                      if (!ruleForm.name.trim()) return;
+                      await createMilestoneRule({
+                        name: ruleForm.name.trim(),
+                        category: ruleForm.category || '通用',
+                        conditionType: ruleForm.conditionType as any,
+                        targetValue: ruleForm.targetValue,
+                        timelineNodeId: ruleForm.timelineNodeId,
+                      });
+                      setShowRuleForm(false);
+                      setRuleForm({ name: '', category: '', conditionType: 'manual', targetValue: 100, timelineNodeId: null });
+                    }}
+                    disabled={!ruleForm.name.trim()}
+                    className="px-4 py-1.5 text-xs bg-[#d4af37] rounded-[4px] text-black font-medium hover:bg-[#c4a030] disabled:opacity-50"
+                  >
+                    创建
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
       {/* Save Button */}
       <div className="mt-6 flex items-center gap-3">
         <button

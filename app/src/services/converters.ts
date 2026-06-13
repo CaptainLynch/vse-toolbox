@@ -5,10 +5,12 @@
 import type {
   Issue, IssueStats, Milestone, DepartmentStat, TrendPoint, Mail, Todo,
   EWOItem, TIRItem,
+  TimelineNode, MilestoneRule, MilestoneEvaluation,
 } from '@/types';
 import type {
   IssueOut, IssueStatsOut, MilestoneOut, MailOut, TodoOut,
   EWOOut, TIROut,
+  TimelineNodeOut, MilestoneRuleOut, MilestoneEvaluationOut,
 } from '@/services/api';
 
 /** 截取 ISO 日期时间到日期部分 */
@@ -126,5 +128,50 @@ export function toTIR(t: TIROut): TIRItem {
     sourceFile: t.source_file ?? null,
     createdAt: fmtDate(t.created_at),
     updatedAt: fmtDate(t.updated_at),
+  };
+}
+export function toTimelineNode(o: TimelineNodeOut): TimelineNode {
+  return {
+    id: o.id,
+    name: o.name,
+    targetDate: o.target_date ?? null,
+    actualDate: o.actual_date ?? null,
+    description: o.description ?? null,
+    sortOrder: o.sort_order,
+    status: o.status as TimelineNode['status'],
+    createdAt: o.created_at ?? null,
+    updatedAt: o.updated_at ?? null,
+  };
+}
+
+export function toMilestoneRule(o: MilestoneRuleOut): MilestoneRule {
+  return {
+    id: o.id,
+    name: o.name,
+    timelineNodeId: o.timeline_node_id ?? null,
+    category: o.category,
+    conditionType: o.condition_type as MilestoneRule['conditionType'],
+    conditionConfig: o.condition_config ?? null,
+    targetValue: o.target_value,
+    sortOrder: o.sort_order,
+    isActive: o.is_active,
+    createdAt: o.created_at ?? null,
+    updatedAt: o.updated_at ?? null,
+  };
+}
+
+export function toMilestoneEvaluation(o: MilestoneEvaluationOut): MilestoneEvaluation {
+  return {
+    evaluationId: o.evaluation_id,
+    ruleId: o.rule_id,
+    ruleName: o.rule_name,
+    timelineNodeName: o.timeline_node_name ?? null,
+    category: o.category,
+    conditionType: o.condition_type,
+    currentValue: o.current_value,
+    targetValue: o.target_value,
+    status: o.status as MilestoneEvaluation['status'],
+    notes: o.notes ?? null,
+    evaluatedAt: o.evaluated_at ?? null,
   };
 }

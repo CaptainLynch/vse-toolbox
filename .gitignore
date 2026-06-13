@@ -1,4 +1,4 @@
-# Python
+﻿# Python
 __pycache__/
 *.pyc
 *.pyo
@@ -39,3 +39,24 @@ backend/dist/
 backend/data/
 backend/logs/
 backend/temp/
+# Driver binaries and archives
+backend/drivers/*.exe
+backend/drivers/*.zip
+backend/drivers/chromedriver-win64/
+backend/drivers/*公司*
+
+# Backup files
+*.bak
+
+# One-off scripts at root
+export_html.py
+replace_method.py
+kill_sangfor.bat
+fix-enc.js
+fix-pt.js
+rewrite-all.js
+rewrite-pt.js
+test_ewo_ncr.py
+
+# Codex agent configs (personal)
+.codex/agents/

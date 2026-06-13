@@ -1,4 +1,4 @@
-import logging
+﻿import logging
 import logging.handlers
 import shutil
 import sys
@@ -143,7 +143,7 @@ app.add_exception_handler(Exception, general_exception_handler)
 # 注册路由
 # ---------------------------------------------------------------------------
 
-from api import issues, excel, crawler, ppt, feishu, milestones, dashboard, ewo_ncr, tir, lookup, settings
+from api import issues, excel, crawler, ppt, feishu, milestones, dashboard, ewo_ncr, tir, lookup, settings, timeline, milestone_rules
 
 app.include_router(issues.router, prefix="/api")
 app.include_router(excel.router, prefix="/api")
@@ -157,6 +157,8 @@ app.include_router(ewo_ncr.router, prefix='/api')
 app.include_router(tir.router, prefix='/api')
 app.include_router(lookup.router, prefix='/api')
 app.include_router(settings.router, prefix='/api')
+app.include_router(timeline.router, prefix='/api')
+app.include_router(milestone_rules.router, prefix='/api')
 
 # ---------------------------------------------------------------------------
 # 文件下载端点

@@ -3,16 +3,18 @@ import type {
   Issue, IssueStats, Milestone, ToolCard, Mail, Todo,
   DeliverableCategory, LayoutCard, DashboardOverview,
   EWOItem, TIRItem,
+  TimelineNode, MilestoneRule, MilestoneEvaluation,
 } from '@/types';
 import type {
   MailOut, TodoOut, PaginatedData, EWOOut, TIROut,
   ExcelImportResult,
+  TimelineNodeOut, MilestoneRuleOut, MilestoneEvaluationOut,
 } from '@/services/api';
 import { api } from '@/services/api';
-import { toIssue, toStats, toMilestone, toMail, toTodo, toEWO, toTIR } from '@/services/converters';
+import { toIssue, toStats, toMilestone, toMail, toTodo, toEWO, toTIR, toTimelineNode, toMilestoneRule, toMilestoneEvaluation } from '@/services/converters';
 
 // ---------------------------------------------------------------------------
-// 状态接口
+// 鐘舵€佹帴鍙?
 // ---------------------------------------------------------------------------
 
 interface AppState {
@@ -106,58 +108,82 @@ interface AppState {
   settings: Record<string, string>;
   fetchSettings: () => Promise<void>;
   updateSetting: (key: string, value: string) => Promise<boolean>;
+
+  // Timeline Nodes
+  timelineNodes: TimelineNode[];
+  fetchTimelineNodes: () => Promise<void>;
+  createTimelineNode: (data: Partial<TimelineNode>) => Promise<boolean>;
+  updateTimelineNode: (id: number, data: Partial<TimelineNode>) => Promise<boolean>;
+  deleteTimelineNode: (id: number) => Promise<boolean>;
+
+  // Milestone Rules
+  milestoneRules: MilestoneRule[];
+  fetchMilestoneRules: (timelineNodeId?: number) => Promise<void>;
+  createMilestoneRule: (data: Partial<MilestoneRule>) => Promise<boolean>;
+  updateMilestoneRule: (id: number, data: Partial<MilestoneRule>) => Promise<boolean>;
+  deleteMilestoneRule: (id: number) => Promise<boolean>;
+
+  // Milestone Evaluations
+  milestoneEvaluations: MilestoneEvaluation[];
+  fetchMilestoneEvaluations: (timelineNodeId?: number) => Promise<void>;
+  refreshMilestoneEvaluations: (timelineNodeId?: number) => Promise<void>;
+  updateMilestoneEvaluation: (id: number, data: { notes?: string; status?: string }) => Promise<boolean>;
+
+  // Selected Timeline Node (for filtering)
+  selectedTimelineNodeId: number | null;
+  setSelectedTimelineNodeId: (id: number | null) => void;
 }
 
 const mockIssues = [
-  { id: 'ISS-2024-001', priority: 'P0' as const, component: '前保险杠', description: '前保险杠与翼子板间隙超差 2.5mm', department: '车身钣金', status: 'open' as const, createdAt: '2024-01-15', assignee: '张伟', updatedAt: '2024-01-15', partSystem: '前保险杠总成', subSystem: '外饰系统', rootCause: null, shortTermAction: null, longTermAction: null, cutoffPoint: null, actionPlan: null, source: 'manual', sourceFile: null },
-  { id: 'ISS-2024-002', priority: 'P1' as const, component: '仪表板', description: '仪表板表面缩痕明显，需优化注塑工艺', department: '内外饰件', status: 'in_progress' as const, createdAt: '2024-01-14', assignee: '李芳', updatedAt: '2024-01-14', partSystem: '仪表板总成', subSystem: '内饰系统', rootCause: null, shortTermAction: null, longTermAction: null, cutoffPoint: null, actionPlan: null, source: 'manual', sourceFile: null },
-  { id: 'ISS-2024-003', priority: 'P2' as const, component: '前大灯', description: 'LED 日行灯色温偏移，与设计确认中', department: '灯具', status: 'open' as const, createdAt: '2024-01-13', assignee: '王磊', updatedAt: '2024-01-13', partSystem: '前大灯总成', subSystem: '灯具系统', rootCause: null, shortTermAction: null, longTermAction: null, cutoffPoint: null, actionPlan: null, source: 'manual', sourceFile: null },
-  { id: 'ISS-2024-004', priority: 'P1' as const, component: '车门密封条', description: '密封条压缩负荷不满足防水要求', department: '车身钣金', status: 'resolved' as const, createdAt: '2024-01-12', assignee: '赵敏', updatedAt: '2024-01-12', partSystem: '车门密封条', subSystem: '车身系统', rootCause: null, shortTermAction: null, longTermAction: null, cutoffPoint: null, actionPlan: null, source: 'manual', sourceFile: null },
-  { id: 'ISS-2024-005', priority: 'P0' as const, component: '后尾灯', description: '尾灯密封失效，进水起雾严重', department: '灯具', status: 'open' as const, createdAt: '2024-01-11', assignee: '孙涛', updatedAt: '2024-01-11', partSystem: '后尾灯总成', subSystem: '灯具系统', rootCause: null, shortTermAction: null, longTermAction: null, cutoffPoint: null, actionPlan: null, source: 'manual', sourceFile: null },
-  { id: 'ISS-2024-006', priority: 'P3' as const, component: '座椅骨架', description: '座椅调节异响，需加润滑脂', department: '内外饰件', status: 'closed' as const, createdAt: '2024-01-10', assignee: '周琳', updatedAt: '2024-01-10', partSystem: '座椅骨架', subSystem: '内饰系统', rootCause: null, shortTermAction: null, longTermAction: null, cutoffPoint: null, actionPlan: null, source: 'manual', sourceFile: null },
-  { id: 'ISS-2024-007', priority: 'P2' as const, component: '引擎盖', description: '引擎盖关闭后与翼子板面差不一致', department: '车身钣金', status: 'in_progress' as const, createdAt: '2024-01-09', assignee: '吴刚', updatedAt: '2024-01-09', partSystem: '引擎盖总成', subSystem: '车身系统', rootCause: null, shortTermAction: null, longTermAction: null, cutoffPoint: null, actionPlan: null, source: 'manual', sourceFile: null },
-  { id: 'ISS-2024-008', priority: 'P1' as const, component: '后视镜', description: '后视镜折叠时电机过热保护', department: '内外饰件', status: 'open' as const, createdAt: '2024-01-08', assignee: '郑辉', updatedAt: '2024-01-08', partSystem: '后视镜总成', subSystem: '外饰系统', rootCause: null, shortTermAction: null, longTermAction: null, cutoffPoint: null, actionPlan: null, source: 'manual', sourceFile: null },
-  { id: 'ISS-2024-009', priority: 'P2' as const, component: '雾灯', description: '雾灯安装角度与设计不符', department: '灯具', status: 'resolved' as const, createdAt: '2024-01-07', assignee: '陈静', updatedAt: '2024-01-07', partSystem: '雾灯总成', subSystem: '灯具系统', rootCause: null, shortTermAction: null, longTermAction: null, cutoffPoint: null, actionPlan: null, source: 'manual', sourceFile: null },
-  { id: 'ISS-2024-010', priority: 'P3' as const, component: '门板饰条', description: '门板饰条安装孔位偏移2mm', department: '车身钣金', status: 'closed' as const, createdAt: '2024-01-06', assignee: '林峰', updatedAt: '2024-01-06', partSystem: '门板饰条', subSystem: '车身系统', rootCause: null, shortTermAction: null, longTermAction: null, cutoffPoint: null, actionPlan: null, source: 'manual', sourceFile: null },
+  { id: 'ISS-2024-001', priority: 'P0' as const, component: 'Front Bumper', description: 'Gap exceeds 2.5mm at fender joint', department: 'Body', status: 'open' as const, createdAt: '2024-01-10', assignee: 'Zhang Wei', updatedAt: '2024-01-10', partSystem: 'Body Assembly', subSystem: 'Exterior', rootCause: null, shortTermAction: null, longTermAction: null, cutoffPoint: null, actionPlan: null, source: 'manual', sourceFile: null },
+  { id: 'ISS-2024-002', priority: 'P1' as const, component: 'Instrument Panel', description: 'Surface shrinkage marks visible, needs injection optimization', department: 'Interior', status: 'in_progress' as const, createdAt: '2024-01-14', assignee: 'Li Fang', updatedAt: '2024-01-14', partSystem: 'Instrument Panel', subSystem: 'Interior', rootCause: null, shortTermAction: null, longTermAction: null, cutoffPoint: null, actionPlan: null, source: 'manual', sourceFile: null },
+  { id: 'ISS-2024-003', priority: 'P2' as const, component: 'Headlamp', description: 'LED DRL color temperature deviation, pending design confirmation', department: 'Lighting', status: 'open' as const, createdAt: '2024-01-15', assignee: 'Wang Ming', updatedAt: '2024-01-15', partSystem: 'Lighting', subSystem: 'Front Lighting', rootCause: null, shortTermAction: null, longTermAction: null, cutoffPoint: null, actionPlan: null, source: 'manual', sourceFile: null },
+  { id: 'ISS-2024-004', priority: 'P1' as const, component: 'Door Seal', description: 'Compression load does not meet waterproof requirement', department: 'Body', status: 'open' as const, createdAt: '2024-01-16', assignee: 'Chen Jie', updatedAt: '2024-01-16', partSystem: 'Body Assembly', subSystem: 'Sealing', rootCause: null, shortTermAction: null, longTermAction: null, cutoffPoint: null, actionPlan: null, source: 'manual', sourceFile: null },
+  { id: 'ISS-2024-005', priority: 'P0' as const, component: 'Taillight', description: 'Seal failure causing water ingress and fogging', department: 'Lighting', status: 'in_progress' as const, createdAt: '2024-01-17', assignee: 'Liu Yang', updatedAt: '2024-01-17', partSystem: 'Lighting', subSystem: 'Rear Lighting', rootCause: null, shortTermAction: null, longTermAction: null, cutoffPoint: null, actionPlan: null, source: 'manual', sourceFile: null },
+  { id: 'ISS-2024-006', priority: 'P3' as const, component: 'Seat Frame', description: 'Seat adjustment noise, needs lubrication', department: 'Interior', status: 'closed' as const, createdAt: '2024-01-18', assignee: 'Zhao Qiang', updatedAt: '2024-01-18', partSystem: 'Seat', subSystem: 'Interior', rootCause: null, shortTermAction: null, longTermAction: null, cutoffPoint: null, actionPlan: null, source: 'manual', sourceFile: null },
+  { id: 'ISS-2024-007', priority: 'P2' as const, component: 'Engine Hood', description: 'Flush gap inconsistent after closing', department: 'Body', status: 'open' as const, createdAt: '2024-01-19', assignee: 'Sun Lei', updatedAt: '2024-01-19', partSystem: 'Body Assembly', subSystem: 'Closure', rootCause: null, shortTermAction: null, longTermAction: null, cutoffPoint: null, actionPlan: null, source: 'manual', sourceFile: null },
+  { id: 'ISS-2024-008', priority: 'P1' as const, component: 'Rearview Mirror', description: 'Motor over-temperature protection during folding', department: 'Interior', status: 'open' as const, createdAt: '2024-01-20', assignee: 'Zhou Hua', updatedAt: '2024-01-20', partSystem: 'Exterior Mirror', subSystem: 'Exterior', rootCause: null, shortTermAction: null, longTermAction: null, cutoffPoint: null, actionPlan: null, source: 'manual', sourceFile: null },
+  { id: 'ISS-2024-009', priority: 'P2' as const, component: 'Fog Lamp', description: 'Installation angle mismatch with design', department: 'Lighting', status: 'open' as const, createdAt: '2024-01-21', assignee: 'Wu Jie', updatedAt: '2024-01-21', partSystem: 'Lighting', subSystem: 'Front Lighting', rootCause: null, shortTermAction: null, longTermAction: null, cutoffPoint: null, actionPlan: null, source: 'manual', sourceFile: null },
+  { id: 'ISS-2024-010', priority: 'P3' as const, component: 'Door Trim', description: 'Mounting hole offset 2mm', department: 'Body', status: 'open' as const, createdAt: '2024-01-22', assignee: 'Xu Dong', updatedAt: '2024-01-22', partSystem: 'Body Assembly', subSystem: 'Interior', rootCause: null, shortTermAction: null, longTermAction: null, cutoffPoint: null, actionPlan: null, source: 'manual', sourceFile: null },
 ];
 const mockMilestones = [
-  { id: 1, name: '车身钣金合装', percentage: 85, category: '车身钣金', targetDate: '2024-03-15', actualDate: '2024-03-12', actualPercentage: 90 },
-  { id: 2, name: '内外饰件匹配', percentage: 62, category: '内外饰件', targetDate: '2024-04-01', actualDate: null, actualPercentage: null },
-  { id: 3, name: '灯具点亮验证', percentage: 78, category: '灯具', targetDate: '2024-03-20', actualDate: '2024-03-18', actualPercentage: 82 },
-  { id: 4, name: '整车密封性测试', percentage: 45, category: '综合', targetDate: '2024-04-15', actualDate: null, actualPercentage: null },
-  { id: 5, name: 'NVH 性能评估', percentage: 30, category: '综合', targetDate: '2024-05-01', actualDate: null, actualPercentage: null },
+  { id: 1, name: 'Body Sheet Metal Assembly', percentage: 85, category: 'Body', targetDate: '2024-03-15', actualDate: '2024-03-12', actualPercentage: 88 },
+  { id: 2, name: 'Interior Trim Matching', percentage: 62, category: 'Interior', targetDate: '2024-04-01', actualDate: null, actualPercentage: null },
+  { id: 3, name: 'Lighting Verification', percentage: 78, category: 'Lighting', targetDate: '2024-03-20', actualDate: '2024-03-18', actualPercentage: 80 },
+  { id: 4, name: 'Vehicle Seal Test', percentage: 45, category: 'General', targetDate: '2024-04-15', actualDate: null, actualPercentage: null },
+  { id: 5, name: 'NVH Performance', percentage: 30, category: 'General', targetDate: '2024-05-01', actualDate: null, actualPercentage: null },
 ];
 const mockStats = {
   totalOpen: 5, newThisWeek: 5, closedThisWeek: 0, highRiskCount: 2,
   departmentStats: [
-    { department: '车身钣金', closedRate: 0, totalIssues: 2 },
-    { department: '内外饰件', closedRate: 0, totalIssues: 1 },
-    { department: '灯具', closedRate: 0, totalIssues: 1 },
-    { department: '总装', closedRate: 0, totalIssues: 0 },
+    { department: 'Body', closedRate: 0, totalIssues: 2 },
+    { department: 'Interior', closedRate: 0, totalIssues: 1 },
+    { department: 'Lighting', closedRate: 0, totalIssues: 1 },
+    { department: 'Assembly', closedRate: 0, totalIssues: 0 },
   ],
   trend: Array.from({ length: 15 }, (_, i) => ({ date: '05-' + String(13 + i).padStart(2, '0'), count: 0 })),
 };
 const mockTools = [
-  { id: 'excel-merge', name: 'Excel 批量合并', description: '合并多份交付物表格，自动去重与汇总', icon: 'FileSpreadsheet', category: '数据处理', status: 'ready' as const },
-  { id: 'excel-rename', name: 'Excel 批量改名', description: '根据规则批量重命名文件，支持正则', icon: 'FileEdit', category: '数据处理', status: 'ready' as const },
-  { id: 'excel-same', name: '同结构合并', description: '多个同结构 Excel 表格纵向拼接', icon: 'FileSpreadsheet', category: '数据处理', status: 'ready' as const },
-  { id: 'web-crawler', name: '内网数据爬取', description: '通过浏览器自动抓取内网页面交付物数据', icon: 'Globe', category: '数据采集', status: 'ready' as const },
-  { id: 'ppt-weekly', name: '周报 PPT 生成', description: '根据问题数据自动生成周报格式的 PPT', icon: 'Presentation', category: '报告生成', status: 'ready' as const },
-  { id: 'ppt-deliverable', name: '交付物 PPT 生成', description: '将交付物数据转化为标准格式 PPT', icon: 'FileStack', category: '报告生成', status: 'ready' as const },
-  { id: 'feishu-mail', name: '飞书邮件助手', description: '查看飞书邮件并自动生成待办任务', icon: 'Mail', category: '协作工具', status: 'ready' as const },
-  { id: 'task-track', name: '任务派发追踪', description: '批量派发任务并追踪完成状态', icon: 'ListChecks', category: '任务管理', status: 'planned' as const },
-  { id: 'risk-warn', name: '风险预警系统', description: '基于节点交付物自动判断风险等级', icon: 'AlertTriangle', category: '智能分析', status: 'beta' as const },
-  { id: 'ai-assistant', name: 'AI 智能助手', description: '语音交互，智能问答与数据分析', icon: 'Sparkles', category: '智能分析', status: 'planned' as const },
+  { id: 'excel-merge', name: 'Excel Batch Merge', description: 'Merge multiple deliverable spreadsheets with auto-dedup', icon: 'FileSpreadsheet', category: 'Data', status: 'ready' as const },
+  { id: 'excel-rename', name: 'Excel Batch Rename', description: 'Batch rename files by rules, supports regex', icon: 'FileEdit', category: 'Data', status: 'ready' as const },
+  { id: 'excel-same', name: 'Same-Structure Merge', description: 'Vertically join multiple same-structure Excel sheets', icon: 'FileSpreadsheet', category: 'Data', status: 'ready' as const },
+  { id: 'web-crawler', name: 'Intranet Data Crawler', description: 'Auto-fetch deliverable data from intranet pages', icon: 'Globe', category: 'Collection', status: 'ready' as const },
+  { id: 'ppt-weekly', name: 'Weekly PPT Generator', description: 'Auto-generate weekly report PPT from issue data', icon: 'Presentation', category: 'Reporting', status: 'ready' as const },
+  { id: 'ppt-deliverable', name: 'Deliverable PPT', description: 'Convert deliverable data to standard PPT format', icon: 'FileStack', category: 'Reporting', status: 'ready' as const },
+  { id: 'feishu-mail', name: 'Feishu Mail Assistant', description: 'View Feishu emails and auto-generate todo tasks', icon: 'Mail', category: 'Collaboration', status: 'ready' as const },
+  { id: 'task-track', name: 'Task Assignment Tracker', description: 'Batch assign tasks and track completion', icon: 'ListChecks', category: 'Management', status: 'ready' as const },
+  { id: 'risk-warn', name: 'Risk Warning System', description: 'Auto-assess risk level based on milestone deliverables', icon: 'AlertTriangle', category: 'Analytics', status: 'planned' as const },
+  { id: 'ai-assistant', name: 'AI Assistant', description: 'Voice interaction, smart Q&A and data analysis', icon: 'Sparkles', category: 'Analytics', status: 'planned' as const },
 ];
 const mockMails = [
-  { id: 'M001', sender: '李明 - 车身工程部', subject: '【交付物】车身钣金 DV 试验报告', preview: '附件为车身钣金 DV 试验报告，请查收。', date: '今天 09:30', isRead: false, isStarred: true, hasAttachment: true, category: '交付物' },
-  { id: 'M002', sender: '王芳 - 内饰部', subject: '仪表板表面缩痕问题', preview: '经过与供应商沟通，注塑温度调整后缩痕问题已明显改善。', date: '今天 08:15', isRead: false, isStarred: false, hasAttachment: true, category: '问题反馈' },
-  { id: 'M003', sender: '张总 - 项目管理部', subject: '【紧急】周五造车评审会议通知', preview: '本周五下午 14:00 召开造车阶段评审会议。', date: '昨天 17:00', isRead: true, isStarred: true, hasAttachment: false, category: '会议通知' },
+  { id: 'M001', sender: 'Li Ming - Body Engineering', subject: '[Deliverable] Body Sheet Metal DV Test Report', preview: 'Attached is the body sheet metal DV test report, please review.', date: '2024-01-15', isRead: false, isStarred: false, hasAttachment: false, category: 'inbox' },
+  { id: 'M002', sender: 'Wang Fang - Interior Dept', subject: 'Instrument Panel Surface Shrinkage Issue', preview: 'After supplier discussion, injection temperature adjustment has significantly improved shrinkage.', date: '2024-01-14', isRead: true, isStarred: false, hasAttachment: false, category: 'inbox' },
+  { id: 'M003', sender: 'Zhang Zong - PM Dept', subject: '[URGENT] Friday Vehicle Build Review Meeting Notice', preview: 'This Friday 14:00 vehicle build phase review meeting, please prepare materials.', date: '2024-01-13', isRead: false, isStarred: false, hasAttachment: false, category: 'inbox' },
 ];
 const mockTodos = [
-  { id: 'T001', content: '审核车身钣金 DV 试验报告', source: '李明邮件', deadline: '今天', completed: false, createdAt: '' },
-  { id: 'T002', content: '确认仪表板缩痕工艺方案', source: '王芳邮件', deadline: '今天', completed: false, createdAt: '' },
-  { id: 'T003', content: '准备周五造车评审材料', source: '张总邮件', deadline: '明天', completed: false, createdAt: '' },
+  { id: 'T001', content: 'Review Body Sheet Metal DV Test Report', source: 'Li Ming Email', deadline: 'Today', completed: false, createdAt: '' },
+  { id: 'T002', content: 'Confirm Instrument Panel Shrinkage Process Plan', source: 'Wang Fang Email', deadline: 'Today', completed: false, createdAt: '' },
+  { id: 'T003', content: 'Prepare Friday Vehicle Build Review Materials', source: 'Zhang Zong Email', deadline: 'Tomorrow', completed: false, createdAt: '' },
 ];
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -446,4 +472,133 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     return false;
   },
+  // ---------------------------------------------------------------------------
+  // Timeline Nodes
+  // ---------------------------------------------------------------------------
+  timelineNodes: [],
+  fetchTimelineNodes: async () => {
+    try {
+      const res = await api.get<TimelineNodeOut[]>('/timeline');
+      if (res.success && res.data) { set({ timelineNodes: res.data.map(toTimelineNode) }); }
+    } catch (e) { console.error('fetchTimelineNodes:', e); }
+  },
+  createTimelineNode: async (data) => {
+    try {
+      const body: Record<string, unknown> = {};
+      if (data.name !== undefined) body.name = data.name;
+      if (data.targetDate !== undefined) body.target_date = data.targetDate;
+      if (data.actualDate !== undefined) body.actual_date = data.actualDate;
+      if (data.description !== undefined) body.description = data.description;
+      if (data.sortOrder !== undefined) body.sort_order = data.sortOrder;
+      if (data.status !== undefined) body.status = data.status;
+      const res = await api.post<TimelineNodeOut>('/timeline', body);
+      if (res.success && res.data) { set((s) => ({ timelineNodes: [...s.timelineNodes, toTimelineNode(res.data!)] })); return true; }
+    } catch (e) { console.error('createTimelineNode:', e); }
+    return false;
+  },
+  updateTimelineNode: async (id, data) => {
+    try {
+      const body: Record<string, unknown> = {};
+      if (data.name !== undefined) body.name = data.name;
+      if (data.targetDate !== undefined) body.target_date = data.targetDate;
+      if (data.actualDate !== undefined) body.actual_date = data.actualDate;
+      if (data.description !== undefined) body.description = data.description;
+      if (data.sortOrder !== undefined) body.sort_order = data.sortOrder;
+      if (data.status !== undefined) body.status = data.status;
+      const res = await api.put<TimelineNodeOut>('/timeline/' + id, body);
+      if (res.success && res.data) { set((s) => ({ timelineNodes: s.timelineNodes.map((n) => n.id === id ? toTimelineNode(res.data!) : n) })); return true; }
+    } catch (e) { console.error('updateTimelineNode:', e); }
+    return false;
+  },
+  deleteTimelineNode: async (id) => {
+    try {
+      const res = await api.del('/timeline/' + id);
+      if (res.success) { set((s) => ({ timelineNodes: s.timelineNodes.filter((n) => n.id !== id) })); return true; }
+    } catch (e) { console.error('deleteTimelineNode:', e); }
+    return false;
+  },
+
+  // ---------------------------------------------------------------------------
+  // Milestone Rules
+  // ---------------------------------------------------------------------------
+  milestoneRules: [],
+  fetchMilestoneRules: async (timelineNodeId?) => {
+    try {
+      const p = timelineNodeId ? '/milestone-rules?timeline_node_id=' + timelineNodeId : '/milestone-rules';
+      const res = await api.get<MilestoneRuleOut[]>(p);
+      if (res.success && res.data) { set({ milestoneRules: res.data.map(toMilestoneRule) }); }
+    } catch (e) { console.error('fetchMilestoneRules:', e); }
+  },
+  createMilestoneRule: async (data) => {
+    try {
+      const body: Record<string, unknown> = {};
+      if (data.name !== undefined) body.name = data.name;
+      if (data.timelineNodeId !== undefined) body.timeline_node_id = data.timelineNodeId;
+      if (data.category !== undefined) body.category = data.category;
+      if (data.conditionType !== undefined) body.condition_type = data.conditionType;
+      if (data.conditionConfig !== undefined) body.condition_config = data.conditionConfig;
+      if (data.targetValue !== undefined) body.target_value = data.targetValue;
+      if (data.sortOrder !== undefined) body.sort_order = data.sortOrder;
+      if (data.isActive !== undefined) body.is_active = data.isActive;
+      const res = await api.post<MilestoneRuleOut>('/milestone-rules', body);
+      if (res.success && res.data) { set((s) => ({ milestoneRules: [...s.milestoneRules, toMilestoneRule(res.data!)] })); return true; }
+    } catch (e) { console.error('createMilestoneRule:', e); }
+    return false;
+  },
+  updateMilestoneRule: async (id, data) => {
+    try {
+      const body: Record<string, unknown> = {};
+      if (data.name !== undefined) body.name = data.name;
+      if (data.timelineNodeId !== undefined) body.timeline_node_id = data.timelineNodeId;
+      if (data.category !== undefined) body.category = data.category;
+      if (data.conditionType !== undefined) body.condition_type = data.conditionType;
+      if (data.conditionConfig !== undefined) body.condition_config = data.conditionConfig;
+      if (data.targetValue !== undefined) body.target_value = data.targetValue;
+      if (data.sortOrder !== undefined) body.sort_order = data.sortOrder;
+      if (data.isActive !== undefined) body.is_active = data.isActive;
+      const res = await api.put<MilestoneRuleOut>('/milestone-rules/' + id, body);
+      if (res.success && res.data) { set((s) => ({ milestoneRules: s.milestoneRules.map((r) => r.id === id ? toMilestoneRule(res.data!) : r) })); return true; }
+    } catch (e) { console.error('updateMilestoneRule:', e); }
+    return false;
+  },
+  deleteMilestoneRule: async (id) => {
+    try {
+      const res = await api.del('/milestone-rules/' + id);
+      if (res.success) { set((s) => ({ milestoneRules: s.milestoneRules.filter((r) => r.id !== id) })); return true; }
+    } catch (e) { console.error('deleteMilestoneRule:', e); }
+    return false;
+  },
+
+  // ---------------------------------------------------------------------------
+  // Milestone Evaluations
+  // ---------------------------------------------------------------------------
+  milestoneEvaluations: [],
+  fetchMilestoneEvaluations: async (timelineNodeId?) => {
+    try {
+      const query = timelineNodeId ? '?timeline_node_id=' + timelineNodeId : '';
+      const res = await api.get<MilestoneEvaluationOut[]>('/milestone-rules/evaluations' + query);
+      if (res.success && res.data) { set({ milestoneEvaluations: res.data.map(toMilestoneEvaluation) }); }
+    } catch (e) { console.error('fetchMilestoneEvaluations:', e); }
+  },
+  refreshMilestoneEvaluations: async (timelineNodeId?) => {
+    try {
+      await api.post('/milestone-rules/evaluations/refresh');
+      const query = timelineNodeId ? '?timeline_node_id=' + timelineNodeId : '';
+      const res = await api.get<MilestoneEvaluationOut[]>('/milestone-rules/evaluations' + query);
+      if (res.success && res.data) { set({ milestoneEvaluations: res.data.map(toMilestoneEvaluation) }); }
+    } catch (e) { console.error('refreshMilestoneEvaluations:', e); }
+  },
+  updateMilestoneEvaluation: async (id, data) => {
+    try {
+      const res = await api.put<MilestoneEvaluationOut>('/milestone-rules/evaluations/' + id, data);
+      if (res.success && res.data) { set((s) => ({ milestoneEvaluations: s.milestoneEvaluations.map((e) => e.evaluationId === id ? toMilestoneEvaluation(res.data!) : e) })); }
+    } catch (e) { console.error('updateMilestoneEvaluation:', e); }
+    return false;
+  },
+
+  // ---------------------------------------------------------------------------
+  // Selected Timeline Node
+  // ---------------------------------------------------------------------------
+  selectedTimelineNodeId: null,
+  setSelectedTimelineNodeId: (id) => set({ selectedTimelineNodeId: id }),
 }));

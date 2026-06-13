@@ -1,4 +1,4 @@
-﻿import json
+import json
 import logging
 import sqlite3
 import sys
@@ -163,6 +163,47 @@ CREATE TABLE IF NOT EXISTS app_settings (
     value TEXT NOT NULL,
     updated_at TEXT
 );
+
+-- 项目时间节点表
+CREATE TABLE IF NOT EXISTS timeline_nodes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    target_date TEXT,
+    actual_date TEXT,
+    description TEXT,
+    sort_order INTEGER DEFAULT 0,
+    status TEXT CHECK(status IN ('pending','in_progress','completed','delayed')) DEFAULT 'pending',
+    created_at TEXT,
+    updated_at TEXT
+);
+
+-- 里程碑规则定义表
+CREATE TABLE IF NOT EXISTS milestone_rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    timeline_node_id INTEGER,
+    category TEXT NOT NULL,
+    condition_type TEXT NOT NULL DEFAULT 'manual',
+    condition_config TEXT,
+    target_value INTEGER DEFAULT 0,
+    sort_order INTEGER DEFAULT 0,
+    is_active INTEGER DEFAULT 1,
+    created_at TEXT,
+    updated_at TEXT
+);
+
+-- 里程碑评估结果表
+CREATE TABLE IF NOT EXISTS milestone_evaluations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    rule_id INTEGER NOT NULL,
+    current_value REAL DEFAULT 0,
+    target_value REAL DEFAULT 0,
+    status TEXT CHECK(status IN ('not_started','in_progress','completed','blocked')) DEFAULT 'not_started',
+    notes TEXT,
+    evaluated_at TEXT,
+    created_at TEXT,
+    updated_at TEXT
+);
 """
 
 
@@ -187,7 +228,8 @@ def get_connection():
 
 _VALID_TABLES = {"issues", "milestones", "ewo_ncr", "tir", "feishu_mails", "todos",
                   "deliverable_categories", "dashboard_layouts",
-                  "lookup_part_system", "lookup_engineer", "app_settings"}
+                  "lookup_part_system", "lookup_engineer", "app_settings",
+                  "timeline_nodes", "milestone_rules", "milestone_evaluations"}
 
 _VALID_COLUMN_DEFS = {"TEXT", "TEXT DEFAULT 'manual'", "INTEGER DEFAULT 0", "INTEGER"}
 
@@ -260,10 +302,80 @@ def evolve_schema():
                 value TEXT NOT NULL,
                 updated_at TEXT
             );
+            CREATE TABLE IF NOT EXISTS timeline_nodes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                target_date TEXT,
+                actual_date TEXT,
+                description TEXT,
+                sort_order INTEGER DEFAULT 0,
+                status TEXT CHECK(status IN ('pending','in_progress','completed','delayed')) DEFAULT 'pending',
+                created_at TEXT,
+                updated_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS milestone_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                timeline_node_id INTEGER,
+                category TEXT NOT NULL,
+                condition_type TEXT NOT NULL DEFAULT 'manual',
+                condition_config TEXT,
+                target_value INTEGER DEFAULT 0,
+                sort_order INTEGER DEFAULT 0,
+                is_active INTEGER DEFAULT 1,
+                created_at TEXT,
+                updated_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS milestone_evaluations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                rule_id INTEGER NOT NULL,
+                current_value REAL DEFAULT 0,
+                target_value REAL DEFAULT 0,
+                status TEXT CHECK(status IN ('not_started','in_progress','completed','blocked')) DEFAULT 'not_started',
+                notes TEXT,
+                evaluated_at TEXT,
+                created_at TEXT,
+                updated_at TEXT
+            );
         """)
 
         conn.commit()
     logger.info("Schema evolution completed")
+
+
+def seed_timeline():
+    """Seed default timeline nodes if table is empty."""
+    with get_connection() as conn:
+        count = conn.execute("SELECT COUNT(*) FROM timeline_nodes").fetchone()[0]
+        if count == 0:
+            nodes = [
+                ('造型冻结', 1), ('T0', 2), ('T1', 3), ('OTS', 4), ('SOP', 5)
+            ]
+            now = datetime.now().isoformat()
+            for name, order in nodes:
+                conn.execute(
+                    "INSERT INTO timeline_nodes (name, sort_order, status, created_at, updated_at) VALUES (?, ?, 'pending', ?, ?)",
+                    (name, order, now, now)
+                )
+            # Seed default milestone rules for OTS node
+            ots_id = conn.execute("SELECT id FROM timeline_nodes WHERE name = 'OTS'").fetchone()
+            if ots_id:
+                ots_node_id = ots_id[0]
+                default_rules = [
+                    ('钣金件零件交样', '交样', 'manual', None, 0, 1),
+                    ('总装件零件交样', '交样', 'manual', None, 0, 2),
+                    ('造车问题状态 5/6', '问题', 'count_threshold',
+                     '{"data_source":"issues","count_field":"status","count_value":"closed","operator":">=","threshold":0.833}', 83, 3),
+                    ('TIR 状态 4/6', 'TIR', 'count_threshold',
+                     '{"data_source":"tir","count_field":"status","count_value":"approved","operator":">=","threshold":0.667}', 67, 4),
+                ]
+                for name, cat, ctype, config, target, order in default_rules:
+                    conn.execute(
+                        "INSERT INTO milestone_rules (name, timeline_node_id, category, condition_type, condition_config, target_value, sort_order, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+                        (name, ots_node_id, cat, ctype, config, target, order, now, now)
+                    )
+            conn.commit()
+    logger.info("Timeline seed data inserted")
 
 
 def init_schema():
@@ -273,6 +385,7 @@ def init_schema():
         conn.executescript(SCHEMA_SQL)
         conn.commit()
     evolve_schema()
+    seed_timeline()
     logger.info("Database schema initialized at %s", DB_PATH)
 
 
@@ -1039,3 +1152,249 @@ class DBManager:
             )
             conn.commit()
         return {"key": key, "value": value, "updated_at": now}
+
+    # ------------------------------------------------------------------
+    # timeline_nodes
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def list_timeline_nodes() -> list[dict]:
+        with get_connection() as conn:
+            rows = conn.execute("SELECT * FROM timeline_nodes ORDER BY sort_order").fetchall()
+        return [dict(r) for r in rows]
+
+    @staticmethod
+    def create_timeline_node(data: dict) -> dict:
+        now = datetime.now().isoformat()
+        with get_connection() as conn:
+            conn.execute(
+                """INSERT INTO timeline_nodes (name, target_date, actual_date, description, sort_order, status, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (data["name"], data.get("target_date"), data.get("actual_date"),
+                 data.get("description"), data.get("sort_order", 0), data.get("status", "pending"), now, now)
+            )
+            node_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            conn.commit()
+        return DBManager.get_timeline_node(node_id)
+
+    @staticmethod
+    def get_timeline_node(node_id: int) -> dict | None:
+        with get_connection() as conn:
+            row = conn.execute("SELECT * FROM timeline_nodes WHERE id = ?", (node_id,)).fetchone()
+        return dict(row) if row else None
+
+    @staticmethod
+    def update_timeline_node(node_id: int, data: dict) -> dict | None:
+        now = datetime.now().isoformat()
+        fields = []
+        params = []
+        for key in ("name", "target_date", "actual_date", "description", "sort_order", "status"):
+            if key in data and data[key] is not None:
+                fields.append(f"{key} = ?")
+                params.append(data[key])
+        if not fields:
+            return DBManager.get_timeline_node(node_id)
+        fields.append("updated_at = ?")
+        params.append(now)
+        params.append(node_id)
+        with get_connection() as conn:
+            conn.execute(f"UPDATE timeline_nodes SET {', '.join(fields)} WHERE id = ?", params)
+            conn.commit()
+        return DBManager.get_timeline_node(node_id)
+
+    @staticmethod
+    def delete_timeline_node(node_id: int) -> bool:
+        with get_connection() as conn:
+            conn.execute("DELETE FROM milestone_rules WHERE timeline_node_id = ?", (node_id,))
+            cur = conn.execute("DELETE FROM timeline_nodes WHERE id = ?", (node_id,))
+            conn.commit()
+        return cur.rowcount > 0
+
+    @staticmethod
+    def reorder_timeline_nodes(items: list[dict]) -> int:
+        now = datetime.now().isoformat()
+        with get_connection() as conn:
+            for item in items:
+                conn.execute(
+                    "UPDATE timeline_nodes SET sort_order = ?, updated_at = ? WHERE id = ?",
+                    (item["sort_order"], now, item["id"])
+                )
+            conn.commit()
+        return len(items)
+
+    # ------------------------------------------------------------------
+    # milestone_rules
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def list_milestone_rules(timeline_node_id: int | None = None) -> list[dict]:
+        with get_connection() as conn:
+            if timeline_node_id is not None:
+                rows = conn.execute(
+                    "SELECT * FROM milestone_rules WHERE timeline_node_id = ? ORDER BY sort_order",
+                    (timeline_node_id,)
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM milestone_rules ORDER BY sort_order").fetchall()
+        results = []
+        for r in rows:
+            d = dict(r)
+            if d.get("condition_config"):
+                try:
+                    d["condition_config"] = json.loads(d["condition_config"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            d["is_active"] = bool(d.get("is_active", 1))
+            results.append(d)
+        return results
+
+    @staticmethod
+    def create_milestone_rule(data: dict) -> dict:
+        now = datetime.now().isoformat()
+        config_json = json.dumps(data["condition_config"]) if data.get("condition_config") else None
+        with get_connection() as conn:
+            conn.execute(
+                """INSERT INTO milestone_rules (name, timeline_node_id, category, condition_type, condition_config, target_value, sort_order, is_active, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (data["name"], data.get("timeline_node_id"), data["category"],
+                 data.get("condition_type", "manual"), config_json, data.get("target_value", 0),
+                 data.get("sort_order", 0), 1 if data.get("is_active", True) else 0, now, now)
+            )
+            rule_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            conn.commit()
+        return DBManager.get_milestone_rule(rule_id)
+
+    @staticmethod
+    def get_milestone_rule(rule_id: int) -> dict | None:
+        with get_connection() as conn:
+            row = conn.execute("SELECT * FROM milestone_rules WHERE id = ?", (rule_id,)).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        if d.get("condition_config"):
+            try:
+                d["condition_config"] = json.loads(d["condition_config"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        d["is_active"] = bool(d.get("is_active", 1))
+        return d
+
+    @staticmethod
+    def update_milestone_rule(rule_id: int, data: dict) -> dict | None:
+        now = datetime.now().isoformat()
+        fields = []
+        params = []
+        for key in ("name", "timeline_node_id", "category", "condition_type", "target_value", "sort_order"):
+            if key in data and data[key] is not None:
+                fields.append(f"{key} = ?")
+                params.append(data[key])
+        if "condition_config" in data and data["condition_config"] is not None:
+            fields.append("condition_config = ?")
+            params.append(json.dumps(data["condition_config"]))
+        if "is_active" in data and data["is_active"] is not None:
+            fields.append("is_active = ?")
+            params.append(1 if data["is_active"] else 0)
+        if not fields:
+            return DBManager.get_milestone_rule(rule_id)
+        fields.append("updated_at = ?")
+        params.append(now)
+        params.append(rule_id)
+        with get_connection() as conn:
+            conn.execute(f"UPDATE milestone_rules SET {', '.join(fields)} WHERE id = ?", params)
+            conn.commit()
+        return DBManager.get_milestone_rule(rule_id)
+
+    @staticmethod
+    def delete_milestone_rule(rule_id: int) -> bool:
+        with get_connection() as conn:
+            conn.execute("DELETE FROM milestone_evaluations WHERE rule_id = ?", (rule_id,))
+            cur = conn.execute("DELETE FROM milestone_rules WHERE id = ?", (rule_id,))
+            conn.commit()
+        return cur.rowcount > 0
+
+    # ------------------------------------------------------------------
+    # milestone_evaluations
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def list_evaluations(timeline_node_id: int | None = None) -> list[dict]:
+        with get_connection() as conn:
+            if timeline_node_id is not None:
+                rows = conn.execute("""
+                    SELECT e.id AS evaluation_id, e.rule_id, r.name AS rule_name,
+                           t.name AS timeline_node_name, r.category, r.condition_type,
+                           e.current_value, e.target_value, e.status, e.notes, e.evaluated_at
+                    FROM milestone_evaluations e
+                    JOIN milestone_rules r ON e.rule_id = r.id
+                    LEFT JOIN timeline_nodes t ON r.timeline_node_id = t.id
+                    WHERE r.timeline_node_id = ?
+                    ORDER BY r.sort_order
+                """, (timeline_node_id,)).fetchall()
+            else:
+                rows = conn.execute("""
+                    SELECT e.id AS evaluation_id, e.rule_id, r.name AS rule_name,
+                           t.name AS timeline_node_name, r.category, r.condition_type,
+                           e.current_value, e.target_value, e.status, e.notes, e.evaluated_at
+                    FROM milestone_evaluations e
+                    JOIN milestone_rules r ON e.rule_id = r.id
+                    LEFT JOIN timeline_nodes t ON r.timeline_node_id = t.id
+                    ORDER BY r.sort_order
+                """).fetchall()
+        return [dict(r) for r in rows]
+
+    @staticmethod
+    def get_evaluation_by_rule(rule_id: int) -> dict | None:
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM milestone_evaluations WHERE rule_id = ?", (rule_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    @staticmethod
+    def upsert_evaluation(rule_id: int, data: dict) -> dict:
+        now = datetime.now().isoformat()
+        existing = DBManager.get_evaluation_by_rule(rule_id)
+        with get_connection() as conn:
+            if existing:
+                fields = []
+                params = []
+                for key in ("current_value", "target_value", "status", "notes"):
+                    if key in data:
+                        fields.append(f"{key} = ?")
+                        params.append(data[key])
+                fields.append("evaluated_at = ?")
+                params.append(now)
+                fields.append("updated_at = ?")
+                params.append(now)
+                params.append(rule_id)
+                conn.execute(f"UPDATE milestone_evaluations SET {', '.join(fields)} WHERE rule_id = ?", params)
+            else:
+                conn.execute(
+                    """INSERT INTO milestone_evaluations (rule_id, current_value, target_value, status, notes, evaluated_at, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (rule_id, data.get("current_value", 0), data.get("target_value", 0),
+                     data.get("status", "not_started"), data.get("notes"), now, now, now)
+                )
+            conn.commit()
+        return DBManager.get_evaluation_by_rule(rule_id)
+
+    @staticmethod
+    def update_evaluation(evaluation_id: int, data: dict) -> dict | None:
+        now = datetime.now().isoformat()
+        fields = []
+        params = []
+        for key in ("notes", "status"):
+            if key in data and data[key] is not None:
+                fields.append(f"{key} = ?")
+                params.append(data[key])
+        if not fields:
+            return None
+        fields.append("updated_at = ?")
+        params.append(now)
+        params.append(evaluation_id)
+        with get_connection() as conn:
+            conn.execute(f"UPDATE milestone_evaluations SET {', '.join(fields)} WHERE id = ?", params)
+            conn.commit()
+        with get_connection() as conn:
+            row = conn.execute("SELECT * FROM milestone_evaluations WHERE id = ?", (evaluation_id,)).fetchone()
+        return dict(row) if row else None

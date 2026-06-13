@@ -17,9 +17,9 @@
 
 ## 技术栈
 
-| 前端 | 后端 | 数据 | Excel | PPT | 爬虫 | 打包 |
-|------|------|------|-------|-----|------|------|
-| React19+TS+Vite+Tailwind+shadcn/ui+Recharts+react-grid-layout | Python3.14+FastAPI+Uvicorn | SQLite3 | openpyxl+pandas | python-pptx+matplotlib | selenium+chromedriver+msedgedriver | PyInstaller |
+| 交互端 (最新) | 交互端 (Web/已暂停) | 后端 | 数据 | Excel | PPT | 爬虫 | 打包 |
+|----------------|----------------------|------|------|-------|-----|------|------|
+| 中文终端菜单 (CLI) | React19+TS+Vite+... | Python3.14+FastAPI | SQLite3 | openpyxl+pandas | python-pptx+matplotlib | selenium+... | PyInstaller |
 
 ## 开发环境
 
@@ -84,3 +84,5 @@ Sidebar
 - 2026-05-28 v1.3 增加架构师终止条件（审计>5000行/跨5文件诊断时强制切换环境）
 - 2026-05-28 v1.4 后端+前端全部开发完成，TODO.md 进度已同步
 - 2026-06-07 v1.5 前端重构 Phase 1-3 完成，品牌名 PM TOOLBOX -> VSE TOOLBOX，子页面体系+拖拽卡片+EWO/TIR数据层
+- 2026-06-12 v1.6 时间轴变色+里程碑卡片联动改进开发完成，前端增设时间轴与里程碑规则/评估管理配置，后端增设时间轴与里程碑自动评估引擎 API
+- 2026-06-13 v2.0-cli 敏捷转型：由于前端Bug较多且交付紧急，暂停前端开发，全面转向中文终端(CLI)主导的后端功能落地，优先级：爬虫>Excel>PPT。

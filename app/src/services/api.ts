@@ -1,7 +1,5 @@
 /**
- * API Service - 与后端 FastAPI 通信的统一层。
- * 所有接口调用均通过此模块，统一错误处理、超时控制、离线检测。
- */
+ * API Service - 与后�?FastAPI 通信的统一层�? * 所有接口调用均通过此模块，统一错误处理、超时控制、离线检测�? */
 
 const API_BASE = '/api';
 const DEFAULT_TIMEOUT = 10000;
@@ -81,19 +79,19 @@ export const api = {
     }
   },
 
-  /** 下载文件（触发浏览器下载） */
+  /** 下载文件（触发浏览器下载�?*/
   download(filePath: string) {
     window.open(`${API_BASE}/download?path=${encodeURIComponent(filePath)}`, '_blank');
   },
 
-  /** Excel 导入（issues / ewo / tir 共用） */
+  /** Excel 导入（issues / ewo / tir 共用�?*/
   async importExcel<T>(endpoint: string, file: File, timeout = 120000): Promise<ApiResponse<T>> {
     const fd = new FormData();
     fd.append('files', file);
     return this.upload<T>(endpoint, fd, timeout);
   },
 
-  /** 检测后端是否可达 */
+  /** 检测后端是否可�?*/
   async healthCheck(): Promise<boolean> {
     const res = await request<unknown>('GET', '/issues/stats', undefined, 3000);
     return res.success;
@@ -101,8 +99,7 @@ export const api = {
 };
 
 // ---------------------------------------------------------------------------
-// 后端返回的业务类型
-// ---------------------------------------------------------------------------
+// 后端返回的业务类�?// ---------------------------------------------------------------------------
 
 export interface IssueOut {
   id: string;
@@ -330,8 +327,7 @@ export interface ExcelImportResult {
 }
 
 // ---------------------------------------------------------------------------
-// Lookup - 零件总成 / 工程师
-// ---------------------------------------------------------------------------
+// Lookup - 零件总成 / 工程�?// ---------------------------------------------------------------------------
 
 export interface PartSystemOut {
   part_system: string;
@@ -341,4 +337,55 @@ export interface PartSystemOut {
 export interface EngineerOut {
   name: string;
   department: string;
+}
+// ---------------------------------------------------------------------------
+// Timeline Nodes
+// ---------------------------------------------------------------------------
+
+export interface TimelineNodeOut {
+  id: number;
+  name: string;
+  target_date: string | null;
+  actual_date: string | null;
+  description: string | null;
+  sort_order: number;
+  status: string;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Milestone Rules
+// ---------------------------------------------------------------------------
+
+export interface MilestoneRuleOut {
+  id: number;
+  name: string;
+  timeline_node_id: number | null;
+  category: string;
+  condition_type: string;
+  condition_config: Record<string, unknown> | null;
+  target_value: number;
+  sort_order: number;
+  is_active: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Milestone Evaluations
+// ---------------------------------------------------------------------------
+
+export interface MilestoneEvaluationOut {
+  evaluation_id: number;
+  rule_id: number;
+  rule_name: string;
+  timeline_node_name: string | null;
+  category: string;
+  condition_type: string;
+  current_value: number;
+  target_value: number;
+  status: string;
+  notes: string | null;
+  evaluated_at: string | null;
 }

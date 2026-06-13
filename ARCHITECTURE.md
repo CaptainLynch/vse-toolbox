@@ -6,32 +6,24 @@
 
 ## 1. 运行时架构
 
-```
 +---------------------------------------------------------------+
-|  用户操作层                                                     |
-|  浏览器 http://127.0.0.1:8002                                  |
+|  用户交互层 (双模态)                                           |
 |                                                               |
-|  +--------------+    +--------------+    +--------------+     |
-|  | Analytics    |    | Toolbox      |    | FeishuMail   |     |
-|  | (数据分析看板)|    | (Excel/PPT/  |    | (邮件/待办)   |     |
-|  | + 子页面体系  |    |  爬虫)       |    |              |     |
-|  +------+-------+    +------+-------+    +------+-------+     |
-|         |                   |                   |              |
-|  +------+-------------------+-------------------+--------+    |
-|  |                  React 19 (HashRouter)                |    |
-|  |           fetch('/api/xxx') -> 统一api.ts封装         |    |
-|  +---------------------------+---------------------------+    |
-|                              |                                |
-+------------------------------+--------------------------------+
-|                              |  127.0.0.1:8002               |
-|  +---------------------------+---------------------------+    |
-|  |              FastAPI + Uvicorn (ASGI)                  |    |
-|  |  /api/issues  /api/excel  /api/ppt  /api/crawler      |    |
-|  |  /api/feishu  /api/download  /api/milestones           |    |
-|  |  /api/dashboard  /api/ewo  /api/tir                    |    |
-|  |  /api/lookup  /api/settings  /api/*/import-excel       |    |
-|  +---------------------------+---------------------------+    |
-|                              |                                |
+|  [当前主力: CLI 模式]         [已暂停: Web 模式]              |
+|  CMD 终端黑窗口               浏览器 http://127.0.0.1:8002    |
+|  +--------------------+      +---------------------------+    |
+|  | cli_main.py        |      | React 19 (HashRouter)     |    |
+|  | 中文菜单/选项输入   |      | fetch('/api/xxx')         |    |
+|  +---------+----------+      +-------------+-------------+    |
+|            |                               |                  |
+|            |                 +-------------+-------------+    |
+|            |                 | FastAPI + Uvicorn (ASGI)  |    |
+|            |                 | /api/* 路由层              |    |
+|            |                 +-------------+-------------+    |
+|            |                               |                  |
++------------|-------------------------------|------------------+
+             |                               |                   
+             v                               v                   
 |  +---------------------------+---------------------------+    |
 |  |              业务服务层                                 |    |
 |  |                                                       |    |
@@ -208,6 +200,22 @@
 | created_at   |       | updated_at TEXT    |
 | updated_at   |       +--------------------+
 +--------------+
+
++------------------+       +-------------------+       +----------------------+
+|  timeline_nodes  |       |  milestone_rules  |       | milestone_evaluations|
++------------------+       +-------------------+       +----------------------+
+| id PK INT        |       | id PK INT         |       | id PK INT            |
+| name TEXT        |       | name TEXT         |       | rule_id INT          |
+| target_date TEXT |       | timeline_node_id  |       | current_value REAL   |
+| actual_date TEXT |       | category TEXT     |       | target_value REAL    |
+| description TEXT |       | condition_type    |       | status TEXT          |
+| sort_order INT   |       | condition_config  |       | notes TEXT           |
+| status TEXT      |       | target_value INT  |       | evaluated_at TEXT    |
+| created_at TEXT  |       | sort_order INT    |       | created_at TEXT      |
+| updated_at TEXT  |       | is_active INT     |       | updated_at TEXT      |
++------------------+       | created_at TEXT   |       +----------------------+
+                           | updated_at TEXT   |
+                           +-------------------+
 ```
 
 ### 3.2 表定义
@@ -377,6 +385,53 @@ CREATE TABLE IF NOT EXISTS app_settings (
 );
 ```
 
+**timeline_nodes**（项目时间节点表）
+```sql
+CREATE TABLE IF NOT EXISTS timeline_nodes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    target_date TEXT,                              -- 计划完成时间
+    actual_date TEXT,                              -- 实际完成时间
+    description TEXT,
+    sort_order INTEGER DEFAULT 0,
+    status TEXT CHECK(status IN ('pending','in_progress','completed','delayed')) DEFAULT 'pending',
+    created_at TEXT,
+    updated_at TEXT
+);
+```
+
+**milestone_rules**（里程碑规则定义表）
+```sql
+CREATE TABLE IF NOT EXISTS milestone_rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    timeline_node_id INTEGER,                      -- 关联时间节点 ID
+    category TEXT NOT NULL,                        -- 分类（如：零件、试验、文件）
+    condition_type TEXT NOT NULL DEFAULT 'manual', -- 评估条件类型 ('count_threshold', 'status_match', 'manual')
+    condition_config TEXT,                         -- JSON 格式的配置参数
+    target_value INTEGER DEFAULT 0,                -- 目标值（百分比）
+    sort_order INTEGER DEFAULT 0,
+    is_active INTEGER DEFAULT 1,
+    created_at TEXT,
+    updated_at TEXT
+);
+```
+
+**milestone_evaluations**（里程碑评估结果表）
+```sql
+CREATE TABLE IF NOT EXISTS milestone_evaluations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    rule_id INTEGER NOT NULL,                      -- 关联规则 ID
+    current_value REAL DEFAULT 0,                  -- 当前实际值（百分比）
+    target_value REAL DEFAULT 0,                   -- 目标值（百分比）
+    status TEXT CHECK(status IN ('not_started','in_progress','completed','blocked')) DEFAULT 'not_started',
+    notes TEXT,                                    -- 评估备注
+    evaluated_at TEXT,                             -- 评估时间
+    created_at TEXT,
+    updated_at TEXT
+);
+```
+
 ---
 
 ## 4. API端点清单
@@ -431,6 +486,20 @@ CREATE TABLE IF NOT EXISTS app_settings (
 | POST | /api/lookup/engineer | 新增工程师映射 |
 | GET | /api/settings | 获取全部设置项 |
 | PUT | /api/settings/{key} | 更新单个设置项 |
+| GET | /api/timeline | 获取项目时间节点列表 |
+| POST | /api/timeline | 新增项目时间节点 |
+| PUT | /api/timeline/reorder | 批量更新时间节点排序 |
+| GET | /api/timeline/{node_id} | 获取单个时间节点详情 |
+| PUT | /api/timeline/{node_id} | 更新单个时间节点 |
+| DELETE | /api/timeline/{node_id} | 删除单个时间节点 |
+| GET | /api/milestone-rules | 里程碑规则列表（支持 ?timeline_node_id 筛选） |
+| POST | /api/milestone-rules | 新增里程碑规则 |
+| GET | /api/milestone-rules/{rule_id} | 获取里程碑规则详情 |
+| PUT | /api/milestone-rules/{rule_id} | 更新里程碑规则 |
+| DELETE | /api/milestone-rules/{rule_id} | 删除里程碑规则 |
+| GET | /api/milestone-rules/evaluations | 里程碑规则评估结果（支持 ?timeline_node_id 筛选） |
+| POST | /api/milestone-rules/evaluations/refresh | 触发全量里程碑规则自动评估 |
+| PUT | /api/milestone-rules/evaluations/{evaluation_id} | 更新单个规则评估备注及状态 |
 
 ---
 
@@ -446,7 +515,8 @@ VSE_TOOLBOX/
 ├── ROLES.md                # 模型分工
 ├── DESIGN_FRONTEND_REDESIGN.md  # 前端重构设计
 ├── backend/
-│   ├── main.py             # FastAPI入口（port 8002）
+│   ├── cli_main.py         # 【新增】终端命令行入口
+│   ├── main.py             # FastAPI入口（port 8002，暂时冷藏）
 │   ├── config.py           # 共享配置、目录常量、路径安全
 │   ├── api/
 │   │   ├── issues.py       # 问题追踪 + Excel导入
@@ -460,13 +530,16 @@ VSE_TOOLBOX/
 │   │   ├── tir.py          # TIR CRUD + Excel导入
 │   │   ├── lookup.py       # 零件总成/工程师自动关联
 │   │   ├── settings.py     # 应用配置
+│   │   ├── timeline.py     # 时间轴 API
+│   │   ├── milestone_rules.py  # 里程碑规则与评估 API
 │   │   └── response.py     # 统一响应封装
 │   ├── services/
-│   │   ├── db.py           # SQLite（11张表）
+│   │   ├── db.py           # SQLite（14张表）
 │   │   ├── excel_service.py
 │   │   ├── excel_import_service.py  # 交付物Excel导入引擎
 │   │   ├── ppt_service.py  # TemplateEngine+DataAdapter+ChartGenerator
 │   │   ├── crawler_service.py  # DriverManager+PageExtractor
+│   │   ├── milestone_evaluator.py  # 里程碑自动评估引擎
 │   │   └── feishu_service.py
 │   ├── models/
 │   │   └── schemas.py      # Pydantic（含EWO/TIR/Dashboard模型）
@@ -488,7 +561,12 @@ VSE_TOOLBOX/
 │   │   │   ├── OfflineBanner.tsx
 │   │   │   ├── SubPageNav.tsx      # 子页面底部导航
 │   │   │   ├── DraggableGrid.tsx   # 磁吸卡片网格
-│   │   │   └── DraggableCard.tsx   # 可拖拽卡片
+│   │   │   ├── DraggableCard.tsx   # 可拖拽卡片
+│   │   │   ├── ProjectTimeline.tsx # 项目进度时间轴
+│   │   │   ├── TimelineNodeEditor.tsx # 时间轴节点编辑器
+│   │   │   ├── MilestoneCardGrid.tsx # 里成碑卡片网格
+│   │   │   ├── MilestoneCard.tsx   # 单个里程碑卡片
+│   │   │   └── MilestoneRuleEditor.tsx # 里程碑规则编辑器
 │   │   ├── pages/
 │   │   │   ├── AnalyticsLayout.tsx  # 数据分析看板容器
 │   │   │   ├── AnalyticsOverview.tsx # 项目总览首页
@@ -566,4 +644,23 @@ URL含feishu.cn或larksuite.com -> msedgedriver.exe (Edge)
 
 ---
 
-最后更新：2026-06-07（追加 Phase 5：交付物管理与 Excel 导入 — 数据库扩展至11张表 + lookup/settings/import-excel API + 前端Settings/Overview/Issues重写）
+最后更新：2026-06-12（追加 v2 项目时间轴与里程碑规则自动评估联动开发完成 — 数据库扩展至14张表，新增项目时间节点及里程碑规则/评估 CRUD API，支持自动评估，前端新增节点/规则编辑器）
+
+### v2 时间轴变色 + 里程碑卡片改进（2026-06-12 实现）
+
+> 详细设计: DESIGN_V2_TIMELINE_MILESTONE.md
+
+**新增 API 参数：**
+- GET /api/milestone-rules/evaluations?timeline_node_id=<id> — 按节点筛选评估结果
+
+**新增前端状态：**
+- ppStore.selectedTimelineNodeId — 当前选中的时间轴节点 ID
+- 节点点击 → 更新 selectedTimelineNodeId → 触发 evaluations 重新获取
+
+**变更文件清单：**
+- ProjectTimeline.tsx — 节点颜色动态判定（绿/黄/红/灰）+ 节点点击联动
+- MilestoneCardGrid.tsx — 按选中节点筛选 + 固定 302×302 卡片
+- MilestoneCard.tsx — 适配固定尺寸容器
+- ppStore.ts — 新增选中节点状态
+- db.py / milestone_rules.py — evaluation 筛选参数
+

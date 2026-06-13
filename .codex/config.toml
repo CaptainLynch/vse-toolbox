@@ -8,13 +8,9 @@ model_reasoning_effort = "medium"
 description = "VSE TOOLBOX 功能设计师：新功能需求分析、架构设计、接口定义"
 config_file = ".codex/agents/architect.toml"
 
-[agents.worker]
+[agents.engineer]
 description = "VSE TOOLBOX 维护工程师：Bug修复、小功能调整、代码修改"
-config_file = ".codex/agents/worker.toml"
-
-[agents.reviewer]
-description = "VSE TOOLBOX 审计官：代码审计、安全审查、GAC合规检查"
-config_file = ".codex/agents/reviewer.toml"
+config_file = ".codex/agents/engineer.toml"
 
 [agents.explorer]
 description = "VSE TOOLBOX 探索员：代码浏览、定位、结构理解"

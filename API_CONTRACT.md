@@ -8,9 +8,9 @@
 
 ## 最后更新
 
-- 版本：v1.2
-- 更新时间：2026-06-07
-- 状态：已确认（新增 import-excel / lookup / settings 端点；dashboard/overview 重写；前端 F-20~F-26 完成+审计）
+- 版本：v1.3
+- 更新时间：2026-06-12
+- 状态：已确认（新增 timeline 及 milestone-rules 相关 API 端点，支持项目时间节点与里程碑评估联动）
 
 ---
 
@@ -415,10 +415,204 @@ Content-Type: application/json
 
 ---
 
-## 16. 变更记录
+## 16. 时间轴 API
+
+项目时间节点相关增删改查。
+
+### 16.1 获取时间节点列表
+
+```
+GET /api/timeline
+```
+
+**响应：**
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": 1,
+      "name": "首台车身下线",
+      "target_date": "2026-06-01",
+      "actual_date": "2026-06-02",
+      "description": "首台车身组装完成下线",
+      "sort_order": 1,
+      "status": "completed",
+      "created_at": "2026-06-12T12:00:00",
+      "updated_at": "2026-06-12T12:00:00"
+    }
+  ],
+  "message": null
+}
+```
+
+### 16.2 新增时间节点
+
+```
+POST /api/timeline
+```
+
+**请求：**
+```json
+{
+  "name": "首台车身下线",
+  "target_date": "2026-06-01",
+  "actual_date": null,
+  "description": "车身下线描述",
+  "sort_order": 0,
+  "status": "pending"
+}
+```
+
+### 16.3 批量更新时间节点排序
+
+```
+PUT /api/timeline/reorder
+```
+
+**请求：**
+```json
+{
+  "items": [
+    {"id": 1, "sort_order": 1},
+    {"id": 2, "sort_order": 2}
+  ]
+}
+```
+
+### 16.4 获取单个时间节点详情
+
+```
+GET /api/timeline/{node_id}
+```
+
+### 16.5 更新时间节点
+
+```
+PUT /api/timeline/{node_id}
+```
+
+**请求：**（支持局部更新）
+```json
+{
+  "actual_date": "2026-06-02",
+  "status": "completed"
+}
+```
+
+### 16.6 删除时间节点
+
+```
+DELETE /api/timeline/{node_id}
+```
+
+---
+
+## 17. 里程碑规则与自动评估 API
+
+里程碑评估规则的配置，以及基于规则的自动化状态计算。
+
+### 17.1 获取里程碑规则列表
+
+```
+GET /api/milestone-rules?timeline_node_id=1
+```
+
+### 17.2 新增里程碑规则
+
+```
+POST /api/milestone-rules
+```
+
+**请求：**
+```json
+{
+  "name": "冲压件完成率",
+  "timeline_node_id": 1,
+  "category": "零件",
+  "condition_type": "count_threshold",
+  "condition_config": {
+    "data_source": "issues",
+    "count_field": "status",
+    "count_value": "resolved"
+  },
+  "target_value": 80,
+  "sort_order": 1,
+  "is_active": true
+}
+```
+
+**说明**：
+- `condition_type` 支持：`manual`（人工维护）、`count_threshold`（数量占比阀值）、`status_match`（特定状态匹配）。
+- `condition_config`：白名单表 `issues` / `ewo` / `tir`，且字段限制在 `status` / `priority` / `severity` / `type`。
+
+### 17.3 里程碑评估结果列表
+
+```
+GET /api/milestone-rules/evaluations?timeline_node_id=1
+```
+
+**响应：**
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "evaluation_id": 1,
+      "rule_id": 1,
+      "rule_name": "冲压件完成率",
+      "timeline_node_name": "首台车身下线",
+      "category": "零件",
+      "condition_type": "count_threshold",
+      "current_value": 0.85,
+      "target_value": 80.0,
+      "status": "completed",
+      "notes": "系统自动评估通过",
+      "evaluated_at": "2026-06-12T12:00:00"
+    }
+  ],
+  "message": null
+}
+```
+
+### 17.4 触发全量里程碑规则自动评估
+
+```
+POST /api/milestone-rules/evaluations/refresh
+```
+
+**响应：**
+```json
+{
+  "success": true,
+  "data": {
+    "refreshed": 3
+  },
+  "message": null
+}
+```
+
+### 17.5 更新单个评估记录（备注/状态）
+
+```
+PUT /api/milestone-rules/evaluations/{evaluation_id}
+```
+
+**请求：**
+```json
+{
+  "notes": "人工确认通过",
+  "status": "completed"
+}
+```
+
+---
+
+## 18. 变更记录
 
 | 版本 | 日期 | 变更内容 | 确认 |
 |------|------|----------|------|
 | v1.0 | 2026-05-27 | 初始版本 | 已确认 |
 | v1.1 | 2026-06-07 | 新增 dashboard/ewo/tir 端点，端口改为 8002 | 已确认 |
 | v1.2 | 2026-06-07 | 新增 import-excel / lookup / settings 端点；dashboard/overview 重写 | 已确认 |
+| v1.3 | 2026-06-12 | 新增 timeline 及 milestone-rules 相关 API 端点，支持时间轴与自动评估联动 | 已确认 |

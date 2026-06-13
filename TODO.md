@@ -11,6 +11,28 @@
 - [~] 进行中
 - [x] 已完成
 - [!] 阻塞（依赖外部，如IT审批）
+- [-] 暂停/取消
+
+---
+
+## 🚀 CLI 转型冲刺 (Sprint v2.0-cli) - 2026-06-13起
+
+> **当前最高优先级。前端任务全部挂起，专注于纯后端服务的 CLI 菜单化。**
+
+### P1: 基础框架与爬虫定时导出
+- [x] **CLI-01** 创建 `backend/cli_main.py`，实现基础的中英文交互主循环和菜单架构。
+- [x] **CLI-02** 梳理 `crawler_service.py`，将其直接对接到 CLI 菜单中。
+- [x] **CLI-03** 实现内网数据的模块化/全量导出选项。
+- [x] **CLI-04** 实现“爬虫定时导出”机制（静默任务模式或菜单守候模式）。
+
+### P2: Excel 工具箱功能
+- [ ] **CLI-05** 将 `excel_service.py` 集成到 CLI 菜单。
+- [ ] **CLI-06** 实现路径内 Excel 合并为总表的功能菜单。
+- [ ] **CLI-07** 实现路径内 Excel 批量改名/清理的功能菜单。
+
+### P3: PPT 自动化生成
+- [ ] **CLI-08** 将 `ppt_service.py` 集成到 CLI 菜单。
+- [ ] **CLI-09** 根据导出的 Excel 明细数据自动生成对应的 PPT 汇报。
 
 ---
 
@@ -314,3 +336,35 @@
 - AnalyticsOverview: KPI trend 图标颜色修正（下降=好用绿色）
 - Settings: 保存后 re-fetch 确保状态同步
 - DeliverableIssues: 定义 CreateIssuePayload 接口替代内联类型
+
+## P9 时间轴变色 + 里程碑卡片改进（2026-06-11 设计完成）
+
+> 设计文档: DESIGN_V2_TIMELINE_MILESTONE.md
+> 架构师: Galileo | 状态: 待实现
+
+### 功能 1：时间轴节点自动变色（纯前端）
+
+- [x] **F-T01** pp/src/components/ProjectTimeline.tsx - 新增 getNodeVisual() 判定函数
+- [x] **F-T02** pp/src/components/ProjectTimeline.tsx - 节点圆圈颜色 + 文字标注改为动态
+
+### 功能 2：里程碑卡片改进（前后端联动）
+
+#### 后端
+
+- [x] **B-T01** ackend/services/db.py - list_evaluations 增加 	imeline_node_id 筛选参数
+- [x] **B-T02** ackend/api/milestone_rules.py - list_evaluations 端点增加 query param
+
+#### 前端
+
+- [x] **F-T03** pp/src/stores/appStore.ts - 新增 selectedTimelineNodeId state + setSelectedTimelineNodeId action
+- [x] **F-T04** pp/src/stores/appStore.ts - etchMilestoneEvaluations 支持 	imelineNodeId 筛选
+- [x] **F-T05** pp/src/components/ProjectTimeline.tsx - 节点点击时 setSelectedTimelineNodeId
+- [x] **F-T06** pp/src/components/MilestoneCardGrid.tsx - 根据选中节点筛选 + 固定 302x302 尺寸
+- [x] **F-T07** pp/src/components/MilestoneCard.tsx - 适配 302x302 容器
+
+### 实施顺序
+
+1. F-T01 → F-T02（功能 1，无依赖）
+2. B-T01 → B-T02（功能 2 后端）
+3. F-T03 → F-T04 → F-T05 → F-T06 → F-T07（功能 2 前端）
+
