@@ -1,0 +1,17 @@
+# 基础依赖
+pywin32==306
+imapclient==3.0.1
+pytz==2024.1
+
+# 爬虫相关
+playwright==1.44.0
+
+# 后端接口与框架相关 (为阶段二预留)
+fastapi==0.111.0
+uvicorn==0.29.0
+sqlalchemy==2.0.30
+
+# 注意：使用国内镜像安装命令如下
+# pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+# playwright 安装完成后需要执行以下命令下载浏览器内核：
+# playwright install chromium

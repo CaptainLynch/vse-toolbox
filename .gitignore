@@ -1,62 +1,28 @@
 ﻿# Python
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
+*.py[cod]
 *.egg-info/
-dist_pyinstaller/
-build_pyinstaller/
-*.spec
+dist/
+build/
 
-# Node
-node_modules/
-app/dist/
+# 数据库文件
+data/*.db
+data/*.db-wal
+data/*.db-shm
+
+# 日志
+data/*.log
+
+# 输出文件
+data/output/
 
 # IDE
 .vscode/
 .idea/
 
-# Environment
-.env
-.env.local
-
-# Data (runtime)
-data/*.db
-logs/
-temp/
-templates/output/*.pptx
-templates/output/*.png
-templates/output/_charts/
-
-# OS
+# 系统文件
 Thumbs.db
-Desktop.ini
 .DS_Store
 
-# Build artifacts
-backend/dist/
-backend/data/
-backend/logs/
-backend/temp/
-# Driver binaries and archives
-backend/drivers/*.exe
-backend/drivers/*.zip
-backend/drivers/chromedriver-win64/
-backend/drivers/*公司*
-
-# Backup files
-*.bak
-
-# One-off scripts at root
-export_html.py
-replace_method.py
-kill_sangfor.bat
-fix-enc.js
-fix-pt.js
-rewrite-all.js
-rewrite-pt.js
-test_ewo_ncr.py
-
-# Codex agent configs (personal)
-.codex/agents/
+# chromedriver
+chromedriver.exe

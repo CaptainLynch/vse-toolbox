@@ -1,9 +1,17 @@
-﻿fastapi>=0.104.0
-uvicorn[standard]>=0.24.0
-pydantic>=2.5.0
-openpyxl>=3.1.0
-pandas>=2.0.0
-python-pptx>=0.6.0
-selenium>=4.15.0
-matplotlib>=3.8.0
-pyinstaller>=6.0.0
+﻿# VSE TOOLBOX (CLI Edition) — 依赖清单
+# 安装方式: pip install -r requirements.txt
+# 国内镜像: pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+# Python 版本要求: >= 3.9
+
+# ── 运行时依赖 ──────────────────────────────────────────────────
+rich>=13.7.0                       # 终端富文本渲染
+pywin32>=306                       # win32com.client COM 自动化 (Office 操作)
+imapclient>=3.0.0                  # IMAP 邮件客户端 (替代标准库 imaplib)
+pytz>=2024.1                       # 时区处理
+selenium>=4.20.0                   # 浏览器自动化 (内网爬虫)
+
+# ── 开发 / 审查工具 ────────────────────────────────────────────
+pytest>=8.2.0                      # 单元测试框架
+flake8>=7.0.0                      # 静态代码检查
+mypy>=1.10.0                       # 类型检查
+typing-extensions>=4.7.0           # Python 3.9 类型标注扩展 (mypy 依赖)

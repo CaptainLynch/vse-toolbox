@@ -1,9 +1,0 @@
-{
-  "text_deliverable_name": {"font_size": 28, "color": "#d4af37", "bold": true},
-  "text_responsible": {"font_size": 14, "color": "#8a8f98"},
-  "text_date": {"font_size": 12, "color": "#8a8f98"},
-  "text_issue_count": {"font_size": 24, "color": "#ffffff", "bold": true},
-  "text_p0_count": {"font_size": 24, "color": "#ff4d4d", "bold": true},
-  "table_default": {"header_size": 10, "body_size": 9},
-  "table_issues": {"header_size": 10, "body_size": 9}
-}

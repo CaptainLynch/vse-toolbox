@@ -1,49 +1,78 @@
-# VSE TOOLBOX
+﻿# VSE TOOLBOX (CLI Edition)
 
-汽车项目管理桌面工具箱。管理车身钣金/内外饰件/灯具模块的开发任务、造车问题追踪、交付物自动生成。
+汽车行业项目管理自动化工具箱 — 纯命令行架构。
 
-## 快速启动
+## 特性
 
-### 前端开发
+- **极简依赖**: `rich`, `pywin32`, `imapclient`, `selenium`，零 Web 框架
+- **完全离线**: 数据存储在本地 SQLite，无需云端服务
+- **DLP 兼容**: Office 操作通过 `win32com.client` COM 自动化，绕过公司透明加密
+- **交互式 CLI**: 基于 `rich` 的彩色终端菜单，操作直观
+- **模块化设计**: 各 service 独立可调，通过 main.py 路由
+- **多智能体协作**: 内置 Agent 角色定义和 SOP 流程文档
 
-```bash
-cd app
-npm install
-npm run dev
-# 访问 http://localhost:5173
-```
-
-### 后端开发
+## 快速开始
 
 ```bash
-cd backend
+# 1. 安装依赖（Windows + Python 3.9+）
+pip install -r requirements.txt
+
+# 2. 安装 pywin32 的 COM 注册（如首次安装）
+python Scripts/pywin32_postinstall.py -install
+
+# 3. 启动 CLI
 python main.py
-# API 服务运行在 http://127.0.0.1:8002
 ```
 
-## 技术栈
+## 目录结构
 
-- **前端**: React 19 + TypeScript + Vite + Tailwind CSS + shadcn/ui + Recharts + react-grid-layout + Zustand
-- **后端**: Python 3.14 + FastAPI + Uvicorn + SQLite3
-- **工具**: openpyxl, pandas, python-pptx, matplotlib, selenium
-- **打包**: PyInstaller (单文件 exe)
+```
+vse-toolbox/
+├── main.py                          # CLI 主入口 & 菜单循环
+├── core/
+│   ├── __init__.py
+│   └── db_manager.py                # SQLite 连接管理 & 表结构
+├── services/
+│   ├── __init__.py
+│   ├── intranet_scraper.py           # Selenium 内网爬虫
+│   ├── feishu_imap.py                # IMAP 邮件解析 → SQLite
+│   └── office_toolbox.py             # Excel / PPT 生成 (win32com COM)
+├── data/
+│   ├── templates/                    # PPT / Excel 模板
+│   └── output/                       # 生成的文件输出
+├── docs/
+│   └── agents/                       # 多智能体 Prompt & 流程文档
+│       ├── project_state.md          # 项目状态快照
+│       ├── implementation_plan.md    # 架构实施计划
+│       ├── task.md                   # 任务拆解与进度
+│       ├── review_feedback.md        # 审查反馈记录
+│       ├── research_notes.md         # Explorer 探索笔记
+│       ├── SOP_worker_coding.md      # Worker 标准作业程序
+│       └── role_*.md                 # 角色定义文件
+├── setup.cfg                         # flake8 / mypy 配置
+├── requirements.txt
+└── README.md
+```
 
-## 功能模块
+## 菜单选项
 
-- **数据分析看板**: 项目总览、造车问题、EWO/NCR、TIR 子页面，可拖拽磁吸卡片布局
-- **工具矩阵**: Excel 合并/改名、PPT 生成、内网数据爬取
-- **飞书邮件助手**: 邮件同步、待办提取
+| 编号 | 功能 | 对应模块 |
+|---|---|---|
+| 1 | 更新交付物状态 | `main.py` → SQLite |
+| 2 | 生成周报 PPT | `services/office_toolbox.py` (PowerPoint COM) |
+| 3 | 扫描飞书待办 | `services/feishu_imap.py` (IMAP) |
+| 4 | 内网数据抓取 | `services/intranet_scraper.py` (Selenium) |
+| 5 | 查看项目概览 | `core/db_manager.py` |
+| 0 | 退出系统 | — |
 
-## 项目文档
+## 多智能体协作
 
-| 文档 | 说明 |
-|------|------|
-| PROJECT.md | 项目入口（环境约束+技术栈+读取顺序） |
-| ARCHITECTURE.md | 系统架构（运行时+数据库+API） |
-| CODING_RULES.md | 编码规则（R-01~R-17） |
-| DESIGN_FRONTEND_REDESIGN.md | 前端重构设计文档 |
-| TODO.md | 全局任务列表 |
-| ADR.md | 架构决策记录 |
-| ROLES.md | 模型分工策略 |
-| API_CONTRACT.md | 前后端接口契约 |
-| TEST_GUIDE.md | 公司环境测试指南 |
+项目内置四角色 Agent 体系，详见 `docs/agents/` 目录：
+
+| 角色 | 模型 | 职责 | 权限 |
+|---|---|---|---|
+| Explorer | 低深度推理 | 代码探索、上下文检索 | 只读 |
+| Architect | 高深度推理 | 架构设计、任务拆解 | 可写文档 |
+| Worker | 结构化推理 | 代码实现、单元测试 | 可写代码 |
+| Reviewer | 高深度推理 | 静态检查、代码审查 | 只读 |
+
