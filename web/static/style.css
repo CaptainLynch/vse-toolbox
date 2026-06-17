@@ -1,0 +1,101 @@
+/* VSE TOOLBOX — 大屏深色基调样式 */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #1a1d24;
+  --surface: #22262f;
+  --border: #2e3440;
+  --accent: #5e9bdc;
+  --text-primary: #e0e4ef;
+  --text-secondary: #8a8fa8;
+  --disabled: #444a5c;
+  --green: #6abf7b;
+  --yellow: #d6b86a;
+  --red: #d06a6a;
+  --blue: #6a9dd0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text-primary);
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  min-height: 100vh;
+}
+
+/* ── 顶部标题 ── */
+.header {
+  padding: 1.5rem 2rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+.header h1 { font-size: 1.5rem; color: var(--accent); letter-spacing: 0.05em; }
+.subtitle { font-size: 0.9rem; color: var(--text-secondary); font-weight: 400; margin-left: 0.5rem; }
+
+/* ── 模块导航条 ── */
+.module-nav {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.75rem 2rem;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.nav-item {
+  padding: 0.35rem 0.9rem;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  text-decoration: none;
+  color: var(--text-primary);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  transition: border-color 0.2s;
+}
+.nav-item.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.nav-item.disabled {
+  color: var(--disabled);
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* ── 卡片栅格 ── */
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1.25rem;
+  padding: 1.5rem 2rem;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1.25rem;
+}
+.card-title {
+  font-size: 0.95rem;
+  color: var(--text-secondary);
+  margin-bottom: 1rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.card-body { display: flex; flex-direction: column; gap: 0.5rem; }
+
+/* ── 统计行 ── */
+.stat-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.9rem;
+}
+.stat-label { color: var(--text-secondary); }
+.stat-value { font-variant-numeric: tabular-nums; font-weight: 600; }
+.stat-value.green { color: var(--green); }
+.stat-value.yellow { color: var(--yellow); }
+.stat-value.red { color: var(--red); }
+.stat-value.blue { color: var(--blue); }
+
+.loading { color: var(--text-secondary); font-style: italic; font-size: 0.85rem; }
+.error-msg { color: var(--red); font-size: 0.85rem; }

@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 VSE TOOLBOX (CLI Edition) — 主入口模块
 
@@ -10,11 +10,13 @@ VSE TOOLBOX (CLI Edition) — 主入口模块
     - main.py 仅做路由，不包含任何业务逻辑
     - 所有功能调用均通过 services/ 下的模块完成
     - 数据库操作通过 core/db_manager 统一管理
+    - 本文件是 CLI 适配层，可使用 rich；service/core 层禁止引入 rich
 """
 
 import sys
 import logging
 from pathlib import Path
+from typing import Callable
 
 from rich.console import Console
 from rich.panel import Panel
@@ -22,12 +24,12 @@ from rich.text import Text
 from rich.prompt import Prompt, Confirm
 
 # ── 项目路径初始化 ──────────────────────────────────────────────
-# 确保项目根目录在 sys.path 中，支持从任意位置启动
 PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.db_manager import DatabaseManager
+from services.excel_toolbox import ExcelToolbox
 from services.intranet_scraper import IntranetScraper
 from services.feishu_imap import FeishuImapParser
 from services.office_toolbox import OfficeToolbox
@@ -47,16 +49,8 @@ logger = logging.getLogger("vse_toolbox")
 # ── 全局 rich 控制台 ────────────────────────────────────────────
 console = Console()
 
-# ── 菜单配置 ────────────────────────────────────────────────────
-# 键: 菜单数字选项  值: (显示文本, 对应处理函数名)
-MENU_OPTIONS: dict[str, tuple[str, str]] = {
-    "1": ("更新交付物状态", "handle_update_deliverables"),
-    "2": ("生成周报 PPT", "handle_generate_ppt"),
-    "3": ("扫描飞书待办", "handle_scan_feishu"),
-    "4": ("内网数据抓取", "handle_intranet_scrape"),
-    "5": ("查看项目概览", "handle_project_overview"),
-    "0": ("退出系统", "handle_exit"),
-}
+# ── 暂缓（置灰）模块键集合（D1：P1/P3/P4 短路占位）──────────────
+DEFERRED: set[str] = {"2", "3", "4"}
 
 
 def show_banner() -> None:
@@ -69,13 +63,19 @@ def show_banner() -> None:
 
 
 def show_menu() -> None:
-    """渲染主菜单选项"""
+    """渲染主菜单选项，暂缓模块以 dim 标注"""
     console.print()
     for key, (label, _) in MENU_OPTIONS.items():
-        style = "bold red" if key == "0" else "bold white"
-        console.print(f"  [{style}]{key}[/] ── {label}")
+        if key == "0":
+            console.print(f"  [bold red]{key}[/] ── {label}")
+        elif key in DEFERRED:
+            console.print(f"  [dim]{key} ── {label}（暂缓）[/]")
+        else:
+            console.print(f"  [bold white]{key}[/] ── {label}")
     console.print()
 
+
+# ── 菜单处理函数 ────────────────────────────────────────────────
 
 def handle_update_deliverables(db: DatabaseManager) -> None:
     """【菜单 1】交互式更新交付物状态"""
@@ -90,7 +90,6 @@ def handle_update_deliverables(db: DatabaseManager) -> None:
             console.print("[yellow]当前无交付物记录，请先通过其他方式导入数据。[/]")
             return
 
-        # 展示当前交付物列表
         from rich.table import Table
 
         table = Table(title="当前交付物列表", show_lines=True)
@@ -113,10 +112,7 @@ def handle_update_deliverables(db: DatabaseManager) -> None:
 
         console.print(table)
 
-        # 交互式选择
-        deliverable_id = Prompt.ask(
-            "\n请输入要更新的交付物 ID（输入 q 返回主菜单）"
-        )
+        deliverable_id = Prompt.ask("\n请输入要更新的交付物 ID（输入 q 返回主菜单）")
         if deliverable_id.lower() == "q":
             return
 
@@ -146,7 +142,10 @@ def handle_update_deliverables(db: DatabaseManager) -> None:
 
 
 def handle_generate_ppt(db: DatabaseManager) -> None:
-    """【菜单 2】基于 SQLite 数据生成周报 PPT"""
+    """【菜单 2 · P3 暂缓】生成周报 PPT"""
+    # D1 短路：P3 暂缓，仅提示后返回，保留原业务代码供后续 Sprint 解除暂缓
+    console.print("\n[dim]该模块（P3 周报 PPT）暂缓开放，敬请期待。[/]")
+    return  # noqa: 以下为保留的原业务代码，暂不执行
     console.print("\n[bold cyan]═══ 生成周报 PPT ═══[/]\n")
     try:
         toolbox = OfficeToolbox(db)
@@ -164,7 +163,10 @@ def handle_generate_ppt(db: DatabaseManager) -> None:
 
 
 def handle_scan_feishu(db: DatabaseManager) -> None:
-    """【菜单 3】扫描飞书 IMAP 邮件并解析待办任务"""
+    """【菜单 3 · P4 暂缓】扫描飞书待办"""
+    # D1 短路：P4 暂缓，仅提示后返回，保留原业务代码供后续 Sprint 解除暂缓
+    console.print("\n[dim]该模块（P4 飞书助手）暂缓开放，敬请期待。[/]")
+    return  # noqa: 以下为保留的原业务代码，暂不执行
     console.print("\n[bold cyan]═══ 扫描飞书待办 ═══[/]\n")
     try:
         parser = FeishuImapParser(db)
@@ -179,7 +181,10 @@ def handle_scan_feishu(db: DatabaseManager) -> None:
 
 
 def handle_intranet_scrape(db: DatabaseManager) -> None:
-    """【菜单 4】启动 Selenium 内网爬虫"""
+    """【菜单 4 · P1 暂缓】内网数据抓取"""
+    # D1 短路：P1 暂缓，仅提示后返回，保留原业务代码供后续 Sprint 解除暂缓
+    console.print("\n[dim]该模块（P1 内网爬虫）暂缓开放，敬请期待。[/]")
+    return  # noqa: 以下为保留的原业务代码，暂不执行
     console.print("\n[bold cyan]═══ 内网数据抓取 ═══[/]\n")
     try:
         scraper = IntranetScraper(db)
@@ -195,17 +200,12 @@ def handle_project_overview(db: DatabaseManager) -> None:
     console.print("\n[bold cyan]═══ 项目概览 ═══[/]\n")
     try:
         with db.get_connection() as conn:
-            # 项目统计
             projects = conn.execute(
                 "SELECT status, COUNT(*) FROM projects GROUP BY status"
             ).fetchall()
-
-            # 交付物统计
             deliverables = conn.execute(
                 "SELECT status, COUNT(*) FROM deliverables GROUP BY status"
             ).fetchall()
-
-            # 飞书待办统计
             feishu_total = conn.execute("SELECT COUNT(*) FROM feishu_tasks").fetchone()[0]
             feishu_synced = conn.execute(
                 "SELECT COUNT(*) FROM feishu_tasks WHERE synced=1"
@@ -232,13 +232,83 @@ def handle_project_overview(db: DatabaseManager) -> None:
         logger.exception("查看项目概览时发生异常")
 
 
+def handle_excel_toolbox(db: DatabaseManager) -> None:
+    """【菜单 6 · P0】Excel 工具箱二级菜单（CLI 适配层）"""
+    console.print("\n[bold cyan]═══ Excel 工具箱 ═══[/]\n")
+    console.print("  [bold white]1[/] ── 纵向追加合并")
+    console.print("  [bold white]2[/] ── 坐标重合合并")
+    console.print("  [bold white]3[/] ── 差异比对")
+    console.print("  [dim]0[/] ── 返回主菜单")
+    console.print()
+
+    sub = Prompt.ask("[bold]请选择操作[/]", choices=["0", "1", "2", "3"], default="0")
+    if sub == "0":
+        return
+
+    toolbox = ExcelToolbox()
+
+    def _ask_paths(prompt_text: str) -> list[Path]:
+        raw = Prompt.ask(prompt_text)
+        return [Path(p.strip()) for p in raw.split(",") if p.strip()]
+
+    def _ask_path_optional(prompt_text: str) -> Path | None:
+        raw = Prompt.ask(f"{prompt_text}（直接回车跳过）", default="")
+        return Path(raw.strip()) if raw.strip() else None
+
+    try:
+        if sub == "1":
+            sources = _ask_paths("源文件路径（多个以逗号分隔）")
+            baseline = _ask_path_optional("基线文件路径")
+            output = _ask_path_optional("输出路径")
+            result = toolbox.merge_append(sources, output_path=output, baseline=baseline)
+            console.print(f"[green]✓ 纵向追加合并完成: {result}[/]")
+
+        elif sub == "2":
+            sources = _ask_paths("来源文件路径（多个以逗号分隔）")
+            target = Path(Prompt.ask("底层目标文件路径"))
+            baseline = _ask_path_optional("基线文件路径")
+            output = _ask_path_optional("输出路径")
+            result = toolbox.merge_overlay(sources, target, output_path=output, baseline=baseline)
+            console.print(f"[green]✓ 坐标重合合并完成: {result}[/]")
+
+        elif sub == "3":
+            target = Path(Prompt.ask("待比对文件路径"))
+            baseline = Path(Prompt.ask("基线文件路径"))
+            output = _ask_path_optional("输出路径")
+            result = toolbox.diff_against_baseline(target, baseline, output_path=output)
+            console.print(f"[green]✓ 差异比对完成: {result}[/]")
+
+    except PermissionError as e:
+        console.print(f"[red]错误: 文件被占用 — {e}[/]")
+        logger.error("Excel 工具箱权限错误: %s", e)
+    except FileNotFoundError as e:
+        console.print(f"[red]错误: 文件未找到 — {e}[/]")
+        logger.error("Excel 工具箱文件未找到: %s", e)
+    except EOFError:
+        return
+    except Exception as e:
+        console.print(f"[red]错误: Excel 操作失败 — {e}[/]")
+        logger.exception("Excel 工具箱发生异常")
+
+
 def handle_exit(db: DatabaseManager) -> None:
     """【菜单 0】退出系统"""
     if Confirm.ask("确定要退出 VSE TOOLBOX 吗？", default=True):
         console.print("[bold green]再见！VSE TOOLBOX 已安全退出。[/]")
         logger.info("用户正常退出系统")
         sys.exit(0)
-    # 用户选择不退出，回到主循环
+
+
+# ── 菜单配置（须在所有 handle_* 之后定义） ────────────────────────
+MENU_OPTIONS: dict[str, tuple[str, Callable[[DatabaseManager], None]]] = {
+    "1": ("更新交付物状态", handle_update_deliverables),
+    "2": ("生成周报 PPT", handle_generate_ppt),
+    "3": ("扫描飞书待办", handle_scan_feishu),
+    "4": ("内网数据抓取", handle_intranet_scrape),
+    "5": ("查看项目概览", handle_project_overview),
+    "6": ("Excel 工具箱 (P0)", handle_excel_toolbox),
+    "0": ("退出系统", handle_exit),
+}
 
 
 def main() -> None:
@@ -246,12 +316,10 @@ def main() -> None:
     logger.info("VSE TOOLBOX 启动")
     show_banner()
 
-    # 初始化数据库
     db = DatabaseManager()
     db.init_database()
     console.print("[dim]数据库已就绪[/]")
 
-    # 主菜单循环
     while True:
         try:
             show_menu()
@@ -260,14 +328,8 @@ def main() -> None:
                 choices=list(MENU_OPTIONS.keys()),
                 default="0",
             )
-
-            label, handler_name = MENU_OPTIONS[choice]
-            handler = globals().get(handler_name)
-
-            if handler and callable(handler):
-                handler(db)
-            else:
-                console.print(f"[red]内部错误: 处理函数 {handler_name} 未找到[/]")
+            label, handler = MENU_OPTIONS[choice]
+            handler(db)
 
         except KeyboardInterrupt:
             console.print("\n\n[bold green]收到中断信号，安全退出。[/]")

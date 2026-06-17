@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd *)",
+      "Bash(echo *)",
+      "Bash(flake8 *)",
+      "Bash(pytest *)",
+      "Bash(mypy *)",
+      "Bash(python -m flake8 *)",
+      "Bash(python -m pytest *)",
+      "Bash(python -m mypy *)",
+      "Bash(git *)",
+      "Bash(ls *)",
+      "Bash(pwd)",
+      "Bash(cat *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(where *)",
+      "Bash(type *)",
+      "Bash(find *)",
+      "Bash(pip *)",
+      "Bash(python -m pip *)",
+      "Bash(python -m venv *)",
+      "Bash(jq *)"
+    ],
+    "ask": [
+      "Bash(git push *)",
+      "Bash(git push --force *)",
+      "Bash(git reset --hard *)",
+      "Bash(git clean *)"
+    ]
+  }
+}

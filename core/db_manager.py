@@ -19,10 +19,7 @@ from pathlib import Path
 from contextlib import contextmanager
 from typing import Generator
 
-from rich.console import Console
-
 logger = logging.getLogger("vse_toolbox.db_manager")
-console = Console()
 
 # ── 默认数据库路径 ──────────────────────────────────────────────
 DEFAULT_DB_DIR = Path(__file__).resolve().parent.parent / "data"
@@ -122,14 +119,18 @@ class DatabaseManager:
                 for ddl in TABLE_DEFINITIONS:
                     conn.execute(ddl)
 
+                # 幂等插入 id=1「未归类」兜底项目，防止 deliverables.project_id 外键孤儿
+                conn.execute(
+                    "INSERT OR IGNORE INTO projects (id, name, manager, status) "
+                    "VALUES (1, '未归类', 'system', 'active');"
+                )
+
                 conn.commit()
 
             logger.info("数据库初始化完成")
-            console.print("[dim]数据库表结构已就绪 (WAL 模式)[/]")
 
-        except sqlite3.Error as e:
+        except sqlite3.Error:
             logger.exception("数据库初始化失败")
-            console.print(f"[red]错误: 数据库初始化失败 — {e}[/]")
             raise
 
     @contextmanager
@@ -186,9 +187,8 @@ class DatabaseManager:
             with self.get_connection() as conn:
                 conn.executescript(script)
             logger.info("SQL 脚本执行成功")
-        except sqlite3.Error as e:
+        except sqlite3.Error:
             logger.exception("SQL 脚本执行失败")
-            console.print(f"[red]错误: SQL 脚本执行失败 — {e}[/]")
             raise
 
     def table_exists(self, table_name: str) -> bool:
@@ -226,25 +226,12 @@ class DatabaseManager:
             return -1
         try:
             with self.get_connection() as conn:
-                result = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
+                # SQLite 不支持参数化表名，用 table_exists 预验证后拼接
+                # table_name 已经过 table_exists 白名单验证，无 SQL 注入风险
+                result = conn.execute(  # nosec: table_name validated by table_exists
+                    f"SELECT COUNT(*) FROM {table_name}"
+                ).fetchone()
                 return result[0] if result else 0
         except sqlite3.Error as e:
             logger.error("获取表 %s 行数时出错: %s", table_name, e)
             return -1
-
-
-# ── 独立运行测试入口 ────────────────────────────────────────────
-if __name__ == "__main__":
-    console.print("[bold cyan]DatabaseManager 独立测试[/]\n")
-
-    test_db = DatabaseManager()
-    test_db.init_database()
-
-    # 验证表是否创建成功
-    for table in ("projects", "deliverables", "feishu_tasks"):
-        exists = test_db.table_exists(table)
-        count = test_db.get_table_row_count(table)
-        status = "[green]✓ 存在[/]" if exists else "[red]✗ 不存在[/]"
-        console.print(f"  表 {table}: {status}  (行数: {count})")
-
-    console.print("\n[green]测试完成[/]")

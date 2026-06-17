@@ -9,9 +9,9 @@
 
 | 字段 | 值 |
 |---|---|
-| 项目名称 | VSE TOOLBOX (CLI Edition) |
-| 架构 | 纯后端 CLI + SQLite + Office COM 自动化 |
-| 主要依赖 | rich, pywin32, imapclient, pytz, selenium |
+| 项目名称 | VSE TOOLBOX (Dual-Interface Edition) |
+| 架构 | 双轨界面（CLI + WEB）共享 service 层 + SQLite + Office COM 自动化 |
+| 主要依赖 | rich, pywin32, imapclient, pytz, selenium, **flask** |
 | 开发/审查工具 | pytest, flake8, mypy |
 | Python 版本 | ≥ 3.9 |
 | Office I/O 方式 | win32com.client (禁止 pandas/openpyxl/python-pptx，原因: DLP 透明加密) |
@@ -19,27 +19,45 @@
 
 ---
 
-## 2. CLI 命令树（当前版本）
+## 2. 命令树 / 目录结构（Sprint 2 目标态）
+
+> 标注: `[新]` 本轮新建 · `[改]` 本轮修改 · 其余为存量保留。
 
 ```
 VSE-TOOLBOX/
-├── main.py                     # CLI 主入口 & 菜单循环
+├── main.py                     # [改] CLI 适配层: 菜单 Callable 化 + Excel 子菜单 + 延期置灰
 ├── core/
 │   ├── __init__.py
-│   └── db_manager.py           # SQLite 连接池 & ORM 建表
+│   ├── config.py               # [新] 集中配置常量（路径/Flask/默认值，禁存明文密码）
+│   └── db_manager.py           # [改] init_database 末尾插入「未归类」兜底项目
 ├── services/
 │   ├── __init__.py
-│   ├── intranet_scraper.py     # Selenium 内网爬虫
-│   ├── feishu_imap.py          # IMAP 邮件解析 → SQLite
-│   └── office_toolbox.py       # Excel / PPT 生成 (win32com COM)
+│   ├── excel_toolbox.py        # [新·P0] Excel 工具箱: 合并/比对/回滚 (win32com COM)
+│   ├── vertical_forms.py       # [新·P0] EWO/NCR/DMU/Styling 四个空类占位
+│   ├── office_toolbox.py       # Excel / PPT 生成 (win32com COM)
+│   ├── intranet_scraper.py     # Selenium 内网爬虫（P1 暂缓·置灰）
+│   └── feishu_imap.py          # IMAP 邮件解析 → SQLite（P4 暂缓·置灰）
+├── web/                        # [新] WEB 适配层
+│   ├── __init__.py             # [新]
+│   ├── app.py                  # [新] Flask 应用 + GET /api/overview (P2 大屏)
+│   ├── templates/
+│   │   └── dashboard.html      # [新] P2 Demo 大屏骨架 + 导航（延期模块置灰）
+│   └── static/
+│       ├── style.css           # [新] 大屏样式
+│       └── app.js              # [新] fetch /api/overview 渲染概览卡片
 ├── data/
 │   ├── vse_toolbox.db          # SQLite 数据库文件（运行时生成）
+│   ├── .backup/                # [新] Excel 改写前 .bak 备份（回滚用）
 │   ├── templates/              # PPT / Excel 模板
 │   └── output/                 # 生成的文件输出
+├── tests/                      # [新]
+│   ├── conftest.py             # [新] 临时 DatabaseManager(tmp_path) fixture
+│   ├── test_db_manager.py      # [新] 兜底项目 + 建表幂等 + 回滚
+│   └── test_excel_toolbox.py   # [新] mock COM，断言写入/备份/回滚/高亮/图例/Quit
 ├── docs/
 │   └── agents/                 # 多智能体 Prompt & 流程文档
 ├── setup.cfg                   # flake8 / mypy 配置
-├── requirements.txt
+├── requirements.txt            # [改] 新增 flask
 └── README.md
 ```
 
@@ -90,27 +108,36 @@ VSE-TOOLBOX/
 
 | 模块 | 状态 | 断点 / 备注 |
 |---|---|---|
-| main.py | 🟢 已完成 | CLI 菜单循环骨架，6 个数字选项路由 |
-| core/db_manager.py | 🟢 已完成 | SQLite WAL 模式，contextmanager 连接管理，3 张表 DDL |
-| services/intranet_scraper.py | 🟡 骨架完成 | Selenium WebDriver，待补充实际页面解析逻辑 (TODO) |
-| services/feishu_imap.py | 🟡 骨架完成 | IMAP 连接 + 飞书邮件识别 + 正则解析，待改用 imapclient |
-| services/office_toolbox.py | 🟢 已完成 | 已重写为 win32com COM 自动化（Excel.Application / PowerPoint.Application） |
-| 多智能体文档 | 🟢 已完成 | 5 个角色 Prompt + 1 个 SOP 流程文档 |
-| 流程控制文件 | 🟢 已完成 | task.md / implementation_plan.md / review_feedback.md / research_notes.md |
+| main.py | 🟡 待 Worker 执行 | Sprint2: 菜单 Callable 化(A3) + Excel 子菜单(B8) + 延期置灰(D1) |
+| core/config.py | 🟡 待 Worker 执行 | Sprint2 新增(A1): 集中配置常量，禁存明文密码 |
+| core/db_manager.py | 🟡 待 Worker 执行 | Sprint2: init_database 末尾插入「未归类」兜底项目(A2) |
+| services/excel_toolbox.py (P0) | 🟡 待 Worker 执行 | Sprint2 新增(B1-B6): 合并/比对/回滚/莫兰迪高亮，全 COM |
+| services/vertical_forms.py (P0) | 🟡 待 Worker 执行 | Sprint2 新增(B7): 四个空类占位，仅 NotImplementedError |
+| web/ (P2) | 🟡 待 Worker 执行 | Sprint2 新增(C1-C3): Flask + /api/overview + Demo 大屏骨架 |
+| services/intranet_scraper.py (P1) | 🟡 暂缓·置灰 | 骨架完成，真实选择器移交 Backlog P1；本轮 CLI 置灰(D1) |
+| services/feishu_imap.py (P4) | 🟡 暂缓·置灰 | 骨架完成，imapclient 迁移移交 Backlog F1-c；本轮 CLI 置灰(D1) |
+| services/office_toolbox.py | 🟢 已完成 | COM 版 Excel/PPT 导出（excel_toolbox 复用其 COM 模式） |
+| tests/ | 🟡 待 Worker 执行 | Sprint2 新增(E1-E3): conftest + db_manager + excel_toolbox(mock COM) |
+| 多智能体文档 | 🟢 已完成 | 角色 Prompt + SOP 流程文档 |
+| 流程控制文件 | 🟢 已完成 | task.md / implementation_plan.md（Sprint2 已更新） |
 | 代码质量配置 | 🟢 已完成 | setup.cfg (flake8 + mypy) |
 
-> 状态图例：⬜ 未开始 · 🟡 进行中 · 🟢 已完成 · 🔴 阻塞
+> 状态图例：⬜ 未开始 · 🟡 进行中 / 待 Worker 执行 · 🟢 已完成 · 🔴 阻塞
 
 ---
 
 ## 5. 当前断点 & 下一步
 
-- **当前断点**: 所有基础设施就绪，10 项待办任务等待 Worker 执行
+- **当前断点**: Sprint 2（双轨界面 + P0 Excel 工具箱）方案已获批并落地为架构文档，
+  task.md 共 **17 项任务**（A1-A3 / B1-B8 / C1-C3 / D1 / E1-E3），等待 Worker 执行。
+- **首批可立即开工（无前置，可并行 4 路）**: **A1**(config) · **A2**(db 兜底) · **A3**(菜单 Callable) · **B7**(vertical_forms 占位)。
+- **解耦红线提醒**: `services/*` 与 `core/*` 禁止 import rich / flask；界面适配仅在 main.py 与 web/app.py。
 - **下一步**:
-  1. Worker 按 task.md 逐项执行：feishu_imap.py 改用 imapclient (任务 3.1-3.4)
-  2. Worker 补充 intranet_scraper.py 实际选择器 (任务 4.1-4.2)
-  3. Architect 设计测试用例，Worker 编写 tests/ (任务 5.1-5.4)
-  4. 在真实 Windows + Office 环境中运行 `python main.py` 端到端测试
+  1. Worker 按「🔀 可并行分派矩阵」波次 W1→W5 推进；B 组(CLI/Excel) 与 C 组(WEB) 在 A1 后跨界面并行。
+  2. P0 Excel 工具箱(B1-B8)全功能落地（合并/比对/回滚），仅 CLI 验收。
+  3. P2 WEB 仅搭可运行 Demo 骨架(C1-C3) + 延期模块导航置灰。
+  4. 补齐测试(E1-E3，mock COM)，`pytest + flake8 + mypy` 全绿后交 Reviewer。
+  5. 真实 Windows + Office 环境运行 `python main.py` 与 `python -m web.app` 端到端验证。
 
 ---
 

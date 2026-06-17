@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VSE TOOLBOX — 项目可视化大屏</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="header">
+    <h1>VSE TOOLBOX <span class="subtitle">项目可视化大屏</span></h1>
+  </header>
+
+  <!-- 模块导航条 -->
+  <nav class="module-nav">
+    <a href="#overview" class="nav-item active">项目可视化</a>
+    <span class="nav-item disabled" title="P0 · WEB 入口待接入">Excel 工具箱（仅 CLI）</span>
+    <span class="nav-item disabled" title="P1 · 待开发">内网爬虫（暂缓）</span>
+    <span class="nav-item disabled" title="P3 · 待开发">周报 PPT（暂缓）</span>
+    <span class="nav-item disabled" title="P4 · 待开发">飞书助手（暂缓）</span>
+  </nav>
+
+  <!-- 概览卡片区 -->
+  <main id="overview" class="dashboard-grid">
+    <section class="card" id="card-projects">
+      <h2 class="card-title">项目</h2>
+      <div class="card-body" id="projects-body">
+        <p class="loading">加载中…</p>
+      </div>
+    </section>
+
+    <section class="card" id="card-deliverables">
+      <h2 class="card-title">交付物</h2>
+      <div class="card-body" id="deliverables-body">
+        <p class="loading">加载中…</p>
+      </div>
+    </section>
+
+    <section class="card" id="card-feishu">
+      <h2 class="card-title">飞书待办</h2>
+      <div class="card-body" id="feishu-body">
+        <p class="loading">加载中…</p>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
