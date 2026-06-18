@@ -6,6 +6,28 @@
 
 ---
 
+## Review Conversation #4 - Phase 4 F1 Code Review
+
+**Review scope**: `services/feishu_imap.py`, F1 tests, F1 contract in `task.md` / `implementation_plan.md`.
+
+### Blocking Findings
+
+| # | Severity | File | Lines | Problem | Required fix | Status |
+|---|---|---|---|---|---|---|
+| F1-1 | Blocking | `services/feishu_imap.py` | L423-L438 | `scan_and_parse()` catches every exception from `_save_tasks()` and `sync_unsynced_tasks_to_deliverables()` and converts it to `return 0`. This violates the F1 contract that sync/database errors must not be hidden as normal scan completion. It also creates misleading semantics: `_save_tasks()` may already have committed new `feishu_tasks`, but the public return becomes `0`, so callers cannot distinguish "no unread mail" from "database/sync failed after saving". The current tests only cover the happy path and do not assert sync bridge failure propagation. | Restrict the `return 0` path to connection failure, and let `_save_tasks()` / sync bridge database exceptions propagate after logging. Add a test where `sync_unsynced_tasks_to_deliverables()` raises and assert `scan_and_parse()` surfaces the failure rather than returning `0` or a normal count. | ✅ Verified — final review passed |
+
+### Verification Notes
+
+- Static review confirms `services/feishu_imap.py` no longer contains `imaplib` and uses `IMAPClient(..., ssl=True)`, `select_folder`, `search(["UNSEEN"])`, and `fetch(ids, ["RFC822"])`.
+- Static review confirms `_get_credentials()` uses `getpass.getpass()` for the password and no password-style `Prompt.ask()` remains in `services/feishu_imap.py`.
+- Final retry review confirms `scan_and_parse()` returns `0` for connection failure / no unread mail, continues per-message parse errors, and re-raises `_save_tasks()` / `sync_unsynced_tasks_to_deliverables()` persistence failures after logging.
+- Final retry review confirms `tests/test_feishu_sync.py` includes the sync-failure propagation regression and fixture literals now match `tests/conftest.py` (`飞书任务1`, `张三`).
+- `pytest` could not be executed in this environment: `pytest` is not on PATH, and `python.exe` / `py.exe` are inaccessible through the sandbox. Review is therefore static plus source-level reasoning.
+
+**Final F1 readiness**: Passed by static/source-level review. No blocking F1 defects remain.
+
+---
+
 ## 审查状态图例
 
 - `⏳ 待修复` — Worker 尚未处理

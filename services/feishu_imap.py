@@ -9,24 +9,25 @@ services/feishu_imap.py — IMAP 邮件解析器（飞书待办提取）
 
 设计要点:
     - 完全离线运行 — 仅需 IMAP 端口连通，无需飞书开放平台 API
-    - 使用 Python 标准库 imaplib + email，零额外依赖
+    - 使用 imapclient + email 处理 IMAP 邮件
     - 邮箱凭据通过终端交互式输入，不硬编码在代码中
     - 解析逻辑基于正则匹配飞书邮件模板，可按需扩展
 
 依赖:
-    - Python 标准库 (imaplib, email, re)
+    - Python 标准库 (email, re, getpass)
+    - imapclient
     - rich (终端交互)
     - core.db_manager (数据持久化)
 """
 
 import re
-import imaplib
+import getpass
 import email
 import email.header
 import logging
-from datetime import datetime
 from typing import Optional
 
+from imapclient import IMAPClient
 from rich.console import Console
 from rich.prompt import Prompt
 
@@ -94,7 +95,7 @@ class FeishuImapParser:
         self._db = db
         self._imap_host = imap_host
         self._imap_port = imap_port
-        self._conn: Optional[imaplib.IMAP4_SSL] = None
+        self._conn: Optional[IMAPClient] = None
 
     def _get_credentials(self) -> tuple[str, str]:
         """
@@ -107,9 +108,7 @@ class FeishuImapParser:
         console.print(f"[dim]IMAP 服务器: {self._imap_host}:{self._imap_port}[/]")
 
         username = Prompt.ask("[bold]请输入邮箱地址[/]")
-        # 使用普通 Prompt 而非 Password，因为部分终端不支持隐藏输入
-        # 生产环境建议替换为 getpass.getpass()
-        password = Prompt.ask("[bold]请输入邮箱密码 / 应用专用密码[/]")
+        password = getpass.getpass("请输入邮箱密码 / 应用专用密码: ")
 
         return username, password
 
@@ -126,19 +125,19 @@ class FeishuImapParser:
         """
         try:
             console.print("[dim]正在连接 IMAP 服务器...[/]")
-            self._conn = imaplib.IMAP4_SSL(self._imap_host, self._imap_port)
+            self._conn = IMAPClient(self._imap_host, port=self._imap_port, ssl=True)
             self._conn.login(username, password)
             console.print("[green]✓ IMAP 连接成功[/]")
             logger.info("IMAP 连接成功: %s@%s", username, self._imap_host)
 
-        except imaplib.IMAP4.error as e:
-            error_msg = f"IMAP 认证失败: {e}"
+        except OSError as e:
+            error_msg = f"IMAP 网络连接失败: {e}"
             console.print(f"[red]错误: {error_msg}[/]")
             logger.error(error_msg)
             raise ConnectionError(error_msg) from e
 
-        except OSError as e:
-            error_msg = f"IMAP 网络连接失败: {e}"
+        except Exception as e:
+            error_msg = f"IMAP 认证失败: {e}"
             console.print(f"[red]错误: {error_msg}[/]")
             logger.error(error_msg)
             raise ConnectionError(error_msg) from e
@@ -309,6 +308,59 @@ class FeishuImapParser:
 
         return saved_count
 
+    def sync_unsynced_tasks_to_deliverables(self, project_id: int = 1) -> int:
+        """
+        将未同步的飞书待办落入交付物表，并标记为已同步。
+
+        Args:
+            project_id: 交付物所属项目 ID，默认使用 id=1 的未归类项目
+
+        Returns:
+            本次同步的任务数量
+        """
+        synced_count = 0
+        with self._db.get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, title, assignee, deadline, source_email_id
+                FROM feishu_tasks
+                WHERE synced=0
+                ORDER BY id
+                """
+            ).fetchall()
+
+            synced_ids: list[int] = []
+            for row in rows:
+                task_id = int(row["id"])
+                source_email_id = row["source_email_id"] or str(task_id)
+                conn.execute(
+                    """
+                    INSERT INTO deliverables
+                        (project_id, name, owner, due_date, status, remark)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        project_id,
+                        row["title"] or "未命名飞书待办",
+                        row["assignee"] or "",
+                        row["deadline"] or None,
+                        "pending",
+                        f"飞书待办同步: {source_email_id}",
+                    ),
+                )
+                synced_ids.append(task_id)
+
+            for task_id in synced_ids:
+                conn.execute(
+                    "UPDATE feishu_tasks SET synced=1 WHERE id=?",
+                    (task_id,),
+                )
+
+            synced_count = len(synced_ids)
+
+        logger.info("飞书待办同步至交付物 %d 条", synced_count)
+        return synced_count
+
     def scan_and_parse(self) -> int:
         """
         执行完整的邮件扫描与解析流程。
@@ -320,34 +372,36 @@ class FeishuImapParser:
 
         # 步骤 1: 获取凭据
         username, password = self._get_credentials()
+        persistence_error = False
 
         try:
             # 步骤 2: 连接
             self._connect(username, password)
+            if self._conn is None:
+                raise ConnectionError("IMAP 连接未建立")
 
             # 步骤 3: 选择收件箱
-            self._conn.select(DEFAULT_MAILBOX, readonly=False)
+            self._conn.select_folder(DEFAULT_MAILBOX, readonly=False)
 
             # 步骤 4: 搜索未读邮件
             console.print("[dim]搜索未读邮件...[/]")
-            status, message_ids = self._conn.search(None, "UNSEEN")
+            ids = self._conn.search(["UNSEEN"])
 
-            if status != "OK" or not message_ids[0]:
+            if not ids:
                 console.print("[yellow]未找到未读邮件[/]")
                 return 0
 
-            ids = message_ids[0].split()
             console.print(f"[dim]找到 {len(ids)} 封未读邮件[/]")
 
             # 步骤 5: 逐封解析
             tasks: list[dict] = []
-            for mid in ids:
+            fetched_messages = self._conn.fetch(ids, ["RFC822"])
+            for mid, data in fetched_messages.items():
                 try:
-                    status, data = self._conn.fetch(mid, "(RFC822)")
-                    if status != "OK":
+                    raw_email = data.get(b"RFC822") or data.get("RFC822")
+                    if not raw_email:
                         continue
 
-                    raw_email = data[0][1]
                     msg = email.message_from_bytes(raw_email)
 
                     # 仅处理飞书邮件
@@ -367,8 +421,17 @@ class FeishuImapParser:
                     continue
 
             # 步骤 6: 写入数据库
-            saved_count = self._save_tasks(tasks)
-            console.print(f"\n[green]✓ 本次解析 {len(tasks)} 条，入库 {saved_count} 条新任务[/]")
+            try:
+                saved_count = self._save_tasks(tasks)
+                synced_count = self.sync_unsynced_tasks_to_deliverables(project_id=1)
+            except Exception:
+                persistence_error = True
+                logger.exception("飞书待办保存或同步失败")
+                raise
+
+            console.print(
+                f"\n[green]✓ 本次解析 {len(tasks)} 条，入库 {saved_count} 条新任务，同步 {synced_count} 条交付物[/]"
+            )
 
             return saved_count
 
@@ -377,6 +440,8 @@ class FeishuImapParser:
             return 0
 
         except Exception as e:
+            if persistence_error:
+                raise
             console.print(f"[red]错误: 邮件扫描异常 — {e}[/]")
             logger.exception("邮件扫描异常")
             return 0

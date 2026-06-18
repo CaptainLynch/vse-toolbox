@@ -265,16 +265,122 @@
 
 ---
 
+### F. F1 — 飞书待办闭环 + 凭据安全 + IMAPClient 迁移
+
+> **目标**: 把 Backlog F1-a/b/c 提升为下一批 Worker 目标。F1 只允许 Worker 修改
+> `services/feishu_imap.py`、`services/intranet_scraper.py`（如发现明文密码交互才改）以及对应 `tests/`；
+> 不改表结构、不改 `core/config.py` 写入敏感字段、不改已完成 Sprint 2 文档任务状态。
+>
+> **架构依据**: implementation_plan.md §2.9 与 §3.3。service 层仍不得 import flask；
+> `services/feishu_imap.py` 当前已有 rich 交互属于存量 CLI 型 service，F1 不扩大 rich 使用面。
+
+- [x] **F1-a1** `services/feishu_imap.py::FeishuImapParser.sync_unsynced_tasks_to_deliverables()` — 新增飞书待办同步桥
+  - 目标文件: `services/feishu_imap.py`
+  - 签名: `def sync_unsynced_tasks_to_deliverables(self, project_id: int = 1) -> int`
+  - 实现: 在单个 `self._db.get_connection()` 事务内读取 `feishu_tasks WHERE synced=0 ORDER BY id`；
+    逐条插入 `deliverables`，并仅把成功插入的同批 `feishu_tasks.id` 更新为 `synced=1`。
+  - 字段映射: `project_id` 默认 `1`；`name = title or "未命名飞书待办"`；
+    `owner = assignee or ""`；`due_date = deadline or None`；`status = "pending"`；
+    `remark = "飞书待办同步: <source_email_id>"`（无来源时用空字符串或任务 id）。
+  - 约束: 不新增表/列；不吞数据库异常；异常由 `get_connection()` 回滚；返回本次同步条数。
+  - 依赖: Sprint 2 A2（`projects.id=1` 兜底项目已完成）
+  - 验收: F1-v1 覆盖正常同步、空标题 fallback、重复调用不重复插入。
+
+- [x] **F1-a2** `services/feishu_imap.py::FeishuImapParser.scan_and_parse()` — 保存后触发同步桥
+  - 目标文件: `services/feishu_imap.py`
+  - 实现: `_save_tasks(tasks)` 成功后调用 `self.sync_unsynced_tasks_to_deliverables(project_id=1)`；
+    控制台提示可包含同步条数，但 `scan_and_parse()` 返回值仍保持 `saved_count`（新入库 feishu_tasks 数量）。
+  - 约束: 不改变连接失败返回 `0` 的行为；单封邮件解析异常继续跳过；同步桥异常不得被误报为解析成功。
+  - 依赖: F1-a1
+  - 验收: F1-v1 用 monkeypatch 断言 `_save_tasks` 后调用同步桥，且返回值仍为 saved_count。
+
+- [x] **F1-b1** `services/feishu_imap.py::FeishuImapParser._get_credentials()` — 密码输入改为 `getpass.getpass`
+  - 目标文件: `services/feishu_imap.py`
+  - 实现: 新增 `import getpass`；用户名可继续使用 `Prompt.ask()`；密码 / 应用专用密码必须使用
+    `getpass.getpass("请输入邮箱密码 / 应用专用密码: ")` 或等价提示。
+  - 约束: 不使用 `Prompt.ask(..., password=True)` 作为替代；不把密码写入日志、异常文本、config 常量或实例属性。
+  - 依赖: 无（可与 F1-a1/F1-c1 并行，但注意同文件合并）
+  - 验收: F1-v2 monkeypatch `getpass.getpass`，断言 `_get_credentials()` 返回密码且未调用密码字段的 `Prompt.ask`。
+
+- [x] **F1-b2** `services/intranet_scraper.py` — 明文密码交互安全审查与最小修正
+  - 目标文件: `services/intranet_scraper.py`
+  - 实现: 检查本文件是否存在终端密码输入（例如 `Prompt.ask`/`input` 获取 password/token/secret）。
+    若存在，限定在对应函数内改为 `getpass.getpass()`；若不存在，保持浏览器内手动登录流程不变。
+  - 约束: 不新增账号/密码参数；不把内网密码放入 `core/config.py`；不改变 `_wait_for_user_login()` 的人工登录确认语义。
+  - 依赖: 无
+  - 验收: F1-v2 grep 证明 intranet_scraper 无 plaintext password Prompt；如发生代码修正，补单元测试或静态断言。
+
+- [x] **F1-c1** `services/feishu_imap.py::FeishuImapParser._connect()` — 从 `imaplib.IMAP4_SSL` 迁移到 `imapclient.IMAPClient`
+  - 目标文件: `services/feishu_imap.py`
+  - 实现: 移除 `import imaplib`；改为 `from imapclient import IMAPClient` 及必要异常类型；
+    `_conn` 类型改为 IMAPClient 兼容类型；`_connect()` 使用 `IMAPClient(self._imap_host, port=self._imap_port, ssl=True)` 并调用 `login(username, password)`。
+  - 约束: 登录/协议/网络异常统一转为 `ConnectionError`；日志不得包含密码；保留现有成功/失败用户提示语义。
+  - 依赖: 无（与 F1-b1 同文件，建议同一 Worker 顺序执行）
+  - 验收: F1-v3 mock IMAPClient，断言构造参数、login 调用与异常转换；grep 无 `imaplib`。
+
+- [x] **F1-c2** `services/feishu_imap.py::FeishuImapParser.scan_and_parse()` — 适配 IMAPClient 的 select/search/fetch 返回结构
+  - 目标文件: `services/feishu_imap.py`
+  - 实现: 用 `self._conn.select_folder(DEFAULT_MAILBOX, readonly=False)` 替代 `select()`；
+    用 `self._conn.search(["UNSEEN"])` 获取 message id 列表；用 `self._conn.fetch(ids, ["RFC822"])`
+    取得原始邮件字节并继续交给 `email.message_from_bytes()`。
+  - 约束: 空搜索结果返回 `0`；逐封解析失败继续记录并跳过；飞书识别与正文解析函数不重写。
+  - 依赖: F1-c1
+  - 验收: F1-v3 mock search/fetch 覆盖空列表、非飞书邮件跳过、飞书邮件入库路径。
+
+- [x] **F1-c3** `services/feishu_imap.py::FeishuImapParser._disconnect()` — 适配 IMAPClient logout
+  - 目标文件: `services/feishu_imap.py`
+  - 实现: 保持 `if self._conn:` 防护，调用 IMAPClient 的 `logout()`；任何 logout 异常继续安静忽略，
+    finally 中置 `self._conn = None`。
+  - 约束: 不新增 close/shutdown 分支，除非 IMAPClient mock/文档明确需要；保持重复调用安全。
+  - 依赖: F1-c1
+  - 验收: F1-v3 覆盖正常 logout、logout 异常、重复 disconnect。
+
+- [x] **F1-v1** `tests/test_feishu_sync.py` — F1-a 同步桥事务与幂等测试
+  - 目标文件: `tests/test_feishu_sync.py`（新建或扩展现有同名文件）
+  - 断言: ①`synced=0` 任务同步为 `deliverables(project_id=1)` 并标记 `synced=1`；
+    ②空标题使用 `"未命名飞书待办"`；③第二次调用返回 0 且不重复插入；
+    ④构造插入异常时不把任务误标记为 `synced=1`。
+  - 依赖: F1-a1 + tests/conftest.py 的 `tmp_db`
+  - 验收: `pytest tests/test_feishu_sync.py` 全绿。
+
+- [x] **F1-v2** `tests/test_credential_safety.py` — 凭据输入与 config 安全验证
+  - 目标文件: `tests/test_credential_safety.py`（新建）
+  - 断言: ①`FeishuImapParser._get_credentials()` 调用 `getpass.getpass` 获取密码；
+    ②`services/feishu_imap.py` 不存在密码字段的 `Prompt.ask` 明文输入；
+    ③`services/intranet_scraper.py` 不存在 password/token/secret 的明文终端输入；
+    ④`core/config.py` 不含 password/token/secret 常量。
+  - 依赖: F1-b1 + F1-b2
+  - 验收: `pytest tests/test_credential_safety.py` 全绿；静态 grep 规则通过。
+
+- [x] **F1-v3** `tests/test_feishu_imapclient.py` — IMAPClient 迁移行为测试
+  - 目标文件: `tests/test_feishu_imapclient.py`（新建或扩展现有 feishu 测试）
+  - 实现: monkeypatch `services.feishu_imap.IMAPClient` 为假客户端，覆盖 `login`、`select_folder`、
+    `search`、`fetch`、`logout`。
+  - 断言: ①`_connect()` 使用 SSL + 端口并调用 login；②登录异常转 `ConnectionError`；
+    ③`scan_and_parse()` 使用 `select_folder/search/fetch(["RFC822"])`；
+    ④`_disconnect()` logout 后清空连接；⑤源码无 `imaplib`。
+  - 依赖: F1-c1 + F1-c2 + F1-c3
+  - 验收: `pytest tests/test_feishu_imapclient.py` 全绿；不需要真实 IMAP 网络。
+
+- [x] **F1-r1** Reviewer 静态边界检查 — F1 代码写入范围与敏感信息检查
+  - 检查范围: `services/feishu_imap.py`、`services/intranet_scraper.py`、`tests/`、`core/config.py`
+  - 断言: `core/config.py` 未新增 password/token/secret；业务源码无硬编码真实凭据；
+    `services/feishu_imap.py` 无 `imaplib`；除既有允许边界外未引入 flask；未改动 F1 范围外业务文件。
+  - 依赖: F1-a/F1-b/F1-c 全部实现
+  - 验收: Reviewer 将发现写入 `review_feedback.md`；无问题则标记本项完成。
+
+- [x] **F1-r2** Worker 最终验证 — 聚合测试命令
+  - 命令: `pytest tests/test_feishu_sync.py tests/test_credential_safety.py tests/test_feishu_imapclient.py`
+  - 建议补充: `pytest` 全量、`flake8`、`mypy`（若项目当前环境可运行）。
+  - 依赖: F1-v1 + F1-v2 + F1-v3
+  - 验收: Worker 在交付说明中贴出执行命令与结果；如环境缺依赖，说明缺失依赖而非跳过。
+
+---
+
 ## 🗂️ 后续 Sprint / Backlog（本轮**不实现**，仅登记）
 
 > Architect 决策: 以下为非阻塞存量缺陷 / 演进项，登记待后续 Sprint 排期。
 
-- [ ] **F1-a** `feishu_tasks.synced` → `deliverables` 同步桥：扫描 `synced=0` 的飞书待办，落地为
-  `deliverables`（默认挂 `project_id=1 未归类`）并置 `synced=1`。当前 `synced` 字段写后无读，存在断链。
-- [ ] **F1-b** 凭据安全：`feishu_imap` / `intranet_scraper` 的明文密码交互改用 `getpass.getpass`，
-  与 config.py「禁存明文」原则对齐。
-- [ ] **F1-c** IMAP 迁移：`feishu_imap.py` 由标准库 `imaplib` 迁移到 `imapclient`，
-  消除「requirements 声明 imapclient 但代码仍 import imaplib」的文档↔实现漂移。
 - [ ] **P1** 内网爬虫真实页面选择器（`_scrape_data` / `_save_to_database`）。
 - [ ] **P3** 周报 PPT：本轮仅在 CLI/WEB 代码层预留入口，真实模板接入后开发。
 - [ ] **P4** 飞书助手：本轮仅代码层预留入口，待需求明确后开发。

@@ -157,6 +157,53 @@
 - **防撞色**: `_highlight_cell` 写入前先读目标单元格原 `Interior.Color`；若与待写色撞色，**顺延取色板下一色**。
 - **图例**: 操作结束前把 `color_map` 交给 `_write_legend`，在独立 Sheet「图例说明」逐行输出「来源 ↔ 色块」。
 
+### 2.9 F1 飞书闭环、凭据安全与 IMAPClient 迁移
+
+#### 推导过程（≥2 备选 + ≥1 次推翻）
+
+- **备选 A（被推翻）**: 在 CLI handler 内直接读取 `feishu_tasks` 并写入 `deliverables`。
+  优点：改动快。缺点：同步规则会被锁死在界面层，WEB 或定时任务将来无法复用；同时违反
+  「界面适配层只做交互」的边界。**推翻**。
+- **备选 B（被推翻）**: 新建独立同步表记录 `feishu_task_id → deliverable_id`。
+  优点：可追踪映射。缺点：当前数据库已有 `feishu_tasks.synced` 状态位，F1 目标只是修复
+  「写后无读」断链；新增表会扩大迁移面，且没有明确的反向追踪需求。**推翻**。
+- **备选 C（采纳）**: 在 `FeishuImapParser` service 内新增一个事务级同步方法，
+  把 `synced=0` 的飞书待办落入 `deliverables`，再把同一批任务标记为 `synced=1`。
+
+#### 最终方案
+
+- **同步桥归属**: `services/feishu_imap.py::FeishuImapParser` 新增
+  `sync_unsynced_tasks_to_deliverables(project_id: int = 1) -> int`。该方法属于 service 层，
+  不 import rich/flask，不做界面输出；只返回本次同步条数，异常上抛给适配层。
+- **事务边界**: 一次同步必须在单个 `DatabaseManager.get_connection()` 事务内完成：
+  先查询 `feishu_tasks WHERE synced=0`，逐条插入 `deliverables`，再仅标记这些已插入的
+  `feishu_tasks.id` 为 `synced=1`。任一插入失败时整体回滚，避免「已标记但未落地」。
+- **字段映射**:
+  - `deliverables.project_id = project_id`，默认 `1`，依赖 Sprint 2 的「未归类」兜底项目。
+  - `deliverables.name = feishu_tasks.title`；标题为空时使用 `"未命名飞书待办"`。
+  - `deliverables.owner = feishu_tasks.assignee`；`deliverables.due_date = feishu_tasks.deadline`。
+  - `deliverables.status = "pending"`。
+  - `deliverables.remark` 写入轻量来源说明（如 `飞书待办同步: <source_email_id>`），避免新增列。
+- **接入点**: `scan_and_parse()` 在 `_save_tasks(tasks)` 成功后调用同步桥，确保本次新增任务与历史
+  `synced=0` 任务都会被补同步；`scan_and_parse()` 的公开返回值仍保持「新入库 feishu_tasks 数量」，
+  避免破坏既有调用方语义。
+- **凭据安全**:
+  - `core/config.py` 继续只放路径、端口、默认 host 等非敏感常量，严禁密码、token、授权码。
+  - `FeishuImapParser._get_credentials()` 的密码输入必须使用 `getpass.getpass()`；用户名可继续用
+    `Prompt.ask()`。
+  - `IntranetScraper` 当前是浏览器内手动登录，不在终端接收密码；Worker 不得新增明文密码 Prompt。
+    若后续加入终端式账号密码输入，密码字段必须封装为 `getpass.getpass()`。
+- **IMAPClient 迁移**: `services/feishu_imap.py` 必须移除 `imaplib` 依赖，改用 requirements 已声明的
+  `imapclient.IMAPClient`。连接用 SSL，`select_folder()` 选择收件箱，`search(["UNSEEN"])` 获取未读邮件，
+  `fetch(ids, ["RFC822"])` 取得原始邮件字节；解析逻辑继续复用既有 `email` 标准库函数。
+- **异常归一**: IMAPClient 登录/协议/网络异常在 `_connect()` 内转换为 `ConnectionError`；
+  `scan_and_parse()` 保持现有容错策略：连接失败返回 0，单封邮件解析失败记录后继续处理下一封。
+- **校验手段**:
+  - Reviewer grep `services/feishu_imap.py` 不得出现 `import imaplib` / `imaplib.`。
+  - Reviewer grep `core/config.py` 不得出现 password/token/secret 等敏感常量。
+  - Reviewer grep `services/feishu_imap.py` / `services/intranet_scraper.py` 不得出现密码字段的
+    `Prompt.ask(...)` 明文交互。
+
 ## 3. 模块接口定义
 
 ### 3.1 DatabaseManager (core/db_manager.py)
@@ -187,7 +234,12 @@ class OfficeToolbox:
 class FeishuImapParser:
     def __init__(self, db: DatabaseManager, imap_host: str, imap_port: int) -> None: ...
     def scan_and_parse(self) -> int: ...  # 返回入库任务数
+    def sync_unsynced_tasks_to_deliverables(self, project_id: int = 1) -> int: ...
 ```
+
+> F1 起：底层 IMAP 客户端为 `imapclient.IMAPClient`，不得再使用 `imaplib`。
+> `_get_credentials()` 中密码必须通过 `getpass.getpass()` 获取；`scan_and_parse()` 成功保存待办后调用
+> `sync_unsynced_tasks_to_deliverables()`，但返回值仍表示「新入库 feishu_tasks 数量」。
 
 ### 3.4 IntranetScraper (services/intranet_scraper.py)
 
@@ -196,6 +248,9 @@ class IntranetScraper:
     def __init__(self, db: DatabaseManager, intranet_url: str, timeout: int) -> None: ...
     def run(self) -> None: ...
 ```
+
+> 当前登录模式为浏览器内手动登录，service 不接收、不保存密码。
+> 若后续新增终端凭据输入，密码字段必须使用 `getpass.getpass()`，且不得写入 `core/config.py`。
 
 ### 3.5 ExcelToolbox (services/excel_toolbox.py) — P0 · 全部 win32com COM
 
@@ -325,10 +380,11 @@ def create_app() -> Flask: ...
 ## 4. 数据流
 
 ```
-[飞书邮件] → IMAP → FeishuImapParser → feishu_tasks 表
-                                              │ (synced=1)
-                                              ▼
-[内网页面] → Selenium → IntranetScraper → deliverables 表
+[飞书邮件] → IMAPClient → FeishuImapParser → feishu_tasks 表 (synced=0)
+                                                   │
+                                                   │ sync_unsynced_tasks_to_deliverables(project_id=1)
+                                                   ▼
+[内网页面] → Selenium → IntranetScraper ───▶ deliverables 表
                                               │
                                               ▼
                                     OfficeToolbox.refresh_weekly_ppt()
@@ -394,6 +450,5 @@ VALUES (1, '未归类', 'system', 'active');
 
 **关联任务**: task A2；验收见 task E2（兜底项目存在性 + 建表幂等）。
 
-> 说明: `synced` 同步桥、明文密码→getpass、imaplib→imapclient 迁移本轮**不实现**，
-> 已登记至 task.md「后续 Sprint / Backlog」（F1-a/b/c）。
-
+> 说明: `synced` 同步桥、明文密码→getpass、imaplib→imapclient 已提升为 F1 目标；
+> Worker 写入范围与验收拆解见 task.md「F. F1」。
