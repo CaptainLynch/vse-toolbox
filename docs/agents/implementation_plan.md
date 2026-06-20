@@ -446,6 +446,139 @@ finally:
 - Web API 不默认调用真实内网，必须由用户显式提交 `base_url` 与 Cookie/header。
 - 单元测试必须 mock `ArasCrawlerClient` 或其 session；不得访问真实内网/外网。
 
+### 2.12 PAA 全量抓取设计：直连 SOAP/AML 分页，不走前端导出
+
+**裁定日期**: 2026-06-21
+
+**证据源**: `docs/agents/paa_har_snapshot.md`、`crawl source/ecm.sgmw.com.cn-PAA.har`、
+`crawl source/ecm.sgmw.com.cn-PAA1.har`、现有 `services/aras_crawler.py` 契约。本设计只基于离线 HAR；
+Worker 开发与测试阶段严禁访问真实 `ecm.sgmw.com.cn` 或任何外网。
+
+**总体裁定**:
+- PAA 全量抓取必须直连底层 SOAP/AML 接口，不走浏览器前端“全量导出”、不模拟点击、不依赖 Selenium。
+- 优先扩展 `services/aras_crawler.py`：新增 PAA select 常量、DTO、filter、builder、parser、分页方法。
+- 本组不得修改 CLI/Web。只有后续 Architect 明确新增界面接入任务时，才允许碰 `main.py` 或 `web/*`。
+- 响应是 SOAP XML，必须使用 `xml.etree.ElementTree` 或等效 XML parser；严禁把响应按 JSON dict 解析，
+  也不得靠字符串 split/正则作为主 parser。正则只可用于离线 HAR 调研或辅助 fixture 萃取。
+
+#### PAA SOAP/AML 契约
+
+**路由与 headers**:
+- Method: `POST`
+- Route: `/innovatorserver/Server/InnovatorServer.aspx`
+- `SOAPAction`: `ApplyItem`
+- `Content-Type`: `text/xml; charset=UTF-8`
+- `TIMEZONE_NAME`: 通用默认可用 `China Standard Time`
+- Cookie、Authorization、api_key、session、csrf 等鉴权材料只能由调用方通过 `headers` / `cookies` /
+  已登录 `Session` 注入；源码、fixture、文档不得写真实值。
+
+**HAR 证实的 AML**:
+
+```xml
+<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/">
+  <SOAP-ENV:Body>
+    <ApplyItem>
+      <Item
+        type="PAA_O"
+        action="get"
+        page="1"
+        select="_affect_certificate,_affect_vehicle_photo,_area,_auth_type,_base,_change_description,_charge_to,_days,_days_or_qty,_effect_consistency,_emis_related,_est_cmpl_date,_est_cost,_ewo_no,_exted_reason,_gacsn,_idle_days,_issue_date,_key_part,_license_tag,_mass_impact,_model_year,_mtl_rq_date,_no,_pe_tdc,_pe_tdc_department,_pe_tdc_name,_pe_tdc_phone,_pe_tdc_smt,_pp_comments,_project_type,_quantity,_reason,_requester_department,_requester_phone,_requester_smt,_resp_unit,_rework_place,_spcl_instr,_stakeholder_buy_in,_stock_disp,_submit_date,_support_ewo_concession,_validation_statement,_vehicles,created_on,state,created_by_id,created_on,modified_by_id,modified_on,locked_by_id,major_rev,css,current_state,keyed_name,new_version,generation,release_date,effective_date,is_current"
+        pagesize="50"
+        maxRecords="2000"
+        returnMode="itemsOnly" />
+    </ApplyItem>
+  </SOAP-ENV:Body>
+</SOAP-ENV:Envelope>
+```
+
+`PAA1.har` 证实同一 `select`、同一路由、同一 `SOAPAction`，但使用 `pagesize="12000"` 与
+`maxRecords="12000"`，且该 entry 未保留响应体。Worker 仍必须实现 while 分页，不得假设单次大页一定返回全量。
+
+**分页属性**:
+- `Item@page`: 从 `1` 开始。
+- `Item@pagesize`: 默认建议 `50`，调用方可覆盖；可用 `12000` 做显式大页 smoke/mock，但全量方法仍走循环。
+- `Item@maxRecords`: 默认建议 `2000` 或调用方覆盖；全量方法额外必须有 `max_pages` 与 `max_records` 熔断。
+- `Item@returnMode`: `itemsOnly`。
+
+**过滤字段**:
+- HAR 捕获的 PAA 请求没有任何 AML 子节点过滤条件，是无过滤列表查询。
+- Worker 可定义保守的 `PAAReportFilters`，但必须把筛选项标记为 AML 惯例推断而非 HAR 证实。建议字段：
+  `paa_no -> <_no>`、`ewo_no -> <_ewo_no>`、`state -> <state>`、`area -> <_area condition="like">`、
+  `base -> <_base condition="like">`、`vehicle_keyword -> <_vehicles condition="like">`、
+  `submit_start/submit_end -> <_submit_date condition="ge/le">`、
+  `mtl_rq_start/mtl_rq_end -> <_mtl_rq_date condition="ge/le">`。
+- 默认全量抓取必须传空 filter，生成的 `<Item ... />` 不包含子节点。
+
+**响应结构**:
+- 外层为 `SOAP-ENV:Envelope/SOAP-ENV:Body/Result`。
+- `Result` 下有多条 `<Item type="PAA_O" typeId="..." id="..." page="1">...</Item>`。
+- `PAA.har` 第一页有 50 个 `PAA_O` open tag；没有总数、next page 或游标字段。
+- 每个 item 的 children 为 select 字段对应元素；空值可能是 `is_null="1"`，关联字段可能带
+  `keyed_name` / `type` 属性。parser 输出应与 EWO 一致，归一化为 `list[dict[str, str | None]]`，
+  并保留 `item_ids`、`page`、`raw_xml`。
+- HAR response 中业务长文本存在潜在未转义 XML 片段风险。生产 parser 仍必须使用 XML parser；
+  离线测试 fixture 应从 HAR `response.content.text` 萃取成可解析的最小代表性 XML，不得把损坏文本绕成 JSON。
+
+#### PAA 全量抓取循环
+
+建议公开方法:
+
+```python
+def query_paa_report(
+    self,
+    filters: PAAReportFilters | None = None,
+    page: int = 1,
+    page_size: int = 50,
+    max_records: int = 2000,
+    select_fields: Sequence[str] | None = None,
+) -> PAAReportPage: ...
+
+def crawl_paa_report_all(
+    self,
+    filters: PAAReportFilters | None = None,
+    page_size: int = 50,
+    max_pages: int = 500,
+    max_records: int = 12000,
+    select_fields: Sequence[str] | None = None,
+) -> PAAReportPage: ...
+```
+
+分页算法:
+
+```text
+page = 1
+rows = []
+item_ids = []
+while page <= max_pages and len(rows) < max_records:
+    current = query_paa_report(filters, page=page, page_size=page_size, max_records=max_records)
+    if not current.rows:
+        break
+    append current rows/item_ids, respecting max_records
+    if len(current.rows) < page_size:
+        break
+    page += 1
+if page > max_pages or len(rows) >= max_records:
+    stop safely and return collected rows; do not loop forever
+```
+
+约束:
+- `page` 必须动态递增，不得重复请求 page 1。
+- 当某页 `rows` 为空时终止；当 `len(rows) < page_size` 时也可安全终止。
+- 必须有 `max_pages` 和 `max_records` 双熔断，防止死循环；测试要覆盖熔断。
+- 可选 dedupe by `Item@id` / child `<id>` / `keyed_name`，但 dedupe 不可替代分页熔断。
+- `_post_soap()` 继续统一设置 `SOAPAction=ApplyItem`，外部注入 headers/cookie，不硬编码凭据。
+
+#### PAA 离线 fixture 与测试
+
+- 新增 fixture 建议放在 `tests/fixtures/crawler/paa_query_response.xml`、
+  `tests/fixtures/crawler/paa_empty_response.xml`、`tests/fixtures/crawler/paa_short_page_response.xml`。
+- fixture 从 HAR `response.content.text` 萃取结构与字段，但必须脱敏/替换业务内容；不得包含真实 Cookie、
+  Authorization、Set-Cookie、token、session、csrf。
+- `tests/test_aras_paa_crawler.py` 或现有 `tests/test_aras_crawler.py` 必须使用 fake session，不发真实 HTTP。
+- 测试断言 route、method、`SOAPAction`、`Item type="PAA_O" action="get"`、`page/pagesize/maxRecords`、
+  `returnMode`、默认 select、空 filter 不生成子节点、推断 filter 生成正确 AML 节点、XML parser 输出、
+  while 分页终止条件与熔断。
+
 ## 3. 模块接口定义
 
 ### 3.1 DatabaseManager (core/db_manager.py)
@@ -523,10 +656,30 @@ class ArasCrawlerClient:
     def query_ncr_approval_progress(self, filters: NCRApprovalFilters) -> NCRExportResult: ...
     def extract_ncr_approval_detail(self, filters: NCRApprovalFilters) -> NCRDetailExportResult: ...
     def get_file_download_token(self, file_id: str) -> str: ...
+
+    def query_paa_report(
+        self,
+        filters: PAAReportFilters | None = None,
+        page: int = 1,
+        page_size: int = 50,
+        max_records: int = 2000,
+        select_fields: Sequence[str] | None = None,
+    ) -> PAAReportPage: ...
+
+    def crawl_paa_report_all(
+        self,
+        filters: PAAReportFilters | None = None,
+        page_size: int = 50,
+        max_pages: int = 500,
+        max_records: int = 12000,
+        select_fields: Sequence[str] | None = None,
+    ) -> PAAReportPage: ...
 ```
 
 **实现边界**:
 - `EWOReportFilters`、`NCRApprovalFilters` 与返回 DTO 可放在同一模块或轻量子模块中；不得引入界面库。
+- PAA 增量只允许扩展同一 service 边界：`PAAReportFilters`、`PAAReportPage`、`DEFAULT_PAA_SELECT_FIELDS`、
+  `_build_paa_payload()`、`parse_paa_report_response()`、`query_paa_report()`、`crawl_paa_report_all()`。
 - 生产下载文件必须做显式 opt-in，不得在查询方法里自动访问 vault 下载 URL。
 - tests 只能使用 HAR fixture 和 mock session；不得触达真实内网。
 

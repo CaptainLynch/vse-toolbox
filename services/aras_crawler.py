@@ -90,6 +90,69 @@ DEFAULT_EWO_SELECT_FIELDS = (
     "effective_date",
     "is_current",
 )
+DEFAULT_PAA_SELECT_FIELDS = (
+    "_affect_certificate",
+    "_affect_vehicle_photo",
+    "_area",
+    "_auth_type",
+    "_base",
+    "_change_description",
+    "_charge_to",
+    "_days",
+    "_days_or_qty",
+    "_effect_consistency",
+    "_emis_related",
+    "_est_cmpl_date",
+    "_est_cost",
+    "_ewo_no",
+    "_exted_reason",
+    "_gacsn",
+    "_idle_days",
+    "_issue_date",
+    "_key_part",
+    "_license_tag",
+    "_mass_impact",
+    "_model_year",
+    "_mtl_rq_date",
+    "_no",
+    "_pe_tdc",
+    "_pe_tdc_department",
+    "_pe_tdc_name",
+    "_pe_tdc_phone",
+    "_pe_tdc_smt",
+    "_pp_comments",
+    "_project_type",
+    "_quantity",
+    "_reason",
+    "_requester_department",
+    "_requester_phone",
+    "_requester_smt",
+    "_resp_unit",
+    "_rework_place",
+    "_spcl_instr",
+    "_stakeholder_buy_in",
+    "_stock_disp",
+    "_submit_date",
+    "_support_ewo_concession",
+    "_validation_statement",
+    "_vehicles",
+    "created_on",
+    "state",
+    "created_by_id",
+    "created_on",
+    "modified_by_id",
+    "modified_on",
+    "locked_by_id",
+    "major_rev",
+    "css",
+    "current_state",
+    "keyed_name",
+    "new_version",
+    "generation",
+    "release_date",
+    "effective_date",
+    "is_current",
+)
 
 
 class ArasCrawlerError(RuntimeError):
@@ -111,6 +174,20 @@ class EWOReportFilters:
 
 
 @dataclass(frozen=True)
+class PAAReportFilters:
+    paa_no: str | None = None
+    ewo_no: str | None = None
+    state: str | None = None
+    area: str | None = None
+    base: str | None = None
+    vehicle_keyword: str | None = None
+    submit_start: str | None = None
+    submit_end: str | None = None
+    mtl_rq_start: str | None = None
+    mtl_rq_end: str | None = None
+
+
+@dataclass(frozen=True)
 class NCRApprovalFilters:
     buy_start: str | None = None
     buy_end: str | None = None
@@ -125,6 +202,14 @@ class NCRApprovalFilters:
 
 @dataclass(frozen=True)
 class EWOReportPage:
+    rows: list[dict[str, str | None]]
+    page: int | None
+    item_ids: list[str]
+    raw_xml: str
+
+
+@dataclass(frozen=True)
+class PAAReportPage:
     rows: list[dict[str, str | None]]
     page: int | None
     item_ids: list[str]
@@ -177,6 +262,59 @@ class ArasCrawlerClient:
         response = self._post_soap("ApplyItem", payload)
         return self.parse_ewo_report_response(response.text)
 
+    def query_paa_report(
+        self,
+        filters: PAAReportFilters | None = None,
+        page: int = 1,
+        page_size: int = 50,
+        max_records: int = 2000,
+        select_fields: Sequence[str] | None = None,
+    ) -> PAAReportPage:
+        payload = self._build_paa_payload(filters or PAAReportFilters(), page, page_size, max_records, select_fields)
+        response = self._post_soap("ApplyItem", payload)
+        return self.parse_paa_report_response(response.text)
+
+    def crawl_paa_report_all(
+        self,
+        filters: PAAReportFilters | None = None,
+        page_size: int = 50,
+        max_pages: int = 500,
+        max_records: int = 12000,
+        select_fields: Sequence[str] | None = None,
+    ) -> PAAReportPage:
+        if page_size <= 0:
+            raise ValueError("page_size must be positive")
+        if max_pages <= 0:
+            raise ValueError("max_pages must be positive")
+        if max_records <= 0:
+            raise ValueError("max_records must be positive")
+
+        rows: list[dict[str, str | None]] = []
+        item_ids: list[str] = []
+        raw_pages: list[str] = []
+        last_page: int | None = None
+        page = 1
+        while page <= max_pages and len(rows) < max_records:
+            current = self.query_paa_report(
+                filters,
+                page=page,
+                page_size=page_size,
+                max_records=max_records,
+                select_fields=select_fields,
+            )
+            raw_pages.append(current.raw_xml)
+            if current.page is not None:
+                last_page = current.page
+            if not current.rows:
+                break
+            remaining = max_records - len(rows)
+            rows.extend(current.rows[:remaining])
+            item_ids.extend(current.item_ids[:remaining])
+            if len(current.rows) < page_size or len(rows) >= max_records:
+                break
+            page += 1
+        return PAAReportPage(rows=rows, page=last_page, item_ids=item_ids, raw_xml="\n".join(raw_pages))
+
     def query_ncr_approval_progress(self, filters: NCRApprovalFilters) -> NCRExportResult:
         payload = self._build_ncr_payload(filters, "sgmw_downloadFileProgressC")
         response = self._post_soap("ApplyMethod", payload)
@@ -204,20 +342,17 @@ class ArasCrawlerClient:
     @staticmethod
     def parse_ewo_report_response(xml_text: str) -> EWOReportPage:
         root = _parse_xml(xml_text)
-        items = [item for item in root.iter() if _local_name(item.tag) == "Item" and item.get("type") == "EWO_O"]
-        rows: list[dict[str, str | None]] = []
-        item_ids: list[str] = []
-        page: int | None = None
-        for item in items:
-            if item.get("id"):
-                item_ids.append(item.get("id", ""))
-            if page is None and item.get("page"):
-                page = int(item.get("page", "0"))
-            row: dict[str, str | None] = {}
-            for child in list(item):
-                row[_local_name(child.tag)] = None if child.get("is_null") == "1" else child.text
-            rows.append(row)
+        rows, item_ids, page = _parse_item_rows(root, "EWO_O")
         return EWOReportPage(rows=rows, page=page, item_ids=item_ids, raw_xml=xml_text)
+
+    @staticmethod
+    def parse_paa_report_response(xml_text: str) -> PAAReportPage:
+        root = _parse_xml(xml_text)
+        result = next((node for node in root.iter() if _local_name(node.tag) == "Result"), None)
+        if result is None:
+            raise ArasCrawlerError("PAA response does not contain Result")
+        rows, item_ids, page = _parse_item_rows(result, "PAA_O")
+        return PAAReportPage(rows=rows, page=page, item_ids=item_ids, raw_xml=xml_text)
 
     @staticmethod
     def parse_ncr_progress_response(xml_text: str) -> NCRExportResult:
@@ -313,6 +448,36 @@ class ArasCrawlerClient:
         body = "".join(child for child in children if child)
         return _soap_envelope(f"<ApplyItem><Item {attrs}>{body}</Item></ApplyItem>")
 
+    def _build_paa_payload(
+        self,
+        filters: PAAReportFilters,
+        page: int,
+        page_size: int,
+        max_records: int,
+        select_fields: Sequence[str] | None,
+    ) -> str:
+        select = ",".join(select_fields or DEFAULT_PAA_SELECT_FIELDS)
+        attrs = (
+            f'type="PAA_O" action="get" page="{page}" select="{escape(select)}" '
+            f'pagesize="{page_size}" maxRecords="{max_records}" returnMode="itemsOnly"'
+        )
+        children = [
+            _element("_no", filters.paa_no),
+            _element("_ewo_no", filters.ewo_no),
+            _element("state", filters.state),
+            _element("_area", filters.area, condition="like"),
+            _element("_base", filters.base, condition="like"),
+            _element("_vehicles", filters.vehicle_keyword, condition="like"),
+            _element("_submit_date", filters.submit_start, condition="ge"),
+            _element("_submit_date", filters.submit_end, condition="le"),
+            _element("_mtl_rq_date", filters.mtl_rq_start, condition="ge"),
+            _element("_mtl_rq_date", filters.mtl_rq_end, condition="le"),
+        ]
+        body = "".join(child for child in children if child)
+        if body:
+            return _soap_envelope(f"<ApplyItem><Item {attrs}>{body}</Item></ApplyItem>")
+        return _soap_envelope(f"<ApplyItem><Item {attrs}/></ApplyItem>")
+
     def _build_ncr_payload(self, filters: NCRApprovalFilters, method_action: str) -> str:
         project_names = ",".join(filters.project_names)
         nodes = (
@@ -328,6 +493,27 @@ class ArasCrawlerClient:
         )
         body = "".join(f"<{name}><![CDATA[{_cdata(value or '')}]]></{name}>" for name, value in nodes)
         return _soap_envelope(f'<ApplyMethod><Item type="Method" action="{method_action}">{body}</Item></ApplyMethod>')
+
+
+def _parse_item_rows(root: ET.Element, item_type: str) -> tuple[list[dict[str, str | None]], list[str], int | None]:
+    items = [item for item in root.iter() if _local_name(item.tag) == "Item" and item.get("type") == item_type]
+    if not items and item_type == "EWO_O":
+        return [], [], None
+    if not items and item_type == "PAA_O":
+        return [], [], None
+    rows: list[dict[str, str | None]] = []
+    item_ids: list[str] = []
+    page: int | None = None
+    for item in items:
+        if item.get("id"):
+            item_ids.append(item.get("id", ""))
+        if page is None and item.get("page"):
+            page = int(item.get("page", "0"))
+        row: dict[str, str | None] = {}
+        for child in list(item):
+            row[_local_name(child.tag)] = None if child.get("is_null") == "1" else child.text
+        rows.append(row)
+    return rows, item_ids, page
 
 
 def _soap_envelope(body: str) -> str:

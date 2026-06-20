@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 core/db_manager.py — SQLite 数据库连接管理与 ORM 表结构初始化
 
@@ -68,6 +68,23 @@ TABLE_DEFINITIONS: list[str] = [
         synced          INTEGER DEFAULT 0
     );
     """,
+    # NCR明细表
+    """
+    CREATE TABLE IF NOT EXISTS ncr_details (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        ncr_name        TEXT NOT NULL,
+        project_name    TEXT,
+        part_number     TEXT,
+        part_name       TEXT,
+        change_type     TEXT,
+        quantity        TEXT,
+        cost_change     TEXT,
+        pr_number       TEXT,
+        po_number       TEXT,
+        created_at      TEXT DEFAULT (datetime('now', 'localtime'))
+    );
+    """
+
 ]
 
 

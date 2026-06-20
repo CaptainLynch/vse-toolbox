@@ -744,6 +744,117 @@
 
 ---
 
+### K. PAA 全量抓取 Worker 组 — SOAP/AML 分页直连
+
+> **目标**: 基于 Phase 1 PAA HAR 快照，实现 `PAA_O` 表单全量抓取能力。必须直连
+> `/innovatorserver/Server/InnovatorServer.aspx` SOAP/AML，不走前端全量导出、不模拟浏览器点击。
+> **权威设计**: `docs/agents/implementation_plan.md` §2.12、§3.4.1；证据源为
+> `docs/agents/paa_har_snapshot.md`、`crawl source/ecm.sgmw.com.cn-PAA.har`、`crawl source/ecm.sgmw.com.cn-PAA1.har`。
+> **允许修改**: 优先扩展 `services/aras_crawler.py`；新增
+> `tests/fixtures/crawler/paa_*.xml`、`tests/test_aras_paa_crawler.py`，或最小扩展现有
+> `tests/test_aras_crawler.py`。
+> **禁止修改**: `main.py`、`web/*`、数据库 schema、Excel/Feishu/Office 相关代码、`docs/agents/*`。
+> **安全硬约束**: Worker 不得访问真实内网/外网；测试必须 mock HTTP；不得硬编码 Cookie、
+> Authorization、api_key、token、session、csrf 或任何真实凭据。
+
+- [x] **K1** Worker PAA 契约常量与 DTO — `services/aras_crawler.py`
+  - 目标文件: `services/aras_crawler.py`
+  - 实现:
+    - 新增 `DEFAULT_PAA_SELECT_FIELDS`，字段顺序必须按 `implementation_plan.md` §2.12 的 HAR-proven select。
+    - 新增 `PAAReportFilters`，默认全空；筛选项仅按 AML 惯例推断：`paa_no`、`ewo_no`、`state`、`area`、
+      `base`、`vehicle_keyword`、`submit_start`、`submit_end`、`mtl_rq_start`、`mtl_rq_end`。
+    - 新增 `PAAReportPage(rows, page, item_ids, raw_xml)`，形态与 `EWOReportPage` 对齐。
+  - 约束: 不引入 `rich` / `flask` / CLI/Web 依赖；不写真实 host、Cookie、Authorization、token。
+  - 验收: import smoke 可导入新 DTO/常量；静态 grep 不出现真实凭据。
+
+- [x] **K2** Worker XML builder — `Item type="PAA_O" action="get"`
+  - 目标函数: `query_paa_report()` 或私有 `_build_paa_payload()`。
+  - 实现:
+    - 路由复用 `SOAP_ROUTE`：`POST /innovatorserver/Server/InnovatorServer.aspx`。
+    - `SOAPAction` 固定为 `ApplyItem`。
+    - 构造 `Item type="PAA_O" action="get" page="<page>" pagesize="<page_size>" maxRecords="<max_records>" returnMode="itemsOnly"`。
+    - 默认 `select` 使用 `DEFAULT_PAA_SELECT_FIELDS`；调用方可覆盖 `select_fields`。
+    - 空 `PAAReportFilters` 必须生成无子节点的 `<Item ... />` 或等价空 body。
+    - 非空 filter 按 §2.12 生成 AML 子节点，`area/base/vehicle_keyword` 使用 `condition="like"`，
+      日期范围使用 `condition="ge"` / `condition="le"`。
+  - 验收: 测试断言 method、route、SOAPAction、分页属性、returnMode、select、空 filter、推断 filter 节点。
+
+- [x] **K3** Worker XML parser — PAA SOAP 响应解析
+  - 目标函数: `parse_paa_report_response(xml_text: str) -> PAAReportPage`。
+  - 实现:
+    - 必须使用 `xml.etree.ElementTree` 或等效 XML parser 解析 `Envelope/Body/Result/Item type="PAA_O"`。
+    - 输出 `rows: list[dict[str, str | None]]`；子节点 `is_null="1"` 转为 `None`。
+    - 保留 `Item@id` 到 `item_ids`；优先从 `Item@page` 得到 `page`；保留 `raw_xml`。
+    - 空 XML、非法 XML、无可用 Result 时抛 `ArasCrawlerError` 或既有领域异常。
+  - 约束: 严禁把响应按 JSON dict 解析；严禁以字符串 split/正则作为主 parser。
+  - 验收: fixture parser 测试覆盖正常页、空页、短页、非法 XML。
+
+- [x] **K4** Worker 全量分页循环 — `crawl_paa_report_all()`
+  - 目标函数: `ArasCrawlerClient.crawl_paa_report_all()`。
+  - 实现:
+    - 从 `page=1` 开始 while 循环，逐页调用 `query_paa_report()`。
+    - 每轮动态递增 `page`，不得重复请求第一页。
+    - 当前页 `rows` 为空时终止；`len(rows) < page_size` 时也安全终止。
+    - 必须提供并执行 `max_pages`、`max_records` 熔断，防止死循环；达到 `max_records` 时截断或停止。
+    - 可选按 `Item@id` / child `<id>` / `keyed_name` 去重，但去重不得替代熔断。
+  - 验收: fake session 测试覆盖多页拼接、空页终止、短页终止、`max_pages` 熔断、`max_records` 熔断。
+
+- [x] **K5** Worker PAA fixtures — 从 HAR response.content 萃取离线 XML
+  - 目标文件:
+    - `tests/fixtures/crawler/paa_query_response.xml`
+    - `tests/fixtures/crawler/paa_empty_response.xml`
+    - `tests/fixtures/crawler/paa_short_page_response.xml`
+  - 实现:
+    - 从 `ecm.sgmw.com.cn-PAA.har` 的 `response.content.text` 萃取 SOAP/Result/Item 结构与字段名。
+    - 因 HAR 长文本存在潜在未转义 XML 片段风险，fixture 必须整理成可被 XML parser 解析的最小代表性样本。
+    - 业务文本、人员、电话、真实 id 等可用 `<sample>` / `PAA000001` / `ID_PLACEHOLDER` 等假值替换。
+  - 约束: fixture 不得包含真实 Cookie、Authorization、Set-Cookie、token、session、csrf。
+  - 验收: `rg -n "Cookie|Authorization|Set-Cookie|csrf|session|token=" tests/fixtures/crawler/paa_*.xml`
+    不得命中真实敏感值。
+
+- [x] **K6** Worker PAA mock 测试 — 禁止真实 HTTP
+  - 目标文件: `tests/test_aras_paa_crawler.py`，或最小扩展 `tests/test_aras_crawler.py`。
+  - 实现:
+    - Fake `requests.Session`，记录 `post` 参数并返回 PAA fixture 文本。
+    - 覆盖 `query_paa_report()` builder + parser 端到端。
+    - 覆盖 caller-supplied `headers` / `cookies` 注入与 `SOAPAction=ApplyItem` 覆盖策略。
+    - monkeypatch 或 fake 掉真实 network path，确保测试不会落到真实 HTTP。
+  - 验收命令:
+    ```powershell
+    & "C:\Users\Lynch\AppData\Local\Python\pythoncore-3.14-64\python.exe" -m pytest tests/test_aras_paa_crawler.py -q --basetemp E:\project\vse-toolbox\.tmp_pytest -p no:cacheprovider
+    ```
+
+- [x] **K7** Worker 安全静态检查 — PAA 凭据与边界
+  - 检查范围: `services/aras_crawler.py`、`tests/test_aras_paa_crawler.py`、`tests/fixtures/crawler/paa_*.xml`。
+  - 建议命令:
+    ```powershell
+    rg -n "ecm\\.sgmw\\.com\\.cn|requests\\.(get|post|head|request)\\(|Cookie|Authorization|Set-Cookie|csrf|session|token=" services/aras_crawler.py tests/test_aras_paa_crawler.py tests/fixtures/crawler/paa_*.xml
+    rg -n "rich|flask|render_template|jsonify|document\\.|window\\." services/aras_crawler.py
+    ```
+  - 判定:
+    - 允许测试使用假 `base_url`、字段名和占位符；不得出现真实敏感值。
+    - `services/aras_crawler.py` 不得出现 CLI/Web 反向依赖。
+    - 单元测试不得发真实 HTTP。
+
+- [x] **K8** Reviewer 验收项 — PAA 契约一致性审查
+  - 审查文件: `docs/agents/implementation_plan.md` §2.12、`services/aras_crawler.py`、
+    `tests/test_aras_paa_crawler.py` 或扩展后的 `tests/test_aras_crawler.py`、`tests/fixtures/crawler/paa_*.xml`。
+  - 验收:
+    - PAA route、method、SOAPAction、`Item type="PAA_O" action="get"`、分页属性、select 字段与 HAR 摘要一致。
+    - parser 使用 XML parser，未按 JSON dict 解析 SOAP 响应。
+    - 全量方法从 page 1 开始动态递增，空页/短页终止，`max_pages`/`max_records` 熔断可测。
+    - Cookie/auth/token 全部外部注入，源码和 fixture 未硬编码真实值。
+    - 未修改 CLI/Web；离线 pytest 全绿；无真实 HTTP。
+
+- [x] **K-final** Phase 4 最终验收项 — PAA 表单全量抓取核心签批完成
+  - 最终复核日期: 2026-06-21
+  - 最终复核输出:
+    - pytest: `16 passed in 0.55s`
+    - py_compile: `services/aras_crawler.py` 通过，无输出
+  - 签批结论: PAA 表单全量抓取核心落地通过最终复审，允许进入签批状态。
+
+---
+
 ## 🗂️ 后续 Sprint / Backlog（本轮**不实现**，仅登记）
 
 > Architect 决策: 以下为非阻塞存量缺陷 / 演进项，登记待后续 Sprint 排期。

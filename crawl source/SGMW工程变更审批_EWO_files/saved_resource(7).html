@@ -1,0 +1,1862 @@
+<!DOCTYPE html>
+<!-- saved from url=(0288)http://ecm.sgmw.com.cn/innovatorserver/Client/X-salt=160_12.0.0.13341-X/scripts/virtualGetForm?formId=E49ACFBC169246F79A6E62CD5497CDE6&formLastModifiedDate=2025-01-18T12:51:58.32&languageCode=zh&itemTypeId=&itemTypeLastModifiedDate=&databasehash=02d7ca355888d5108ba3e0f48b7935cf&mode=edit -->
+<html class="html_edit"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+	<title></title>
+	
+
+	<script type="text/javascript" src="./include(12).aspx"></script>
+	<script type="text/javascript" src="./field.js.下载"></script>
+	<script>
+		var aras = TopWindowHelper.getMostTopWindowWithAras(window).aras;
+	</script>
+		<script>
+			var paramName = "_E49ACFBC169246F79A6E62CD5497CDE6_params";
+			var params = {};
+			// window.dialogArguments is not null in the iframe which is part of page opened in the dialog, in this case parameters will be retrieved from window.parent
+			// if form is opened directly in the dialog, then window.parent will be equal to window, when in case of iframe window.parent will point to window on which frame is defined
+			if(window.dialogArguments && window.parent == window) {
+				params = window.dialogArguments;
+			} else if (window.parent) {
+				params = window.parent.windowArgumentsExchange[paramName];
+			} else if (window.opener) {
+				params = window.opener.windowArgumentsExchange[paramName];
+			}
+
+			if (params) {
+				document.item = params.item;
+				document.itemNd = params.itemNd;
+				document.itemID = params.itemID;
+				document.itemTypeName = params.itemTypeName;
+				document.itemType = params.itemType;
+				document.thisItem = params.thisItem;
+				document.itemTypeNd = params.itemTypeNd;
+				document.itemTypeID = params.itemTypeID;
+				document.viewMode = params.viewMode;
+				document.isEditMode = params.isEditMode;
+				document.isTemp = params.isTemp;
+				document.formID = params.formID;
+				document.formNd = params.formNd;
+				document.userChangeHandler = params.userChangeHandler;
+			}
+		</script>
+		<script type="text/javascript" src="./include(13).aspx" data-dojo-config="isDebug: false, parseOnLoad: true, baseUrl:&#39;../javascript/dojo&#39;"></script>
+		<link rel="stylesheet" type="text/css" href="./claro.css">
+		<link rel="stylesheet" type="text/css" href="./claroGrid.css">
+		<link rel="stylesheet" type="text/css" href="./common(1).min.css">
+		<link rel="stylesheet" type="text/css" href="./innovatorForm.css">
+		<style type="text/css">@import "/InnovatorServer/Client/X-salt=160_12.0.0.13341-X/javascript/include.aspx?classes=common.css";</style> <link rel="stylesheet" type="text/css" href="./default(1).css">		
+	<!-- legacy body CSS -->
+	<style type="text/css">
+		body
+		{
+					background-color:#FFFFFF;
+
+		}
+	</style>
+<!-- fields CSS -->
+<style type="text/css">
+		.buyEnd 
+		{
+		}
+		.buyStart 
+		{
+		}
+		.changeType 
+		{
+		}
+		.eplName 
+		{
+		}
+		.ncrName 
+		{
+		}
+		.ncrNo 
+		{
+		}
+		.otherCondition 
+		{
+		}
+		.peEnd 
+		{
+		}
+		.peStart 
+		{
+		}
+		.queryDetail 
+		{
+		}
+		.queryProcess 
+		{
+		}
+		.secCode 
+		{
+		}
+
+</style>			
+			<script defer="" type="text/javascript" src="./include(14).aspx"></script>
+			<script type="text/javascript">
+				window.addEventListener('DOMContentLoaded', function() {
+					ArasModules.soap(null, {async: true, url: aras.getServerURL(), headers: aras.getHttpHeadersForSoapMessage('ApplyItem')});
+				});
+			</script>
+		<!--<base href="http://ecm.sgmw.com.cn/innovatorserver/Client/X-salt=160_12.0.0.13341-X/scripts/">--><base href=".">
+		</head>
+		<body class="claro body_edit">
+		<script type="text/javascript">
+			document.isEditMode = true;
+		</script>
+		<script type="text/javascript">
+			document.mode = true;
+			window.addEventListener("load", function () {
+				//register shortcuts
+				if(window.parent.ITEM_WINDOW && window.parent !== window) {
+					window.parent.ITEM_WINDOW.registerStandardShortcuts(window, true);
+				}
+			}, false);
+		</script>
+<script type="text/javascript">
+	window.addEventListener('load', function (event) {
+		aras.uiPopulateFormWithItemEx(document.forms.MainDataForm, document.item, document.itemTypeNd, document.mode);
+		if (window.onLoadHandler) onLoadHandler(event);		var textareas = document.querySelectorAll("textarea[rows='0']");
+		Array.prototype.forEach.call(textareas, function (textarea) {
+			var newHeight = aras.browserHelper.adjustHeightTexAreaWithNullableRows(textarea);
+			textarea.style.height = newHeight + "px";
+		});
+	});
+</script>
+
+				
+			<script type="text/javascript">
+				var inputsArray = new Array();
+				document.isFormPopulated = false;
+				function handleItemChange(propNm, propVal, dataType, datePattern)
+				{
+					var elem = observersHash.getElementById(propNm + "_system");
+					if (!elem) return false;
+					if (!document.isFormPopulated || !document.isEditMode || !document.item) return true;
+					var propVal2 = propVal;
+					if (propVal2.xml != undefined) propVal2 = propVal.getAttribute("id");
+					var notupdateMenu = (document.item.getAttribute("isDirty") == "1");
+					if (elem.value == propVal2) return true;
+					document.item.setAttribute("isDirty", "1");
+					var applyChanges2All = document.applyChanges2All;
+					var neutralValIfNeed = aras.convertToNeutral(propVal, dataType, datePattern);
+					aras.setItemProperty(document.item, propNm, neutralValIfNeed, applyChanges2All, document.itemTypeNd);
+					if (dataType == 'ml_string')
+					{
+						var langCd = aras.getSessionContextLanguageCode();
+						aras.removeItemTranslationAttribute(document.item, propNm, langCd, "is_null");
+						if (neutralValIfNeed === null || neutralValIfNeed === "")
+						{
+							neutralValIfNeed = null;
+						}
+						aras.setItemTranslation(document.item, propNm, neutralValIfNeed, langCd);
+						aras.removeItemPropertyAttribute(document.item, propNm, "is_null");
+						aras.setItemProperty(document.item, propNm, (neutralValIfNeed === null ? "" : neutralValIfNeed));
+						if (neutralValIfNeed === null)
+							aras.setItemPropertyAttribute(document.item, propNm, "is_null", "1");
+					}
+					elem.setValue(propVal2);
+					if (!document.item) return;
+					if ((document.item.getAttribute("action") != "add") && (document.item.getAttribute("action") != "create"))
+						document.item.setAttribute("action", "update");
+					var parentWin = window.parent;
+
+					if (parentWin && parentWin.frames && parentWin.frames.tearoff_menu && parentWin.frames.tearoff_menu.setControlEnabled)
+						parentWin.frames.tearoff_menu.setControlEnabled("undo", true);
+					else if (parentWin && parentWin.parent && parentWin.parent.frames && parentWin.parent.frames.menu && parentWin.parent.frames.menu.setControlEnabled)
+						parentWin.parent.frames.menu.setControlEnabled("undo", true);
+					if (document.userChangeHandler)
+						document.userChangeHandler(propNm, propVal, notupdateMenu);
+				}
+			</script>
+		<script type="text/javascript">
+			var bFromSearch = false;
+			var beforeUnloadHandler = function() {
+				if (aras.Browser.isCh()) {
+					//fix for IR-042857. In Chrome 'onchange' event is not triggered on input element if the element has focus (and its value has been changed) and a window closed right after that.
+					//trigger 'blur' event manually on the element in order to not lose input data
+					var focusedElement = document.activeElement;
+					if (focusedElement && ((focusedElement.tagName === 'INPUT' && focusedElement.type === 'text') || focusedElement.tagName === 'TEXTAREA')) {
+						focusedElement.blur();
+					}
+				}
+
+				StopHookingMouseInputInScript_E49ACFBC169246F79A6E62CD5497CDE6();
+			}
+
+			function StopHookingMouseInputInScript_E49ACFBC169246F79A6E62CD5497CDE6() {
+				if (window.inputsArray) 
+					for (var i = 0; i < inputsArray.length; i++)
+						aras.utils.stopHookingMouseInputInScript(window, inputsArray[i]);
+			}
+			window.addEventListener("unload", beforeUnloadHandler);
+			function tearOffItemChangeHandler(propNm, propVal, notupdateMenu) {
+				var topWnd = aras.getMostTopWindowWithAras(window);
+				if (topWnd.opener && !aras.isWindowClosed(topWnd.opener) && topWnd.opener.aras) {
+					var mainTopWindow = topWnd.opener.aras.getMostTopWindowWithAras(window);
+					if (mainTopWindow && mainTopWindow.main && mainTopWindow.main.work && mainTopWindow.main.work.isItemsGrid) {
+						var mainGridFrame = mainTopWindow.main.work;
+						if (document.itemTypeName === mainGridFrame.itemTypeName) {
+							mainGridFrame.updateRow(document.item, notupdateMenu);
+						}
+					}
+				}
+			}
+			if (aras.getMostTopWindowWithAras(window).isTearOff && !document.userChangeHandler)
+				document.userChangeHandler = tearOffItemChangeHandler;
+		</script>
+		<script type="text/javascript">
+			var tempHashtable = new Object();
+				tempHashtable["buyEnd"] = "281F41BCA3034A90B62FED8CFB174D83span";
+				tempHashtable["buyStart"] = "9D8EAFA43864447C9E248744242103DEspan";
+				tempHashtable["changeType"] = "3E2F7EA349F848D18164C2C7D58DB30Dspan";
+				tempHashtable["eplName"] = "9A4D6DE55ABB4654B635379F2722D036span";
+				tempHashtable["ncrName"] = "18076C17B6AB45D7A64D1A7DF70DDF6Espan";
+				tempHashtable["ncrNo"] = "F9683A76444D4EA5A4CFF8D44EED2E73span";
+				tempHashtable["otherCondition"] = "0FAD634091624298AC0FB9125AADEFCFspan";
+				tempHashtable["peEnd"] = "2FD271609DCE4A03888859C01353ADEFspan";
+				tempHashtable["peStart"] = "84E8C9C0F9A54235869A44A549525567span";
+				tempHashtable["queryDetail"] = "9E42F17B8487418485E4A834608BAACCspan";
+				tempHashtable["queryProcess"] = "AEBA755FC29E4C72A9586D8662804DBEspan";
+				tempHashtable["secCode"] = "43E4CAE19A8E499F9F8E79AE9D7A3E8Bspan";
+			document.fieldsTab = tempHashtable;
+
+			function getFieldByName(name)
+			{
+				var res = document.fieldsTab[name];
+				return res ? document.getElementById(res) : null;
+			}
+
+			function getFieldComponentByName(name) {
+				var id = document.fieldsTab && document.fieldsTab[name] && document.fieldsTab[name].slice(0, -4);
+				return getFieldComponentById(id);
+			}
+
+			function getFieldComponentById(id) {
+				return window['field' + id + 'Component'];
+			}
+
+		</script>
+		<form id="MainDataForm" novalidate="" onsubmit="return false;">
+			<script type="text/javascript">
+	function Observer(value) {
+		this.handlers = [];
+		this.value = value || "";
+	}
+
+	Observer.prototype = {
+		attachEvent: function(fake, handler) {
+			this.handlers.push(handler);
+		},
+
+		setValue: function(value) {
+			if (this.value == value) return;
+			this.value = value;
+			var event = {
+				propertyName: "value",
+				target: { value: this.value },
+				srcElement: { value: this.value },
+				type: "propertychange",
+				contentWindow: window
+			};
+			for (var i = 0; i < this.handlers.length; i++) {
+				this.handlers[i](event);
+			}
+		},
+
+		getValue: function() {
+			return this.value;
+		}
+	}
+	var observersHash = {};
+	observersHash.getElementById = function (id) { return this[id]; };
+
+
+</script> 
+<!--
+
+
+beginning of buyStart
+--><div id="9D8EAFA43864447C9E248744242103DEspan" name="buyStart" class="sys_f_container sys_session_lang_direction_ltr sys_label_lang_direction_ltr    sys_ft_date sys_fn_buyStart " style=" top: 40px; left: 170px;    ">
+	<fieldset class="sys_f_border" style="border-style: solid; border-color: #ADAA9C; border-width: 0px;">
+			<table cellspacing="0" cellpadding="0" class="sys_f_table">
+				<tbody class="sys_f_tbody">
+				   <tr class="sys_f_tr">
+						<td class="sys_f_label_container sys_f_label_top " style="">
+									<div class="sys_f_label" style="font-family:arial, helvetica, sans-serif;font-size:8pt;font-weight:bold;color:#000000;">采购处理起始日期</div>
+									</td>
+										</tr>
+										<tr class="sys_f_tr">
+									<td class="sys_f_value_container sys_f_value_bottom " style="">
+								<div class="sys_f_value">
+									<input type="text" id="9D8EAFA43864447C9E248744242103DE" name="buyStart" class="sys_special_readonly_prop sys_f_input_calendar buyStart" style="width: 115px;" onclick="
+				return user_9D8EAFA43864447C9E248744242103DE_onclick(event);" onkeydown="var userHandlerResult = user$9D8EAFA43864447C9E248744242103DE$onkeydown(event);
+							  if (!userHandlerResult) return false;
+							  if (event.keyCode == 113) {
+								if (!event.srcElement) event.srcElement = event.target;
+								event.cancelBubble = true;
+								if (event.preventDefault) event.preventDefault();
+system_9D8EAFA43864447C9E248744242103DE_showCalendar(event);
+								return false;}
+							  else if (event.keyCode == 13) {
+								return false;}" tabindex=""><input class="sys_f_input_image sys_f_input_image_ch sys_f_input_image_calendar_ch" type="image" id="9D8EAFA43864447C9E248744242103DE_img" onmouseover="hoverHandler_9D8EAFA43864447C9E248744242103DE(true)" onmouseout="hoverHandler_9D8EAFA43864447C9E248744242103DE(false)" onclick="system_9D8EAFA43864447C9E248744242103DE_showCalendar(event);" align="absmiddle" border="0" unselectable="on" src="./calendar.svg" value="">
+		<script type="text/javascript">
+			function hoverHandler_9D8EAFA43864447C9E248744242103DE(isMouseOver)
+			{
+				var imageDom = document.getElementById("9D8EAFA43864447C9E248744242103DE_img");
+				if (isMouseOver) imageDom.setAttribute("src", "../images/calendar-hover.svg");
+				else imageDom.setAttribute("src", "../images/calendar.svg");
+			}
+		</script>
+		<script type="text/javascript">
+			function system_9D8EAFA43864447C9E248744242103DE_showCalendar(event)
+			{
+					
+						var dateField = document.getElementById("9D8EAFA43864447C9E248744242103DE");
+						<!-- code marker for DateField2 -->
+						<!-- code marker start -->
+						var pattern = aras.getDotNetDatePattern("");
+						if (!pattern) {
+							pattern = "";
+						}
+
+						<!-- code marker end -->
+						var wndRect = aras.uiGetElementCoordinates(dateField);
+						var topWnd = aras.getMostTopWindowWithAras(window);
+						var param = {
+							date: dateField.value,
+							format: pattern,
+							aras: aras
+						};
+						param.type = "Date";
+						var dateDialog = (topWnd.main || topWnd).ArasModules.Dialog.show("iframe", param);
+						dateDialog.move(wndRect.left - wndRect.screenLeft, wndRect.top - wndRect.screenTop);
+
+						//Magic behaviour for IE11 caused by impossibility show modalWindow from resolved promise
+						//Issue causes when calling confirm dialog with modal realization (e.g. in Solutions)
+						//TODO: Remove when ModalDialogHelper will be removed completely from Innovator
+						if (aras.Browser && aras.Browser.isIe() && aras.Browser.getMajorVersionNumber() === 11) {
+							dateDialog.dialogNode.addEventListener('close', function(evt) {
+								var newDate = dateDialog.returnValue;
+								if (newDate !== undefined) {
+									var prevVal = dateField.value;
+									dateField.value = newDate;
+									if (prevVal !== dateField.value) {
+										if (window.handleItemChange) {
+											handleItemChange("", dateField.value, "date", pattern);
+										}
+										var e = document.createEvent('HTMLEvents');
+										e.initEvent('change', false, false);
+										dateField.dispatchEvent(e);
+									}
+								}
+							});
+							return;
+						}
+						dateDialog.promise.then(function (newDate) {
+							if (newDate != undefined) {
+								var prevVal = dateField.value;
+								dateField.value = newDate;
+								if (prevVal != dateField.value) {
+									if (window.handleItemChange) {
+										handleItemChange("", dateField.value, "date", pattern);
+									}
+									if (dateField.fireEvent) {dateField.fireEvent("onchange");}
+									else if (dateField.dispatchEvent) {var e = document.createEvent('HTMLEvents');e.initEvent('change', false, false);dateField.dispatchEvent(e);}
+								}
+							}
+						});
+					
+			}
+		</script>
+<script type="text/javascript">
+									function user_9D8EAFA43864447C9E248744242103DE_onclick(event) 
+									{ 
+												const srcElement = window.event ? window.event.srcElement : event.srcElement ? event.srcElement : event.target;
+return (function () {return true;
+ }.apply(srcElement, arguments));/*Fix for mistakes with missed closing comments brackets*/
+									}
+								</script>
+<script type="text/javascript">
+								function user$9D8EAFA43864447C9E248744242103DE$onkeydown(event) {
+								const srcElement = window.event ? window.event.srcElement : event.srcElement ? event.srcElement : event.target;
+return (function () {return true; }.apply(srcElement, arguments));	
+								}
+							  </script>
+
+	
+	<script type="text/javascript">
+		function system_9D8EAFA43864447C9E248744242103DE_value(event) 
+		{
+			if (!event) event = window.event;
+
+			if (!event.srcElement) event.srcElement = event.target;
+
+			if (event.propertyName != "value")  return true;
+
+			var ctrlElem = event.srcElement;
+			if (!ctrlElem) return true;
+
+			var input = document.getElementById("9D8EAFA43864447C9E248744242103DE");
+			if (!input) return true;
+
+			var val = ctrlElem.value;
+			if (val) {
+				<!-- code marker for DateField -->
+				<!-- code marker start -->
+				var pattern = aras.getDotNetDatePattern("");
+				if (!pattern) {
+					pattern = "";
+				}
+				var neutralDate = aras.convertToNeutral(val, "date", pattern);
+				val = aras.convertFromNeutral(neutralDate, "date", pattern);
+				<!-- code marker end -->
+			}
+
+			input.value = val;
+
+				 input.value=val; 
+
+			return true;
+		}
+
+	</script>
+<script type="text/javascript">
+	function expression_9D8EAFA43864447C9E248744242103DE_setExpression(isEditMode) 
+	{
+			
+				var field = document.getElementById('9D8EAFA43864447C9E248744242103DE');
+				var fieldImg = document.getElementById('9D8EAFA43864447C9E248744242103DE_img');
+				fieldImg.disabled = field.disabled = !isEditMode;
+				fieldImg.setAttribute("src", (isEditMode ? "../images/calendar.svg" : "../images/calendar-disabled.svg"));
+				
+		var field = document.getElementById('9D8EAFA43864447C9E248744242103DE');
+		if (!isEditMode) {field.className = field.className.replace("sys_special_readonly_prop", "sys_special_readonly_prop_disabled");} 
+		else {field.className = field.className.replace("sys_special_readonly_prop_disabled", "sys_special_readonly_prop");}
+	}
+	setTimeout('expression_9D8EAFA43864447C9E248744242103DE_setExpression(document.isEditMode)', 1);
+</script>
+
+								</div>
+								<div class="sys_f_restricted_msg" id="sys_f_restricted_msg" name="sys_f_restricted_msg" onclick="system$9D8EAFA43864447C9E248744242103DE$restrictedMsgClick(true, event);" onhelp="system$9D8EAFA43864447C9E248744242103DE$restrictedMsgClick(false, event);">Restricted</div>
+								<script type="text/javascript">
+									function system$9D8EAFA43864447C9E248744242103DE$restrictedMsgClick(doHide, event)
+									{
+										if (!document.isEditMode && doHide == true) return false;
+										var pn = "";
+										var s = event.srcElement || event.target;
+										if (!pn || !document.item.selectSingleNode(pn + "[@is_null='0']"))
+										{
+											s.style.display = "";
+											s.parentElement.getElementsByTagName("DIV")[0].style.display="";
+											return;
+										}
+										s.style.display = (doHide ? "" : "block");
+										s.parentElement.getElementsByTagName("DIV")[0].style.display = (doHide ? "" : "none");
+									}
+								</script>
+						</td>
+					</tr>
+				</tbody>
+			</table>
+</fieldset>
+</div><!-- end of buyStart -->
+<!--
+
+
+beginning of buyEnd
+--><div id="281F41BCA3034A90B62FED8CFB174D83span" name="buyEnd" class="sys_f_container sys_session_lang_direction_ltr sys_label_lang_direction_ltr    sys_ft_date sys_fn_buyEnd " style=" top: 40px; left: 330px;    ">
+	<fieldset class="sys_f_border" style="border-style: solid; border-color: #ADAA9C; border-width: 0px;">
+			<table cellspacing="0" cellpadding="0" class="sys_f_table">
+				<tbody class="sys_f_tbody">
+				   <tr class="sys_f_tr">
+						<td class="sys_f_label_container sys_f_label_top " style="">
+									<div class="sys_f_label" style="font-family:arial, helvetica, sans-serif;font-size:8pt;font-weight:bold;color:#000000;">采购处理终止日期</div>
+									</td>
+										</tr>
+										<tr class="sys_f_tr">
+									<td class="sys_f_value_container sys_f_value_bottom " style="">
+								<div class="sys_f_value">
+									<input type="text" id="281F41BCA3034A90B62FED8CFB174D83" name="buyEnd" class="sys_special_readonly_prop sys_f_input_calendar buyEnd" style="width: 115px;" onclick="
+				return user_281F41BCA3034A90B62FED8CFB174D83_onclick(event);" onkeydown="var userHandlerResult = user$281F41BCA3034A90B62FED8CFB174D83$onkeydown(event);
+							  if (!userHandlerResult) return false;
+							  if (event.keyCode == 113) {
+								if (!event.srcElement) event.srcElement = event.target;
+								event.cancelBubble = true;
+								if (event.preventDefault) event.preventDefault();
+system_281F41BCA3034A90B62FED8CFB174D83_showCalendar(event);
+								return false;}
+							  else if (event.keyCode == 13) {
+								return false;}" tabindex=""><input class="sys_f_input_image sys_f_input_image_ch sys_f_input_image_calendar_ch" type="image" id="281F41BCA3034A90B62FED8CFB174D83_img" onmouseover="hoverHandler_281F41BCA3034A90B62FED8CFB174D83(true)" onmouseout="hoverHandler_281F41BCA3034A90B62FED8CFB174D83(false)" onclick="system_281F41BCA3034A90B62FED8CFB174D83_showCalendar(event);" align="absmiddle" border="0" unselectable="on" src="./calendar.svg" value="">
+		<script type="text/javascript">
+			function hoverHandler_281F41BCA3034A90B62FED8CFB174D83(isMouseOver)
+			{
+				var imageDom = document.getElementById("281F41BCA3034A90B62FED8CFB174D83_img");
+				if (isMouseOver) imageDom.setAttribute("src", "../images/calendar-hover.svg");
+				else imageDom.setAttribute("src", "../images/calendar.svg");
+			}
+		</script>
+		<script type="text/javascript">
+			function system_281F41BCA3034A90B62FED8CFB174D83_showCalendar(event)
+			{
+					
+						var dateField = document.getElementById("281F41BCA3034A90B62FED8CFB174D83");
+						<!-- code marker for DateField2 -->
+						<!-- code marker start -->
+						var pattern = aras.getDotNetDatePattern("");
+						if (!pattern) {
+							pattern = "";
+						}
+
+						<!-- code marker end -->
+						var wndRect = aras.uiGetElementCoordinates(dateField);
+						var topWnd = aras.getMostTopWindowWithAras(window);
+						var param = {
+							date: dateField.value,
+							format: pattern,
+							aras: aras
+						};
+						param.type = "Date";
+						var dateDialog = (topWnd.main || topWnd).ArasModules.Dialog.show("iframe", param);
+						dateDialog.move(wndRect.left - wndRect.screenLeft, wndRect.top - wndRect.screenTop);
+
+						//Magic behaviour for IE11 caused by impossibility show modalWindow from resolved promise
+						//Issue causes when calling confirm dialog with modal realization (e.g. in Solutions)
+						//TODO: Remove when ModalDialogHelper will be removed completely from Innovator
+						if (aras.Browser && aras.Browser.isIe() && aras.Browser.getMajorVersionNumber() === 11) {
+							dateDialog.dialogNode.addEventListener('close', function(evt) {
+								var newDate = dateDialog.returnValue;
+								if (newDate !== undefined) {
+									var prevVal = dateField.value;
+									dateField.value = newDate;
+									if (prevVal !== dateField.value) {
+										if (window.handleItemChange) {
+											handleItemChange("", dateField.value, "date", pattern);
+										}
+										var e = document.createEvent('HTMLEvents');
+										e.initEvent('change', false, false);
+										dateField.dispatchEvent(e);
+									}
+								}
+							});
+							return;
+						}
+						dateDialog.promise.then(function (newDate) {
+							if (newDate != undefined) {
+								var prevVal = dateField.value;
+								dateField.value = newDate;
+								if (prevVal != dateField.value) {
+									if (window.handleItemChange) {
+										handleItemChange("", dateField.value, "date", pattern);
+									}
+									if (dateField.fireEvent) {dateField.fireEvent("onchange");}
+									else if (dateField.dispatchEvent) {var e = document.createEvent('HTMLEvents');e.initEvent('change', false, false);dateField.dispatchEvent(e);}
+								}
+							}
+						});
+					
+			}
+		</script>
+<script type="text/javascript">
+									function user_281F41BCA3034A90B62FED8CFB174D83_onclick(event) 
+									{ 
+												const srcElement = window.event ? window.event.srcElement : event.srcElement ? event.srcElement : event.target;
+return (function () {return true;
+ }.apply(srcElement, arguments));/*Fix for mistakes with missed closing comments brackets*/
+									}
+								</script>
+<script type="text/javascript">
+								function user$281F41BCA3034A90B62FED8CFB174D83$onkeydown(event) {
+								const srcElement = window.event ? window.event.srcElement : event.srcElement ? event.srcElement : event.target;
+return (function () {return true; }.apply(srcElement, arguments));	
+								}
+							  </script>
+
+	
+	<script type="text/javascript">
+		function system_281F41BCA3034A90B62FED8CFB174D83_value(event) 
+		{
+			if (!event) event = window.event;
+
+			if (!event.srcElement) event.srcElement = event.target;
+
+			if (event.propertyName != "value")  return true;
+
+			var ctrlElem = event.srcElement;
+			if (!ctrlElem) return true;
+
+			var input = document.getElementById("281F41BCA3034A90B62FED8CFB174D83");
+			if (!input) return true;
+
+			var val = ctrlElem.value;
+			if (val) {
+				<!-- code marker for DateField -->
+				<!-- code marker start -->
+				var pattern = aras.getDotNetDatePattern("");
+				if (!pattern) {
+					pattern = "";
+				}
+				var neutralDate = aras.convertToNeutral(val, "date", pattern);
+				val = aras.convertFromNeutral(neutralDate, "date", pattern);
+				<!-- code marker end -->
+			}
+
+			input.value = val;
+
+				 input.value=val; 
+
+			return true;
+		}
+
+	</script>
+<script type="text/javascript">
+	function expression_281F41BCA3034A90B62FED8CFB174D83_setExpression(isEditMode) 
+	{
+			
+				var field = document.getElementById('281F41BCA3034A90B62FED8CFB174D83');
+				var fieldImg = document.getElementById('281F41BCA3034A90B62FED8CFB174D83_img');
+				fieldImg.disabled = field.disabled = !isEditMode;
+				fieldImg.setAttribute("src", (isEditMode ? "../images/calendar.svg" : "../images/calendar-disabled.svg"));
+				
+		var field = document.getElementById('281F41BCA3034A90B62FED8CFB174D83');
+		if (!isEditMode) {field.className = field.className.replace("sys_special_readonly_prop", "sys_special_readonly_prop_disabled");} 
+		else {field.className = field.className.replace("sys_special_readonly_prop_disabled", "sys_special_readonly_prop");}
+	}
+	setTimeout('expression_281F41BCA3034A90B62FED8CFB174D83_setExpression(document.isEditMode)', 1);
+</script>
+
+								</div>
+								<div class="sys_f_restricted_msg" id="sys_f_restricted_msg" name="sys_f_restricted_msg" onclick="system$281F41BCA3034A90B62FED8CFB174D83$restrictedMsgClick(true, event);" onhelp="system$281F41BCA3034A90B62FED8CFB174D83$restrictedMsgClick(false, event);">Restricted</div>
+								<script type="text/javascript">
+									function system$281F41BCA3034A90B62FED8CFB174D83$restrictedMsgClick(doHide, event)
+									{
+										if (!document.isEditMode && doHide == true) return false;
+										var pn = "";
+										var s = event.srcElement || event.target;
+										if (!pn || !document.item.selectSingleNode(pn + "[@is_null='0']"))
+										{
+											s.style.display = "";
+											s.parentElement.getElementsByTagName("DIV")[0].style.display="";
+											return;
+										}
+										s.style.display = (doHide ? "" : "block");
+										s.parentElement.getElementsByTagName("DIV")[0].style.display = (doHide ? "" : "none");
+									}
+								</script>
+						</td>
+					</tr>
+				</tbody>
+			</table>
+</fieldset>
+</div><!-- end of buyEnd -->
+<!--
+
+
+beginning of peStart
+--><div id="84E8C9C0F9A54235869A44A549525567span" name="peStart" class="sys_f_container sys_session_lang_direction_ltr sys_label_lang_direction_ltr    sys_ft_date sys_fn_peStart " style=" top: 40px; left: 490px;    ">
+	<fieldset class="sys_f_border" style="border-style: solid; border-color: #ADAA9C; border-width: 0px;">
+			<table cellspacing="0" cellpadding="0" class="sys_f_table">
+				<tbody class="sys_f_tbody">
+				   <tr class="sys_f_tr">
+						<td class="sys_f_label_container sys_f_label_top " style="">
+									<div class="sys_f_label" style="font-family:arial, helvetica, sans-serif;font-size:8pt;font-weight:bold;color:#000000;">PE编制起始日期</div>
+									</td>
+										</tr>
+										<tr class="sys_f_tr">
+									<td class="sys_f_value_container sys_f_value_bottom " style="">
+								<div class="sys_f_value">
+									<input type="text" id="84E8C9C0F9A54235869A44A549525567" name="peStart" class="sys_special_readonly_prop sys_f_input_calendar peStart" style="width: 115px;" onclick="
+				return user_84E8C9C0F9A54235869A44A549525567_onclick(event);" onkeydown="var userHandlerResult = user$84E8C9C0F9A54235869A44A549525567$onkeydown(event);
+							  if (!userHandlerResult) return false;
+							  if (event.keyCode == 113) {
+								if (!event.srcElement) event.srcElement = event.target;
+								event.cancelBubble = true;
+								if (event.preventDefault) event.preventDefault();
+system_84E8C9C0F9A54235869A44A549525567_showCalendar(event);
+								return false;}
+							  else if (event.keyCode == 13) {
+								return false;}" tabindex=""><input class="sys_f_input_image sys_f_input_image_ch sys_f_input_image_calendar_ch" type="image" id="84E8C9C0F9A54235869A44A549525567_img" onmouseover="hoverHandler_84E8C9C0F9A54235869A44A549525567(true)" onmouseout="hoverHandler_84E8C9C0F9A54235869A44A549525567(false)" onclick="system_84E8C9C0F9A54235869A44A549525567_showCalendar(event);" align="absmiddle" border="0" unselectable="on" src="./calendar.svg" value="">
+		<script type="text/javascript">
+			function hoverHandler_84E8C9C0F9A54235869A44A549525567(isMouseOver)
+			{
+				var imageDom = document.getElementById("84E8C9C0F9A54235869A44A549525567_img");
+				if (isMouseOver) imageDom.setAttribute("src", "../images/calendar-hover.svg");
+				else imageDom.setAttribute("src", "../images/calendar.svg");
+			}
+		</script>
+		<script type="text/javascript">
+			function system_84E8C9C0F9A54235869A44A549525567_showCalendar(event)
+			{
+					
+						var dateField = document.getElementById("84E8C9C0F9A54235869A44A549525567");
+						<!-- code marker for DateField2 -->
+						<!-- code marker start -->
+						var pattern = aras.getDotNetDatePattern("");
+						if (!pattern) {
+							pattern = "";
+						}
+
+						<!-- code marker end -->
+						var wndRect = aras.uiGetElementCoordinates(dateField);
+						var topWnd = aras.getMostTopWindowWithAras(window);
+						var param = {
+							date: dateField.value,
+							format: pattern,
+							aras: aras
+						};
+						param.type = "Date";
+						var dateDialog = (topWnd.main || topWnd).ArasModules.Dialog.show("iframe", param);
+						dateDialog.move(wndRect.left - wndRect.screenLeft, wndRect.top - wndRect.screenTop);
+
+						//Magic behaviour for IE11 caused by impossibility show modalWindow from resolved promise
+						//Issue causes when calling confirm dialog with modal realization (e.g. in Solutions)
+						//TODO: Remove when ModalDialogHelper will be removed completely from Innovator
+						if (aras.Browser && aras.Browser.isIe() && aras.Browser.getMajorVersionNumber() === 11) {
+							dateDialog.dialogNode.addEventListener('close', function(evt) {
+								var newDate = dateDialog.returnValue;
+								if (newDate !== undefined) {
+									var prevVal = dateField.value;
+									dateField.value = newDate;
+									if (prevVal !== dateField.value) {
+										if (window.handleItemChange) {
+											handleItemChange("", dateField.value, "date", pattern);
+										}
+										var e = document.createEvent('HTMLEvents');
+										e.initEvent('change', false, false);
+										dateField.dispatchEvent(e);
+									}
+								}
+							});
+							return;
+						}
+						dateDialog.promise.then(function (newDate) {
+							if (newDate != undefined) {
+								var prevVal = dateField.value;
+								dateField.value = newDate;
+								if (prevVal != dateField.value) {
+									if (window.handleItemChange) {
+										handleItemChange("", dateField.value, "date", pattern);
+									}
+									if (dateField.fireEvent) {dateField.fireEvent("onchange");}
+									else if (dateField.dispatchEvent) {var e = document.createEvent('HTMLEvents');e.initEvent('change', false, false);dateField.dispatchEvent(e);}
+								}
+							}
+						});
+					
+			}
+		</script>
+<script type="text/javascript">
+									function user_84E8C9C0F9A54235869A44A549525567_onclick(event) 
+									{ 
+												const srcElement = window.event ? window.event.srcElement : event.srcElement ? event.srcElement : event.target;
+return (function () {return true;
+ }.apply(srcElement, arguments));/*Fix for mistakes with missed closing comments brackets*/
+									}
+								</script>
+<script type="text/javascript">
+								function user$84E8C9C0F9A54235869A44A549525567$onkeydown(event) {
+								const srcElement = window.event ? window.event.srcElement : event.srcElement ? event.srcElement : event.target;
+return (function () {return true; }.apply(srcElement, arguments));	
+								}
+							  </script>
+
+	
+	<script type="text/javascript">
+		function system_84E8C9C0F9A54235869A44A549525567_value(event) 
+		{
+			if (!event) event = window.event;
+
+			if (!event.srcElement) event.srcElement = event.target;
+
+			if (event.propertyName != "value")  return true;
+
+			var ctrlElem = event.srcElement;
+			if (!ctrlElem) return true;
+
+			var input = document.getElementById("84E8C9C0F9A54235869A44A549525567");
+			if (!input) return true;
+
+			var val = ctrlElem.value;
+			if (val) {
+				<!-- code marker for DateField -->
+				<!-- code marker start -->
+				var pattern = aras.getDotNetDatePattern("");
+				if (!pattern) {
+					pattern = "";
+				}
+				var neutralDate = aras.convertToNeutral(val, "date", pattern);
+				val = aras.convertFromNeutral(neutralDate, "date", pattern);
+				<!-- code marker end -->
+			}
+
+			input.value = val;
+
+				 input.value=val; 
+
+			return true;
+		}
+
+	</script>
+<script type="text/javascript">
+	function expression_84E8C9C0F9A54235869A44A549525567_setExpression(isEditMode) 
+	{
+			
+				var field = document.getElementById('84E8C9C0F9A54235869A44A549525567');
+				var fieldImg = document.getElementById('84E8C9C0F9A54235869A44A549525567_img');
+				fieldImg.disabled = field.disabled = !isEditMode;
+				fieldImg.setAttribute("src", (isEditMode ? "../images/calendar.svg" : "../images/calendar-disabled.svg"));
+				
+		var field = document.getElementById('84E8C9C0F9A54235869A44A549525567');
+		if (!isEditMode) {field.className = field.className.replace("sys_special_readonly_prop", "sys_special_readonly_prop_disabled");} 
+		else {field.className = field.className.replace("sys_special_readonly_prop_disabled", "sys_special_readonly_prop");}
+	}
+	setTimeout('expression_84E8C9C0F9A54235869A44A549525567_setExpression(document.isEditMode)', 1);
+</script>
+
+								</div>
+								<div class="sys_f_restricted_msg" id="sys_f_restricted_msg" name="sys_f_restricted_msg" onclick="system$84E8C9C0F9A54235869A44A549525567$restrictedMsgClick(true, event);" onhelp="system$84E8C9C0F9A54235869A44A549525567$restrictedMsgClick(false, event);">Restricted</div>
+								<script type="text/javascript">
+									function system$84E8C9C0F9A54235869A44A549525567$restrictedMsgClick(doHide, event)
+									{
+										if (!document.isEditMode && doHide == true) return false;
+										var pn = "";
+										var s = event.srcElement || event.target;
+										if (!pn || !document.item.selectSingleNode(pn + "[@is_null='0']"))
+										{
+											s.style.display = "";
+											s.parentElement.getElementsByTagName("DIV")[0].style.display="";
+											return;
+										}
+										s.style.display = (doHide ? "" : "block");
+										s.parentElement.getElementsByTagName("DIV")[0].style.display = (doHide ? "" : "none");
+									}
+								</script>
+						</td>
+					</tr>
+				</tbody>
+			</table>
+</fieldset>
+</div><!-- end of peStart -->
+<!--
+
+
+beginning of peEnd
+--><div id="2FD271609DCE4A03888859C01353ADEFspan" name="peEnd" class="sys_f_container sys_session_lang_direction_ltr sys_label_lang_direction_ltr    sys_ft_date sys_fn_peEnd " style=" top: 40px; left: 660px;    ">
+	<fieldset class="sys_f_border" style="border-style: solid; border-color: #ADAA9C; border-width: 0px;">
+			<table cellspacing="0" cellpadding="0" class="sys_f_table">
+				<tbody class="sys_f_tbody">
+				   <tr class="sys_f_tr">
+						<td class="sys_f_label_container sys_f_label_top " style="">
+									<div class="sys_f_label" style="font-family:arial, helvetica, sans-serif;font-size:8pt;font-weight:bold;color:#000000;">PE编制终止日期</div>
+									</td>
+										</tr>
+										<tr class="sys_f_tr">
+									<td class="sys_f_value_container sys_f_value_bottom " style="">
+								<div class="sys_f_value">
+									<input type="text" id="2FD271609DCE4A03888859C01353ADEF" name="peEnd" class="sys_special_readonly_prop sys_f_input_calendar peEnd" style="width: 115px;" onclick="
+				return user_2FD271609DCE4A03888859C01353ADEF_onclick(event);" onkeydown="var userHandlerResult = user$2FD271609DCE4A03888859C01353ADEF$onkeydown(event);
+							  if (!userHandlerResult) return false;
+							  if (event.keyCode == 113) {
+								if (!event.srcElement) event.srcElement = event.target;
+								event.cancelBubble = true;
+								if (event.preventDefault) event.preventDefault();
+system_2FD271609DCE4A03888859C01353ADEF_showCalendar(event);
+								return false;}
+							  else if (event.keyCode == 13) {
+								return false;}" tabindex=""><input class="sys_f_input_image sys_f_input_image_ch sys_f_input_image_calendar_ch" type="image" id="2FD271609DCE4A03888859C01353ADEF_img" onmouseover="hoverHandler_2FD271609DCE4A03888859C01353ADEF(true)" onmouseout="hoverHandler_2FD271609DCE4A03888859C01353ADEF(false)" onclick="system_2FD271609DCE4A03888859C01353ADEF_showCalendar(event);" align="absmiddle" border="0" unselectable="on" src="./calendar.svg" value="">
+		<script type="text/javascript">
+			function hoverHandler_2FD271609DCE4A03888859C01353ADEF(isMouseOver)
+			{
+				var imageDom = document.getElementById("2FD271609DCE4A03888859C01353ADEF_img");
+				if (isMouseOver) imageDom.setAttribute("src", "../images/calendar-hover.svg");
+				else imageDom.setAttribute("src", "../images/calendar.svg");
+			}
+		</script>
+		<script type="text/javascript">
+			function system_2FD271609DCE4A03888859C01353ADEF_showCalendar(event)
+			{
+					
+						var dateField = document.getElementById("2FD271609DCE4A03888859C01353ADEF");
+						<!-- code marker for DateField2 -->
+						<!-- code marker start -->
+						var pattern = aras.getDotNetDatePattern("");
+						if (!pattern) {
+							pattern = "";
+						}
+
+						<!-- code marker end -->
+						var wndRect = aras.uiGetElementCoordinates(dateField);
+						var topWnd = aras.getMostTopWindowWithAras(window);
+						var param = {
+							date: dateField.value,
+							format: pattern,
+							aras: aras
+						};
+						param.type = "Date";
+						var dateDialog = (topWnd.main || topWnd).ArasModules.Dialog.show("iframe", param);
+						dateDialog.move(wndRect.left - wndRect.screenLeft, wndRect.top - wndRect.screenTop);
+
+						//Magic behaviour for IE11 caused by impossibility show modalWindow from resolved promise
+						//Issue causes when calling confirm dialog with modal realization (e.g. in Solutions)
+						//TODO: Remove when ModalDialogHelper will be removed completely from Innovator
+						if (aras.Browser && aras.Browser.isIe() && aras.Browser.getMajorVersionNumber() === 11) {
+							dateDialog.dialogNode.addEventListener('close', function(evt) {
+								var newDate = dateDialog.returnValue;
+								if (newDate !== undefined) {
+									var prevVal = dateField.value;
+									dateField.value = newDate;
+									if (prevVal !== dateField.value) {
+										if (window.handleItemChange) {
+											handleItemChange("", dateField.value, "date", pattern);
+										}
+										var e = document.createEvent('HTMLEvents');
+										e.initEvent('change', false, false);
+										dateField.dispatchEvent(e);
+									}
+								}
+							});
+							return;
+						}
+						dateDialog.promise.then(function (newDate) {
+							if (newDate != undefined) {
+								var prevVal = dateField.value;
+								dateField.value = newDate;
+								if (prevVal != dateField.value) {
+									if (window.handleItemChange) {
+										handleItemChange("", dateField.value, "date", pattern);
+									}
+									if (dateField.fireEvent) {dateField.fireEvent("onchange");}
+									else if (dateField.dispatchEvent) {var e = document.createEvent('HTMLEvents');e.initEvent('change', false, false);dateField.dispatchEvent(e);}
+								}
+							}
+						});
+					
+			}
+		</script>
+<script type="text/javascript">
+									function user_2FD271609DCE4A03888859C01353ADEF_onclick(event) 
+									{ 
+												const srcElement = window.event ? window.event.srcElement : event.srcElement ? event.srcElement : event.target;
+return (function () {return true;
+ }.apply(srcElement, arguments));/*Fix for mistakes with missed closing comments brackets*/
+									}
+								</script>
+<script type="text/javascript">
+								function user$2FD271609DCE4A03888859C01353ADEF$onkeydown(event) {
+								const srcElement = window.event ? window.event.srcElement : event.srcElement ? event.srcElement : event.target;
+return (function () {return true; }.apply(srcElement, arguments));	
+								}
+							  </script>
+
+	
+	<script type="text/javascript">
+		function system_2FD271609DCE4A03888859C01353ADEF_value(event) 
+		{
+			if (!event) event = window.event;
+
+			if (!event.srcElement) event.srcElement = event.target;
+
+			if (event.propertyName != "value")  return true;
+
+			var ctrlElem = event.srcElement;
+			if (!ctrlElem) return true;
+
+			var input = document.getElementById("2FD271609DCE4A03888859C01353ADEF");
+			if (!input) return true;
+
+			var val = ctrlElem.value;
+			if (val) {
+				<!-- code marker for DateField -->
+				<!-- code marker start -->
+				var pattern = aras.getDotNetDatePattern("");
+				if (!pattern) {
+					pattern = "";
+				}
+				var neutralDate = aras.convertToNeutral(val, "date", pattern);
+				val = aras.convertFromNeutral(neutralDate, "date", pattern);
+				<!-- code marker end -->
+			}
+
+			input.value = val;
+
+				 input.value=val; 
+
+			return true;
+		}
+
+	</script>
+<script type="text/javascript">
+	function expression_2FD271609DCE4A03888859C01353ADEF_setExpression(isEditMode) 
+	{
+			
+				var field = document.getElementById('2FD271609DCE4A03888859C01353ADEF');
+				var fieldImg = document.getElementById('2FD271609DCE4A03888859C01353ADEF_img');
+				fieldImg.disabled = field.disabled = !isEditMode;
+				fieldImg.setAttribute("src", (isEditMode ? "../images/calendar.svg" : "../images/calendar-disabled.svg"));
+				
+		var field = document.getElementById('2FD271609DCE4A03888859C01353ADEF');
+		if (!isEditMode) {field.className = field.className.replace("sys_special_readonly_prop", "sys_special_readonly_prop_disabled");} 
+		else {field.className = field.className.replace("sys_special_readonly_prop_disabled", "sys_special_readonly_prop");}
+	}
+	setTimeout('expression_2FD271609DCE4A03888859C01353ADEF_setExpression(document.isEditMode)', 1);
+</script>
+
+								</div>
+								<div class="sys_f_restricted_msg" id="sys_f_restricted_msg" name="sys_f_restricted_msg" onclick="system$2FD271609DCE4A03888859C01353ADEF$restrictedMsgClick(true, event);" onhelp="system$2FD271609DCE4A03888859C01353ADEF$restrictedMsgClick(false, event);">Restricted</div>
+								<script type="text/javascript">
+									function system$2FD271609DCE4A03888859C01353ADEF$restrictedMsgClick(doHide, event)
+									{
+										if (!document.isEditMode && doHide == true) return false;
+										var pn = "";
+										var s = event.srcElement || event.target;
+										if (!pn || !document.item.selectSingleNode(pn + "[@is_null='0']"))
+										{
+											s.style.display = "";
+											s.parentElement.getElementsByTagName("DIV")[0].style.display="";
+											return;
+										}
+										s.style.display = (doHide ? "" : "block");
+										s.parentElement.getElementsByTagName("DIV")[0].style.display = (doHide ? "" : "none");
+									}
+								</script>
+						</td>
+					</tr>
+				</tbody>
+			</table>
+</fieldset>
+</div><!-- end of peEnd -->
+<!--
+
+
+beginning of ncrNo
+--><div id="F9683A76444D4EA5A4CFF8D44EED2E73span" name="ncrNo" class="sys_f_container sys_session_lang_direction_ltr sys_label_lang_direction_ltr    sys_ft_text sys_fn_ncrNo " style=" top: 90px; left: 660px;    ">
+	<fieldset class="sys_f_border" style="border-style: solid; border-color: #ADAA9C; border-width: 0px;">
+			<table cellspacing="0" cellpadding="0" class="sys_f_table">
+				<tbody class="sys_f_tbody">
+				   <tr class="sys_f_tr">
+						<td class="sys_f_label_container sys_f_label_top " style="">
+									<div class="sys_f_label" style="font-family:arial, helvetica, sans-serif;font-size:8pt;font-weight:bold;color:#000000;">NCR编号</div>
+									</td>
+										</tr>
+										<tr class="sys_f_tr">
+									<td class="sys_f_value_container sys_f_value_bottom " style="">
+								<div class="sys_f_value">
+									<input type="text" onkeydown="if (event.keyCode == 13) return false;" id="F9683A76444D4EA5A4CFF8D44EED2E73" name="ncrNo" class="ncrNo" style="width: 130px;">
+		
+		
+		<script type="text/javascript">
+			function system_F9683A76444D4EA5A4CFF8D44EED2E73_value(event) 
+			{
+				if (event.propertyName != "value") return true;
+				var ctrlElem = event.srcElement;
+				if (!ctrlElem) return true;
+				var input = document.getElementById("F9683A76444D4EA5A4CFF8D44EED2E73");
+				if (!input) return true;
+				var val = ctrlElem.value;
+				if (input.value == val) return true;
+					input.value = val;
+
+				return true;
+			}
+			document.getElementById("F9683A76444D4EA5A4CFF8D44EED2E73").propNm="";
+		</script>
+	<script type="text/javascript">
+		function expression_F9683A76444D4EA5A4CFF8D44EED2E73_setExpression(isEditMode)
+		{
+				var field = document.getElementById('F9683A76444D4EA5A4CFF8D44EED2E73');
+				if (!isEditMode) field.setAttribute('readonly', 'readonly');
+				else field.removeAttribute('readonly');
+		}
+		setTimeout('expression_F9683A76444D4EA5A4CFF8D44EED2E73_setExpression(document.isEditMode)', 1);	
+	</script>
+
+								</div>
+								<div class="sys_f_restricted_msg" id="sys_f_restricted_msg" name="sys_f_restricted_msg" onclick="system$F9683A76444D4EA5A4CFF8D44EED2E73$restrictedMsgClick(true, event);" onhelp="system$F9683A76444D4EA5A4CFF8D44EED2E73$restrictedMsgClick(false, event);">Restricted</div>
+								<script type="text/javascript">
+									function system$F9683A76444D4EA5A4CFF8D44EED2E73$restrictedMsgClick(doHide, event)
+									{
+										if (!document.isEditMode && doHide == true) return false;
+										var pn = "";
+										var s = event.srcElement || event.target;
+										if (!pn || !document.item.selectSingleNode(pn + "[@is_null='0']"))
+										{
+											s.style.display = "";
+											s.parentElement.getElementsByTagName("DIV")[0].style.display="";
+											return;
+										}
+										s.style.display = (doHide ? "" : "block");
+										s.parentElement.getElementsByTagName("DIV")[0].style.display = (doHide ? "" : "none");
+									}
+								</script>
+						</td>
+					</tr>
+				</tbody>
+			</table>
+</fieldset>
+</div><!-- end of ncrNo -->
+<!--
+
+
+beginning of ncrName
+--><div id="18076C17B6AB45D7A64D1A7DF70DDF6Espan" name="ncrName" class="sys_f_container sys_session_lang_direction_ltr sys_label_lang_direction_ltr    sys_ft_html sys_fn_ncrName " style=" top: 90px; left: 420px;    ">
+	<fieldset class="sys_f_border" style="border-style: solid; border-color: #ADAA9C; border-width: 0px;">
+			<table cellspacing="0" cellpadding="0" class="sys_f_table">
+				<tbody class="sys_f_tbody">
+				   <tr class="sys_f_tr">
+						<td class="sys_f_label_container sys_f_label_top " style="">
+									<div class="sys_f_label" style="font-family:arial, helvetica, sans-serif;font-size:8pt;font-weight:bold;color:#000000;">项目名称</div>
+									</td>
+										</tr>
+										<tr class="sys_f_tr">
+									<td class="sys_f_value_container sys_f_value_bottom " style="">
+								<div class="sys_f_value">
+								<script src="./jquery-1.11.3.min.js.下载"></script>
+<script src="./ySelect.js.下载"></script>
+<link rel="stylesheet" href="./ySelect.css">
+<div class="container">
+    <div class="fs-wrap multiple"><div class="fs-label-wrap"><div class="fs-label"></div><span class="fs-arrow"></span></div><div class="fs-dropdown hidden"><div class="fs-search"><input type="search" placeholder="搜索"><span class="fs-selectAll"><i class="fa fa-check-square-o"></i></span></div><div class="fs-options"></div></div><select id="ncrname" class="ncrname hidden" multiple="multiple">
+    </select></div>
+</div>
+<script>
+    $(function () {
+        $('#ncrname').ySelect({
+            placeholder: '',
+            searchText: '搜索',
+            showSearch: true,
+            numDisplayed: 2,
+            overflowText: '已选中 {n}项',
+            isCheck: false
+        });        
+    });
+</script>
+								</div>
+								<div class="sys_f_restricted_msg" id="sys_f_restricted_msg" name="sys_f_restricted_msg" onclick="system$18076C17B6AB45D7A64D1A7DF70DDF6E$restrictedMsgClick(true, event);" onhelp="system$18076C17B6AB45D7A64D1A7DF70DDF6E$restrictedMsgClick(false, event);">Restricted</div>
+								<script type="text/javascript">
+									function system$18076C17B6AB45D7A64D1A7DF70DDF6E$restrictedMsgClick(doHide, event)
+									{
+										if (!document.isEditMode && doHide == true) return false;
+										var pn = "";
+										var s = event.srcElement || event.target;
+										if (!pn || !document.item.selectSingleNode(pn + "[@is_null='0']"))
+										{
+											s.style.display = "";
+											s.parentElement.getElementsByTagName("DIV")[0].style.display="";
+											return;
+										}
+										s.style.display = (doHide ? "" : "block");
+										s.parentElement.getElementsByTagName("DIV")[0].style.display = (doHide ? "" : "none");
+									}
+								</script>
+						</td>
+					</tr>
+				</tbody>
+			</table>
+</fieldset>
+</div><!-- end of ncrName -->
+<!--
+
+
+beginning of secCode
+--><div id="43E4CAE19A8E499F9F8E79AE9D7A3E8Bspan" name="secCode" class="sys_f_container sys_session_lang_direction_ltr sys_label_lang_direction_ltr    sys_ft_html sys_fn_secCode " style=" top: 140px; left: 170px;    ">
+	<fieldset class="sys_f_border" style="border-style: solid; border-color: #ADAA9C; border-width: 0px;">
+			<table cellspacing="0" cellpadding="0" class="sys_f_table">
+				<tbody class="sys_f_tbody">
+				   <tr class="sys_f_tr">
+						<td class="sys_f_label_container sys_f_label_top " style="">
+									<div class="sys_f_label" style="font-family:arial, helvetica, sans-serif;font-size:8pt;font-weight:bold;color:#000000;">专业科室</div>
+									</td>
+										</tr>
+										<tr class="sys_f_tr">
+									<td class="sys_f_value_container sys_f_value_bottom " style="">
+								<div class="sys_f_value">
+								<div class="container">
+    <div class="fs-wrap multiple"><div class="fs-label-wrap"><div class="fs-label"></div><span class="fs-arrow"></span></div><div class="fs-dropdown hidden"><div class="fs-search"><input type="search" placeholder="搜索"><span class="fs-selectAll"><i class="fa fa-check-square-o"></i></span></div><div class="fs-options"><div class="fs-option" data-value="CAE科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">CAE科</div></div><div class="fs-option" data-value="NVH研究所"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">NVH研究所</div></div><div class="fs-option" data-value="安全集成科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">安全集成科</div></div><div class="fs-option" data-value="宝骏产品"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">宝骏产品</div></div><div class="fs-option" data-value="宝骏产品定义科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">宝骏产品定义科</div></div><div class="fs-option" data-value="变速箱与传动系统科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">变速箱与传动系统科</div></div><div class="fs-option" data-value="标定架构集成科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">标定架构集成科</div></div><div class="fs-option" data-value="材料工程科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">材料工程科</div></div><div class="fs-option" data-value="测试与体验科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">测试与体验科</div></div><div class="fs-option" data-value="产品定义集成科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">产品定义集成科</div></div><div class="fs-option" data-value="产品工艺集成科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">产品工艺集成科</div></div><div class="fs-option" data-value="产品价值工程科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">产品价值工程科</div></div><div class="fs-option" data-value="场景驾驶测试及体验科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">场景驾驶测试及体验科</div></div><div class="fs-option" data-value="场景驾驶车路云协同科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">场景驾驶车路云协同科</div></div><div class="fs-option" data-value="场景驾驶功能及算法科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">场景驾驶功能及算法科</div></div><div class="fs-option" data-value="场景驾驶生态产品科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">场景驾驶生态产品科</div></div><div class="fs-option" data-value="场景驾驶系统架构科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">场景驾驶系统架构科</div></div><div class="fs-option" data-value="场景驾驶硬件科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">场景驾驶硬件科</div></div><div class="fs-option" data-value="场景与系统集成科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">场景与系统集成科</div></div><div class="fs-option" data-value="车门及附件工程科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">车门及附件工程科</div></div><div class="fs-option" data-value="车身SE工程科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">车身SE工程科</div></div><div class="fs-option" data-value="车身工装工程科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">车身工装工程科</div></div><div class="fs-option" data-value="车身规划及工艺工程科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">车身规划及工艺工程科</div></div><div class="fs-option" data-value="车身科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">车身科</div></div><div class="fs-option" data-value="车体架构集成科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">车体架构集成科</div></div><div class="fs-option" data-value="车体科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">车体科</div></div><div class="fs-option" data-value="成型工程科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">成型工程科</div></div><div class="fs-option" data-value="乘用车产品定义科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">乘用车产品定义科</div></div><div class="fs-option" data-value="尺寸工程科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">尺寸工程科</div></div><div class="fs-option" data-value="传动科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">传动科</div></div><div class="fs-option" data-value="大数据应用科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">大数据应用科</div></div><div class="fs-option" data-value="代步车/家用车"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">代步车/家用车</div></div><div class="fs-option" data-value="底盘标定科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">底盘标定科</div></div><div class="fs-option" data-value="底盘工程科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">底盘工程科</div></div><div class="fs-option" data-value="电动高压集成科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">电动高压集成科</div></div><div class="fs-option" data-value="电动系统集成科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">电动系统集成科</div></div><div class="fs-option" data-value="电控系统科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">电控系统科</div></div><div class="fs-option" data-value="电气工程科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">电气工程科</div></div><div class="fs-option" data-value="电器测试科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">电器测试科</div></div><div class="fs-option" data-value="电驱系统科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">电驱系统科</div></div><div class="fs-option" data-value="电子标定集成科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">电子标定集成科</div></div><div class="fs-option" data-value="电子架构集成科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">电子架构集成科</div></div><div class="fs-option" data-value="电子软件实验科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">电子软件实验科</div></div><div class="fs-option" data-value="动力标定科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">动力标定科</div></div><div class="fs-option" data-value="动力底盘附件集成科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">动力底盘附件集成科</div></div><div class="fs-option" data-value="动力及排放试验室"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">动力及排放试验室</div></div><div class="fs-option" data-value="动力总成平台科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">动力总成平台科</div></div><div class="fs-option" data-value="发动机工程科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">发动机工程科</div></div><div class="fs-option" data-value="法规研究科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">法规研究科</div></div><div class="fs-option" data-value="法规与标准科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">法规与标准科</div></div><div class="fs-option" data-value="感知体验定义科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">感知体验定义科</div></div><div class="fs-option" data-value="公告认证科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">公告认证科</div></div><div class="fs-option" data-value="海外事业及工程中心产品法规及标准科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">海外事业及工程中心产品法规及标准科</div></div><div class="fs-option" data-value="海外事业及工程中心车身及内外饰工程科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">海外事业及工程中心车身及内外饰工程科</div></div><div class="fs-option" data-value="海外事业及工程中心动力总成科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">海外事业及工程中心动力总成科</div></div><div class="fs-option" data-value="海外事业及工程中心空电底盘科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">海外事业及工程中心空电底盘科</div></div><div class="fs-option" data-value="海外事业及工程中心空电及底盘工程科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">海外事业及工程中心空电及底盘工程科</div></div><div class="fs-option" data-value="海外事业及工程中心整车集成及平台管理科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">海外事业及工程中心整车集成及平台管理科</div></div><div class="fs-option" data-value="海外事业及工程中心制造工程科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">海外事业及工程中心制造工程科</div></div><div class="fs-option" data-value="海外事业及工程中心质量工程科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">海外事业及工程中心质量工程科</div></div><div class="fs-option" data-value="混动电驱科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">混动电驱科</div></div><div class="fs-option" data-value="混动架构集成科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">混动架构集成科</div></div><div class="fs-option" data-value="混动直驱科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">混动直驱科</div></div><div class="fs-option" data-value="技术工程科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">技术工程科</div></div><div class="fs-option" data-value="技术工程科（青岛）"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">技术工程科（青岛）</div></div><div class="fs-option" data-value="技术工程科（重庆）"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">技术工程科（重庆）</div></div><div class="fs-option" data-value="技术中心总监"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">技术中心总监</div></div><div class="fs-option" data-value="架构集成科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">架构集成科</div></div><div class="fs-option" data-value="架构技术科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">架构技术科</div></div><div class="fs-option" data-value="结构工程科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">结构工程科</div></div><div class="fs-option" data-value="结构工程科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">结构工程科</div></div><div class="fs-option" data-value="结构功能实验科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">结构功能实验科</div></div><div class="fs-option" data-value="竞品分析科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">竞品分析科</div></div><div class="fs-option" data-value="空电及NVH试验室"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">空电及NVH试验室</div></div><div class="fs-option" data-value="空调工程科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">空调工程科</div></div><div class="fs-option" data-value="控制软件架构集成科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">控制软件架构集成科</div></div><div class="fs-option" data-value="控制软件科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">控制软件科</div></div><div class="fs-option" data-value="零部件及碰撞试验室"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">零部件及碰撞试验室</div></div><div class="fs-option" data-value="零部件设计科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">零部件设计科</div></div><div class="fs-option" data-value="逻辑算法科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">逻辑算法科</div></div><div class="fs-option" data-value="模型设计科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">模型设计科</div></div><div class="fs-option" data-value="内饰科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">内饰科</div></div><div class="fs-option" data-value="内饰设计科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">内饰设计科</div></div><div class="fs-option" data-value="能源动力实验科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">能源动力实验科</div></div><div class="fs-option" data-value="能源科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">能源科</div></div><div class="fs-option" data-value="能源科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">能源科</div></div><div class="fs-option" data-value="能源驱动架构集成科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">能源驱动架构集成科</div></div><div class="fs-option" data-value="品质实现科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">品质实现科</div></div><div class="fs-option" data-value="前瞻技术策划科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">前瞻技术策划科</div></div><div class="fs-option" data-value="前瞻技术集成科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">前瞻技术集成科</div></div><div class="fs-option" data-value="前瞻技术科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">前瞻技术科</div></div><div class="fs-option" data-value="嵌入式软件科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">嵌入式软件科</div></div><div class="fs-option" data-value="驱动科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">驱动科</div></div><div class="fs-option" data-value="燃油驱动标定科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">燃油驱动标定科</div></div><div class="fs-option" data-value="人才飞地科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">人才飞地科</div></div><div class="fs-option" data-value="人力资源科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">人力资源科</div></div><div class="fs-option" data-value="柔性驱动标定科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">柔性驱动标定科</div></div><div class="fs-option" data-value="色彩工作室"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">色彩工作室</div></div><div class="fs-option" data-value="色彩设计科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">色彩设计科</div></div><div class="fs-option" data-value="商用车产品定义科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">商用车产品定义科</div></div><div class="fs-option" data-value="设计实现-设计集成科（上海）"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">设计实现-设计集成科（上海）</div></div><div class="fs-option" data-value="设计实现-油泥模型设计科（上海）"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">设计实现-油泥模型设计科（上海）</div></div><div class="fs-option" data-value="设计体验科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">设计体验科</div></div><div class="fs-option" data-value="设计质量科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">设计质量科</div></div><div class="fs-option" data-value="设计质量科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">设计质量科</div></div><div class="fs-option" data-value="视觉工程科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">视觉工程科</div></div><div class="fs-option" data-value="试验运行保障科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">试验运行保障科</div></div><div class="fs-option" data-value="试验运行保障科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">试验运行保障科</div></div><div class="fs-option" data-value="试制车间"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">试制车间</div></div><div class="fs-option" data-value="试制中心"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">试制中心</div></div><div class="fs-option" data-value="售后工程科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">售后工程科</div></div><div class="fs-option" data-value="数据采集科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">数据采集科</div></div><div class="fs-option" data-value="数据存储科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">数据存储科</div></div><div class="fs-option" data-value="数据管理科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">数据管理科</div></div><div class="fs-option" data-value="数据应用科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">数据应用科</div></div><div class="fs-option" data-value="数字设计科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">数字设计科</div></div><div class="fs-option" data-value="数字设计科(上海)"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">数字设计科(上海)</div></div><div class="fs-option" data-value="外饰科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">外饰科</div></div><div class="fs-option" data-value="外饰设计科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">外饰设计科</div></div><div class="fs-option" data-value="微货/微客"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">微货/微客</div></div><div class="fs-option" data-value="无人物流科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">无人物流科</div></div><div class="fs-option" data-value="物理集成科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">物理集成科</div></div><div class="fs-option" data-value="系统标定科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">系统标定科</div></div><div class="fs-option" data-value="项目管理科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">项目管理科</div></div><div class="fs-option" data-value="项目集成管理科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">项目集成管理科</div></div><div class="fs-option" data-value="项目集成科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">项目集成科</div></div><div class="fs-option" data-value="项目集成科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">项目集成科</div></div><div class="fs-option" data-value="芯片技术科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">芯片技术科</div></div><div class="fs-option" data-value="芯片与硬件科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">芯片与硬件科</div></div><div class="fs-option" data-value="新能源及智联试验室"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">新能源及智联试验室</div></div><div class="fs-option" data-value="新能源实验室运行科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">新能源实验室运行科</div></div><div class="fs-option" data-value="新四化试验室"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">新四化试验室</div></div><div class="fs-option" data-value="性能集成科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">性能集成科</div></div><div class="fs-option" data-value="虚拟现实科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">虚拟现实科</div></div><div class="fs-option" data-value="衍生及改装中心"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">衍生及改装中心</div></div><div class="fs-option" data-value="移动机器人生态科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">移动机器人生态科</div></div><div class="fs-option" data-value="用户连接科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">用户连接科</div></div><div class="fs-option" data-value="运营管理科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">运营管理科</div></div><div class="fs-option" data-value="运营管理科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">运营管理科</div></div><div class="fs-option" data-value="造型设计科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">造型设计科</div></div><div class="fs-option" data-value="整车认证科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">整车认证科</div></div><div class="fs-option" data-value="整车试验场"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">整车试验场</div></div><div class="fs-option" data-value="整车性能集成科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">整车性能集成科</div></div><div class="fs-option" data-value="知识工程科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">知识工程科</div></div><div class="fs-option" data-value="知识工程科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">知识工程科</div></div><div class="fs-option" data-value="执行单元开发科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">执行单元开发科</div></div><div class="fs-option" data-value="制造工程科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">制造工程科</div></div><div class="fs-option" data-value="智驾网联测试科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">智驾网联测试科</div></div><div class="fs-option" data-value="智驾网联架构集成科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">智驾网联架构集成科</div></div><div class="fs-option" data-value="智驾网联生态科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">智驾网联生态科</div></div><div class="fs-option" data-value="智驾网联硬件科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">智驾网联硬件科</div></div><div class="fs-option" data-value="智联测试科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">智联测试科</div></div><div class="fs-option" data-value="智联场景交互科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">智联场景交互科</div></div><div class="fs-option" data-value="智联架构科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">智联架构科</div></div><div class="fs-option" data-value="智联软件科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">智联软件科</div></div><div class="fs-option" data-value="智联通讯科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">智联通讯科</div></div><div class="fs-option" data-value="智联硬件及外设科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">智联硬件及外设科</div></div><div class="fs-option" data-value="智能体验定义科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">智能体验定义科</div></div><div class="fs-option" data-value="自动变速箱标定科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">自动变速箱标定科</div></div><div class="fs-option" data-value="综合管理科"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">综合管理科</div></div></div></div><select id="seccode" class="seccode hidden" multiple="multiple">
+    <option value="CAE科">CAE科</option><option value="NVH研究所">NVH研究所</option><option value="安全集成科">安全集成科</option><option value="宝骏产品">宝骏产品</option><option value="宝骏产品定义科">宝骏产品定义科</option><option value="变速箱与传动系统科">变速箱与传动系统科</option><option value="标定架构集成科">标定架构集成科</option><option value="材料工程科">材料工程科</option><option value="测试与体验科">测试与体验科</option><option value="产品定义集成科">产品定义集成科</option><option value="产品工艺集成科">产品工艺集成科</option><option value="产品价值工程科">产品价值工程科</option><option value="场景驾驶测试及体验科">场景驾驶测试及体验科</option><option value="场景驾驶车路云协同科">场景驾驶车路云协同科</option><option value="场景驾驶功能及算法科">场景驾驶功能及算法科</option><option value="场景驾驶生态产品科">场景驾驶生态产品科</option><option value="场景驾驶系统架构科">场景驾驶系统架构科</option><option value="场景驾驶硬件科">场景驾驶硬件科</option><option value="场景与系统集成科">场景与系统集成科</option><option value="车门及附件工程科">车门及附件工程科</option><option value="车身SE工程科">车身SE工程科</option><option value="车身工装工程科">车身工装工程科</option><option value="车身规划及工艺工程科">车身规划及工艺工程科</option><option value="车身科">车身科</option><option value="车体架构集成科">车体架构集成科</option><option value="车体科">车体科</option><option value="成型工程科">成型工程科</option><option value="乘用车产品定义科">乘用车产品定义科</option><option value="尺寸工程科">尺寸工程科</option><option value="传动科">传动科</option><option value="大数据应用科">大数据应用科</option><option value="代步车/家用车">代步车/家用车</option><option value="底盘标定科">底盘标定科</option><option value="底盘工程科">底盘工程科</option><option value="电动高压集成科">电动高压集成科</option><option value="电动系统集成科">电动系统集成科</option><option value="电控系统科">电控系统科</option><option value="电气工程科">电气工程科</option><option value="电器测试科">电器测试科</option><option value="电驱系统科">电驱系统科</option><option value="电子标定集成科">电子标定集成科</option><option value="电子架构集成科">电子架构集成科</option><option value="电子软件实验科">电子软件实验科</option><option value="动力标定科">动力标定科</option><option value="动力底盘附件集成科">动力底盘附件集成科</option><option value="动力及排放试验室">动力及排放试验室</option><option value="动力总成平台科">动力总成平台科</option><option value="发动机工程科">发动机工程科</option><option value="法规研究科">法规研究科</option><option value="法规与标准科">法规与标准科</option><option value="感知体验定义科">感知体验定义科</option><option value="公告认证科">公告认证科</option><option value="海外事业及工程中心产品法规及标准科">海外事业及工程中心产品法规及标准科</option><option value="海外事业及工程中心车身及内外饰工程科">海外事业及工程中心车身及内外饰工程科</option><option value="海外事业及工程中心动力总成科">海外事业及工程中心动力总成科</option><option value="海外事业及工程中心空电底盘科">海外事业及工程中心空电底盘科</option><option value="海外事业及工程中心空电及底盘工程科">海外事业及工程中心空电及底盘工程科</option><option value="海外事业及工程中心整车集成及平台管理科">海外事业及工程中心整车集成及平台管理科</option><option value="海外事业及工程中心制造工程科">海外事业及工程中心制造工程科</option><option value="海外事业及工程中心质量工程科">海外事业及工程中心质量工程科</option><option value="混动电驱科">混动电驱科</option><option value="混动架构集成科">混动架构集成科</option><option value="混动直驱科">混动直驱科</option><option value="技术工程科">技术工程科</option><option value="技术工程科（青岛）">技术工程科（青岛）</option><option value="技术工程科（重庆）">技术工程科（重庆）</option><option value="技术中心总监">技术中心总监</option><option value="架构集成科">架构集成科</option><option value="架构技术科">架构技术科</option><option value="结构工程科">结构工程科</option><option value="结构工程科">结构工程科</option><option value="结构功能实验科">结构功能实验科</option><option value="竞品分析科">竞品分析科</option><option value="空电及NVH试验室">空电及NVH试验室</option><option value="空调工程科">空调工程科</option><option value="控制软件架构集成科">控制软件架构集成科</option><option value="控制软件科">控制软件科</option><option value="零部件及碰撞试验室">零部件及碰撞试验室</option><option value="零部件设计科">零部件设计科</option><option value="逻辑算法科">逻辑算法科</option><option value="模型设计科">模型设计科</option><option value="内饰科">内饰科</option><option value="内饰设计科">内饰设计科</option><option value="能源动力实验科">能源动力实验科</option><option value="能源科">能源科</option><option value="能源科">能源科</option><option value="能源驱动架构集成科">能源驱动架构集成科</option><option value="品质实现科">品质实现科</option><option value="前瞻技术策划科">前瞻技术策划科</option><option value="前瞻技术集成科">前瞻技术集成科</option><option value="前瞻技术科">前瞻技术科</option><option value="嵌入式软件科">嵌入式软件科</option><option value="驱动科">驱动科</option><option value="燃油驱动标定科">燃油驱动标定科</option><option value="人才飞地科">人才飞地科</option><option value="人力资源科">人力资源科</option><option value="柔性驱动标定科">柔性驱动标定科</option><option value="色彩工作室">色彩工作室</option><option value="色彩设计科">色彩设计科</option><option value="商用车产品定义科">商用车产品定义科</option><option value="设计实现-设计集成科（上海）">设计实现-设计集成科（上海）</option><option value="设计实现-油泥模型设计科（上海）">设计实现-油泥模型设计科（上海）</option><option value="设计体验科">设计体验科</option><option value="设计质量科">设计质量科</option><option value="设计质量科">设计质量科</option><option value="视觉工程科">视觉工程科</option><option value="试验运行保障科">试验运行保障科</option><option value="试验运行保障科">试验运行保障科</option><option value="试制车间">试制车间</option><option value="试制中心">试制中心</option><option value="售后工程科">售后工程科</option><option value="数据采集科">数据采集科</option><option value="数据存储科">数据存储科</option><option value="数据管理科">数据管理科</option><option value="数据应用科">数据应用科</option><option value="数字设计科">数字设计科</option><option value="数字设计科(上海)">数字设计科(上海)</option><option value="外饰科">外饰科</option><option value="外饰设计科">外饰设计科</option><option value="微货/微客">微货/微客</option><option value="无人物流科">无人物流科</option><option value="物理集成科">物理集成科</option><option value="系统标定科">系统标定科</option><option value="项目管理科">项目管理科</option><option value="项目集成管理科">项目集成管理科</option><option value="项目集成科">项目集成科</option><option value="项目集成科">项目集成科</option><option value="芯片技术科">芯片技术科</option><option value="芯片与硬件科">芯片与硬件科</option><option value="新能源及智联试验室">新能源及智联试验室</option><option value="新能源实验室运行科">新能源实验室运行科</option><option value="新四化试验室">新四化试验室</option><option value="性能集成科">性能集成科</option><option value="虚拟现实科">虚拟现实科</option><option value="衍生及改装中心">衍生及改装中心</option><option value="移动机器人生态科">移动机器人生态科</option><option value="用户连接科">用户连接科</option><option value="运营管理科">运营管理科</option><option value="运营管理科">运营管理科</option><option value="造型设计科">造型设计科</option><option value="整车认证科">整车认证科</option><option value="整车试验场">整车试验场</option><option value="整车性能集成科">整车性能集成科</option><option value="知识工程科">知识工程科</option><option value="知识工程科">知识工程科</option><option value="执行单元开发科">执行单元开发科</option><option value="制造工程科">制造工程科</option><option value="智驾网联测试科">智驾网联测试科</option><option value="智驾网联架构集成科">智驾网联架构集成科</option><option value="智驾网联生态科">智驾网联生态科</option><option value="智驾网联硬件科">智驾网联硬件科</option><option value="智联测试科">智联测试科</option><option value="智联场景交互科">智联场景交互科</option><option value="智联架构科">智联架构科</option><option value="智联软件科">智联软件科</option><option value="智联通讯科">智联通讯科</option><option value="智联硬件及外设科">智联硬件及外设科</option><option value="智能体验定义科">智能体验定义科</option><option value="自动变速箱标定科">自动变速箱标定科</option><option value="综合管理科">综合管理科</option></select></div>
+</div>
+<script>
+    var inn = top.aras.newIOMInnovator();
+    var valueItem = inn.newItem("Sec_lkp", "get");
+    valueItem.setAttribute("orderBy","name asc");
+    var valueItems = valueItem.apply();
+
+    var listItem, listValue, listLabel, voteIndex = 0;;
+    for (var i = 0; i < valueItems.getItemCount(); i++) {
+        listItem = valueItems.getItemByIndex(i);
+        listValue = listItem.getProperty("name");
+        listLabel = listItem.getProperty("name");
+        var newOption = new Option();
+        newOption.text = listLabel;
+        newOption.value = listValue;
+        seccode.options[voteIndex++] = newOption;
+    }
+
+    $(function () {
+        $('.seccode').ySelect({
+            placeholder: '',
+            searchText: '搜索',
+            showSearch: true,
+            numDisplayed: 4,
+            overflowText: '已选中 {n}项',
+            isCheck: false
+        }
+        );
+    }
+    );
+</script>
+								</div>
+								<div class="sys_f_restricted_msg" id="sys_f_restricted_msg" name="sys_f_restricted_msg" onclick="system$43E4CAE19A8E499F9F8E79AE9D7A3E8B$restrictedMsgClick(true, event);" onhelp="system$43E4CAE19A8E499F9F8E79AE9D7A3E8B$restrictedMsgClick(false, event);">Restricted</div>
+								<script type="text/javascript">
+									function system$43E4CAE19A8E499F9F8E79AE9D7A3E8B$restrictedMsgClick(doHide, event)
+									{
+										if (!document.isEditMode && doHide == true) return false;
+										var pn = "";
+										var s = event.srcElement || event.target;
+										if (!pn || !document.item.selectSingleNode(pn + "[@is_null='0']"))
+										{
+											s.style.display = "";
+											s.parentElement.getElementsByTagName("DIV")[0].style.display="";
+											return;
+										}
+										s.style.display = (doHide ? "" : "block");
+										s.parentElement.getElementsByTagName("DIV")[0].style.display = (doHide ? "" : "none");
+									}
+								</script>
+						</td>
+					</tr>
+				</tbody>
+			</table>
+</fieldset>
+</div><!-- end of secCode -->
+<!--
+
+
+beginning of changeType
+--><div id="3E2F7EA349F848D18164C2C7D58DB30Dspan" name="changeType" class="sys_f_container sys_session_lang_direction_ltr sys_label_lang_direction_ltr    sys_ft_html sys_fn_changeType " style=" top: 140px; left: 420px;    ">
+	<fieldset class="sys_f_border" style="border-style: solid; border-color: #ADAA9C; border-width: 0px;">
+			<table cellspacing="0" cellpadding="0" class="sys_f_table">
+				<tbody class="sys_f_tbody">
+				   <tr class="sys_f_tr">
+						<td class="sys_f_label_container sys_f_label_top " style="">
+									<div class="sys_f_label" style="font-family:arial, helvetica, sans-serif;font-size:8pt;font-weight:bold;color:#000000;">更改类别</div>
+									</td>
+										</tr>
+										<tr class="sys_f_tr">
+									<td class="sys_f_value_container sys_f_value_bottom " style="">
+								<div class="sys_f_value">
+								<div class="container">
+    <div class="fs-wrap multiple"><div class="fs-label-wrap"><div class="fs-label"></div><span class="fs-arrow"></span></div><div class="fs-dropdown hidden"><div class="fs-search"><input type="search" placeholder="搜索"><span class="fs-selectAll"><i class="fa fa-check-square-o"></i></span></div><div class="fs-options"><div class="fs-option" data-value="1"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">T2与报价数据差异、结构优化</div></div><div class="fs-option" data-value="2"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">材料、工艺调整/纠错</div></div><div class="fs-option" data-value="3"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">动静态感知质量提升</div></div><div class="fs-option" data-value="4"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">配置更改</div></div><div class="fs-option" data-value="5"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">降成本</div></div><div class="fs-option" data-value="6"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">法规要求</div></div><div class="fs-option" data-value="7"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">EWO定点</div></div><div class="fs-option" data-value="8"><span class="fs-checkbox"><i></i></span><div class="fs-option-label">问题解决</div></div></div></div><select id="changetype" class="changetype hidden" multiple="multiple">
+    <option value="1">T2与报价数据差异、结构优化</option><option value="2">材料、工艺调整/纠错</option><option value="3">动静态感知质量提升</option><option value="4">配置更改</option><option value="5">降成本</option><option value="6">法规要求</option><option value="7">EWO定点</option><option value="8">问题解决</option></select></div>
+</div>
+<script>
+    var inn = top.aras.newIOMInnovator();
+    var valueItem = inn.newItem("Value", "get");
+    valueItem.setProperty("source_id", "E2F092CAB81A4B42A1BAF1DC1539F175");
+    var valueItems = valueItem.apply();
+
+    var listItem, listValue, listLabel, voteIndex = 0;;
+    for (var i = 0; i < valueItems.getItemCount(); i++) {
+        listItem = valueItems.getItemByIndex(i);
+        listValue = listItem.getProperty("value");
+        listLabel = listItem.getProperty("label");
+        var newOption = new Option();
+        newOption.text = listLabel;
+        newOption.value = listValue;
+        changetype.options[voteIndex++] = newOption;
+    }
+
+    $(function () {
+        $('.changetype').ySelect({
+            placeholder: '',
+            searchText: '搜索',
+            showSearch: true,
+            numDisplayed: 2,
+            overflowText: '已选中 {n}项',
+            isCheck: false
+        }
+        );
+    }
+    );
+</script>
+								</div>
+								<div class="sys_f_restricted_msg" id="sys_f_restricted_msg" name="sys_f_restricted_msg" onclick="system$3E2F7EA349F848D18164C2C7D58DB30D$restrictedMsgClick(true, event);" onhelp="system$3E2F7EA349F848D18164C2C7D58DB30D$restrictedMsgClick(false, event);">Restricted</div>
+								<script type="text/javascript">
+									function system$3E2F7EA349F848D18164C2C7D58DB30D$restrictedMsgClick(doHide, event)
+									{
+										if (!document.isEditMode && doHide == true) return false;
+										var pn = "";
+										var s = event.srcElement || event.target;
+										if (!pn || !document.item.selectSingleNode(pn + "[@is_null='0']"))
+										{
+											s.style.display = "";
+											s.parentElement.getElementsByTagName("DIV")[0].style.display="";
+											return;
+										}
+										s.style.display = (doHide ? "" : "block");
+										s.parentElement.getElementsByTagName("DIV")[0].style.display = (doHide ? "" : "none");
+									}
+								</script>
+						</td>
+					</tr>
+				</tbody>
+			</table>
+</fieldset>
+</div><!-- end of changeType -->
+<!--
+
+
+beginning of queryProcess
+--><div id="AEBA755FC29E4C72A9586D8662804DBEspan" name="queryProcess" class="sys_f_container sys_session_lang_direction_ltr sys_label_lang_direction_ltr    sys_ft_html sys_fn_queryProcess " style=" top: 230px; left: 315px;    ">
+	<fieldset class="sys_f_border" style="border-style: solid; border-color: #ADAA9C; border-width: 0px;">
+			<table cellspacing="0" cellpadding="0" class="sys_f_table">
+				<tbody class="sys_f_tbody">
+				   <tr class="sys_f_tr">
+						<td class="sys_f_label_container sys_f_label_top sys_f_empty_label_container" style="">
+									<div class="sys_f_label" style="font-family:arial, helvetica, sans-serif;font-size:8pt;font-weight:bold;color:#000000;"></div>
+									</td>
+										</tr>
+										<tr class="sys_f_tr">
+									<td class="sys_f_value_container sys_f_value_bottom " style="">
+								<div class="sys_f_value">
+								<input type="button" id="B00A3373470946CBB13094A3A3F3BFE5" name="btn_queryProcess" class="proXls-btn" value="查询审批进度" onclick="queryProcess()" style="cursor: pointer;width:100px;height:30px;background:#3668b1;color:white;border-style :none; margin-left:0px;margin-top:0px">
+<script type="text/javascript">
+
+    function queryProcess() {
+        var inn = aras.newIOMInnovator();
+
+        var buyStart = document.getElementById("9D8EAFA43864447C9E248744242103DE").value;  //采购起始
+        var buyEnd = document.getElementById("281F41BCA3034A90B62FED8CFB174D83").value;  //采购终止
+        var peStart = document.getElementById("84E8C9C0F9A54235869A44A549525567").value;  //PE起始
+        var peEnd = document.getElementById("2FD271609DCE4A03888859C01353ADEF").value;  //PE终止
+        var eplName = document.getElementById("epllist").value;  //EPL名称
+        var ncrName = $("#ncrname").ySelectedValues(",");  //项目名称
+        console.log(ncrName)
+        console.log($("#ncrname").ySelectedValues(","))
+        var ncrNo = document.getElementById("F9683A76444D4EA5A4CFF8D44EED2E73").value;  //NCR编号
+        var secCode = $("#seccode").ySelectedValues(",");  //专业科室
+        var changeType = $("#changetype").ySelectedValues(",");  //更改类别
+        var otherCondition = document.getElementById("D6F6A3A40A07403AA689248806B5E0B0").value;  //其他条件
+
+        if(eplName =="" || eplName == null){
+            if(otherCondition == "" || otherCondition == null || otherCondition == "0"){
+                top.aras.AlertError("请选择“EPL名称”或“其他过滤条件”。");
+                return;
+            }
+        }
+        if(eplName !="" && eplName != null){
+            if(ncrName =="" ||ncrName == null){
+                var ncrProItems = inn.newItem("NCR Project", "get");
+                ncrProItems.setProperty("_belongepl", eplName);
+                ncrProItems.setAttribute("orderBy", "name asc");
+                var ncrProItem = ncrProItems.apply();
+                if(ncrProItem.getItemCount() < 1){
+                    top.aras.AlertError("当前EPL下无对应NCR项目");
+                    return;
+                }
+                for (var i = 0; i < ncrProItem.getItemCount(); i++) {
+                    ncrPro = ncrProItem.getItemByIndex(i);
+                    ncrName = ncrName + ncrPro.getProperty("name") + ",";
+                }
+                ncrName = ncrName.substring(0,ncrName.length-1)
+            }
+        }
+        console.log("<buystart><![CDATA[" + buyStart + "]]></buystart><buyend><![CDATA[" + buyEnd + "]]></buyend><pestart><![CDATA[" + peStart + "]]></pestart><peend><![CDATA[" + peEnd + "]]></peend><ncrno><![CDATA[" + ncrNo + "]]></ncrno><ncrname><![CDATA[" + ncrName + "]]></ncrname><seccode><![CDATA[" + secCode + "]]></seccode><changetype><![CDATA[" + changeType + "]]></changetype><othercondition><![CDATA[" + otherCondition + "]]></othercondition>");
+
+        var resultItem = inn.applyMethod("sgmw_downloadFileProgressC", "<buystart><![CDATA[" + buyStart + "]]></buystart><buyend><![CDATA[" + buyEnd + "]]></buyend><pestart><![CDATA[" + peStart + "]]></pestart><peend><![CDATA[" + peEnd + "]]></peend><ncrno><![CDATA[" + ncrNo + "]]></ncrno><ncrname><![CDATA[" + ncrName + "]]></ncrname><seccode><![CDATA[" + secCode + "]]></seccode><changetype><![CDATA[" + changeType + "]]></changetype><othercondition><![CDATA[" + otherCondition + "]]></othercondition>");
+
+        if (resultItem.isError()) {
+            top.aras.AlertError("查询失败，请联系管理员。");
+            return;
+        }
+        if (resultItem.getItemCount() <= 0) {
+            top.aras.AlertError("没有查询到符合条件的NCR，下载失败。");
+            return;
+        }
+        var fileItem = inn.getItemById("File", resultItem.getProperty("_file"));
+
+        var fileURL = top.aras.getFileURLEx(fileItem.node);
+
+        var results = top.aras.vault.downloadFile(fileURL);
+        if (!results) {
+            top.aras.AlertError("无法从库中检索文件，下载失败。");
+            return;
+        }
+    }
+</script>
+
+<style>
+    .proXls-btn {
+        margin-top: 10px;
+        width: 80px;
+        height: 30px;
+        /* color: white;
+        background: #CB0165; */
+        border-radius: 5px;
+        /* text-align: left; */
+    }
+
+    .proXls-btn:active {
+        margin-top: 10px;
+        width: 80px;
+        height: 30px;
+        /* color: white;
+        background: #000000; */
+        border-radius: 5px;
+        opacity: 0.5;
+        /* text-align: left; */
+    }
+</style>
+								</div>
+								<div class="sys_f_restricted_msg" id="sys_f_restricted_msg" name="sys_f_restricted_msg" onclick="system$AEBA755FC29E4C72A9586D8662804DBE$restrictedMsgClick(true, event);" onhelp="system$AEBA755FC29E4C72A9586D8662804DBE$restrictedMsgClick(false, event);">Restricted</div>
+								<script type="text/javascript">
+									function system$AEBA755FC29E4C72A9586D8662804DBE$restrictedMsgClick(doHide, event)
+									{
+										if (!document.isEditMode && doHide == true) return false;
+										var pn = "";
+										var s = event.srcElement || event.target;
+										if (!pn || !document.item.selectSingleNode(pn + "[@is_null='0']"))
+										{
+											s.style.display = "";
+											s.parentElement.getElementsByTagName("DIV")[0].style.display="";
+											return;
+										}
+										s.style.display = (doHide ? "" : "block");
+										s.parentElement.getElementsByTagName("DIV")[0].style.display = (doHide ? "" : "none");
+									}
+								</script>
+						</td>
+					</tr>
+				</tbody>
+			</table>
+</fieldset>
+</div><!-- end of queryProcess -->
+<!--
+
+
+beginning of queryDetail
+--><div id="9E42F17B8487418485E4A834608BAACCspan" name="queryDetail" class="sys_f_container sys_session_lang_direction_ltr sys_label_lang_direction_ltr    sys_ft_html sys_fn_queryDetail " style=" top: 230px; left: 495px;    ">
+	<fieldset class="sys_f_border" style="border-style: solid; border-color: #ADAA9C; border-width: 0px;">
+			<table cellspacing="0" cellpadding="0" class="sys_f_table">
+				<tbody class="sys_f_tbody">
+				   <tr class="sys_f_tr">
+						<td class="sys_f_label_container sys_f_label_top sys_f_empty_label_container" style="">
+									<div class="sys_f_label" style="font-family:arial, helvetica, sans-serif;font-size:8pt;font-weight:bold;color:#000000;"></div>
+									</td>
+										</tr>
+										<tr class="sys_f_tr">
+									<td class="sys_f_value_container sys_f_value_bottom " style="">
+								<div class="sys_f_value">
+								<input type="button" id="8BAA335F66F242889093E02B8730CE98" name="btn_queryDetail" class="detXls-btn" value="查询审批明细" onclick="queryDetail()" style="cursor: pointer;width:100px;height:30px;background:#3668b1;color:white;border-style :none; margin-left:0px;margin-top:0px">
+<script type="text/javascript">
+
+    function queryDetail() {
+        var inn = aras.newIOMInnovator();
+
+        var buyStart = document.getElementById("9D8EAFA43864447C9E248744242103DE").value;  //采购起始
+        var buyEnd = document.getElementById("281F41BCA3034A90B62FED8CFB174D83").value;  //采购终止
+        var peStart = document.getElementById("84E8C9C0F9A54235869A44A549525567").value;  //PE起始
+        var peEnd = document.getElementById("2FD271609DCE4A03888859C01353ADEF").value;  //PE终止
+        var eplName = document.getElementById("epllist").value;  //EPL名称
+        var ncrName = $("#ncrname").ySelectedValues(",");  //项目名称
+        var ncrNo = document.getElementById("F9683A76444D4EA5A4CFF8D44EED2E73").value;  //NCR编号
+        var secCode = $("#seccode").ySelectedValues(",");  //专业科室
+        var changeType = $("#changetype").ySelectedValues(",");  //更改类别
+        var otherCondition = document.getElementById("D6F6A3A40A07403AA689248806B5E0B0").value;  //其他条件
+
+        if(eplName =="" ||eplName == null){
+            top.aras.AlertError("请选择EPL名称。");
+            return;
+        }
+        if(ncrName =="" ||ncrName == null){
+            var ncrProItems = inn.newItem("NCR Project", "get");
+            ncrProItems.setProperty("_belongepl", eplName);
+            ncrProItems.setAttribute("orderBy", "name asc");
+            var ncrProItem = ncrProItems.apply();
+            if(ncrProItem.getItemCount() < 1){
+                top.aras.AlertError("当前EPL下无对应NCR项目");
+                return;
+            }
+            for (var i = 0; i < ncrProItem.getItemCount(); i++) {
+                ncrPro = ncrProItem.getItemByIndex(i);
+                ncrName = ncrName + ncrPro.getProperty("name") + ",";
+            }
+            ncrName = ncrName.substring(0,ncrName.length-1)
+        }
+        console.log("<buystart><![CDATA[" + buyStart + "]]></buystart><buyend><![CDATA[" + buyEnd + "]]></buyend><pestart><![CDATA[" + peStart + "]]></pestart><peend><![CDATA[" + peEnd + "]]></peend><ncrno><![CDATA[" + ncrNo + "]]></ncrno><ncrname><![CDATA[" + ncrName + "]]></ncrname><seccode><![CDATA[" + secCode + "]]></seccode><changetype><![CDATA[" + changeType + "]]></changetype><othercondition><![CDATA[" + otherCondition + "]]></othercondition>");
+
+        var resultItem = inn.applyMethod("sgmw_downloadFileDetail4C", "<buystart><![CDATA[" + buyStart + "]]></buystart><buyend><![CDATA[" + buyEnd + "]]></buyend><pestart><![CDATA[" + peStart + "]]></pestart><peend><![CDATA[" + peEnd + "]]></peend><ncrno><![CDATA[" + ncrNo + "]]></ncrno><ncrname><![CDATA[" + ncrName + "]]></ncrname><seccode><![CDATA[" + secCode + "]]></seccode><changetype><![CDATA[" + changeType + "]]></changetype><othercondition><![CDATA[" + otherCondition + "]]></othercondition>");
+
+        if (resultItem.isError()) {
+            top.aras.AlertError("查询失败，请联系管理员。");
+            return;
+        }
+        console.log(resultItem.dom);
+
+        var filename = resultItem.dom.selectSingleNode('//Result').text;
+
+        if (filename != "") {
+            var rootUrl=getRootPath();
+            var fileUrl=rootUrl+"/Server/NcrReport/"+filename;
+
+            window.location.href = fileUrl;
+
+        }
+        else {
+            top.aras.AlertError("无法从库中检索文件，下载失败。");
+            return;
+        }
+    }
+
+    function getRootPath() {
+        var curWwwPath = window.document.location.href;
+        var pathName = window.document.location.pathname;
+        var pos = curWwwPath.indexOf(pathName);
+        var localhostPaht = curWwwPath.substring(0, pos);
+        var projectName = pathName.substring(0, pathName.substr(1).indexOf('/') + 1);
+        return (localhostPaht + projectName);
+    }
+
+</script>
+
+<style>
+    .detXls-btn {
+        margin-top: 10px;
+        width: 80px;
+        height: 30px;
+        /* color: white;
+        background: #CB0165; */
+        border-radius: 5px;
+        /* text-align: left; */
+    }
+
+    .detXls-btn:active {
+        margin-top: 10px;
+        width: 80px;
+        height: 30px;
+        /* color: white;
+        background: #000000; */
+        border-radius: 5px;
+        opacity: 0.5;
+        /* text-align: left; */
+    }
+</style>
+								</div>
+								<div class="sys_f_restricted_msg" id="sys_f_restricted_msg" name="sys_f_restricted_msg" onclick="system$9E42F17B8487418485E4A834608BAACC$restrictedMsgClick(true, event);" onhelp="system$9E42F17B8487418485E4A834608BAACC$restrictedMsgClick(false, event);">Restricted</div>
+								<script type="text/javascript">
+									function system$9E42F17B8487418485E4A834608BAACC$restrictedMsgClick(doHide, event)
+									{
+										if (!document.isEditMode && doHide == true) return false;
+										var pn = "";
+										var s = event.srcElement || event.target;
+										if (!pn || !document.item.selectSingleNode(pn + "[@is_null='0']"))
+										{
+											s.style.display = "";
+											s.parentElement.getElementsByTagName("DIV")[0].style.display="";
+											return;
+										}
+										s.style.display = (doHide ? "" : "block");
+										s.parentElement.getElementsByTagName("DIV")[0].style.display = (doHide ? "" : "none");
+									}
+								</script>
+						</td>
+					</tr>
+				</tbody>
+			</table>
+</fieldset>
+</div><!-- end of queryDetail -->
+<!--
+
+
+beginning of otherCondition
+--><div id="0FAD634091624298AC0FB9125AADEFCFspan" name="otherCondition" class="sys_f_container sys_session_lang_direction_ltr sys_label_lang_direction_ltr    sys_ft_html sys_fn_otherCondition " style=" top: 140px; left: 660px;    ">
+	<fieldset class="sys_f_border" style="border-style: solid; border-color: #ADAA9C; border-width: 0px;">
+			<table cellspacing="0" cellpadding="0" class="sys_f_table">
+				<tbody class="sys_f_tbody">
+				   <tr class="sys_f_tr">
+						<td class="sys_f_label_container sys_f_label_top sys_f_empty_label_container" style="">
+									<div class="sys_f_label" style="font-family:arial, helvetica, sans-serif;font-size:8pt;font-weight:bold;color:#000000;"></div>
+									</td>
+										</tr>
+										<tr class="sys_f_tr">
+									<td class="sys_f_value_container sys_f_value_bottom " style="">
+								<div class="sys_f_value">
+								<style>
+	.customize_aras_list {
+		appearance: none;
+		-moz-appearance: none;
+		-webkit-appearance: none;
+		background: url('../images/dropdown-arrow.svg') no-repeat scroll right top / 17px 17px #fff;
+		border: 1px solid #505050;
+		position: relative;
+		top: 0;
+		display: inline-block;
+		text-align: left;
+		height: 1.584rem;
+		width: 133px;
+	}
+
+	select::-ms-expand {
+		display: none;
+	}
+</style>
+<div style="font-family:tahoma, arial, helvetica,sans-serif;font-size:8pt;font-weight:bold;color:#000000;" class="aras-field__label">其他过滤条件</div>
+<div><select id="D6F6A3A40A07403AA689248806B5E0B0" class="customize_aras_list">
+		<option value="0" selected="selected"></option>
+		<option value="1">未完成审批</option>
+		<option value="2">完成审批</option>
+		<option value="3">--完成审批未到采购</option>
+		<option value="4">--完成审批已到采购</option>
+		<option value="5">----已到采购未定价</option>
+		<option value="6">----已到采购已定价</option>
+		<option value="7">需申请PR</option>
+		<option value="8">--需申请PR无PR号</option>
+		<option value="9">--需申请PR有PR号</option>
+	</select>
+</div>
+								</div>
+								<div class="sys_f_restricted_msg" id="sys_f_restricted_msg" name="sys_f_restricted_msg" onclick="system$0FAD634091624298AC0FB9125AADEFCF$restrictedMsgClick(true, event);" onhelp="system$0FAD634091624298AC0FB9125AADEFCF$restrictedMsgClick(false, event);">Restricted</div>
+								<script type="text/javascript">
+									function system$0FAD634091624298AC0FB9125AADEFCF$restrictedMsgClick(doHide, event)
+									{
+										if (!document.isEditMode && doHide == true) return false;
+										var pn = "";
+										var s = event.srcElement || event.target;
+										if (!pn || !document.item.selectSingleNode(pn + "[@is_null='0']"))
+										{
+											s.style.display = "";
+											s.parentElement.getElementsByTagName("DIV")[0].style.display="";
+											return;
+										}
+										s.style.display = (doHide ? "" : "block");
+										s.parentElement.getElementsByTagName("DIV")[0].style.display = (doHide ? "" : "none");
+									}
+								</script>
+						</td>
+					</tr>
+				</tbody>
+			</table>
+</fieldset>
+</div><!-- end of otherCondition -->
+<!--
+
+
+beginning of eplName
+--><div id="9A4D6DE55ABB4654B635379F2722D036span" name="eplName" class="sys_f_container sys_session_lang_direction_ltr sys_label_lang_direction_ltr    sys_ft_html sys_fn_eplName " style=" top: 55px; left: 170px;    ">
+	<fieldset class="sys_f_border" style="border-style: solid; border-color: #ADAA9C; border-width: 0px;">
+			<table cellspacing="0" cellpadding="0" class="sys_f_table">
+				<tbody class="sys_f_tbody">
+				   <tr class="sys_f_tr">
+						<td class="sys_f_label_container sys_f_label_top sys_f_empty_label_container" style="">
+									<div class="sys_f_label" style="font-family:arial, helvetica, sans-serif;font-size:8pt;font-weight:bold;color:#000000;"></div>
+									</td>
+										</tr>
+										<tr class="sys_f_tr">
+									<td class="sys_f_value_container sys_f_value_bottom " style="">
+								<div class="sys_f_value">
+								<div id="epllistspan" name="field_type" class="sys_f_container sys_session_lang_direction_ltr sys_label_lang_direction_ltr sys_dt_list   sys_ft_dropdown sys_fn_field_type sys_pn_field_type" style="top: 34px; left: 0px; visibility: visible;">
+    <fieldset style="border-style: solid; border-color: #ADAA9C; border-width: 0px;">
+
+        <div class="aras-field aras-field_label-top">
+            <span style="font-family:arial, helvetica, sans-serif;font-size:8pt;font-weight:bold;color:#000000;cursor: pointer;" class="aras-field__label">EPL名称</span>
+            <div class="aras-field__value" style="cursor: pointer;">
+
+                <div id="div_select_epllist">
+                <aras-filter-list><div class="aras-filter-list aras-dropdown-container" style="width: 206px;"><input class="aras-filter-list__input aras-form-input" autocomplete="off" id="epllist" tabindex="2" name="field_type"><div class="aras-filter-list__icon-container"><span class="aras-filter-list-icon aras-icon-error" style="display: none;"></span></div><button class="aras-filter-list__button aras-btn aras-icon-arrow aras-icon-arrow_down" tabindex="-1"></button><div class="aras-filter-list__dropdown aras-dropdown" tabindex="1" style="display: none; top: 0px;"><ul class="aras-list"><li class="aras-list-item aras-list-item_shown" data-value=""><mark></mark></li><li class="aras-list-item aras-list-item_shown" data-value="310C 埃及CKD"><mark></mark>310C 埃及CKD</li><li class="aras-list-item aras-list-item_shown" data-value="310C两厢"><mark></mark>310C两厢</li><li class="aras-list-item aras-list-item_shown" data-value="310C三厢"><mark></mark>310C三厢</li><li class="aras-list-item aras-list-item_shown" data-value="310S"><mark></mark>310S</li><li class="aras-list-item aras-list-item_shown" data-value="310S EV"><mark></mark>310S EV</li><li class="aras-list-item aras-list-item_shown" data-value="310S PU-B"><mark></mark>310S PU-B</li><li class="aras-list-item aras-list-item_shown" data-value="310SR"><mark></mark>310SR</li><li class="aras-list-item aras-list-item_shown" data-value="730M"><mark></mark>730M</li><li class="aras-list-item aras-list-item_shown" data-value="730S"><mark></mark>730S</li><li class="aras-list-item aras-list-item_shown" data-value="730S HEV（扩展车型）-CN202SR-ID"><mark></mark>730S HEV（扩展车型）-CN202SR-ID</li><li class="aras-list-item aras-list-item_shown" data-value="B Series Engine"><mark></mark>B Series Engine</li><li class="aras-list-item aras-list-item_shown" data-value="B-DOHC Turbo engine"><mark></mark>B-DOHC Turbo engine</li><li class="aras-list-item aras-list-item_shown" data-value="C14D&amp;B15D"><mark></mark>C14D&amp;B15D</li><li class="aras-list-item aras-list-item_shown" data-value="C310P"><mark></mark>C310P</li><li class="aras-list-item aras-list-item_shown" data-value="C510P"><mark></mark>C510P</li><li class="aras-list-item aras-list-item_shown" data-value="C710P"><mark></mark>C710P</li><li class="aras-list-item aras-list-item_shown" data-value="CE110M"><mark></mark>CE110M</li><li class="aras-list-item aras-list-item_shown" data-value="CE110MR"><mark></mark>CE110MR</li><li class="aras-list-item aras-list-item_shown" data-value="CE510P"><mark></mark>CE510P</li><li class="aras-list-item aras-list-item_shown" data-value="CF510P"><mark></mark>CF510P</li><li class="aras-list-item aras-list-item_shown" data-value="CF510V"><mark></mark>CF510V</li><li class="aras-list-item aras-list-item_shown" data-value="CF710P"><mark></mark>CF710P</li><li class="aras-list-item aras-list-item_shown" data-value="CF710V"><mark></mark>CF710V</li><li class="aras-list-item aras-list-item_shown" data-value="CN050V"><mark></mark>CN050V</li><li class="aras-list-item aras-list-item_shown" data-value="CN100V"><mark></mark>CN100V</li><li class="aras-list-item aras-list-item_shown" data-value="CN110P&amp;PS"><mark></mark>CN110P&amp;PS</li><li class="aras-list-item aras-list-item_shown" data-value="CN110V"><mark></mark>CN110V</li><li class="aras-list-item aras-list-item_shown" data-value="CN112"><mark></mark>CN112</li><li class="aras-list-item aras-list-item_shown" data-value="CN113"><mark></mark>CN113</li><li class="aras-list-item aras-list-item_shown" data-value="CN113PR"><mark></mark>CN113PR</li><li class="aras-list-item aras-list-item_shown" data-value="CN113R"><mark></mark>CN113R</li><li class="aras-list-item aras-list-item_shown" data-value="CN115"><mark></mark>CN115</li><li class="aras-list-item aras-list-item_shown" data-value="CN120S"><mark></mark>CN120S</li><li class="aras-list-item aras-list-item_shown" data-value="CN150M"><mark></mark>CN150M</li><li class="aras-list-item aras-list-item_shown" data-value="CN150S"><mark></mark>CN150S</li><li class="aras-list-item aras-list-item_shown" data-value="CN150V"><mark></mark>CN150V</li><li class="aras-list-item aras-list-item_shown" data-value="CN180C"><mark></mark>CN180C</li><li class="aras-list-item aras-list-item_shown" data-value="CN180M"><mark></mark>CN180M</li><li class="aras-list-item aras-list-item_shown" data-value="CN180S"><mark></mark>CN180S</li><li class="aras-list-item aras-list-item_shown" data-value="CN180S_MCE"><mark></mark>CN180S_MCE</li><li class="aras-list-item aras-list-item_shown" data-value="CN180S整车出口"><mark></mark>CN180S整车出口</li><li class="aras-list-item aras-list-item_shown" data-value="CN180W"><mark></mark>CN180W</li><li class="aras-list-item aras-list-item_shown" data-value="CN185M"><mark></mark>CN185M</li><li class="aras-list-item aras-list-item_shown" data-value="CN200M"><mark></mark>CN200M</li><li class="aras-list-item aras-list-item_shown" data-value="CN200S"><mark></mark>CN200S</li><li class="aras-list-item aras-list-item_shown" data-value="CN201M"><mark></mark>CN201M</li><li class="aras-list-item aras-list-item_shown" data-value="CN201S"><mark></mark>CN201S</li><li class="aras-list-item aras-list-item_shown" data-value="CN202C"><mark></mark>CN202C</li><li class="aras-list-item aras-list-item_shown" data-value="CN202K"><mark></mark>CN202K</li><li class="aras-list-item aras-list-item_shown" data-value="CN202M"><mark></mark>CN202M</li><li class="aras-list-item aras-list-item_shown" data-value="CN202S"><mark></mark>CN202S</li><li class="aras-list-item aras-list-item_shown" data-value="CN202S MCE整车出口"><mark></mark>CN202S MCE整车出口</li><li class="aras-list-item aras-list-item_shown" data-value="CN202S_出口南美"><mark></mark>CN202S_出口南美</li><li class="aras-list-item aras-list-item_shown" data-value="CN202SMY整车出口"><mark></mark>CN202SMY整车出口</li><li class="aras-list-item aras-list-item_shown" data-value="CN202SR"><mark></mark>CN202SR</li><li class="aras-list-item aras-list-item_shown" data-value="CN202SR MCE"><mark></mark>CN202SR MCE</li><li class="aras-list-item aras-list-item_shown" data-value="CN202SR MCE印度"><mark></mark>CN202SR MCE印度</li><li class="aras-list-item aras-list-item_shown" data-value="CN202SR-ID"><mark></mark>CN202SR-ID</li><li class="aras-list-item aras-list-item_shown" data-value="CN202SR印度"><mark></mark>CN202SR印度</li><li class="aras-list-item aras-list-item_shown" data-value="CN202S整车出口"><mark></mark>CN202S整车出口</li><li class="aras-list-item aras-list-item_shown" data-value="CN202W"><mark></mark>CN202W</li><li class="aras-list-item aras-list-item_shown" data-value="CN210M"><mark></mark>CN210M</li><li class="aras-list-item aras-list-item_shown" data-value="CN210MR"><mark></mark>CN210MR</li><li class="aras-list-item aras-list-item_shown" data-value="CN210S"><mark></mark>CN210S</li><li class="aras-list-item aras-list-item_shown" data-value="CN220C"><mark></mark>CN220C</li><li class="aras-list-item aras-list-item_shown" data-value="CN220M"><mark></mark>CN220M</li><li class="aras-list-item aras-list-item_shown" data-value="CN300M"><mark></mark>CN300M</li><li class="aras-list-item aras-list-item_shown" data-value="CN300S"><mark></mark>CN300S</li><li class="aras-list-item aras-list-item_shown" data-value="DHT"><mark></mark>DHT</li><li class="aras-list-item aras-list-item_shown" data-value="E10"><mark></mark>E10</li><li class="aras-list-item aras-list-item_shown" data-value="E100"><mark></mark>E100</li><li class="aras-list-item aras-list-item_shown" data-value="E10扩展车型"><mark></mark>E10扩展车型</li><li class="aras-list-item aras-list-item_shown" data-value="E110C"><mark></mark>E110C</li><li class="aras-list-item aras-list-item_shown" data-value="E110C CKD越南"><mark></mark>E110C CKD越南</li><li class="aras-list-item aras-list-item_shown" data-value="E110M"><mark></mark>E110M</li><li class="aras-list-item aras-list-item_shown" data-value="E112C"><mark></mark>E112C</li><li class="aras-list-item aras-list-item_shown" data-value="E112CR整车出口泰国"><mark></mark>E112CR整车出口泰国</li><li class="aras-list-item aras-list-item_shown" data-value="E200"><mark></mark>E200</li><li class="aras-list-item aras-list-item_shown" data-value="E210S"><mark></mark>E210S</li><li class="aras-list-item aras-list-item_shown" data-value="E230"><mark></mark>E230</li><li class="aras-list-item aras-list-item_shown" data-value="E230R"><mark></mark>E230R</li><li class="aras-list-item aras-list-item_shown" data-value="E230R-ID-IKD"><mark></mark>E230R-ID-IKD</li><li class="aras-list-item aras-list-item_shown" data-value="E230R-IKD-BK"><mark></mark>E230R-IKD-BK</li><li class="aras-list-item aras-list-item_shown" data-value="E260"><mark></mark>E260</li><li class="aras-list-item aras-list-item_shown" data-value="E260 MCE"><mark></mark>E260 MCE</li><li class="aras-list-item aras-list-item_shown" data-value="E260 SKD 台湾"><mark></mark>E260 SKD 台湾</li><li class="aras-list-item aras-list-item_shown" data-value="E260 SKD 越南TMT"><mark></mark>E260 SKD 越南TMT</li><li class="aras-list-item aras-list-item_shown" data-value="E260 SKD越南"><mark></mark>E260 SKD越南</li><li class="aras-list-item aras-list-item_shown" data-value="E260R"><mark></mark>E260R</li><li class="aras-list-item aras-list-item_shown" data-value="E260R CKD巴基斯坦"><mark></mark>E260R CKD巴基斯坦</li><li class="aras-list-item aras-list-item_shown" data-value="E260R SKD马来西亚"><mark></mark>E260R SKD马来西亚</li><li class="aras-list-item aras-list-item_shown" data-value="E260R-CKD"><mark></mark>E260R-CKD</li><li class="aras-list-item aras-list-item_shown" data-value="E260R-IKD"><mark></mark>E260R-IKD</li><li class="aras-list-item aras-list-item_shown" data-value="E260S"><mark></mark>E260S</li><li class="aras-list-item aras-list-item_shown" data-value="E260S LITE"><mark></mark>E260S LITE</li><li class="aras-list-item aras-list-item_shown" data-value="E260S PLUS"><mark></mark>E260S PLUS</li><li class="aras-list-item aras-list-item_shown" data-value="E261 CKD越南"><mark></mark>E261 CKD越南</li><li class="aras-list-item aras-list-item_shown" data-value="E261 SKD台湾"><mark></mark>E261 SKD台湾</li><li class="aras-list-item aras-list-item_shown" data-value="E262C"><mark></mark>E262C</li><li class="aras-list-item aras-list-item_shown" data-value="E262S"><mark></mark>E262S</li><li class="aras-list-item aras-list-item_shown" data-value="E300"><mark></mark>E300</li><li class="aras-list-item aras-list-item_shown" data-value="E300 PLUS"><mark></mark>E300 PLUS</li><li class="aras-list-item aras-list-item_shown" data-value="E310S"><mark></mark>E310S</li><li class="aras-list-item aras-list-item_shown" data-value="E410S"><mark></mark>E410S</li><li class="aras-list-item aras-list-item_shown" data-value="E50"><mark></mark>E50</li><li class="aras-list-item aras-list-item_shown" data-value="E50 CKD出口越南"><mark></mark>E50 CKD出口越南</li><li class="aras-list-item aras-list-item_shown" data-value="E50 MCE"><mark></mark>E50 MCE</li><li class="aras-list-item aras-list-item_shown" data-value="E50 SKD出口越南"><mark></mark>E50 SKD出口越南</li><li class="aras-list-item aras-list-item_shown" data-value="E50MCE 敞篷车"><mark></mark>E50MCE 敞篷车</li><li class="aras-list-item aras-list-item_shown" data-value="EQ100"><mark></mark>EQ100</li><li class="aras-list-item aras-list-item_shown" data-value="EQ100R"><mark></mark>EQ100R</li><li class="aras-list-item aras-list-item_shown" data-value="EQ100R印尼"><mark></mark>EQ100R印尼</li><li class="aras-list-item aras-list-item_shown" data-value="EQ200"><mark></mark>EQ200</li><li class="aras-list-item aras-list-item_shown" data-value="F310C"><mark></mark>F310C</li><li class="aras-list-item aras-list-item_shown" data-value="F310S"><mark></mark>F310S</li><li class="aras-list-item aras-list-item_shown" data-value="F410C"><mark></mark>F410C</li><li class="aras-list-item aras-list-item_shown" data-value="F410S"><mark></mark>F410S</li><li class="aras-list-item aras-list-item_shown" data-value="F510C"><mark></mark>F510C</li><li class="aras-list-item aras-list-item_shown" data-value="F510S"><mark></mark>F510S</li><li class="aras-list-item aras-list-item_shown" data-value="F512C"><mark></mark>F512C</li><li class="aras-list-item aras-list-item_shown" data-value="F512S"><mark></mark>F512S</li><li class="aras-list-item aras-list-item_shown" data-value="F520M"><mark></mark>F520M</li><li class="aras-list-item aras-list-item_shown" data-value="F520M CKD越南"><mark></mark>F520M CKD越南</li><li class="aras-list-item aras-list-item_shown" data-value="F520MR SKD马来西亚"><mark></mark>F520MR SKD马来西亚</li><li class="aras-list-item aras-list-item_shown" data-value="F520MR整车出口"><mark></mark>F520MR整车出口</li><li class="aras-list-item aras-list-item_shown" data-value="F520S"><mark></mark>F520S</li><li class="aras-list-item aras-list-item_shown" data-value="F520SR SKD马来西亚"><mark></mark>F520SR SKD马来西亚</li><li class="aras-list-item aras-list-item_shown" data-value="F610M"><mark></mark>F610M</li><li class="aras-list-item aras-list-item_shown" data-value="F610S"><mark></mark>F610S</li><li class="aras-list-item aras-list-item_shown" data-value="F620S"><mark></mark>F620S</li><li class="aras-list-item aras-list-item_shown" data-value="F710C"><mark></mark>F710C</li><li class="aras-list-item aras-list-item_shown" data-value="F710S"><mark></mark>F710S</li><li class="aras-list-item aras-list-item_shown" data-value="GP30"><mark></mark>GP30</li><li class="aras-list-item aras-list-item_shown" data-value="GP30 N12A"><mark></mark>GP30 N12A</li><li class="aras-list-item aras-list-item_shown" data-value="GP30 NSE"><mark></mark>GP30 NSE</li><li class="aras-list-item aras-list-item_shown" data-value="GP52 CKD"><mark></mark>GP52 CKD</li><li class="aras-list-item aras-list-item_shown" data-value="GP53 NB"><mark></mark>GP53 NB</li><li class="aras-list-item aras-list-item_shown" data-value="ILMR-01"><mark></mark>ILMR-01</li><li class="aras-list-item aras-list-item_shown" data-value="ISMR01"><mark></mark>ISMR01</li><li class="aras-list-item aras-list-item_shown" data-value="M150"><mark></mark>M150</li><li class="aras-list-item aras-list-item_shown" data-value="N001"><mark></mark>N001</li><li class="aras-list-item aras-list-item_shown" data-value="N001依维柯"><mark></mark>N001依维柯</li><li class="aras-list-item aras-list-item_shown" data-value="N111 CQ"><mark></mark>N111 CQ</li><li class="aras-list-item aras-list-item_shown" data-value="N111 SKD"><mark></mark>N111 SKD</li><li class="aras-list-item aras-list-item_shown" data-value="N111P&amp;PS"><mark></mark>N111P&amp;PS</li><li class="aras-list-item aras-list-item_shown" data-value="N120"><mark></mark>N120</li><li class="aras-list-item aras-list-item_shown" data-value="N300"><mark></mark>N300</li><li class="aras-list-item aras-list-item_shown" data-value="N300CKD"><mark></mark>N300CKD</li><li class="aras-list-item aras-list-item_shown" data-value="N300L"><mark></mark>N300L</li><li class="aras-list-item aras-list-item_shown" data-value="N300P"><mark></mark>N300P</li><li class="aras-list-item aras-list-item_shown" data-value="N300P&amp;PS迭代"><mark></mark>N300P&amp;PS迭代</li><li class="aras-list-item aras-list-item_shown" data-value="N300P货车"><mark></mark>N300P货车</li><li class="aras-list-item aras-list-item_shown" data-value="N300货车KD"><mark></mark>N300货车KD</li><li class="aras-list-item aras-list-item_shown" data-value="N300货车出口"><mark></mark>N300货车出口</li><li class="aras-list-item aras-list-item_shown" data-value="N310"><mark></mark>N310</li><li class="aras-list-item aras-list-item_shown" data-value="N350P&amp;PS"><mark></mark>N350P&amp;PS</li><li class="aras-list-item aras-list-item_shown" data-value="N350PPS EV"><mark></mark>N350PPS EV</li><li class="aras-list-item aras-list-item_shown" data-value="N350V"><mark></mark>N350V</li><li class="aras-list-item aras-list-item_shown" data-value="N350V L"><mark></mark>N350V L</li><li class="aras-list-item aras-list-item_shown" data-value="N350V_EV"><mark></mark>N350V_EV</li><li class="aras-list-item aras-list-item_shown" data-value="N350V-EV-P"><mark></mark>N350V-EV-P</li><li class="aras-list-item aras-list-item_shown" data-value="N350VR SKD马来西亚"><mark></mark>N350VR SKD马来西亚</li><li class="aras-list-item aras-list-item_shown" data-value="N360P"><mark></mark>N360P</li><li class="aras-list-item aras-list-item_shown" data-value="N360P EV"><mark></mark>N360P EV</li><li class="aras-list-item aras-list-item_shown" data-value="N360PL"><mark></mark>N360PL</li><li class="aras-list-item aras-list-item_shown" data-value="N400"><mark></mark>N400</li><li class="aras-list-item aras-list-item_shown" data-value="N510M"><mark></mark>N510M</li><li class="aras-list-item aras-list-item_shown" data-value="N510M CKD越南"><mark></mark>N510M CKD越南</li><li class="aras-list-item aras-list-item_shown" data-value="N510M SKD越南"><mark></mark>N510M SKD越南</li><li class="aras-list-item aras-list-item_shown" data-value="NC-115"><mark></mark>NC-115</li><li class="aras-list-item aras-list-item_shown" data-value="S DHE Engine"><mark></mark>S DHE Engine</li><li class="aras-list-item aras-list-item_shown" data-value="S15 DHE"><mark></mark>S15 DHE</li><li class="aras-list-item aras-list-item_shown" data-value="TRA"><mark></mark>TRA</li><li class="aras-list-item aras-list-item_shown" data-value="埃及310S CKD"><mark></mark>埃及310S CKD</li><li class="aras-list-item aras-list-item_shown" data-value="变速箱_GF6"><mark></mark>变速箱_GF6</li><li class="aras-list-item aras-list-item_shown" data-value="肯尼亚E230R"><mark></mark>肯尼亚E230R</li><li class="aras-list-item aras-list-item_shown" data-value="名爵印度E230R CKD Ⅱ"><mark></mark>名爵印度E230R CKD Ⅱ</li><li class="aras-list-item aras-list-item_shown" data-value="名爵印度EQ100R"><mark></mark>名爵印度EQ100R</li><li class="aras-list-item aras-list-item_shown" data-value="驱动系统（SGMW造）"><mark></mark>驱动系统（SGMW造）</li><li class="aras-list-item aras-list-item_shown" data-value="泰国E260R-SKD"><mark></mark>泰国E260R-SKD</li><li class="aras-list-item aras-list-item_shown" data-value="印度CN202SR MY25"><mark></mark>印度CN202SR MY25</li><li class="aras-list-item aras-list-item_shown" data-value="印度E230R"><mark></mark>印度E230R</li><li class="aras-list-item aras-list-item_shown" data-value="印度EQ100R MCE"><mark></mark>印度EQ100R MCE</li><li class="aras-list-item aras-list-item_shown" data-value="印度F510SR-CKD"><mark></mark>印度F510SR-CKD</li><li class="aras-list-item aras-list-item_shown" data-value="印度F520SR"><mark></mark>印度F520SR</li><li class="aras-list-item aras-list-item_shown" data-value="印尼E112CR"><mark></mark>印尼E112CR</li><li class="aras-list-item aras-list-item_shown" data-value="印尼E230R"><mark></mark>印尼E230R</li><li class="aras-list-item aras-list-item_shown" data-value="印尼EQ100R-CBU"><mark></mark>印尼EQ100R-CBU</li><li class="aras-list-item aras-list-item_shown" data-value="印尼EQ100R-CKD"><mark></mark>印尼EQ100R-CKD</li><li class="aras-list-item aras-list-item_shown" data-value="印尼EQ100R-CKD-BK"><mark></mark>印尼EQ100R-CKD-BK</li><li class="aras-list-item aras-list-item_shown" data-value="印尼EQ100R-IKD"><mark></mark>印尼EQ100R-IKD</li><li class="aras-list-item aras-list-item_shown" data-value="印尼F510SR"><mark></mark>印尼F510SR</li><li class="aras-list-item aras-list-item_shown" data-value="印尼F520MR"><mark></mark>印尼F520MR</li><li class="aras-list-item aras-list-item_shown" data-value="印尼F520SR"><mark></mark>印尼F520SR</li><li class="aras-list-item aras-list-item_shown" data-value="印尼N350VR"><mark></mark>印尼N350VR</li></ul></div></div></aras-filter-list></div>
+                <script type="text/javascript">
+                    function onchangeepllist(event) {
+                        event = window.event || event;
+                        var target = event.srcElement || event.target;
+                        var tmpSelectedVal = fieldepllistComponent.getValue();
+                        if (window.handleItemChange) {
+                            handleItemChange('field_type', tmpSelectedVal);
+                        }
+
+                        $("#ncrname").find("option").remove();
+                        var inn = top.aras.newIOMInnovator();
+                        var valueItem = inn.newItem("NCR Project", "get");
+                        valueItem.setProperty("_belongepl", tmpSelectedVal);
+                        valueItem.setAttribute("orderBy", "name asc");
+                        var valueItems = valueItem.apply();
+
+                        var listItem, listValue, listLabel, voteIndex = 0;;
+                        var options = "";
+                        for (var i = 0; i < valueItems.getItemCount(); i++) {
+                            listItem = valueItems.getItemByIndex(i);
+                            listValue = listItem.getProperty("name");
+                            listLabel = listItem.getProperty("name");
+                            console.log(listLabel);
+                            //var newOption = new Option();
+                            var newOption = {};
+                            newOption.text = listLabel;
+                            newOption.value = listValue;
+                            //  ncrname.options[voteIndex++] = newOption;
+                            $("#ncrname").append($("<option/>", newOption));
+                      
+                        }
+                     
+                        var $wrap = $("#ncrname").closest('.fs-wrap');
+                        // $wrap.find('.fs-option').removeClass('selected');
+                        // console.log($wrap.find('.fs-search'));
+                        $wrap.find('.fs-search').remove();
+
+                        $wrap.find('select').ySelect('reload');
+                        $wrap.find('select').ySelect('setwrap');
+
+                    //   console.log($wrap);
+                      
+                    }
+                </script>
+                <script type="text/javascript">
+                    function system_epllist_selectedIndex(event) {
+                        event = event || window.event;
+                        event.srcElement = event.srcElement || event.target;
+                        var ctrlElem = event.srcElement;
+                        var select = fieldepllistComponent;
+                        if (event.propertyName != "value" || !ctrlElem || !select) {
+                            return true;
+                        }
+                        var selectValue = select.getValue();
+                        if (selectValue == ctrlElem.value) return true;
+                        var val = ctrlElem.value;
+                        select.setValue(val || '');
+                        return true;
+                    }
+
+                    function system_epllist_blur(event) {
+                        var value = fieldepllistComponent.getValue();
+                        if (fieldepllistComponent.component.validate()) {
+                            if (window.handleItemChange) {
+                                handleItemChange('field_type', value);
+                            }
+                        } else {
+                            var mostTopWindow = aras.getMostTopWindowWithAras();
+                            var confirmDialog = mostTopWindow.ArasModules.Dialog.show('iframe', {
+                                buttons: {
+                                    btnYes: aras.getResource('', 'common.ok'),
+                                    btnCancel: aras.getResource('', 'common.cancel')
+                                },
+                                defaultButton: 'btnCancel',
+                                aras: aras,
+                                dialogHeight: 20,
+                                dialogWidth: 300,
+                                message: aras.getResource('', 'component_dropdown_blur_msg', 'Field Type'),
+                                content: 'groupChgsDialog.html'
+                            });
+                            confirmDialog.promise.then(function (result) {
+                                var res = result === 'btnYes';
+                                if (res) {
+                                    field = this;
+                                    setTimeout('field.focus();', 0);
+                                } else {
+                                    var oldVal = observersHash.getElementById('field_type_system').value;
+                                    fieldepllistComponent.setValue(oldVal || '');
+                                }
+                            }.bind(this));
+                        }
+                    }
+
+                    if (observersHash.getElementById("field_type_system"))
+                        observersHash.getElementById("field_type_system").attachEvent("onpropertychange", system_epllist_selectedIndex);
+
+                </script>
+                <script>
+
+
+                    var fieldepllistComponent;
+                    var fieldepllistOptions = [];
+                    fieldepllistOptions.push({ label: '', value: '' });
+
+                    var epls = top.aras.applyMethod("sgmw_getEPLName");
+                    var epldoc = aras.createXMLDocument();
+                    epldoc.loadXML(epls);
+
+                    var epllist = epldoc.selectNodes('//Item');
+
+                    for (var i = 0; i < epllist.length; i++) {
+                        var epl = epllist[i];
+                        fieldepllistOptions.push({ label: aras.getItemProperty(epl, "code2"), value: aras.getItemProperty(epl, "code2") });
+
+                    }
+
+
+                    var filterList = document.createElement('aras-filter-list');
+                    filterList.setState({
+                        list: fieldepllistOptions
+                    });
+
+                    filterList.format = function (template) {
+                        var input = template.children[0];
+                        input.attrs = Object.assign(input.attrs || {}, {
+                            id: 'epllist',
+                            tabIndex: '2',
+                            name: 'field_type'
+                        });
+                        return template;
+                    };
+                    filterList.state.width = '206px';
+
+                    var container = document.getElementById('div_select_epllist');
+                    container.appendChild(filterList);
+
+                    fieldepllistComponent = new Field(document.getElementById('epllistspan').querySelector('.aras-field__value'), filterList, 'change:onchangeepllist');
+                    fieldepllistComponent.on('focusout', system_epllist_blur);
+                </script>
+                <script type="text/javascript">
+                    function expression_epllist_setExpression(isEditMode) {
+                        fieldepllistComponent.setReadOnly(!isEditMode);
+                    }
+                    setTimeout('expression_epllist_setExpression(document.isEditMode)', 0);
+                </script>
+                <script type="text/javascript">
+                    fieldepllistComponent.setValue("");
+                </script>
+
+
+            </div>
+            <div class="sys_f_restricted_msg" id="sys_f_restricted_msg" name="sys_f_restricted_msg" onclick="system$epllist$restrictedMsgClick(true, event);">Restricted</div>
+            <script type="text/javascript">
+                function system$epllist$restrictedMsgClick(doHide, event) {
+                    if (!document.isEditMode && doHide == true) return false;
+                    var pn = "field_type";
+                    var s = event.srcElement || event.target;
+                    if (!pn || !document.item.selectSingleNode(pn + "[@is_null='0']")) {
+                        s.style.display = "";
+                        s.parentElement.getElementsByTagName("DIV")[0].style.display = "";
+                        return;
+                    }
+                    s.style.display = (doHide ? "" : "block");
+                    s.parentElement.getElementsByTagName("DIV")[0].style.display = (doHide ? "" : "none");
+                }
+            </script>
+        </div>
+    </fieldset>
+</div>
+								</div>
+								<div class="sys_f_restricted_msg" id="sys_f_restricted_msg" name="sys_f_restricted_msg" onclick="system$9A4D6DE55ABB4654B635379F2722D036$restrictedMsgClick(true, event);" onhelp="system$9A4D6DE55ABB4654B635379F2722D036$restrictedMsgClick(false, event);">Restricted</div>
+								<script type="text/javascript">
+									function system$9A4D6DE55ABB4654B635379F2722D036$restrictedMsgClick(doHide, event)
+									{
+										if (!document.isEditMode && doHide == true) return false;
+										var pn = "";
+										var s = event.srcElement || event.target;
+										if (!pn || !document.item.selectSingleNode(pn + "[@is_null='0']"))
+										{
+											s.style.display = "";
+											s.parentElement.getElementsByTagName("DIV")[0].style.display="";
+											return;
+										}
+										s.style.display = (doHide ? "" : "block");
+										s.parentElement.getElementsByTagName("DIV")[0].style.display = (doHide ? "" : "none");
+									}
+								</script>
+						</td>
+					</tr>
+				</tbody>
+			</table>
+</fieldset>
+</div><!-- end of eplName -->
+
+		</form>
+	   
+	
+</body></html>
