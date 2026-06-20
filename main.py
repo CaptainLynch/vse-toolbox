@@ -31,6 +31,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.db_manager import DatabaseManager
+from core.runtime_paths import app_root
 from services.excel_toolbox import ExcelToolbox
 from services.feishu_imap import FeishuImapParser
 from services.office_toolbox import OfficeToolbox
@@ -40,6 +41,8 @@ from services.aras_crawler import (
     EWOReportFilters,
     NCRApprovalFilters,
 )
+
+PROJECT_ROOT = app_root()
 
 _SENSITIVE_JSON_RE = re.compile(
     r"(?i)(['\"])(authorization|cookie|token|api_key|sid|sessionid|csrf|secret)\1(\s*:\s*)(['\"])(.*?)\4"

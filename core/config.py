@@ -14,8 +14,10 @@ core/config.py — 集中配置常量模块
 
 from pathlib import Path
 
+from core.runtime_paths import app_root
+
 # ── 项目根目录（本文件位于 core/，向上一级即为项目根） ─────────────
-PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent
+PROJECT_ROOT: Path = app_root()
 
 # ── 数据目录体系 ────────────────────────────────────────────────
 DATA_DIR: Path = PROJECT_ROOT / "data"

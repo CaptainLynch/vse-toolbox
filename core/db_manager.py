@@ -19,10 +19,12 @@ from pathlib import Path
 from contextlib import contextmanager
 from typing import Generator
 
+from core.runtime_paths import app_root
+
 logger = logging.getLogger("vse_toolbox.db_manager")
 
 # ── 默认数据库路径 ──────────────────────────────────────────────
-DEFAULT_DB_DIR = Path(__file__).resolve().parent.parent / "data"
+DEFAULT_DB_DIR = app_root() / "data"
 DEFAULT_DB_PATH = DEFAULT_DB_DIR / "vse_toolbox.db"
 
 # ── 建表 DDL ───────────────────────────────────────────────────
