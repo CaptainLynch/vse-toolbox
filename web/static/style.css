@@ -99,3 +99,153 @@ body {
 
 .loading { color: var(--text-secondary); font-style: italic; font-size: 0.85rem; }
 .error-msg { color: var(--red); font-size: 0.85rem; }
+
+.panel-section[hidden] { display: none; }
+
+.aras-shell {
+  padding: 1.5rem 2rem;
+}
+
+.aras-layout {
+  display: grid;
+  grid-template-columns: minmax(320px, 520px) minmax(320px, 1fr);
+  gap: 1.25rem;
+  align-items: start;
+}
+
+.aras-form,
+.aras-results {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+}
+
+.form-grid,
+.aras-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.aras-fields {
+  margin-top: 1rem;
+}
+
+.wide {
+  grid-column: 1 / -1;
+}
+
+label span {
+  display: block;
+  margin-bottom: 0.3rem;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+}
+
+input,
+textarea {
+  width: 100%;
+  min-height: 2.25rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #181b22;
+  color: var(--text-primary);
+  padding: 0.45rem 0.55rem;
+  font: inherit;
+}
+
+textarea {
+  resize: vertical;
+}
+
+.segmented {
+  display: inline-flex;
+  gap: 0.25rem;
+  margin-top: 1rem;
+  padding: 0.25rem;
+  background: #181b22;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.segment,
+.primary-btn {
+  min-height: 2.25rem;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--text-primary);
+  background: transparent;
+  padding: 0.35rem 0.8rem;
+  cursor: pointer;
+}
+
+.segment.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(94, 155, 220, 0.12);
+}
+
+.form-actions {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  margin-top: 1rem;
+}
+
+.primary-btn {
+  background: var(--accent);
+  color: #111820;
+  font-weight: 700;
+}
+
+.primary-btn:disabled,
+.primary-btn.running {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.aras-results {
+  min-height: 220px;
+  overflow: hidden;
+}
+
+.result-meta {
+  color: var(--text-secondary);
+  margin-bottom: 0.75rem;
+  font-size: 0.85rem;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+.result-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.result-table th,
+.result-table td {
+  border: 1px solid var(--border);
+  padding: 0.45rem 0.55rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.result-table th {
+  color: var(--text-secondary);
+  background: #181b22;
+}
+
+@media (max-width: 900px) {
+  .aras-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .form-grid,
+  .aras-fields {
+    grid-template-columns: 1fr;
+  }
+}

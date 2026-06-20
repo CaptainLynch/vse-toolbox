@@ -29,7 +29,7 @@
 ┌──────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────┐ ┌──────────────┐
 │ Excel    │ │ Office       │ │ Intranet     │ │ Feishu   │ │ vertical_    │
 │ Toolbox  │ │ Toolbox      │ │ Scraper      │ │ ImapPars │ │ forms (占位) │
-│ (P0·COM) │ │ (COM)        │ │ (Selenium)   │ │ (IMAP)   │ │              │
+│(P0·xlwings)││ (COM)        │ │ (Selenium)   │ │ (IMAP)   │ │              │
 └────┬─────┘ └──────┬───────┘ └──────┬───────┘ └────┬─────┘ └──────────────┘
      │              │                │              │
      └──────────────┴───────┬────────┴──────────────┘
@@ -45,16 +45,96 @@
 
 ## 2. 关键设计决策
 
-### 2.1 Office I/O: win32com COM 自动化
+### 2.1 Office I/O: Office 原生进程保存
 
-**决策**: 放弃 pandas/openpyxl/python-pptx，改用 `win32com.client` 驱动本地 Office 进程。
+**决策**: ExcelToolbox 的物理基座从 `win32com.client` 强制迁移到 `xlwings`；PowerPoint / OfficeToolbox
+暂不纳入本次 Excel 迁移，仍按既有 Office 原生自动化路径维护。
 
-**理由**: 公司 DLP 透明加密对 Python 文件库直接写入的二进制流进行加密，导致文件打开乱码。通过 COM 调用 Office 原生进程写入，走 Office 的正常保存路径，不受 DLP 干扰。
+**理由**: 公司 DLP 透明加密对 Python 文件库直接写入的二进制流进行加密，导致文件打开乱码。Excel 迁移到
+`xlwings` 后仍必须驱动本机 Excel 进程，并继续通过 Excel 原生 `SaveAs(FileFormat=51)` 保存；不得改用
+`pandas` / `openpyxl` 等文件直写路径。
 
-**COM 生命周期约束**:
-- `Excel.Application` / `PowerPoint.Application` 必须在 `try...finally` 中操作
-- `finally` 块必须包含 `Workbook.Close()` / `Presentation.Close()` + `Application.Quit()`
-- 释放 COM 对象引用（`del`）以避免引用计数残留
+**Office 生命周期约束**:
+- `xlwings.App` 必须在 `try...finally` 或 context manager 中创建和释放。
+- `xlwings.App(visible=False, add_book=False)` 是 ExcelToolbox 的最低构造参数；不得让 Excel 弹窗或创建无用空白簿。
+- 静默策略通过 `app.api` 控制：至少设置 `DisplayAlerts=False`、`ScreenUpdating=False`，可按需设置
+  `EnableEvents=False`；退出前必须关闭所有本次打开/创建的 `Book` 并 `app.quit()`。
+- 输出仍使用 Excel 原生保存语义：`book.api.SaveAs(<abs_path>, FileFormat=51)`；禁止 `DataFrame.to_excel()`、
+  `openpyxl.Workbook.save()` 或任何 OOXML 文件流直写。
+
+### 2.1.1 Phase 1 裁定: 强制从 win32com 迁移至 xlwings
+
+**裁定日期**: 2026-06-20
+
+**裁定**: `services/excel_toolbox.py` 不再保留 `win32com.client` / `Excel.Application` / `_get_win32com`
+作为 Excel 物理基座。Worker 必须以 `xlwings` 作为唯一 Excel 入口，并更新 `tests/test_excel_toolbox.py`
+的 mock 形状。若 `requirements.txt` 尚未声明 `xlwings`，Worker 可做最小依赖补丁：新增 `xlwings`，
+但不得新增 `pandas` / `openpyxl` 作为 Excel I/O 实现。
+
+**关键 API 映射**:
+
+| 现存 win32com 语义 | xlwings 替换方案 | 约束 |
+|---|---|---|
+| `_get_win32com()` | `_get_xlwings()` 延迟导入 `xlwings as xw` | 保留 monkeypatch seam，便于测试替换；ImportError 文案提示安装 `xlwings` |
+| `wc.Dispatch("Excel.Application")` | `xw.App(visible=False, add_book=False)` | 必须显式传入 `visible=False`、`add_book=False` |
+| `excel.Visible = False` | `App(visible=False, ...)` | 不再运行期切 visible；构造即隐藏 |
+| `excel.DisplayAlerts = False` | `app.api.DisplayAlerts = False` | 同一静默初始化块内设置 |
+| `ScreenUpdating / EnableEvents` | `app.api.ScreenUpdating = False`; `app.api.EnableEvents = False` | 降低可见闪烁和事件副作用 |
+| `excel.Workbooks.Add()` | `app.books.add()` | 新建输出簿后用 `book.sheets[0]` 取首个 Sheet |
+| `excel.Workbooks.Open(abs_path)` | `app.books.open(abs_path, update_links=False, read_only=<bool>)` | baseline/source 尽量只读；输出副本可写 |
+| `workbook.ActiveSheet` | `book.sheets.active` 或 `book.sheets[0]` | 优先 `book.sheets[0]` 保持确定性 |
+| `workbook.Sheets(1)` | `book.sheets[0]` | xlwings 为 0-based list 风格 |
+| `workbook.Sheets.Add()` | `book.sheets.add(name="图例说明", after=book.sheets[-1])` | 图例 Sheet 名称保持不变 |
+| `sheet.UsedRange.Rows.Count` | `sheet.api.UsedRange.Rows.Count` | 用 `.api` 访问 Excel 原生 UsedRange |
+| `sheet.UsedRange.Columns.Count` | `sheet.api.UsedRange.Columns.Count` | 同上 |
+| `sheet.Cells(r, c).Value` | `sheet.range((r, c)).value` | 行列坐标保持 1-based |
+| `sheet.Cells(r, c).Formula` | `sheet.range((r, c)).formula` | 差异比对必须同时比对值和公式 |
+| `sheet.Cells(r, c).Interior.Color` | `sheet.range((r, c)).api.Interior.Color` | 高亮仍使用 Excel BGR 整数 |
+| `workbook.SaveAs(path, FileFormat=51)` | `book.api.SaveAs(path, FileFormat=51)` | 必须保留 Excel 原生 xlsx 保存语义 |
+| `workbook.Close(SaveChanges=0)` | `book.close()` 或 `book.api.Close(SaveChanges=False)` | finally 中关闭所有本次打开的 Book |
+| `excel.Quit()` | `app.quit()` | finally 中必须执行，避免残留 Excel 进程 |
+
+**迁移骨架**:
+
+```python
+xw = _get_xlwings()
+app = None
+books: list[Any] = []
+try:
+    app = xw.App(visible=False, add_book=False)
+    app.api.DisplayAlerts = False
+    app.api.ScreenUpdating = False
+    app.api.EnableEvents = False
+
+    out_book = app.books.add()
+    books.append(out_book)
+    out_sheet = out_book.sheets[0]
+    # source_book = app.books.open(path, update_links=False, read_only=True)
+    # cell = out_sheet.range((row, col)); cell.value = value
+    out_book.api.SaveAs(self._to_absolute(output_path), FileFormat=51)
+    return output_path
+except Exception:
+    if backup is not None:
+        self._rollback(output_path, backup)
+    raise
+finally:
+    for book in reversed(books):
+        try:
+            book.close()
+        except Exception:
+            pass
+    if app is not None:
+        app.quit()
+```
+
+**生产约束**:
+
+- 保留现有 `_check_file_not_locked`、`_to_absolute`、`_backup`、`_rollback`、莫兰迪色板、图例 Sheet、
+  `merge_append` / `merge_overlay` / `diff_against_baseline` 公共签名和 CLI 契约。
+- 日志不得输出单元格内容、公式正文、脱密前文件内容或凭据；可记录操作类型、文件名级别的非敏感信息和异常类型。
+- 迁移只改变 Excel 物理自动化 API，不改变业务语义：追加合并、坐标覆盖、baseline 差异、高亮、防撞色、备份回滚均保持。
+- `tests/test_excel_toolbox.py` 必须改为 mock `xlwings.App` / `Book` / `Sheet` / `Range` / `.api`，
+  不得继续以 `wc.Dispatch("Excel.Application")` 作为主验证对象。
 
 ### 2.2 数据库: SQLite WAL 模式
 
@@ -135,10 +215,11 @@
 #### 最终方案
 
 - **决策**: 任何**改写已存在文件**的操作（merge_overlay 覆盖 target、merge_append/diff 改写已存在的 output）
-  在 COM 操作前调用 `_backup(target)`；COM 异常时在 `except` 中 `_rollback(target, backup)` 并**上抛**异常。
+  在 Excel 自动化写入前调用 `_backup(target)`；异常时在 `except` 中 `_rollback(target, backup)` 并**上抛**异常。
 - **备份命名**: `data/.backup/<name>.<YYYYMMDD_HHMMSS>.bak`（带时间戳，避免互相覆盖）。
-- **COM 生命周期**: `try` 内执行 COM；`except` 内 `_rollback` 后 `raise`；`finally` 内 `Close + Quit + del` 释放进程。
-- **与 §2.1 一致**: 复用 office_toolbox 的 `Visible=False` / `DisplayAlerts=False` / `SaveAs(FileFormat=51)` / try-finally 释放模式。
+- **Excel 生命周期**: `try` 内执行 `xlwings` 自动化；`except` 内 `_rollback` 后 `raise`；`finally` 内关闭 `Book` 并 `app.quit()`。
+- **与 §2.1 一致**: 使用 `visible=False` / `add_book=False` / `app.api.DisplayAlerts=False` /
+  `app.api.ScreenUpdating=False` / `SaveAs(FileFormat=51)` / try-finally 释放模式。
 
 ### 2.8 莫兰迪色高亮与防撞色
 
@@ -204,6 +285,167 @@
   - Reviewer grep `services/feishu_imap.py` / `services/intranet_scraper.py` 不得出现密码字段的
     `Prompt.ask(...)` 明文交互。
 
+### 2.10 P1 内网爬虫接口契约：HAR 逆向与离线优先
+
+**裁定日期**: 2026-06-20
+
+**证据源**: `docs/agents/crawl_source_index.md` 与 `docs/agents/crawler_contract.md`。本轮只基于
+`crawl source` 离线 HAR/HTML/XLSX 样本设计契约，不允许 Worker 在开发或测试中访问真实内网或外网。
+
+**三条能力线**:
+- EWO 报表按需过滤查询：`POST /innovatorserver/Server/InnovatorServer.aspx`，`SOAPAction=ApplyItem`，
+  AML 为 `Item type="EWO_O" action="get"`，分页属性为 `page` / `pagesize` / `maxRecords`，
+  默认 `select` 字段来自 `ecm.sgmw.com.cn-EWO明细.har` 第一条 entry。
+- NCR 审批进度查询：同一 SOAP 路由，`SOAPAction=ApplyMethod`，AML 为
+  `Method action="sgmw_downloadFileProgressC"`，筛选字段为 `buystart`、`buyend`、`pestart`、`peend`、
+  `ncrno`、`ncrname`、`seccode`、`changetype`、`othercondition`；响应为
+  `sgmw_outputFileRecord`，其中 `_file` 提供 `<file_id>` 与 xlsx 文件名。
+- NCR 审批明细提取：同一 SOAP 路由，`SOAPAction=ApplyMethod`，AML 为
+  `Method action="sgmw_downloadFileDetail4C"`，筛选字段与进度查询一致；响应 `Result` 文本为明细 xlsx 文件名。
+
+**Session / header / cookie 策略**:
+- P1 Worker 必须使用 `requests.Session`，但 session、headers、cookies 均由外部调用方显式注入或传入；
+  service 不得硬编码样本中的真实会话、用户、token、cookie、Authorization 或 api_key。
+- 基础 headers 只可包含非敏感通用项：`Accept`、`Content-Type`、`SOAPAction`、`TIMEZONE_NAME`、
+  `Origin`、`Referer`、`User-Agent`、`LOCALE`。`Cookie`、`Authorization`、`api_key` 只能来自调用方。
+- NCR 文件下载 token 响应结构为 `{"d":"<download_token>"}`；真实 token 不得写入文档、源码、测试或日志。
+
+**离线测试策略**:
+- Worker 从 HAR `response.content.text` 萃取 XML/JSON fixture；包含 token 的 fixture 必须先脱敏为
+  `<download_token>` 或生成假 token。
+- 单元测试必须 mock `requests.Session.post/head/get`，断言 route、method、headers、payload、解析结果；
+  严禁真实 HTTP 请求。
+- 详细接口、字段映射、响应结构和 fixture 命名以 `docs/agents/crawler_contract.md` 为准。
+
+### 2.11 P1 双轨接入拓扑：CLI 终端适配层 + WEB 可视化适配层
+
+**裁定日期**: 2026-06-20
+
+**阶段定位**: `services/aras_crawler.py` 已作为底层 HTTP/AML service 通过审查。本节只定义 P1 在
+`main.py` 与 `web/*` 的接入拓扑、请求/响应契约、Worker 文件边界与安全红线；不得要求 Worker 修改
+`services/aras_crawler.py`。
+
+#### CLI 适配层（main.py）
+
+**入口解锁**:
+- `DEFERRED` 仅移除 P1 对应菜单键 `"4"`；P3/P4 继续暂缓。
+- `show_menu()` 渲染时 P1 不再 dim/暂缓；`handle_intranet_scrape(db)` 不再短路 return，而是进入
+  P1 Aras 爬虫二级菜单。
+- 原 `IntranetScraper` Selenium 旧代码可保留为不可达历史分支或后续迁移对象，但本次 P1 菜单应调用
+  `ArasCrawlerClient`，不扩大 Selenium 职责。
+
+**rich 表单采集**:
+- 必填连接项: `base_url`。必须由用户显式输入；不得从配置默认指向真实内网。
+- 敏感项: Cookie/token/Authorization 等只通过当前会话输入。Cookie 推荐用 `Prompt.ask(..., password=True)`
+  采集为原始 `Cookie` header 字符串；额外 headers 以 `Key: Value` 多行或逗号分隔输入，并在 CLI 层解析为
+  `dict[str, str]`。
+- 查询类型: 二级菜单提供 `EWO 报表查询`、`NCR 审批进度导出`、`NCR 审批明细提取`、`返回`。
+- EWO 过滤项映射到 `EWOReportFilters`: `ewo_no`、`project_code`、`subject_keyword`、`change_type`、
+  `change_sub_type`、`area`、`state`、`rsp_department`、`submit_start`、`submit_end`；分页项映射到
+  `page`、`page_size`、`max_records`。
+- NCR 过滤项映射到 `NCRApprovalFilters`: `buy_start`、`buy_end`、`pe_start`、`pe_end`、`ncr_no`、
+  `project_names`、`section_code`、`change_type`、`othercondition`。
+- CLI 层可把 Cookie 字符串透传为 `headers["Cookie"]`，或在用户输入结构化 cookies 时传入
+  `cookies: Mapping[str, str]`；不得持久化到 `core/config.py`、数据库、日志或本地文件。
+
+**service 调用与 rich 渲染**:
+- CLI 仅实例化 `ArasCrawlerClient(base_url, headers=headers, cookies=cookies, timeout=...)` 并调用公开方法：
+  `query_ewo_report()`、`query_ncr_approval_progress()`、`extract_ncr_approval_detail()`。
+- EWO 返回 `EWOReportPage` 后用 `rich.table.Table` 渲染 `rows`；列名以返回 row keys 为准，可限制为首屏关键列
+  或提供“显示全部列”选项；同时展示 `page`、`len(rows)`、`len(item_ids)`。
+- NCR 进度返回 `NCRExportResult` 后渲染 `file_name`、`file_id`、`record_id`，并提示“下载 token 需用户显式二次确认”，
+  不得默认调用真实下载。
+- NCR 明细返回 `NCRDetailExportResult` 后渲染 `file_name`。`raw_xml` 只可在用户显式调试开关下脱敏展示，默认不打印。
+- 捕获 `ArasCrawlerError`、HTTP 层异常和通用异常时，rich 只显示脱敏错误类型与摘要；logger 不记录 Cookie、
+  Authorization、token、完整 headers 或完整请求体。
+
+#### WEB 适配层（web/app.py + dashboard HTML/JS）
+
+**Flask API 路由设计**:
+- 所有 P1 API 使用 `POST`，避免凭据出现在 URL/query string。
+- `POST /api/aras/ewo/query`
+  - 请求 JSON:
+    ```json
+    {
+      "base_url": "https://<aras-host>/",
+      "headers": {"User-Agent": "...", "Authorization": "<optional>"},
+      "cookie": "<Cookie header string>",
+      "cookies": {"name": "value"},
+      "filters": {
+        "ewo_no": "", "project_code": "", "subject_keyword": "",
+        "change_type": "", "change_sub_type": "", "area": "", "state": "",
+        "rsp_department": "", "submit_start": "", "submit_end": ""
+      },
+      "page": 1,
+      "page_size": 50,
+      "max_records": 2000
+    }
+    ```
+  - 成功响应 JSON:
+    ```json
+    {
+      "ok": true,
+      "data": {
+        "rows": [{"_no": "..."}],
+        "page": 1,
+        "item_ids": ["..."],
+        "count": 1
+      }
+    }
+    ```
+- `POST /api/aras/ncr/progress`
+  - 请求 JSON: `base_url` / `headers` / `cookie` / `cookies` 同上，`filters` 使用
+    `buy_start`、`buy_end`、`pe_start`、`pe_end`、`ncr_no`、`project_names`、`section_code`、
+    `change_type`、`othercondition`。
+  - 成功响应 JSON:
+    ```json
+    {"ok": true, "data": {"file_id": "...", "file_name": "...", "record_id": "..."}}
+    ```
+- `POST /api/aras/ncr/detail`
+  - 请求 JSON: 同 NCR progress。
+  - 成功响应 JSON:
+    ```json
+    {"ok": true, "data": {"file_name": "..."}}
+    ```
+- 失败响应 JSON 统一为:
+  ```json
+  {"ok": false, "error": {"type": "ArasCrawlerError", "message": "脱敏摘要"}}
+  ```
+  参数校验失败用 `400`；上游 Aras/HTTP 失败用 `502`；未预期异常用 `500`。
+
+**headers/cookie 透传策略**:
+- Web API 每次请求即时构造 `ArasCrawlerClient`；不使用服务器端 session 存储 Cookie/token。
+- `cookie` 字符串优先转为 `headers["Cookie"]`，以保留浏览器复制出来的 Cookie header 语义；
+  `cookies` mapping 仅在用户显式提交结构化键值时传给 client。
+- `headers` 允许透传非空字符串键值，但 Web 层必须在日志、错误响应、测试快照中屏蔽 `Cookie`、
+  `Authorization`、`token`、`api_key`、`secret` 等敏感字段。
+- Web API 不默认调用真实内网；`base_url` 缺失时直接 `400`，不得从 `DEFAULT_INTRANET_URL` 自动补齐。
+
+**dashboard HTML/JS 面板解锁**:
+- `dashboard.html` 将 P1 导航从 disabled 改为可进入的“内网爬虫”面板；P3/P4 仍 disabled。
+- 新增 P1 面板包含连接表单、查询类型 tabs/segmented control、EWO/NCR 过滤表单、执行按钮、结果表格、
+  错误提示区与 loading 状态。
+- `app.js` 使用原生 `fetch` 调用上述 POST API；实现轻量异步渲染队列：
+  同一时间只允许一个 Aras 查询处于 running，后续点击进入 queued 或直接禁用按钮并显示等待状态；
+  响应回来后按请求序号渲染，避免慢响应覆盖新结果。
+- EWO rows 渲染为可横向滚动表格；NCR progress/detail 渲染为结果摘要。前端不得把 Cookie/token 写入
+  `localStorage`、`sessionStorage`、URL、DOM 可见结果区或 console。
+
+#### 隔离红线
+
+- `services/aras_crawler.py` 不得 import `rich`、`flask`、DOM、浏览器 API、`web/*` 或 `main.py`。
+- CLI/Web 只依赖 service 公开 DTO 与方法；service 不反向依赖 CLI/Web，也不输出终端样式或 HTTP response。
+- Worker 本组允许改 `main.py`、`web/app.py`、`web/templates/dashboard.html`、`web/static/app.js`、
+  `web/static/style.css`、新增 `tests/test_aras_cli_web.py` 或同等聚焦测试。
+- Worker 本组禁止修改 `services/aras_crawler.py`；除非 Architect 另行打回并新增专门任务。
+
+#### 安全红线
+
+- 不持久化 Cookie/token/Authorization/api_key/secret；不写入配置、数据库、日志、测试 fixture、HTML 默认值。
+- 不把鉴权信息写入异常、日志、前端 console、URL 或响应 JSON。
+- Web API 不默认调用真实内网，必须由用户显式提交 `base_url` 与 Cookie/header。
+- 单元测试必须 mock `ArasCrawlerClient` 或其 session；不得访问真实内网/外网。
+
 ## 3. 模块接口定义
 
 ### 3.1 DatabaseManager (core/db_manager.py)
@@ -252,14 +494,55 @@ class IntranetScraper:
 > 当前登录模式为浏览器内手动登录，service 不接收、不保存密码。
 > 若后续新增终端凭据输入，密码字段必须使用 `getpass.getpass()`，且不得写入 `core/config.py`。
 
-### 3.5 ExcelToolbox (services/excel_toolbox.py) — P0 · 全部 win32com COM
+### 3.4.1 ArasCrawlerClient (P1, services/aras_crawler.py 建议新增)
+
+> P1 Worker 的新 HTTP/AML 爬虫实现建议独立放入 `services/aras_crawler.py`，避免继续扩大
+> Selenium 版 `IntranetScraper` 的职责。若 Worker 选择复用现有文件，必须保持公共签名和契约等价。
+> 详见 `docs/agents/crawler_contract.md`。
+
+```python
+class ArasCrawlerClient:
+    def __init__(
+        self,
+        base_url: str,
+        session: requests.Session | None = None,
+        headers: Mapping[str, str] | None = None,
+        cookies: Mapping[str, str] | None = None,
+        timeout: float = 30.0,
+    ) -> None: ...
+
+    def query_ewo_report(
+        self,
+        filters: EWOReportFilters,
+        page: int = 1,
+        page_size: int = 50,
+        max_records: int = 2000,
+        select_fields: Sequence[str] | None = None,
+    ) -> EWOReportPage: ...
+
+    def query_ncr_approval_progress(self, filters: NCRApprovalFilters) -> NCRExportResult: ...
+    def extract_ncr_approval_detail(self, filters: NCRApprovalFilters) -> NCRDetailExportResult: ...
+    def get_file_download_token(self, file_id: str) -> str: ...
+```
+
+**实现边界**:
+- `EWOReportFilters`、`NCRApprovalFilters` 与返回 DTO 可放在同一模块或轻量子模块中；不得引入界面库。
+- 生产下载文件必须做显式 opt-in，不得在查询方法里自动访问 vault 下载 URL。
+- tests 只能使用 HAR fixture 和 mock session；不得触达真实内网。
+
+### 3.5 ExcelToolbox (services/excel_toolbox.py) — P0 · xlwings
 
 > **本节为 Worker 实现 B1–B6 的权威签名契约**。严禁擅自增删公共方法或改动参数名 / 默认值。
-> 复用 office_toolbox 已验证模式：`_get_win32com` 延迟导入、`_check_file_not_locked` 占用预检、
-> `_to_absolute`、`Excel.Visible=False`、`DisplayAlerts=False`、`SaveAs(FileFormat=51)`。
+> 复用既有文件安全模式：`_check_file_not_locked` 占用预检、`_to_absolute`、`.bak` 备份与回滚。
+> Excel 物理层必须改为 `xlwings.App(visible=False, add_book=False)`，并通过 `app.api` 设置
+> `DisplayAlerts=False`、`ScreenUpdating=False`、`EnableEvents=False`。保存必须走
+> `book.api.SaveAs(..., FileFormat=51)`。
 > **无 DatabaseManager 依赖**（纯文件工具）。
 
 ```python
+def _get_xlwings() -> Any: ...
+# 延迟导入 xlwings as xw；供 tests monkeypatch，不再暴露 _get_win32com。
+
 class ExcelToolbox:
     def __init__(self) -> None: ...
 
@@ -309,40 +592,46 @@ class ExcelToolbox:
 
     def _highlight_cell(self, sheet: Any, row: int, col: int, source_tag: str) -> None: ...
     # 按 source_tag 在 color_map 分配/复用莫兰迪色；写入前读原 Interior.Color，撞色则顺延取下一色；
-    # 写入 sheet.Cells(row, col).Interior.Color = <bgr>
+    # 写入 sheet.range((row, col)).api.Interior.Color = <bgr>
 
     def _write_legend(self, workbook: Any, color_map: dict[str, int]) -> None: ...
-    # 新增独立 Sheet「图例说明」，逐行写"来源标签 ↔ 色块"（行单元格 Interior.Color 设为对应色值）
+    # 新增独立 Sheet「图例说明」，逐行写"来源标签 ↔ 色块"（行单元格 api.Interior.Color 设为对应色值）
 
     @staticmethod
     def _auto_output_name(src: Path, suffix: str = "-汇总") -> Path: ...
     # src.with_stem(src.stem + suffix) 风格，输出到 OUTPUT_DIR
 ```
 
-**COM 生命周期 & 回滚骨架（Worker 每个 merge/diff 方法须遵循）**:
+**xlwings 生命周期 & 回滚骨架（Worker 每个 merge/diff 方法须遵循）**:
 
 ```
 backup = None
 if output/target 已存在:
     backup = self._backup(target)
-excel = workbook = None
+app = None
+books = []
 try:
-    excel = wc.Dispatch("Excel.Application")
-    excel.Visible = False; excel.DisplayAlerts = False
-    ...  # 打开 source/baseline、写入、_highlight_cell、_write_legend
-    workbook.SaveAs(self._to_absolute(output_path), FileFormat=51)
+    xw = _get_xlwings()
+    app = xw.App(visible=False, add_book=False)
+    app.api.DisplayAlerts = False
+    app.api.ScreenUpdating = False
+    app.api.EnableEvents = False
+    ...  # app.books.open/add、sheet.range((r, c)).value、_highlight_cell、_write_legend
+    out_book.api.SaveAs(self._to_absolute(output_path), FileFormat=51)
     return output_path
 except Exception:
     if backup is not None:
         self._rollback(target, backup)
     raise
 finally:
-    if workbook is not None: workbook.Close(SaveChanges=0)
-    if excel is not None: excel.Quit()
-    del workbook; del excel
+    for book in reversed(books):
+        try: book.close()
+        except Exception: pass
+    if app is not None: app.quit()
 ```
 
 **莫兰迪色板规格**: 6–8 个低饱和 BGR 整数循环分配；`color_map`（来源标签 → 色值）贯穿一次操作并交 `_write_legend`。
+底色读写必须通过 `Range.api.Interior.Color` 完成。
 
 ### 3.6 VerticalForms (services/vertical_forms.py) — 占位
 
@@ -374,8 +663,12 @@ def create_app() -> Flask: ...
 # GET /api/overview → 复用 DatabaseManager 概览查询，jsonify 返回:
 #   { "projects": {status: count}, "deliverables": {status: count},
 #     "feishu": {"total": int, "synced": int} }
+# POST /api/aras/ewo/query    → 调用 ArasCrawlerClient.query_ewo_report，返回 rows/page/item_ids/count
+# POST /api/aras/ncr/progress → 调用 ArasCrawlerClient.query_ncr_approval_progress，返回 file_id/file_name/record_id
+# POST /api/aras/ncr/detail   → 调用 ArasCrawlerClient.extract_ncr_approval_detail，返回 file_name
 ```
 > Flask 仅做路由 + 序列化；概览查询逻辑复用 service/core，不在路由内写死超出最小复用范围。
+> P1 Aras API 必须 POST JSON，`base_url` 与鉴权 headers/cookie 每次由用户显式提交；不得服务器端持久化。
 
 ## 4. 数据流
 
@@ -399,11 +692,11 @@ def create_app() -> Flask: ...
 [本地 .xlsx 散表]
    │ collect_sources(paths|directory)
    ▼
-ExcelToolbox.merge_append / merge_overlay / diff_against_baseline   (win32com COM)
+ExcelToolbox.merge_append / merge_overlay / diff_against_baseline   (xlwings.App)
    │  改写前 _backup → data/.backup/*.bak
    │  baseline 非空 → _highlight_cell(莫兰迪色) + _write_legend(图例说明 Sheet)
    ▼
-data/output/<name>-汇总.xlsx        ← 异常时 _rollback 还原，COM finally 释放
+data/output/<name>-汇总.xlsx        ← 异常时 _rollback 还原，finally 关闭 Book + app.quit()
    ▲
    │ handle_excel_toolbox(db)  ← main.py CLI 适配层（rich 子菜单 + 异常分类提示）
 ```
@@ -419,6 +712,36 @@ data/output/<name>-汇总.xlsx        ← 异常时 _rollback 还原，COM final
                                         │ jsonify
    概览卡片 ◀──JSON──────────────────────┘   (static/app.js 渲染)
 ```
+
+### 4.3 P1 Aras 内网爬虫双轨数据流
+
+```
+CLI:
+[用户输入 base_url + Cookie/header + filters]
+       │ rich Prompt / Confirm
+       ▼
+main.py::handle_intranet_scrape()
+       │ ArasCrawlerClient(base_url, headers, cookies)
+       ▼
+services/aras_crawler.py
+       │ EWOReportPage / NCRExportResult / NCRDetailExportResult / ArasCrawlerError
+       ▼
+rich Table / 脱敏错误提示
+
+WEB:
+[dashboard P1 表单]
+       │ fetch POST /api/aras/...
+       ▼
+web/app.py Flask route
+       │ 每次请求即时构造 ArasCrawlerClient；不存 Cookie/token
+       ▼
+services/aras_crawler.py
+       │ DTO
+       ▼
+jsonify({ok, data}) ──▶ app.js 异步队列渲染表格/摘要
+```
+
+> 两条轨道共享同一 service；差异只在输入采集与输出渲染。任何鉴权信息只在本次调用内存中存在。
 
 ## 5. 迁移策略
 

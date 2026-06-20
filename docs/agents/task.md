@@ -86,7 +86,10 @@
 
 ---
 
-### B. P0 Excel 工具箱 — `services/excel_toolbox.py`（全部 win32com COM）
+### B. P0 Excel 工具箱 — `services/excel_toolbox.py`（历史 win32com 基线，已由 H 段覆盖）
+
+> **历史说明**: B/E 组记录的是 Sprint 2 已完成的 `win32com` 基线实现与测试。自 H 段起，
+> ExcelToolbox 的后续 Worker 任务以 `xlwings` 迁移为准；不得再按本节旧 API 继续扩展。
 
 > **契约权威**: 方法签名以 implementation_plan.md §3.5 为准，本节给出依赖与验收。
 > 串行起点 **B1** 先行 → 并行组 **{B2, B3}** → 并行组 **{B4, B5, B6}**（依赖 B1/B2/B3）
@@ -377,6 +380,370 @@
 
 ---
 
+### H. Phase 1–3 — ExcelToolbox 强制迁移 xlwings + PowerShell pytest 修复
+
+> **目标**: 不再讨论是否采用 `xlwings`。先解决 PowerShell 下 `python` / `pytest` 无法寻址，再把
+> `services/excel_toolbox.py` 和 `tests/test_excel_toolbox.py` 迁移到 `xlwings`，最后由 Architect
+> 静态审查语法并抓取真实 pytest 动态报告。
+>
+> **时序铁律**: **H1 必须先于 H2**。没有可执行的绝对路径 pytest 命令，不允许声称 H2 验收完成。
+> **生产铁律**: 继续静默、无感知、脱密安全；Excel 输出仍走原生 `SaveAs(FileFormat=51)`，不得引入
+> `pandas` / `openpyxl` 文件直写。
+
+- [x] **H0** Architect 迁移图纸 — win32com 语义映射到 xlwings
+  - 目标文件: `docs/agents/implementation_plan.md`、`docs/agents/task.md`
+  - 图纸范围: `_get_win32com`、`Excel.Application`、`Workbooks.Add/Open`、`Sheets`、`Cells`、
+    `UsedRange`、`.Value`、`.Formula`、`Interior.Color`、`SaveAs(FileFormat=51)`、`Close`、`Quit`。
+  - 裁定: `services/excel_toolbox.py` 必须移除 `win32com.client` / `_get_win32com` / `Dispatch("Excel.Application")`；
+    改为 `_get_xlwings()` + `xw.App(visible=False, add_book=False)`。
+  - 验收: implementation_plan.md §2.1.1 与 §3.5 已给出可执行 API 映射、生命周期骨架与 mock 迁移要求。
+
+- [x] **H1-a** Worker 环境诊断 — 定位可用 Python 解释器
+  - 目标文件: 不改 `.py`；允许修复工作区虚拟环境或依赖安装状态。
+  - 操作要求: 在 PowerShell 中诊断 `python`、`py`、`.venv\Scripts\python.exe`、已安装 Python 绝对路径。
+    可使用 `where.exe python`、`where.exe py`、`py -0p`、`Get-Command python -All` 等命令。
+  - 约束: 不依赖裸 `pytest` 命令；后续测试统一使用 `"<absolute-python>" -m pytest ...`。
+  - 验收: Worker 交付说明中写明最终选定的 Python 绝对路径，以及为何原 `python` / `pytest` 无法寻址。
+
+- [x] **H1-b** Worker 环境修复 — 形成可执行 pytest 命令
+  - 目标文件: 不改业务 `.py`；如依赖缺失，可最小化修复 `.venv` 或安装 `requirements.txt`。
+  - 允许手段:
+    - 使用已存在解释器的绝对路径运行 pytest；
+    - 重建工作区 `.venv`；
+    - 通过 `"<absolute-python>" -m pip install -r requirements.txt` 补齐依赖；
+    - 如 `requirements.txt` 缺少 `xlwings`，在 H2 中做最小依赖补丁，禁止引入 `pandas` / `openpyxl` 作为 Excel I/O。
+  - 必须形成的命令模板:
+    ```powershell
+    & "E:\project\vse-toolbox\.venv\Scripts\python.exe" -m pytest tests/test_excel_toolbox.py -q
+    ```
+    若实际解释器不在 `.venv`，必须替换为 Worker 诊断出的真实绝对路径。
+  - 验收: `& "<absolute-python>" -m pytest --version` 可运行；`tests/test_excel_toolbox.py` 的真实测试命令可执行
+    （迁移前可以失败，但失败原因不得再是找不到 python/pytest）。
+
+- [x] **H1-final** Phase 3 最终验收项 — PowerShell pytest 寻址修复完成
+  - 标记规则: 只有 Architect 在 Phase 3 复核到真实命令输出后，才可把本项改为 `[x]`。
+  - 通过条件: pytest 由绝对 Python 路径启动，错误不再是 `python` / `pytest` 无法寻址或系统无法访问解释器。
+
+- [x] **H2-a** Worker 实现迁移 — `_get_xlwings()` 与 `xlwings.App` 生命周期
+  - 目标文件: `services/excel_toolbox.py`；如缺依赖，仅允许最小修改 `requirements.txt` 新增 `xlwings`。
+  - 实现:
+    - 移除 `import win32com.client` 路径与 `_get_win32com()`；
+    - 新增 `_get_xlwings() -> Any`，延迟导入 `xlwings as xw`，保留 monkeypatch 能力；
+    - 每个 merge/diff 方法使用 `xw.App(visible=False, add_book=False)`；
+    - 初始化后设置 `app.api.DisplayAlerts = False`、`app.api.ScreenUpdating = False`、`app.api.EnableEvents = False`；
+    - finally 中关闭本次打开/创建的 `Book` 并 `app.quit()`。
+  - 约束: 不改变 `ExcelToolbox` 公共签名；不把 UI 提示写进 service；不输出单元格内容到日志。
+  - 验收: 静态 grep 不再命中 `_get_win32com`、`Dispatch("Excel.Application")`、`excel.Workbooks`。
+
+- [x] **H2-b** Worker 实现迁移 — Range / UsedRange / SaveAs 语义替换
+  - 目标文件: `services/excel_toolbox.py`
+  - 替换要求:
+    - `Workbooks.Add/Open` → `app.books.add()` / `app.books.open(...)`；
+    - `Sheets(1)` / `ActiveSheet` → `book.sheets[0]` / `book.sheets.active`；
+    - `UsedRange.Rows/Columns.Count` → `sheet.api.UsedRange.Rows.Count` / `.Columns.Count`；
+    - `Cells(r, c).Value` → `sheet.range((r, c)).value`；
+    - `Cells(r, c).Formula` → `sheet.range((r, c)).formula`；
+    - `Interior.Color` → `sheet.range((r, c)).api.Interior.Color`；
+    - `SaveAs(..., FileFormat=51)` → `book.api.SaveAs(..., FileFormat=51)`。
+  - 约束: 备份、回滚、文件锁预检、莫兰迪色、防撞色、图例 Sheet、baseline 差异语义必须保持。
+  - 验收: 三个公开方法 `merge_append` / `merge_overlay` / `diff_against_baseline` 均使用 xlwings API 完成同等语义。
+
+- [x] **H2-c** Worker 测试迁移 — `tests/test_excel_toolbox.py` 改为 mock xlwings
+  - 目标文件: `tests/test_excel_toolbox.py`
+  - 实现: monkeypatch `services.excel_toolbox._get_xlwings`，提供假 `xw.App`、`App.books`、`Book`、`Sheet`、
+    `Range` 与 `.api` 对象。
+  - 断言:
+    - `App` 构造参数包含 `visible=False`、`add_book=False`；
+    - `app.api.DisplayAlerts`、`ScreenUpdating`、`EnableEvents` 被置为 `False`；
+    - `book.api.SaveAs(..., FileFormat=51)` 被调用；
+    - `sheet.range((row, col)).value` / `.formula` / `.api.Interior.Color` 替代原 `Cells` 语义；
+    - 异常路径仍 `_rollback` 并 `app.quit()`；
+    - 无真实 Excel 进程启动。
+  - 约束: 测试不得继续以 `wc.Dispatch("Excel.Application")` 作为主 mock。
+  - 验收: `& "<absolute-python>" -m pytest tests/test_excel_toolbox.py -q` 可真实执行。
+
+- [x] **H2-final** Phase 3 最终验收项 — ExcelToolbox xlwings 迁移完成
+  - 标记规则: 只有 Architect 在 Phase 3 看到静态审查通过且真实 pytest 全绿后，才可把本项改为 `[x]`。
+  - 通过条件: `tests/test_excel_toolbox.py` 全绿；`services/excel_toolbox.py` 无 `win32com` 物理入口；
+    Excel 保存仍通过 `book.api.SaveAs(..., FileFormat=51)`。
+
+- [x] **H3-a** Architect 静态审查门 — xlwings 语法与禁用路径
+  - 检查范围: `services/excel_toolbox.py`、`tests/test_excel_toolbox.py`、`requirements.txt`。
+  - 建议命令:
+    ```powershell
+    rg -n "win32com|_get_win32com|Dispatch\\(\"Excel\\.Application\"\\)|\\.Workbooks|\\.Cells\\(" services/excel_toolbox.py tests/test_excel_toolbox.py
+    rg -n "xlwings|_get_xlwings|xw\\.App|app\\.books|\\.range\\(\\(|\\.api\\.SaveAs|\\.api\\.Interior\\.Color|\\.api\\.UsedRange" services/excel_toolbox.py tests/test_excel_toolbox.py requirements.txt
+    rg -n "pandas|openpyxl|DataFrame\\.to_excel|Workbook\\.save" services/excel_toolbox.py tests/test_excel_toolbox.py requirements.txt
+    ```
+  - 判定:
+    - 第一条命令不得命中 ExcelToolbox 的 win32com 物理入口；
+    - 第二条命令必须显示 xlwings 主路径；
+    - 第三条命令不得显示 Excel I/O 直写实现。
+  - 失败处理: 任何一条不满足，Architect 打回 Worker，不得标记 H1/H2/H3 final。
+
+- [x] **H3-b** Architect 动态审查门 — 抓取真实 pytest 报告
+  - 前置: H1 已给出可执行绝对路径 pytest 命令。
+  - 必跑命令:
+    ```powershell
+    & "<absolute-python>" -m pytest tests/test_excel_toolbox.py -q
+    ```
+  - 报告要求: Architect 在审查记录或交付说明中贴出命令、退出码、通过/失败数量、首个失败摘要。
+  - 失败处理: pytest 未全绿、命令无法执行、或仍然是解释器/pytest 寻址问题，均打回 Worker。
+
+- [x] **H3-final** Phase 3 最终验收项 — Architect 守门通过并回填状态
+  - 标记规则: 只有 H3-a 静态审查通过，且 H3-b 真实 pytest 全绿，才可把 `H1-final`、`H2-final`、
+    `H3-final` 三项同时改为 `[x]`。
+  - 通过后状态: 本轮 Excel 物理基座迁移完成；若失败，保持未勾选并在 Worker 下一步中列明返工项。
+  - Phase 3 Final Review 真实输出摘要（2026-06-20）:
+    - smoke: `& "C:\Users\Lynch\AppData\Local\Python\pythoncore-3.14-64\python.exe" -c "import services.excel_toolbox as m; xw=m._get_xlwings(); print(xw.__version__)"` -> `0.36.6`
+    - pytest: `& "C:\Users\Lynch\AppData\Local\Python\pythoncore-3.14-64\python.exe" -m pytest tests/test_excel_toolbox.py -q --basetemp E:\project\vse-toolbox\.tmp_pytest -p no:cacheprovider` -> `17 passed in 0.60s`
+
+---
+
+### I. P1 内网爬虫 Worker 组 — Aras HAR 契约落地（EWO / NCR）
+
+> **目标**: 按 `docs/agents/crawler_contract.md` 落地 P1 HTTP/AML 爬虫，不再依赖真实浏览器选择器作为核心数据通路。
+> **硬约束**: Worker 不得访问真实内网或外网；测试必须 mock HTTP；不得硬编码 Cookie、Authorization、api_key、token 或样本真实下载令牌。
+> **推荐文件边界**: 新增 `services/aras_crawler.py`、`tests/fixtures/crawler/*`、`tests/test_aras_crawler.py`；必要时最小更新 `requirements.txt`。不要修改 `docs/agents/*`。
+
+- [x] **I1** Worker 源码骨架 — `services/aras_crawler.py::ArasCrawlerClient`
+  - 目标文件: `services/aras_crawler.py`（建议新增；若复用 `services/intranet_scraper.py`，必须保持 Selenium 手动登录职责不被扩大）
+  - 实现:
+    - 定义 `ArasCrawlerClient.__init__(base_url, session=None, headers=None, cookies=None, timeout=30.0)`。
+    - 定义 DTO/dataclass: `EWOReportFilters`、`NCRApprovalFilters`、`EWOReportPage`、`NCRExportResult`、`NCRDetailExportResult`。
+    - 合并通用 SOAP headers 与调用方注入 headers/cookies；调用方 headers 优先。
+  - 约束: service 层不得 import `rich` / `flask`；不得在模块内写真实 cookie/token/auth；不得自动下载 vault 文件。
+  - 验收: `python -m pytest tests/test_aras_crawler.py -q` 中 mock session 可实例化并验证 headers/cookies 注入。
+
+- [x] **I2** Worker XML builder — EWO 查询请求
+  - 目标函数: `ArasCrawlerClient.query_ewo_report()` 或其私有 builder。
+  - 实现:
+    - 路由 `POST /innovatorserver/Server/InnovatorServer.aspx`，`SOAPAction=ApplyItem`。
+    - 构造 `Item type="EWO_O" action="get" page="<page>" pagesize="<page_size>" maxRecords="<max_records>" returnMode="itemsOnly"`。
+    - 默认 `select` 字段完全按 `docs/agents/crawler_contract.md`；根据 `EWOReportFilters` 追加 AML 子节点条件。
+  - 验收: 测试断言 method、route、SOAPAction、分页属性、`select`、关键 filter 节点名，不做真实 HTTP。
+
+- [x] **I3** Worker XML builder — NCR 进度与明细请求
+  - 目标函数: `query_ncr_approval_progress()`、`extract_ncr_approval_detail()` 或共享私有 builder。
+  - 实现:
+    - 进度: `Method action="sgmw_downloadFileProgressC"`。
+    - 明细: `Method action="sgmw_downloadFileDetail4C"`。
+    - 共同筛选节点: `buystart`、`buyend`、`pestart`、`peend`、`ncrno`、`ncrname`、`seccode`、`changetype`、`othercondition`。
+    - `project_names` 以逗号连接写入 `ncrname` CDATA；`othercondition` 默认 `"0"`。
+  - 验收: 测试断言两个方法仅 action 不同，payload 节点与 CDATA 内容符合 HAR 契约。
+
+- [x] **I4** Worker parser — HAR 响应 XML/JSON 解析
+  - 目标函数: EWO/NCR 响应解析函数，可为私有函数或模块级 helper。
+  - 实现:
+    - EWO: 解析 `Envelope/Body/Result/Item type="EWO_O"` 为 rows，并保留 `id`、`page`、raw XML。
+    - NCR 进度: 解析 `sgmw_outputFileRecord` 的 `_file` 文本为 `file_id`，`_file@keyed_name` 为 `file_name`。
+    - NCR 明细: 解析 `Envelope/Body/Result` 文本为 `file_name`。
+    - 下载 token: 解析 JSON `{"d":"<download_token>"}`，但不得记录真实 token。
+  - 验收: parser 测试从 fixture 读取响应并断言结构化结果；空/异常响应抛领域异常。
+
+- [x] **I5** Worker fixtures — 从 HAR response.content 萃取离线样本
+  - 目标文件:
+    - `tests/fixtures/crawler/ewo_query_response.xml`
+    - `tests/fixtures/crawler/ncr_project_lookup_response.xml`
+    - `tests/fixtures/crawler/ncr_progress_response.xml`
+    - `tests/fixtures/crawler/ncr_detail_response.xml`
+    - `tests/fixtures/crawler/download_token_response.json`
+  - 实现: 前四个 fixture 可来自 HAR `response.content.text` 原样内容；token fixture 必须替换为 `<download_token>` 或假 token。
+  - 约束: fixture 不得包含真实 Cookie、Authorization、Set-Cookie、session、CSRF、download token。
+  - 验收: `rg -n "Cookie|Authorization|Set-Cookie|csrf|session|token=" tests/fixtures/crawler` 不得命中真实敏感值；允许命中 `<download_token>`。
+
+- [x] **I6** Worker mock 测试 — 禁止真实 HTTP
+  - 目标文件: `tests/test_aras_crawler.py`
+  - 实现:
+    - Fake `requests.Session`，记录 `post/head/get` 参数并返回 fixture 文本。
+    - 覆盖 EWO 查询、NCR 进度、NCR 明细、下载 token JSON 解析。
+    - 覆盖 caller-supplied `headers` / `cookies` 注入与覆盖策略。
+    - monkeypatch `requests.sessions.Session.request` 或直接断言 fake session，确保测试不会落到真实网络。
+  - 验收命令:
+    ```powershell
+    & "C:\Users\Lynch\AppData\Local\Python\pythoncore-3.14-64\python.exe" -m pytest tests/test_aras_crawler.py -q --basetemp E:\project\vse-toolbox\.tmp_pytest -p no:cacheprovider
+    ```
+
+- [x] **I7** Worker 安全静态检查 — 凭据与真实 HTTP 防线
+  - 检查范围: `services/aras_crawler.py`、`tests/test_aras_crawler.py`、`tests/fixtures/crawler/*`。
+  - 建议命令:
+    ```powershell
+    rg -n "ecm\\.sgmw\\.com\\.cn|requests\\.(get|post|head|request)\\(|Cookie|Authorization|Set-Cookie|csrf|session|token=" services/aras_crawler.py tests/test_aras_crawler.py tests/fixtures/crawler
+    ```
+  - 判定:
+    - 允许契约测试断言路径字符串或 base_url 测试值；不得出现真实 token/cookie/auth 值。
+    - `requests.Session` 只能通过注入或创建后由测试 fake；不得在单元测试中发真实请求。
+
+- [x] **I8** Reviewer 验收项 — P1 契约一致性审查
+  - 审查文件: `docs/agents/crawler_contract.md`、`services/aras_crawler.py`、`tests/test_aras_crawler.py`、`tests/fixtures/crawler/*`。
+  - 验收:
+    - 三条能力的 route、method、SOAPAction、payload 节点、响应解析与合同一致。
+    - Cookie/auth/token 全部外部注入或运行时返回，未硬编码。
+    - 离线 pytest 全绿，且无真实 HTTP。
+    - 若 Worker 修改了 `services/intranet_scraper.py`，Reviewer 需确认未破坏现有 Selenium 手动登录流。
+
+- [x] **I9-final** Phase 4 最终验收项 — Aras HAR 契约落地完成
+  - 标记规则: 只有 Architect 在 Phase 4 复核到目标解释器 smoke、生产 session smoke、import/class smoke、专项 pytest 真实输出后，才可把本项改为 `[x]`。
+  - 通过条件: `requests` 在目标解释器可 import；`ArasCrawlerClient` 默认生产 session 可实例化；三条能力与 HAR 契约一致；fixture 无真实 Cookie/token/auth；测试不发真实 HTTP。
+  - Phase 4 Final Review 真实输出摘要（2026-06-20）:
+    - requests smoke: `2.34.2`
+    - production session smoke: `Session`
+    - import/class smoke: `ArasCrawlerClient`
+    - pytest: `7 passed in 0.57s`
+
+---
+
+### J. P1 双轨接入 Worker 组 — CLI 终端适配 + WEB 可视化适配
+
+> **目标**: 在不修改 `services/aras_crawler.py` 的前提下，把已验收的 Aras service 接入 CLI 与 WEB 两条界面轨道。
+> **权威设计**: `docs/agents/implementation_plan.md` §2.11、§3.8、§4.3。
+> **允许修改**: `main.py`、`web/app.py`、`web/templates/dashboard.html`、`web/static/app.js`、
+> `web/static/style.css`、新增 `tests/test_aras_cli_web.py` 或同等聚焦测试。
+> **禁止修改**: `services/aras_crawler.py`；除非 Architect 另行打回并新增专门修复任务。
+> **安全硬约束**: 不持久化 Cookie/token/Authorization/api_key/secret；不写日志、不进 URL、不进 localStorage/sessionStorage；
+> Web API 不默认调用真实内网，必须由用户显式提交 `base_url` 与 Cookie/header；测试必须 mock。
+
+- [x] **J1** Worker CLI 入口解锁 — `main.py::DEFERRED` / `show_menu()` / `handle_intranet_scrape()`
+  - 目标文件: `main.py`
+  - 实现:
+    - 从 `DEFERRED` 中移除 P1 菜单键 `"4"`，保留 P3/P4 暂缓。
+    - `show_menu()` 中 P1 显示为可选普通菜单，不再标注“暂缓”。
+    - `handle_intranet_scrape(db)` 移除 P1 短路 return，改为进入 Aras 爬虫二级菜单。
+    - 引入 `ArasCrawlerClient`、`EWOReportFilters`、`NCRApprovalFilters`、`ArasCrawlerError`，仅在 CLI 适配层使用。
+  - 约束: 不删除旧 `IntranetScraper` import 和历史代码，除非 Worker 同时证明没有破坏旧调用；本任务不得写任何 service 业务逻辑。
+  - 验收: `python main.py` 菜单中 P1 可进入二级菜单；P3/P4 仍 dim/暂缓。
+
+- [x] **J2** Worker CLI 表单采集 helpers — `main.py` Aras 输入解析
+  - 目标文件: `main.py`
+  - 建议新增函数:
+    - `_ask_aras_connection() -> tuple[str, dict[str, str], dict[str, str] | None]`
+    - `_ask_ewo_filters() -> tuple[EWOReportFilters, int, int, int]`
+    - `_ask_ncr_filters() -> NCRApprovalFilters`
+    - `_parse_header_lines(raw: str) -> dict[str, str]`
+  - 实现:
+    - `base_url` 必填；为空时提示并返回二级菜单。
+    - Cookie 用 `Prompt.ask(..., password=True)` 或等效隐藏输入采集；作为 `headers["Cookie"]` 透传或结构化 cookies 透传。
+    - 额外 headers 支持 `Key: Value` 多行/逗号分隔；跳过空行；拒绝无冒号格式并给 rich 提示。
+    - EWO/NCR 过滤项与 `implementation_plan.md` §2.11 完全对齐；空输入转换为 `None` 或默认值。
+  - 约束: 不把输入值写入 logger；不把 Cookie/token 回显到终端。
+  - 验收: helper 可由测试 monkeypatch `Prompt.ask` 覆盖；敏感字段不会出现在 captured stdout。
+
+- [x] **J3** Worker CLI 执行与 rich 渲染 — `main.py::handle_intranet_scrape()`
+  - 目标文件: `main.py`
+  - 实现:
+    - 二级菜单提供 `EWO 报表查询`、`NCR 审批进度导出`、`NCR 审批明细提取`、`返回`。
+    - EWO 调用 `client.query_ewo_report(filters, page, page_size, max_records)`，用 `rich.table.Table` 渲染 rows；
+      同时显示 `page`、`count`、`item_ids` 数量。
+    - NCR 进度调用 `client.query_ncr_approval_progress(filters)`，渲染 `file_name`、`file_id`、`record_id`；
+      不默认调用 `get_file_download_token()`。
+    - NCR 明细调用 `client.extract_ncr_approval_detail(filters)`，渲染 `file_name`。
+    - 捕获 `ArasCrawlerError`、HTTP 异常、通用异常，输出脱敏错误摘要。
+  - 约束: 不打印 `raw_xml`、Cookie、Authorization、token、完整 headers；不访问真实下载 URL。
+  - 验收: 通过 fake client 测试三类分支的调用参数和 rich 输出结构。
+
+- [x] **J4** Worker Web API 基础 helpers — `web/app.py`
+  - 目标文件: `web/app.py`
+  - 建议新增函数:
+    - `_json_error(error_type: str, message: str, status: int)`
+    - `_redact_error_message(exc: Exception) -> str`
+    - `_build_aras_client_from_payload(payload: dict[str, Any]) -> ArasCrawlerClient`
+    - `_payload_headers(payload: dict[str, Any]) -> tuple[dict[str, str], dict[str, str] | None]`
+  - 实现:
+    - 校验 JSON object；`base_url` 缺失返回 `400`。
+    - `headers` 只接收字符串键值；`cookie` 字符串写入 `headers["Cookie"]`；`cookies` mapping 可选。
+    - 每次请求即时构造 `ArasCrawlerClient`；不使用 Flask session/server cache 保存凭据。
+    - 错误响应统一为 `{"ok": false, "error": {"type": "...", "message": "..."}}`。
+  - 约束: logger 不记录 payload、headers、cookie；错误 message 必须脱敏。
+  - 验收: Flask test client 覆盖无 `base_url`、非法 headers、cookie 透传、错误脱敏。
+
+- [x] **J5** Worker Web API 路由 — `web/app.py`
+  - 目标文件: `web/app.py`
+  - 实现路由:
+    - `POST /api/aras/ewo/query` → `ArasCrawlerClient.query_ewo_report()`，返回 `rows`、`page`、`item_ids`、`count`。
+    - `POST /api/aras/ncr/progress` → `query_ncr_approval_progress()`，返回 `file_id`、`file_name`、`record_id`。
+    - `POST /api/aras/ncr/detail` → `extract_ncr_approval_detail()`，返回 `file_name`。
+  - 状态码:
+    - 参数错误 `400`；
+    - `ArasCrawlerError` 或 HTTP 上游错误 `502`；
+    - 未预期异常 `500`。
+  - 约束: 全部使用 `POST`；不得通过 query string 接收 Cookie/token；不得返回 `raw_xml`。
+  - 验收: `tests/test_aras_cli_web.py` 使用 monkeypatch fake client，断言 JSON 契约和状态码。
+
+- [x] **J6** Worker Dashboard HTML 面板解锁 — `web/templates/dashboard.html`
+  - 目标文件: `web/templates/dashboard.html`
+  - 实现:
+    - 将“内网爬虫（暂缓）”导航改为可用 P1 面板入口；P3/P4 仍 disabled。
+    - 新增 P1 Aras 面板：连接信息、隐藏 Cookie 输入、headers 输入、查询类型切换、EWO filters、
+      NCR filters、执行按钮、loading/error 区、结果容器。
+    - 不在 HTML 中放任何真实 `base_url`、Cookie、Authorization、token 默认值。
+  - 约束: 表单文案只描述字段本身，不展示敏感示例值；不引入前端框架。
+  - 验收: 页面可无 JS 错误加载；P1 面板 DOM id/class 与 J7 约定一致。
+
+- [x] **J7** Worker Dashboard JS 异步渲染队列 — `web/static/app.js`
+  - 目标文件: `web/static/app.js`
+  - 实现:
+    - 采集 P1 表单并组装 POST JSON；按查询类型调用 `/api/aras/ewo/query`、
+      `/api/aras/ncr/progress`、`/api/aras/ncr/detail`。
+    - 实现 request 序号或 running/queued 状态，避免慢响应覆盖新结果；请求中禁用执行按钮并显示 loading。
+    - EWO rows 渲染为表格；NCR progress/detail 渲染为摘要行；错误渲染为脱敏提示。
+    - 请求完成后清理内存中的敏感临时变量引用；不得写 localStorage/sessionStorage/URL/console。
+  - 约束: 原 `/api/overview` 概览渲染保持可用；不引入构建链。
+  - 验收: 前端单元可通过 DOM smoke 或人工浏览验证；代码 grep 不出现 `localStorage`/`sessionStorage` 保存凭据。
+
+- [x] **J8** Worker Dashboard 样式 — `web/static/style.css`
+  - 目标文件: `web/static/style.css`
+  - 实现:
+    - 为 P1 表单、tabs/segmented control、结果表格、loading/error、disabled/running 状态补齐样式。
+    - EWO 大表支持横向滚动；移动端不溢出视口。
+  - 约束: 不改变现有 P2 overview 的基本布局；不把页面改成单一营销页。
+  - 验收: dashboard 首屏和 P1 面板在桌面宽度下无明显重叠，P2 概览仍正常显示。
+
+- [x] **J9** Worker CLI/Web 测试 — 新增 `tests/test_aras_cli_web.py`
+  - 目标文件: `tests/test_aras_cli_web.py`
+  - 实现:
+    - main.py helper 测试：headers 解析、空值过滤、Cookie 不回显、DTO 构造。
+    - Flask API 测试：fake `ArasCrawlerClient` 覆盖 EWO/NCR 三条路由，断言请求/响应 JSON。
+    - 错误路径测试：无 `base_url` 为 `400`；fake service 抛 `ArasCrawlerError` 为 `502`；异常信息脱敏。
+  - 约束: 不访问真实内网/外网；不得要求真实 Cookie/token fixture。
+  - 验收命令:
+    ```powershell
+    & "C:\Users\Lynch\AppData\Local\Python\pythoncore-3.14-64\python.exe" -m pytest tests/test_aras_cli_web.py -q --basetemp E:\project\vse-toolbox\.tmp_pytest -p no:cacheprovider
+    ```
+
+- [x] **J10** Worker 安全静态检查 — 凭据、防反向污染与真实 HTTP 防线
+  - 检查范围: `main.py`、`web/app.py`、`web/templates/dashboard.html`、`web/static/app.js`、
+    `web/static/style.css`、`tests/test_aras_cli_web.py`、`services/aras_crawler.py`。
+  - 建议命令:
+    ```powershell
+    rg -n "localStorage|sessionStorage|console\\.log\\(|Cookie|Authorization|api_key|token|secret" main.py web tests/test_aras_cli_web.py
+    rg -n "rich|flask|render_template|jsonify|document\\.|window\\." services/aras_crawler.py
+    rg -n "requests\\.(get|post|head|request)\\(" tests/test_aras_cli_web.py
+    ```
+  - 判定:
+    - 第一条允许字段名/占位名命中，但不得出现真实敏感值或持久化逻辑。
+    - 第二条不得命中，确保 service 不被 CLI/Web 反向污染。
+    - 第三条不得命中真实 HTTP 直接调用。
+  - 验收: Worker 交付说明贴出命令、退出码和命中解释。
+
+- [x] **J11** Reviewer 验收项 — P1 双轨接入契约审查
+  - 审查文件: `implementation_plan.md` §2.11、`main.py`、`web/app.py`、`web/templates/dashboard.html`、
+    `web/static/app.js`、`web/static/style.css`、`tests/test_aras_cli_web.py`、`services/aras_crawler.py`。
+  - 验收:
+    - CLI P1 已解锁，P3/P4 仍暂缓；CLI 只做 rich 表单和渲染，不写爬虫业务。
+    - Web 三条 POST API 契约、状态码、脱敏错误响应与 §2.11 一致。
+    - dashboard P1 面板可操作，overview 仍可用，前端不持久化凭据。
+    - `services/aras_crawler.py` 未被修改或未引入 rich/flask/DOM/web 依赖。
+    - 专项 pytest 与安全静态检查通过；无真实 HTTP。
+
+- [x] **J-final** Phase 3 最终验收项 — P1 CLI/Web 双轨注入返工签批完成
+  - 最终复核日期: 2026-06-20
+  - 最终复核输出:
+    - pytest: `12 passed in 0.59s`
+    - py_compile: `main.py`、`web/app.py` 通过，无输出
+  - 签批结论: P1 CLI/Web 双轨注入返工通过最终复审，允许进入签批状态。
+
+---
+
 ## 🗂️ 后续 Sprint / Backlog（本轮**不实现**，仅登记）
 
 > Architect 决策: 以下为非阻塞存量缺陷 / 演进项，登记待后续 Sprint 排期。
@@ -384,6 +751,8 @@
 - [ ] **P1** 内网爬虫真实页面选择器（`_scrape_data` / `_save_to_database`）。
 - [ ] **P3** 周报 PPT：本轮仅在 CLI/WEB 代码层预留入口，真实模板接入后开发。
 - [ ] **P4** 飞书助手：本轮仅代码层预留入口，待需求明确后开发。
+- [ ] **P5** Office I/O 适配层调研：仅当出现“脱离本机 Office / 服务端批处理 / Linux 运行 /
+  多引擎切换”明确目标时启动；Excel 第一实现以 H 段 `xlwings` 基座为准，并证明不破坏 DLP 原生保存路径。
 
 ---
 

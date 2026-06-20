@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>VSE TOOLBOX — 项目可视化大屏</title>
+  <title>VSE TOOLBOX - 项目可视化大屏</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
@@ -11,35 +11,100 @@
     <h1>VSE TOOLBOX <span class="subtitle">项目可视化大屏</span></h1>
   </header>
 
-  <!-- 模块导航条 -->
-  <nav class="module-nav">
-    <a href="#overview" class="nav-item active">项目可视化</a>
-    <span class="nav-item disabled" title="P0 · WEB 入口待接入">Excel 工具箱（仅 CLI）</span>
-    <span class="nav-item disabled" title="P1 · 待开发">内网爬虫（暂缓）</span>
-    <span class="nav-item disabled" title="P3 · 待开发">周报 PPT（暂缓）</span>
-    <span class="nav-item disabled" title="P4 · 待开发">飞书助手（暂缓）</span>
+  <nav class="module-nav" aria-label="模块导航">
+    <a href="#overview" class="nav-item active" data-panel-link="overview">项目可视化</a>
+    <span class="nav-item disabled" title="P0 - WEB 入口待接入">Excel 工具箱（CLI）</span>
+    <a href="#aras-panel" class="nav-item" data-panel-link="aras-panel">内网爬虫</a>
+    <span class="nav-item disabled" title="P3 - 待开放">周报 PPT（暂缓）</span>
+    <span class="nav-item disabled" title="P4 - 待开放">飞书助手（暂缓）</span>
   </nav>
 
-  <!-- 概览卡片区 -->
-  <main id="overview" class="dashboard-grid">
-    <section class="card" id="card-projects">
-      <h2 class="card-title">项目</h2>
-      <div class="card-body" id="projects-body">
-        <p class="loading">加载中…</p>
-      </div>
+  <main>
+    <section id="overview" class="dashboard-grid panel-section">
+      <section class="card" id="card-projects">
+        <h2 class="card-title">项目</h2>
+        <div class="card-body" id="projects-body">
+          <p class="loading">加载中...</p>
+        </div>
+      </section>
+
+      <section class="card" id="card-deliverables">
+        <h2 class="card-title">交付物</h2>
+        <div class="card-body" id="deliverables-body">
+          <p class="loading">加载中...</p>
+        </div>
+      </section>
+
+      <section class="card" id="card-feishu">
+        <h2 class="card-title">飞书待办</h2>
+        <div class="card-body" id="feishu-body">
+          <p class="loading">加载中...</p>
+        </div>
+      </section>
     </section>
 
-    <section class="card" id="card-deliverables">
-      <h2 class="card-title">交付物</h2>
-      <div class="card-body" id="deliverables-body">
-        <p class="loading">加载中…</p>
-      </div>
-    </section>
+    <section id="aras-panel" class="panel-section aras-shell" hidden>
+      <div class="aras-layout">
+        <form id="aras-form" class="aras-form" autocomplete="off">
+          <div class="form-grid">
+            <label>
+              <span>Base URL</span>
+              <input id="aras-base-url" name="base_url" type="url" required placeholder="https://aras-host/" />
+            </label>
+            <label>
+              <span>Cookie</span>
+              <input id="aras-cookie" name="cookie" type="password" autocomplete="off" />
+            </label>
+            <label class="wide">
+              <span>Headers</span>
+              <textarea id="aras-headers" name="headers" rows="3" placeholder="Key: Value，每行一条"></textarea>
+            </label>
+          </div>
 
-    <section class="card" id="card-feishu">
-      <h2 class="card-title">飞书待办</h2>
-      <div class="card-body" id="feishu-body">
-        <p class="loading">加载中…</p>
+          <div class="segmented" role="tablist" aria-label="Aras 查询类型">
+            <button type="button" class="segment active" data-aras-mode="ewo">EWO</button>
+            <button type="button" class="segment" data-aras-mode="ncr-progress">NCR 进度</button>
+            <button type="button" class="segment" data-aras-mode="ncr-detail">NCR 明细</button>
+          </div>
+
+          <div class="aras-fields" data-mode-fields="ewo">
+            <label><span>EWO 编号</span><input name="ewo_no" /></label>
+            <label><span>项目代码</span><input name="project_code" /></label>
+            <label><span>主题关键词</span><input name="subject_keyword" /></label>
+            <label><span>变更类型</span><input name="change_type" /></label>
+            <label><span>变更子类型</span><input name="change_sub_type" /></label>
+            <label><span>区域</span><input name="area" /></label>
+            <label><span>状态</span><input name="state" /></label>
+            <label><span>责任部门</span><input name="rsp_department" /></label>
+            <label><span>提交开始</span><input name="submit_start" type="date" /></label>
+            <label><span>提交结束</span><input name="submit_end" type="date" /></label>
+            <label><span>页码</span><input name="page" type="number" min="1" value="1" /></label>
+            <label><span>每页数量</span><input name="page_size" type="number" min="1" value="50" /></label>
+            <label><span>最大记录数</span><input name="max_records" type="number" min="1" value="2000" /></label>
+          </div>
+
+          <div class="aras-fields" data-mode-fields="ncr" hidden>
+            <label><span>采购开始</span><input name="buy_start" type="date" /></label>
+            <label><span>采购结束</span><input name="buy_end" type="date" /></label>
+            <label><span>PE 开始</span><input name="pe_start" type="date" /></label>
+            <label><span>PE 结束</span><input name="pe_end" type="date" /></label>
+            <label><span>NCR 编号</span><input name="ncr_no" /></label>
+            <label><span>项目名称</span><input name="project_names" placeholder="多个用逗号分隔" /></label>
+            <label><span>科室代码</span><input name="section_code" /></label>
+            <label><span>变更类型</span><input name="change_type" /></label>
+            <label><span>Other Condition</span><input name="othercondition" value="0" /></label>
+          </div>
+
+          <div class="form-actions">
+            <button id="aras-submit" class="primary-btn" type="submit">执行查询</button>
+            <span id="aras-status" class="loading" aria-live="polite"></span>
+          </div>
+        </form>
+
+        <section class="aras-results" aria-live="polite">
+          <div id="aras-error" class="error-msg" hidden></div>
+          <div id="aras-result"></div>
+        </section>
       </div>
     </section>
   </main>

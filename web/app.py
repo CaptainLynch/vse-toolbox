@@ -10,14 +10,25 @@ web/app.py — WEB 适配层：Flask 应用工厂 + /api/overview 路由
 """
 
 import logging
+import re
 from typing import Any
 
-from flask import Flask, jsonify, render_template
+from flask import Flask, jsonify, render_template, request
 
 from core.config import FLASK_HOST, FLASK_PORT
 from core.db_manager import DatabaseManager
+from services.aras_crawler import ArasCrawlerClient, ArasCrawlerError, EWOReportFilters, NCRApprovalFilters
 
 logger = logging.getLogger("vse_toolbox.web")
+
+_SENSITIVE_JSON_RE = re.compile(
+    r"(?i)(['\"])(authorization|cookie|token|api_key|sid|sessionid|csrf|secret)\1(\s*:\s*)(['\"])(.*?)\4"
+)
+_SENSITIVE_PARAM_RE = re.compile(r"(?i)\b(token|api_key|sid|sessionid|csrf|secret)=([^&\s,;'\"}\])]+)")
+_SENSITIVE_HEADER_RE = re.compile(
+    r"(?i)\b(cookie|authorization)\b(\s*[:=]?\s*)(?:Bearer\s+)?([^,\s;'\"}\])]+)"
+)
+_SENSITIVE_BEARER_RE = re.compile(r"(?i)\bBearer\s+([^,\s;'\"}\])]+)")
 
 
 def _query_overview(db: DatabaseManager) -> dict[str, Any]:
@@ -41,6 +52,110 @@ def _query_overview(db: DatabaseManager) -> dict[str, Any]:
     }
 
 
+def _sanitize_error_message(exc: Exception) -> str:
+    message = str(exc).replace("\n", " ")
+    message = _SENSITIVE_JSON_RE.sub(r"\1\2\1\3\4[redacted]\4", message)
+    message = _SENSITIVE_PARAM_RE.sub(r"\1=[redacted]", message)
+    message = _SENSITIVE_HEADER_RE.sub(r"\1\2[redacted]", message)
+    message = _SENSITIVE_BEARER_RE.sub("Bearer [redacted]", message)
+    return message[:240]
+
+
+def _json_error(status: int, error_type: str, message: str):
+    return jsonify({"ok": False, "error": {"type": error_type, "message": message}}), status
+
+
+def _request_payload() -> tuple[dict[str, Any] | None, Any]:
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return None, _json_error(400, "ValidationError", "JSON object body is required")
+    if not str(payload.get("base_url") or "").strip():
+        return None, _json_error(400, "ValidationError", "base_url is required")
+    return payload, None
+
+
+def _clean_string_mapping(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    clean: dict[str, str] = {}
+    for key, item in value.items():
+        if isinstance(key, str) and isinstance(item, str) and key.strip() and item.strip():
+            clean[key.strip()] = item.strip()
+    return clean
+
+
+def _build_aras_client_from_payload(payload: dict[str, Any]) -> ArasCrawlerClient:
+    headers = _clean_string_mapping(payload.get("headers"))
+    cookie = payload.get("cookie")
+    if isinstance(cookie, str) and cookie.strip():
+        headers["Cookie"] = cookie.strip()
+    cookies = _clean_string_mapping(payload.get("cookies")) or None
+    return ArasCrawlerClient(
+        str(payload["base_url"]).strip(),
+        headers=headers,
+        cookies=cookies,
+        timeout=30.0,
+    )
+
+
+def _filter_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    filters = payload.get("filters", {})
+    return filters if isinstance(filters, dict) else {}
+
+
+def _none_if_blank(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _ewo_filters_from_payload(payload: dict[str, Any]) -> EWOReportFilters:
+    filters = _filter_payload(payload)
+    return EWOReportFilters(
+        ewo_no=_none_if_blank(filters.get("ewo_no")),
+        project_code=_none_if_blank(filters.get("project_code")),
+        subject_keyword=_none_if_blank(filters.get("subject_keyword")),
+        change_type=_none_if_blank(filters.get("change_type")),
+        change_sub_type=_none_if_blank(filters.get("change_sub_type")),
+        area=_none_if_blank(filters.get("area")),
+        state=_none_if_blank(filters.get("state")),
+        rsp_department=_none_if_blank(filters.get("rsp_department")),
+        submit_start=_none_if_blank(filters.get("submit_start")),
+        submit_end=_none_if_blank(filters.get("submit_end")),
+    )
+
+
+def _ncr_filters_from_payload(payload: dict[str, Any]) -> NCRApprovalFilters:
+    filters = _filter_payload(payload)
+    project_names = filters.get("project_names", ())
+    if isinstance(project_names, str):
+        projects = tuple(item.strip() for item in project_names.split(",") if item.strip())
+    elif isinstance(project_names, list):
+        projects = tuple(str(item).strip() for item in project_names if str(item).strip())
+    else:
+        projects = ()
+    return NCRApprovalFilters(
+        buy_start=_none_if_blank(filters.get("buy_start")),
+        buy_end=_none_if_blank(filters.get("buy_end")),
+        pe_start=_none_if_blank(filters.get("pe_start")),
+        pe_end=_none_if_blank(filters.get("pe_end")),
+        ncr_no=_none_if_blank(filters.get("ncr_no")),
+        project_names=projects,
+        section_code=_none_if_blank(filters.get("section_code")),
+        change_type=_none_if_blank(filters.get("change_type")),
+        othercondition=str(filters.get("othercondition") or "0").strip() or "0",
+    )
+
+
+def _positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
 def create_app() -> Flask:
     """Flask 应用工厂。"""
     app = Flask(
@@ -50,6 +165,7 @@ def create_app() -> Flask:
     )
 
     # DatabaseManager 实例化一次，init_database 只在启动时调用
+    db = DatabaseManager()
     db = DatabaseManager()
     db.init_database()
 
@@ -65,6 +181,80 @@ def create_app() -> Flask:
         except Exception as e:
             logger.exception("api/overview 查询失败")
             return jsonify({"error": str(e)}), 500
+
+    @app.post("/api/aras/ewo/query")
+    def api_aras_ewo_query():
+        payload, error_response = _request_payload()
+        if error_response:
+            return error_response
+        assert payload is not None
+        try:
+            client = _build_aras_client_from_payload(payload)
+            result = client.query_ewo_report(
+                _ewo_filters_from_payload(payload),
+                page=_positive_int(payload.get("page"), 1),
+                page_size=_positive_int(payload.get("page_size"), 50),
+                max_records=_positive_int(payload.get("max_records"), 2000),
+            )
+            return jsonify(
+                {
+                    "ok": True,
+                    "data": {
+                        "rows": result.rows,
+                        "page": result.page,
+                        "item_ids": result.item_ids,
+                        "count": len(result.rows),
+                    },
+                }
+            )
+        except ArasCrawlerError as e:
+            return _json_error(502, "ArasCrawlerError", _sanitize_error_message(e))
+        except Exception as e:
+            logger.warning("Aras EWO API failed: %s", type(e).__name__)
+            return _json_error(500, type(e).__name__, _sanitize_error_message(e))
+
+    @app.post("/api/aras/ncr/progress")
+    def api_aras_ncr_progress():
+        payload, error_response = _request_payload()
+        if error_response:
+            return error_response
+        assert payload is not None
+        try:
+            result = _build_aras_client_from_payload(payload).query_ncr_approval_progress(
+                _ncr_filters_from_payload(payload)
+            )
+            return jsonify(
+                {
+                    "ok": True,
+                    "data": {
+                        "file_id": result.file_id,
+                        "file_name": result.file_name,
+                        "record_id": result.record_id,
+                    },
+                }
+            )
+        except ArasCrawlerError as e:
+            return _json_error(502, "ArasCrawlerError", _sanitize_error_message(e))
+        except Exception as e:
+            logger.warning("Aras NCR progress API failed: %s", type(e).__name__)
+            return _json_error(500, type(e).__name__, _sanitize_error_message(e))
+
+    @app.post("/api/aras/ncr/detail")
+    def api_aras_ncr_detail():
+        payload, error_response = _request_payload()
+        if error_response:
+            return error_response
+        assert payload is not None
+        try:
+            result = _build_aras_client_from_payload(payload).extract_ncr_approval_detail(
+                _ncr_filters_from_payload(payload)
+            )
+            return jsonify({"ok": True, "data": {"file_name": result.file_name}})
+        except ArasCrawlerError as e:
+            return _json_error(502, "ArasCrawlerError", _sanitize_error_message(e))
+        except Exception as e:
+            logger.warning("Aras NCR detail API failed: %s", type(e).__name__)
+            return _json_error(500, type(e).__name__, _sanitize_error_message(e))
 
     return app
 
