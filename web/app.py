@@ -11,13 +11,26 @@ web/app.py — WEB 适配层：Flask 应用工厂 + /api/overview 路由
 
 import logging
 import re
+import sys
+from pathlib import Path
 from typing import Any
 
 from flask import Flask, jsonify, render_template, request
 
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
 from core.config import FLASK_HOST, FLASK_PORT
 from core.db_manager import DatabaseManager
-from services.aras_crawler import ArasCrawlerClient, ArasCrawlerError, EWOReportFilters, NCRApprovalFilters
+from core.redaction import redact_sensitive_text
+from services.aras_crawler import (
+    ArasCrawlerClient,
+    ArasCrawlerError,
+    EWOReportFilters,
+    NCRApprovalFilters,
+    PAAReportFilters,
+)
 
 logger = logging.getLogger("vse_toolbox.web")
 
@@ -29,6 +42,23 @@ _SENSITIVE_HEADER_RE = re.compile(
     r"(?i)\b(cookie|authorization)\b(\s*[:=]?\s*)(?:Bearer\s+)?([^,\s;'\"}\])]+)"
 )
 _SENSITIVE_BEARER_RE = re.compile(r"(?i)\bBearer\s+([^,\s;'\"}\])]+)")
+
+_SENSITIVE_RESPONSE_KEYS = {
+    "raw_xml",
+    "file_id",
+    "authorization",
+    "set-cookie",
+    "cookie",
+    "token",
+    "api_key",
+    "sid",
+    "sessionid",
+    "arasauth",
+    "jsessionid",
+    "csrf",
+    "secret",
+    "password",
+}
 
 
 def _query_overview(db: DatabaseManager) -> dict[str, Any]:
@@ -53,16 +83,28 @@ def _query_overview(db: DatabaseManager) -> dict[str, Any]:
 
 
 def _sanitize_error_message(exc: Exception) -> str:
-    message = str(exc).replace("\n", " ")
-    message = _SENSITIVE_JSON_RE.sub(r"\1\2\1\3\4[redacted]\4", message)
-    message = _SENSITIVE_PARAM_RE.sub(r"\1=[redacted]", message)
-    message = _SENSITIVE_HEADER_RE.sub(r"\1\2[redacted]", message)
-    message = _SENSITIVE_BEARER_RE.sub("Bearer [redacted]", message)
-    return message[:240]
+    return redact_sensitive_text(exc, limit=240, collapse_newlines=True)
 
 
 def _json_error(status: int, error_type: str, message: str):
     return jsonify({"ok": False, "error": {"type": error_type, "message": message}}), status
+
+
+def _safe_rows(rows: list[dict[str, Any]]) -> list[dict[str, str | None]]:
+    safe: list[dict[str, str | None]] = []
+    for row in rows:
+        clean: dict[str, str | None] = {}
+        for key, value in row.items():
+            key_text = str(key)
+            if key_text.lower() in _SENSITIVE_RESPONSE_KEYS:
+                continue
+            clean[key_text] = None if value is None else redact_sensitive_text(value)
+        safe.append(clean)
+    return safe
+
+
+def _safe_scalar(value: Any) -> str:
+    return redact_sensitive_text(value)
 
 
 def _request_payload() -> tuple[dict[str, Any] | None, Any]:
@@ -126,6 +168,22 @@ def _ewo_filters_from_payload(payload: dict[str, Any]) -> EWOReportFilters:
     )
 
 
+def _paa_filters_from_payload(payload: dict[str, Any]) -> PAAReportFilters:
+    filters = _filter_payload(payload)
+    return PAAReportFilters(
+        paa_no=_none_if_blank(filters.get("paa_no")),
+        ewo_no=_none_if_blank(filters.get("ewo_no")),
+        state=_none_if_blank(filters.get("state")),
+        area=_none_if_blank(filters.get("area")),
+        base=_none_if_blank(filters.get("base")),
+        vehicle_keyword=_none_if_blank(filters.get("vehicle_keyword")),
+        submit_start=_none_if_blank(filters.get("submit_start")),
+        submit_end=_none_if_blank(filters.get("submit_end")),
+        mtl_rq_start=_none_if_blank(filters.get("mtl_rq_start")),
+        mtl_rq_end=_none_if_blank(filters.get("mtl_rq_end")),
+    )
+
+
 def _ncr_filters_from_payload(payload: dict[str, Any]) -> NCRApprovalFilters:
     filters = _filter_payload(payload)
     project_names = filters.get("project_names", ())
@@ -166,7 +224,6 @@ def create_app() -> Flask:
 
     # DatabaseManager 实例化一次，init_database 只在启动时调用
     db = DatabaseManager()
-    db = DatabaseManager()
     db.init_database()
 
     @app.route("/")
@@ -200,7 +257,7 @@ def create_app() -> Flask:
                 {
                     "ok": True,
                     "data": {
-                        "rows": result.rows,
+                        "rows": _safe_rows(result.rows),
                         "page": result.page,
                         "item_ids": result.item_ids,
                         "count": len(result.rows),
@@ -211,6 +268,68 @@ def create_app() -> Flask:
             return _json_error(502, "ArasCrawlerError", _sanitize_error_message(e))
         except Exception as e:
             logger.warning("Aras EWO API failed: %s", type(e).__name__)
+            return _json_error(500, type(e).__name__, _sanitize_error_message(e))
+
+    @app.post("/api/aras/paa/query")
+    def api_aras_paa_query():
+        payload, error_response = _request_payload()
+        if error_response:
+            return error_response
+        assert payload is not None
+        try:
+            client = _build_aras_client_from_payload(payload)
+            result = client.query_paa_report(
+                _paa_filters_from_payload(payload),
+                page=_positive_int(payload.get("page"), 1),
+                page_size=_positive_int(payload.get("page_size"), 50),
+                max_records=_positive_int(payload.get("max_records"), 2000),
+            )
+            return jsonify(
+                {
+                    "ok": True,
+                    "data": {
+                        "rows": _safe_rows(result.rows),
+                        "page": result.page,
+                        "item_ids": result.item_ids,
+                        "count": len(result.rows),
+                    },
+                }
+            )
+        except ArasCrawlerError as e:
+            return _json_error(502, "ArasCrawlerError", _sanitize_error_message(e))
+        except Exception as e:
+            logger.warning("Aras PAA API failed: %s", type(e).__name__)
+            return _json_error(500, type(e).__name__, _sanitize_error_message(e))
+
+    @app.post("/api/aras/paa/crawl-all")
+    def api_aras_paa_crawl_all():
+        payload, error_response = _request_payload()
+        if error_response:
+            return error_response
+        assert payload is not None
+        try:
+            client = _build_aras_client_from_payload(payload)
+            result = client.crawl_paa_report_all(
+                _paa_filters_from_payload(payload),
+                page_size=_positive_int(payload.get("page_size"), 50),
+                max_pages=_positive_int(payload.get("max_pages"), 20),
+                max_records=_positive_int(payload.get("max_records"), 2000),
+            )
+            return jsonify(
+                {
+                    "ok": True,
+                    "data": {
+                        "rows": _safe_rows(result.rows),
+                        "page": result.page,
+                        "item_ids": result.item_ids,
+                        "count": len(result.rows),
+                    },
+                }
+            )
+        except ArasCrawlerError as e:
+            return _json_error(502, "ArasCrawlerError", _sanitize_error_message(e))
+        except Exception as e:
+            logger.warning("Aras PAA crawl-all API failed: %s", type(e).__name__)
             return _json_error(500, type(e).__name__, _sanitize_error_message(e))
 
     @app.post("/api/aras/ncr/progress")
@@ -227,9 +346,8 @@ def create_app() -> Flask:
                 {
                     "ok": True,
                     "data": {
-                        "file_id": result.file_id,
-                        "file_name": result.file_name,
-                        "record_id": result.record_id,
+                        "file_name": _safe_scalar(result.file_name),
+                        "record_id": _safe_scalar(result.record_id),
                     },
                 }
             )
@@ -249,7 +367,7 @@ def create_app() -> Flask:
             result = _build_aras_client_from_payload(payload).extract_ncr_approval_detail(
                 _ncr_filters_from_payload(payload)
             )
-            return jsonify({"ok": True, "data": {"file_name": result.file_name}})
+            return jsonify({"ok": True, "data": {"file_name": _safe_scalar(result.file_name)}})
         except ArasCrawlerError as e:
             return _json_error(502, "ArasCrawlerError", _sanitize_error_message(e))
         except Exception as e:

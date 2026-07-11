@@ -24,6 +24,7 @@ DATA_DIR: Path = PROJECT_ROOT / "data"
 OUTPUT_DIR: Path = DATA_DIR / "output"
 TEMPLATE_DIR: Path = DATA_DIR / "templates"
 BACKUP_DIR: Path = DATA_DIR / ".backup"
+DIAGNOSTIC_DIR: Path = DATA_DIR / "diagnostics"
 
 # ── 数据库路径 ──────────────────────────────────────────────────
 DB_PATH: Path = DATA_DIR / "vse_toolbox.db"

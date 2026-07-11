@@ -18,9 +18,19 @@ FIXTURE_DIR = Path(__file__).parent / "fixtures" / "crawler"
 
 
 class FakeResponse:
-    def __init__(self, text: str, status_code: int = 200) -> None:
+    def __init__(
+        self,
+        text: str,
+        status_code: int = 200,
+        reason: str = "",
+        url: str = "",
+        headers: dict[str, str] | None = None,
+    ) -> None:
         self.text = text
         self.status_code = status_code
+        self.reason = reason
+        self.url = url
+        self.headers = headers or {}
 
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
@@ -106,6 +116,99 @@ def test_query_ewo_report_maps_route_headers_filters_and_parses_rows() -> None:
     assert result.rows[0]["_no"] is not None
     assert "_affect_service_type" in result.rows[0]
     assert result.raw_xml.startswith("<SOAP-ENV:Envelope")
+
+
+def test_query_ewo_report_emits_diagnostic_http_event() -> None:
+    events = []
+    session = FakeSession([FakeResponse(fixture_text("ewo_query_response.xml"))])
+    client = ArasCrawlerClient(
+        "http://aras.example",
+        session=session,  # type: ignore[arg-type]
+        headers={"Authorization": "Bearer fake-token"},
+        diagnostic_hook=events.append,
+    )
+
+    result = client.query_ewo_report(EWOReportFilters(ewo_no="EWO-1"))
+
+    assert result.rows
+    assert len(events) == 1
+    event = events[0]
+    assert event.stage == "soap-ApplyItem"
+    assert event.method == "POST"
+    assert event.status_code == 200
+    assert "Bearer fake-token" in event.request_headers["Authorization"]
+    assert event.request_body is not None
+    assert "<_no>EWO-1</_no>" in event.request_body
+
+
+def test_app_root_base_url_does_not_duplicate_innovatorserver() -> None:
+    session = FakeSession([FakeResponse(fixture_text("ewo_query_response.xml"))])
+    client = ArasCrawlerClient("http://aras.example/innovatorserver", session=session)  # type: ignore[arg-type]
+
+    client.query_ewo_report(EWOReportFilters(ewo_no="EWO-1"))
+
+    call = session.calls[0]
+    assert call["url"] == "http://aras.example/innovatorserver/Server/InnovatorServer.aspx"
+    assert call["headers"]["Referer"] == "http://aras.example/innovatorserver/Client/default.aspx"
+    assert "/innovatorserver/innovatorserver/" not in call["url"].lower()
+
+
+def test_download_token_app_root_base_url_does_not_duplicate_innovatorserver() -> None:
+    session = FakeSession([FakeResponse(fixture_text("download_token_response.json"))])
+    client = ArasCrawlerClient("http://aras.example/innovatorserver", session=session)  # type: ignore[arg-type]
+
+    client.get_file_download_token("FILE123")
+
+    call = session.calls[0]
+    assert str(call["url"]).startswith(
+        "http://aras.example/innovatorserver/Server/AuthenticationBroker.asmx/GetFileDownloadToken?rnd="
+    )
+    assert "/innovatorserver/innovatorserver/" not in str(call["url"]).lower()
+
+
+def test_401_bearer_error_includes_authentication_hint_without_leaking_token() -> None:
+    session = FakeSession(
+        [
+            FakeResponse(
+                "Authorization: Bearer secret-token is invalid",
+                status_code=401,
+                reason="Unauthorized",
+                url="http://aras.example/innovatorserver/Server/InnovatorServer.aspx",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        ]
+    )
+    client = ArasCrawlerClient("http://aras.example", session=session)  # type: ignore[arg-type]
+
+    with pytest.raises(ArasCrawlerError) as excinfo:
+        client.query_ewo_report(EWOReportFilters())
+
+    message = str(excinfo.value)
+    assert "missing or expired Authorization Bearer token" in message
+    assert "successful InnovatorServer.aspx browser request" in message
+    assert "secret-token" not in message
+
+
+def test_download_token_401_bearer_error_uses_authentication_hint() -> None:
+    session = FakeSession(
+        [
+            FakeResponse(
+                "token=secret-token",
+                status_code=401,
+                reason="Unauthorized",
+                url="http://aras.example/innovatorserver/Server/AuthenticationBroker.asmx/GetFileDownloadToken",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        ]
+    )
+    client = ArasCrawlerClient("http://aras.example", session=session)  # type: ignore[arg-type]
+
+    with pytest.raises(ArasCrawlerError) as excinfo:
+        client.get_file_download_token("FILE123")
+
+    message = str(excinfo.value)
+    assert "missing or expired Authorization Bearer token" in message
+    assert "secret-token" not in message
 
 
 def test_ncr_progress_maps_cdata_payload_and_parses_export_record() -> None:

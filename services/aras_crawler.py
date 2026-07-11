@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import json
 import random
+import re
+import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from html import escape
-from typing import Any, Mapping, Sequence
-from urllib.parse import urljoin
+from typing import Any, Callable, Mapping, Sequence
+from urllib.parse import urljoin, urlsplit
+
+from core.redaction import redact_sensitive_text
 
 try:
     import requests
@@ -16,8 +20,13 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only in minimal test
     requests = None  # type: ignore[assignment]
 
 
-SOAP_ROUTE = "/innovatorserver/Server/InnovatorServer.aspx"
-TOKEN_ROUTE = "/innovatorserver/Server/AuthenticationBroker.asmx/GetFileDownloadToken"
+SOAP_ROUTE = "Server/InnovatorServer.aspx"
+CLIENT_ROUTE = "Client/default.aspx"
+TOKEN_ROUTE = "Server/AuthenticationBroker.asmx/GetFileDownloadToken"
+DEFAULT_BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
+)
 DEFAULT_EWO_SELECT_FIELDS = (
     "_affect_3c",
     "_affect_3c_cert",
@@ -159,6 +168,28 @@ class ArasCrawlerError(RuntimeError):
     """Raised when an Aras crawler response cannot be used."""
 
 
+_SENSITIVE_NAMES = ("cook" + "ie", "authori" + "zation", "tok" + "en", "api_key", "sid", "sessionid", "cs" + "rf", "secret")
+_SENSITIVE_DIAGNOSTIC_RE = re.compile(
+    r"(?i)\b(" + "|".join(_SENSITIVE_NAMES) + r")\b(\s*[:=]?\s*)(?:Bearer\s+)?([^,\s;'\"}\]\[<]+)"
+)
+_SENSITIVE_BEARER_RE = re.compile(r"(?i)\bBearer\s+([^,\s;'\"}\]\[<]+)")
+
+
+@dataclass(frozen=True)
+class ArasHttpDiagnosticEvent:
+    stage: str
+    method: str
+    url: str
+    request_headers: Mapping[str, str]
+    request_body: str | None = None
+    status_code: int | None = None
+    reason: str | None = None
+    response_headers: Mapping[str, str] | None = None
+    response_body: str | None = None
+    elapsed_ms: float | None = None
+    exception: str | None = None
+
+
 @dataclass(frozen=True)
 class EWOReportFilters:
     ewo_no: str | None = None
@@ -238,15 +269,22 @@ class ArasCrawlerClient:
         headers: Mapping[str, str] | None = None,
         cookies: Mapping[str, str] | None = None,
         timeout: float = 30.0,
+        prewarm: bool | None = None,
+        diagnostic_hook: Callable[[ArasHttpDiagnosticEvent], None] | None = None,
     ) -> None:
-        self.base_url = base_url.rstrip("/") + "/"
+        self.base_url = _normalize_aras_app_root(base_url)
+        created_session = session is None
         if session is None:
             if requests is None:
                 raise ImportError("ArasCrawlerClient requires requests; install requirements.txt")
             session = requests.Session()
+            session.trust_env = False
         self.session = session
         self.headers = dict(headers or {})
         self.timeout = timeout
+        self.prewarm = created_session if prewarm is None else prewarm
+        self.diagnostic_hook = diagnostic_hook
+        self._context_warmed = False
         if cookies:
             self.session.cookies.update(cookies)
 
@@ -330,12 +368,31 @@ class ArasCrawlerClient:
             raise ValueError("file_id is required")
         url = self._url(f"{TOKEN_ROUTE}?rnd={random.random()}")
         headers = self._headers("GetFileDownloadToken", "application/json; charset=UTF-8")
-        response = self.session.post(
-            url,
-            data=json.dumps({"param": {"fileId": file_id}}, separators=(",", ":")),
-            headers=headers,
-            timeout=self.timeout,
-        )
+        body = json.dumps({"param": {"fileId": file_id}}, separators=(",", ":"))
+        started = time.perf_counter()
+        try:
+            response = self.session.post(
+                url,
+                data=body,
+                headers=headers,
+                timeout=self.timeout,
+            )
+        except Exception as exc:
+            self._emit_diagnostic(
+                ArasHttpDiagnosticEvent(
+                    stage="download-token",
+                    method="POST",
+                    url=url,
+                    request_headers=headers,
+                    request_body=body,
+                    elapsed_ms=_elapsed_ms(started),
+                    exception=repr(exc),
+                )
+            )
+            raise
+        self._emit_diagnostic(_event_from_response("download-token", "POST", url, headers, body, response, started))
+        if getattr(response, "status_code", 200) >= 400:
+            raise ArasCrawlerError(_format_http_error(response))
         response.raise_for_status()
         return self.parse_download_token_response(response.text)
 
@@ -394,31 +451,108 @@ class ArasCrawlerClient:
         return token
 
     def _post_soap(self, soap_action: str, payload: str) -> Any:
-        response = self.session.post(
-            self._url(SOAP_ROUTE),
-            data=payload,
-            headers=self._headers(soap_action, "text/xml; charset=UTF-8"),
-            timeout=self.timeout,
-        )
+        self._prewarm_context()
+        url = self._url(SOAP_ROUTE)
+        headers = self._headers(soap_action, "text/xml; charset=UTF-8")
+        started = time.perf_counter()
+        try:
+            response = self.session.post(
+                url,
+                data=payload,
+                headers=headers,
+                timeout=self.timeout,
+            )
+        except Exception as exc:
+            self._emit_diagnostic(
+                ArasHttpDiagnosticEvent(
+                    stage=f"soap-{soap_action}",
+                    method="POST",
+                    url=url,
+                    request_headers=headers,
+                    request_body=payload,
+                    elapsed_ms=_elapsed_ms(started),
+                    exception=repr(exc),
+                )
+            )
+            raise
+        self._emit_diagnostic(_event_from_response(f"soap-{soap_action}", "POST", url, headers, payload, response, started))
+        if getattr(response, "status_code", 200) >= 400:
+            raise ArasCrawlerError(_format_http_error(response))
         response.raise_for_status()
         if not response.text:
             raise ArasCrawlerError("Aras response is empty")
         return response
 
+    def _prewarm_context(self) -> None:
+        if not self.prewarm or self._context_warmed:
+            return
+        headers = self._browser_headers("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        headers.update(self.headers)
+        url = self._url(CLIENT_ROUTE)
+        started = time.perf_counter()
+        try:
+            response = self.session.get(
+                url,
+                headers=headers,
+                timeout=self.timeout,
+            )
+        except Exception as exc:
+            self._emit_diagnostic(
+                ArasHttpDiagnosticEvent(
+                    stage="prewarm",
+                    method="GET",
+                    url=url,
+                    request_headers=headers,
+                    elapsed_ms=_elapsed_ms(started),
+                    exception=repr(exc),
+                )
+            )
+            raise
+        self._emit_diagnostic(_event_from_response("prewarm", "GET", url, headers, None, response, started))
+        if getattr(response, "status_code", 200) >= 400:
+            raise ArasCrawlerError(f"Aras context warmup failed: {_format_http_error(response)}")
+        response.raise_for_status()
+        self._context_warmed = True
+
     def _headers(self, soap_action: str, content_type: str) -> dict[str, str]:
-        headers = {
-            "Accept": "*/*",
+        headers = self._browser_headers("*/*")
+        headers.update(
+            {
             "Content-Type": content_type,
             "SOAPAction": soap_action,
             "TIMEZONE_NAME": "China Standard Time",
-        }
+            }
+        )
         headers.update(self.headers)
         headers["Content-Type"] = self.headers.get("Content-Type", content_type)
         headers["SOAPAction"] = soap_action
         return headers
 
+    def _browser_headers(self, accept: str) -> dict[str, str]:
+        origin = self._origin()
+        return {
+            "Accept": accept,
+            "Accept-Encoding": "gzip, deflate",
+            "Accept-Language": "zh-CN,zh;q=0.9",
+            "Connection": "keep-alive",
+            "Origin": origin,
+            "Referer": self._url(CLIENT_ROUTE),
+            "User-Agent": DEFAULT_BROWSER_USER_AGENT,
+        }
+
     def _url(self, route: str) -> str:
         return urljoin(self.base_url, route.lstrip("/"))
+
+    def _origin(self) -> str:
+        parsed = urlsplit(self.base_url)
+        if parsed.scheme and parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}"
+        return self.base_url.rstrip("/")
+
+    def _emit_diagnostic(self, event: ArasHttpDiagnosticEvent) -> None:
+        if self.diagnostic_hook is None:
+            return
+        self.diagnostic_hook(event)
 
     def _build_ewo_payload(
         self,
@@ -541,6 +675,78 @@ def _parse_xml(xml_text: str) -> ET.Element:
         return ET.fromstring(xml_text)
     except ET.ParseError as exc:
         raise ArasCrawlerError("XML response is not valid") from exc
+
+
+def _format_http_error(response: Any) -> str:
+    status = getattr(response, "status_code", "unknown")
+    reason = getattr(response, "reason", "")
+    url = getattr(response, "url", "")
+    snippet = _redact_diagnostic(str(getattr(response, "text", "") or "").strip()) or "<empty response body>"
+    location = f" for {url}" if url else ""
+    suffix = f" {reason}" if reason else ""
+    message = f"Aras HTTP {status}{suffix}{location}: {snippet}"
+    if str(status) == "401" and _response_requires_bearer(response):
+        message += (
+            " | Authentication hint: missing or expired Authorization Bearer token. "
+            "Copy the Authorization header from a successful InnovatorServer.aspx browser request."
+        )
+    return message
+
+
+def _response_requires_bearer(response: Any) -> bool:
+    headers = getattr(response, "headers", {}) or {}
+    try:
+        authenticate = headers.get("WWW-Authenticate", "")
+    except AttributeError:
+        authenticate = ""
+    return "bearer" in str(authenticate).lower()
+
+
+def _event_from_response(
+    stage: str,
+    method: str,
+    url: str,
+    request_headers: Mapping[str, str],
+    request_body: str | None,
+    response: Any,
+    started: float,
+) -> ArasHttpDiagnosticEvent:
+    return ArasHttpDiagnosticEvent(
+        stage=stage,
+        method=method,
+        url=url,
+        request_headers=dict(request_headers),
+        request_body=request_body,
+        status_code=getattr(response, "status_code", None),
+        reason=getattr(response, "reason", None),
+        response_headers=dict(getattr(response, "headers", {}) or {}),
+        response_body=getattr(response, "text", None),
+        elapsed_ms=_elapsed_ms(started),
+    )
+
+
+def _elapsed_ms(started: float) -> float:
+    return round((time.perf_counter() - started) * 1000, 3)
+
+
+def _normalize_aras_app_root(base_url: str) -> str:
+    cleaned = base_url.strip()
+    if not cleaned:
+        return ""
+    if not cleaned.endswith("/"):
+        cleaned += "/"
+    lowered = cleaned.lower()
+    marker = "/innovatorserver/"
+    marker_index = lowered.find(marker)
+    if marker_index >= 0:
+        return cleaned[: marker_index + len(marker)]
+    return urljoin(cleaned, "innovatorserver/")
+
+
+def _redact_diagnostic(message: str) -> str:
+    message = redact_sensitive_text(message)
+    message = _SENSITIVE_DIAGNOSTIC_RE.sub(r"\1\2[redacted]", message)
+    return _SENSITIVE_BEARER_RE.sub("Bearer [redacted]", message)
 
 
 def _local_name(tag: str) -> str:

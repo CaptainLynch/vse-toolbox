@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 VSE TOOLBOX (CLI Edition) — 主入口模块
 
@@ -18,19 +18,24 @@ import re
 import sys
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urljoin, urlsplit
 
 from rich.console import Console
+from rich import box
 from rich.panel import Panel
 from rich.text import Text
 from rich.prompt import Prompt, Confirm
 from rich.table import Table
+from rich.theme import Theme
 
 # ── 项目路径初始化 ──────────────────────────────────────────────
-PROJECT_ROOT = Path(__file__).resolve().parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+BOOTSTRAP_ROOT = Path(__file__).resolve().parent
+if str(BOOTSTRAP_ROOT) not in sys.path:
+    sys.path.insert(0, str(BOOTSTRAP_ROOT))
 
 from core.db_manager import DatabaseManager
+from core.diagnostics import DiagnosticOptions, MarkdownDiagnosticReport
+from core.redaction import redact_sensitive_text, safe_display_value
 from core.runtime_paths import app_root
 from services.excel_toolbox import ExcelToolbox
 from services.feishu_imap import FeishuImapParser
@@ -38,24 +43,17 @@ from services.office_toolbox import OfficeToolbox
 from services.aras_crawler import (
     ArasCrawlerClient,
     ArasCrawlerError,
+    DEFAULT_BROWSER_USER_AGENT,
     EWOReportFilters,
     NCRApprovalFilters,
+    PAAReportFilters,
 )
 
 PROJECT_ROOT = app_root()
 
-_SENSITIVE_JSON_RE = re.compile(
-    r"(?i)(['\"])(authorization|cookie|token|api_key|sid|sessionid|csrf|secret)\1(\s*:\s*)(['\"])(.*?)\4"
-)
-_SENSITIVE_PARAM_RE = re.compile(r"(?i)\b(token|api_key|sid|sessionid|csrf|secret)=([^&\s,;'\"}\])]+)")
-_SENSITIVE_HEADER_RE = re.compile(
-    r"(?i)\b(cookie|authorization)\b(\s*[:=]?\s*)(?:Bearer\s+)?([^,\s;'\"}\])]+)"
-)
-_SENSITIVE_BEARER_RE = re.compile(r"(?i)\bBearer\s+([^,\s;'\"}\])]+)")
-
 # ── 日志配置 ────────────────────────────────────────────────────
 LOG_DIR = PROJECT_ROOT / "data"
-LOG_DIR.mkdir(exist_ok=True)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
     filename=str(LOG_DIR / "vse_toolbox.log"),
@@ -65,36 +63,29 @@ logging.basicConfig(
 )
 logger = logging.getLogger("vse_toolbox")
 
+DEFAULT_ARAS_BASE_URL = ""
+
 # ── 全局 rich 控制台 ────────────────────────────────────────────
-console = Console()
+console = Console(
+    theme=Theme(
+        {
+            "vse.title": "bold #9fc7c2",
+            "vse.subtitle": "#a7a49a",
+            "vse.accent": "#88a6a4",
+            "vse.sage": "#9caf88",
+            "vse.amber": "#c7ad7a",
+            "vse.rose": "#c19191",
+            "vse.plum": "#a899b8",
+            "vse.muted": "#747a83",
+            "vse.error": "bold #c19191",
+        }
+    )
+)
 
 # ── 暂缓（置灰）模块键集合（D1：P1/P3/P4 短路占位）──────────────
 DEFERRED: set[str] = {"2", "3"}
 
 
-def show_banner() -> None:
-    """显示启动横幅"""
-    banner = Text()
-    banner.append("VSE TOOLBOX", style="bold cyan")
-    banner.append(" (CLI Edition)", style="dim")
-    banner.append("\n汽车行业项目管理自动化工具箱", style="green")
-    console.print(Panel(banner, border_style="cyan", expand=False))
-
-
-def show_menu() -> None:
-    """渲染主菜单选项，暂缓模块以 dim 标注"""
-    console.print()
-    for key, (label, _) in MENU_OPTIONS.items():
-        if key == "0":
-            console.print(f"  [bold red]{key}[/] ── {label}")
-        elif key in DEFERRED:
-            console.print(f"  [dim]{key} ── {label}（暂缓）[/]")
-        else:
-            console.print(f"  [bold white]{key}[/] ── {label}")
-    console.print()
-
-
-# ── 菜单处理函数 ────────────────────────────────────────────────
 
 def handle_update_deliverables(db: DatabaseManager) -> None:
     """【菜单 1】交互式更新交付物状态"""
@@ -199,20 +190,6 @@ def handle_scan_feishu(db: DatabaseManager) -> None:
         logger.exception("扫描飞书待办时发生异常")
 
 
-def handle_intranet_scrape(db: DatabaseManager) -> None:
-    """【菜单 4 · P1 暂缓】内网数据抓取"""
-    # D1 短路：P1 暂缓，仅提示后返回，保留原业务代码供后续 Sprint 解除暂缓
-    console.print("\n[dim]该模块（P1 内网爬虫）暂缓开放，敬请期待。[/]")
-    return  # noqa: 以下为保留的原业务代码，暂不执行
-    console.print("\n[bold cyan]═══ 内网数据抓取 ═══[/]\n")
-    try:
-        scraper = IntranetScraper(db)
-        scraper.run()
-        console.print("[green]✓ 内网数据抓取完成[/]")
-    except Exception as e:
-        console.print(f"[red]错误: 内网抓取失败 — {e}[/]")
-        logger.exception("内网数据抓取时发生异常")
-
 
 def _blank_to_none(value: str) -> str | None:
     value = value.strip()
@@ -221,7 +198,7 @@ def _blank_to_none(value: str) -> str | None:
 
 def _parse_header_lines(raw: str) -> dict[str, str]:
     headers: dict[str, str] = {}
-    for part in raw.replace("\n", ",").split(","):
+    for part in re.split(r"\r?\n|,\s*(?=[A-Za-z0-9_-]+\s*:)", raw):
         item = part.strip()
         if not item or ":" not in item:
             continue
@@ -233,34 +210,148 @@ def _parse_header_lines(raw: str) -> dict[str, str]:
     return headers
 
 
-def _ask_aras_connection() -> tuple[str, dict[str, str], dict[str, str] | None]:
-    base_url = Prompt.ask("Aras base_url（必填，不使用默认内网地址）").strip()
-    headers = _parse_header_lines(
-        Prompt.ask("额外 headers（Key: Value，多个用逗号分隔，可空）", default="")
+def _contains_control_char(value: str) -> bool:
+    return any(ord(char) < 32 or ord(char) == 127 for char in value)
+
+
+def _normalize_cookie_header(raw: str) -> str:
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    cookie_line = next((line for line in lines if line.lower().startswith("cookie:")), "")
+    cookie = cookie_line or " ".join(lines) or raw.strip()
+    if cookie.lower().startswith("cookie:"):
+        cookie = cookie.split(":", 1)[1].strip()
+    return cookie
+
+
+def _ask_cookie_header() -> str:
+    console.print("Cookie header（可粘贴多行，空行结束；直接回车跳过）:")
+    lines: list[str] = []
+    while True:
+        line = console.input("Cookie> " if not lines else "      > ")
+        if line == "":
+            break
+        lines.append(line)
+    return _normalize_cookie_header("\n".join(lines))
+
+
+def _ask_extra_headers(default_headers: str) -> str:
+    console.print(
+        "Extra headers（建议从浏览器 DevTools 复制成功的 InnovatorServer.aspx 请求头；"
+        "可粘贴多行，空行结束；直接回车使用默认 headers）:"
     )
-    cookie = Prompt.ask("Cookie header（可空，隐藏输入）", default="", password=True).strip()
+    lines: list[str] = []
+    while True:
+        line = console.input("Header> " if not lines else "      > ")
+        if line == "":
+            break
+        lines.append(line)
+    return "\n".join(lines) if lines else default_headers
+
+
+def _has_header(headers: dict[str, str], name: str) -> bool:
+    return any(key.lower() == name.lower() for key in headers)
+
+
+def _default_aras_headers_text(base_url: str) -> str:
+    parsed = urlsplit(base_url.rstrip("/") + "/")
+    origin = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else base_url.rstrip("/")
+    headers = {
+        "Origin": origin,
+        "Referer": urljoin(origin + "/", "innovatorserver/Client/default.aspx"),
+        "Accept": "*/*",
+        "Accept-Encoding": "gzip, deflate",
+        "Accept-Language": "zh-CN,zh;q=0.9",
+        "Connection": "keep-alive",
+        "TIMEZONE_NAME": "China Standard Time",
+        "User-Agent": DEFAULT_BROWSER_USER_AGENT,
+    }
+    return ", ".join(f"{key}: {value}" for key, value in headers.items())
+
+
+
+def _ask_positive_int(label: str, default: int) -> int:
+    raw = Prompt.ask(label, default=str(default))
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        console.print(f"[vse.amber]{label} invalid, using {default}[/]")
+        return default
+    if value <= 0:
+        console.print(f"[vse.amber]{label} must be positive, using {default}[/]")
+        return default
+    return value
+
+
+def _ask_aras_connection() -> tuple[str, dict[str, str], dict[str, str] | None]:
+    base_url = Prompt.ask("Aras base_url", default=DEFAULT_ARAS_BASE_URL).strip()
+    if not base_url:
+        return "", {}, None
+    default_headers = _default_aras_headers_text(base_url) if base_url else ""
+    raw_headers = _ask_extra_headers(default_headers)
+    headers = _parse_header_lines(raw_headers)
+    cookie = _ask_cookie_header()
     if cookie:
-        headers["Cookie"] = cookie
+        if _contains_control_char(cookie):
+            console.print("[vse.amber]Cookie header contains control characters and was ignored. Please paste plain text.[/]")
+        else:
+            headers["Cookie"] = cookie
+    if not _has_header(headers, "Authorization"):
+        console.print(
+            "[vse.amber]当前 Aras 可能需要 Authorization: Bearer token；"
+            "若遇到 401，请从浏览器成功的 InnovatorServer.aspx 请求复制 Authorization header。[/]"
+        )
     return base_url, headers, None
+
+
+def _ask_aras_diagnostic_options() -> DiagnosticOptions:
+    enabled = Confirm.ask("生成 Aras 调试诊断 MD 报告？", default=False)
+    if not enabled:
+        return DiagnosticOptions()
+    unsafe_raw = Confirm.ask("报告中包含原始 Cookie/token/Authorization？仅排障使用", default=False)
+    return DiagnosticOptions(enabled=True, unsafe_raw=unsafe_raw)
 
 
 def _ask_ewo_filters() -> tuple[EWOReportFilters, int, int, int]:
     filters = EWOReportFilters(
-        ewo_no=_blank_to_none(Prompt.ask("EWO 编号", default="")),
-        project_code=_blank_to_none(Prompt.ask("项目代码", default="")),
-        subject_keyword=_blank_to_none(Prompt.ask("主题关键词", default="")),
-        change_type=_blank_to_none(Prompt.ask("变更类型", default="")),
-        change_sub_type=_blank_to_none(Prompt.ask("变更子类型", default="")),
-        area=_blank_to_none(Prompt.ask("区域", default="")),
-        state=_blank_to_none(Prompt.ask("状态", default="")),
-        rsp_department=_blank_to_none(Prompt.ask("责任部门", default="")),
-        submit_start=_blank_to_none(Prompt.ask("提交开始日期", default="")),
-        submit_end=_blank_to_none(Prompt.ask("提交结束日期", default="")),
+        ewo_no=_blank_to_none(Prompt.ask("EWO no", default="")),
+        project_code=_blank_to_none(Prompt.ask("Project code", default="")),
+        subject_keyword=_blank_to_none(Prompt.ask("Subject keyword", default="")),
+        change_type=_blank_to_none(Prompt.ask("Change type", default="")),
+        change_sub_type=_blank_to_none(Prompt.ask("Change sub type", default="")),
+        area=_blank_to_none(Prompt.ask("Area", default="")),
+        state=_blank_to_none(Prompt.ask("State", default="")),
+        rsp_department=_blank_to_none(Prompt.ask("Response department", default="")),
+        submit_start=_blank_to_none(Prompt.ask("Submit start", default="")),
+        submit_end=_blank_to_none(Prompt.ask("Submit end", default="")),
     )
-    page = int(Prompt.ask("页码", default="1"))
-    page_size = int(Prompt.ask("每页数量", default="50"))
-    max_records = int(Prompt.ask("最大记录数", default="2000"))
-    return filters, page, page_size, max_records
+    return (
+        filters,
+        _ask_positive_int("Page", 1),
+        _ask_positive_int("Page size", 50),
+        _ask_positive_int("Max records", 2000),
+    )
+
+
+def _ask_paa_filters() -> tuple[PAAReportFilters, int, int, int, int]:
+    filters = PAAReportFilters(
+        paa_no=_blank_to_none(Prompt.ask("PAA no", default="")),
+        ewo_no=_blank_to_none(Prompt.ask("EWO no", default="")),
+        state=_blank_to_none(Prompt.ask("State", default="")),
+        area=_blank_to_none(Prompt.ask("Area", default="")),
+        base=_blank_to_none(Prompt.ask("Base", default="")),
+        vehicle_keyword=_blank_to_none(Prompt.ask("Vehicle keyword", default="")),
+        submit_start=_blank_to_none(Prompt.ask("Submit start", default="")),
+        submit_end=_blank_to_none(Prompt.ask("Submit end", default="")),
+        mtl_rq_start=_blank_to_none(Prompt.ask("Material request start", default="")),
+        mtl_rq_end=_blank_to_none(Prompt.ask("Material request end", default="")),
+    )
+    return (
+        filters,
+        _ask_positive_int("Page", 1),
+        _ask_positive_int("Page size", 50),
+        _ask_positive_int("Max records", 2000),
+        _ask_positive_int("Max pages", 20),
+    )
 
 
 def _ask_ncr_filters() -> NCRApprovalFilters:
@@ -282,91 +373,214 @@ def _ask_ncr_filters() -> NCRApprovalFilters:
     )
 
 
-def _render_ewo_result(page) -> Table:
+
+_SENSITIVE_DISPLAY_KEYS = {
+    "raw_xml",
+    "authorization",
+    "cookie",
+    "token",
+    "api_key",
+    "sid",
+    "sessionid",
+    "csrf",
+    "secret",
+    "password",
+}
+
+_EWO_COLUMNS = [
+    "_no",
+    "_eplmwriteneplcode",
+    "_subject",
+    "_area",
+    "_sort_type",
+    "_rsp_department",
+    "_submit_time",
+    "state",
+]
+
+_PAA_COLUMNS = [
+    "_no",
+    "_ewo_no",
+    "state",
+    "_area",
+    "_base",
+    "_vehicles",
+    "_submit_date",
+    "_mtl_rq_date",
+]
+
+
+def _safe_error_message(exc: Exception) -> str:
+    return redact_sensitive_text(exc)
+
+
+def _select_display_columns(rows, preferred, max_columns=12) -> list[str]:
+    columns: list[str] = []
+    available = {key for row in rows for key in row if str(key).lower() not in _SENSITIVE_DISPLAY_KEYS}
+    for key in preferred:
+        if key in available and key not in columns:
+            columns.append(key)
+    extra = sorted(key for key in available if key not in columns)
+    columns.extend(extra)
+    return columns[:max_columns]
+
+
+def _render_report_rows(title, page, rows, item_ids, preferred_columns) -> Table:
     table = Table(
-        title=f"EWO 查询结果 | page={page.page or '-'} rows={len(page.rows)} items={len(page.item_ids)}",
+        title=f"{title} | page={page or '-'} rows={len(rows)} items={len(item_ids)}",
         show_lines=True,
+        box=box.SIMPLE_HEAVY,
     )
-    keys: list[str] = []
-    for row in page.rows:
-        for key in row:
-            if key not in keys:
-                keys.append(key)
-            if len(keys) >= 8:
-                break
-        if len(keys) >= 8:
-            break
+    keys = _select_display_columns(rows, preferred_columns)
     for key in keys or ["message"]:
         table.add_column(key, overflow="fold")
-    if page.rows:
-        for row in page.rows:
-            table.add_row(*(str(row.get(key) or "-") for key in keys))
+    if rows:
+        for row in rows:
+            table.add_row(*(safe_display_value(row.get(key)) for key in keys))
     else:
-        table.add_row("无结果")
+        table.add_row("No results")
     return table
 
 
+def _render_ewo_result(page) -> Table:
+    return _render_report_rows("EWO report result", page.page, page.rows, page.item_ids, _EWO_COLUMNS)
+
+
+def _render_paa_result(page) -> Table:
+    return _render_report_rows("PAA report result", page.page, page.rows, page.item_ids, _PAA_COLUMNS)
+
+
 def _render_ncr_progress_result(result) -> Table:
-    table = Table(title="NCR 审批进度导出", show_lines=True)
-    table.add_column("字段", style="cyan")
-    table.add_column("值", overflow="fold")
-    table.add_row("file_name", result.file_name or "-")
-    table.add_row("file_id", result.file_id or "-")
-    table.add_row("record_id", result.record_id or "-")
+    table = Table(title="NCR approval progress result", show_lines=True, box=box.SIMPLE_HEAVY)
+    table.add_column("field", style="#88a6a4", no_wrap=True)
+    table.add_column("value", overflow="fold")
+    table.add_row("file_name", safe_display_value(getattr(result, "file_name", None)))
+    table.add_row("record_id", safe_display_value(getattr(result, "record_id", None)))
     return table
 
 
 def _render_ncr_detail_result(result) -> Table:
-    table = Table(title="NCR 审批明细提取", show_lines=True)
-    table.add_column("字段", style="cyan")
-    table.add_column("值", overflow="fold")
-    table.add_row("file_name", result.file_name or "-")
+    table = Table(title="NCR approval detail result", show_lines=True, box=box.SIMPLE_HEAVY)
+    table.add_column("field", style="#88a6a4", no_wrap=True)
+    table.add_column("value", overflow="fold")
+    table.add_row("file_name", safe_display_value(getattr(result, "file_name", None)))
     return table
 
 
-def _safe_error_message(exc: Exception) -> str:
-    message = str(exc).replace("\n", " ")
-    message = _SENSITIVE_JSON_RE.sub(r"\1\2\1\3\4[redacted]\4", message)
-    message = _SENSITIVE_PARAM_RE.sub(r"\1=[redacted]", message)
-    message = _SENSITIVE_HEADER_RE.sub(r"\1\2[redacted]", message)
-    message = _SENSITIVE_BEARER_RE.sub("Bearer [redacted]", message)
-    return message[:240]
-
 
 def handle_intranet_scrape(db: DatabaseManager) -> None:
-    """菜单 4：P1 Aras 内网爬虫 CLI 适配层。"""
-    console.print("\n[bold cyan]Aras 内网爬虫[/]\n")
-    console.print("  [bold white]1[/] —— EWO 报表查询")
-    console.print("  [bold white]2[/] —— NCR 审批进度导出")
-    console.print("  [bold white]3[/] —— NCR 审批明细提取")
-    console.print("  [dim]0[/] —— 返回主菜单")
-    sub = Prompt.ask("请选择 Aras 查询类型", choices=["0", "1", "2", "3"], default="0")
+    """Menu 4: Aras CLI adapter."""
+    menu = Table(box=box.SIMPLE_HEAVY, show_header=False)
+    menu.add_column("Key", style="#88a6a4", no_wrap=True)
+    menu.add_column("Mode")
+    menu.add_row("1", "EWO report query")
+    menu.add_row("2", "NCR approval progress")
+    menu.add_row("3", "NCR approval detail")
+    menu.add_row("4", "PAA paged query")
+    menu.add_row("5", "PAA full crawl")
+    menu.add_row("0", "Return")
+    console.print(Panel(menu, title="Aras Cockpit", border_style="#88a6a4", box=box.ROUNDED))
+    sub = Prompt.ask("Select Aras mode", choices=["0", "1", "2", "3", "4", "5"], default="0")
     if sub == "0":
         return
 
+    report: MarkdownDiagnosticReport | None = None
     try:
+        diagnostic_options = _ask_aras_diagnostic_options()
         base_url, headers, cookies = _ask_aras_connection()
         if not base_url:
-            console.print("[red]base_url 必填[/]")
+            console.print("[bold #c19191]base_url is required[/]")
             return
-        client = ArasCrawlerClient(base_url, headers=headers, cookies=cookies, timeout=30.0)
+        parsed = urlsplit(base_url.rstrip("/") + "/")
+        origin = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else base_url
+        report = MarkdownDiagnosticReport(
+            options=diagnostic_options,
+            base_url=base_url,
+            mode=sub,
+            inputs={
+                "sub_menu": sub,
+                "origin": origin,
+                "headers": headers,
+                "cookies": cookies,
+                "timeout": 30.0,
+            },
+        )
+        client = ArasCrawlerClient(
+            base_url,
+            headers=headers,
+            cookies=cookies,
+            timeout=30.0,
+            diagnostic_hook=report.record_http_event if diagnostic_options.enabled else None,
+        )
+
         if sub == "1":
             filters, page, page_size, max_records = _ask_ewo_filters()
-            result = client.query_ewo_report(filters, page=page, page_size=page_size, max_records=max_records)
+            console.print(
+                f"[#747a83]mode=EWO origin={origin} page={page} page_size={page_size} max_records={max_records}[/]"
+            )
+            with console.status("Querying Aras", spinner="dots"):
+                result = client.query_ewo_report(filters, page=page, page_size=page_size, max_records=max_records)
             console.print(_render_ewo_result(result))
+            if report_path := report.save("success"):
+                console.print(f"[#747a83]诊断报告已保存: {report_path}[/]")
         elif sub == "2":
-            result = client.query_ncr_approval_progress(_ask_ncr_filters())
+            console.print(f"[#747a83]mode=NCR progress origin={origin}[/]")
+            filters = _ask_ncr_filters()
+            with console.status("Querying Aras", spinner="dots"):
+                result = client.query_ncr_approval_progress(filters)
             console.print(_render_ncr_progress_result(result))
-            console.print(Panel("下载 token 需用户显式二次确认；本命令不会自动下载。", border_style="yellow"))
+            if report_path := report.save("success"):
+                console.print(f"[#747a83]诊断报告已保存: {report_path}[/]")
         elif sub == "3":
-            result = client.extract_ncr_approval_detail(_ask_ncr_filters())
+            console.print(f"[#747a83]mode=NCR detail origin={origin}[/]")
+            filters = _ask_ncr_filters()
+            with console.status("Querying Aras", spinner="dots"):
+                result = client.extract_ncr_approval_detail(filters)
             console.print(_render_ncr_detail_result(result))
+            if report_path := report.save("success"):
+                console.print(f"[#747a83]诊断报告已保存: {report_path}[/]")
+        elif sub == "4":
+            filters, page, page_size, max_records, _max_pages = _ask_paa_filters()
+            console.print(
+                f"[#747a83]mode=PAA origin={origin} page={page} page_size={page_size} max_records={max_records}[/]"
+            )
+            with console.status("Querying Aras", spinner="dots"):
+                result = client.query_paa_report(filters, page=page, page_size=page_size, max_records=max_records)
+            console.print(_render_paa_result(result))
+            if report_path := report.save("success"):
+                console.print(f"[#747a83]诊断报告已保存: {report_path}[/]")
+        elif sub == "5":
+            filters, _page, page_size, max_records, max_pages = _ask_paa_filters()
+            if not Confirm.ask("PAA full crawl may be slow. Continue?", default=False):
+                console.print("[#747a83]PAA full crawl cancelled[/]")
+                return
+            console.print(
+                f"[#747a83]mode=PAA all origin={origin} page_size={page_size} max_pages={max_pages} max_records={max_records}[/]"
+            )
+            with console.status("Querying Aras", spinner="dots"):
+                result = client.crawl_paa_report_all(
+                    filters,
+                    page_size=page_size,
+                    max_pages=max_pages,
+                    max_records=max_records,
+                )
+            console.print(_render_paa_result(result))
+            if report_path := report.save("success"):
+                console.print(f"[#747a83]诊断报告已保存: {report_path}[/]")
         logger.info("Aras CLI query finished: type=%s", sub)
     except ArasCrawlerError as e:
-        console.print(f"[red]ArasCrawlerError: {_safe_error_message(e)}[/]")
+        console.print(Panel(_safe_error_message(e), title="ArasCrawlerError", border_style="#c19191"))
+        if report:
+            report.record_exception(e)
+            if report_path := report.save("failed"):
+                console.print(f"[#c19191]诊断报告已保存: {report_path}[/]")
         logger.warning("Aras CLI query failed with ArasCrawlerError")
     except Exception as e:
-        console.print(f"[red]{type(e).__name__}: {_safe_error_message(e)}[/]")
+        console.print(Panel(_safe_error_message(e), title=type(e).__name__, border_style="#c19191"))
+        if report:
+            report.record_exception(e)
+            if report_path := report.save("failed"):
+                console.print(f"[#c19191]诊断报告已保存: {report_path}[/]")
         logger.warning("Aras CLI query failed: %s", type(e).__name__)
 
 
@@ -486,6 +700,45 @@ MENU_OPTIONS: dict[str, tuple[str, Callable[[DatabaseManager], None]]] = {
 }
 
 
+def show_banner() -> None:
+    """Render the CLI workbench banner."""
+    banner = Text()
+    banner.append("VSE TOOLBOX", style="vse.title")
+    banner.append("  CLI Workbench", style="vse.subtitle")
+    banner.append(f"\nData directory: {LOG_DIR}", style="vse.muted")
+    console.print(Panel.fit(banner, border_style="vse.accent", box=box.ROUNDED))
+
+
+def show_menu() -> None:
+    """Render the main menu with stable option numbers."""
+    rows = {
+        "1": ("Deliverables", "Ready", "Update deliverable status"),
+        "2": ("Weekly PPT", "Paused", "Deferred module"),
+        "3": ("Feishu Assistant", "Paused", "Deferred module"),
+        "4": ("Aras Cockpit", "Ready", "EWO, PAA and NCR queries"),
+        "5": ("Overview", "Web", "Project dashboard summary"),
+        "6": ("Excel Toolbox", "CLI", "Append, overlay and diff workbooks"),
+        "0": ("Exit", "Ready", "Close VSE Toolbox"),
+    }
+    table = Table(box=box.SIMPLE_HEAVY, show_header=True, header_style="vse.muted")
+    table.add_column("#", style="vse.accent", no_wrap=True)
+    table.add_column("Module")
+    table.add_column("Status", no_wrap=True)
+    table.add_column("Description", style="vse.subtitle")
+    for key, (label, _) in MENU_OPTIONS.items():
+        module, status, description = rows.get(key, (label, "Ready", label))
+        status_style = {
+            "Ready": "vse.sage",
+            "CLI": "vse.amber",
+            "Web": "vse.plum",
+            "Paused": "vse.muted",
+        }.get(status, "vse.subtitle")
+        table.add_row(key, module, f"[{status_style}]{status}[/]", description)
+    console.print()
+    console.print(table)
+    console.print()
+
+
 def main() -> None:
     """CLI 主循环入口"""
     logger.info("VSE TOOLBOX 启动")
@@ -521,3 +774,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

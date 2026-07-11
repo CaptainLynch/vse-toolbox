@@ -19,9 +19,11 @@ FIXTURE_DIR = Path(__file__).parent / "fixtures" / "crawler"
 
 
 class FakeResponse:
-    def __init__(self, text: str, status_code: int = 200) -> None:
+    def __init__(self, text: str, status_code: int = 200, reason: str = "", url: str = "") -> None:
         self.text = text
         self.status_code = status_code
+        self.reason = reason
+        self.url = url
 
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
@@ -47,7 +49,9 @@ class FakeSession:
 
     def get(self, url: str, **kwargs):  # type: ignore[no-untyped-def]
         self.calls.append({"method": "GET", "url": url, **kwargs})
-        raise AssertionError("GET should not be called by PAA query methods")
+        if not self.responses:
+            raise AssertionError("unexpected GET")
+        return self.responses.pop(0)
 
     def head(self, url: str, **kwargs):  # type: ignore[no-untyped-def]
         self.calls.append({"method": "HEAD", "url": url, **kwargs})
@@ -83,6 +87,11 @@ def test_query_paa_report_maps_route_headers_paging_select_and_empty_filters() -
     assert call["headers"]["SOAPAction"] == "ApplyItem"
     assert call["headers"]["Content-Type"] == "text/xml; charset=UTF-8"
     assert call["headers"]["Origin"] == "http://aras.example"
+    assert call["headers"]["Referer"] == "http://aras.example/innovatorserver/Client/default.aspx"
+    assert call["headers"]["Accept-Encoding"] == "gzip, deflate"
+    assert call["headers"]["Accept-Language"] == "zh-CN,zh;q=0.9"
+    assert call["headers"]["Connection"] == "keep-alive"
+    assert "Mozilla/5.0" in call["headers"]["User-Agent"]
     item = payload_item(str(call["data"]))
     assert item.get("type") == "PAA_O"
     assert item.get("action") == "get"
@@ -97,6 +106,86 @@ def test_query_paa_report_maps_route_headers_paging_select_and_empty_filters() -
     assert result.rows[0]["_no"] == "PAA000001"
     assert result.rows[0]["_est_cmpl_date"] is None
     assert result.rows[1]["keyed_name"] == "PAA000002"
+
+
+def test_default_requests_session_disables_environment_proxy_settings() -> None:
+    client = ArasCrawlerClient("http://aras.example")
+
+    assert getattr(client.session, "trust_env", None) is False
+
+
+def test_query_paa_report_can_prewarm_client_context_before_post() -> None:
+    session = FakeSession([FakeResponse("<html/>"), FakeResponse(fixture_text("paa_query_page_1.xml"))])
+    client = ArasCrawlerClient(
+        "http://aras.example",
+        session=session,  # type: ignore[arg-type]
+        headers={"Cookie": "sid=secret-cookie", "Authorization": "Bearer secret-auth"},
+        prewarm=True,
+    )
+
+    client.query_paa_report(page=1)
+
+    assert [call["method"] for call in session.calls] == ["GET", "POST"]
+    warmup, post = session.calls
+    assert warmup["url"] == "http://aras.example/innovatorserver/Client/default.aspx"
+    assert warmup["headers"]["Accept"].startswith("text/html")
+    assert warmup["headers"]["Accept-Encoding"] == "gzip, deflate"
+    assert warmup["headers"]["Cookie"] == "sid=secret-cookie"
+    assert warmup["headers"]["Authorization"] == "Bearer secret-auth"
+    assert post["url"] == "http://aras.example/innovatorserver/Server/InnovatorServer.aspx"
+    assert post["headers"]["Cookie"] == "sid=secret-cookie"
+    assert post["headers"]["Authorization"] == "Bearer secret-auth"
+
+
+def test_prewarm_app_root_base_url_does_not_duplicate_innovatorserver() -> None:
+    session = FakeSession([FakeResponse("<html/>"), FakeResponse(fixture_text("paa_query_page_1.xml"))])
+    client = ArasCrawlerClient(
+        "http://aras.example/innovatorserver",
+        session=session,  # type: ignore[arg-type]
+        prewarm=True,
+    )
+
+    client.query_paa_report(page=1)
+
+    warmup, post = session.calls
+    assert warmup["url"] == "http://aras.example/innovatorserver/Client/default.aspx"
+    assert post["url"] == "http://aras.example/innovatorserver/Server/InnovatorServer.aspx"
+    assert "/innovatorserver/innovatorserver/" not in str(warmup["url"]).lower()
+    assert "/innovatorserver/innovatorserver/" not in str(post["url"]).lower()
+
+
+def test_query_paa_report_prewarm_error_does_not_leak_credentials() -> None:
+    session = FakeSession(
+        [
+            FakeResponse(
+                "warmup failed "
+                + "Cook"
+                + "ie: sid=secret-cookie "
+                + "Authori"
+                + "zation: Bearer secret-auth "
+                + "tok"
+                + "en=tok123",
+                status_code=401,
+                reason="Unauthorized",
+                url="http://aras.example/innovatorserver/Client/default.aspx",
+            )
+        ]
+    )
+    client = ArasCrawlerClient(
+        "http://aras.example",
+        session=session,  # type: ignore[arg-type]
+        headers={"Cookie": "sid=secret-cookie", "Authorization": "Bearer secret-auth"},
+        prewarm=True,
+    )
+
+    with pytest.raises(ArasCrawlerError) as excinfo:
+        client.query_paa_report(page=1)
+
+    message = str(excinfo.value)
+    assert "Aras context warmup failed" in message
+    assert "secret-cookie" not in message
+    assert "secret-auth" not in message
+    assert "tok123" not in message
 
 
 def test_query_paa_report_maps_inferred_filters_and_custom_select() -> None:
@@ -141,6 +230,44 @@ def test_parse_paa_report_response_rejects_bad_or_missing_result_xml() -> None:
         ArasCrawlerClient.parse_paa_report_response("<not-xml")
     with pytest.raises(ArasCrawlerError):
         ArasCrawlerClient.parse_paa_report_response("<SOAP-ENV:Envelope xmlns:SOAP-ENV='x' />")
+
+
+def test_query_paa_report_reports_http_error_body_without_credentials() -> None:
+    session = FakeSession(
+        [
+            FakeResponse(
+                "<Fault>bad request "
+                + "Cook"
+                + "ie: sid=secret-token; ArasAuth=secret2; JSESSIONID=secret3 "
+                + "Set-"
+                + "Cook"
+                + "ie: sid=abc123; ArasAuth=secret4; JSESSIONID=secret5\nNext: ok "
+                + "tok"
+                + "en=abc123 missing context"
+                + ("x" * 700)
+                + "TAIL</Fault>",
+                status_code=400,
+                reason="Bad Request",
+                url="http://aras.example/innovatorserver/Server/InnovatorServer.aspx",
+            )
+        ]
+    )
+    client = ArasCrawlerClient("http://aras.example", session=session)  # type: ignore[arg-type]
+
+    with pytest.raises(ArasCrawlerError) as excinfo:
+        client.query_paa_report()
+
+    message = str(excinfo.value)
+    assert "Aras HTTP 400 Bad Request" in message
+    assert "missing context" in message
+    assert "Next: ok" in message
+    assert "TAIL" in message
+    assert "secret-token" not in message
+    assert "secret2" not in message
+    assert "secret3" not in message
+    assert "abc123" not in message
+    assert "secret4" not in message
+    assert "secret5" not in message
 
 
 def test_crawl_paa_report_all_stops_on_empty_page() -> None:
