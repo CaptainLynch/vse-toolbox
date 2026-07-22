@@ -1,12 +1,19 @@
 # -*- coding: utf-8 -*-
 
 import ast
+import logging
 import subprocess
 from pathlib import Path
 
+import pytest
+from rich.console import Console
+
+import main
 import core.config as config
+from core.diagnostics import DiagnosticOptions, MarkdownDiagnosticReport
 from core.redaction import redact_sensitive_text, safe_display_value
 from services.feishu_imap import FeishuImapParser
+from services.tdc_crawler import TDCCrawlerClient, TDCCrawlerError, TDCHttpDiagnosticEvent
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -187,3 +194,74 @@ process.stdout.write(context.result);
     assert "def" not in result.stdout
     assert "Next" in result.stdout
     assert "ok" in result.stdout
+
+
+def test_tdc_source_isolated_from_sensitive_material_and_gitignored():
+    gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
+    source_paths = [
+        ROOT / "services" / "tdc_auth.py",
+        ROOT / "services" / "tdc_crawler.py",
+        ROOT / "main.py",
+        ROOT / "core" / "diagnostics.py",
+    ]
+    forbidden = "fictional-persisted-credential"
+
+    assert "/爬虫源文件/" in gitignore
+    assert all(forbidden not in path.read_text(encoding="utf-8-sig") for path in source_paths)
+    assert "00_登录过程_原始.har" not in (ROOT / "services" / "tdc_crawler.py").read_text(encoding="utf-8")
+    assert "00_登录过程_原始.har" not in (ROOT / "services" / "tdc_auth.py").read_text(encoding="utf-8")
+
+
+class _FailingTDCSession:
+    def get(self, url, **kwargs):  # type: ignore[no-untyped-def]
+        del url, kwargs
+        raise RuntimeError(
+            "Cookie: sid=fictional-cookie-secret Authorization: Bearer fictional-auth-secret "
+            "token=fictional-query-secret"
+        )
+
+
+def test_tdc_console_log_error_and_diagnostic_report_share_redaction(monkeypatch, tmp_path, caplog):  # type: ignore[no-untyped-def]
+    event = TDCHttpDiagnosticEvent(
+        timestamp="2026-07-19T10:11:12.123",
+        stage="request",
+        request_id="safe1234",
+        page_type="sor",
+        path="/sp/sor/sorPage",
+        query={"token": "fictional-query-secret"},
+        request_headers={
+            "Cookie": "sid=fictional-cookie-secret",
+            "Authorization": "Bearer fictional-auth-secret",
+        },
+        reason=(
+            "Cookie: sid=fictional-cookie-secret Authorization: Bearer fictional-auth-secret "
+            "token=fictional-query-secret"
+        ),
+    )
+    console = Console(record=True, width=160)
+    monkeypatch.setattr(main, "console", console)
+    main._tdc_console_debug_hook(event)
+
+    report = MarkdownDiagnosticReport(
+        options=DiagnosticOptions(enabled=True),
+        base_url="https://tdc.example",
+        mode="sor",
+        output_dir=tmp_path,
+        report_title="TDC CLI Diagnostic Report",
+        file_name_prefix="tdc_cli_debug",
+        allow_unsafe_raw=False,
+    )
+    report.record_http_event(event)
+    path = report.save("failed")
+    assert path is not None
+
+    caplog.set_level(logging.DEBUG, logger="vse_toolbox.tdc_crawler")
+    with pytest.raises(TDCCrawlerError) as excinfo:
+        TDCCrawlerClient("https://tdc.example", session=_FailingTDCSession()).query_sor_page()
+
+    combined = "\n".join(
+        [console.export_text(), path.read_text(encoding="utf-8"), caplog.text, str(excinfo.value)]
+    )
+    for secret in ("fictional-cookie-secret", "fictional-auth-secret", "fictional-query-secret"):
+        assert secret not in combined
+    assert "[redacted]" in combined

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import socket
 import sys
 import time
@@ -36,12 +37,21 @@ class MarkdownDiagnosticReport:
         mode: str,
         inputs: Mapping[str, Any] | None = None,
         output_dir: Path = DIAGNOSTIC_DIR,
+        report_title: str = "Aras CLI Diagnostic Report",
+        file_name_prefix: str = "aras_cli_debug",
+        allow_unsafe_raw: bool = True,
     ) -> None:
+        if options.unsafe_raw and not allow_unsafe_raw:
+            raise ValueError("unsafe_raw diagnostics are not allowed for this report")
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", file_name_prefix):
+            raise ValueError("file_name_prefix may contain only letters, numbers, underscore, and hyphen")
         self.options = options
         self.base_url = base_url
         self.mode = mode
         self.inputs = dict(inputs or {})
         self.output_dir = output_dir
+        self.report_title = report_title
+        self.file_name_prefix = file_name_prefix
         self.created_at = datetime.now()
         self.started = time.perf_counter()
         self.sections: list[tuple[str, str]] = []
@@ -61,7 +71,7 @@ class MarkdownDiagnosticReport:
         dns_rows: list[str] = []
         if host:
             try:
-                addresses = sorted({item[4][0] for item in socket.getaddrinfo(host, port or 0)})
+                addresses = sorted({str(item[4][0]) for item in socket.getaddrinfo(host, port or 0)})
                 dns_rows.append(f"- DNS: `{host}` -> `{', '.join(addresses)}`")
             except Exception as exc:  # pragma: no cover - depends on local network
                 dns_rows.append(f"- DNS: `{host}` lookup failed: `{type(exc).__name__}: {self.scrub(exc)}`")
@@ -111,6 +121,41 @@ class MarkdownDiagnosticReport:
             f"- Status: `{self.scrub(fields.get('status_code', ''))}`",
             f"- Reason: `{self.scrub(fields.get('reason', ''))}`",
         ]
+        extended_fields = [
+            ("Timestamp", "timestamp"),
+            ("Request ID", "request_id"),
+            ("Page Type", "page_type"),
+            ("Origin", "origin"),
+            ("Path", "path"),
+            ("Query", "query"),
+            ("Page", "page"),
+            ("Page Size", "page_size"),
+            ("Attempt", "attempt"),
+            ("Timeout", "timeout"),
+            ("Content-Type", "content_type"),
+            ("Content-Length", "content_length"),
+            ("JSON Fields", "json_fields"),
+            ("Record Count", "record_count"),
+            ("Total", "total"),
+            ("Pages", "pages"),
+            ("Accumulated Count", "accumulated_count"),
+            ("Unique Count", "unique_count"),
+            ("Duplicate Count", "duplicate_count"),
+            ("Current Page", "current_page"),
+            ("Estimated Pages", "estimated_pages"),
+            ("Stop Reason", "stop_reason"),
+            ("File Name", "file_name"),
+            ("Saved Path", "saved_path"),
+            ("Bytes Written", "bytes_written"),
+            ("Validation", "validation"),
+            ("Exception Type", "exception_type"),
+            ("Completed Pages", "completed_pages"),
+        ]
+        for label, key in extended_fields:
+            value = fields.get(key)
+            if value is None or value == "" or value == () or value == {}:
+                continue
+            lines.append(f"- {label}: `{self.scrub(_format_payload(value))}`")
         for label, key in [
             ("Request Headers", "request_headers"),
             ("Request Body", "request_body"),
@@ -140,10 +185,10 @@ class MarkdownDiagnosticReport:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         stamp = self.created_at.strftime("%Y%m%d_%H%M%S")
         raw_suffix = "_raw" if self.options.unsafe_raw else ""
-        path = self.output_dir / f"aras_cli_debug{raw_suffix}_{stamp}.md"
+        path = self.output_dir / f"{self.file_name_prefix}{raw_suffix}_{stamp}.md"
         duration = time.perf_counter() - self.started
         lines = [
-            "# Aras CLI Diagnostic Report",
+            f"# {self.scrub(self.report_title)}",
             "",
             f"- Status: `{status}`",
             f"- Duration seconds: `{duration:.3f}`",

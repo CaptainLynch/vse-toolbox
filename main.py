@@ -48,6 +48,20 @@ from services.aras_crawler import (
     NCRApprovalFilters,
     PAAReportFilters,
 )
+from services.tdc_crawler import (
+    AFACE_CONTRACT_BLOCKER,
+    DATA_MODEL_PAGE_PATH,
+    DEFAULT_TDC_BASE_URL,
+    SOR_PAGE_PATH,
+    TDCAFaceFilters,
+    TDCCrawlerClient,
+    TDCCrawlerError,
+    TDCDataModelFilters,
+    TDCHttpDiagnosticEvent,
+    TDCSORFilters,
+    combine_diagnostic_hooks,
+)
+from services.tdc_auth import TDCAuthError, TDCPasswordAuthClient
 
 PROJECT_ROOT = app_root()
 
@@ -55,12 +69,19 @@ PROJECT_ROOT = app_root()
 LOG_DIR = PROJECT_ROOT / "data"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-logging.basicConfig(
-    filename=str(LOG_DIR / "vse_toolbox.log"),
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    encoding="utf-8",
-)
+try:
+    logging.basicConfig(
+        filename=str(LOG_DIR / "vse_toolbox.log"),
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        encoding="utf-8",
+    )
+except OSError:
+    # A stale or policy-protected log file must not prevent the CLI or tests from starting.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
 logger = logging.getLogger("vse_toolbox")
 
 DEFAULT_ARAS_BASE_URL = ""
@@ -248,6 +269,20 @@ def _ask_extra_headers(default_headers: str) -> str:
     return "\n".join(lines) if lines else default_headers
 
 
+def _ask_tdc_extra_headers(default_headers: str) -> str:
+    console.print(
+        "Extra headers（可粘贴浏览器中对应 TDC 页面请求头；"
+        "可粘贴多行，空行结束；直接回车使用安全默认 headers）:"
+    )
+    lines: list[str] = []
+    while True:
+        line = console.input("Header> " if not lines else "      > ")
+        if line == "":
+            break
+        lines.append(line)
+    return "\n".join(lines) if lines else default_headers
+
+
 def _has_header(headers: dict[str, str], name: str) -> bool:
     return any(key.lower() == name.lower() for key in headers)
 
@@ -267,6 +302,17 @@ def _default_aras_headers_text(base_url: str) -> str:
     }
     return ", ".join(f"{key}: {value}" for key, value in headers.items())
 
+
+def _default_tdc_headers_text(base_url: str, page_path: str) -> str:
+    parsed = urlsplit(base_url.rstrip("/") + "/")
+    origin = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else base_url.rstrip("/")
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "zh-CN,zh;q=0.9",
+        "User-Agent": DEFAULT_BROWSER_USER_AGENT,
+        "Referer": urljoin(origin + "/", page_path.lstrip("/")),
+    }
+    return ", ".join(f"{key}: {value}" for key, value in headers.items())
 
 
 def _ask_positive_int(label: str, default: int) -> int:
@@ -301,6 +347,37 @@ def _ask_aras_connection() -> tuple[str, dict[str, str], dict[str, str] | None]:
             "若遇到 401，请从浏览器成功的 InnovatorServer.aspx 请求复制 Authorization header。[/]"
         )
     return base_url, headers, None
+
+
+def _ask_tdc_connection(page_path: str) -> tuple[str, dict[str, str]]:
+    base_url = Prompt.ask("TDC base_url", default=DEFAULT_TDC_BASE_URL).strip()
+    raw_headers = _ask_tdc_extra_headers(_default_tdc_headers_text(base_url, page_path))
+    headers = _parse_header_lines(raw_headers)
+    cookie = _ask_cookie_header()
+    if cookie:
+        if _contains_control_char(cookie):
+            console.print("[vse.amber]Cookie header contains control characters and was ignored.[/]")
+        else:
+            headers["Cookie"] = cookie
+    return base_url, headers
+
+
+def _ask_tdc_login_mode() -> str:
+    table = Table(box=box.SIMPLE_HEAVY, show_header=False)
+    table.add_column("Key", style="#88a6a4", no_wrap=True)
+    table.add_column("Login")
+    table.add_row("1", "账号密码登录（主要）")
+    table.add_row("2", "浏览器 Header/Cookie（备用）")
+    table.add_row("0", "返回 TDC 菜单")
+    console.print(table)
+    return Prompt.ask("选择登录方式", choices=["0", "1", "2"], default="1")
+
+
+def _ask_tdc_password_connection() -> tuple[str, str, str]:
+    base_url = Prompt.ask("TDC base_url", default=DEFAULT_TDC_BASE_URL).strip()
+    username = Prompt.ask("TDC 用户名", default="").strip()
+    password = Prompt.ask("TDC 密码", password=True)
+    return base_url, username, password
 
 
 def _ask_aras_diagnostic_options() -> DiagnosticOptions:
@@ -385,6 +462,10 @@ _SENSITIVE_DISPLAY_KEYS = {
     "csrf",
     "secret",
     "password",
+    "applicanttel",
+    "phone",
+    "telephone",
+    "mobile",
 }
 
 _EWO_COLUMNS = [
@@ -466,6 +547,335 @@ def _render_ncr_detail_result(result) -> Table:
     table.add_row("file_name", safe_display_value(getattr(result, "file_name", None)))
     return table
 
+
+_TDC_DATA_MODEL_COLUMNS = [
+    "incident",
+    "applicant",
+    "superDepartment",
+    "department",
+    "requestDate",
+    "projectModel",
+    "partNumber",
+    "modelNumber",
+]
+
+_TDC_SOR_COLUMNS = [
+    "processNo",
+    "bizName",
+    "carTypeProject",
+    "startUser",
+    "title",
+    "deptName",
+    "sectionName",
+    "startTime",
+    "sorPartNo",
+    "sorNo",
+    "processInstanceStatus",
+]
+
+
+def _ask_tdc_data_model_filters() -> TDCDataModelFilters:
+    return TDCDataModelFilters(
+        serial_number=_blank_to_none(Prompt.ask("流水单号", default="")),
+        applicant=_blank_to_none(Prompt.ask("申请人", default="")),
+        department=_blank_to_none(Prompt.ask("部门", default="")),
+        section=_blank_to_none(Prompt.ask("科室", default="")),
+        application_start=_blank_to_none(Prompt.ask("申请开始日期 (YYYY-MM-DD)", default="")),
+        application_end=_blank_to_none(Prompt.ask("申请结束日期 (YYYY-MM-DD)", default="")),
+        project_model=_blank_to_none(Prompt.ask("项目/车型", default="")),
+        part_number=_blank_to_none(Prompt.ask("零件号", default="")),
+        model_number=_blank_to_none(Prompt.ask("数模号", default="")),
+    )
+
+
+def _ask_tdc_sor_filters() -> TDCSORFilters:
+    return TDCSORFilters(
+        serial_number=_blank_to_none(Prompt.ask("流水单号", default="")),
+        process_type=_blank_to_none(Prompt.ask("流程类型", default="")),
+        car_type_project=_blank_to_none(Prompt.ask("车型项目", default="")),
+        applicant=_blank_to_none(Prompt.ask("申请人", default="")),
+        title=_blank_to_none(Prompt.ask("标题", default="")),
+        department=_blank_to_none(Prompt.ask("部门", default="")),
+        section=_blank_to_none(Prompt.ask("科室", default="")),
+        application_start=_blank_to_none(Prompt.ask("申请开始日期 (YYYY-MM-DD)", default="")),
+        application_end=_blank_to_none(Prompt.ask("申请结束日期 (YYYY-MM-DD)", default="")),
+        part_number=_blank_to_none(Prompt.ask("零件号", default="")),
+        part_name=_blank_to_none(Prompt.ask("零件名称", default="")),
+        version=_blank_to_none(Prompt.ask("版本号", default="")),
+        sor_number=_blank_to_none(Prompt.ask("SOR 号", default="")),
+        latest_completed_node=_blank_to_none(Prompt.ask("最新完成节点", default="")),
+        approval_status=_blank_to_none(Prompt.ask("审批状态", default="")),
+    )
+
+
+def _render_tdc_paged_result(result) -> Table:
+    if result.report_type == "sor":
+        title = "SOR 流程查询（流程粒度）"
+        preferred = _TDC_SOR_COLUMNS
+    else:
+        title = "数模设计审核流程报表（流程粒度）"
+        preferred = _TDC_DATA_MODEL_COLUMNS
+    table = Table(
+        title=(
+            f"{title} | page={result.page} rows={len(result.rows)} total={result.total or '-'} "
+            f"pages={result.pages or '-'} unique={result.unique_count} duplicates={result.duplicate_count} "
+            f"stop={result.stop_reason}"
+        ),
+        show_lines=True,
+        box=box.SIMPLE_HEAVY,
+    )
+    keys = _select_display_columns(result.rows, preferred)
+    for key in keys or ["message"]:
+        table.add_column(key, overflow="fold")
+    if result.rows:
+        for row in result.rows:
+            table.add_row(*(Text(safe_display_value(row.get(key))) for key in keys))
+    else:
+        table.add_row("No results")
+    return table
+
+
+def _render_tdc_export_result(result) -> Table:
+    granularity = "零件明细" if result.record_granularity == "part_detail" else "流程"
+    title = "SOR 官方导出（零件明细粒度）" if result.report_type == "sor" else "TDC 官方 XLSX 导出"
+    table = Table(title=title, show_lines=True, box=box.SIMPLE_HEAVY)
+    table.add_column("field", style="#88a6a4", no_wrap=True)
+    table.add_column("value", overflow="fold")
+    table.add_row("file_name", safe_display_value(result.file_name))
+    table.add_row("absolute_path", safe_display_value(result.path))
+    table.add_row("bytes", str(result.byte_count))
+    table.add_row("validation", "Content-Type + XLSX PK: passed" if result.signature_valid else "failed")
+    table.add_row("record_granularity", granularity)
+    table.add_row("elapsed_ms", f"{result.elapsed_ms:.3f}")
+    return table
+
+
+_TDC_DEBUG_HEADER_ALLOWLIST = {
+    "accept",
+    "accept-language",
+    "content-type",
+    "origin",
+    "referer",
+    "user-agent",
+}
+
+
+def _format_tdc_debug_mapping(values, *, headers: bool = False) -> str:
+    parts: list[str] = []
+    for key, value in (values or {}).items():
+        lowered = str(key).lower()
+        if lowered in {"cookie", "authorization", "set-cookie"}:
+            shown = "[redacted]"
+        elif headers and lowered not in _TDC_DEBUG_HEADER_ALLOWLIST:
+            continue
+        else:
+            shown = redact_sensitive_text(value, limit=240, collapse_newlines=True)
+        parts.append(f"{key}={shown}")
+    return ", ".join(parts) or "-"
+
+
+def _tdc_console_debug_hook(event: TDCHttpDiagnosticEvent) -> None:
+    table = Table(box=box.SIMPLE, show_header=False, pad_edge=False)
+    table.add_column("field", style="#88a6a4", no_wrap=True)
+    table.add_column("value", overflow="fold")
+
+    def add(label: str, value) -> None:
+        if value is not None and value != "" and value != ():
+            table.add_row(label, Text(safe_display_value(redact_sensitive_text(value, limit=1000))))
+
+    add("timestamp", event.timestamp)
+    add("stage", event.stage)
+    add("request_id", event.request_id)
+    add("page_type", event.page_type)
+    add("method", event.method)
+    add("origin", event.origin)
+    add("path", event.path)
+    add("query", _format_tdc_debug_mapping(event.query))
+    add("page / page_size", f"{event.page or '-'} / {event.page_size or '-'}")
+    add("attempt / timeout", f"{event.attempt} / {event.timeout or '-'}")
+    add("status / elapsed_ms", f"{event.status_code or '-'} / {event.elapsed_ms or '-'}")
+    add("Content-Type", event.content_type)
+    add("Content-Length", event.content_length)
+    add("request headers", _format_tdc_debug_mapping(event.request_headers, headers=True))
+    add("response headers", _format_tdc_debug_mapping(event.response_headers, headers=True))
+    add("JSON fields", ", ".join(event.json_fields))
+    add("records / total / pages", f"{event.record_count or 0} / {event.total or '-'} / {event.pages or '-'}")
+    add(
+        "pagination",
+        (
+            f"accumulated={event.accumulated_count or 0}, unique={event.unique_count or 0}, "
+            f"duplicates={event.duplicate_count or 0}, current={event.current_page or '-'}, "
+            f"estimated={event.estimated_pages or '-'}, stop={event.stop_reason or '-'}"
+        ),
+    )
+    if event.file_name or event.saved_path:
+        add(
+            "export",
+            (
+                f"file={event.file_name or '-'}, path={event.saved_path or '-'}, bytes={event.bytes_written or 0}, "
+                f"validation={event.validation or '-'}"
+            ),
+        )
+    if event.exception_type or event.reason:
+        add(
+            "failure",
+            (
+                f"type={event.exception_type or '-'}, reason={event.reason or '-'}, status={event.status_code or '-'}, "
+                f"completed_pages={event.completed_pages or 0}"
+            ),
+        )
+    console.print(
+        Panel(table, title=Text(f"TDC Debug [{event.request_id}]"), border_style="#c7ad7a", box=box.ROUNDED)
+    )
+
+
+def _tdc_action_menu() -> str:
+    table = Table(box=box.SIMPLE_HEAVY, show_header=False)
+    table.add_column("Key", style="#88a6a4", no_wrap=True)
+    table.add_column("Action")
+    table.add_row("1", "单页查询")
+    table.add_row("2", "全量分页抓取")
+    table.add_row("3", "官方 XLSX 导出")
+    table.add_row("0", "返回 TDC 菜单")
+    console.print(table)
+    return Prompt.ask("选择操作", choices=["0", "1", "2", "3"], default="0")
+
+
+def _run_tdc_report(report_type: str, debug_enabled: bool) -> None:
+    page_path = DATA_MODEL_PAGE_PATH if report_type == "data_model" else SOR_PAGE_PATH
+    action = _tdc_action_menu()
+    if action == "0":
+        return
+    filters = _ask_tdc_data_model_filters() if report_type == "data_model" else _ask_tdc_sor_filters()
+    login_choice = _ask_tdc_login_mode()
+    if login_choice == "0":
+        return
+    auth_mode = "password" if login_choice == "1" else "headers"
+    username = ""
+    password = ""
+    if auth_mode == "password":
+        base_url, username, password = _ask_tdc_password_connection()
+        headers: dict[str, str] = {}
+    else:
+        base_url, headers = _ask_tdc_connection(page_path)
+    report = MarkdownDiagnosticReport(
+        options=DiagnosticOptions(enabled=debug_enabled, unsafe_raw=False),
+        base_url=base_url,
+        mode=f"{report_type}:{action}",
+        inputs={
+            "report_type": report_type,
+            "action": action,
+            "auth_mode": auth_mode,
+            "origin": urlsplit(base_url).netloc,
+            "headers": headers,
+        },
+        report_title="TDC CLI Diagnostic Report",
+        file_name_prefix="tdc_cli_debug",
+        allow_unsafe_raw=False,
+    )
+    hook = combine_diagnostic_hooks(
+        _tdc_console_debug_hook if debug_enabled else None,
+        report.record_http_event if debug_enabled else None,
+    )
+    label = "数模设计审核流程报表" if report_type == "data_model" else "SOR 流程报表"
+    try:
+        session = None
+        if auth_mode == "password":
+            console.print("[vse.muted]正在通过企业账号中心登录 TDC...[/]")
+            auth_client = TDCPasswordAuthClient(base_url, timeout=30.0, diagnostic_hook=hook)
+            try:
+                login_result = auth_client.login(username, password)
+            finally:
+                password = ""
+            session = login_result.session
+            console.print("[vse.muted]TDC 账号密码登录成功[/]")
+        else:
+            console.print("[vse.muted]使用浏览器 Header/Cookie 备用登录方式[/]")
+        client = TDCCrawlerClient(
+            base_url,
+            session=session,
+            headers=headers,
+            timeout=30.0,
+            diagnostic_hook=hook,
+        )
+        console.print(f"[vse.muted]开始: {label}[/]")
+        if action == "1":
+            page = _ask_positive_int("Page", 1)
+            page_size = _ask_positive_int("Page size", 50)
+            result = (
+                client.query_data_model_page(filters, page=page, page_size=page_size)
+                if report_type == "data_model"
+                else client.query_sor_page(filters, page=page, page_size=page_size)
+            )
+            console.print(_render_tdc_paged_result(result))
+        elif action == "2":
+            page_size = _ask_positive_int("Page size", 50)
+            max_pages = _ask_positive_int("Max pages", 100)
+            max_records = _ask_positive_int("Max records", 10000)
+            if not Confirm.ask("全量抓取可能耗时，继续？", default=False):
+                console.print("[vse.muted]已取消全量抓取[/]")
+                return
+            result = (
+                client.crawl_data_model_all(
+                    filters, page_size=page_size, max_pages=max_pages, max_records=max_records
+                )
+                if report_type == "data_model"
+                else client.crawl_sor_all(filters, page_size=page_size, max_pages=max_pages, max_records=max_records)
+            )
+            console.print(_render_tdc_paged_result(result))
+        else:
+            file_name = _blank_to_none(Prompt.ask("保存文件名（留空使用官方名称）", default=""))
+            result = (
+                client.export_data_model(filters, file_name=file_name)
+                if report_type == "data_model"
+                else client.export_sor(filters, file_name=file_name)
+            )
+            console.print(_render_tdc_export_result(result))
+        if report_path := report.save("success"):
+            console.print(f"[vse.muted]诊断报告已保存: {report_path}[/]")
+        logger.info("TDC CLI operation finished: report_type=%s action=%s", report_type, action)
+    except (TDCAuthError, TDCCrawlerError) as exc:
+        console.print(Panel(Text(_safe_error_message(exc)), title=type(exc).__name__, border_style="#c19191"))
+        report.record_exception(exc)
+        if report_path := report.save("failed"):
+            console.print(f"[vse.rose]诊断报告已保存: {report_path}[/]")
+        logger.warning("TDC CLI operation failed: report_type=%s action=%s type=%s", report_type, action, type(exc).__name__)
+    except Exception as exc:
+        console.print(Panel(Text(_safe_error_message(exc)), title=type(exc).__name__, border_style="#c19191"))
+        report.record_exception(exc)
+        if report_path := report.save("failed"):
+            console.print(f"[vse.rose]诊断报告已保存: {report_path}[/]")
+        logger.warning("TDC CLI operation failed: report_type=%s action=%s type=%s", report_type, action, type(exc).__name__)
+
+
+def handle_tdc_crawler(db: DatabaseManager) -> None:
+    """Menu 7: TDC report queries and official exports."""
+    del db
+    debug_enabled = False
+    while True:
+        menu = Table(box=box.SIMPLE_HEAVY, show_header=False)
+        menu.add_column("Key", style="#88a6a4", no_wrap=True)
+        menu.add_column("Mode")
+        menu.add_row("1", "数模设计审核流程报表")
+        menu.add_row("2", "SOR 流程报表")
+        menu.add_row("3", "造型 A 面冻结发布单")
+        menu.add_row("4", f"调试与诊断设置（当前：{'开启' if debug_enabled else '关闭'}）")
+        menu.add_row("0", "返回主菜单")
+        console.print(Panel(menu, title="TDC 报表爬虫", border_style="#88a6a4", box=box.ROUNDED))
+        sub = Prompt.ask("选择 TDC 报表", choices=["0", "1", "2", "3", "4"], default="0")
+        if sub == "0":
+            return
+        if sub == "4":
+            debug_enabled = Confirm.ask("开启 TDC 详细 Debug 与安全诊断报告？", default=debug_enabled)
+            state = "开启" if debug_enabled else "关闭"
+            console.print(f"[vse.muted]TDC Debug 已{state}；TDC 始终禁用 unsafe_raw。[/]")
+            continue
+        if sub == "3":
+            # Keep the third page visible without inventing an HTTP contract from its output workbook.
+            _ = TDCAFaceFilters()
+            console.print(Panel(AFACE_CONTRACT_BLOCKER, title="造型 A 面冻结发布单", border_style="#c7ad7a"))
+            continue
+        _run_tdc_report("data_model" if sub == "1" else "sor", debug_enabled)
 
 
 def handle_intranet_scrape(db: DatabaseManager) -> None:
@@ -696,6 +1106,7 @@ MENU_OPTIONS: dict[str, tuple[str, Callable[[DatabaseManager], None]]] = {
     "4": ("内网数据抓取", handle_intranet_scrape),
     "5": ("查看项目概览", handle_project_overview),
     "6": ("Excel 工具箱 (P0)", handle_excel_toolbox),
+    "7": ("TDC 报表爬虫", handle_tdc_crawler),
     "0": ("退出系统", handle_exit),
 }
 
@@ -718,21 +1129,22 @@ def show_menu() -> None:
         "4": ("Aras Cockpit", "Ready", "EWO, PAA and NCR queries"),
         "5": ("Overview", "Web", "Project dashboard summary"),
         "6": ("Excel Toolbox", "CLI", "Append, overlay and diff workbooks"),
+        "7": ("TDC Reports", "CLI", "三个 TDC 报表的查询与导出"),
         "0": ("Exit", "Ready", "Close VSE Toolbox"),
     }
-    table = Table(box=box.SIMPLE_HEAVY, show_header=True, header_style="vse.muted")
-    table.add_column("#", style="vse.accent", no_wrap=True)
+    table = Table(box=box.SIMPLE_HEAVY, show_header=True, header_style="#747a83")
+    table.add_column("#", style="#88a6a4", no_wrap=True)
     table.add_column("Module")
     table.add_column("Status", no_wrap=True)
-    table.add_column("Description", style="vse.subtitle")
+    table.add_column("Description", style="#a7a49a")
     for key, (label, _) in MENU_OPTIONS.items():
         module, status, description = rows.get(key, (label, "Ready", label))
         status_style = {
-            "Ready": "vse.sage",
-            "CLI": "vse.amber",
-            "Web": "vse.plum",
-            "Paused": "vse.muted",
-        }.get(status, "vse.subtitle")
+            "Ready": "#9caf88",
+            "CLI": "#c7ad7a",
+            "Web": "#a899b8",
+            "Paused": "#747a83",
+        }.get(status, "#a7a49a")
         table.add_row(key, module, f"[{status_style}]{status}[/]", description)
     console.print()
     console.print(table)
