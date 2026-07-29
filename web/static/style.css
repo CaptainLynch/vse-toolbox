@@ -221,7 +221,9 @@ h4 {
 }
 
 .panel-section[hidden],
-.aras-fields[hidden] { display: none; }
+.aras-fields[hidden],
+.cancel-btn[hidden],
+[data-compat-auth-field][hidden] { display: none; }
 
 .overview-grid {
   display: grid;
@@ -307,7 +309,8 @@ h4 {
 }
 
 .segment,
-.primary-btn {
+.primary-btn,
+.cancel-btn {
   min-height: 40px;
   padding: 0 13px;
   color: var(--muted);
@@ -360,6 +363,31 @@ h4 {
 
 .wide { grid-column: 1 / -1; }
 
+.insecure-http-confirm {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 10px;
+  color: var(--muted);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 8px;
+  background: var(--canvas);
+}
+
+[data-password-auth-field][hidden] { display: none; }
+
+.insecure-http-confirm input {
+  flex: 0 0 auto;
+  width: 16px;
+  min-height: 16px;
+  margin: 1px 0 0;
+}
+
+.insecure-http-confirm span {
+  margin: 0;
+  line-height: 1.45;
+}
+
 label span {
   display: block;
   margin-bottom: 5px;
@@ -406,6 +434,23 @@ textarea:focus {
   border-color: var(--primary-active);
 }
 
+.cancel-btn {
+  color: var(--error);
+  border-color: color-mix(in srgb, var(--error) 50%, var(--hairline));
+  background: transparent;
+}
+
+.cancel-btn:hover {
+  color: #fff;
+  border-color: var(--error);
+  background: var(--error);
+}
+
+.cancel-btn:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+
 .primary-btn:disabled,
 .primary-btn.is-running {
   opacity: 0.7;
@@ -418,6 +463,51 @@ textarea:focus {
   font-family: var(--font-mono);
   font-size: 12px;
 }
+
+.test-session-panel {
+  margin-top: 14px;
+  padding: 16px;
+  background: var(--surface-soft);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+}
+
+.test-session-panel[hidden] { display: none; }
+
+.test-session-head,
+.test-session-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.test-session-note,
+.test-session-status {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.test-session-actions {
+  justify-content: flex-start;
+  margin-top: 12px;
+}
+
+.test-session-status {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.test-session-status-row {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.25fr) minmax(0, 1fr);
+  gap: 10px;
+}
+
+.test-session-status-row strong { color: var(--body); }
 
 .result-panel {
   margin-top: 14px;

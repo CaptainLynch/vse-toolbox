@@ -20,6 +20,41 @@ from core.config import DIAGNOSTIC_DIR, PROJECT_ROOT
 from core.redaction import redact_sensitive_text
 
 
+_REDACTED = "[redacted]"
+_SENSITIVE_KEY_SUFFIXES = (
+    "authorization",
+    "cookie",
+    "token",
+    "apikey",
+    "sid",
+    "sessionid",
+    "csrf",
+    "xsrf",
+    "secret",
+    "password",
+    "passwd",
+    "passphrase",
+)
+_SENSITIVE_KEY_EXACT = {
+    "arasauth",
+    "credential",
+    "credentials",
+    "jsessionid",
+    "pwd",
+}
+_PERMANENT_SECRET_JSON_RE = re.compile(
+    r"(?i)(['\"])(password|passwd|pwd|passphrase|(?:client[_-]?)?secret)\1"
+    r"(\s*:\s*)(['\"])(?:\\.|(?!\4)[\s\S])*?\4"
+)
+_PERMANENT_SECRET_PARAM_RE = re.compile(
+    r"(?i)\b(password|passwd|pwd|passphrase|(?:client[_-]?)?secret)\b"
+    r"(\s*[:=]\s*)(?:Bearer\s+)?([^,\s;'\"}\]\[<]+)"
+)
+_URL_USERINFO_RE = re.compile(
+    r"(?i)\b(https?://)([^/@\s:]+):([^/@\s]+)@"
+)
+
+
 @dataclass(frozen=True)
 class DiagnosticOptions:
     enabled: bool = False
@@ -60,9 +95,15 @@ class MarkdownDiagnosticReport:
 
     def scrub(self, value: Any) -> str:
         text = "" if value is None else str(value)
+        text = _redact_permanent_secret_text(text)
         if self.options.unsafe_raw:
             return _escape_control_chars(text)
         return _escape_control_chars(redact_sensitive_text(text))
+
+    def scrub_keyed(self, key: Any, value: Any) -> str:
+        if _is_sensitive_key(key):
+            return _REDACTED
+        return self.scrub(_format_payload(value))
 
     def record_runtime_snapshot(self) -> None:
         parsed = urlsplit(self.base_url)
@@ -101,7 +142,10 @@ class MarkdownDiagnosticReport:
         if self.inputs:
             runtime.append("")
             runtime.append("### CLI Inputs")
-            runtime.extend(f"- `{key}`: `{self.scrub(value)}`" for key, value in self.inputs.items())
+            runtime.extend(
+                f"- `{key}`: `{self.scrub_keyed(key, value)}`"
+                for key, value in self.inputs.items()
+            )
         runtime.append("")
         runtime.append("### Network")
         runtime.extend(dns_rows)
@@ -219,8 +263,60 @@ def _event_to_mapping(event: Any) -> Mapping[str, Any]:
 
 def _format_payload(value: Any) -> str:
     if isinstance(value, Mapping):
-        return "\n".join(f"{key}: {item}" for key, item in value.items())
+        return "\n".join(
+            f"{key}: {_format_keyed_payload_value(key, item)}"
+            for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return "[" + ", ".join(_format_payload(item) for item in value) + "]"
     return str(value)
+
+
+def _format_keyed_payload_value(key: Any, value: Any) -> str:
+    if _is_sensitive_key(key):
+        return _REDACTED
+    return _format_payload(value)
+
+
+def _is_sensitive_key(key: Any) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "", str(key).casefold())
+    if normalized in _SENSITIVE_KEY_EXACT:
+        return True
+    if any(
+        marker in normalized
+        for marker in (
+            "authorization",
+            "cookie",
+            "credential",
+            "token",
+            "apikey",
+            "sessionid",
+            "csrf",
+            "xsrf",
+            "secret",
+            "password",
+            "passwd",
+            "passphrase",
+        )
+    ):
+        return True
+    return any(normalized.endswith(suffix) for suffix in _SENSITIVE_KEY_SUFFIXES)
+
+
+def _redact_permanent_secret_text(value: str) -> str:
+    value = _URL_USERINFO_RE.sub(
+        lambda match: f"{match.group(1)}{_REDACTED}:{_REDACTED}@",
+        value,
+    )
+    value = _PERMANENT_SECRET_JSON_RE.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}{match.group(1)}"
+        f"{match.group(3)}{match.group(4)}{_REDACTED}{match.group(4)}",
+        value,
+    )
+    return _PERMANENT_SECRET_PARAM_RE.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}{_REDACTED}",
+        value,
+    )
 
 
 def _escape_control_chars(value: str) -> str:

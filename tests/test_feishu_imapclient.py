@@ -81,7 +81,7 @@ def test_scan_and_parse_uses_imapclient_fetch_and_returns_saved_count(monkeypatc
         b"Message-ID: <task-1>\r\n"
         b"Content-Type: text/plain; charset=utf-8\r\n"
         b"\r\n"
-        "任务标题: Package signoff\n负责人: Alice\n截止时间: 2026-12-31".encode("utf-8")
+        + "任务标题: Package signoff\n负责人: Alice\n截止时间: 2026-12-31".encode("utf-8")
     )
     FakeIMAPClient.search_result = [101]
     FakeIMAPClient.fetch_result = {101: {b"RFC822": raw}}

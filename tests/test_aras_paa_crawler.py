@@ -216,11 +216,47 @@ def test_query_paa_report_maps_inferred_filters_and_custom_select() -> None:
     assert "<state>DRAFT1</state>" in payload
     assert '<_area condition="like">AREA</_area>' in payload
     assert '<_base condition="like">BASE</_base>' in payload
-    assert '<_vehicles condition="like">VEHICLE</_vehicles>' in payload
+    assert '<_vehicles condition="like">%VEHICLE%</_vehicles>' in payload
     assert '<_submit_date condition="ge">2026-01-01</_submit_date>' in payload
     assert '<_submit_date condition="le">2026-12-31</_submit_date>' in payload
     assert '<_mtl_rq_date condition="ge">2026-02-01</_mtl_rq_date>' in payload
     assert '<_mtl_rq_date condition="le">2026-11-30</_mtl_rq_date>' in payload
+
+
+def test_paa_department_or_and_vehicle_and_are_contains_predicates_on_every_page() -> None:
+    client = ArasCrawlerClient("http://aras.example", session=object(), prewarm=False)  # type: ignore[arg-type]
+    filters = PAAReportFilters(
+        department_keyword="  Body Engineering  ",
+        vehicle_keyword="  F610S  ",
+    )
+
+    page_one = client._build_paa_payload(filters, 1, 50, 12000, None)
+    page_two = client._build_paa_payload(filters, 2, 50, 12000, None)
+
+    grouped = (
+        '<and><or><_pe_tdc_department condition="like">%Body Engineering%</_pe_tdc_department>'
+        '<_requester_department condition="like">%Body Engineering%</_requester_department></or>'
+        '<_vehicles condition="like">%F610S%</_vehicles></and>'
+    )
+    assert grouped in page_one
+    assert page_one.replace('page="1"', 'page="2"', 1) == page_two
+
+
+def test_paa_blank_department_and_vehicle_emit_no_grouping() -> None:
+    client = ArasCrawlerClient("http://aras.example", session=object(), prewarm=False)  # type: ignore[arg-type]
+
+    payload = client._build_paa_payload(
+        PAAReportFilters(department_keyword="  ", vehicle_keyword="\t"),
+        1,
+        50,
+        12000,
+        None,
+    )
+
+    assert "<_pe_tdc_department" not in payload
+    assert "<_requester_department" not in payload
+    assert "<_vehicles" not in payload
+    assert "<and>" not in payload
 
 
 def test_parse_paa_report_response_rejects_bad_or_missing_result_xml() -> None:
@@ -232,7 +268,7 @@ def test_parse_paa_report_response_rejects_bad_or_missing_result_xml() -> None:
         ArasCrawlerClient.parse_paa_report_response("<SOAP-ENV:Envelope xmlns:SOAP-ENV='x' />")
 
 
-def test_query_paa_report_reports_http_error_body_without_credentials() -> None:
+def test_query_paa_report_never_exposes_http_error_body_or_credentials() -> None:
     session = FakeSession(
         [
             FakeResponse(
@@ -258,10 +294,10 @@ def test_query_paa_report_reports_http_error_body_without_credentials() -> None:
         client.query_paa_report()
 
     message = str(excinfo.value)
-    assert "Aras HTTP 400 Bad Request" in message
-    assert "missing context" in message
-    assert "Next: ok" in message
-    assert "TAIL" in message
+    assert message == "Aras HTTP 400 Bad Request; the response body was not exposed."
+    assert "missing context" not in message
+    assert "Next: ok" not in message
+    assert "TAIL" not in message
     assert "secret-token" not in message
     assert "secret2" not in message
     assert "secret3" not in message

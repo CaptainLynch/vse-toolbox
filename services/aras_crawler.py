@@ -7,12 +7,16 @@ import random
 import re
 import time
 import xml.etree.ElementTree as ET
+from contextlib import contextmanager
 from dataclasses import dataclass
 from html import escape
-from typing import Any, Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Iterator, Mapping, Sequence
 from urllib.parse import urljoin, urlsplit
 
 from core.redaction import redact_sensitive_text
+
+if TYPE_CHECKING:
+    from services.aras_report_export import ArasReportExportResult
 
 try:
     import requests
@@ -23,6 +27,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only in minimal test
 SOAP_ROUTE = "Server/InnovatorServer.aspx"
 CLIENT_ROUTE = "Client/default.aspx"
 TOKEN_ROUTE = "Server/AuthenticationBroker.asmx/GetFileDownloadToken"
+SOAP11_NAMESPACE = "http://schemas.xmlsoap.org/soap/envelope/"
 DEFAULT_BROWSER_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
@@ -168,6 +173,14 @@ class ArasCrawlerError(RuntimeError):
     """Raised when an Aras crawler response cannot be used."""
 
 
+class ArasCrawlerDeadlineExceeded(ArasCrawlerError):
+    """Raised when an export-scoped request deadline has expired."""
+
+
+class ArasCrawlerSessionExpired(ArasCrawlerError):
+    """Raised when an authenticated SOAP session is no longer usable."""
+
+
 _SENSITIVE_NAMES = ("cook" + "ie", "authori" + "zation", "tok" + "en", "api_key", "sid", "sessionid", "cs" + "rf", "secret")
 _SENSITIVE_DIAGNOSTIC_RE = re.compile(
     r"(?i)\b(" + "|".join(_SENSITIVE_NAMES) + r")\b(\s*[:=]?\s*)(?:Bearer\s+)?([^,\s;'\"}\]\[<]+)"
@@ -202,6 +215,8 @@ class EWOReportFilters:
     rsp_department: str | None = None
     submit_start: str | None = None
     submit_end: str | None = None
+    rsp_department_keyword: str | None = None
+    model_keyword: str | None = None
 
 
 @dataclass(frozen=True)
@@ -216,6 +231,7 @@ class PAAReportFilters:
     submit_end: str | None = None
     mtl_rq_start: str | None = None
     mtl_rq_end: str | None = None
+    department_keyword: str | None = None
 
 
 @dataclass(frozen=True)
@@ -282,6 +298,7 @@ class ArasCrawlerClient:
         self.session = session
         self.headers = dict(headers or {})
         self.timeout = timeout
+        self._request_deadline: float | None = None
         self.prewarm = created_session if prewarm is None else prewarm
         self.diagnostic_hook = diagnostic_hook
         self._context_warmed = False
@@ -353,6 +370,68 @@ class ArasCrawlerClient:
             page += 1
         return PAAReportPage(rows=rows, page=last_page, item_ids=item_ids, raw_xml="\n".join(raw_pages))
 
+    def export_ewo_report(
+        self,
+        filters: EWOReportFilters,
+        *,
+        max_pages: int = 500,
+        max_records: int = 12000,
+        timeout_seconds: float = 300.0,
+    ) -> ArasReportExportResult:
+        """Fetch all matching EWO rows and write a safe local XLSX export."""
+        from services.aras_report_export import export_ewo_report
+
+        return export_ewo_report(
+            self,
+            filters,
+            max_pages=max_pages,
+            max_records=max_records,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def export_paa_report(
+        self,
+        filters: PAAReportFilters | None = None,
+        *,
+        max_pages: int = 500,
+        max_records: int = 12000,
+        timeout_seconds: float = 300.0,
+    ) -> ArasReportExportResult:
+        """Fetch all matching PAA rows and write a safe local XLSX export."""
+        from services.aras_report_export import export_paa_report
+
+        return export_paa_report(
+            self,
+            filters,
+            max_pages=max_pages,
+            max_records=max_records,
+            timeout_seconds=timeout_seconds,
+        )
+
+    @contextmanager
+    def begin_full_export_scope(
+        self,
+        module: str,
+        filters: EWOReportFilters | PAAReportFilters,
+        *,
+        max_pages: int,
+        max_records: int,
+        deadline: float,
+    ) -> Iterator[None]:
+        """Bind browser transports to one immutable full-export contract.
+
+        Ordinary requests sessions intentionally keep the existing behavior.
+        """
+        begin = getattr(self.session, "begin_full_export", None)
+        if not callable(begin):
+            yield
+            return
+        from services.aras_browser_transport import canonical_filters_signature
+
+        signature = canonical_filters_signature(module, filters)
+        with begin(module, signature, max_pages, max_records, deadline):
+            yield
+
     def query_ncr_approval_progress(self, filters: NCRApprovalFilters) -> NCRExportResult:
         payload = self._build_ncr_payload(filters, "sgmw_downloadFileProgressC")
         response = self._post_soap("ApplyMethod", payload)
@@ -375,7 +454,7 @@ class ArasCrawlerClient:
                 url,
                 data=body,
                 headers=headers,
-                timeout=self.timeout,
+                timeout=self._network_timeout(),
             )
         except Exception as exc:
             self._emit_diagnostic(
@@ -398,16 +477,13 @@ class ArasCrawlerClient:
 
     @staticmethod
     def parse_ewo_report_response(xml_text: str) -> EWOReportPage:
-        root = _parse_xml(xml_text)
-        rows, item_ids, page = _parse_item_rows(root, "EWO_O")
+        result = _parse_report_result(xml_text, "EWO_O")
+        rows, item_ids, page = _parse_item_rows(result, "EWO_O")
         return EWOReportPage(rows=rows, page=page, item_ids=item_ids, raw_xml=xml_text)
 
     @staticmethod
     def parse_paa_report_response(xml_text: str) -> PAAReportPage:
-        root = _parse_xml(xml_text)
-        result = next((node for node in root.iter() if _local_name(node.tag) == "Result"), None)
-        if result is None:
-            raise ArasCrawlerError("PAA response does not contain Result")
+        result = _parse_report_result(xml_text, "PAA_O")
         rows, item_ids, page = _parse_item_rows(result, "PAA_O")
         return PAAReportPage(rows=rows, page=page, item_ids=item_ids, raw_xml=xml_text)
 
@@ -460,7 +536,8 @@ class ArasCrawlerClient:
                 url,
                 data=payload,
                 headers=headers,
-                timeout=self.timeout,
+                timeout=self._network_timeout(),
+                allow_redirects=False,
             )
         except Exception as exc:
             self._emit_diagnostic(
@@ -476,7 +553,14 @@ class ArasCrawlerClient:
             )
             raise
         self._emit_diagnostic(_event_from_response(f"soap-{soap_action}", "POST", url, headers, payload, response, started))
-        if getattr(response, "status_code", 200) >= 400:
+        status = int(getattr(response, "status_code", 200) or 200)
+        if status == 401 or _is_authentication_response(response):
+            raise ArasCrawlerSessionExpired(
+                "The Aras account session has expired; authenticate again and retry once."
+            )
+        if status == 403:
+            raise ArasCrawlerError("The Aras account does not have permission to read this report.")
+        if status >= 400:
             raise ArasCrawlerError(_format_http_error(response))
         response.raise_for_status()
         if not response.text:
@@ -494,7 +578,7 @@ class ArasCrawlerClient:
             response = self.session.get(
                 url,
                 headers=headers,
-                timeout=self.timeout,
+                timeout=self._network_timeout(),
             )
         except Exception as exc:
             self._emit_diagnostic(
@@ -518,9 +602,9 @@ class ArasCrawlerClient:
         headers = self._browser_headers("*/*")
         headers.update(
             {
-            "Content-Type": content_type,
-            "SOAPAction": soap_action,
-            "TIMEZONE_NAME": "China Standard Time",
+                "Content-Type": content_type,
+                "SOAPAction": soap_action,
+                "TIMEZONE_NAME": "China Standard Time",
             }
         )
         headers.update(self.headers)
@@ -550,9 +634,22 @@ class ArasCrawlerClient:
         return self.base_url.rstrip("/")
 
     def _emit_diagnostic(self, event: ArasHttpDiagnosticEvent) -> None:
+        # Browser Scheme A must never enter the verbose requests diagnostic path:
+        # that event shape contains URL, headers, AML and response text.
+        if getattr(self.session, "is_browser_aras_session", False):
+            return
         if self.diagnostic_hook is None:
             return
         self.diagnostic_hook(event)
+
+    def _network_timeout(self) -> float:
+        """Return the timeout for the next call within an optional total deadline."""
+        if self._request_deadline is None:
+            return self.timeout
+        remaining = self._request_deadline - time.monotonic()
+        if remaining <= 0:
+            raise ArasCrawlerDeadlineExceeded("Aras export request deadline exceeded")
+        return min(self.timeout, remaining)
 
     def _build_ewo_payload(
         self,
@@ -575,7 +672,15 @@ class ArasCrawlerClient:
             _element("_sort_sub_type", filters.change_sub_type),
             _element("_area", filters.area, condition="like"),
             _element("state", filters.state),
-            _element("_rsp_department", filters.rsp_department),
+            _element(
+                "_rsp_department",
+                _contains_filter(
+                    _clean_filter(filters.rsp_department_keyword)
+                    or _clean_filter(filters.rsp_department)
+                ),
+                condition="like",
+            ),
+            _element("_modelinfo", _contains_filter(filters.model_keyword), condition="like"),
             _element("_submit_time", filters.submit_start, condition="ge"),
             _element("_submit_time", filters.submit_end, condition="le"),
         ]
@@ -601,13 +706,26 @@ class ArasCrawlerClient:
             _element("state", filters.state),
             _element("_area", filters.area, condition="like"),
             _element("_base", filters.base, condition="like"),
-            _element("_vehicles", filters.vehicle_keyword, condition="like"),
             _element("_submit_date", filters.submit_start, condition="ge"),
             _element("_submit_date", filters.submit_end, condition="le"),
             _element("_mtl_rq_date", filters.mtl_rq_start, condition="ge"),
             _element("_mtl_rq_date", filters.mtl_rq_end, condition="le"),
         ]
         body = "".join(child for child in children if child)
+        department = _clean_filter(filters.department_keyword)
+        vehicle = _clean_filter(filters.vehicle_keyword)
+        grouped: list[str] = []
+        if department:
+            grouped.append(
+                "<or>"
+                + _element("_pe_tdc_department", _contains_filter(department), condition="like")
+                + _element("_requester_department", _contains_filter(department), condition="like")
+                + "</or>"
+            )
+        if vehicle:
+            grouped.append(_element("_vehicles", _contains_filter(vehicle), condition="like"))
+        if grouped:
+            body += "<and>" + "".join(grouped) + "</and>"
         if body:
             return _soap_envelope(f"<ApplyItem><Item {attrs}>{body}</Item></ApplyItem>")
         return _soap_envelope(f"<ApplyItem><Item {attrs}/></ApplyItem>")
@@ -630,17 +748,16 @@ class ArasCrawlerClient:
 
 
 def _parse_item_rows(root: ET.Element, item_type: str) -> tuple[list[dict[str, str | None]], list[str], int | None]:
-    items = [item for item in root.iter() if _local_name(item.tag) == "Item" and item.get("type") == item_type]
-    if not items and item_type == "EWO_O":
-        return [], [], None
-    if not items and item_type == "PAA_O":
-        return [], [], None
+    items = [
+        item
+        for item in list(root)
+        if item.tag == "Item" and item.get("type") == item_type
+    ]
     rows: list[dict[str, str | None]] = []
     item_ids: list[str] = []
     page: int | None = None
     for item in items:
-        if item.get("id"):
-            item_ids.append(item.get("id", ""))
+        item_ids.append(item.get("id", ""))
         if page is None and item.get("page"):
             page = int(item.get("page", "0"))
         row: dict[str, str | None] = {}
@@ -648,6 +765,34 @@ def _parse_item_rows(root: ET.Element, item_type: str) -> tuple[list[dict[str, s
             row[_local_name(child.tag)] = None if child.get("is_null") == "1" else child.text
         rows.append(row)
     return rows, item_ids, page
+
+
+def _parse_report_result(xml_text: str, item_type: str) -> ET.Element:
+    """Return a protocol-valid report Result without treating errors as zero rows."""
+    root = _parse_xml(xml_text)
+    envelope_tag = f"{{{SOAP11_NAMESPACE}}}Envelope"
+    body_tag = f"{{{SOAP11_NAMESPACE}}}Body"
+    if root.tag != envelope_tag:
+        raise ArasCrawlerError("Aras report response is not a SOAP 1.1 envelope")
+    body = next((node for node in list(root) if node.tag == body_tag), None)
+    if body is None:
+        raise ArasCrawlerError("Aras report response does not contain a SOAP 1.1 body")
+    if any(_local_name(node.tag) == "Fault" for node in body.iter()):
+        raise ArasCrawlerError("Aras report request returned a SOAP fault")
+    result_nodes = [node for node in list(body) if node.tag == "Result"]
+    if len(result_nodes) != 1:
+        raise ArasCrawlerError("Aras report response does not contain one direct Result")
+    result = result_nodes[0]
+    children = list(result)
+    if not children:
+        if (result.text or "").strip():
+            raise ArasCrawlerError("Aras report Result is not a valid item collection")
+        return result
+    if any(node.tag != "Item" for node in children):
+        raise ArasCrawlerError("Aras report Result contains an invalid item collection")
+    if any(node.get("type") != item_type for node in children):
+        raise ArasCrawlerError("Aras report Result contains an unexpected item type")
+    return result
 
 
 def _soap_envelope(body: str) -> str:
@@ -662,6 +807,18 @@ def _element(name: str, value: str | None, condition: str | None = None) -> str:
         return ""
     attr = f' condition="{condition}"' if condition else ""
     return f"<{name}{attr}>{escape(value)}</{name}>"
+
+
+def _clean_filter(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = str(value).strip()
+    return cleaned or None
+
+
+def _contains_filter(value: str | None) -> str | None:
+    cleaned = _clean_filter(value)
+    return f"%{cleaned}%" if cleaned is not None else None
 
 
 def _cdata(value: str) -> str:
@@ -680,17 +837,8 @@ def _parse_xml(xml_text: str) -> ET.Element:
 def _format_http_error(response: Any) -> str:
     status = getattr(response, "status_code", "unknown")
     reason = getattr(response, "reason", "")
-    url = getattr(response, "url", "")
-    snippet = _redact_diagnostic(str(getattr(response, "text", "") or "").strip()) or "<empty response body>"
-    location = f" for {url}" if url else ""
     suffix = f" {reason}" if reason else ""
-    message = f"Aras HTTP {status}{suffix}{location}: {snippet}"
-    if str(status) == "401" and _response_requires_bearer(response):
-        message += (
-            " | Authentication hint: missing or expired Authorization Bearer token. "
-            "Copy the Authorization header from a successful InnovatorServer.aspx browser request."
-        )
-    return message
+    return f"Aras HTTP {status}{suffix}; the response body was not exposed."
 
 
 def _response_requires_bearer(response: Any) -> bool:
@@ -700,6 +848,19 @@ def _response_requires_bearer(response: Any) -> bool:
     except AttributeError:
         authenticate = ""
     return "bearer" in str(authenticate).lower()
+
+
+def _is_authentication_response(response: Any) -> bool:
+    status = int(getattr(response, "status_code", 0) or 0)
+    if status == 401 or _response_requires_bearer(response):
+        return True
+    headers = getattr(response, "headers", {}) or {}
+    location = str(headers.get("Location", "") or "").casefold()
+    if location and any(marker in location for marker in ("authorize", "login", "oauth")):
+        return True
+    content_type = str(headers.get("Content-Type", "") or "").casefold()
+    body = str(getattr(response, "text", "") or "").lstrip().casefold()
+    return "text/html" in content_type or body.startswith(("<!doctype html", "<html"))
 
 
 def _event_from_response(

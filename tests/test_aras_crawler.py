@@ -118,6 +118,36 @@ def test_query_ewo_report_maps_route_headers_filters_and_parses_rows() -> None:
     assert result.raw_xml.startswith("<SOAP-ENV:Envelope")
 
 
+def test_ewo_department_and_model_are_trimmed_contains_predicates_on_every_page() -> None:
+    client = ArasCrawlerClient("http://aras.example", session=object(), prewarm=False)  # type: ignore[arg-type]
+    filters = EWOReportFilters(
+        rsp_department_keyword="  Body & Chassis <Team>  ",
+        model_keyword="  F610S  ",
+    )
+
+    page_one = client._build_ewo_payload(filters, 1, 50, 12000, None)
+    page_two = client._build_ewo_payload(filters, 2, 50, 12000, None)
+
+    assert '<_rsp_department condition="like">%Body &amp; Chassis &lt;Team&gt;%</_rsp_department>' in page_one
+    assert '<_modelinfo condition="like">%F610S%</_modelinfo>' in page_one
+    assert page_one.replace('page="1"', 'page="2"', 1) == page_two
+
+
+def test_ewo_blank_contains_filters_emit_no_predicate() -> None:
+    client = ArasCrawlerClient("http://aras.example", session=object(), prewarm=False)  # type: ignore[arg-type]
+
+    payload = client._build_ewo_payload(
+        EWOReportFilters(rsp_department_keyword="  ", model_keyword="\t"),
+        1,
+        50,
+        12000,
+        None,
+    )
+
+    assert "<_rsp_department" not in payload
+    assert "<_modelinfo" not in payload
+
+
 def test_query_ewo_report_emits_diagnostic_http_event() -> None:
     events = []
     session = FakeSession([FakeResponse(fixture_text("ewo_query_response.xml"))])
@@ -166,7 +196,7 @@ def test_download_token_app_root_base_url_does_not_duplicate_innovatorserver() -
     assert "/innovatorserver/innovatorserver/" not in str(call["url"]).lower()
 
 
-def test_401_bearer_error_includes_authentication_hint_without_leaking_token() -> None:
+def test_401_bearer_error_is_stable_without_body_or_copy_authorization_advice() -> None:
     session = FakeSession(
         [
             FakeResponse(
@@ -184,12 +214,13 @@ def test_401_bearer_error_includes_authentication_hint_without_leaking_token() -
         client.query_ewo_report(EWOReportFilters())
 
     message = str(excinfo.value)
-    assert "missing or expired Authorization Bearer token" in message
-    assert "successful InnovatorServer.aspx browser request" in message
+    assert message == "The Aras account session has expired; authenticate again and retry once."
+    assert "Authorization" not in message
+    assert "copy" not in message.casefold()
     assert "secret-token" not in message
 
 
-def test_download_token_401_bearer_error_uses_authentication_hint() -> None:
+def test_download_token_401_error_does_not_expose_body_or_request_authorization_copy() -> None:
     session = FakeSession(
         [
             FakeResponse(
@@ -207,7 +238,9 @@ def test_download_token_401_bearer_error_uses_authentication_hint() -> None:
         client.get_file_download_token("FILE123")
 
     message = str(excinfo.value)
-    assert "missing or expired Authorization Bearer token" in message
+    assert message == "Aras HTTP 401 Unauthorized; the response body was not exposed."
+    assert "Authorization" not in message
+    assert "copy" not in message.casefold()
     assert "secret-token" not in message
 
 

@@ -152,9 +152,13 @@ def test_web_frontend_redacts_sensitive_result_values_before_rendering():
 
     assert "function redactSensitiveText(value)" in source
     assert "function safeDisplayValue(value)" in source
+    assert "function renderSummary(data)" in source
+    assert "function renderExportSummary(data)" in source
     assert "valueCell.textContent = safeDisplayValue(value)" in source
-    assert "td.textContent = safeDisplayValue(row[key])" in source
-    assert "showArasError(redactSensitiveText(err.message))" in source
+    assert "formatArasApiError(err.safeError)" in source
+    assert "safeError.message" not in source
+    aras_job_section = source[source.index("class ArasJobUiError") : source.index("function setupPanels")]
+    assert "err.message" not in aras_job_section
     assert "raw_xml" in source
 
     script = r"""

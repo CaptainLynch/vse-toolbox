@@ -108,7 +108,7 @@ def test_scan_and_parse_calls_sync_bridge_and_returns_saved_count(monkeypatch, t
                 b"Message-ID: <task-1>\r\n"
                 b"Content-Type: text/plain; charset=utf-8\r\n"
                 b"\r\n"
-                "任务标题: Review package\n负责人: Alice\n截止时间: 2026-12-31".encode("utf-8")
+                + "任务标题: Review package\n负责人: Alice\n截止时间: 2026-12-31".encode("utf-8")
             )
             return {1: {b"RFC822": raw}}
 

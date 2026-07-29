@@ -69,6 +69,12 @@ vse-toolbox/
 
 菜单 4 保持为 Aras Cockpit。菜单 7 提供数模设计审核流程、SOR 流程以及造型 A 面冻结发布单的独立 CLI。TDC 默认通过企业账号中心使用用户名和隐藏密码完成 OIDC 登录，浏览器 Header/Cookie 作为备用方式保留；密码、令牌和会话信息不写入配置、日志或诊断报告。
 
+EWO/PAA 新建 XLSX 导出以 Excel COM 为首选。仅当本机明确没有可用的
+`Excel.Application` COM 注册时，Aras 导出器使用 Python 标准库生成等价的
+OOXML 新文件；该窄范围回退不读取或修改已有工作簿，也不适用于 Excel 工具箱、
+PPT 或其他可能受 DLP 保护的 Office 文件。Excel 已启动后的保存、权限、DLP 或
+磁盘错误始终失败关闭，不会绕过 COM。
+
 ## 多智能体协作
 
 项目内置四角色 Agent 体系，详见 `docs/agents/` 目录：
