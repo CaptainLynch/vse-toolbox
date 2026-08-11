@@ -7,10 +7,18 @@ import pytest
 
 from services.aras_crawler import (
     DEFAULT_EWO_SELECT_FIELDS,
+    ArasAuthenticationError,
     ArasCrawlerClient,
     ArasCrawlerError,
     EWOReportFilters,
     NCRApprovalFilters,
+    PAAReportFilters,
+)
+from services.aras_department_mapping import (
+    NCR_SECTION_CODES,
+    NCR_SECTION_CODES_BY_DEPARTMENT_V1,
+    normalize_departments,
+    resolve_ncr_section_codes,
 )
 
 
@@ -25,12 +33,14 @@ class FakeResponse:
         reason: str = "",
         url: str = "",
         headers: dict[str, str] | None = None,
+        content: bytes | None = None,
     ) -> None:
         self.text = text
         self.status_code = status_code
         self.reason = reason
         self.url = url
         self.headers = headers or {}
+        self.content = content if content is not None else text.encode("utf-8")
 
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
@@ -56,7 +66,9 @@ class FakeSession:
 
     def get(self, url: str, **kwargs):  # type: ignore[no-untyped-def]
         self.calls.append({"method": "GET", "url": url, **kwargs})
-        raise AssertionError("GET should not be called by query methods")
+        if not self.responses:
+            raise AssertionError("unexpected GET")
+        return self.responses.pop(0)
 
     def head(self, url: str, **kwargs):  # type: ignore[no-untyped-def]
         self.calls.append({"method": "HEAD", "url": url, **kwargs})
@@ -65,6 +77,17 @@ class FakeSession:
 
 def fixture_text(name: str) -> str:
     return (FIXTURE_DIR / name).read_text(encoding="utf-8-sig")
+
+
+def ewo_response(page: object, numbers: list[str]) -> str:
+    items = "".join(
+        f'<Item type="EWO_O" id="ID-{number}" page="{page}"><_no>{number}</_no></Item>'
+        for number in numbers
+    )
+    return (
+        '<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/">'
+        f"<SOAP-ENV:Body><Result>{items}</Result></SOAP-ENV:Body></SOAP-ENV:Envelope>"
+    )
 
 
 def test_query_ewo_report_maps_route_headers_filters_and_parses_rows() -> None:
@@ -118,6 +141,30 @@ def test_query_ewo_report_maps_route_headers_filters_and_parses_rows() -> None:
     assert result.raw_xml.startswith("<SOAP-ENV:Envelope")
 
 
+def test_query_paa_report_filters_department_without_requester_condition() -> None:
+    session = FakeSession(
+        [
+            FakeResponse(
+                '<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/">'
+                '<SOAP-ENV:Body><Result><Item type="PAA_O" id="PAA-1" page="1">'
+                "<_no>PAA-1</_no></Item></Result></SOAP-ENV:Body></SOAP-ENV:Envelope>"
+            )
+        ]
+    )
+    client = ArasCrawlerClient("http://aras.example", session=session)  # type: ignore[arg-type]
+
+    result = client.query_paa_report(PAAReportFilters(department="技术中心_车体工程"))
+
+    call = session.calls[0]
+    assert call["method"] == "POST"
+    payload = call["data"]
+    assert 'type="PAA_O" action="get" page="1"' in payload
+    assert "<_pe_tdc_department>技术中心_车体工程</_pe_tdc_department>" in payload
+    assert "<_pe_tdc_department condition=" not in payload
+    assert "<_requester_department" not in payload
+    assert result.rows[0]["_no"] == "PAA-1"
+
+
 def test_query_ewo_report_emits_diagnostic_http_event() -> None:
     events = []
     session = FakeSession([FakeResponse(fixture_text("ewo_query_response.xml"))])
@@ -139,6 +186,70 @@ def test_query_ewo_report_emits_diagnostic_http_event() -> None:
     assert "Bearer fake-token" in event.request_headers["Authorization"]
     assert event.request_body is not None
     assert "<_no>EWO-1</_no>" in event.request_body
+
+
+def test_crawl_ewo_report_all_paginates_and_honors_record_limit() -> None:
+    session = FakeSession(
+        [
+            FakeResponse(ewo_response(1, ["EWO-1", "EWO-2"])),
+            FakeResponse(ewo_response(2, ["EWO-3", "EWO-4"])),
+        ]
+    )
+    client = ArasCrawlerClient("http://aras.example", session=session)  # type: ignore[arg-type]
+
+    result = client.crawl_ewo_report_all(page_size=2, max_pages=5, max_records=3)
+
+    assert [row["_no"] for row in result.rows] == ["EWO-1", "EWO-2", "EWO-3"]
+    assert result.item_ids == ["ID-EWO-1", "ID-EWO-2", "ID-EWO-3"]
+    assert len(session.calls) == 2
+    assert 'page="1"' in session.calls[0]["data"]
+    assert 'page="2"' in session.calls[1]["data"]
+
+
+def test_query_ewo_report_rejects_login_html_as_authentication_error() -> None:
+    session = FakeSession(
+        [
+            FakeResponse(
+                '<html><form class="login-form"><input type="password"></form></html>',
+                headers={"Content-Type": "text/html; charset=UTF-8"},
+            )
+        ]
+    )
+    client = ArasCrawlerClient("http://aras.example", session=session)  # type: ignore[arg-type]
+
+    with pytest.raises(ArasAuthenticationError, match="returned a login page"):
+        client.query_ewo_report(EWOReportFilters())
+
+
+def test_prewarm_rejects_login_html_before_posting_credentials() -> None:
+    session = FakeSession()
+    session.get = lambda *args, **kwargs: FakeResponse(  # type: ignore[method-assign]
+        '<html><form><input type="password"></form></html>',
+        headers={"Content-Type": "text/html"},
+    )
+    client = ArasCrawlerClient("http://aras.example", session=session, prewarm=True)  # type: ignore[arg-type]
+
+    with pytest.raises(ArasAuthenticationError, match="context warmup returned a login page"):
+        client.query_ewo_report(EWOReportFilters())
+
+    assert not any(call["method"] == "POST" for call in session.calls)
+
+
+def test_ewo_parser_tolerates_non_numeric_page_attribute() -> None:
+    result = ArasCrawlerClient.parse_ewo_report_response(ewo_response("unknown", ["EWO-1"]))
+
+    assert result.page is None
+    assert result.rows[0]["_no"] == "EWO-1"
+
+
+def test_query_ewo_report_caps_untrusted_server_rows() -> None:
+    session = FakeSession([FakeResponse(ewo_response(1, ["EWO-1", "EWO-2"]))])
+    client = ArasCrawlerClient("http://aras.example", session=session)  # type: ignore[arg-type]
+
+    result = client.query_ewo_report(EWOReportFilters(), page_size=50, max_records=1)
+
+    assert [row["_no"] for row in result.rows] == ["EWO-1"]
+    assert result.item_ids == ["ID-EWO-1"]
 
 
 def test_app_root_base_url_does_not_duplicate_innovatorserver() -> None:
@@ -320,3 +431,165 @@ def test_static_guard_blocks_direct_http_and_persisted_credentials() -> None:
         text = path.read_text(encoding="utf-8-sig")
         assert not sensitive.search(text), path
     assert fixture_text("download_token_response.json").strip() == '{"d":"<download_token>"}'
+
+
+def test_department_mapping_normalizes_aliases_and_exposes_section_codes() -> None:
+    normalized = normalize_departments(("技术中心-车体工程", "技术中心_车体工程"))
+
+    assert normalized == ("技术中心_车体工程", "技术中心_车体工程")
+    assert isinstance(normalized, tuple)
+    assert isinstance(NCR_SECTION_CODES, tuple)
+    assert NCR_SECTION_CODES == ("BA", "BE", "BI", "EXT", "INT", "SES", "VE")
+    assert normalize_departments(()) == ()
+
+
+def test_resolve_ncr_section_codes_maps_department_to_section_codes() -> None:
+    resolved = resolve_ncr_section_codes(("技术中心-车体工程", "技术中心_车体工程"))
+
+    assert resolved == ("BA", "BE", "BI", "EXT", "INT", "SES", "VE")
+    assert isinstance(resolved, tuple)
+    assert resolve_ncr_section_codes(()) == ()
+
+
+def test_ncr_section_codes_mapping_is_versioned_and_immutable() -> None:
+    from types import MappingProxyType
+
+    assert isinstance(NCR_SECTION_CODES_BY_DEPARTMENT_V1, MappingProxyType)
+    assert NCR_SECTION_CODES_BY_DEPARTMENT_V1["技术中心_车体工程"] == NCR_SECTION_CODES
+    with pytest.raises(TypeError):
+        NCR_SECTION_CODES_BY_DEPARTMENT_V1["研发部"] = ("XX",)  # type: ignore[index]
+
+
+@pytest.mark.parametrize("bad_name", ["", "   ", None, "研发部", "车身工程"])
+def test_resolve_ncr_section_codes_rejects_unknown_or_empty_departments(
+    bad_name: str | None,
+) -> None:
+    with pytest.raises(ValueError):
+        resolve_ncr_section_codes((bad_name,))
+
+
+@pytest.mark.parametrize("bad_name", ["", "   ", None, "研发部", "车身工程"])
+def test_department_mapping_rejects_unknown_or_empty_departments(bad_name: str | None) -> None:
+    with pytest.raises(ValueError):
+        normalize_departments((bad_name,))
+
+
+def test_ncr_payload_merges_trimmed_deduped_section_codes() -> None:
+    session = FakeSession([FakeResponse(fixture_text("ncr_detail_response.xml"))])
+    client = ArasCrawlerClient("http://aras.example", session=session)  # type: ignore[arg-type]
+
+    client.extract_ncr_approval_detail(
+        NCRApprovalFilters(section_code=" BA ", section_codes=("BA", "EXT", " int ", "BA"))
+    )
+
+    payload = session.calls[0]["data"]
+    assert "<seccode><![CDATA[BA,EXT,int]]></seccode>" in payload
+
+
+def test_download_ncr_detail_file_uses_app_root_and_writes_atomically(tmp_path) -> None:
+    payload = b"PK\x03\x04fake-xlsx-content"
+    session = FakeSession(
+        [
+            FakeResponse("", content=payload, headers={"Content-Type": "application/octet-stream"}),
+            FakeResponse("", content=payload, headers={"Content-Type": "application/octet-stream"}),
+        ]
+    )
+    client = ArasCrawlerClient("http://aras.example/innovatorserver", session=session, timeout=9)  # type: ignore[arg-type]
+
+    downloaded = client.download_ncr_detail_file("NCR 9.xlsx", tmp_path)
+
+    assert downloaded == tmp_path / "NCR 9.xlsx"
+    assert downloaded.read_bytes() == payload
+    call = session.calls[0]
+    assert call["method"] == "GET"
+    assert call["url"] == "http://aras.example/innovatorserver/Server/NcrReport/NCR%209.xlsx"
+    assert "/innovatorserver/innovatorserver/" not in call["url"].lower()
+    assert call["timeout"] == 9
+
+    named = client.download_ncr_detail_file("NCR-9.xlsx", tmp_path / "custom.bin")
+    assert named == tmp_path / "custom.bin"
+    assert named.read_bytes() == payload
+    assert len(session.calls) == 2
+
+
+@pytest.mark.parametrize(
+    "bad_name",
+    ["", "   ", ".", "..", "a/b.xlsx", "a\\b.xlsx", "/etc/passwd", "../secret.xlsx", "sub/../up.xlsx"],
+)
+def test_download_ncr_detail_file_rejects_non_basename_names(tmp_path, bad_name: str) -> None:
+    session = FakeSession()
+    client = ArasCrawlerClient("http://aras.example", session=session)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError):
+        client.download_ncr_detail_file(bad_name, tmp_path)
+
+    assert session.calls == []
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_download_ncr_detail_file_rejects_html_login_and_empty_bodies(tmp_path) -> None:
+    session = FakeSession(
+        [
+            FakeResponse(
+                '<html><form class="login-form"><input type="password"></form></html>',
+                headers={"Content-Type": "text/html"},
+            )
+        ]
+    )
+    client = ArasCrawlerClient("http://aras.example", session=session)  # type: ignore[arg-type]
+    with pytest.raises(ArasAuthenticationError, match="login page"):
+        client.download_ncr_detail_file("NCR.xlsx", tmp_path)
+
+    session = FakeSession([FakeResponse("<html><body>not found</body></html>")])
+    client = ArasCrawlerClient("http://aras.example", session=session)  # type: ignore[arg-type]
+    with pytest.raises(ArasCrawlerError, match="HTML page"):
+        client.download_ncr_detail_file("NCR.xlsx", tmp_path)
+
+    session = FakeSession([FakeResponse("", content=b"")])
+    client = ArasCrawlerClient("http://aras.example", session=session)  # type: ignore[arg-type]
+    with pytest.raises(ArasCrawlerError, match="empty"):
+        client.download_ncr_detail_file("NCR.xlsx", tmp_path)
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_download_ncr_detail_file_http_errors_use_safe_exceptions(tmp_path) -> None:
+    session = FakeSession(
+        [
+            FakeResponse(
+                "unauthorized",
+                status_code=401,
+                reason="Unauthorized",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        ]
+    )
+    client = ArasCrawlerClient("http://aras.example", session=session)  # type: ignore[arg-type]
+    with pytest.raises(ArasAuthenticationError):
+        client.download_ncr_detail_file("NCR.xlsx", tmp_path)
+
+    session = FakeSession([FakeResponse("missing", status_code=404, reason="Not Found")])
+    client = ArasCrawlerClient("http://aras.example", session=session)  # type: ignore[arg-type]
+    with pytest.raises(ArasCrawlerError):
+        client.download_ncr_detail_file("NCR.xlsx", tmp_path)
+
+
+def test_download_ncr_detail_file_diagnostic_omits_response_headers_and_body(tmp_path) -> None:
+    events = []
+    session = FakeSession(
+        [
+            FakeResponse(
+                "",
+                content=b"xlsx-bytes",
+                headers={"Content-Type": "application/octet-stream", "Set-Cookie": "session=secret"},
+            )
+        ]
+    )
+    client = ArasCrawlerClient("http://aras.example", session=session, diagnostic_hook=events.append)  # type: ignore[arg-type]
+
+    client.download_ncr_detail_file("NCR.xlsx", tmp_path)
+
+    assert len(events) == 1
+    assert events[0].stage == "ncr-download"
+    assert events[0].response_headers is None
+    assert events[0].response_body is None

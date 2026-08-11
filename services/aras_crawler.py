@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import json
+import os
 import random
 import re
+import tempfile
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from html import escape
+from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import quote, urljoin, urlsplit
 
 from core.redaction import redact_sensitive_text
 
@@ -168,11 +171,25 @@ class ArasCrawlerError(RuntimeError):
     """Raised when an Aras crawler response cannot be used."""
 
 
+class ArasAuthenticationError(ArasCrawlerError):
+    """Raised when Aras redirects to login or rejects the supplied browser session."""
+
+
 _SENSITIVE_NAMES = ("cook" + "ie", "authori" + "zation", "tok" + "en", "api_key", "sid", "sessionid", "cs" + "rf", "secret")
 _SENSITIVE_DIAGNOSTIC_RE = re.compile(
     r"(?i)\b(" + "|".join(_SENSITIVE_NAMES) + r")\b(\s*[:=]?\s*)(?:Bearer\s+)?([^,\s;'\"}\]\[<]+)"
 )
 _SENSITIVE_BEARER_RE = re.compile(r"(?i)\bBearer\s+([^,\s;'\"}\]\[<]+)")
+_LOGIN_MARKERS = (
+    'type="password"',
+    "type='password'",
+    "openid-connect",
+    "login-form",
+    "signin",
+    "sign in",
+    "登录",
+)
+_LOGIN_MARKERS_BYTES = tuple(marker.encode("utf-8") for marker in _LOGIN_MARKERS)
 
 
 @dataclass(frozen=True)
@@ -216,6 +233,7 @@ class PAAReportFilters:
     submit_end: str | None = None
     mtl_rq_start: str | None = None
     mtl_rq_end: str | None = None
+    department: str | None = None
 
 
 @dataclass(frozen=True)
@@ -227,6 +245,7 @@ class NCRApprovalFilters:
     ncr_no: str | None = None
     project_names: Sequence[str] = ()
     section_code: str | None = None
+    section_codes: Sequence[str] = ()
     change_type: str | None = None
     othercondition: str = "0"
 
@@ -296,9 +315,54 @@ class ArasCrawlerClient:
         max_records: int = 2000,
         select_fields: Sequence[str] | None = None,
     ) -> EWOReportPage:
+        _validate_page_limits(page, page_size, max_records)
         payload = self._build_ewo_payload(filters, page, page_size, max_records, select_fields)
         response = self._post_soap("ApplyItem", payload)
-        return self.parse_ewo_report_response(response.text)
+        result = self.parse_ewo_report_response(response.text)
+        limit = min(page_size, max_records)
+        return EWOReportPage(
+            rows=result.rows[:limit],
+            page=result.page,
+            item_ids=result.item_ids[:limit],
+            raw_xml=result.raw_xml,
+        )
+
+    def crawl_ewo_report_all(
+        self,
+        filters: EWOReportFilters | None = None,
+        page_size: int = 50,
+        max_pages: int = 40,
+        max_records: int = 2000,
+        select_fields: Sequence[str] | None = None,
+    ) -> EWOReportPage:
+        """Fetch matching EWO rows page by page, bounded by explicit safety limits."""
+        _validate_crawl_limits(page_size, max_pages, max_records)
+
+        rows: list[dict[str, str | None]] = []
+        item_ids: list[str] = []
+        raw_pages: list[str] = []
+        last_page: int | None = None
+        page = 1
+        while page <= max_pages and len(rows) < max_records:
+            current = self.query_ewo_report(
+                filters or EWOReportFilters(),
+                page=page,
+                page_size=page_size,
+                max_records=max_records,
+                select_fields=select_fields,
+            )
+            raw_pages.append(current.raw_xml)
+            if current.page is not None:
+                last_page = current.page
+            if not current.rows:
+                break
+            remaining = max_records - len(rows)
+            rows.extend(current.rows[:remaining])
+            item_ids.extend(current.item_ids[:remaining])
+            if len(current.rows) < page_size or len(rows) >= max_records:
+                break
+            page += 1
+        return EWOReportPage(rows=rows, page=last_page, item_ids=item_ids, raw_xml="\n".join(raw_pages))
 
     def query_paa_report(
         self,
@@ -308,6 +372,7 @@ class ArasCrawlerClient:
         max_records: int = 2000,
         select_fields: Sequence[str] | None = None,
     ) -> PAAReportPage:
+        _validate_page_limits(page, page_size, max_records)
         payload = self._build_paa_payload(filters or PAAReportFilters(), page, page_size, max_records, select_fields)
         response = self._post_soap("ApplyItem", payload)
         return self.parse_paa_report_response(response.text)
@@ -320,12 +385,7 @@ class ArasCrawlerClient:
         max_records: int = 12000,
         select_fields: Sequence[str] | None = None,
     ) -> PAAReportPage:
-        if page_size <= 0:
-            raise ValueError("page_size must be positive")
-        if max_pages <= 0:
-            raise ValueError("max_pages must be positive")
-        if max_records <= 0:
-            raise ValueError("max_records must be positive")
+        _validate_crawl_limits(page_size, max_pages, max_records)
 
         rows: list[dict[str, str | None]] = []
         item_ids: list[str] = []
@@ -362,6 +422,64 @@ class ArasCrawlerClient:
         payload = self._build_ncr_payload(filters, "sgmw_downloadFileDetail4C")
         response = self._post_soap("ApplyMethod", payload)
         return self.parse_ncr_detail_response(response.text)
+
+    def download_ncr_detail_file(
+        self,
+        file_name: str,
+        destination: str | os.PathLike[str],
+    ) -> Path:
+        """Download an NCR detail export file.
+
+        `file_name` must be a plain basename: empty names, dot-directory names,
+        path separators and traversal are rejected with ValueError. The URL is
+        derived from the app root (/innovatorserver/Server/NcrReport/<quoted>).
+        `destination` may be a directory or a full file path; the file is
+        written via a temp file + os.replace and is only reported as successful
+        after a non-empty read-back. Empty bodies and HTML/login responses are
+        rejected with the safe crawler exceptions, and response headers/bodies
+        are never echoed into diagnostics.
+        """
+        name = _validate_download_file_name(file_name)
+        url = self._url(f"Server/NcrReport/{quote(name, safe='')}")
+        headers = self._browser_headers("*/*")
+        headers.update(self.headers)
+        started = time.perf_counter()
+        try:
+            response = self.session.get(url, headers=headers, timeout=self.timeout)
+        except Exception as exc:
+            self._emit_diagnostic(
+                ArasHttpDiagnosticEvent(
+                    stage="ncr-download",
+                    method="GET",
+                    url=url,
+                    request_headers=headers,
+                    elapsed_ms=_elapsed_ms(started),
+                    exception=repr(exc),
+                )
+            )
+            raise
+        self._emit_diagnostic(
+            ArasHttpDiagnosticEvent(
+                stage="ncr-download",
+                method="GET",
+                url=url,
+                request_headers=headers,
+                status_code=getattr(response, "status_code", None),
+                reason=getattr(response, "reason", None),
+                elapsed_ms=_elapsed_ms(started),
+            )
+        )
+        status = int(getattr(response, "status_code", 200) or 200)
+        if status in {401, 403}:
+            raise ArasAuthenticationError(_format_http_error(response))
+        if status >= 400:
+            raise ArasCrawlerError(_format_http_error(response))
+        response.raise_for_status()
+        content = getattr(response, "content", b"") or b""
+        if not content:
+            raise ArasCrawlerError("NCR file download response is empty")
+        _reject_html_download(response, content)
+        return _atomic_write_download(_resolve_download_target(destination, name), content)
 
     def get_file_download_token(self, file_id: str) -> str:
         if not file_id:
@@ -476,11 +594,19 @@ class ArasCrawlerClient:
             )
             raise
         self._emit_diagnostic(_event_from_response(f"soap-{soap_action}", "POST", url, headers, payload, response, started))
-        if getattr(response, "status_code", 200) >= 400:
+        status = int(getattr(response, "status_code", 200) or 200)
+        if status in {401, 403}:
+            raise ArasAuthenticationError(_format_http_error(response))
+        if status >= 400:
             raise ArasCrawlerError(_format_http_error(response))
         response.raise_for_status()
         if not response.text:
             raise ArasCrawlerError("Aras response is empty")
+        if _looks_like_login_response(response):
+            raise ArasAuthenticationError(
+                "Aras authentication is not valid: the SOAP endpoint returned a login page. "
+                "Refresh the browser Cookie/Authorization values and try again."
+            )
         return response
 
     def _prewarm_context(self) -> None:
@@ -509,18 +635,26 @@ class ArasCrawlerClient:
             )
             raise
         self._emit_diagnostic(_event_from_response("prewarm", "GET", url, headers, None, response, started))
-        if getattr(response, "status_code", 200) >= 400:
+        status = int(getattr(response, "status_code", 200) or 200)
+        if status in {401, 403}:
+            raise ArasAuthenticationError(f"Aras context warmup failed: {_format_http_error(response)}")
+        if status >= 400:
             raise ArasCrawlerError(f"Aras context warmup failed: {_format_http_error(response)}")
         response.raise_for_status()
+        if _looks_like_login_response(response):
+            raise ArasAuthenticationError(
+                "Aras authentication is not valid: context warmup returned a login page. "
+                "Refresh the browser Cookie/Authorization values and try again."
+            )
         self._context_warmed = True
 
     def _headers(self, soap_action: str, content_type: str) -> dict[str, str]:
         headers = self._browser_headers("*/*")
         headers.update(
             {
-            "Content-Type": content_type,
-            "SOAPAction": soap_action,
-            "TIMEZONE_NAME": "China Standard Time",
+                "Content-Type": content_type,
+                "SOAPAction": soap_action,
+                "TIMEZONE_NAME": "China Standard Time",
             }
         )
         headers.update(self.headers)
@@ -606,6 +740,7 @@ class ArasCrawlerClient:
             _element("_submit_date", filters.submit_end, condition="le"),
             _element("_mtl_rq_date", filters.mtl_rq_start, condition="ge"),
             _element("_mtl_rq_date", filters.mtl_rq_end, condition="le"),
+            _element("_pe_tdc_department", filters.department),
         ]
         body = "".join(child for child in children if child)
         if body:
@@ -621,7 +756,7 @@ class ArasCrawlerClient:
             ("peend", filters.pe_end),
             ("ncrno", filters.ncr_no),
             ("ncrname", project_names),
-            ("seccode", filters.section_code),
+            ("seccode", _merge_section_codes(filters)),
             ("changetype", filters.change_type),
             ("othercondition", filters.othercondition),
         )
@@ -642,7 +777,10 @@ def _parse_item_rows(root: ET.Element, item_type: str) -> tuple[list[dict[str, s
         if item.get("id"):
             item_ids.append(item.get("id", ""))
         if page is None and item.get("page"):
-            page = int(item.get("page", "0"))
+            try:
+                page = int(item.get("page", "0"))
+            except (TypeError, ValueError):
+                page = None
         row: dict[str, str | None] = {}
         for child in list(item):
             row[_local_name(child.tag)] = None if child.get("is_null") == "1" else child.text
@@ -700,6 +838,112 @@ def _response_requires_bearer(response: Any) -> bool:
     except AttributeError:
         authenticate = ""
     return "bearer" in str(authenticate).lower()
+
+
+def _looks_like_login_response(response: Any) -> bool:
+    """Detect a successful HTTP response that is actually an HTML login challenge."""
+    headers = getattr(response, "headers", {}) or {}
+    try:
+        content_type = str(headers.get("Content-Type", "")).lower()
+    except AttributeError:
+        content_type = ""
+    text = str(getattr(response, "text", "") or "").lstrip()
+    lowered = text[:12000].lower()
+    is_html = "text/html" in content_type or lowered.startswith("<!doctype html") or lowered.startswith("<html")
+    if not is_html:
+        return False
+    return any(marker in lowered for marker in _LOGIN_MARKERS)
+
+
+def _bytes_look_like_login(content: bytes) -> bool:
+    lowered = content[:12000].lower()
+    return any(marker in lowered for marker in _LOGIN_MARKERS_BYTES)
+
+
+def _merge_section_codes(filters: NCRApprovalFilters) -> str:
+    """Merge section_code + section_codes into a trimmed, order-preserving, deduped CSV."""
+    raw = [filters.section_code] if filters.section_code else []
+    raw.extend(filters.section_codes or ())
+    merged: list[str] = []
+    for code in raw:
+        cleaned = str(code).strip()
+        if cleaned and cleaned not in merged:
+            merged.append(cleaned)
+    return ",".join(merged)
+
+
+def _validate_download_file_name(file_name: str) -> str:
+    if not isinstance(file_name, str) or not file_name.strip():
+        raise ValueError("file_name must be a non-empty basename")
+    name = file_name.strip()
+    if name in (".", ".."):
+        raise ValueError("file_name must be a plain basename, not a directory reference")
+    if "/" in name or "\\" in name:
+        raise ValueError("file_name must be a plain basename without path separators")
+    if os.path.basename(name) != name:
+        raise ValueError("file_name must be a plain basename")
+    return name
+
+
+def _resolve_download_target(destination: str | os.PathLike[str], file_name: str) -> Path:
+    raw = str(destination)
+    dest = Path(raw)
+    if dest.is_dir() or raw.endswith(("/", "\\")):
+        return dest / file_name
+    return dest
+
+
+def _reject_html_download(response: Any, content: bytes) -> None:
+    headers = getattr(response, "headers", {}) or {}
+    try:
+        content_type = str(headers.get("Content-Type", "")).lower()
+    except AttributeError:
+        content_type = ""
+    looks_html = "text/html" in content_type or content[:1024].lstrip().lower().startswith(
+        (b"<!doctype html", b"<html")
+    )
+    if not looks_html:
+        return
+    if _bytes_look_like_login(content):
+        raise ArasAuthenticationError(
+            "Aras authentication is not valid: NCR file download returned a login page. "
+            "Refresh the browser Cookie/Authorization values and try again."
+        )
+    raise ArasCrawlerError("NCR file download returned an HTML page instead of the file")
+
+
+def _atomic_write_download(target: Path, content: bytes) -> Path:
+    fd, temp_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent))
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, target)
+    except Exception:
+        try:
+            os.unlink(temp_name)
+        except OSError:
+            pass
+        raise
+    if not target.read_bytes():
+        raise ArasCrawlerError("NCR file download failed: written file is empty")
+    return target
+
+
+def _validate_page_limits(page: int, page_size: int, max_records: int) -> None:
+    if page <= 0:
+        raise ValueError("page must be positive")
+    if page_size <= 0:
+        raise ValueError("page_size must be positive")
+    if max_records <= 0:
+        raise ValueError("max_records must be positive")
+
+
+def _validate_crawl_limits(page_size: int, max_pages: int, max_records: int) -> None:
+    _validate_page_limits(1, page_size, max_records)
+    if max_pages <= 0:
+        raise ValueError("max_pages must be positive")
 
 
 def _event_from_response(

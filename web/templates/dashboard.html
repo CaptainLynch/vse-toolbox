@@ -99,6 +99,7 @@
                 <textarea id="aras-headers" name="headers" rows="3" placeholder="名称: 值"></textarea>
               </label>
             </div>
+            <p class="connection-note">ECM 已认证 Cookie/Authorization；普通 SSO 登录成功不等于 SOAP 已授权</p>
           </section>
 
           <section class="form-block fields-block">
@@ -128,6 +129,7 @@
               <label><span>状态</span><input name="state" /></label>
               <label><span>区域</span><input name="area" /></label>
               <label><span>基地</span><input name="base" /></label>
+              <label><span>业务部门</span><input name="department" placeholder="技术中心-车体工程" /></label>
               <label><span>车辆关键词</span><input name="vehicle_keyword" /></label>
               <label><span>提交开始</span><input name="submit_start" type="date" /></label>
               <label><span>提交结束</span><input name="submit_end" type="date" /></label>
@@ -146,14 +148,21 @@
               <label><span>PE 结束</span><input name="pe_end" type="date" /></label>
               <label><span>NCR 编号</span><input name="ncr_no" /></label>
               <label><span>项目名称</span><input name="project_names" /></label>
-              <label><span>区段代码</span><input name="section_code" /></label>
+              <label><span>业务部门</span><input name="department" placeholder="技术中心-车体工程" /></label>
+              <label>
+                <span>区段代码（高级字段）</span>
+                <input name="section_code" />
+                <small class="field-note">系统会把业务部门自动映射为区段代码：BA/BE/BI/EXT/INT/SES/VE</small>
+              </label>
               <label><span>变更类型</span><input name="change_type" /></label>
               <label><span>其他条件</span><input name="othercondition" value="0" /></label>
             </div>
           </section>
 
           <section class="form-block actions-block">
-            <button id="aras-submit" class="primary-btn" type="submit">执行查询</button>
+            <button id="aras-submit" class="primary-btn" type="submit" data-aras-action="preview">查询预览</button>
+            <button id="aras-export" class="primary-btn" type="button" data-aras-action="export" hidden>全量导出 CSV</button>
+            <button id="aras-download" class="primary-btn" type="button" data-aras-action="download" hidden>生成并下载</button>
             <span id="aras-status" aria-live="polite"></span>
           </section>
         </form>
@@ -164,6 +173,7 @@
             <span id="result-kind">就绪</span>
           </div>
           <div id="aras-error" class="error-msg" hidden></div>
+          <div id="aras-warning" class="error-msg" hidden></div>
           <div id="aras-result" class="is-empty">暂无结果</div>
         </section>
       </section>

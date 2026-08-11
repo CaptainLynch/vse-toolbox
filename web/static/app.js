@@ -65,6 +65,11 @@ const SENSITIVE_VALUE_PATTERNS = [
 const ARAS_MODES = {
   ewo: {
     endpoint: "/api/aras/ewo/query",
+    exportEndpoint: "/api/aras/ewo/export",
+    exportNumberNames: ["max_records", "max_pages"],
+    exportLabel: "全量导出 CSV",
+    defaultFileName: "aras-ewo-export.csv",
+    submitLabel: "查询预览",
     fieldGroup: "ewo",
     filterNames: ["ewo_no", "project_code", "subject_keyword", "change_type", "change_sub_type", "area", "state", "rsp_department", "submit_start", "submit_end"],
     numberNames: ["page", "page_size", "max_records"],
@@ -73,32 +78,47 @@ const ARAS_MODES = {
   },
   paa: {
     endpoint: "/api/aras/paa/query",
+    exportEndpoint: "/api/aras/paa/export",
+    exportNumberNames: ["max_records", "max_pages"],
+    exportLabel: "全量导出 CSV",
+    defaultFileName: "aras-paa-export.csv",
+    submitLabel: "查询预览",
     fieldGroup: "paa",
-    filterNames: ["paa_no", "ewo_no", "state", "area", "base", "vehicle_keyword", "submit_start", "submit_end", "mtl_rq_start", "mtl_rq_end"],
+    filterNames: ["paa_no", "ewo_no", "state", "area", "base", "department", "vehicle_keyword", "submit_start", "submit_end", "mtl_rq_start", "mtl_rq_end"],
     numberNames: ["page", "page_size", "max_records"],
     preferredColumns: ["_no", "_ewo_no", "state", "_area", "_base", "_vehicles", "_submit_date", "_mtl_rq_date"],
     resultKind: "rows",
   },
   "paa-all": {
     endpoint: "/api/aras/paa/crawl-all",
+    exportEndpoint: "/api/aras/paa/export",
+    exportNumberNames: ["max_records", "max_pages"],
+    exportLabel: "全量导出 CSV",
+    defaultFileName: "aras-paa-export.csv",
+    submitLabel: "查询预览",
     fieldGroup: "paa",
-    filterNames: ["paa_no", "ewo_no", "state", "area", "base", "vehicle_keyword", "submit_start", "submit_end", "mtl_rq_start", "mtl_rq_end"],
+    filterNames: ["paa_no", "ewo_no", "state", "area", "base", "department", "vehicle_keyword", "submit_start", "submit_end", "mtl_rq_start", "mtl_rq_end"],
     numberNames: ["page_size", "max_records", "max_pages"],
     preferredColumns: ["_no", "_ewo_no", "state", "_area", "_base", "_vehicles", "_submit_date", "_mtl_rq_date"],
     resultKind: "rows",
   },
   "ncr-progress": {
     endpoint: "/api/aras/ncr/progress",
+    submitLabel: "执行查询",
     fieldGroup: "ncr",
-    filterNames: ["buy_start", "buy_end", "pe_start", "pe_end", "ncr_no", "project_names", "section_code", "change_type", "othercondition"],
+    filterNames: ["buy_start", "buy_end", "pe_start", "pe_end", "ncr_no", "project_names", "department", "section_code", "change_type", "othercondition"],
     numberNames: [],
     preferredColumns: [],
     resultKind: "summary",
   },
   "ncr-detail": {
     endpoint: "/api/aras/ncr/detail",
+    downloadEndpoint: "/api/aras/ncr/detail/download",
+    exportLabel: "生成并下载",
+    defaultFileName: "aras-ncr-detail.xlsx",
+    submitLabel: "执行查询",
     fieldGroup: "ncr",
-    filterNames: ["buy_start", "buy_end", "pe_start", "pe_end", "ncr_no", "project_names", "section_code", "change_type", "othercondition"],
+    filterNames: ["buy_start", "buy_end", "pe_start", "pe_end", "ncr_no", "project_names", "department", "section_code", "change_type", "othercondition"],
     numberNames: [],
     preferredColumns: [],
     resultKind: "summary",
@@ -107,7 +127,7 @@ const ARAS_MODES = {
 
 let arasMode = "ewo";
 let arasRunning = false;
-let arasQueued = false;
+let arasQueuedAction = "";
 let arasRequestSeq = 0;
 let arasLatestRendered = 0;
 
@@ -248,14 +268,90 @@ function collectArasPayload(config) {
   return payload;
 }
 
+function sanitizeDownloadName(name) {
+  return String(name)
+    .replace(/[\r\n\u0000-\u001f"\\/]/g, "")
+    .replace(/^.*[\\/]/, "")
+    .trim();
+}
+
+function parseContentDispositionFilename(value) {
+  if (!value) return "";
+  const star = /filename\*\s*=\s*(?:utf-8''|UTF-8'')([^;]+)/i.exec(value);
+  if (star) {
+    try {
+      const decoded = decodeURIComponent(star[1].trim());
+      const safe = sanitizeDownloadName(decoded);
+      if (safe) return safe;
+    } catch {
+      // filename* 解码失败时回退到普通 filename
+    }
+  }
+  const plain = /filename\s*=\s*(?:"([^"]+)"|([^;]+))/i.exec(value);
+  if (plain) {
+    const safe = sanitizeDownloadName(plain[1] || plain[2] || "");
+    if (safe) return safe;
+  }
+  return "";
+}
+
+async function fetchBlobDownload(endpoint, payload, defaultFileName) {
+  const resp = await fetch(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!resp.ok) {
+    let message = `HTTP ${resp.status}`;
+    try {
+      const body = await resp.json();
+      const err = body && body.error;
+      if (err && err.message) message = `${err.type || "错误"}: ${err.message}`;
+    } catch {
+      // 非 JSON 错误体不回显
+    }
+    throw new Error(redactSensitiveText(message));
+  }
+  const blob = await resp.blob();
+  const fileName =
+    parseContentDispositionFilename(resp.headers.get("Content-Disposition")) ||
+    defaultFileName ||
+    "aras-export.csv";
+  const rowCount = resp.headers.get("X-Export-Row-Count");
+  const truncated =
+    resp.headers.get("X-Export-Truncated") === "true" ||
+    resp.headers.get("X-Export-Complete") === "false";
+  const url = URL.createObjectURL(blob);
+  try {
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+  return { fileName, rowCount, truncated };
+}
+
 function setArasStatus(text, isRunning) {
   const status = document.getElementById("aras-status");
-  const button = document.getElementById("aras-submit");
   status.textContent = text || "";
   status.classList.toggle("loading", Boolean(isRunning && text));
-  button.disabled = Boolean(isRunning);
-  button.classList.toggle("is-running", Boolean(isRunning));
+  document.querySelectorAll("[data-aras-action]").forEach((button) => {
+    button.disabled = Boolean(isRunning);
+    button.classList.toggle("is-running", Boolean(isRunning));
+  });
   document.body.classList.toggle("aras-running", Boolean(isRunning));
+}
+
+function restoreArasButtons() {
+  document.querySelectorAll("[data-aras-action]").forEach((button) => {
+    button.disabled = false;
+    button.classList.remove("is-running");
+  });
+  document.body.classList.remove("aras-running");
 }
 
 function showArasError(message) {
@@ -263,6 +359,12 @@ function showArasError(message) {
   error.hidden = !message;
   error.textContent = message || "";
   document.querySelector(".result-panel")?.classList.toggle("has-output", Boolean(message));
+}
+
+function showArasWarning(message) {
+  const warning = document.getElementById("aras-warning");
+  warning.hidden = !message;
+  warning.textContent = message || "";
 }
 
 function renderSummary(data) {
@@ -358,7 +460,7 @@ function renderArasResult(data, mode, config) {
 
 async function runArasQuery() {
   if (arasRunning) {
-    arasQueued = true;
+    arasQueuedAction = "query";
     setArasStatus("已排队", true);
     return;
   }
@@ -368,6 +470,7 @@ async function runArasQuery() {
   const seq = ++arasRequestSeq;
   setArasStatus("运行中", true);
   showArasError("");
+  showArasWarning("");
   const payload = collectArasPayload(requestConfig);
   try {
     const resp = await fetch(requestConfig.endpoint, {
@@ -392,11 +495,62 @@ async function runArasQuery() {
   } finally {
     payload.cookie = "";
     arasRunning = false;
-    if (arasQueued) {
-      arasQueued = false;
+    const queued = arasQueuedAction;
+    arasQueuedAction = "";
+    if (queued === "export") {
+      runArasExport();
+    } else if (queued === "query") {
       runArasQuery();
     } else {
       setArasStatus("", false);
+    }
+  }
+}
+
+async function runArasExport() {
+  if (arasRunning) {
+    arasQueuedAction = "export";
+    setArasStatus("已排队", true);
+    return;
+  }
+  arasRunning = true;
+  const requestMode = arasMode;
+  const requestConfig = ARAS_MODES[requestMode];
+  const endpoint = requestConfig.exportEndpoint || requestConfig.downloadEndpoint;
+  if (!endpoint) {
+    arasRunning = false;
+    restoreArasButtons();
+    return;
+  }
+  const payload = collectArasPayload({
+    ...requestConfig,
+    numberNames: requestConfig.exportNumberNames || [],
+  });
+  setArasStatus("导出中", true);
+  showArasError("");
+  showArasWarning("");
+  try {
+    const outcome = await fetchBlobDownload(endpoint, payload, requestConfig.defaultFileName);
+    const parts = [`已下载：${outcome.fileName}`];
+    if (outcome.rowCount != null) parts.push(`共 ${outcome.rowCount} 行`);
+    setArasStatus(parts.join("，"), false);
+    if (outcome.truncated) {
+      showArasWarning("导出已截断：结果超过 max_records / max_pages 限制，文件不完整！请调大限制后重试。");
+    }
+  } catch (err) {
+    setArasStatus("", false);
+    showArasError(redactSensitiveText(err.message));
+  } finally {
+    payload.cookie = "";
+    arasRunning = false;
+    const queued = arasQueuedAction;
+    arasQueuedAction = "";
+    if (queued === "export") {
+      runArasExport();
+    } else if (queued === "query") {
+      runArasQuery();
+    } else {
+      restoreArasButtons();
     }
   }
 }
@@ -418,8 +572,20 @@ function setupPanels() {
   });
 }
 
+function updateArasActionButtons() {
+  const config = ARAS_MODES[arasMode];
+  document.getElementById("aras-submit").textContent = config.submitLabel || "执行查询";
+  const exportButton = document.getElementById("aras-export");
+  const downloadButton = document.getElementById("aras-download");
+  exportButton.hidden = !config.exportEndpoint;
+  downloadButton.hidden = !config.downloadEndpoint;
+  if (config.exportEndpoint) exportButton.textContent = config.exportLabel || "全量导出 CSV";
+  if (config.downloadEndpoint) downloadButton.textContent = config.exportLabel || "生成并下载";
+}
+
 function setupArasForm() {
   document.body.dataset.currentCommand = arasMode;
+  updateArasActionButtons();
   document.querySelectorAll("[data-aras-mode]").forEach((button) => {
     button.addEventListener("click", () => {
       arasMode = button.dataset.arasMode;
@@ -430,7 +596,9 @@ function setupArasForm() {
       document.querySelectorAll("[data-mode-fields]").forEach((group) => {
         group.hidden = group.dataset.modeFields !== ARAS_MODES[arasMode].fieldGroup;
       });
+      updateArasActionButtons();
       showArasError("");
+      showArasWarning("");
       const result = document.getElementById("aras-result");
       result.className = "is-empty";
       result.textContent = "暂无结果";
@@ -441,6 +609,14 @@ function setupArasForm() {
   document.getElementById("aras-form").addEventListener("submit", (event) => {
     event.preventDefault();
     runArasQuery();
+  });
+  document.getElementById("aras-export").addEventListener("click", () => {
+    if (!ARAS_MODES[arasMode].exportEndpoint) return;
+    runArasExport();
+  });
+  document.getElementById("aras-download").addEventListener("click", () => {
+    if (!ARAS_MODES[arasMode].downloadEndpoint) return;
+    runArasExport();
   });
 }
 

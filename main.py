@@ -44,10 +44,18 @@ from services.aras_crawler import (
     ArasCrawlerClient,
     ArasCrawlerError,
     DEFAULT_BROWSER_USER_AGENT,
+    DEFAULT_PAA_SELECT_FIELDS,
     EWOReportFilters,
     NCRApprovalFilters,
     PAAReportFilters,
 )
+from services.aras_auth import ArasAuthError, ArasECMAuthClient
+from services.aras_department_mapping import (
+    NCR_SECTION_CODES,
+    normalize_departments,
+    resolve_ncr_section_codes,
+)
+from services.aras_export import export_ewo_report_csv, export_report_csv
 from services.tdc_crawler import (
     AFACE_CONTRACT_BLOCKER,
     DATA_MODEL_PAGE_PATH,
@@ -84,7 +92,7 @@ except OSError:
     )
 logger = logging.getLogger("vse_toolbox")
 
-DEFAULT_ARAS_BASE_URL = ""
+DEFAULT_ARAS_BASE_URL = "http://ecm.sgmw.com.cn/innovatorserver"
 
 # ── 全局 rich 控制台 ────────────────────────────────────────────
 console = Console(
@@ -237,11 +245,15 @@ def _contains_control_char(value: str) -> bool:
 
 def _normalize_cookie_header(raw: str) -> str:
     lines = [line.strip() for line in raw.splitlines() if line.strip()]
-    cookie_line = next((line for line in lines if line.lower().startswith("cookie:")), "")
-    cookie = cookie_line or " ".join(lines) or raw.strip()
-    if cookie.lower().startswith("cookie:"):
-        cookie = cookie.split(":", 1)[1].strip()
-    return cookie
+    cookie_parts: list[str] = []
+    for line in lines:
+        if line.lower().startswith("cookie:"):
+            line = line.split(":", 1)[1].strip()
+        elif re.match(r"^[A-Za-z0-9_-]+\s*:", line):
+            continue
+        if line:
+            cookie_parts.append(line.strip(" ;"))
+    return "; ".join(part for part in cookie_parts if part) or raw.strip()
 
 
 def _ask_cookie_header() -> str:
@@ -256,10 +268,18 @@ def _ask_cookie_header() -> str:
 
 
 def _ask_extra_headers(default_headers: str) -> str:
+    """Ask for extra headers, visibly showing the safe plaintext defaults.
+
+    Enter accepts the defaults; pasted headers replace them. Only non-secret
+    browser/SOAP headers appear in the defaults (never Cookie/Authorization/
+    token/password).
+    """
     console.print(
-        "Extra headers（建议从浏览器 DevTools 复制成功的 InnovatorServer.aspx 请求头；"
-        "可粘贴多行，空行结束；直接回车使用默认 headers）:"
+        "Extra headers（可粘贴多行，空行结束；直接回车使用下列安全默认 headers）:"
     )
+    for line in default_headers.split(", "):
+        if line:
+            console.print(f"  [dim]{line}[/]")
     lines: list[str] = []
     while True:
         line = console.input("Header> " if not lines else "      > ")
@@ -287,16 +307,35 @@ def _has_header(headers: dict[str, str], name: str) -> bool:
     return any(key.lower() == name.lower() for key in headers)
 
 
+def _reject_aras_secret_headers(headers: dict[str, str]) -> None:
+    """Fail fast when Aras extra headers carry Cookie/Authorization.
+
+    The Aras CLI authenticates with ECM username/password only; pasted
+    Cookie/Authorization values are rejected with a credential-free message
+    instead of being silently ignored or used as a fallback.
+    """
+    for name in ("Cookie", "Authorization"):
+        if _has_header(headers, name):
+            raise ValueError(
+                f"Extra headers must not contain {name}: Aras 登录仅支持 ECM 用户名/密码，"
+                "请勿在 Extra headers 粘贴 Cookie/Authorization"
+            )
+
+
 def _default_aras_headers_text(base_url: str) -> str:
+    """Safe plaintext default extra headers for the Aras CLI flow.
+
+    Only non-secret browser/SOAP headers are included: Accept, Accept-Language,
+    Content-Type, Origin, Referer, TIMEZONE_NAME, User-Agent.
+    """
     parsed = urlsplit(base_url.rstrip("/") + "/")
     origin = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else base_url.rstrip("/")
     headers = {
+        "Accept": "*/*",
+        "Accept-Language": "zh-CN,zh;q=0.9",
+        "Content-Type": "text/xml; charset=UTF-8",
         "Origin": origin,
         "Referer": urljoin(origin + "/", "innovatorserver/Client/default.aspx"),
-        "Accept": "*/*",
-        "Accept-Encoding": "gzip, deflate",
-        "Accept-Language": "zh-CN,zh;q=0.9",
-        "Connection": "keep-alive",
         "TIMEZONE_NAME": "China Standard Time",
         "User-Agent": DEFAULT_BROWSER_USER_AGENT,
     }
@@ -328,25 +367,42 @@ def _ask_positive_int(label: str, default: int) -> int:
     return value
 
 
-def _ask_aras_connection() -> tuple[str, dict[str, str], dict[str, str] | None]:
+def _ask_aras_connection() -> tuple[str, dict[str, str], tuple[str, str] | None]:
+    """Ask for the Aras connection: base_url, extra headers, ECM username/password.
+
+    The base_url prompt displays the plaintext default
+    ``http://ecm.sgmw.com.cn/innovatorserver`` and the extra headers prompt
+    visibly shows the safe defaults (Enter accepts them). Cookie and
+    Authorization in extra headers are rejected fail-fast with a
+    credential-free message. Authentication is username + hidden password only;
+    both are required after a nonblank base_url, with no Cookie prompt and no
+    silent Cookie fallback.
+    """
     base_url = Prompt.ask("Aras base_url", default=DEFAULT_ARAS_BASE_URL).strip()
     if not base_url:
         return "", {}, None
-    default_headers = _default_aras_headers_text(base_url) if base_url else ""
+    default_headers = _default_aras_headers_text(base_url)
     raw_headers = _ask_extra_headers(default_headers)
     headers = _parse_header_lines(raw_headers)
-    cookie = _ask_cookie_header()
-    if cookie:
-        if _contains_control_char(cookie):
-            console.print("[vse.amber]Cookie header contains control characters and was ignored. Please paste plain text.[/]")
-        else:
-            headers["Cookie"] = cookie
-    if not _has_header(headers, "Authorization"):
+    _reject_aras_secret_headers(headers)
+    username = Prompt.ask("ECM 用户名", default="").strip()
+    if not username:
+        raise ValueError("ECM 用户名不能为空：Aras 登录仅支持 ECM 用户名/密码，拒绝无凭据访问")
+    password = Prompt.ask("ECM 密码", password=True)
+    if not password:
+        raise ValueError("ECM 密码不能为空：Aras 登录仅支持 ECM 用户名/密码，拒绝无凭据访问")
+    credentials = (username, password)
+    if urlsplit(base_url).scheme.lower() == "http":
         console.print(
-            "[vse.amber]当前 Aras 可能需要 Authorization: Bearer token；"
-            "若遇到 401，请从浏览器成功的 InnovatorServer.aspx 请求复制 Authorization header。[/]"
+            "[vse.amber]警告：当前 Aras 地址使用 HTTP。账号密码仅发送到 HTTPS 企业账号中心"
+            "（account.sgmw.com.cn），不会发送到此 HTTP 地址；登录后的 Bearer/SOAP 数据请求将走明文 HTTP。[/]"
         )
-    return base_url, headers, None
+    console.print(
+        "[vse.amber]认证说明：Aras 将通过企业账号中心（ECM 账号密码）登录，"
+        "登录成功后才会调用 SOAP ValidateUser 校验会话；"
+        "不会使用 Cookie 登录，也不会在失败时回退到 Cookie。[/]"
+    )
+    return base_url, headers, credentials
 
 
 def _ask_tdc_connection(page_path: str) -> tuple[str, dict[str, str]]:
@@ -388,6 +444,10 @@ def _ask_aras_diagnostic_options() -> DiagnosticOptions:
     return DiagnosticOptions(enabled=True, unsafe_raw=unsafe_raw)
 
 
+#: Fixed page size for full export crawls (EWO/PAA) — not derived from max_records.
+_FULL_EXPORT_PAGE_SIZE = 2000
+
+
 def _ask_ewo_filters() -> tuple[EWOReportFilters, int, int, int]:
     filters = EWOReportFilters(
         ewo_no=_blank_to_none(Prompt.ask("EWO no", default="")),
@@ -410,6 +470,7 @@ def _ask_ewo_filters() -> tuple[EWOReportFilters, int, int, int]:
 
 
 def _ask_paa_filters() -> tuple[PAAReportFilters, int, int, int, int]:
+    department = _ask_department_filter("业务部门（多个用逗号分隔，可空）")
     filters = PAAReportFilters(
         paa_no=_blank_to_none(Prompt.ask("PAA no", default="")),
         ewo_no=_blank_to_none(Prompt.ask("EWO no", default="")),
@@ -421,14 +482,30 @@ def _ask_paa_filters() -> tuple[PAAReportFilters, int, int, int, int]:
         submit_end=_blank_to_none(Prompt.ask("Submit end", default="")),
         mtl_rq_start=_blank_to_none(Prompt.ask("Material request start", default="")),
         mtl_rq_end=_blank_to_none(Prompt.ask("Material request end", default="")),
+        department=department,
     )
     return (
         filters,
         _ask_positive_int("Page", 1),
         _ask_positive_int("Page size", 50),
         _ask_positive_int("Max records", 2000),
-        _ask_positive_int("Max pages", 20),
+        _ask_positive_int("Max pages", 1000),
     )
+
+
+def _ask_department_filter(label: str) -> str | None:
+    """Ask a business department and normalize it fail-closed to system departments.
+
+    Unknown names raise ValueError, which the Aras menu surfaces as a safe error
+    and returns to the menu; blank input means no department filter.
+    """
+    raw = _blank_to_none(Prompt.ask(label, default=""))
+    if not raw:
+        return None
+    names = [part.strip() for part in raw.split(",") if part.strip()]
+    if not names:
+        return None
+    return ",".join(dict.fromkeys(normalize_departments(names)))
 
 
 def _ask_ncr_filters() -> NCRApprovalFilters:
@@ -437,6 +514,14 @@ def _ask_ncr_filters() -> NCRApprovalFilters:
         for item in Prompt.ask("项目名称（多个用逗号分隔）", default="").split(",")
         if item.strip()
     ]
+    raw_department = _blank_to_none(
+        Prompt.ask("业务部门（多个用逗号分隔，可空；映射为科室代码）", default="")
+    )
+    section_codes: tuple[str, ...] = ()
+    if raw_department:
+        names = [part.strip() for part in raw_department.split(",") if part.strip()]
+        section_codes = resolve_ncr_section_codes(names)
+    section_codes_hint = "，".join(NCR_SECTION_CODES)
     return NCRApprovalFilters(
         buy_start=_blank_to_none(Prompt.ask("采购开始日期", default="")),
         buy_end=_blank_to_none(Prompt.ask("采购结束日期", default="")),
@@ -444,7 +529,8 @@ def _ask_ncr_filters() -> NCRApprovalFilters:
         pe_end=_blank_to_none(Prompt.ask("PE 结束日期", default="")),
         ncr_no=_blank_to_none(Prompt.ask("NCR 编号", default="")),
         project_names=tuple(projects),
-        section_code=_blank_to_none(Prompt.ask("科室代码", default="")),
+        section_code=_blank_to_none(Prompt.ask(f"科室代码（高级，可空；例如 {section_codes_hint}）", default="")),
+        section_codes=section_codes,
         change_type=_blank_to_none(Prompt.ask("变更类型", default="")),
         othercondition=Prompt.ask("othercondition", default="0").strip() or "0",
     )
@@ -470,7 +556,7 @@ _SENSITIVE_DISPLAY_KEYS = {
 
 _EWO_COLUMNS = [
     "_no",
-    "_eplmwriteneplcode",
+    "eplmwriteneplcode",
     "_subject",
     "_area",
     "_sort_type",
@@ -883,7 +969,7 @@ def handle_intranet_scrape(db: DatabaseManager) -> None:
     menu = Table(box=box.SIMPLE_HEAVY, show_header=False)
     menu.add_column("Key", style="#88a6a4", no_wrap=True)
     menu.add_column("Mode")
-    menu.add_row("1", "EWO report query")
+    menu.add_row("1", "EWO report query / CSV export")
     menu.add_row("2", "NCR approval progress")
     menu.add_row("3", "NCR approval detail")
     menu.add_row("4", "PAA paged query")
@@ -897,12 +983,17 @@ def handle_intranet_scrape(db: DatabaseManager) -> None:
     report: MarkdownDiagnosticReport | None = None
     try:
         diagnostic_options = _ask_aras_diagnostic_options()
-        base_url, headers, cookies = _ask_aras_connection()
+        base_url, headers, credentials = _ask_aras_connection()
         if not base_url:
             console.print("[bold #c19191]base_url is required[/]")
             return
+        if credentials is None:
+            console.print("[bold #c19191]ECM 用户名和密码为必填，拒绝无凭据访问[/]")
+            return
+        _reject_aras_secret_headers(headers)
         parsed = urlsplit(base_url.rstrip("/") + "/")
         origin = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else base_url
+        auth_mode = "password"
         report = MarkdownDiagnosticReport(
             options=diagnostic_options,
             base_url=base_url,
@@ -911,16 +1002,27 @@ def handle_intranet_scrape(db: DatabaseManager) -> None:
                 "sub_menu": sub,
                 "origin": origin,
                 "headers": headers,
-                "cookies": cookies,
+                "auth_mode": auth_mode,
                 "timeout": 30.0,
             },
         )
+        diagnostic_hook = report.record_http_event if diagnostic_options.enabled else None
+        console.print("[vse.muted]正在通过企业账号中心登录 ECM...[/]")
+        auth_client = ArasECMAuthClient(base_url, timeout=30.0, diagnostic_hook=diagnostic_hook)
+        username, password = credentials
+        try:
+            login_result = auth_client.login(username, password)
+        finally:
+            password = ""
+            credentials = None
+        session = login_result.session
+        console.print("[vse.muted]ECM 账号密码登录成功[/]")
         client = ArasCrawlerClient(
             base_url,
+            session=session,
             headers=headers,
-            cookies=cookies,
             timeout=30.0,
-            diagnostic_hook=report.record_http_event if diagnostic_options.enabled else None,
+            diagnostic_hook=diagnostic_hook,
         )
 
         if sub == "1":
@@ -931,6 +1033,28 @@ def handle_intranet_scrape(db: DatabaseManager) -> None:
             with console.status("Querying Aras", spinner="dots"):
                 result = client.query_ewo_report(filters, page=page, page_size=page_size, max_records=max_records)
             console.print(_render_ewo_result(result))
+            if result.rows and Confirm.ask(
+                f"导出全部匹配 EWO（最多 {max_records} 条）为 Excel 兼容 CSV？",
+                default=False,
+            ):
+                file_name = Prompt.ask("CSV file name", default="").strip() or None
+                max_pages = max(1, (max_records + _FULL_EXPORT_PAGE_SIZE - 1) // _FULL_EXPORT_PAGE_SIZE)
+                with console.status("Exporting EWO", spinner="dots"):
+                    export_page = client.crawl_ewo_report_all(
+                        filters,
+                        page_size=_FULL_EXPORT_PAGE_SIZE,
+                        max_pages=max_pages,
+                        max_records=max_records,
+                    )
+                    export_result = export_ewo_report_csv(export_page, file_name=file_name)
+                console.print(
+                    f"[vse.sage]EWO CSV 已保存: {export_result.path} "
+                    f"({export_result.row_count} rows)[/]"
+                )
+                if len(export_page.rows) >= max_records or (
+                    export_page.page is not None and export_page.page >= max_pages
+                ):
+                    console.print("[vse.amber]提示：已达到最大页数/记录数上限，导出结果可能截断。[/]")
             if report_path := report.save("success"):
                 console.print(f"[#747a83]诊断报告已保存: {report_path}[/]")
         elif sub == "2":
@@ -947,6 +1071,14 @@ def handle_intranet_scrape(db: DatabaseManager) -> None:
             with console.status("Querying Aras", spinner="dots"):
                 result = client.extract_ncr_approval_detail(filters)
             console.print(_render_ncr_detail_result(result))
+            file_name = getattr(result, "file_name", None)
+            if file_name:
+                destination = Prompt.ask("保存目录或完整路径", default="").strip() or str(Path.cwd())
+                with console.status("Downloading NCR detail", spinner="dots"):
+                    saved_path = client.download_ncr_detail_file(file_name, destination)
+                console.print(f"[vse.sage]NCR 明细文件已保存: {saved_path}[/]")
+            else:
+                console.print("[#747a83]未生成可下载的明细文件（file_name 为空）。[/]")
             if report_path := report.save("success"):
                 console.print(f"[#747a83]诊断报告已保存: {report_path}[/]")
         elif sub == "4":
@@ -960,33 +1092,47 @@ def handle_intranet_scrape(db: DatabaseManager) -> None:
             if report_path := report.save("success"):
                 console.print(f"[#747a83]诊断报告已保存: {report_path}[/]")
         elif sub == "5":
-            filters, _page, page_size, max_records, max_pages = _ask_paa_filters()
+            filters, _page, _page_size, max_records, max_pages = _ask_paa_filters()
             if not Confirm.ask("PAA full crawl may be slow. Continue?", default=False):
                 console.print("[#747a83]PAA full crawl cancelled[/]")
                 return
             console.print(
-                f"[#747a83]mode=PAA all origin={origin} page_size={page_size} max_pages={max_pages} max_records={max_records}[/]"
+                f"[#747a83]mode=PAA all origin={origin} page_size={_FULL_EXPORT_PAGE_SIZE} "
+                f"max_pages={max_pages} max_records={max_records}[/]"
             )
             with console.status("Querying Aras", spinner="dots"):
                 result = client.crawl_paa_report_all(
                     filters,
-                    page_size=page_size,
+                    page_size=_FULL_EXPORT_PAGE_SIZE,
                     max_pages=max_pages,
                     max_records=max_records,
                 )
             console.print(_render_paa_result(result))
+            if len(result.rows) >= max_records or (result.page is not None and result.page >= max_pages):
+                console.print("[vse.amber]提示：已达到最大页数/记录数上限，结果可能截断。[/]")
+            if result.rows and Confirm.ask("导出全部 PAA 结果为 Excel 兼容 CSV？", default=False):
+                with console.status("Exporting PAA", spinner="dots"):
+                    export_result = export_report_csv(
+                        result.rows,
+                        report_name="paa",
+                        preferred_fields=DEFAULT_PAA_SELECT_FIELDS,
+                    )
+                console.print(
+                    f"[vse.sage]PAA CSV 已保存: {export_result.path} "
+                    f"({export_result.row_count} rows)[/]"
+                )
             if report_path := report.save("success"):
                 console.print(f"[#747a83]诊断报告已保存: {report_path}[/]")
         logger.info("Aras CLI query finished: type=%s", sub)
-    except ArasCrawlerError as e:
-        console.print(Panel(_safe_error_message(e), title="ArasCrawlerError", border_style="#c19191"))
+    except (ArasAuthError, ArasCrawlerError) as e:
+        console.print(Panel(Text(_safe_error_message(e)), title=type(e).__name__, border_style="#c19191"))
         if report:
             report.record_exception(e)
             if report_path := report.save("failed"):
                 console.print(f"[#c19191]诊断报告已保存: {report_path}[/]")
-        logger.warning("Aras CLI query failed with ArasCrawlerError")
+        logger.warning("Aras CLI query failed with %s", type(e).__name__)
     except Exception as e:
-        console.print(Panel(_safe_error_message(e), title=type(e).__name__, border_style="#c19191"))
+        console.print(Panel(Text(_safe_error_message(e)), title=type(e).__name__, border_style="#c19191"))
         if report:
             report.record_exception(e)
             if report_path := report.save("failed"):

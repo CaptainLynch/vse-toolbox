@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import re
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from rich.console import Console
+from rich.prompt import Prompt
 
 import main
 import web.app as web_app
 from core.diagnostics import DiagnosticOptions, MarkdownDiagnosticReport
 from services.aras_crawler import ArasCrawlerError, EWOReportPage, PAAReportPage
+from services.aras_export import CSVExportResult, EWOExportResult
 
 
 @dataclass
@@ -28,11 +32,13 @@ class FakeDetail:
 class FakeArasClient:
     calls: list[dict[str, object]] = []
     fail: Exception | None = None
+    detail_file_name: str = "detail.xlsx"
 
-    def __init__(self, base_url, headers=None, cookies=None, timeout=30.0, diagnostic_hook=None):  # type: ignore[no-untyped-def]
+    def __init__(self, base_url, headers=None, cookies=None, session=None, timeout=30.0, diagnostic_hook=None):  # type: ignore[no-untyped-def]
         self.base_url = base_url
         self.headers = headers or {}
         self.cookies = cookies
+        self.session = session
         self.timeout = timeout
         self.diagnostic_hook = diagnostic_hook
         self.__class__.calls.append(
@@ -40,6 +46,7 @@ class FakeArasClient:
                 "base_url": base_url,
                 "headers": self.headers,
                 "cookies": cookies,
+                "session": session,
                 "timeout": timeout,
                 "diagnostic_hook": diagnostic_hook,
             }
@@ -62,6 +69,25 @@ class FakeArasClient:
                 }
             ],
             page=page,
+            item_ids=["ID-1"],
+            raw_xml="<xml/>",
+        )
+
+    def crawl_ewo_report_all(self, filters, page_size=50, max_pages=40, max_records=2000):  # type: ignore[no-untyped-def]
+        if self.fail:
+            raise self.fail
+        self.__class__.calls.append(
+            {
+                "method": "ewo_all",
+                "filters": filters,
+                "page_size": page_size,
+                "max_pages": max_pages,
+                "max_records": max_records,
+            }
+        )
+        return EWOReportPage(
+            rows=[{"_no": "EWO-1", "eplmwriteneplcode": "F610S", "state": "Open"}],
+            page=1,
             item_ids=["ID-1"],
             raw_xml="<xml/>",
         )
@@ -123,7 +149,17 @@ class FakeArasClient:
         if self.fail:
             raise self.fail
         self.__class__.calls.append({"method": "detail", "filters": filters})
-        return FakeDetail()
+        return FakeDetail(file_name=self.__class__.detail_file_name)
+
+    def download_ncr_detail_file(self, file_name, destination):  # type: ignore[no-untyped-def]
+        if self.fail:
+            raise self.fail
+        self.__class__.calls.append(
+            {"method": "ncr_download", "file_name": file_name, "destination": destination}
+        )
+        target = Path(destination) / file_name
+        target.write_bytes(b"NCR-DETAIL-CONTENT")
+        return target
 
 
 @pytest.fixture(autouse=True)
@@ -131,16 +167,22 @@ def disable_cli_aras_diagnostics(monkeypatch) -> None:  # type: ignore[no-untype
     monkeypatch.setattr(main, "_ask_aras_diagnostic_options", lambda: DiagnosticOptions())
 
 
-@pytest.fixture()
-def client(monkeypatch, tmp_path):
+def _make_test_client(monkeypatch, tmp_path, allowed_hosts=None):  # type: ignore[no-untyped-def]
     FakeArasClient.calls = []
     FakeArasClient.fail = None
+    FakeArasClient.detail_file_name = "detail.xlsx"
     monkeypatch.setattr(web_app, "ArasCrawlerClient", FakeArasClient)
     db_cls = web_app.DatabaseManager
     monkeypatch.setattr(web_app, "DatabaseManager", lambda: db_cls(tmp_path / "web-test.db"))
-    app = web_app.create_app()
+    app = web_app.create_app(allowed_hosts=allowed_hosts)
     app.config.update(TESTING=True)
     return app.test_client()
+
+
+@pytest.fixture()
+def client(monkeypatch, tmp_path):
+    # aras.example 仅通过 create_app(allowed_hosts=...) 注入，供既有路由契约测试使用
+    return _make_test_client(monkeypatch, tmp_path, allowed_hosts=["aras.example"])
 
 
 def test_ewo_route_contract_and_no_auth_echo(client) -> None:
@@ -282,6 +324,223 @@ def test_paa_routes_contract_and_no_auth_echo(client) -> None:
     assert "raw_xml" not in crawl.get_data(as_text=True)
 
 
+def test_host_allowlist_default_rejects_unknown_host_without_echoing_credentials(
+    monkeypatch, tmp_path
+) -> None:
+    default_client = _make_test_client(monkeypatch, tmp_path)
+    resp = default_client.post(
+        "/api/aras/ewo/query",
+        json={
+            "base_url": "http://evil.example/innovatorserver",
+            "headers": {"Authorization": "secret-auth"},
+            "cookie": "sid=secret-cookie",
+            "filters": {},
+        },
+    )
+    assert resp.status_code == 400
+    body = resp.get_data(as_text=True)
+    assert resp.get_json()["error"]["type"] == "HostNotAllowed"
+    assert "secret-cookie" not in body
+    assert "secret-auth" not in body
+    assert FakeArasClient.calls == []  # client 从未构造，allowlist 在构造前拒绝
+
+
+def test_host_allowlist_normalizes_case_port_and_scheme(monkeypatch, tmp_path) -> None:
+    default_client = _make_test_client(monkeypatch, tmp_path)
+    for url in [
+        "https://ecm.sgmw.com.cn/innovatorserver",
+        "HTTPS://ECM.SGMW.COM.CN:443/innovatorserver",
+        "http://ecm.sgmw.com.cn:80/innovatorserver",
+        "http://ecm.sgmw.com.cn:8080/innovatorserver",
+    ]:
+        resp = default_client.post("/api/aras/ewo/query", json={"base_url": url, "filters": {}})
+        assert resp.status_code == 200, url
+    for url in [
+        "http://user:pass@ecm.sgmw.com.cn/innovatorserver",  # userinfo
+        "ftp://ecm.sgmw.com.cn/innovatorserver",  # 非 http(s)
+        "https://aras.example/innovatorserver",  # 任意主机
+        "https://ecm.sgmw.com.cn:99999/innovatorserver",  # 非法端口
+    ]:
+        resp = default_client.post("/api/aras/ewo/query", json={"base_url": url, "filters": {}})
+        assert resp.status_code == 400, url
+
+
+def test_host_allowlist_injectable_via_app_config(monkeypatch, tmp_path) -> None:
+    FakeArasClient.calls = []
+    FakeArasClient.fail = None
+    FakeArasClient.detail_file_name = "detail.xlsx"
+    monkeypatch.setattr(web_app, "ArasCrawlerClient", FakeArasClient)
+    db_cls = web_app.DatabaseManager
+    monkeypatch.setattr(web_app, "DatabaseManager", lambda: db_cls(tmp_path / "web-test.db"))
+    app = web_app.create_app()  # 默认仅 ecm.sgmw.com.cn
+    app.config["ARAS_ALLOWED_HOSTS"] = ("aras.example",)  # 运行前注入测试 host
+    app.config.update(TESTING=True)
+    test_client = app.test_client()
+
+    allowed = test_client.post("/api/aras/paa/query", json={"base_url": "http://aras.example", "filters": {}})
+    assert allowed.status_code == 200
+    rejected = test_client.post("/api/aras/paa/query", json={"base_url": "http://localhost", "filters": {}})
+    assert rejected.status_code == 400
+    assert rejected.get_json()["error"]["type"] == "HostNotAllowed"
+
+
+def test_paa_department_filter_normalizes_and_fails_closed(client) -> None:
+    ok = client.post(
+        "/api/aras/paa/query",
+        json={
+            "base_url": "http://aras.example",
+            "filters": {"department": "技术中心-车体工程, 技术中心_车体工程"},
+        },
+    )
+    assert ok.status_code == 200
+    assert FakeArasClient.calls[-1]["filters"].department == "技术中心_车体工程"
+
+    blank = client.post(
+        "/api/aras/paa/query",
+        json={"base_url": "http://aras.example", "filters": {"department": ""}},
+    )
+    assert blank.status_code == 200
+    assert FakeArasClient.calls[-1]["filters"].department is None
+
+    unknown = client.post(
+        "/api/aras/paa/query",
+        json={"base_url": "http://aras.example", "filters": {"department": "未知部门"}},
+    )
+    assert unknown.status_code == 400
+    assert unknown.get_json()["error"]["type"] == "ValidationError"
+    assert FakeArasClient.calls[-1].get("method") is None  # 未发起查询
+
+
+def test_ewo_export_route_streams_csv_with_export_headers(client) -> None:
+    resp = client.post(
+        "/api/aras/ewo/export",
+        json={
+            "base_url": "http://aras.example",
+            "headers": {"Authorization": "secret-auth"},
+            "cookie": "sid=secret-cookie",
+            "filters": {"project_code": "F610S"},
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.headers["Content-Type"] == "text/csv; charset=utf-8"
+    assert "attachment" in resp.headers["Content-Disposition"]
+    assert "filename=" in resp.headers["Content-Disposition"]
+    body = resp.get_data(as_text=True)
+    assert "EWO-1" in body
+    assert "F610S" in body
+    assert resp.headers["X-Export-Complete"] == "true"
+    assert resp.headers["X-Export-Truncated"] == "false"
+    assert resp.headers["X-Export-Row-Count"] == "1"
+    crawl_call = next(call for call in FakeArasClient.calls if call.get("method") == "ewo_all")
+    assert crawl_call["page_size"] == 2000
+    assert crawl_call["max_pages"] == 1000
+    assert crawl_call["max_records"] == 10000
+    assert "secret-cookie" not in body
+    assert "secret-auth" not in body
+
+
+def test_paa_export_route_streams_csv_and_redacts_credentials(client) -> None:
+    resp = client.post(
+        "/api/aras/paa/export",
+        json={
+            "base_url": "http://aras.example",
+            "cookie": "sid=secret-cookie",
+            "filters": {"department": "技术中心-车体工程"},
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.headers["Content-Type"] == "text/csv; charset=utf-8"
+    assert resp.headers["X-Export-Complete"] == "true"
+    assert resp.headers["X-Export-Row-Count"] == "1"
+    body = resp.get_data(as_text=True)
+    assert "PAA-2" in body
+    assert "abc123" not in body
+    assert "tok123" not in body
+    assert "secret-cookie" not in body
+    assert "raw_xml" not in body
+    crawl_call = next(call for call in FakeArasClient.calls if call.get("method") == "paa_all")
+    assert crawl_call["page_size"] == 2000
+    assert crawl_call["max_pages"] == 1000
+    assert crawl_call["max_records"] == 10000
+    assert crawl_call["filters"].department == "技术中心_车体工程"
+
+
+def test_ewo_export_marks_truncation_via_headers(monkeypatch, client) -> None:
+    def truncated_crawl(self, filters=None, page_size=2000, max_pages=1000, max_records=10000):  # type: ignore[no-untyped-def]
+        self.__class__.calls.append(
+            {
+                "method": "ewo_all",
+                "filters": filters,
+                "page_size": page_size,
+                "max_pages": max_pages,
+                "max_records": max_records,
+            }
+        )
+        return EWOReportPage(rows=[{"_no": "EWO-1"}], page=max_pages, item_ids=["ID-1"], raw_xml="")
+
+    monkeypatch.setattr(FakeArasClient, "crawl_ewo_report_all", truncated_crawl)
+    resp = client.post(
+        "/api/aras/ewo/export",
+        json={"base_url": "http://aras.example", "filters": {}, "max_records": 100},
+    )
+    assert resp.status_code == 200
+    assert resp.headers["X-Export-Complete"] == "false"
+    assert resp.headers["X-Export-Truncated"] == "true"
+    assert resp.headers["X-Export-Row-Count"] == "1"
+
+
+def test_export_temp_dir_removed_after_response(monkeypatch, tmp_path) -> None:
+    test_client = _make_test_client(monkeypatch, tmp_path, allowed_hosts=["aras.example"])
+    captured: list[str] = []
+    real_mkdtemp = tempfile.mkdtemp
+    fake_tempfile = SimpleNamespace(
+        mkdtemp=lambda *args, **kwargs: captured.append(real_mkdtemp(*args, **kwargs)) or captured[-1]
+    )
+    monkeypatch.setattr(web_app, "tempfile", fake_tempfile)
+    resp = test_client.post(
+        "/api/aras/ewo/export",
+        json={"base_url": "http://aras.example", "filters": {}},
+    )
+    assert resp.status_code == 200
+    assert "EWO-1" in resp.get_data(as_text=True)
+    assert len(captured) == 1
+    # 数据读入内存后临时目录已在响应返回前清理（不依赖响应关闭回调）
+    assert not Path(captured[0]).exists()
+
+
+def test_ncr_detail_download_route_downloads_file(client) -> None:
+    resp = client.post(
+        "/api/aras/ncr/detail/download",
+        json={
+            "base_url": "http://aras.example",
+            "cookie": "sid=secret-cookie",
+            "filters": {"department": "技术中心-车体工程", "section_code": "BE"},
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.get_data() == b"NCR-DETAIL-CONTENT"
+    disposition = resp.headers["Content-Disposition"]
+    assert "attachment" in disposition
+    assert "detail.xlsx" in disposition
+    detail_call = next(call for call in FakeArasClient.calls if call.get("method") == "detail")
+    assert detail_call["filters"].section_codes == ("BA", "BE", "BI", "EXT", "INT", "SES", "VE")
+    assert detail_call["filters"].section_code == "BE"
+    download_call = next(call for call in FakeArasClient.calls if call.get("method") == "ncr_download")
+    assert download_call["file_name"] == "detail.xlsx"
+    assert "secret-cookie" not in resp.get_data(as_text=True)
+
+
+def test_ncr_detail_download_without_file_name_returns_502(monkeypatch, client) -> None:
+    monkeypatch.setattr(FakeArasClient, "detail_file_name", "")
+    resp = client.post(
+        "/api/aras/ncr/detail/download",
+        json={"base_url": "http://aras.example", "filters": {}},
+    )
+    assert resp.status_code == 502
+    assert resp.get_json()["ok"] is False
+    assert not any(call.get("method") == "ncr_download" for call in FakeArasClient.calls)
+
+
 def test_route_validation_and_aras_error_are_sanitized(client) -> None:
     missing = client.post("/api/aras/ewo/query", json={"filters": {}})
     assert missing.status_code == 400
@@ -336,118 +595,250 @@ def test_cli_helpers_parse_headers_and_render_without_auth() -> None:
     assert "secret" not in repr(table)
 
 
-def test_cli_aras_connection_defaults_browser_headers(monkeypatch) -> None:
+def test_cli_aras_connection_defaults_base_url_and_headers_are_visible(monkeypatch) -> None:
+    real_prompt_ask = Prompt.ask  # 在 monkeypatch 前捕获真实 Prompt.ask
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def fake_ask(*args, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append((args, kwargs))
+        return ""
+
+    monkeypatch.setattr(main.Prompt, "ask", fake_ask)
+
+    base_url, headers, credentials = main._ask_aras_connection()
+
+    assert base_url == ""
+    assert credentials is None
+    assert headers == {}
+    base_call = next((args, kwargs) for args, kwargs in calls if str(args[0]).startswith("Aras base_url"))
+    assert base_call[1]["default"] == "http://ecm.sgmw.com.cn/innovatorserver"
+    assert not any(str(args[0]).startswith("Cookie header") for args, _kwargs in calls)
+
+    # 真实 Prompt 渲染：base_url 默认值以明文出现在终端提示中；用户名为空 → 安全校验错误
+    console = Console(record=True, width=160)
+    monkeypatch.setattr(main, "console", console)
+    monkeypatch.setattr(console, "input", lambda *args, **kwargs: "")
+    monkeypatch.setattr(
+        main.Prompt,
+        "ask",
+        lambda prompt, **kwargs: real_prompt_ask(prompt, console=console, **kwargs),
+    )
+    with pytest.raises(ValueError, match="用户名不能为空"):
+        main._ask_aras_connection()
+    rendered = console.export_text()
+    assert "http://ecm.sgmw.com.cn/innovatorserver" in rendered
+    assert "Cookie header" not in rendered
+    assert "Cookie> " not in rendered
+
+
+def test_cli_aras_connection_default_headers_show_safe_plaintext_and_enter_accepts(
+    monkeypatch,
+) -> None:
     calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
     def fake_ask(*args, **kwargs):  # type: ignore[no-untyped-def]
         calls.append((args, kwargs))
         prompt = str(args[0])
         if prompt.startswith("Aras base_url"):
-            return ""
-        if prompt.startswith("Extra headers"):
-            return kwargs["default"]
+            return "http://aras.example/innovatorserver"
+        if prompt.startswith("ECM 用户名"):
+            return "fictional-user"
+        if prompt.startswith("ECM 密码"):
+            return "fictional-password-secret"
         return ""
 
     monkeypatch.setattr(main.Prompt, "ask", fake_ask)
+    console = Console(record=True, width=160)
+    # 直接回车（空行）→ 使用可见的安全默认 headers
+    monkeypatch.setattr(console, "input", lambda *args, **kwargs: "")
+    monkeypatch.setattr(main, "console", console)
 
-    base_url, headers, cookies = main._ask_aras_connection()
+    base_url, headers, credentials = main._ask_aras_connection()
 
-    assert base_url == ""
-    assert cookies is None
-    assert headers == {}
-    base_call = next((args, kwargs) for args, kwargs in calls if str(args[0]).startswith("Aras base_url"))
-    assert base_call[1]["default"] == ""
+    assert base_url == "http://aras.example/innovatorserver"
+    assert credentials == ("fictional-user", "fictional-password-secret")
+    rendered = console.export_text()
+    assert "Accept: */*" in rendered
+    assert "Accept-Language: zh-CN,zh;q=0.9" in rendered
+    assert "Content-Type: text/xml; charset=UTF-8" in rendered
+    assert "Origin: http://aras.example" in rendered
+    assert "Referer: http://aras.example/innovatorserver/Client/default.aspx" in rendered
+    assert "TIMEZONE_NAME: China Standard Time" in rendered
+    assert "User-Agent:" in rendered
+    # 默认 headers 仅含非机密浏览器/SOAP 头
+    for header_name in ("Accept", "Accept-Language", "Content-Type", "Origin", "Referer", "TIMEZONE_NAME", "User-Agent"):
+        assert header_name in headers
+    assert not any(
+        name.lower() in {"cookie", "authorization"}
+        for name in headers
+    )
     assert not any(str(args[0]).startswith("Cookie header") for args, _kwargs in calls)
 
 
-def test_cli_aras_connection_cookie_header_is_plain_and_normalized(monkeypatch) -> None:
+def test_cli_aras_connection_username_with_hidden_password_and_no_cookie_prompt(
+    monkeypatch,
+) -> None:
     calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
     answers = iter(
         [
             "http://aras.example/innovatorserver",
-            "",
+            "fictional-user",
+            "fictional-password-secret",
         ]
     )
-    input_lines = iter(["", "Cookie: sid=abc; token=x", ""])
 
     def fake_ask(*args, **kwargs):  # type: ignore[no-untyped-def]
         calls.append((args, kwargs))
         return next(answers)
 
     monkeypatch.setattr(main.Prompt, "ask", fake_ask)
-    console = Console(record=True, width=140)
-    monkeypatch.setattr(console, "input", lambda *args, **kwargs: next(input_lines))
+    console = Console(record=True, width=160)
+    monkeypatch.setattr(console, "input", lambda *args, **kwargs: "")
     monkeypatch.setattr(main, "console", console)
 
-    base_url, headers, cookies = main._ask_aras_connection()
+    base_url, headers, credentials = main._ask_aras_connection()
 
     assert base_url == "http://aras.example/innovatorserver"
-    assert headers["Cookie"] == "sid=abc; token=x"
-    assert cookies is None
-    assert not any(str(args[0]).startswith("Cookie header") for args, _kwargs in calls)
+    assert credentials == ("fictional-user", "fictional-password-secret")
+    assert headers == {  # 回车 → 使用默认 headers
+        "Accept": "*/*",
+        "Accept-Language": "zh-CN,zh;q=0.9",
+        "Content-Type": "text/xml; charset=UTF-8",
+        "Origin": "http://aras.example",
+        "Referer": "http://aras.example/innovatorserver/Client/default.aspx",
+        "TIMEZONE_NAME": "China Standard Time",
+        "User-Agent": main.DEFAULT_BROWSER_USER_AGENT,
+    }
+    prompts = [str(args[0]) for args, _kwargs in calls]
+    assert "ECM 用户名" in prompts
+    password_call = next((args, kwargs) for args, kwargs in calls if str(args[0]).startswith("ECM 密码"))
+    assert password_call[1]["password"] is True
+    assert not any(prompt.startswith("Cookie header") for prompt in prompts)
+    assert "fictional-password-secret" not in console.export_text()
 
 
-def test_cli_aras_connection_multiline_cookie_paste_stays_in_cookie_prompt(monkeypatch) -> None:
-    answers = iter(["http://aras.example/innovatorserver", ""])
-    input_lines = iter(
+def test_cli_aras_connection_blank_username_raises_required_validation(monkeypatch) -> None:
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    answers = iter(
         [
-            "",
-            "Cookie: sid=abc; token=x",
-            "ASP.NET_SessionId=should-not-be-filter",
-            "",
+            "http://aras.example/innovatorserver",
+            "",  # 用户名为空 → 安全校验错误，不再询问密码
         ]
     )
-    monkeypatch.setattr(main.Prompt, "ask", lambda *args, **kwargs: next(answers))
-    console = Console(record=True, width=140)
-    monkeypatch.setattr(console, "input", lambda *args, **kwargs: next(input_lines))
+
+    def fake_ask(*args, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append((args, kwargs))
+        return next(answers)
+
+    monkeypatch.setattr(main.Prompt, "ask", fake_ask)
+    console = Console(record=True, width=160)
+    monkeypatch.setattr(console, "input", lambda *args, **kwargs: "")
     monkeypatch.setattr(main, "console", console)
 
-    _base_url, headers, _cookies = main._ask_aras_connection()
+    with pytest.raises(ValueError, match="用户名不能为空"):
+        main._ask_aras_connection()
 
-    assert headers["Cookie"] == "sid=abc; token=x"
+    prompts = [str(args[0]) for args, _kwargs in calls]
+    assert "ECM 用户名" in prompts
+    assert not any(prompt.startswith("ECM 密码") for prompt in prompts)  # fail-fast，不进入密码询问
+    assert not any(prompt.startswith("Cookie header") for prompt in prompts)
+    assert "fictional-password-secret" not in console.export_text()
 
 
-def test_cli_aras_connection_ignores_cookie_control_characters(monkeypatch) -> None:
-    answers = iter(["http://aras.example", ""])
-    input_lines = iter(["", "\x16", ""])
-    monkeypatch.setattr(main.Prompt, "ask", lambda *args, **kwargs: next(answers))
-    console = Console(record=True, width=140)
-    monkeypatch.setattr(console, "input", lambda *args, **kwargs: next(input_lines))
+def test_cli_aras_connection_blank_password_raises_required_validation(monkeypatch) -> None:
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    answers = iter(
+        [
+            "http://aras.example/innovatorserver",
+            "fictional-user",
+            "",  # 密码为空 → 安全校验错误，拒绝无凭据访问
+        ]
+    )
+
+    def fake_ask(*args, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append((args, kwargs))
+        return next(answers)
+
+    monkeypatch.setattr(main.Prompt, "ask", fake_ask)
+    console = Console(record=True, width=160)
+    monkeypatch.setattr(console, "input", lambda *args, **kwargs: "")
     monkeypatch.setattr(main, "console", console)
 
-    _base_url, headers, _cookies = main._ask_aras_connection()
+    with pytest.raises(ValueError, match="密码不能为空"):
+        main._ask_aras_connection()
 
-    assert "Cookie" not in headers
-    assert "control characters" in console.export_text()
+    prompts = [str(args[0]) for args, _kwargs in calls]
+    password_call = next((args, kwargs) for args, kwargs in calls if str(args[0]).startswith("ECM 密码"))
+    assert password_call[1]["password"] is True  # 密码始终隐藏输入
+    assert not any(prompt.startswith("Cookie header") for prompt in prompts)
 
 
-def test_cli_aras_connection_accepts_multiline_authorization_headers(monkeypatch) -> None:
+def test_cli_aras_connection_rejects_authorization_extra_header_fail_fast(monkeypatch) -> None:
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
     answers = iter(["http://aras.example/innovatorserver"])
     input_lines = iter(
         [
             "Authorization: Bearer fake-token",
-            "Cookie: sid=abc; token=x",
-            "Accept-Language: zh-CN,zh;q=0.9",
-            "",
             "",
         ]
     )
-    monkeypatch.setattr(main.Prompt, "ask", lambda *args, **kwargs: next(answers))
-    console = Console(record=True, width=140)
+
+    def fake_ask(*args, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append((args, kwargs))
+        return next(answers)
+
+    monkeypatch.setattr(main.Prompt, "ask", fake_ask)
+    console = Console(record=True, width=160)
     monkeypatch.setattr(console, "input", lambda *args, **kwargs: next(input_lines))
     monkeypatch.setattr(main, "console", console)
 
-    _base_url, headers, _cookies = main._ask_aras_connection()
+    with pytest.raises(ValueError, match="Authorization"):
+        main._ask_aras_connection()
 
-    assert headers["Authorization"] == "Bearer fake-token"
-    assert headers["Cookie"] == "sid=abc; token=x"
-    assert headers["Accept-Language"] == "zh-CN,zh;q=0.9"
-    assert "可能需要 Authorization" not in console.export_text()
+    # fail-fast：拒绝发生在询问用户名/密码之前，且消息不含粘贴值
+    prompts = [str(args[0]) for args, _kwargs in calls]
+    assert prompts == ["Aras base_url"]
+    rendered = console.export_text()
+    assert "fake-token" not in rendered
+    assert "Cookie header" not in rendered
+    assert "Cookie> " not in rendered
+
+
+def test_cli_aras_connection_rejects_cookie_extra_header_fail_fast(monkeypatch) -> None:
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    answers = iter(["http://aras.example/innovatorserver"])
+    input_lines = iter(
+        [
+            "Cookie: sid=fake-cookie-secret",
+            "",
+        ]
+    )
+
+    def fake_ask(*args, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append((args, kwargs))
+        return next(answers)
+
+    monkeypatch.setattr(main.Prompt, "ask", fake_ask)
+    console = Console(record=True, width=160)
+    monkeypatch.setattr(console, "input", lambda *args, **kwargs: next(input_lines))
+    monkeypatch.setattr(main, "console", console)
+
+    with pytest.raises(ValueError, match="Extra headers must not contain Cookie"):
+        main._ask_aras_connection()
+
+    # fail-fast：拒绝发生在询问用户名/密码之前，且消息不含粘贴值
+    prompts = [str(args[0]) for args, _kwargs in calls]
+    assert prompts == ["Aras base_url"]
+    rendered = console.export_text()
+    assert "fake-cookie-secret" not in rendered
+    assert "Cookie header" not in rendered
+    assert "Cookie> " not in rendered
 
 
 def test_cli_paa_helper_collects_filters_and_limits(monkeypatch) -> None:
     answers = iter(
         [
+            "",  # 业务部门（空 → 不筛选）
             "PAA-1",
             "EWO-1",
             "Open",
@@ -478,7 +869,77 @@ def test_cli_paa_helper_collects_filters_and_limits(monkeypatch) -> None:
     assert filters.submit_end == "2026-01-31"
     assert filters.mtl_rq_start == "2026-02-01"
     assert filters.mtl_rq_end == "2026-02-28"
+    assert filters.department is None
     assert (page, page_size, max_records, max_pages) == (3, 25, 100, 7)
+
+
+def test_cli_paa_helper_normalizes_department_and_default_max_pages(monkeypatch) -> None:
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    answers = iter(
+        [
+            "技术中心-车体工程, 技术中心_车体工程",  # 重复 → 去重
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "1",
+            "50",
+            "2000",
+            "",  # Max pages 使用默认值
+        ]
+    )
+
+    def fake_ask(*args, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append((args, kwargs))
+        return next(answers)
+
+    monkeypatch.setattr(main.Prompt, "ask", fake_ask)
+
+    filters, page, page_size, max_records, max_pages = main._ask_paa_filters()
+
+    assert filters.department == "技术中心_车体工程"
+    assert (page, page_size, max_records, max_pages) == (1, 50, 2000, 1000)
+    max_pages_call = next((args, kwargs) for args, kwargs in calls if str(args[0]).startswith("Max pages"))
+    assert max_pages_call[1]["default"] == "1000"
+
+    answers = iter(["未知部门"] + [""] * 13)
+    monkeypatch.setattr(main.Prompt, "ask", lambda *args, **kwargs: next(answers))
+    with pytest.raises(ValueError):
+        main._ask_paa_filters()
+
+
+def test_cli_ncr_helper_maps_department_to_section_codes(monkeypatch) -> None:
+    answers = iter(
+        [
+            "",  # 项目名称
+            "技术中心-车体工程",  # 业务部门 → section_codes
+            "",  # 采购开始日期
+            "",  # 采购结束日期
+            "",  # PE 开始日期
+            "",  # PE 结束日期
+            "",  # NCR 编号
+            "BE",  # 高级科室代码原输入仍可用
+            "",  # 变更类型
+            "0",  # othercondition
+        ]
+    )
+    monkeypatch.setattr(main.Prompt, "ask", lambda *args, **kwargs: next(answers))
+
+    filters = main._ask_ncr_filters()
+
+    assert filters.section_codes == ("BA", "BE", "BI", "EXT", "INT", "SES", "VE")
+    assert filters.section_code == "BE"
+
+    answers = iter(["", "未知部门", "", "", "", "", "", "", "", "0"])
+    monkeypatch.setattr(main.Prompt, "ask", lambda *args, **kwargs: next(answers))
+    with pytest.raises(ValueError):
+        main._ask_ncr_filters()
 
 
 def test_cli_paa_render_without_raw_xml_or_credentials() -> None:
@@ -594,6 +1055,223 @@ def test_cli_ncr_renderers_do_not_leak_sensitive_values() -> None:
     assert "secret2" not in rendered
 
 
+def test_cli_ewo_handler_queries_without_forcing_export(monkeypatch) -> None:
+    FakeArasClient.calls = []
+    FakeArasClient.fail = None
+    FakeECMAuthClient.calls = []
+    FakeECMAuthClient.fail = None
+    filters = main.EWOReportFilters(ewo_no="EWO-1")
+    monkeypatch.setattr(main, "ArasCrawlerClient", FakeArasClient)
+    monkeypatch.setattr(main, "ArasECMAuthClient", FakeECMAuthClient)
+    monkeypatch.setattr(main.Prompt, "ask", lambda *args, **kwargs: "1")
+    monkeypatch.setattr(main.Confirm, "ask", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        main,
+        "_ask_aras_connection",
+        lambda: ("http://aras.example", {}, ("fictional-user", "fictional-password-secret")),
+    )
+    monkeypatch.setattr(main, "_ask_ewo_filters", lambda: (filters, 2, 25, 100))
+    console = Console(record=True, width=140)
+    monkeypatch.setattr(main, "console", console)
+
+    main.handle_intranet_scrape(None)  # type: ignore[arg-type]
+
+    call = next(item for item in FakeArasClient.calls if item.get("method") == "ewo")
+    assert call["filters"] == filters
+    assert call["page"] == 2
+    assert call["page_size"] == 25
+    assert call["max_records"] == 100
+    assert not any(item.get("method") == "ewo_all" for item in FakeArasClient.calls)
+    assert "EWO report result" in console.export_text()
+
+
+class FakeECMAuthClient:
+    calls: list[dict[str, object]] = []
+    session = object()
+    fail: Exception | None = None
+
+    def __init__(self, base_url, timeout=30.0, diagnostic_hook=None):  # type: ignore[no-untyped-def]
+        self.__class__.calls.append(
+            {
+                "method": "init",
+                "base_url": base_url,
+                "timeout": timeout,
+                "diagnostic_hook": diagnostic_hook,
+            }
+        )
+
+    def login(self, username, password):  # type: ignore[no-untyped-def]
+        self.__class__.calls.append({"method": "login", "username": username, "password": password})
+        if self.fail:
+            raise self.fail
+        from services.aras_auth import ArasLoginResult
+
+        return ArasLoginResult(session=self.session)
+
+
+def test_cli_aras_handler_ecm_password_login_injects_authenticated_session(
+    monkeypatch,
+) -> None:
+    FakeArasClient.calls = []
+    FakeArasClient.fail = None
+    FakeECMAuthClient.calls = []
+    FakeECMAuthClient.fail = None
+    filters = main.EWOReportFilters(ewo_no="EWO-1")
+    monkeypatch.setattr(main, "ArasCrawlerClient", FakeArasClient)
+    monkeypatch.setattr(main, "ArasECMAuthClient", FakeECMAuthClient)
+    monkeypatch.setattr(main.Prompt, "ask", lambda *args, **kwargs: "1")
+    monkeypatch.setattr(main.Confirm, "ask", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        main,
+        "_ask_aras_connection",
+        lambda: ("http://aras.example", {}, ("fictional-user", "fictional-password-secret")),
+    )
+    monkeypatch.setattr(main, "_ask_ewo_filters", lambda: (filters, 1, 25, 100))
+    console = Console(record=True, width=140)
+    monkeypatch.setattr(main, "console", console)
+
+    main.handle_intranet_scrape(None)  # type: ignore[arg-type]
+
+    auth_call = next(item for item in FakeECMAuthClient.calls if item["method"] == "login")
+    assert auth_call["username"] == "fictional-user"
+    assert auth_call["password"] == "fictional-password-secret"
+    init_call = next(item for item in FakeArasClient.calls if item.get("method") is None)
+    assert init_call["session"] is FakeECMAuthClient.session
+    rendered = console.export_text()
+    assert "正在通过企业账号中心登录 ECM" in rendered
+    assert "ECM 账号密码登录成功" in rendered
+    assert "fictional-user" not in rendered
+    assert "fictional-password-secret" not in rendered
+
+
+def test_cli_aras_handler_auth_error_is_redacted_and_reported(monkeypatch) -> None:
+    from services.aras_auth import ArasAuthError
+
+    FakeArasClient.calls = []
+    FakeArasClient.fail = None
+    FakeECMAuthClient.calls = []
+    FakeECMAuthClient.fail = ArasAuthError(
+        "ECM login failed password=fictional-password-secret token=fictional-token-secret",
+        stage="ecm-credentials",
+    )
+    monkeypatch.setattr(main, "ArasCrawlerClient", FakeArasClient)
+    monkeypatch.setattr(main, "ArasECMAuthClient", FakeECMAuthClient)
+    monkeypatch.setattr(main.Prompt, "ask", lambda *args, **kwargs: "1")
+    monkeypatch.setattr(main.Confirm, "ask", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        main,
+        "_ask_aras_connection",
+        lambda: ("http://aras.example", {}, ("fictional-user", "fictional-password-secret")),
+    )
+    monkeypatch.setattr(main, "_ask_ewo_filters", lambda: (main.EWOReportFilters(), 1, 25, 100))
+    console = Console(record=True, width=140)
+    monkeypatch.setattr(main, "console", console)
+
+    main.handle_intranet_scrape(None)  # type: ignore[arg-type]
+
+    rendered = console.export_text()
+    assert "ArasAuthError" in rendered
+    assert "fictional-user" not in rendered
+    assert "fictional-password-secret" not in rendered
+    assert "fictional-token-secret" not in rendered
+    assert "[redacted]" in rendered
+    assert not any(item.get("method") == "ewo" for item in FakeArasClient.calls)
+
+
+def test_cli_aras_handler_requires_credentials_without_business_requests(monkeypatch) -> None:
+    FakeArasClient.calls = []
+    FakeArasClient.fail = None
+    FakeECMAuthClient.calls = []
+    FakeECMAuthClient.fail = None
+    monkeypatch.setattr(main, "ArasCrawlerClient", FakeArasClient)
+    monkeypatch.setattr(main, "ArasECMAuthClient", FakeECMAuthClient)
+    monkeypatch.setattr(main.Prompt, "ask", lambda *args, **kwargs: "1")
+    monkeypatch.setattr(main, "_ask_aras_connection", lambda: ("http://aras.example", {}, None))
+    console = Console(record=True, width=140)
+    monkeypatch.setattr(main, "console", console)
+
+    main.handle_intranet_scrape(None)  # type: ignore[arg-type]
+
+    rendered = console.export_text()
+    assert "用户名和密码为必填" in rendered
+    # 无凭据 → 不构造客户端、不发起登录、零业务请求
+    assert FakeArasClient.calls == []
+    assert FakeECMAuthClient.calls == []
+    assert not any(item.get("method") == "ewo" for item in FakeArasClient.calls)
+
+
+def test_cli_aras_handler_rejects_secret_extra_headers_without_business_requests(
+    monkeypatch,
+) -> None:
+    FakeArasClient.calls = []
+    FakeArasClient.fail = None
+    FakeECMAuthClient.calls = []
+    FakeECMAuthClient.fail = None
+    monkeypatch.setattr(main, "ArasCrawlerClient", FakeArasClient)
+    monkeypatch.setattr(main, "ArasECMAuthClient", FakeECMAuthClient)
+    monkeypatch.setattr(main.Prompt, "ask", lambda *args, **kwargs: "1")
+    monkeypatch.setattr(
+        main,
+        "_ask_aras_connection",
+        lambda: (
+            "http://aras.example",
+            {"Cookie": "sid=fake-cookie-secret"},
+            ("fictional-user", "fictional-password-secret"),
+        ),
+    )
+    console = Console(record=True, width=140)
+    monkeypatch.setattr(main, "console", console)
+
+    main.handle_intranet_scrape(None)  # type: ignore[arg-type]
+
+    rendered = console.export_text()
+    assert "Extra headers must not contain Cookie" in rendered
+    assert "fake-cookie-secret" not in rendered
+    # 拒绝对话边界：即使提供了凭据，带 Cookie/Authorization 的 extra headers 也不放行
+    assert FakeArasClient.calls == []
+    assert FakeECMAuthClient.calls == []
+
+
+def test_cli_ewo_handler_exports_all_matching_rows(monkeypatch, tmp_path) -> None:
+    FakeArasClient.calls = []
+    FakeArasClient.fail = None
+    FakeECMAuthClient.calls = []
+    FakeECMAuthClient.fail = None
+    filters = main.EWOReportFilters(project_code="F610S")
+    answers = iter(["1", "safe-report"])
+    captured = {}
+    monkeypatch.setattr(main, "ArasCrawlerClient", FakeArasClient)
+    monkeypatch.setattr(main, "ArasECMAuthClient", FakeECMAuthClient)
+    monkeypatch.setattr(main.Prompt, "ask", lambda *args, **kwargs: next(answers))
+    monkeypatch.setattr(main.Confirm, "ask", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        main,
+        "_ask_aras_connection",
+        lambda: ("http://aras.example", {}, ("fictional-user", "fictional-password-secret")),
+    )
+    monkeypatch.setattr(main, "_ask_ewo_filters", lambda: (filters, 1, 25, 100))
+
+    def fake_export(page, file_name=None):  # type: ignore[no-untyped-def]
+        captured["page"] = page
+        captured["file_name"] = file_name
+        return EWOExportResult(path=tmp_path / "safe-report.csv", row_count=len(page.rows), columns=("_no",))
+
+    monkeypatch.setattr(main, "export_ewo_report_csv", fake_export)
+    console = Console(record=True, width=140)
+    monkeypatch.setattr(main, "console", console)
+
+    main.handle_intranet_scrape(None)  # type: ignore[arg-type]
+
+    call = next(item for item in FakeArasClient.calls if item.get("method") == "ewo_all")
+    assert call["filters"] == filters
+    assert call["page_size"] == 2000
+    assert call["max_pages"] == 1
+    assert call["max_records"] == 100
+    assert captured["file_name"] == "safe-report"
+    assert captured["page"].rows[0]["_no"] == "EWO-1"
+    assert "EWO CSV 已保存" in console.export_text()
+
+
 def test_cli_ncr_handlers_progress_and_detail(monkeypatch) -> None:
     for choice, method, title in [
         ("2", "progress", "NCR approval progress result"),
@@ -601,10 +1279,17 @@ def test_cli_ncr_handlers_progress_and_detail(monkeypatch) -> None:
     ]:
         FakeArasClient.calls = []
         FakeArasClient.fail = None
+        FakeECMAuthClient.calls = []
+        FakeECMAuthClient.fail = None
         filters = main.NCRApprovalFilters(ncr_no="NCR-1")
         monkeypatch.setattr(main, "ArasCrawlerClient", FakeArasClient)
+        monkeypatch.setattr(main, "ArasECMAuthClient", FakeECMAuthClient)
         monkeypatch.setattr(main.Prompt, "ask", lambda *args, **kwargs: choice)
-        monkeypatch.setattr(main, "_ask_aras_connection", lambda: ("http://aras.example", {}, None))
+        monkeypatch.setattr(
+            main,
+            "_ask_aras_connection",
+            lambda: ("http://aras.example", {}, ("fictional-user", "fictional-password-secret")),
+        )
         monkeypatch.setattr(main, "_ask_ncr_filters", lambda: filters)
         console = Console(record=True, width=140)
         monkeypatch.setattr(main, "console", console)
@@ -619,13 +1304,52 @@ def test_cli_ncr_handlers_progress_and_detail(monkeypatch) -> None:
         assert "secret2" not in rendered
 
 
+def test_cli_ncr_detail_downloads_file_and_reports_path(monkeypatch, tmp_path) -> None:
+    FakeArasClient.calls = []
+    FakeArasClient.fail = None
+    FakeECMAuthClient.calls = []
+    FakeECMAuthClient.fail = None
+    filters = main.NCRApprovalFilters(ncr_no="NCR-1", section_codes=("BA", "BE"))
+    answers = iter(["3", str(tmp_path)])
+    monkeypatch.setattr(main, "ArasCrawlerClient", FakeArasClient)
+    monkeypatch.setattr(main, "ArasECMAuthClient", FakeECMAuthClient)
+    monkeypatch.setattr(main.Prompt, "ask", lambda *args, **kwargs: next(answers))
+    monkeypatch.setattr(
+        main,
+        "_ask_aras_connection",
+        lambda: ("http://aras.example", {}, ("fictional-user", "fictional-password-secret")),
+    )
+    monkeypatch.setattr(main, "_ask_ncr_filters", lambda: filters)
+    console = Console(record=True, width=140)
+    monkeypatch.setattr(main, "console", console)
+
+    main.handle_intranet_scrape(None)  # type: ignore[arg-type]
+
+    detail_call = next(call for call in FakeArasClient.calls if call.get("method") == "detail")
+    assert detail_call["filters"] == filters
+    assert detail_call["filters"].section_codes == ("BA", "BE")
+    download_call = next(call for call in FakeArasClient.calls if call.get("method") == "ncr_download")
+    assert download_call["file_name"] == "detail.xlsx"
+    assert download_call["destination"] == str(tmp_path)
+    rendered = console.export_text()
+    assert "NCR 明细文件已保存" in rendered
+    assert str(tmp_path / "detail.xlsx") in rendered
+
+
 def test_cli_paa_handler_page_query(monkeypatch) -> None:
     FakeArasClient.calls = []
     FakeArasClient.fail = None
+    FakeECMAuthClient.calls = []
+    FakeECMAuthClient.fail = None
     filters = main.PAAReportFilters(paa_no="PAA-1")
     monkeypatch.setattr(main, "ArasCrawlerClient", FakeArasClient)
+    monkeypatch.setattr(main, "ArasECMAuthClient", FakeECMAuthClient)
     monkeypatch.setattr(main.Prompt, "ask", lambda *args, **kwargs: "4")
-    monkeypatch.setattr(main, "_ask_aras_connection", lambda: ("http://aras.example", {"Authorization": "secret"}, None))
+    monkeypatch.setattr(
+        main,
+        "_ask_aras_connection",
+        lambda: ("http://aras.example", {}, ("fictional-user", "fictional-password-secret")),
+    )
     monkeypatch.setattr(main, "_ask_paa_filters", lambda: (filters, 3, 25, 100, 7))
     console = Console(record=True, width=140)
     monkeypatch.setattr(main, "console", console)
@@ -642,15 +1366,31 @@ def test_cli_paa_handler_page_query(monkeypatch) -> None:
     assert "secret" not in rendered
 
 
-def test_cli_paa_handler_full_crawl(monkeypatch) -> None:
+def test_cli_paa_handler_full_crawl(monkeypatch, tmp_path) -> None:
     FakeArasClient.calls = []
     FakeArasClient.fail = None
+    FakeECMAuthClient.calls = []
+    FakeECMAuthClient.fail = None
     filters = main.PAAReportFilters(ewo_no="EWO-1")
     monkeypatch.setattr(main, "ArasCrawlerClient", FakeArasClient)
+    monkeypatch.setattr(main, "ArasECMAuthClient", FakeECMAuthClient)
     monkeypatch.setattr(main.Prompt, "ask", lambda *args, **kwargs: "5")
     monkeypatch.setattr(main.Confirm, "ask", lambda *args, **kwargs: True)
-    monkeypatch.setattr(main, "_ask_aras_connection", lambda: ("http://aras.example", {}, None))
+    monkeypatch.setattr(
+        main,
+        "_ask_aras_connection",
+        lambda: ("http://aras.example", {}, ("fictional-user", "fictional-password-secret")),
+    )
     monkeypatch.setattr(main, "_ask_paa_filters", lambda: (filters, 9, 40, 120, 6))
+    captured = {}
+
+    def fake_export(rows, output_dir=None, report_name=None, filters=None, preferred_fields=None):  # type: ignore[no-untyped-def]
+        captured["rows"] = rows
+        captured["report_name"] = report_name
+        captured["preferred_fields"] = preferred_fields
+        return CSVExportResult(path=tmp_path / "paa.csv", row_count=len(rows), fieldnames=("_no",))
+
+    monkeypatch.setattr(main, "export_report_csv", fake_export)
     console = Console(record=True, width=140)
     monkeypatch.setattr(main, "console", console)
 
@@ -658,20 +1398,59 @@ def test_cli_paa_handler_full_crawl(monkeypatch) -> None:
 
     method_call = next(call for call in FakeArasClient.calls if call.get("method") == "paa_all")
     assert method_call["filters"] == filters
-    assert method_call["page_size"] == 40
+    assert method_call["page_size"] == 2000
     assert method_call["max_pages"] == 6
     assert method_call["max_records"] == 120
-    assert "PAA report result" in console.export_text()
+    assert captured["report_name"] == "paa"
+    assert captured["preferred_fields"] == main.DEFAULT_PAA_SELECT_FIELDS
+    assert captured["rows"][0]["_no"] == "PAA-2"
+    rendered = console.export_text()
+    assert "PAA report result" in rendered
+    assert "PAA CSV 已保存" in rendered
+
+
+def test_cli_paa_handler_full_crawl_warns_when_limits_reached(monkeypatch) -> None:
+    FakeArasClient.calls = []
+    FakeArasClient.fail = None
+    FakeECMAuthClient.calls = []
+    FakeECMAuthClient.fail = None
+    filters = main.PAAReportFilters(ewo_no="EWO-1")
+    monkeypatch.setattr(main, "ArasCrawlerClient", FakeArasClient)
+    monkeypatch.setattr(main, "ArasECMAuthClient", FakeECMAuthClient)
+    monkeypatch.setattr(main.Prompt, "ask", lambda *args, **kwargs: "5")
+    confirm_answers = iter([True, False])
+    monkeypatch.setattr(main.Confirm, "ask", lambda *args, **kwargs: next(confirm_answers))
+    monkeypatch.setattr(
+        main,
+        "_ask_aras_connection",
+        lambda: ("http://aras.example", {}, ("fictional-user", "fictional-password-secret")),
+    )
+    monkeypatch.setattr(main, "_ask_paa_filters", lambda: (filters, 9, 40, 120, 1))
+    console = Console(record=True, width=140)
+    monkeypatch.setattr(main, "console", console)
+
+    main.handle_intranet_scrape(None)  # type: ignore[arg-type]
+
+    method_call = next(call for call in FakeArasClient.calls if call.get("method") == "paa_all")
+    assert method_call["max_pages"] == 1
+    assert "可能截断" in console.export_text()
 
 
 def test_cli_paa_handler_full_crawl_cancel(monkeypatch) -> None:
     FakeArasClient.calls = []
     FakeArasClient.fail = None
+    FakeECMAuthClient.calls = []
+    FakeECMAuthClient.fail = None
     filters = main.PAAReportFilters(ewo_no="EWO-1")
     monkeypatch.setattr(main, "ArasCrawlerClient", FakeArasClient)
+    monkeypatch.setattr(main, "ArasECMAuthClient", FakeECMAuthClient)
     monkeypatch.setattr(main.Prompt, "ask", lambda *args, **kwargs: "5")
     monkeypatch.setattr(main.Confirm, "ask", lambda *args, **kwargs: False)
-    monkeypatch.setattr(main, "_ask_aras_connection", lambda: ("http://aras.example", {}, None))
+    monkeypatch.setattr(
+        main,
+        "_ask_aras_connection",
+        lambda: ("http://aras.example", {}, ("fictional-user", "fictional-password-secret")),
+    )
     monkeypatch.setattr(main, "_ask_paa_filters", lambda: (filters, 9, 40, 120, 6))
     console = Console(record=True, width=140)
     monkeypatch.setattr(main, "console", console)
@@ -702,4 +1481,51 @@ def test_static_guards_for_boundaries_and_credentials() -> None:
     assert not re.search(
         r"requests\.(?:get|post|head|request)\(",
         Path("tests/test_aras_cli_web.py").read_text(encoding="utf-8-sig"),
+    )
+
+
+def test_static_aras_export_download_markers_and_department_fields() -> None:
+    html_text = Path("web/templates/dashboard.html").read_text(encoding="utf-8-sig")
+    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+
+    # 业务部门字段：PAA（分页与全量共用字段组）与 NCR 进度/明细都要有
+    assert html_text.count('name="department"') >= 2
+    assert html_text.count('placeholder="技术中心-车体工程"') >= 2
+    assert 'name="section_code"' in html_text  # NCR 高级字段保留
+    assert "BA/BE/BI/EXT/INT/SES/VE" in html_text
+
+    # 连接区文案：SSO 登录成功 ≠ SOAP 已授权
+    assert "ECM 已认证 Cookie/Authorization" in html_text
+    assert "普通 SSO 登录成功不等于 SOAP 已授权" in html_text
+
+    # 按钮 action 标识（预览 / 全量导出 / 生成并下载）
+    assert 'data-aras-action="preview"' in html_text
+    assert 'data-aras-action="export"' in html_text
+    assert 'data-aras-action="download"' in html_text
+    assert 'type="button"' in html_text
+
+    # 导出 / 下载端点在前端配置中
+    assert "/api/aras/ewo/export" in js_text
+    assert "/api/aras/paa/export" in js_text
+    assert "/api/aras/ncr/detail/download" in js_text
+
+    # NCR 进度没有可下载端点（不伪装可下载），但保留业务部门筛选
+    progress_block = js_text[js_text.index('"ncr-progress"') : js_text.index('"ncr-detail"')]
+    assert "downloadEndpoint" not in progress_block
+    assert "exportEndpoint" not in progress_block
+    assert "department" in progress_block
+
+    # blob 下载 helper 读取导出状态头并解析 Content-Disposition 文件名
+    assert "X-Export-Row-Count" in js_text
+    assert "X-Export-Truncated" in js_text
+    assert "Content-Disposition" in js_text
+    assert "URL.revokeObjectURL" in js_text
+
+    # 凭据不进 localStorage / sessionStorage（只随 POST body 发送）
+    assert "sessionStorage" not in html_text
+    assert "sessionStorage" not in js_text
+    assert not re.search(
+        r"(?:cookie|token|authorization|sessionid|csrf).{0,80}localStorage",
+        html_text + js_text,
+        re.IGNORECASE,
     )
