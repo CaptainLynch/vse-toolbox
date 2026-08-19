@@ -1,0 +1,18 @@
+<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/">
+  <SOAP-ENV:Body>
+    <Result>
+      <Item type="PAA_O" typeId="TYPE_ID_PLACEHOLDER" id="ID_PLACEHOLDER_003" page="2">
+        <_area>AREA_SAMPLE_3</_area>
+        <_base>BASE_SAMPLE_3</_base>
+        <_ewo_no>EWO000003</_ewo_no>
+        <_mtl_rq_date>2026-07-02T00:00:00</_mtl_rq_date>
+        <_submit_date>2026-06-21T10:36:05</_submit_date>
+        <_vehicles>VEHICLE_SAMPLE_3</_vehicles>
+        <id keyed_name="PAA000003" type="PAA_O">ID_PLACEHOLDER_003</id>
+        <keyed_name>PAA000003</keyed_name>
+        <state>RELEASED</state>
+        <_no>PAA000003</_no>
+      </Item>
+    </Result>
+  </SOAP-ENV:Body>
+</SOAP-ENV:Envelope>

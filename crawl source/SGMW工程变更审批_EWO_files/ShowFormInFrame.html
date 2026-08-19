@@ -1,0 +1,94 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd">
+<!-- saved from url=(0169)http://ecm.sgmw.com.cn/innovatorserver/Client/X-salt=160_12.0.0.13341-X/scripts/ShowFormInFrame.html?formId=E49ACFBC169246F79A6E62CD5497CDE6&formType=edit&item=undefined -->
+<html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		<title></title>
+		
+		<style type="text/css">
+			html, body
+			{
+				height: 100%;
+				margin: 0px;
+			}
+		</style>
+		<script type="text/javascript">
+			var aras = parent.aras || parent.parent.aras;
+			document.writeln("<base HREF=\"" + aras.getScriptsURL() + "\" />");
+		</script><!--<base href="http://ecm.sgmw.com.cn/innovatorserver/Client/X-salt=160_12.0.0.13341-X/scripts/">--><base href=".">
+
+		<script type="text/javascript" src="./QueryString.js.下载"></script>
+	</head>
+	<body>
+		<script type="text/javascript">
+			var formId = QueryString("formId").toString();
+			var formType = QueryString("formType").toString();
+			var pathToItem = QueryString("item").toString();
+			if (!pathToItem)
+			{
+				pathToItem = "parent.item"; //for legacy purposes
+			}
+			var item = eval(pathToItem);
+			var form = aras.getFormForDisplay(formId, "id").node;
+
+			function onload_handler() {
+				isEditMode = (formType == "edit");
+				var frame = document.getElementById("formFrame");
+				var wind = frame.contentWindow;
+				if (item)
+				{
+					 aras.uiShowItemInFrameEx(wind, item, formType, 0, form);
+				}
+				else
+				{
+					aras.uiShowItemInFrameEx(wind, undefined, formType, 0, form);
+				}
+			}
+			window.addEventListener("DOMContentLoaded", onload_handler);
+			
+			var isEditMode = false;
+			function setEditMode(item)
+			{
+				isEditMode = true;
+				refreshForm(item);
+			}
+
+			function setViewMode(item)
+			{
+				isEditMode = false;
+				refreshForm(item);
+			}
+
+			function refreshForm(item)
+			{
+				var formFrameWnd = document.getElementById("formFrame").contentWindow;
+				aras.uiPopulateFormWithItemEx(formFrameWnd.document.forms.MainDataForm, item, undefined, isEditMode);
+
+				if (form)
+				{
+					var bodyNd = form.selectSingleNode('Relationships/Item[@type="Body"]');
+					if (bodyNd)
+					{
+						fieldNds = bodyNd.selectNodes('Relationships/Item[@type="Field" and ' +
+							'(not(@action) or (@action!="delete" and @action!="purge"))]');
+
+						for (var i = 0; i < fieldNds.length; i++)
+						{
+							var fieldNd = fieldNds[i];
+							var fieldId = fieldNd.getAttribute('id');
+
+							var setExpHandler = formFrameWnd['expression_' + fieldId + '_setExpression'];
+							if (setExpHandler) {
+								setExpHandler(isEditMode);
+							}
+						}
+					}
+				}
+			}
+
+			function onTabSelected()
+			{
+				refreshForm(parent.item);
+			}
+		</script>
+		<iframe id="formFrame" style="width: 100%; height: 100%; display: block;" frameborder="0" src="./saved_resource(7).html"></iframe>
+	
+</body></html>

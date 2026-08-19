@@ -1,4 +1,4 @@
-﻿# VSE TOOLBOX (CLI Edition)
+# VSE TOOLBOX (CLI Edition)
 
 汽车行业项目管理自动化工具箱 — 纯命令行架构。
 
@@ -61,9 +61,15 @@ vse-toolbox/
 | 1 | 更新交付物状态 | `main.py` → SQLite |
 | 2 | 生成周报 PPT | `services/office_toolbox.py` (PowerPoint COM) |
 | 3 | 扫描飞书待办 | `services/feishu_imap.py` (IMAP) |
-| 4 | 内网数据抓取 | `services/intranet_scraper.py` (Selenium) |
+| 4 | Aras Cockpit | `services/aras_crawler.py`（EWO、PAA、NCR） |
 | 5 | 查看项目概览 | `core/db_manager.py` |
+| 6 | Excel 工具箱 | `services/excel_toolbox.py` |
+| 7 | TDC 报表爬虫 | `services/tdc_auth.py` + `services/tdc_crawler.py`（企业账号登录、查询与导出） |
 | 0 | 退出系统 | — |
+
+菜单 4 保持为 Aras Cockpit。菜单 7 提供数模设计审核流程、SOR 流程以及造型 A 面冻结发布单的独立 CLI。TDC 默认通过企业账号中心使用用户名和隐藏密码完成 OIDC 登录，浏览器 Header/Cookie 作为备用方式保留；密码、令牌和会话信息不写入配置、日志或诊断报告。
+
+Aras/EWO 使用浏览器中已登录会话的 Cookie/Authorization，不在本地持久化凭据。CLI 会识别失效会话返回的登录页并给出重新获取浏览器凭据的提示；EWO 查询后可按 `max_records` 上限分页抓取，并导出为 UTF-8 CSV（Excel 可直接打开）。使用 HTTP 地址时 CLI 会提示凭据明文传输风险。
 
 ## 多智能体协作
 
@@ -75,4 +81,3 @@ vse-toolbox/
 | Architect | 高深度推理 | 架构设计、任务拆解 | 可写文档 |
 | Worker | 结构化推理 | 代码实现、单元测试 | 可写代码 |
 | Reviewer | 高深度推理 | 静态检查、代码审查 | 只读 |
-

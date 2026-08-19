@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 services/intranet_scraper.py — 基于 Selenium 的内网数据爬虫
 
@@ -22,6 +22,15 @@ services/intranet_scraper.py — 基于 Selenium 的内网数据爬虫
 import logging
 from pathlib import Path
 from typing import Any
+import os
+import time
+import glob
+
+try:
+    import pandas as pd
+    PANDAS_AVAILABLE = True
+except ImportError:
+    PANDAS_AVAILABLE = False
 
 from rich.console import Console
 from rich.prompt import Confirm
@@ -95,6 +104,9 @@ class IntranetScraper:
         if not SELENIUM_AVAILABLE:
             console.print("[red]错误: 未安装 selenium 库，请执行 pip install selenium[/]")
             raise ImportError("selenium 未安装")
+        if not PANDAS_AVAILABLE:
+            console.print("[red]错误: 未安装 pandas 库，请执行 pip install pandas openpyxl[/]")
+            raise ImportError("pandas 未安装")
 
     def _create_driver(self) -> Any:
         """
@@ -107,6 +119,20 @@ class IntranetScraper:
             WebDriverException: WebDriver 启动失败
         """
         options = ChromeOptions()
+        
+        # 设定静默下载目录为项目 data 文件夹
+        download_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data'))
+        if not os.path.exists(download_dir):
+            os.makedirs(download_dir)
+            
+        prefs = {
+            "download.default_directory": download_dir,
+            "download.prompt_for_download": False,
+            "download.directory_upgrade": True,
+            "safebrowsing.enabled": True 
+        }
+        options.add_experimental_option("prefs", prefs)
+
         # 非无头模式 — 用户需要看到浏览器完成手动登录
         # options.add_argument("--headless")  # 如需无头模式，取消此行注释
         options.add_argument("--disable-gpu")
@@ -153,41 +179,91 @@ class IntranetScraper:
         """
         执行实际的数据抓取逻辑。
 
-        注意: 此方法中的选择器和解析逻辑需根据实际内网页面结构调整。
-
-        Returns:
-            抓取到的数据列表，每条为一个 dict
+        基于静默下载 Excel 的策略：
+        1. 穿透 iframe 定位查询/导出按钮
+        2. 点击并等待 Excel 落盘到 data 目录
+        3. 使用 Pandas 解析
         """
         scraped_items: list[dict[str, Any]] = []
+        download_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data'))
 
         try:
-            # 等待页面关键元素加载
-            WebDriverWait(self._driver, self._timeout).until(
-                EC.presence_of_element_located((By.TAG_NAME, "body"))
-            )
+            wait = WebDriverWait(self._driver, self._timeout)
+            
+            # Aras Innovator 的表单通常在 iframe 中，尝试自动切换
+            try:
+                iframes = self._driver.find_elements(By.TAG_NAME, "iframe")
+                for iframe in iframes:
+                    src = iframe.get_attribute("src") or ""
+                    if "ShowFormInFrame" in src or "itemsGrid" in src or "index.html" in src:
+                        self._driver.switch_to.frame(iframe)
+                        break
+            except Exception as e:
+                logger.debug("Iframe 切换异常: %s", e)
 
-            # ──────────────────────────────────────────────
-            # TODO: 在此添加实际的页面解析逻辑
-            # 示例:
-            #   rows = self._driver.find_elements(By.CSS_SELECTOR, "table.data tbody tr")
-            #   for row in rows:
-            #       cols = row.find_elements(By.TAG_NAME, "td")
-            #       scraped_items.append({
-            #           "name": cols[0].text.strip(),
-            #           "owner": cols[1].text.strip(),
-            #           "status": cols[2].text.strip(),
-            #       })
-            # ──────────────────────────────────────────────
+            # 定位“查询审批进度”按钮，支持常见的 button 标签或带有文本的 div/span
+            query_btn = wait.until(EC.element_to_be_clickable(
+                (By.XPATH, "//*[contains(text(), '审批进度')] | //input[contains(@value, '审批进度')]")
+            ))
+            
+            # 记录下载前文件夹内的 .xlsx 文件集合
+            files_before = set(glob.glob(os.path.join(download_dir, "*.xlsx")))
+            
+            console.print("[dim]正在触发报表生成并等待下载 (最多60秒)...[/]")
+            query_btn.click()
 
-            console.print(f"[green]✓ 抓取到 {len(scraped_items)} 条数据[/]")
+            # 轮询等待新 Excel 出现
+            downloaded_file = None
+            for _ in range(60):
+                time.sleep(1)
+                files_after = set(glob.glob(os.path.join(download_dir, "*.xlsx")))
+                new_files = files_after - files_before
+                
+                if new_files:
+                    potential_file = new_files.pop()
+                    if not potential_file.endswith('.crdownload'):
+                        downloaded_file = potential_file
+                        break
+
+            if not downloaded_file:
+                raise TimeoutException("等待 Excel 下载超时，请检查网络或按钮是否正确点击。")
+
+            console.print(f"[green]✓ 报表已成功下载至: {downloaded_file}[/]")
+            
+            # 切回主页面
+            self._driver.switch_to.default_content()
+
+            # 解析下载好的 Excel 文件，第一行为副标题，第二行(index=1)为真实表头
+            df = pd.read_excel(downloaded_file, header=1)
+            
+            def map_status(s: str) -> str:
+                s = str(s).strip()
+                if "关闭" in s or "完成" in s:
+                    return "done"
+                elif "终止" in s or "作废" in s:
+                    return "blocked"
+                elif not s or s == "nan":
+                    return "pending"
+                return "in_progress"
+            
+            # 遍历数据行转换为字典 (根据刚刚读取到的真实表头进行映射)
+            for index, row in df.iterrows():
+                scraped_items.append({
+                    "name": str(row.get('NCR编号', f'Unknown_{index}')), 
+                    "project_id": str(row.get('项目', '1')),
+                    "owner": str(row.get('当前审批人', '未知')),
+                    "status": map_status(row.get('状态', ''))
+                })
+
+            console.print(f"[green]✓ 从 Excel 中成功提取了 {len(scraped_items)} 条数据[/]")
 
         except TimeoutException:
-            console.print("[red]错误: 页面加载超时，请检查网络连接[/]")
-            logger.error("页面加载超时: %s", self._intranet_url)
+            console.print("[red]错误: 页面加载或下载超时，请检查网络连接[/]")
+            logger.exception("抓取/下载超时: %s", self._intranet_url)
             raise
-        except NoSuchElementException as e:
-            console.print(f"[red]错误: 页面元素未找到 — {e}[/]")
-            logger.error("页面元素未找到: %s", e)
+        except Exception as e:
+            console.print(f"[red]错误: 页面操作或解析失败 — {e}[/]")
+            logger.exception("抓取操作异常")
             raise
 
         return scraped_items
@@ -205,14 +281,25 @@ class IntranetScraper:
 
         try:
             with self._db.get_connection() as conn:
+                project_map = {}
                 for item in items:
+                    proj_name = item.get("project_id", "Unknown_Project")
+                    if proj_name not in project_map:
+                        cursor = conn.execute("SELECT id FROM projects WHERE name = ?", (proj_name,))
+                        res = cursor.fetchone()
+                        if res:
+                            project_map[proj_name] = res[0]
+                        else:
+                            cursor = conn.execute("INSERT INTO projects (name, manager) VALUES (?, ?)", (proj_name, "Crawler"))
+                            project_map[proj_name] = cursor.lastrowid
+
                     conn.execute(
                         """
                         INSERT INTO deliverables (project_id, name, owner, status)
                         VALUES (?, ?, ?, ?)
                         """,
                         (
-                            item.get("project_id", 1),
+                            project_map[proj_name],
                             item.get("name", "未命名"),
                             item.get("owner", ""),
                             item.get("status", "pending"),

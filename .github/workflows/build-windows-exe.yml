@@ -1,0 +1,163 @@
+name: Build Windows production-validation EXE
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - "codex/**"
+    paths:
+      - ".github/workflows/build-windows-exe.yml"
+      - "core/**"
+      - "services/**"
+      - "web/**"
+      - "main.py"
+      - "requirements.txt"
+      - "setup.cfg"
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-exe:
+    name: Build VSE Toolbox EXE
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install runtime and build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install "pyinstaller>=6.10,<7"
+
+      - name: Verify packaged dependency surface
+        shell: pwsh
+        run: |
+          @'
+          import importlib
+
+          required = [
+              "rich",
+              "win32com.client",
+              "pythoncom",
+              "pywintypes",
+              "xlwings",
+              "imapclient",
+              "pytz",
+              "selenium",
+              "requests",
+              "flask",
+          ]
+
+          missing = []
+          for name in required:
+              try:
+                  importlib.import_module(name)
+              except Exception as exc:
+                  missing.append(f"{name}: {exc!r}")
+
+          if missing:
+              raise SystemExit("Missing runtime dependencies:\n" + "\n".join(missing))
+
+          print("Runtime dependency smoke passed")
+          '@ | python -
+
+      - name: Run production-validation tests
+        shell: pwsh
+        run: |
+          python -m pytest `
+            tests/test_excel_toolbox.py `
+            tests/test_aras_crawler.py `
+            tests/test_aras_paa_crawler.py `
+            tests/test_aras_cli_web.py `
+            -q `
+            --basetemp "$env:RUNNER_TEMP\pytest" `
+            -p no:cacheprovider
+          python -m py_compile main.py web/app.py services/aras_crawler.py services/excel_toolbox.py services/office_toolbox.py core/config.py core/db_manager.py core/runtime_paths.py
+          node --check web/static/app.js
+
+      - name: Build single-file EXE with PyInstaller
+        shell: pwsh
+        run: |
+          pyinstaller `
+            --noconfirm `
+            --clean `
+            --onefile `
+            --console `
+            --name VSE-Toolbox `
+            --collect-submodules rich `
+            --collect-submodules win32com `
+            --collect-submodules xlwings `
+            --collect-submodules selenium `
+            --collect-submodules flask `
+            --hidden-import pythoncom `
+            --hidden-import pywintypes `
+            --hidden-import win32timezone `
+            --hidden-import win32com.client `
+            --hidden-import win32com.client.gencache `
+            --hidden-import requests `
+            --hidden-import imapclient `
+            --hidden-import pytz `
+            --hidden-import flask `
+            --add-data "web/templates;web/templates" `
+            --add-data "web/static;web/static" `
+            main.py
+
+      - name: Write production-validation summary
+        shell: pwsh
+        run: |
+          @"
+          ## VSE Toolbox production-validation EXE
+
+          Entry point:
+            VSE-Toolbox.exe
+
+          Runtime platform:
+            Windows workstation with Microsoft Excel installed.
+
+          DLP / Office output requirements:
+            - Excel output is generated through xlwings and the native Excel process.
+            - Excel files are saved with Excel native SaveAs(FileFormat=51).
+            - Do not replace this package with pandas/openpyxl file-writer output for production validation.
+            - Keep generated files under data/output or another explicit user-selected Office-managed path.
+
+          Credential handling:
+            - Aras Cookie / Authorization headers are runtime inputs only.
+            - This package does not persist Cookie, token, api_key, sessionid, csrf, or Authorization values.
+
+          Runtime directories:
+            - The single-file EXE creates and uses data/output, data/.backup, and data/templates beside the EXE.
+            - Keep the EXE in the target validation folder before running it.
+
+          Build metadata:
+            Commit: $env:GITHUB_SHA
+            Branch/ref: $env:GITHUB_REF_NAME
+            Run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID
+          "@ | Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding UTF8
+
+      - name: Smoke generated EXE
+        shell: pwsh
+        run: |
+          if (!(Test-Path "dist\VSE-Toolbox.exe")) {
+            throw "VSE-Toolbox.exe was not generated"
+          }
+          Get-Item "dist\VSE-Toolbox.exe" | Select-Object Name, Length
+
+      - name: Upload EXE artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VSE-Toolbox-windows-production-validation-${{ github.sha }}
+          path: dist/VSE-Toolbox.exe
+          if-no-files-found: error
+          retention-days: 30

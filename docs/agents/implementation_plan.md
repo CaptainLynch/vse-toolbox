@@ -1,454 +1,297 @@
-﻿# 🗺️ implementation_plan.md — 架构实施计划
+# VSE Toolbox Interface Refactor Implementation Plan
 
-> **用途**: Architect 输出的顶层设计文档，Worker 严格按此实现。
-> **维护者**: 仅 Architect 可修改。Worker 只读参照。
-> **关联**: 每个实施项对应 `task.md` 中的具体任务编号。
+日期: 2026-06-27  
+角色: Architect  
+适用范围: 后续 Worker 的 Web 前端与 CLI rich 交互重构  
+本轮 Architect 修改范围: 仅 `docs/agents/implementation_plan.md` 与 `docs/agents/task.md`
 
----
+## 目标
 
-## 1. 整体架构图
+把当前的 VSE Toolbox 从“功能可跑的 CLI/Web 适配层”重构为一套一致、克制、可维护的双界面体验:
 
-> **Sprint 2 起：单一 CLI → 双轨界面（Dual-Interface）**。
-> CLI 与 WEB 是两层平行的「界面适配层」，**共享同一 service 层**。
-> 解耦边界落在 service 层：`services/*`、`core/*` 不依赖任何界面库。
+- Web 对标 Claude 桌面端官方美学（Warm Cream + Coral Primary + Serif Display Heading）: cream canvas、coral primary、dark product surface、serif display heading、humanist sans body、低阴影与 hairline border，但首屏必须是可用业务界面，不做营销页。
+- CLI 对标 Claude Code CLI 的终端体验: rich 作为唯一渲染基座，使用莫兰迪低饱和色系、动态 Spinner、优雅 Panel、层级清晰的交互流。
+- CLI 与 Web 仍然只是 Interface Adapter。`services/*` 与 `core/*` 不得反向依赖 `rich`、`flask`、DOM 或任何界面库。
+- 后续 Worker 必须只做 scoped edits。当前工作树已有用户或历史改动，尤其 `main.py` 已脏，严禁 `git reset`、`git checkout --`、回滚无关文件或清理无关 diff。
 
+## 当前系统观察
+
+现有结构:
+
+- CLI 主入口在 `main.py`，包含 banner/menu、Excel 子菜单、Aras 二级菜单、EWO/PAA/NCR 结果渲染、错误脱敏。
+- Flask API 在 `web/app.py`，包含 `GET /api/overview` 与 Aras EWO/NCR 三条 POST API。
+- 前端是单页 dashboard: `web/templates/dashboard.html`、`web/static/style.css`、`web/static/app.js`。
+- Aras 核心能力在 `services/aras_crawler.py`，已经有 `EWOReportFilters`、`PAAReportFilters`、`NCRApprovalFilters`、`query_paa_report()`、`crawl_paa_report_all()` 等 DTO 与 service 方法。
+
+确认到的结构性风险:
+
+- `main.py` 中 `PROJECT_ROOT` 初始化有两处语义: 先用 `Path(__file__).resolve().parent` 做 `sys.path` bootstrap，后又用 `app_root()` 覆盖。
+- `main.py` 中 `handle_intranet_scrape` 有两处定义。前一处是旧的 P1 暂缓 stub，后一处是当前真正的 Aras CLI handler。Python 运行时以后者覆盖前者，但源码阅读和后续修改都容易误伤。
+- `main.py::_render_paa_result` 通过 `Exception(str(value))` 包一层再调用 `_safe_error_message`，语义别扭，应该改为直接的 display-value 脱敏函数。
+- `web/app.py::create_app()` 里 `DatabaseManager()` 连续实例化两次。
+- Web API 尚未暴露 PAA 查询和 PAA 全量抓取，但 CLI 已支持 PAA 两种模式，导致双轨界面能力不对称。
+- `app.js::renderRows` 依赖对象 key 出现顺序且只截取前 12 列。不同响应、不同 Python dict 构造路径会让列顺序漂移，不适合业务表格。
+- Web 与 CLI 各自维护脱敏正则，长期会漂移。
+
+## 边界原则
+
+1. 当前 Architect 不改生产代码，只写文档。
+2. Worker 可以改生产代码，但只允许改任务单列出的文件；任何额外文件必须先说明必要性。
+3. Worker 开始前必须记录 `git status --short`，不得回滚未由自己创建的改动。
+4. 所有真实 HTTP、内网访问、Cookie、Authorization、token、session、csrf 都不得写入源码、fixture、文档或日志。
+5. Web 零构建、零 CDN。Display heading、Body/UI、Code/table 字体均通过本机字体优先栈启用，不从 Google Fonts 或外网拉取。
+6. 界面样式可以高级，但业务功能必须优先: overview 能加载，Aras EWO/PAA/NCR 能发起请求、显示结果、显示错误。
+
+## 推导过程
+
+### 1. Web 架构方案对比
+
+| 方案 | 描述 | 优点 | 缺点 | 裁定 |
+|---|---|---|---|---|
+| A. 只换 CSS | 保留现有 HTML/JS 结构，只把颜色改深、卡片改漂亮 | 风险最低，改动少 | 不能解决 PAA 缺失、列顺序漂移、状态管理混乱；视觉只是涂层 | 推翻 |
+| B. 引入 React/Vue/Vite | 用现代 SPA 重写 dashboard | 组件化最好，状态管理清晰 | 当前项目是内网工具；引入 Node/build/CDN/包管理会显著增加部署和审计成本 | 推翻 |
+| C. Flask 模板 + 原生模块化 JS + 设计 token | 保持零构建，以 HTML/CSS/JS 重构为 app shell 与 state modules | 部署成本低，能解决状态、布局、API parity；符合当前代码形态 | 组件复用要靠自律，JS 文件需要清晰分区 | 采纳 |
+| D. 纯服务端渲染 | 所有结果由 Flask render HTML fragment | 安全边界简单 | Aras 查询是异步长请求，用户体验差；表格交互、loading、queued 状态弱 | 推翻 |
+| E. 做成静态报告页 | 把 overview 和 Aras 结果预生成 | 可离线展示 | 不能满足实时查询和 Cookie/header 注入 | 推翻 |
+
+最终选择 C。原因是本项目的主要约束不是“构建复杂 UI”，而是“在受限内网环境里稳定交付可用工作台”。零构建能最大限度降低部署摩擦，同时通过清晰的 JS 配置对象和 CSS token 达到足够的工程化。
+
+### 2. Web 视觉方向对比
+
+| 方案 | 视觉方向 | 业务适配 | 问题 | 裁定 |
+|---|---|---|---|---|
+| A. 传统大屏蓝色科技风 | 深蓝背景、发光大数字、装饰性网格 | 第一眼像大屏 | 容易一色到底，表单密度差，像展示页而非工具 | 推翻 |
+| B. Aras 原站表单风 | 接近企业系统默认表单 | 熟悉 | 观感老旧，无法体现重构价值；大量输入会显得拥挤 | 推翻 |
+| C. Claude 桌面端官方美学 | Warm Cream 画布、Coral Primary、Serif Display Heading、humanist sans body、细边框、低阴影，结果区可使用 dark product surface | 很适合“工具箱 + 查询工作台”，既安静又有产品识别度 | 需要认真控制 coral 使用比例和层级，避免变成营销页或卡片套卡片 | 采纳 |
+| D. 终端复古风 | 等宽字体、绿色字符、命令行感 | 极客感强 | 对表单和表格阅读不友好，管理类数据会疲劳 | 推翻 |
+
+最终 Web 应对标 Claude 桌面端官方美学（Warm Cream + Coral Primary + Serif Display Heading），不是“深色工程工作台”，也不是酷炫大屏。整体以 warm cream 作为主画布，coral 只承担主操作和 focus 强调，serif display heading 负责品牌气质；结果区可以使用 dark product surface，但业务表单和表格密度仍要服务长时间操作。
+
+### 2.1 阶段二替换审阅结论
+
+已审阅 `FRONTEND_REDESIGN_EXECUTION_PLAN.md` 的“替换条件”与“替换步骤”。替换条件可以作为阶段二准入门槛：`/redesign` 功能对比、API 载荷对比、敏感信息脱敏、移动端布局、零外网依赖都必须先通过。替换步骤需要在阶段二收紧：本阶段不再保留短周期 `/redesign` 对照入口，而是用新版文件接管 `/`，并删除临时 `/redesign` 路由，避免长期双入口和双源码漂移。
+
+覆盖前必须先做契约核对：确认新版仍保留 Overview/Aras 导航、五个 Aras 模式、全部 Aras 表单字段 `name`、现有 API endpoint/method/top-level key/`filters` key、number 转换、`project_names` 数组拆分、queued submit 语义，以及结果/错误展示中的敏感信息脱敏。覆盖只允许替换界面文件，不允许借机改动 `services/aras_crawler.py` 业务契约或写入真实 Cookie、Authorization、token、session、csrf。
+
+### 3. CLI 架构方案对比
+
+| 方案 | 描述 | 优点 | 缺点 | 裁定 |
+|---|---|---|---|---|
+| A. 只改颜色和 banner | 在 `main.py` 原地美化 | 改动小 | 无法解决重复 handler、渲染重复、PAA 渲染异常写法 | 推翻 |
+| B. 全量 TUI | 引入 Textual/prompt_toolkit 做全屏终端应用 | 体验上限高 | 新依赖、学习成本、测试成本过高；当前是菜单式 CLI，不需要全屏 | 推翻 |
+| C. 保持 `main.py` 入口，抽出小型 rich helper | 以 rich Theme、Panel、Table、Status 重构关键交互；仍由 `main.py` 路由 | 风险可控，贴近现状，能显著提升体验 | `main.py` 仍较大，需后续再拆文件 | 采纳 |
+| D. 改成 Typer/Click 子命令 | 变成命令式 CLI | 自动 help、脚本友好 | 会破坏当前交互式菜单用户习惯，超出界面重构目标 | 推翻 |
+
+最终选择 C。先把 rich 的层级、颜色、Spinner、Panel 和结果表做好，再考虑后续把 CLI renderer 拆为独立模块。
+
+### 4. CLI/Web 共享契约方案对比
+
+| 方案 | 描述 | 优点 | 缺点 | 裁定 |
+|---|---|---|---|---|
+| A. 继续 CLI/Web 各自维护字段列表和脱敏 | 最少改动 | 继续漂移；安全逻辑不一致 | 推翻 |
+| B. 把字段配置放进 `services/aras_crawler.py` | 离 DTO 近 | service 会开始承担展示职责，边界变脏 | 推翻 |
+| C. 新建界面无关的 `core/redaction.py`，字段展示在各 adapter 本地配置 | 安全逻辑统一，展示逻辑留在 adapter | 字段配置仍有少量重复 | 采纳 |
+| D. 新建完整 presentation schema 包 | 最干净 | 当前规模偏小，会扩大改动面 | 暂缓 |
+
+最终选择 C。先把高风险的脱敏统一；字段列顺序分别在 CLI renderer 和 `app.js` 中显式声明，保持简单、可读、可测试。
+
+## 定稿架构
+
+```mermaid
+flowchart TD
+    Browser["Browser dashboard"] --> HTML["dashboard.html"]
+    HTML --> JS["web/static/app.js"]
+    JS --> Flask["web/app.py Flask routes"]
+    CLI["main.py rich CLI"] --> ArasService["services/aras_crawler.py"]
+    Flask --> ArasService
+    CLI --> DB["core/db_manager.py"]
+    Flask --> DB
+    CLI --> Redact["core/redaction.py"]
+    Flask --> Redact
+    ArasService --> Redact
 ```
-        界面适配层 (Interface Adapters)
-┌────────────────────────┐      ┌────────────────────────┐
-│   main.py  (CLI 入口)   │      │  web/app.py (WEB 入口)  │
-│  handle_* + rich 渲染   │      │  Flask 路由 + jsonify   │
-│  · Excel 工具箱 (P0)    │      │  · 项目可视化大屏 (P2)  │
-│  · 内网爬虫 (P1, 置灰)  │      │  GET / , GET /api/...   │
-└───────────┬────────────┘      └───────────┬────────────┘
-            │  调用（仅传参 / 收数据）         │
-            └───────────────┬─────────────────┘
-                            ▼
-              共享 service 层（界面无关 · 不 import rich/flask）
-   ┌───────────────┬───────────────┬───────────────┬──────────────┐
-   ▼               ▼               ▼               ▼              ▼
-┌──────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────┐ ┌──────────────┐
-│ Excel    │ │ Office       │ │ Intranet     │ │ Feishu   │ │ vertical_    │
-│ Toolbox  │ │ Toolbox      │ │ Scraper      │ │ ImapPars │ │ forms (占位) │
-│ (P0·COM) │ │ (COM)        │ │ (Selenium)   │ │ (IMAP)   │ │              │
-└────┬─────┘ └──────┬───────┘ └──────┬───────┘ └────┬─────┘ └──────────────┘
-     │              │                │              │
-     └──────────────┴───────┬────────┴──────────────┘
-                            ▼
-                   ┌─────────────────┐      ┌─────────────────┐
-                   │  DatabaseManager │◀────│  core/config.py  │
-                   │  (SQLite WAL)   │      │ (集中常量·无密码)│
-                   └─────────────────┘      └─────────────────┘
+
+### Web 信息架构
+
+首屏必须是实际工作台:
+
+- Top bar: 产品名 `VSE Toolbox`、当前模块状态、轻量系统状态。
+- Module nav: `Overview`、`Aras Cockpit` 可用；Excel 工具箱标记为 `CLI only`；周报 PPT、飞书助手保持 disabled。
+- Overview panel: 项目、交付物、飞书待办三组指标卡；保留 `projects-body`、`deliverables-body`、`feishu-body` ID。
+- Aras panel: 左侧连接与安全输入，右侧查询类型与结果。
+- Aras mode: EWO、PAA 分页、PAA 全量、NCR 进度、NCR 明细。PAA 全量必须有“范围/熔断参数”并在 UI 文案中提示可能较慢。
+- Result panel: 元数据条 + 表格/摘要。EWO/PAA 使用稳定列顺序，未知列进入追加列尾但排序稳定。
+
+### Web 视觉 token
+
+CSS 以变量驱动，禁止一色到底:
+
+```css
+:root {
+  --font-display: "Cormorant Garamond", "EB Garamond", Georgia, serif;
+  --font-sans: Inter, "SF Pro Text", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  --canvas: #faf9f5;
+  --surface-soft: #f5f0e8;
+  --surface-card: #efe9de;
+  --hairline: #e6dfd8;
+  --ink: #141413;
+  --body: #3d3d3a;
+  --muted: #6c6a64;
+  --muted-soft: #8e8b82;
+  --primary: #cc785c;
+  --primary-active: #a9583e;
+  --surface-dark: #181715;
+  --surface-dark-elevated: #252320;
+  --on-dark: #faf9f5;
+  --on-dark-soft: #a09d96;
+  --success: #5db872;
+  --warning: #d4a017;
+  --error: #c64545;
+}
 ```
 
-> 关键约束：**箭头单向向下**。service 接收参数 → 返回数据 / `Path` → 抛领域异常；
-> 绝不反向 import 界面层，也不在 service 内做 rich 打印或 HTTP 响应。
+交互要求:
 
-## 2. 关键设计决策
+- 所有输入、按钮、tab、表格行有 120-180ms transition。
+- Loading 使用 skeleton 或 subtle shimmer；同时尊重 `prefers-reduced-motion: reduce`。
+- Button disabled/running 状态不能改变布局尺寸。
+- 主按钮、active tab、focus ring 使用 coral primary；hover/active 使用 darker coral。
+- Display heading 使用 serif fallback，字重以 400 或 500 为主；Body/UI 使用 humanist/system sans；Code/table/result 使用 mono fallback。
+- Result table 使用 sticky header、横向滚动、单元格最大宽度与 `overflow-wrap:anywhere`。
+- 移动端改成单列，表单不横向溢出。
+- 不使用纯白主画布、蓝紫主品牌色、装饰性 orb、bokeh 或纯渐变 hero；这不是 landing page。
+- Dark product surface 只用于结果区、代码/表格承载或高对比工作区，不作为整站深色外壳。
 
-### 2.1 Office I/O: win32com COM 自动化
+### Web API 契约
 
-**决策**: 放弃 pandas/openpyxl/python-pptx，改用 `win32com.client` 驱动本地 Office 进程。
+保留:
 
-**理由**: 公司 DLP 透明加密对 Python 文件库直接写入的二进制流进行加密，导致文件打开乱码。通过 COM 调用 Office 原生进程写入，走 Office 的正常保存路径，不受 DLP 干扰。
+- `GET /api/overview`
+- `POST /api/aras/ewo/query`
+- `POST /api/aras/ncr/progress`
+- `POST /api/aras/ncr/detail`
 
-**COM 生命周期约束**:
-- `Excel.Application` / `PowerPoint.Application` 必须在 `try...finally` 中操作
-- `finally` 块必须包含 `Workbook.Close()` / `Presentation.Close()` + `Application.Quit()`
-- 释放 COM 对象引用（`del`）以避免引用计数残留
+新增:
 
-### 2.2 数据库: SQLite WAL 模式
+- `POST /api/aras/paa/query`
+- `POST /api/aras/paa/crawl-all`
 
-**决策**: 启用 `PRAGMA journal_mode=WAL`，所有连接统一通过 `DatabaseManager.get_connection()` 上下文管理器。
+成功响应:
 
-**理由**: WAL 模式支持并发读写，适合 CLI 场景下爬虫写入 + 用户查询的并行需求。
+```json
+{"ok": true, "data": {"rows": [], "page": 1, "item_ids": [], "count": 0}}
+```
 
-### 2.3 IMAP 邮件: imapclient 替代标准库
+错误响应:
 
-**决策**: 使用 `imapclient` 替代 `imaplib`。
+```json
+{"ok": false, "error": {"type": "ArasCrawlerError", "message": "sanitized message"}}
+```
 
-**理由**: imapclient 接口更友好，支持 IDLE 推送、更好的编码处理，减少邮件解析中的编码异常。
+状态码:
 
-### 2.4 多智能体协作: 角色权限隔离
+- `400`: JSON body 不是 object，或 `base_url` 缺失，或数值参数非法。
+- `502`: `ArasCrawlerError` 或上游 HTTP/AML 错误。
+- `500`: 未预期异常，message 必须脱敏并截断。
 
-| 角色 | 模型 | 可修改文件 | 不可修改 |
-|---|---|---|---|
-| Explorer | 低深度推理 | 无（只读） | 所有 |
-| Architect | 高深度推理 | project_state.md, task.md, implementation_plan.md | .py 源码 |
-| Worker | 结构化推理 | .py 源码, tests/ | project_state.md 之外的文档 |
-| Reviewer | 高深度推理 | review_feedback.md | 所有（只读审查） |
+### CLI 体验定稿
 
-### 2.5 双轨界面（Dual-Interface）与解耦边界
-
-#### 推导过程（≥2 备选 + ≥1 次推翻）
-
-- **备选 A（被推翻）**: 保持纯 CLI，把可视化也塞进 rich 终端表格。
-  优点：零新依赖、单一入口。缺点：项目「数据大屏」诉求本质是**多人浏览的可视化看板**，
-  rich 终端无法满足非终端用户（管理层）远程查看，且大屏交互（卡片、刷新）在 TUI 中表达力极弱。**推翻**。
-- **备选 B（被推翻）**: CLI 与 WEB 各自独立实现一套数据访问逻辑。
-  优点：上手快。缺点：同一份概览查询会在 `main.py` 和 Flask 路由里**双写**，
-  P0 Excel 若将来上 WEB 还要再抄一遍，违反 DRY，且两套逻辑必然漂移。**推翻**。
-- **备选 C（采纳）**: 双轨界面 + 共享 service 层，**解耦边界画在 service 层**。
-  CLI（`main.py` 的 `handle_*`）与 WEB（`web/app.py` 路由）都是**薄适配层**，
-  调用同一组 `services/*` / `core/*` 方法；service 只认参数与返回值，不认界面。
-
-#### 最终方案
-
-- **解耦铁律**: `services/*`、`core/*` **禁止** `import rich` / `import flask` / 任何界面库；
-  方法只接收原始参数（`Path` / `list` / `str` …），返回**数据结构 / `Path`**，
-  失败时抛**领域异常**（`PermissionError` / `FileNotFoundError` / 自定义），由适配层翻译为界面反馈。
-- **CLI 适配层** = `main.py`：负责 rich 渲染、`Prompt` 交互、异常分类提示。
-- **WEB 适配层** = `web/app.py`：负责 Flask 路由、`jsonify` 序列化、HTTP 状态码。
-- **本轮界面落地范围**:
-  - **P0 Excel 工具箱 仅 CLI 落地**（合并/比对/回滚全功能）。
-  - **WEB 仅搭可运行的 P2 Demo 骨架**（项目可视化大屏）+ 其余模块导航**置灰占位**。
-- **校验手段**: Reviewer 对 `services/`、`core/` grep `rich` / `flask`，命中即判不合格。
-
-### 2.6 WEB 技术栈：仅引入 Flask
-
-#### 推导过程（≥2 备选 + ≥1 次推翻）
-
-- **备选 A（被推翻）**: FastAPI + 前端框架（Vue/React）。
-  优点：异步、自带 OpenAPI。缺点：本项目是**内网单机自用工具**，QPS 极低、无异步必要；
-  引入构建链（node/打包）与额外重依赖，违背「轻量 CLI 工具」定位，也加重 DLP 环境部署负担。**推翻**。
-- **备选 B（被推翻）**: Django。
-  优点：全家桶。缺点：ORM/Admin/中间件对一个只读概览大屏严重过重。**推翻**。
-- **备选 C（采纳）**: **仅引入 Flask**，动态读 SQLite 返回 JSON，前端用原生 fetch + 极简 HTML/CSS/JS。
-
-#### 最终方案
-
-- **决策**: `requirements.txt` **仅新增 `flask`**（不引入任何前端框架 / ORM / 异步栈）。
-- **理由**: 内网自用、低并发、只读概览；Flask 足够轻、与现有 `pathlib`/`sqlite3` 风格一致；
-  前端零构建（静态文件直出），DLP 环境部署成本最低。
-- **数据通路**: 浏览器 `fetch('/api/overview')` → Flask 路由 → 复用 `DatabaseManager` 概览查询 → `jsonify`。
-- **边界**: Flask 仅存在于 `web/app.py`；service 层对 Flask 无感知。
-
-### 2.7 回滚机制：磁盘临时 `.bak` 备份
-
-#### 推导过程（≥2 备选 + ≥1 次推翻）
-
-- **备选 A（被推翻）**: 数据库事务式回滚（把 Excel 内容也纳入 DB 快照）。
-  缺点：Excel 是二进制文件，DLP 加密下无法可靠序列化进 DB；且 COM 写文件不在 SQLite 事务边界内。**推翻**。
-- **备选 B（被推翻）**: 内存缓存原文件字节，失败时写回。
-  缺点：大文件占内存；进程崩溃则缓存丢失，无落盘恢复点。**推翻**。
-- **备选 C（采纳）**: **改写前 `shutil.copy2` 落盘备份到 `data/.backup/`，失败时复制回原位**。
-
-#### 最终方案
-
-- **决策**: 任何**改写已存在文件**的操作（merge_overlay 覆盖 target、merge_append/diff 改写已存在的 output）
-  在 COM 操作前调用 `_backup(target)`；COM 异常时在 `except` 中 `_rollback(target, backup)` 并**上抛**异常。
-- **备份命名**: `data/.backup/<name>.<YYYYMMDD_HHMMSS>.bak`（带时间戳，避免互相覆盖）。
-- **COM 生命周期**: `try` 内执行 COM；`except` 内 `_rollback` 后 `raise`；`finally` 内 `Close + Quit + del` 释放进程。
-- **与 §2.1 一致**: 复用 office_toolbox 的 `Visible=False` / `DisplayAlerts=False` / `SaveAs(FileFormat=51)` / try-finally 释放模式。
-
-### 2.8 莫兰迪色高亮与防撞色
-
-#### 推导过程（≥2 备选 + ≥1 次推翻）
-
-- **备选 A（被推翻）**: 固定单色高亮所有变更。
-  缺点：多来源合并时无法区分「这格来自哪个文件」，丢失溯源信息。**推翻**。
-- **备选 B（被推翻）**: 随机生成 RGB。
-  缺点：可能与单元格原有底色或彼此撞色，且观感杂乱、不可复现。**推翻**。
-- **备选 C（采纳）**: **预置 6–8 个低饱和莫兰迪色板循环分配**，写入前**读原底色防撞色**。
-
-#### 最终方案
-
-- **色板**: 模块级常量 `MORANDI_PALETTE`（6–8 个低饱和 BGR 整数，COM `Interior.Color` 用 **BGR 十进制**）。
-- **分配**: 按**来源标签**循环取色，记入 `color_map: dict[str, int]`（来源标签 → 色值），**一次操作内全程贯穿**。
-- **防撞色**: `_highlight_cell` 写入前先读目标单元格原 `Interior.Color`；若与待写色撞色，**顺延取色板下一色**。
-- **图例**: 操作结束前把 `color_map` 交给 `_write_legend`，在独立 Sheet「图例说明」逐行输出「来源 ↔ 色块」。
-
-### 2.9 F1 飞书闭环、凭据安全与 IMAPClient 迁移
-
-#### 推导过程（≥2 备选 + ≥1 次推翻）
-
-- **备选 A（被推翻）**: 在 CLI handler 内直接读取 `feishu_tasks` 并写入 `deliverables`。
-  优点：改动快。缺点：同步规则会被锁死在界面层，WEB 或定时任务将来无法复用；同时违反
-  「界面适配层只做交互」的边界。**推翻**。
-- **备选 B（被推翻）**: 新建独立同步表记录 `feishu_task_id → deliverable_id`。
-  优点：可追踪映射。缺点：当前数据库已有 `feishu_tasks.synced` 状态位，F1 目标只是修复
-  「写后无读」断链；新增表会扩大迁移面，且没有明确的反向追踪需求。**推翻**。
-- **备选 C（采纳）**: 在 `FeishuImapParser` service 内新增一个事务级同步方法，
-  把 `synced=0` 的飞书待办落入 `deliverables`，再把同一批任务标记为 `synced=1`。
-
-#### 最终方案
-
-- **同步桥归属**: `services/feishu_imap.py::FeishuImapParser` 新增
-  `sync_unsynced_tasks_to_deliverables(project_id: int = 1) -> int`。该方法属于 service 层，
-  不 import rich/flask，不做界面输出；只返回本次同步条数，异常上抛给适配层。
-- **事务边界**: 一次同步必须在单个 `DatabaseManager.get_connection()` 事务内完成：
-  先查询 `feishu_tasks WHERE synced=0`，逐条插入 `deliverables`，再仅标记这些已插入的
-  `feishu_tasks.id` 为 `synced=1`。任一插入失败时整体回滚，避免「已标记但未落地」。
-- **字段映射**:
-  - `deliverables.project_id = project_id`，默认 `1`，依赖 Sprint 2 的「未归类」兜底项目。
-  - `deliverables.name = feishu_tasks.title`；标题为空时使用 `"未命名飞书待办"`。
-  - `deliverables.owner = feishu_tasks.assignee`；`deliverables.due_date = feishu_tasks.deadline`。
-  - `deliverables.status = "pending"`。
-  - `deliverables.remark` 写入轻量来源说明（如 `飞书待办同步: <source_email_id>`），避免新增列。
-- **接入点**: `scan_and_parse()` 在 `_save_tasks(tasks)` 成功后调用同步桥，确保本次新增任务与历史
-  `synced=0` 任务都会被补同步；`scan_and_parse()` 的公开返回值仍保持「新入库 feishu_tasks 数量」，
-  避免破坏既有调用方语义。
-- **凭据安全**:
-  - `core/config.py` 继续只放路径、端口、默认 host 等非敏感常量，严禁密码、token、授权码。
-  - `FeishuImapParser._get_credentials()` 的密码输入必须使用 `getpass.getpass()`；用户名可继续用
-    `Prompt.ask()`。
-  - `IntranetScraper` 当前是浏览器内手动登录，不在终端接收密码；Worker 不得新增明文密码 Prompt。
-    若后续加入终端式账号密码输入，密码字段必须封装为 `getpass.getpass()`。
-- **IMAPClient 迁移**: `services/feishu_imap.py` 必须移除 `imaplib` 依赖，改用 requirements 已声明的
-  `imapclient.IMAPClient`。连接用 SSL，`select_folder()` 选择收件箱，`search(["UNSEEN"])` 获取未读邮件，
-  `fetch(ids, ["RFC822"])` 取得原始邮件字节；解析逻辑继续复用既有 `email` 标准库函数。
-- **异常归一**: IMAPClient 登录/协议/网络异常在 `_connect()` 内转换为 `ConnectionError`；
-  `scan_and_parse()` 保持现有容错策略：连接失败返回 0，单封邮件解析失败记录后继续处理下一封。
-- **校验手段**:
-  - Reviewer grep `services/feishu_imap.py` 不得出现 `import imaplib` / `imaplib.`。
-  - Reviewer grep `core/config.py` 不得出现 password/token/secret 等敏感常量。
-  - Reviewer grep `services/feishu_imap.py` / `services/intranet_scraper.py` 不得出现密码字段的
-    `Prompt.ask(...)` 明文交互。
-
-## 3. 模块接口定义
-
-### 3.1 DatabaseManager (core/db_manager.py)
+rich 主题:
 
 ```python
-class DatabaseManager:
-    def __init__(self, db_path: Path | str | None = None) -> None: ...
-    def init_database(self) -> None: ...
-    @contextmanager
-    def get_connection(self) -> Generator[sqlite3.Connection, None, None]: ...
-    def execute_script(self, script: str) -> None: ...
-    def table_exists(self, table_name: str) -> bool: ...
-    def get_table_row_count(self, table_name: str) -> int: ...
+Theme({
+    "vse.title": "bold #9fc7c2",
+    "vse.subtitle": "#a7a49a",
+    "vse.accent": "#88a6a4",
+    "vse.sage": "#9caf88",
+    "vse.amber": "#c7ad7a",
+    "vse.rose": "#c19191",
+    "vse.plum": "#a899b8",
+    "vse.muted": "#747a83",
+    "vse.error": "bold #c19191",
+})
 ```
 
-### 3.2 OfficeToolbox (services/office_toolbox.py) — COM 版
+CLI 结构:
 
-```python
-class OfficeToolbox:
-    def __init__(self, db: DatabaseManager) -> None: ...
-    def export_deliverables_excel(self, output_path: Path | None = None) -> Path: ...
-    def refresh_weekly_ppt(self, template_path: Path | None = None, output_path: Path | None = None) -> Path: ...
+- `show_banner()` 输出紧凑 Panel，不再大面积装饰；标题、短副标题、当前数据目录。
+- `show_menu()` 输出 Table 或 Columns，按可用、CLI only、paused 分组。菜单项要有稳定编号和简短说明。
+- Aras 二级菜单用 Panel 包裹，EWO/PAA/NCR 分组清晰。PAA 全量抓取前用 `Confirm.ask` 二次确认。
+- 所有网络请求用 `console.status("正在查询 Aras", spinner="dots")` 或 rich `Progress` 包裹。
+- EWO/PAA 结果表共用列选择规则: 优先业务字段，再追加非敏感字段，最多 12 列。
+- 错误使用红色边框 Panel，显示异常类型和脱敏 message；不得打印 headers、Cookie、raw_xml。
+- Cookie 输入改为 `Prompt.ask("Cookie header", default="", password=True)`，除非用户显式选择“显示输入”模式；默认不回显。
+
+### 共享脱敏定稿
+
+新增 `core/redaction.py`，必须暴露两个函数:
+
+- `redact_sensitive_text(value: object, *, limit: int | None = None, collapse_newlines: bool = False) -> str`: 返回脱敏后的字符串，并负责可选换行折叠与长度截断。
+- `safe_display_value(value: object, *, empty: str = "-") -> str`: 把 `None` 或空字符串显示为 `empty`，其余值转字符串后走统一脱敏。
+
+规则:
+
+- 覆盖 JSON-like 字段: `authorization`、`cookie`、`token`、`api_key`、`sid`、`sessionid`、`csrf`、`secret`、`password`。
+- 覆盖 query/header-like 片段，例如 `token=tok123`、`Cookie: sid=abc123`、`Authorization: Bearer xyz789`。
+- `safe_display_value(None)` 返回 `"-"`。
+- `web/app.py` 使用 `limit=240, collapse_newlines=True`。
+- `main.py` 默认保留换行，但同样脱敏。
+
+## Worker 实施阶段
+
+1. Preflight: 记录脏工作树，不回滚。
+2. Safety cleanup: 统一脱敏，清理 `main.py` 重复定义与 `PROJECT_ROOT` 双语义，修复 `web/app.py` 双实例化。
+3. Web API parity: 增加 PAA API。
+4. Web desktop refactor: 重写 HTML/CSS/JS 为工作台体验。
+5. CLI rich refactor: 重构 banner/menu/Aras flow/result renderers。
+6. Verification: pytest、py_compile、静态 grep、浏览器 smoke。
+
+## 验收标准
+
+功能:
+
+- `/api/overview` 仍能返回概览 JSON。
+- Web 可从 Overview 切换到 Aras Cockpit。
+- Web EWO、PAA 分页、PAA 全量、NCR 进度、NCR 明细能构造正确 POST JSON，并渲染 ok/error。
+- CLI 主菜单可用，Excel 子菜单仍可进入，Aras 子菜单支持 EWO/PAA/NCR。
+- `services/aras_crawler.py` 不引入 UI 依赖。
+
+安全:
+
+- 响应、CLI 表格、错误 Panel、浏览器 DOM 中不出现 Cookie、Authorization、token、session、csrf 的真实值。
+- 前端不使用 `localStorage`、`sessionStorage`、URL query 保存凭据。
+- 测试不触达真实内网或外网。
+
+视觉:
+
+- Web 对标 Claude 桌面端官方美学，Warm Cream 画布、Coral Primary、Serif Display Heading 生效；结果区可使用 dark product surface，动效克制，移动端不溢出。
+- CLI rich 色彩为低饱和莫兰迪，不是高饱和霓虹；层级通过 Panel/Table/Status 清晰表达。
+
+代码质量:
+
+- `main.py` 不再有重复 `handle_intranet_scrape` 定义。
+- `PROJECT_ROOT` 只有一个业务语义，bootstrap path 另用明确变量名。
+- `web/app.py` 不再重复实例化 `DatabaseManager()`。
+- `renderRows` 不再依赖对象 key 顺序作为唯一列顺序。
+
+## 非目标
+
+- 不引入 React/Vue/Vite/Textual/Typer。
+- 不改 Aras SOAP/AML service 业务逻辑，除非测试显示现有契约被 UI 接入阻塞。
+- 不接入真实下载 token 自动下载。
+- 不改 Excel、Feishu、Office 业务功能。
+- 不做登录态持久化。
+
+## 建议验证命令
+
+Worker 完成后至少运行:
+
+```powershell
+python -m py_compile main.py web/app.py core/redaction.py
+python -m pytest tests/test_aras_cli_web.py tests/test_aras_paa_crawler.py tests/test_credential_safety.py -q --basetemp E:\project\vse-toolbox\.tmp_pytest -p no:cacheprovider
+rg -n "cookie.*localStorage|token.*localStorage|authorization.*localStorage|sessionStorage|console\.log\(" web main.py tests
+rg -n "rich|flask|render_template|jsonify|document\.|window\." services core
 ```
 
-### 3.3 FeishuImapParser (services/feishu_imap.py)
-
-```python
-class FeishuImapParser:
-    def __init__(self, db: DatabaseManager, imap_host: str, imap_port: int) -> None: ...
-    def scan_and_parse(self) -> int: ...  # 返回入库任务数
-    def sync_unsynced_tasks_to_deliverables(self, project_id: int = 1) -> int: ...
-```
-
-> F1 起：底层 IMAP 客户端为 `imapclient.IMAPClient`，不得再使用 `imaplib`。
-> `_get_credentials()` 中密码必须通过 `getpass.getpass()` 获取；`scan_and_parse()` 成功保存待办后调用
-> `sync_unsynced_tasks_to_deliverables()`，但返回值仍表示「新入库 feishu_tasks 数量」。
-
-### 3.4 IntranetScraper (services/intranet_scraper.py)
-
-```python
-class IntranetScraper:
-    def __init__(self, db: DatabaseManager, intranet_url: str, timeout: int) -> None: ...
-    def run(self) -> None: ...
-```
-
-> 当前登录模式为浏览器内手动登录，service 不接收、不保存密码。
-> 若后续新增终端凭据输入，密码字段必须使用 `getpass.getpass()`，且不得写入 `core/config.py`。
-
-### 3.5 ExcelToolbox (services/excel_toolbox.py) — P0 · 全部 win32com COM
-
-> **本节为 Worker 实现 B1–B6 的权威签名契约**。严禁擅自增删公共方法或改动参数名 / 默认值。
-> 复用 office_toolbox 已验证模式：`_get_win32com` 延迟导入、`_check_file_not_locked` 占用预检、
-> `_to_absolute`、`Excel.Visible=False`、`DisplayAlerts=False`、`SaveAs(FileFormat=51)`。
-> **无 DatabaseManager 依赖**（纯文件工具）。
-
-```python
-class ExcelToolbox:
-    def __init__(self) -> None: ...
-
-    def collect_sources(
-        self,
-        paths: list[Path] | None = None,
-        directory: Path | None = None,
-    ) -> list[Path]: ...
-    # 汇总显式 paths + 扫描 directory 下 *.xlsx/*.xls，去重排序返回
-
-    def _backup(self, target: Path) -> Path: ...
-    # shutil.copy2 → data/.backup/<name>.<YYYYMMDD_HHMMSS>.bak，返回备份路径
-    # 约定: target 不存在时抛 FileNotFoundError（调用方在"已存在才备份"分支内调用）
-
-    def _rollback(self, target: Path, backup: Path) -> None: ...
-    # shutil.copy2(backup, target) 复制回原位；backup 缺失则记录并安静返回
-
-    def merge_append(
-        self,
-        sources: list[Path],
-        output_path: Path | None = None,
-        baseline: Path | None = None,
-    ) -> Path: ...
-    # 纵向追加：各 source 行尾接式合并到新工作簿。
-    # baseline 非空 → 对相对 baseline 的新增/变更行 _highlight_cell + _write_legend。
-    # output_path 为 None → _auto_output_name。改写已存在 output 前 _backup。
-
-    def merge_overlay(
-        self,
-        sources: list[Path],
-        target: Path,
-        output_path: Path | None = None,
-        baseline: Path | None = None,
-    ) -> Path: ...
-    # 坐标重合：以 target 为底，各 source 按相同单元格坐标覆盖/合并。
-    # 冲突格按来源 _highlight_cell 标色；baseline 非空时高亮变更 + _write_legend。
-    # 改写 target / 已存在 output 前 _backup。
-
-    def diff_against_baseline(
-        self,
-        target: Path,
-        baseline: Path,
-        output_path: Path | None = None,
-    ) -> Path: ...
-    # 逐单元格比对 .Value 与 .Formula；差异格 _highlight_cell（color_map 区分新增/修改/删除）。
-    # 只读 baseline，输出标注副本（改写已存在 output 前 _backup）+ _write_legend。
-
-    def _highlight_cell(self, sheet: Any, row: int, col: int, source_tag: str) -> None: ...
-    # 按 source_tag 在 color_map 分配/复用莫兰迪色；写入前读原 Interior.Color，撞色则顺延取下一色；
-    # 写入 sheet.Cells(row, col).Interior.Color = <bgr>
-
-    def _write_legend(self, workbook: Any, color_map: dict[str, int]) -> None: ...
-    # 新增独立 Sheet「图例说明」，逐行写"来源标签 ↔ 色块"（行单元格 Interior.Color 设为对应色值）
-
-    @staticmethod
-    def _auto_output_name(src: Path, suffix: str = "-汇总") -> Path: ...
-    # src.with_stem(src.stem + suffix) 风格，输出到 OUTPUT_DIR
-```
-
-**COM 生命周期 & 回滚骨架（Worker 每个 merge/diff 方法须遵循）**:
-
-```
-backup = None
-if output/target 已存在:
-    backup = self._backup(target)
-excel = workbook = None
-try:
-    excel = wc.Dispatch("Excel.Application")
-    excel.Visible = False; excel.DisplayAlerts = False
-    ...  # 打开 source/baseline、写入、_highlight_cell、_write_legend
-    workbook.SaveAs(self._to_absolute(output_path), FileFormat=51)
-    return output_path
-except Exception:
-    if backup is not None:
-        self._rollback(target, backup)
-    raise
-finally:
-    if workbook is not None: workbook.Close(SaveChanges=0)
-    if excel is not None: excel.Quit()
-    del workbook; del excel
-```
-
-**莫兰迪色板规格**: 6–8 个低饱和 BGR 整数循环分配；`color_map`（来源标签 → 色值）贯穿一次操作并交 `_write_legend`。
-
-### 3.6 VerticalForms (services/vertical_forms.py) — 占位
-
-```python
-class EWOForm:           # 工程变更单
-    ...                  # 所有方法体: raise NotImplementedError("待真实模板接入")
-class NCRForm: ...       # 不合格报告
-class DMUReviewForm: ... # DMU 评审
-class StylingReviewForm: ...  # 造型评审
-```
-> **严禁预写业务逻辑 / COM 调用**，仅空类骨架。
-
-### 3.7 配置 (core/config.py) — 集中常量
-
-```python
-PROJECT_ROOT: Path; DATA_DIR: Path; OUTPUT_DIR: Path; TEMPLATE_DIR: Path
-BACKUP_DIR: Path          # DATA_DIR / ".backup"
-DB_PATH: Path
-DEFAULT_INTRANET_URL: str; DEFAULT_IMAP_HOST: str; DEFAULT_IMAP_PORT: int
-FLASK_HOST: str; FLASK_PORT: int
-```
-> **禁存明文密码 / token**；无类、无业务逻辑、不 import 界面库。
-
-### 3.8 WEB 适配层 (web/app.py) — Flask
-
-```python
-def create_app() -> Flask: ...
-# GET /            → render dashboard.html
-# GET /api/overview → 复用 DatabaseManager 概览查询，jsonify 返回:
-#   { "projects": {status: count}, "deliverables": {status: count},
-#     "feishu": {"total": int, "synced": int} }
-```
-> Flask 仅做路由 + 序列化；概览查询逻辑复用 service/core，不在路由内写死超出最小复用范围。
-
-## 4. 数据流
-
-```
-[飞书邮件] → IMAPClient → FeishuImapParser → feishu_tasks 表 (synced=0)
-                                                   │
-                                                   │ sync_unsynced_tasks_to_deliverables(project_id=1)
-                                                   ▼
-[内网页面] → Selenium → IntranetScraper ───▶ deliverables 表
-                                              │
-                                              ▼
-                                    OfficeToolbox.refresh_weekly_ppt()
-                                              │
-                                              ▼
-                                    data/output/周报_YYYYMMDD.pptx
-```
-
-### 4.1 P0 Excel 工具箱数据流（CLI 适配）
-
-```
-[本地 .xlsx 散表]
-   │ collect_sources(paths|directory)
-   ▼
-ExcelToolbox.merge_append / merge_overlay / diff_against_baseline   (win32com COM)
-   │  改写前 _backup → data/.backup/*.bak
-   │  baseline 非空 → _highlight_cell(莫兰迪色) + _write_legend(图例说明 Sheet)
-   ▼
-data/output/<name>-汇总.xlsx        ← 异常时 _rollback 还原，COM finally 释放
-   ▲
-   │ handle_excel_toolbox(db)  ← main.py CLI 适配层（rich 子菜单 + 异常分类提示）
-```
-
-### 4.2 P2 项目可视化数据流（WEB 适配）
-
-```
-[浏览器] ──GET /──▶ Flask render dashboard.html
-[浏览器] ──fetch('/api/overview')──▶ web/app.py 路由
-                                        │ 复用 DatabaseManager 概览查询
-                                        ▼
-                                  SQLite (projects / deliverables / feishu_tasks)
-                                        │ jsonify
-   概览卡片 ◀──JSON──────────────────────┘   (static/app.js 渲染)
-```
-
-## 5. 迁移策略
-
-当表结构变更时：
-1. Architect 在 task.md 中添加迁移任务
-2. 输出 `ALTER TABLE` 语句到 implementation_plan.md 第 6 节
-3. Worker 在 `db_manager.py` 中追加迁移逻辑
-4. 更新 project_state.md 第 3 节
-
----
-
-## 6. 迁移记录
-
-### 2026-06-17: Sprint 2 — `projects` 兜底项目幂等插入（task A2）
-
-**背景**: `deliverables.project_id` 为 `NOT NULL` 且外键 `REFERENCES projects(id)`，
-启用 `PRAGMA foreign_keys=ON` 后，空库直接插入交付物会因无父项目而违反外键约束（孤儿）。
-飞书同步桥（Backlog F1-a）也需要一个默认归属项目。
-
-**变更**: 在 `init_database()` 的建表循环之后、`conn.commit()` 之前追加一条幂等插入：
-
-```sql
-INSERT OR IGNORE INTO projects (id, name, manager, status)
-VALUES (1, '未归类', 'system', 'active');
-```
-
-**性质**: 幂等（`INSERT OR IGNORE` + 固定 `id=1`），重复 `init_database()` 不增行、不覆盖既有数据。
-本轮**不涉及** `ALTER TABLE` / 表结构变更，仅数据兜底。
-
-**关联任务**: task A2；验收见 task E2（兜底项目存在性 + 建表幂等）。
-
-> 说明: `synced` 同步桥、明文密码→getpass、imaplib→imapclient 已提升为 F1 目标；
-> Worker 写入范围与验收拆解见 task.md「F. F1」。
+如果本机 Python 命令不可用，Worker 应使用项目现有可用解释器，但不得联网安装新依赖。

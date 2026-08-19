@@ -30,12 +30,13 @@ from typing import Optional, Any
 from rich.console import Console
 
 from core.db_manager import DatabaseManager
+from core.runtime_paths import app_root
 
 logger = logging.getLogger("vse_toolbox.office_toolbox")
 console = Console()
 
 # ── 默认路径配置 ────────────────────────────────────────────────
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = app_root()
 TEMPLATE_DIR = PROJECT_ROOT / "data" / "templates"
 OUTPUT_DIR = PROJECT_ROOT / "data" / "output"
 

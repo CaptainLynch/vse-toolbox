@@ -6,6 +6,145 @@
 
 ---
 
+## Review Conversation #7 - Phase 3 Architect Final Review for P1 CLI/Web Rework
+
+**Review date**: 2026-06-20
+**Review role**: Phase 3 Architect Final Reviewer
+**Review scope**: `main.py`, `web/app.py`, `tests/test_aras_cli_web.py`, `services/aras_crawler.py`,
+`web/templates/dashboard.html`, `web/static/app.js`, `web/static/style.css`.
+
+### Gate Result
+
+Final review passed. P1 CLI/Web dual-track injection is signed off after the sensitive-value
+redaction rework. `services/aras_crawler.py` remains a service-layer module and is not polluted by
+CLI/Web dependencies.
+
+### Verification Notes
+
+- Leakage regression samples were rechecked for both CLI `_safe_error_message()` and Web
+  `_sanitize_error_message()`: `sid=abc123`, `Bearer xyz789`, and `token=tok123` do not remain in
+  the sanitized outputs or Web error response body.
+- Static architecture guard passed: `services/aras_crawler.py` has no `rich`, `flask`,
+  `render_template`, `jsonify`, `document.`, or `window.` dependency hit.
+- Static HTTP guard passed: `tests/test_aras_cli_web.py` has no direct `requests.get/post/head/request`
+  call.
+- Functional surface guard passed: CLI menu key `4` is unlocked while P3/P4 remain deferred; Web
+  keeps `POST /api/aras/ewo/query`, `POST /api/aras/ncr/progress`, `POST /api/aras/ncr/detail`,
+  dashboard DOM hooks, and `fetch()` calls.
+- Static credential persistence guard passed: no `localStorage`, `sessionStorage`, or `console.log(`
+  hit in the reviewed CLI/Web/test scope.
+
+### Real Command Output
+
+| Check | Command summary | Output |
+|---|---|---|
+| pytest | `python.exe -m pytest tests/test_aras_cli_web.py tests/test_aras_crawler.py -q --basetemp E:\project\vse-toolbox\.tmp_pytest -p no:cacheprovider` | `12 passed in 0.59s` |
+| py_compile | `python.exe -m py_compile main.py web/app.py` | passed, no output |
+| JS syntax smoke | `node --check web/static/app.js` | passed, no output |
+
+**Final Phase 3 P1 readiness**: Signed off. J11 and J-final are marked complete in
+`docs/agents/task.md`.
+
+---
+
+## Review Conversation #8 - Phase 4 Architect Final Review for PAA Full Crawl Core
+
+**Review date**: 2026-06-21
+**Review role**: Phase 4 Architect Reviewer
+**Review scope**: `services/aras_crawler.py`, `tests/test_aras_paa_crawler.py`,
+`tests/test_aras_crawler.py`, `tests/fixtures/crawler/paa_*.xml`, `docs/agents/task.md`,
+`docs/agents/implementation_plan.md`, `docs/agents/paa_har_snapshot.md`.
+
+### Gate Result
+
+Final review passed. PAA report querying and full crawl pagination are implemented in the service
+layer only. The implementation uses the SOAP route with `SOAPAction=ApplyItem`, builds
+`Item type="PAA_O" action="get"` payloads, parses SOAP XML via `ElementTree`, and keeps tests fully
+offline through fake sessions.
+
+### Verification Notes
+
+- PAA route, method, `SOAPAction`, pagination attributes, `returnMode="itemsOnly"`, and default
+  `select` match the HAR-backed contract in `implementation_plan.md` and `paa_har_snapshot.md`.
+- `parse_paa_report_response()` uses XML parsing and does not parse SOAP responses as JSON dicts.
+- `crawl_paa_report_all()` starts from page 1, increments page dynamically, stops on empty pages and
+  short pages, and enforces `max_pages` plus `max_records` fuses with truncation at `max_records`.
+- PAA fixtures contain placeholder/sample values only; static credential scans found no real
+  Cookie, Authorization, Set-Cookie, csrf, session, or token values.
+- No PAA CLI/Web route or UI integration was introduced in this worker scope.
+
+### Real Command Output
+
+| Check | Command summary | Output |
+|---|---|---|
+| pytest | `python.exe -m pytest tests/test_aras_paa_crawler.py tests/test_aras_crawler.py -q --basetemp E:\project\vse-toolbox\.tmp_pytest -p no:cacheprovider` | `16 passed in 0.55s` |
+| py_compile | `python.exe -m py_compile services/aras_crawler.py` | passed, no output |
+| static credential scan | `rg -n -g "paa_*.xml" ... tests/fixtures/crawler`; `rg -n ... services/aras_crawler.py tests/test_aras_paa_crawler.py` | no disallowed hits |
+| service UI dependency scan | `rg -n "rich|flask|render_template|jsonify|document\.|window\." services/aras_crawler.py` | no hits |
+
+**Final Phase 4 PAA readiness**: Signed off. K8 and K-final are marked complete in
+`docs/agents/task.md`.
+
+---
+
+## Review Conversation #6 - Phase 3 Architect Final Review
+
+**Review scope**: `services/excel_toolbox.py`, `tests/test_excel_toolbox.py`, `requirements.txt`,
+`docs/agents/task.md`, `docs/agents/implementation_plan.md`.
+
+### Gate Result
+
+Final review passed. ExcelToolbox production path now uses `xlwings` via `_get_xlwings()` and
+`xw.App(visible=False, add_book=False)`, with `app.api.DisplayAlerts=False`,
+`app.api.ScreenUpdating=False`, and `app.api.EnableEvents=False`. Output still uses native Excel
+`book.api.SaveAs(..., FileFormat=51)`. No `pandas` / `openpyxl` direct Excel file-write path was
+introduced.
+
+### Verification Notes
+
+- Static gate: no `win32com` / `_get_win32com` / `Dispatch("Excel.Application")` / `.Workbooks` /
+  `.Cells(` hit in `services/excel_toolbox.py` or `tests/test_excel_toolbox.py`.
+- Static gate: xlwings path is present in production code, tests, and `requirements.txt`
+  (`xlwings>=0.33.0`).
+- Static gate: no `pandas` / `openpyxl` / `DataFrame.to_excel` / `Workbook.save` hit in the scoped
+  Excel files or `requirements.txt`.
+- Smoke command:
+  `& "C:\Users\Lynch\AppData\Local\Python\pythoncore-3.14-64\python.exe" -c "import services.excel_toolbox as m; xw=m._get_xlwings(); print(xw.__version__)"`
+  -> `0.36.6`.
+- Pytest command:
+  `& "C:\Users\Lynch\AppData\Local\Python\pythoncore-3.14-64\python.exe" -m pytest tests/test_excel_toolbox.py -q --basetemp E:\project\vse-toolbox\.tmp_pytest -p no:cacheprovider`
+  -> `17 passed in 0.60s`.
+
+**Final Phase 3 readiness**: Signed off. H1-final, H2-final, H3-a, H3-b, and H3-final are marked
+complete in `docs/agents/task.md`.
+
+---
+
+## Review Conversation #5 - Phase 4 Excel I/O Stack Gate
+
+**Review scope**: `requirements.txt`, `services/excel_toolbox.py`, `services/office_toolbox.py`,
+`tests/test_excel_toolbox.py`, `docs/agents/implementation_plan.md`, `docs/agents/task.md`.
+
+### Gate Result
+
+Phase 2 不迁移裁定通过。静态审查确认本轮不触发 ExcelToolbox 源码重构，保持
+`win32com.client` / Office 原生保存路径；`xlwings` 仅作为文档比较项出现，未进入运行时依赖或源码实现。
+
+### Verification Notes
+
+- 最终工作树变更仅涉及 `docs/agents/implementation_plan.md`、`docs/agents/task.md`、
+  `docs/agents/review_feedback.md`；未发现 `.py` 源码改动。
+- `requirements.txt` 未新增 `xlwings`、`openpyxl`、`pandas`；运行时 Office 自动化依赖仍为 `pywin32`。
+- `services/excel_toolbox.py` 仍保留 `_get_win32com()`、`Excel.Application`、`SaveAs(FileFormat=51)`、
+  `Close()` / `Quit()`、备份与回滚路径。
+- `tests/test_excel_toolbox.py` 仍通过 monkeypatch `_get_win32com` 隔离真实 COM，未要求启动真实 Excel。
+- 测试未能执行：`pytest` 不在 PowerShell PATH；`python -m pytest` 失败于 `python.exe` 系统无法访问；
+  `py -m pytest` 失败于 `py.exe` 系统无法访问。该项记录为环境阻塞，不记为测试通过。
+
+**Final Phase 4 readiness**: Passed by static/source-level review. No Phase 3 rollback item is required.
+
+---
+
 ## Review Conversation #4 - Phase 4 F1 Code Review
 
 **Review scope**: `services/feishu_imap.py`, F1 tests, F1 contract in `task.md` / `implementation_plan.md`.
@@ -390,3 +529,32 @@ Worker 已在 L31–L32 添加 `# noqa: E402` 豁免，仅保留 2 条 import（
 | S4 | 🟡 | `services/feishu_imap.py` | L27 | flake8 F401: `datetime` 未使用 |
 | S5 | 🟡 | `services/intranet_scraper.py` | L27 | flake8 F401: `Confirm` 未使用 |
 | S6 | 🟡 | `services/intranet_scraper.py` | L36 | flake8 F401: `WebDriverException` 未使用 |
+
+---
+
+## 审查会话 #Phase 4 Final — P1 Aras HAR 契约最终签批
+
+**审查日期**: 2026-06-20
+**审查角色**: Phase 4 Architect Final Reviewer
+**审查结论**: ✅ **签批通过**
+
+### 真实命令输出
+
+| 检查 | 命令摘要 | 真实输出 |
+|---|---|---|
+| requests smoke | `python.exe -c "import requests; print(requests.__version__)"` | `2.34.2` |
+| production session smoke | `python.exe -c "from services.aras_crawler import ArasCrawlerClient; c=ArasCrawlerClient('http://aras.example'); print(type(c.session).__name__)"` | `Session` |
+| import/class smoke | `python.exe -c "import services.aras_crawler as m; print(m.ArasCrawlerClient.__name__)"` | `ArasCrawlerClient` |
+| 专项 pytest | `python.exe -m pytest tests/test_aras_crawler.py -q --basetemp E:\project\vse-toolbox\.tmp_pytest -p no:cacheprovider` | `7 passed in 0.57s` |
+
+### 静态复核结论
+
+| 范围 | 结论 |
+|---|---|
+| `services/aras_crawler.py` | EWO 报表过滤、NCR 审批进度、NCR 审批明细三大能力实体已落地；默认生产 session 在目标解释器可用。 |
+| `tests/fixtures/crawler/*` | fixture 为离线响应样本；敏感扫描 `Cookie|Authorization|Set-Cookie|csrf|session|token=` 无命中真实凭据；下载 token 使用 `<download_token>`。 |
+| `tests/test_aras_crawler.py` | 使用 `FakeSession`/`FakeResponse` 注入并记录调用；专项测试覆盖 EWO、NCR 进度、NCR 明细、下载 token；未发真实 HTTP。 |
+| `requirements.txt` | 已包含 `requests>=2.32.0`。 |
+| `docs/agents/task.md` | I1-I8 Worker/Reviewer 项已勾选，新增并勾选 I9-final 最终验收项。 |
+
+**最终判定**: Phase 4 P1 Aras HAR 契约落地通过最终复审，可签批。

@@ -1,0 +1,22 @@
+﻿/*Fix for IR-050127 Group box blocks work of some elements on form*/
+form > .sys_fn_priority_groupbox {
+	z-index: 0 !important;
+}
+
+/*Fix for IR-049959 TAhead: Activity2 Deliv Type list doesn't display values fully*/
+form > .sys_fn_deliv_type .aras-filter-list {
+	width: 80px !important;
+}
+
+/*Fix for IR-049822 TAhead: Classification and List fields overlap other fields*/
+.aras-filter-list__button,
+.aras-itemProperty__button,
+.aras-filter-list__input,
+.aras-itemProperty__input {
+	height: 1.584rem !important;
+}
+
+.aras-filter-list__button,
+.aras-itemProperty__button {
+	width: 1.584rem !important;
+}

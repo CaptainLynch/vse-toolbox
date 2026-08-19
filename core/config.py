@@ -14,14 +14,17 @@ core/config.py — 集中配置常量模块
 
 from pathlib import Path
 
+from core.runtime_paths import app_root
+
 # ── 项目根目录（本文件位于 core/，向上一级即为项目根） ─────────────
-PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent
+PROJECT_ROOT: Path = app_root()
 
 # ── 数据目录体系 ────────────────────────────────────────────────
 DATA_DIR: Path = PROJECT_ROOT / "data"
 OUTPUT_DIR: Path = DATA_DIR / "output"
 TEMPLATE_DIR: Path = DATA_DIR / "templates"
 BACKUP_DIR: Path = DATA_DIR / ".backup"
+DIAGNOSTIC_DIR: Path = DATA_DIR / "diagnostics"
 
 # ── 数据库路径 ──────────────────────────────────────────────────
 DB_PATH: Path = DATA_DIR / "vse_toolbox.db"

@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 core/db_manager.py — SQLite 数据库连接管理与 ORM 表结构初始化
 
@@ -19,10 +19,12 @@ from pathlib import Path
 from contextlib import contextmanager
 from typing import Generator
 
+from core.runtime_paths import app_root
+
 logger = logging.getLogger("vse_toolbox.db_manager")
 
 # ── 默认数据库路径 ──────────────────────────────────────────────
-DEFAULT_DB_DIR = Path(__file__).resolve().parent.parent / "data"
+DEFAULT_DB_DIR = app_root() / "data"
 DEFAULT_DB_PATH = DEFAULT_DB_DIR / "vse_toolbox.db"
 
 # ── 建表 DDL ───────────────────────────────────────────────────
@@ -68,6 +70,23 @@ TABLE_DEFINITIONS: list[str] = [
         synced          INTEGER DEFAULT 0
     );
     """,
+    # NCR明细表
+    """
+    CREATE TABLE IF NOT EXISTS ncr_details (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        ncr_name        TEXT NOT NULL,
+        project_name    TEXT,
+        part_number     TEXT,
+        part_name       TEXT,
+        change_type     TEXT,
+        quantity        TEXT,
+        cost_change     TEXT,
+        pr_number       TEXT,
+        po_number       TEXT,
+        created_at      TEXT DEFAULT (datetime('now', 'localtime'))
+    );
+    """
+
 ]
 
 

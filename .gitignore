@@ -4,6 +4,8 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+production*/
+.build_production*/
 
 # 数据库文件
 data/*.db
@@ -15,6 +17,7 @@ data/*.log
 
 # 输出文件
 data/output/
+data/diagnostics/
 
 # IDE
 .vscode/
@@ -26,3 +29,12 @@ Thumbs.db
 
 # chromedriver
 chromedriver.exe
+
+# 本地爬虫取证材料（可能包含明文凭据）
+/爬虫源文件/
+
+# 本地测试及工具临时文件
+/.pytest_cache/
+/.tmp_pytest*/
+/.claude/settings.local.json
+/design-previews/
