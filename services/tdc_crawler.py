@@ -29,7 +29,7 @@ logger = logging.getLogger("vse_toolbox.tdc_crawler")
 DEFAULT_TDC_BASE_URL = "https://tdc.sgmw.com.cn"
 DEFAULT_TDC_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
 )
 
 DATA_MODEL_PAGE_PATH = "/tpc/dataAdmin/dataModelDesign/index"

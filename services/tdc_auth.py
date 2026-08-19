@@ -3,10 +3,12 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import math
 import re
+import sys
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -32,9 +34,20 @@ logger = logging.getLogger("vse_toolbox.tdc_auth")
 
 DEFAULT_TDC_IDENTITY_ORIGIN = "https://account.sgmw.com.cn"
 DEFAULT_TDC_OIDC_CLIENT_ID = "tpc-front"
+DEFAULT_TDC_FORM_LOGIN_CLIENT = "pig:pig"
 TDC_ENTRY_PATH = "/tpc/"
 TDC_TOKEN_EXCHANGE_PATH = "/auth/oauth/token"
 TDC_USER_INFO_PATH = "/uwf/user/info"
+_TDC_TOKEN_BROWSER_HEADERS = {
+    "Sec-CH-UA": '"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"',
+    "Sec-CH-UA-Mobile": "?0",
+    "Sec-CH-UA-Platform": '"Windows"',
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin",
+}
+_ENTRY_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
+_MAX_ENTRY_REDIRECTS = 5
 _OIDC_AUTH_SUFFIX = "/protocol/openid-connect/auth"
 _OIDC_TOKEN_SUFFIX = "/protocol/openid-connect/token"
 _OIDC_AUTH_PATH = "/auth/realms/common/protocol/openid-connect/auth"
@@ -42,8 +55,15 @@ _SAFE_HEADER_NAMES = {
     "accept",
     "accept-language",
     "content-type",
+    "istoken",
     "origin",
     "referer",
+    "sec-ch-ua",
+    "sec-ch-ua-mobile",
+    "sec-ch-ua-platform",
+    "sec-fetch-dest",
+    "sec-fetch-mode",
+    "sec-fetch-site",
     "user-agent",
 }
 
@@ -131,15 +151,19 @@ class TDCPasswordAuthClient:
         *,
         identity_origin: str = DEFAULT_TDC_IDENTITY_ORIGIN,
         oidc_client_id: str = DEFAULT_TDC_OIDC_CLIENT_ID,
+        form_login_client: str = DEFAULT_TDC_FORM_LOGIN_CLIENT,
         session: Any | None = None,
         timeout: float = 30.0,
         diagnostic_hook: Callable[[TDCHttpDiagnosticEvent], None] | None = None,
         random_value_factory: Callable[[], str] | None = None,
+        tdc_session_factory: Callable[[], Any] | None = None,
     ) -> None:
         self.base_url = _normalize_https_origin(base_url, "base_url")
         self.identity_origin = _normalize_https_origin(identity_origin, "identity_origin")
         self.oidc_client_id = _validate_client_id(oidc_client_id)
+        self.form_login_client = _validate_form_login_client(form_login_client)
         self.timeout = _validate_timeout(timeout)
+        self._session_injected = session is not None
         if session is None:
             if requests is None:
                 raise ImportError("TDCPasswordAuthClient requires requests; install requirements.txt")
@@ -148,6 +172,7 @@ class TDCPasswordAuthClient:
         self.session = session
         self.diagnostic_hook = diagnostic_hook
         self.random_value_factory = random_value_factory or (lambda: uuid.uuid4().hex)
+        self.tdc_session_factory = tdc_session_factory
 
     def login(self, username: str, password: str) -> TDCLoginResult:
         """Run the captured OIDC code flow and return the authenticated session."""
@@ -241,6 +266,7 @@ class TDCPasswordAuthClient:
         if not authorization_code or not expected_state or returned_state != expected_state:
             self._reject(login_response, "oidc-state-or-code", "OIDC callback state/code validation failed")
         self._accept(login_response, validation="authorization-code-received")
+        entry_url = urlunsplit((callback_parts.scheme, callback_parts.netloc, callback_parts.path, "", ""))
 
         token_path = auth_parts.path[: -len(_OIDC_AUTH_SUFFIX)] + _OIDC_TOKEN_SUFFIX
         oidc_token_url = urlunsplit((auth_parts.scheme, auth_parts.netloc, token_path, "", ""))
@@ -275,6 +301,25 @@ class TDCPasswordAuthClient:
             self._reject(oidc_token, "oidc-token-missing", "OIDC response does not contain an access token")
         self._accept(oidc_token, validation="oidc-token-received", json_fields=tuple(sorted(oidc_payload)))
 
+        native_session_created = False
+        previous_session: Any = None
+        if not self._session_injected and (self.tdc_session_factory is not None or sys.platform == "win32"):
+            factory = self.tdc_session_factory or _new_native_tdc_session
+            try:
+                previous_session = self.session
+                self.session = factory()
+                native_session_created = True
+            except Exception as exc:
+                raise TDCAuthError(
+                    f"TDC native session creation failed: {type(exc).__name__}",
+                    stage="tdc-session-init",
+                ) from exc
+
+        if native_session_created:
+            self._migrate_cookies(previous_session, entry_url)
+            self._prewarm_entry(entry_url, browser_headers)
+
+        basic_authorization = _basic_authorization(self.form_login_client)
         try:
             tdc_exchange = self._request(
                 "POST",
@@ -286,43 +331,147 @@ class TDCPasswordAuthClient:
                     "Origin": self.base_url.rstrip("/"),
                     "Referer": self._url(TDC_ENTRY_PATH),
                     "User-Agent": DEFAULT_TDC_USER_AGENT,
-                    "istoken": "false",
+                    "isToken": "false",
+                    "Authorization": basic_authorization,
+                    **_TDC_TOKEN_BROWSER_HEADERS,
                 },
                 params={"token": identity_access_token},
                 allow_redirects=False,
             )
         finally:
             identity_access_token = ""
+            basic_authorization = ""
         tdc_payload = self._json_response(tdc_exchange)
         if tdc_payload.get("code") not in (0, "0") or not isinstance(tdc_payload.get("data"), Mapping):
             self._reject(tdc_exchange, "tdc-token-rejected", "TDC rejected the identity token exchange")
         tdc_data = tdc_payload["data"]
-        if not isinstance(tdc_data.get("access_token"), str) or not tdc_data.get("access_token"):
+        access_token = tdc_data.get("access_token")
+        if not isinstance(access_token, str) or not access_token:
             self._reject(tdc_exchange, "tdc-token-missing", "TDC token exchange did not establish a session")
+        token_type = _safe_token_type(tdc_data.get("token_type"))
         expires_in = _optional_positive_int(tdc_data.get("expires_in"))
         self._accept(tdc_exchange, validation="tdc-session-established", json_fields=tuple(sorted(tdc_payload)))
+        try:
+            self.session.headers["Authorization"] = f"{token_type} {access_token}"
+        finally:
+            access_token = ""
+            tdc_data = {}
+            tdc_payload = {}
 
-        verification = self._request(
-            "GET",
-            self._url(TDC_USER_INFO_PATH),
-            stage="auth-verify",
-            headers={
-                "Accept": "application/json, text/plain, */*",
-                "Accept-Language": "zh-CN,zh;q=0.9",
-                "Referer": self._url(TDC_ENTRY_PATH),
-                "User-Agent": DEFAULT_TDC_USER_AGENT,
-            },
-            allow_redirects=False,
-        )
-        verification_payload = self._json_response(verification)
-        if verification_payload.get("code") not in (0, "0") or verification_payload.get("data") is None:
-            self._reject(verification, "session-verification-failed", "TDC session verification failed")
-        self._accept(
-            verification,
-            validation="authenticated",
-            json_fields=tuple(sorted(verification_payload)),
-        )
+        try:
+            verification = self._request(
+                "GET",
+                self._url(TDC_USER_INFO_PATH),
+                stage="auth-verify",
+                headers={
+                    "Accept": "application/json, text/plain, */*",
+                    "Accept-Language": "zh-CN,zh;q=0.9",
+                    "Referer": self._url(TDC_ENTRY_PATH),
+                    "User-Agent": DEFAULT_TDC_USER_AGENT,
+                },
+                allow_redirects=False,
+            )
+            verification_payload = self._json_response(verification)
+            if verification_payload.get("code") not in (0, "0") or verification_payload.get("data") is None:
+                self._reject(verification, "session-verification-failed", "TDC session verification failed")
+            self._accept(
+                verification,
+                validation="authenticated",
+                json_fields=tuple(sorted(verification_payload)),
+            )
+        except TDCAuthError:
+            self.session.headers.pop("Authorization", None)
+            raise
         return TDCLoginResult(session=self.session, token_expires_in=expires_in)
+
+    def _prewarm_entry(self, entry_url: str, browser_headers: Mapping[str, str]) -> None:
+        current_url = entry_url
+        trace: _RequestTrace | None = None
+        validation = "entry-observed"
+        for redirect_count in range(_MAX_ENTRY_REDIRECTS + 1):
+            trace = self._request(
+                "GET",
+                current_url,
+                stage="tdc-entry",
+                headers=browser_headers,
+                allow_redirects=False,
+            )
+            status = int(getattr(trace.response, "status_code", 0) or 0)
+            if status not in _ENTRY_REDIRECT_STATUSES:
+                validation = "entry-observed" if 200 <= status < 300 else "entry-http-observed"
+                break
+            location = _header_value(getattr(trace.response, "headers", {}), "Location")
+            redirect_parts = urlsplit(urljoin(current_url, location))
+            redirect_url = urlunsplit(
+                (
+                    redirect_parts.scheme,
+                    redirect_parts.netloc,
+                    redirect_parts.path,
+                    redirect_parts.query,
+                    "",
+                )
+            )
+            if not location or not self._is_trusted_entry_redirect(redirect_url):
+                validation = "entry-redirect-not-followed"
+                break
+            if redirect_count == _MAX_ENTRY_REDIRECTS:
+                validation = "entry-redirect-limit"
+                break
+            current_url = redirect_url
+        if trace is not None:
+            self._accept(trace, validation=validation)
+
+    def _migrate_cookies(self, previous_session: Any, entry_url: str) -> None:
+        """Migrate RFC-eligible cookies from the OIDC session to the native one.
+
+        Only runs when the flow switched from a ``requests.Session`` to a newly
+        created native session. Cookie names and values are never surfaced: the
+        diagnostic event carries only the migrated count, whether the migration
+        ran, and the elapsed time. A count of 0 is a valid experimental result
+        and never raises; a migration failure is logged generically and the
+        login flow continues unchanged.
+        """
+        importer = getattr(self.session, "import_cookies", None)
+        source_jar = getattr(previous_session, "cookies", previous_session)
+        started = time.perf_counter()
+        migrated = 0
+        performed = False
+        if callable(importer):
+            try:
+                migrated = importer(source_jar, entry_url)
+                performed = True
+            except Exception as exc:  # experiment; must never break authentication
+                logger.warning("TDC cookie migration failed: %s", type(exc).__name__)
+                migrated = 0
+                performed = False
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        self._emit(
+            self._cookie_migration_event(entry_url, performed, migrated, elapsed_ms)
+        )
+
+    def _cookie_migration_event(
+        self, entry_url: str, performed: bool, migrated: int, elapsed_ms: float
+    ) -> TDCHttpDiagnosticEvent:
+        parts = urlsplit(entry_url)
+        validation = "cookie-migration-performed" if performed else "cookie-migration-skipped"
+        return TDCHttpDiagnosticEvent(
+            timestamp=datetime.now().isoformat(timespec="milliseconds"),
+            stage="tdc-cookie-migration",
+            request_id=uuid.uuid4().hex[:8],
+            page_type="authentication",
+            origin=f"{parts.scheme}://{parts.netloc}",
+            path=parts.path,
+            validation=validation,
+            record_count=migrated,
+            elapsed_ms=elapsed_ms,
+        )
+
+    def _is_trusted_entry_redirect(self, value: str) -> bool:
+        parsed = urlsplit(value)
+        if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
+            return False
+        origin = f"https://{parsed.netloc}/".lower()
+        return origin in {self.base_url.lower(), self.identity_origin.lower()}
 
     def _request(
         self,
@@ -337,12 +486,13 @@ class TDCPasswordAuthClient:
     ) -> _RequestTrace:
         request_id = uuid.uuid4().hex[:8]
         started = time.perf_counter()
+        request_headers = {**getattr(self.session, "headers", {}), **dict(headers)}
         try:
             request_method = getattr(self.session, method.lower())
             response = request_method(
                 url,
                 params=dict(params or {}),
-                data=dict(data or {}),
+                data=None if data is None else dict(data),
                 headers=dict(headers),
                 timeout=self.timeout,
                 allow_redirects=allow_redirects,
@@ -356,7 +506,7 @@ class TDCPasswordAuthClient:
                     method=method,
                     url=url,
                     query=_safe_auth_query(params, url),
-                    headers=headers,
+                    headers=request_headers,
                     timeout=self.timeout,
                     elapsed_ms=elapsed,
                     exception_type=type(exc).__name__,
@@ -374,7 +524,7 @@ class TDCPasswordAuthClient:
             method=method,
             url=url,
             query=_safe_auth_query(params, url),
-            headers=dict(headers),
+            headers=request_headers,
             response=response,
             elapsed_ms=(time.perf_counter() - started) * 1000,
             timeout=self.timeout,
@@ -402,7 +552,11 @@ class TDCPasswordAuthClient:
     def _require_status(self, trace: _RequestTrace, allowed: set[int]) -> None:
         status = int(getattr(trace.response, "status_code", 0) or 0)
         if status not in allowed:
-            self._reject(trace, "rejected-status", f"TDC authentication HTTP {status}")
+            detail, json_fields = _safe_error_detail(trace.response)
+            message = f"TDC authentication HTTP {status}"
+            if detail:
+                message = f"{message}: {detail}"
+            self._reject(trace, "rejected-status", message, json_fields=json_fields)
 
     def _require_origin(self, value: str, expected_origin: str, label: str) -> None:
         parsed = urlsplit(str(value))
@@ -426,6 +580,7 @@ class TDCPasswordAuthClient:
         message: str,
         *,
         exception_type: str | None = None,
+        json_fields: tuple[str, ...] = (),
     ) -> None:
         status = int(getattr(trace.response, "status_code", 0) or 0)
         self._emit(
@@ -434,6 +589,7 @@ class TDCPasswordAuthClient:
                 validation=validation,
                 exception_type=exception_type,
                 reason=message,
+                json_fields=json_fields,
             )
         )
         raise TDCAuthError(message, stage=trace.stage, request_id=trace.request_id, status_code=status)
@@ -471,6 +627,12 @@ def _parse_login_form(html: str) -> _LoginForm | None:
         if "username" in lowered and "password" in lowered and form.action:
             return form
     return None
+
+
+def _new_native_tdc_session() -> Any:
+    from services.windows_http import WinHTTPSession
+
+    return WinHTTPSession()
 
 
 def _event_from_trace(
@@ -580,6 +742,32 @@ def _response_text(response: Any) -> str:
     return content.decode("utf-8", errors="replace") if isinstance(content, bytes) else ""
 
 
+_SAFE_ERROR_FIELDS = ("error", "error_description", "code", "message", "msg")
+
+
+def _safe_error_detail(response: Any) -> tuple[str, tuple[str, ...]]:
+    content_type = _header_value(getattr(response, "headers", {}), "Content-Type")
+    if "json" not in content_type.lower():
+        return "", ()
+    try:
+        loader = getattr(response, "json", None)
+        payload = loader() if callable(loader) else json.loads(_response_text(response))
+    except Exception:
+        return "", ()
+    if not isinstance(payload, Mapping):
+        return "", ()
+    parts: list[str] = []
+    for name in _SAFE_ERROR_FIELDS:
+        value = payload.get(name)
+        if value is None or isinstance(value, (Mapping, list, tuple, set)):
+            continue
+        shown = redact_sensitive_text(value, limit=160, collapse_newlines=True)
+        if shown:
+            parts.append(f"{name}={shown}")
+    fields = tuple(sorted(name for name in _SAFE_ERROR_FIELDS if name in payload))
+    return "; ".join(parts)[:480], fields
+
+
 def _header_value(headers: Mapping[str, Any], name: str) -> str:
     for key, value in headers.items():
         if str(key).lower() == name.lower():
@@ -626,6 +814,30 @@ def _validate_timeout(value: float) -> float:
     if not math.isfinite(timeout) or timeout <= 0 or timeout > 600:
         raise ValueError("timeout must be between 0 and 600 seconds")
     return timeout
+
+
+def _validate_form_login_client(value: str) -> str:
+    client = str(value)
+    if (
+        not client
+        or len(client) > 256
+        or ":" not in client
+        or any(ord(char) < 32 or ord(char) > 126 for char in client)
+    ):
+        raise ValueError("form_login_client must be a printable ASCII client credential")
+    return client
+
+
+def _basic_authorization(client: str) -> str:
+    encoded = base64.b64encode(client.encode("ascii")).decode("ascii")
+    return f"Basic {encoded}"
+
+
+def _safe_token_type(value: Any) -> str:
+    token_type = str(value or "Bearer").strip()
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9._~-]{0,31}", token_type):
+        return "Bearer"
+    return token_type
 
 
 def _optional_positive_int(value: Any) -> int | None:
