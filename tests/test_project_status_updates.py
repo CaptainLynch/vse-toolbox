@@ -155,14 +155,16 @@ def test_policy_rejects_unknown_and_forbidden_config(service, payload, field) ->
     assert field in exc.value.fields
 
 
-def test_policy_restricts_automation_to_pilot(service) -> None:
+@pytest.mark.parametrize("blocked_id", ["VPI-T2-D1", "VPI-T2-D4"])
+def test_policy_blocks_automation_for_unsupported_targets(service, blocked_id: str) -> None:
+    """D1 和 D4 保持禁止自动化配置（mode/enabled/fieldAuthority）。"""
     with pytest.raises(ProjectStatusPolicyError) as exc:
-        service.update_update_policy("VPI-T2-D3", {"mode": "hybrid"})
+        service.update_update_policy(blocked_id, {"mode": "hybrid"})
     assert "mode" in exc.value.fields
 
     with pytest.raises(ProjectStatusPolicyError) as exc:
         service.update_update_policy(
-            "VPI-T2-D3",
+            blocked_id,
             {
                 "enabled": True,
                 "externalKey": "k",
@@ -173,10 +175,22 @@ def test_policy_restricts_automation_to_pilot(service) -> None:
 
     with pytest.raises(ProjectStatusPolicyError) as exc:
         service.update_update_policy(
-            "VPI-T2-D3",
-            {"fieldAuthority": {"status": "automatic"}},
+            blocked_id,
+            {"fieldAuthority": {"owner": "automatic"}},
         )
     assert "fieldAuthority" in exc.value.fields
+
+
+@pytest.mark.parametrize("allowed_id", ["VPI-T2-D2", "VPI-T2-D3", "VPI-T2-D5"])
+def test_policy_allows_automation_for_supported_targets(service, allowed_id: str) -> None:
+    """D2, D3, D5 属于允许目标，可成功配置 hybrid 模式。"""
+    policy = service.update_update_policy(
+        allowed_id,
+        {
+            "mode": "hybrid",
+        },
+    )
+    assert policy["mode"] == "hybrid"
 
 
 def test_manual_mode_rejects_automatic_field_authority(service) -> None:

@@ -36,6 +36,7 @@ def _enable_pilot_direct(db: DatabaseManager) -> int:
             UPDATE project_status_update_bindings
             SET mode='hybrid', source_type='tdc', enabled=1,
                 external_key='FM-1',
+                credential_ref='test-credential-ref',
                 match_rule_json='{"incident":"FM-1"}',
                 mapping_json='{"owner":"currentApprover","note":"approvalComment"}'
             WHERE deliverable_id='VPI-T2-D5'
@@ -106,9 +107,13 @@ def test_once_does_not_show_banner(monkeypatch, cli_db) -> None:
     monkeypatch.setattr(
         main_module, "show_banner", lambda: banner_called.__setitem__("value", True)
     )
+    from services.project_status_sync_runner import ConnectorRegistry
+    monkeypatch.setattr(
+        main_module, "create_production_registry", lambda: ConnectorRegistry()
+    )
 
     code = main_module.main(["project-status-sync", "--once"])
-    # 生产 registry 为空 → connector_unavailable → needs_attention → exit 2。
+    # 注入空 registry → connector_unavailable → needs_attention → exit 2。
     assert code == 2
     assert banner_called["value"] is False
 
@@ -118,19 +123,24 @@ def test_once_does_not_show_banner(monkeypatch, cli_db) -> None:
 
 def test_cli_output_no_sensitive_data(monkeypatch, cli_db, capsys) -> None:
     binding_id = _enable_pilot_direct(cli_db)
-    # 写入 credential_ref 验证不泄漏。
+    # 写入 fake credential_ref 验证 CLI 输出不泄漏。
     with cli_db.get_connection() as conn:
         conn.execute(
-            "UPDATE project_status_update_bindings SET credential_ref='vault-secret-ref' "
+            "UPDATE project_status_update_bindings SET credential_ref='test-credential-ref' "
             "WHERE id=?",
             (binding_id,),
         )
         conn.commit()
 
+    from services.project_status_sync_runner import ConnectorRegistry
+    monkeypatch.setattr(
+        main_module, "create_production_registry", lambda: ConnectorRegistry()
+    )
+
     code = main_module.main(["project-status-sync", "--once"])
     captured = capsys.readouterr()
     output = captured.out + captured.err
-    assert "vault-secret-ref" not in output
+    assert "test-credential-ref" not in output
     assert "lease_token" not in output
     assert "cursor_json" not in output
     assert "match_rule" not in output
@@ -149,6 +159,10 @@ def test_no_eligible_bindings_exit_0(monkeypatch, cli_db, capsys) -> None:
 
 def test_dry_run_unavailable_connector_exit_2(monkeypatch, cli_db, capsys) -> None:
     _enable_pilot_direct(cli_db)
+    from services.project_status_sync_runner import ConnectorRegistry
+    monkeypatch.setattr(
+        main_module, "create_production_registry", lambda: ConnectorRegistry()
+    )
     code = main_module.main(["project-status-sync", "--once", "--dry-run"])
     assert code == 2
     output = capsys.readouterr().out
@@ -160,7 +174,7 @@ def test_dry_run_available_connector_exit_0(
     monkeypatch, cli_db, capsys
 ) -> None:
     _enable_pilot_direct(cli_db)
-    # 注入一个 fake connector 到生产 registry。
+    # 注入一个 fake connector 到 registry。
     from services.project_status_sync_runner import ConnectorRegistry
     from services.project_status_updates import ConnectorSnapshot
 
@@ -184,6 +198,10 @@ def test_dry_run_available_connector_exit_0(
 
 def test_needs_attention_exit_2(monkeypatch, cli_db) -> None:
     _enable_pilot_direct(cli_db)
+    from services.project_status_sync_runner import ConnectorRegistry
+    monkeypatch.setattr(
+        main_module, "create_production_registry", lambda: ConnectorRegistry()
+    )
     code = main_module.main(["project-status-sync", "--once"])
     assert code == 2
 

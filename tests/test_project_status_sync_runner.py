@@ -70,6 +70,7 @@ def _enable_pilot(service: ProjectStatusUpdateService) -> int:
             "matchRule": {"incident": "FM-1"},
             "mapping": {"owner": "currentApprover", "note": "approvalComment"},
             "fieldAuthority": {"owner": "automatic", "note": "automatic"},
+            "credentialRef": "test-credential-ref",
         },
     )
     with service._db.get_connection() as conn:
@@ -88,6 +89,7 @@ def _enable_second_deliverable(db: DatabaseManager) -> int:
             UPDATE project_status_update_bindings
             SET mode='hybrid', source_type='tdc', enabled=1,
                 external_key='FM-3',
+                credential_ref='test-credential-ref',
                 match_rule_json='{"incident":"FM-3"}',
                 mapping_json='{"owner":"currentApprover"}'
             WHERE deliverable_id='VPI-T2-D3'
@@ -766,3 +768,107 @@ def test_finalize_failure_secondary_exception_does_not_mask_ki(
     # KI 仍须上抛，不被 RuntimeError 掩盖。
     with pytest.raises(KeyboardInterrupt):
         runner.run_once()
+
+
+# ── 绑定就绪度与凭据测试 ─────────────────────────────────────────
+
+
+def test_runner_needs_attention_when_binding_not_ready_zero_runs(
+    runner: ProjectStatusSyncRunner, db: DatabaseManager, service: ProjectStatusUpdateService, registry: ConnectorRegistry
+) -> None:
+    """当 binding 未就绪（例如无 credential_ref）时，runner 返回 needs_attention，零 connector 调用且零 run 产生。"""
+    # 配置 mode=hybrid, enabled=1，但不设置 credential_ref
+    service.update_update_policy(
+        "VPI-T2-D5",
+        {
+            "mode": "hybrid",
+            "enabled": True,
+            "externalKey": "FM-1",
+            "matchRule": {"incident": "FM-1"},
+            "mapping": {"owner": "currentApprover", "note": "approvalComment"},
+            "fieldAuthority": {"owner": "automatic", "note": "automatic"},
+        },
+    )
+    # 显式清除 credential_ref
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE project_status_update_bindings SET credential_ref = NULL WHERE deliverable_id = 'VPI-T2-D5'"
+        )
+        conn.commit()
+
+    connector = FakeConnector(snapshot=_matched_snapshot(db, owner="ok"))
+    registry.register("tdc", connector)
+
+    result = runner.run_once()
+    assert len(result.results) == 1
+    r = result.results[0]
+    assert r.outcome == "needs_attention"
+    assert r.final_state == "needs_attention"
+    assert r.error_type == "binding_not_ready"
+    assert r.run_id is None
+    assert result.exit_code == EXIT_ATTENTION
+
+    # connector 零调用，零 run 产生
+    assert len(connector.collect_calls) == 0
+    assert _count_runs(db) == 0
+
+
+def test_dry_run_binding_not_ready_returns_attention(
+    runner: ProjectStatusSyncRunner, db: DatabaseManager, service: ProjectStatusUpdateService, registry: ConnectorRegistry
+) -> None:
+    """dry-run 下 binding 未配置 credential_ref 时 binding_ready=False 且 exit_code=EXIT_ATTENTION。"""
+    service.update_update_policy(
+        "VPI-T2-D5",
+        {
+            "mode": "hybrid",
+            "enabled": True,
+            "externalKey": "FM-1",
+            "matchRule": {"incident": "FM-1"},
+            "mapping": {"owner": "currentApprover", "note": "approvalComment"},
+            "fieldAuthority": {"owner": "automatic", "note": "automatic"},
+        },
+    )
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE project_status_update_bindings SET credential_ref = NULL WHERE deliverable_id = 'VPI-T2-D5'"
+        )
+        conn.commit()
+
+    connector = FakeConnector(snapshot=_matched_snapshot(db))
+    registry.register("tdc", connector)
+
+    result = runner.run_once(dry_run=True)
+    assert result.dry_run is True
+    assert result.exit_code == EXIT_ATTENTION
+    assert len(result.readiness) == 1
+    assert result.readiness[0].connector_available is True
+    assert result.readiness[0].binding_ready is False
+    assert len(connector.collect_calls) == 0
+    assert _count_runs(db) == 0
+
+
+def test_eligible_rows_credential_configured_bool_and_credential_ref_absent(
+    db: DatabaseManager, service: ProjectStatusUpdateService
+) -> None:
+    """list_eligible_sync_bindings 返回 credential_configured bool 且不返回 credential_ref。"""
+    _enable_pilot(service)
+    rows = db.list_eligible_sync_bindings()
+    assert len(rows) >= 1
+    d5_row = next(r for r in rows if r["deliverable_id"] == "VPI-T2-D5")
+    assert d5_row["credential_configured"] is True
+    assert isinstance(d5_row["credential_configured"], bool)
+    assert "credential_ref" not in d5_row
+    assert "lease_token" not in d5_row
+
+    # 清空 credential_ref 后再查
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE project_status_update_bindings SET credential_ref = '' WHERE deliverable_id = 'VPI-T2-D5'"
+        )
+        conn.commit()
+
+    rows2 = db.list_eligible_sync_bindings()
+    d5_row2 = next(r for r in rows2 if r["deliverable_id"] == "VPI-T2-D5")
+    assert d5_row2["credential_configured"] is False
+    assert isinstance(d5_row2["credential_configured"], bool)
+    assert "credential_ref" not in d5_row2

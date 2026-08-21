@@ -50,6 +50,7 @@ def _enable_pilot_binding(service: ProjectStatusUpdateService) -> int:
             "matchRule": {"incident": "FM-1"},
             "mapping": {"owner": "currentApprover", "note": "approvalComment"},
             "fieldAuthority": {"owner": "automatic", "note": "automatic"},
+            "credentialRef": "test-credential-ref",
         },
     )
     binding = _get_binding(db := service._db, "VPI-T2-D5")
@@ -359,10 +360,50 @@ def test_acquire_rejects_unready_binding(service: ProjectStatusUpdateService, db
     with pytest.raises(SyncBindingNotReadyError):
         service.acquire_sync_lease("VPI-T2-D5", "scheduled")
 
-    # 非试点交付物。
+    # 手动模式交付物。
     service.update_update_policy("VPI-T2-D3", {"mode": "manual"})
     with pytest.raises(SyncBindingNotReadyError):
         service.acquire_sync_lease("VPI-T2-D3", "scheduled")
+
+
+def test_acquire_readiness_rejection_before_run_lease_or_last_attempt_mutation(
+    service: ProjectStatusUpdateService, db: DatabaseManager
+) -> None:
+    """就绪检查失败时不创建 run、不分配 lease_token、不更新 last_attempt_at 或 sync_state。"""
+    # 配置 enabled=True 但缺少 credential_ref 的绑定
+    service.update_update_policy(
+        "VPI-T2-D5",
+        {
+            "mode": "hybrid",
+            "enabled": True,
+            "externalKey": "FM-1",
+            "matchRule": {"incident": "FM-1"},
+            "mapping": {"owner": "currentApprover", "note": "approvalComment"},
+            "fieldAuthority": {"owner": "automatic", "note": "automatic"},
+        },
+    )
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE project_status_update_bindings SET credential_ref = NULL, last_attempt_at = '2026-01-01T00:00:00.000Z', sync_state = 'idle' WHERE deliverable_id = 'VPI-T2-D5'"
+        )
+        conn.commit()
+
+    with pytest.raises(SyncBindingNotReadyError):
+        service.acquire_sync_lease("VPI-T2-D5", "scheduled")
+
+    # 验证 run 数量为 0，binding 的 lease_token 为空，last_attempt_at 与 sync_state 未被改变
+    with db.get_connection() as conn:
+        runs_count = conn.execute("SELECT COUNT(*) AS c FROM project_status_sync_runs").fetchone()["c"]
+        assert runs_count == 0
+
+        binding = conn.execute(
+            "SELECT lease_token, lease_acquired_at, lease_expires_at, last_attempt_at, sync_state FROM project_status_update_bindings WHERE deliverable_id = 'VPI-T2-D5'"
+        ).fetchone()
+        assert binding["lease_token"] is None
+        assert binding["lease_acquired_at"] is None
+        assert binding["lease_expires_at"] is None
+        assert binding["last_attempt_at"] == "2026-01-01T00:00:00.000Z"
+        assert binding["sync_state"] == "idle"
 
 
 def test_acquire_rejects_invalid_lease_duration(service: ProjectStatusUpdateService, db: DatabaseManager) -> None:

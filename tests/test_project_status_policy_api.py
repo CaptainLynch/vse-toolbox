@@ -111,16 +111,36 @@ def test_policy_patch_rejects_invalid_configuration(client, payload, field) -> N
     assert field in response.get_json()["error"]["fields"]
 
 
-def test_policy_patch_allows_confirmed_ewo_target_mode(client) -> None:  # type: ignore[no-untyped-def]
+@pytest.mark.parametrize("blocked_id", ["VPI-T2-D1", "VPI-T2-D4"])
+def test_policy_patch_rejects_blocked_targets(client, blocked_id: str) -> None:  # type: ignore[no-untyped-def]
+    """D1 和 D4 禁止配置非 manual 模式及自动同步。"""
     response = client.patch(
-        "/api/project-status/deliverables/VPI-T2-D3/update-policy",
+        f"/api/project-status/deliverables/{blocked_id}/update-policy",
+        json={"mode": "hybrid"},
+    )
+    assert response.status_code == 422
+    assert "mode" in response.get_json()["error"]["fields"]
+
+    response = client.patch(
+        f"/api/project-status/deliverables/{blocked_id}/update-policy",
+        json={"enabled": True, "externalKey": "k", "matchRule": {"incident": "x"}},
+    )
+    assert response.status_code == 422
+    assert "enabled" in response.get_json()["error"]["fields"]
+
+
+@pytest.mark.parametrize("allowed_id", ["VPI-T2-D2", "VPI-T2-D3", "VPI-T2-D5"])
+def test_policy_patch_allows_supported_targets(client, allowed_id: str) -> None:  # type: ignore[no-untyped-def]
+    """D2, D3, D5 属于允许自动化范围。"""
+    response = client.patch(
+        f"/api/project-status/deliverables/{allowed_id}/update-policy",
         json={"mode": "hybrid"},
     )
     assert response.status_code == 200
     assert response.get_json()["data"]["mode"] == "hybrid"
 
     response = client.patch(
-        "/api/project-status/deliverables/VPI-T2-D3/update-policy",
+        f"/api/project-status/deliverables/{allowed_id}/update-policy",
         json={"fieldAuthority": {"status": "automatic"}},
     )
     assert response.status_code == 422
