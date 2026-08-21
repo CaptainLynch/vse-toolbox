@@ -974,6 +974,7 @@ class DatabaseManager:
                 """
                 SELECT b.id, b.deliverable_id, b.mode, b.source_type, b.enabled,
                        b.external_key, b.match_rule_json, b.mapping_json,
+                       b.credential_ref,
                        b.lease_token, b.lease_expires_at, b.retry_policy_json,
                        b.sync_state, d.phase_id
                 FROM project_status_update_bindings b
@@ -1000,6 +1001,10 @@ class DatabaseManager:
                 raise SyncBindingNotReadyError("binding match rule is empty")
             if not isinstance(mapping, dict) or not mapping:
                 raise SyncBindingNotReadyError("binding mapping is empty")
+            if not str(binding["credential_ref"] or "").strip():
+                raise SyncBindingNotReadyError(
+                    "credential reference is not configured"
+                )
 
             now = self._utc_now(conn)
             lease_token = secrets.token_urlsafe(32)
@@ -1684,6 +1689,8 @@ class DatabaseManager:
                     SELECT b.id, b.deliverable_id, b.source_type, b.external_key,
                            b.match_rule_json, b.mapping_json, b.cursor_json,
                            b.retry_policy_json, b.sync_state,
+                           CASE WHEN trim(COALESCE(b.credential_ref, '')) <> ''
+                                THEN 1 ELSE 0 END AS credential_configured,
                            d.phase_id, d.updated_at AS deliverable_updated_at
                     FROM project_status_update_bindings b
                     INNER JOIN project_status_deliverables d ON d.id = b.deliverable_id
@@ -1700,6 +1707,8 @@ class DatabaseManager:
                     SELECT b.id, b.deliverable_id, b.source_type, b.external_key,
                            b.match_rule_json, b.mapping_json, b.cursor_json,
                            b.retry_policy_json, b.sync_state,
+                           CASE WHEN trim(COALESCE(b.credential_ref, '')) <> ''
+                                THEN 1 ELSE 0 END AS credential_configured,
                            d.phase_id, d.updated_at AS deliverable_updated_at
                     FROM project_status_update_bindings b
                     INNER JOIN project_status_deliverables d ON d.id = b.deliverable_id
@@ -1708,7 +1717,12 @@ class DatabaseManager:
                     ORDER BY b.id
                     """
                 ).fetchall()
-            return [dict(row) for row in rows]
+            result = [dict(row) for row in rows]
+            for item in result:
+                item["credential_configured"] = bool(
+                    item["credential_configured"]
+                )
+            return result
 
     def get_sync_binding_credential_ref(self, binding_id: int) -> str:
         """Return the opaque credential alias for internal connector execution."""

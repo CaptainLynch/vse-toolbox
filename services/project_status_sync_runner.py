@@ -188,7 +188,7 @@ class RunOnceResult:
     def exit_code(self) -> int:
         if self.dry_run:
             for item in self.readiness:
-                if not item.connector_available:
+                if not item.connector_available or not item.binding_ready:
                     return EXIT_ATTENTION
             return EXIT_OK
 
@@ -309,6 +309,8 @@ class ProjectStatusSyncRunner:
         mapping = _safe_json_loads(binding.get("mapping_json"))
         if not match_rule or not mapping:
             return False
+        if binding.get("credential_configured") is not True:
+            return False
         return True
 
     def _run_single_binding(self, binding: dict[str, Any]) -> BindingRunResult:
@@ -342,8 +344,8 @@ class ProjectStatusSyncRunner:
                 binding_id=binding_id,
                 deliverable_id=deliverable_id,
                 source_type=source_type,
-                outcome="failed",
-                final_state="failed",
+                outcome="needs_attention",
+                final_state="needs_attention",
                 error_type="binding_not_ready",
                 error_message=_sanitize(str(exc)),
             )
@@ -472,8 +474,8 @@ class ProjectStatusSyncRunner:
                 binding_id=binding_id,
                 deliverable_id=deliverable_id,
                 source_type=source_type,
-                outcome="failed",
-                final_state="failed",
+                outcome="needs_attention",
+                final_state="needs_attention",
                 error_type="binding_not_ready",
                 error_message=_sanitize(str(exc)),
             )
