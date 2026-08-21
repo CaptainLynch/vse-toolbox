@@ -53,6 +53,20 @@ def build_command(
     return command
 
 
+def build_prompt(task: dict[str, Any]) -> str:
+    instructions = (
+        "Act as a bounded implementation worker in the current Git worktree. "
+        "Follow only the structured task below. Do not push, rebase, reset, clean, "
+        "restore, access credentials, change system configuration, or operate outside "
+        "the worktree. Apply workspace edits through terminal commands inside the "
+        "current isolated worktree; write_to_file is artifact-only and must not be "
+        "used for workspace paths. Do not request administrator escalation. "
+        "Run only relevant project checks and finish with JSON matching the supplied "
+        "output schema."
+    )
+    return f"{instructions}\n\n{json.dumps(task, ensure_ascii=False, indent=2)}"
+
+
 def invoke(
     task: dict[str, Any],
     worktree: Path,
@@ -68,15 +82,7 @@ def invoke(
         effective["effort"] = effort
     timeout = int(effective.get("timeout_seconds", 900))
     schema = Path(__file__).resolve().parents[2] / "schemas" / "worker-result.schema.json"
-    prompt = (
-        "Act as a bounded implementation worker in the current Git worktree. "
-        "Follow only the structured task below. Do not push, rebase, reset, clean, "
-        "restore, access credentials, change system configuration, or operate outside "
-        "the worktree. Prefer native file read/edit tools over shell commands for file "
-        "content changes. Run only relevant project checks and finish with JSON matching "
-        "the supplied output schema.\n\n"
-        + json.dumps(task, ensure_ascii=False, indent=2)
-    )
+    prompt = build_prompt(task)
     try:
         command = build_command(effective, schema, prompt)
     except FileNotFoundError as exc:

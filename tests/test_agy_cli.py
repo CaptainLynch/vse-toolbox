@@ -85,3 +85,16 @@ def test_permission_denial_is_blocked():
     )
 
     assert result["status"] == "blocked"
+
+
+def test_build_prompt_workspace_edit_and_escalation_rules():
+    task = {
+        "task_id": "TASK-123",
+        "objective": "Test objective",
+    }
+    prompt = agy_cli.build_prompt(task)
+
+    assert "write_to_file is artifact-only and must not be used for workspace paths" in prompt
+    assert "Apply workspace edits through terminal commands inside the current isolated worktree" in prompt
+    assert "Do not request administrator escalation" in prompt
+    assert '"task_id": "TASK-123"' in prompt

@@ -3,7 +3,7 @@
   "worker_agent": "agy-cli",
   "agy": {
     "executable": "agy",
-    "model": "gemini-3.7-flash-high",
+    "model": "gemini-3.7-flash-low",
     "effort": "high",
     "mode": "accept-edits",
     "sandbox": true,
