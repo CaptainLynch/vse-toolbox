@@ -140,6 +140,8 @@ def create_plan(root: Path, run_dir: Path, task: dict[str, Any], dry_run: bool) 
 
 
 def command_checks(root: Path, task: dict[str, Any] | None = None) -> list[list[str]]:
+    if task and task.get("context", {}).get("read_only") is True:
+        return []
     task_commands = (task or {}).get("verification_commands", [])
     return task_commands or checks.discover(root)
 

@@ -97,4 +97,5 @@ def test_build_prompt_workspace_edit_and_escalation_rules():
     assert "write_to_file is artifact-only and must not be used for workspace paths" in prompt
     assert "Apply workspace edits through terminal commands inside the current isolated worktree" in prompt
     assert "Do not request administrator escalation" in prompt
+    assert "return compact findings" in prompt
     assert '"task_id": "TASK-123"' in prompt

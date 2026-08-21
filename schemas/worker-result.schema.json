@@ -12,6 +12,19 @@
     "commands_executed": {"type": "array", "items": {"type": "string"}},
     "risks": {"type": "array", "items": {"type": "string"}},
     "unresolved": {"type": "array", "items": {"type": "string"}},
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "evidence", "implication"],
+        "properties": {
+          "title": {"type": "string"},
+          "evidence": {"type": "array", "items": {"type": "string"}},
+          "implication": {"type": "string"}
+        }
+      }
+    },
     "needs_review": {"type": "boolean"}
   }
 }

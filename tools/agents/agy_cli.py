@@ -61,6 +61,8 @@ def build_prompt(task: dict[str, Any]) -> str:
         "the worktree. Apply workspace edits through terminal commands inside the "
         "current isolated worktree; write_to_file is artifact-only and must not be "
         "used for workspace paths. Do not request administrator escalation. "
+        "For a read-only exploration task, return compact findings with title, "
+        "file-and-line evidence, and implication; do not hide the report in prose. "
         "Run only relevant project checks and finish with JSON matching the supplied "
         "output schema."
     )

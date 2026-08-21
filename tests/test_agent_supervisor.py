@@ -27,6 +27,15 @@ def test_normalize_task_preserves_argument_array_verification_commands():
     assert task["verification_commands"] == [["python", "-m", "pytest", "tests/test_readme.py", "-q"]]
 
 
+def test_command_checks_skips_default_checks_for_read_only_task(tmp_path):
+    task = {
+        "context": {"read_only": True},
+        "verification_commands": [],
+    }
+
+    assert supervisor.command_checks(tmp_path, task) == []
+
+
 def test_collect_change_evidence_includes_only_scoped_untracked_text(tmp_path):
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
     (tmp_path / "allowed.txt").write_bytes(b"allowed\n")
