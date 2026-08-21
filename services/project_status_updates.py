@@ -85,6 +85,7 @@ class ConnectorSnapshot:
     external_version: str
     fetched_at: str
     expected_deliverable_updated_at: str
+    artifacts: Sequence[Mapping[str, Any]] = ()
 
 
 @dataclass(frozen=True)
@@ -125,6 +126,15 @@ ALLOWED_TDC_MATCH_KEYS = frozenset(
         "projectModel",
         "partNumber",
         "modelNumber",
+        "reportType",
+        "processNo",
+        "carTypeProject",
+        "title",
+        "sorNumber",
+        "approvalStatus",
+        "ewoNo",
+        "projectCode",
+        "subjectKeyword",
     }
 )
 
@@ -380,7 +390,7 @@ class ProjectStatusUpdateService:
                 result_summary=self._sanitize_message(
                     f"sync applied for {binding['deliverable_id']}"
                 ),
-                artifacts=None,
+                artifacts=snapshot.artifacts,
             )
         except ProjectStatusConcurrentUpdateError:
             # 乐观锁冲突：写 conflict 审计并原子释放租约。
@@ -557,6 +567,8 @@ class ProjectStatusUpdateService:
             "matchRule",
             "mapping",
             "fieldAuthority",
+            "credentialRef",
+            "intervalMinutes",
         }
         if unknown:
             fields["request"] = "包含不允许修改的字段"
@@ -566,6 +578,8 @@ class ProjectStatusUpdateService:
         external_key = payload.get("externalKey", binding["external_key"])
         match_rule = payload.get("matchRule", _json_loads(binding["match_rule_json"]))
         mapping = payload.get("mapping", _json_loads(binding["mapping_json"]))
+        credential_ref = payload.get("credentialRef", binding.get("credential_ref"))
+        interval_minutes = payload.get("intervalMinutes", binding.get("interval_minutes") or 60)
 
         current_authority = {
             PROJECT_STATUS_FIELD_NAME_TO_API[row["field_name"]]: row["authority"]
@@ -596,6 +610,15 @@ class ProjectStatusUpdateService:
             fields["mode"] = "模式必须是 manual、automatic 或 hybrid"
         if not isinstance(enabled, bool):
             fields["enabled"] = "enabled 必须是布尔值"
+        if credential_ref is not None:
+            if not isinstance(credential_ref, str) or not credential_ref.strip():
+                fields["credentialRef"] = "凭据引用必须是非空别名或 null"
+            elif len(credential_ref.strip()) > 256 or any(ord(ch) < 32 for ch in credential_ref):
+                fields["credentialRef"] = "凭据引用格式无效"
+            else:
+                credential_ref = credential_ref.strip()
+        if not isinstance(interval_minutes, int) or isinstance(interval_minutes, bool) or interval_minutes < 1:
+            fields["intervalMinutes"] = "同步周期必须是正整数分钟"
 
         if external_key is not None and not isinstance(external_key, str):
             fields["externalKey"] = "外部稳定键必须是字符串或 null"
@@ -635,14 +658,14 @@ class ProjectStatusUpdateService:
             elif len(_json_dumps(mapping)) > _TEXT_LIMITS["mapping"]:
                 fields["mapping"] = "字段映射过长"
 
-        is_pilot = deliverable_id == PROJECT_STATUS_PILOT_DELIVERABLE_ID
-        if not is_pilot:
+        automatic_targets = {"VPI-T2-D2", "VPI-T2-D3", "VPI-T2-D5"}
+        if deliverable_id not in automatic_targets:
             if mode != "manual":
-                fields["mode"] = "仅 VPI-T2-D5 允许 tdc 试点自动化"
+                fields["mode"] = "此交付物当前保持手工或映射发现模式"
             if enabled:
-                fields["enabled"] = "仅 VPI-T2-D5 允许启用试点自动化"
+                fields["enabled"] = "此交付物当前禁止自动同步"
             if any(value == "automatic" for value in field_authority.values()):
-                fields["fieldAuthority"] = "仅 VPI-T2-D5 允许自动字段归属"
+                fields["fieldAuthority"] = "此交付物当前禁止自动字段归属"
 
         if mode == "manual" and any(
             value == "automatic" for value in field_authority.values()
@@ -666,6 +689,9 @@ class ProjectStatusUpdateService:
                 fields["matchRule"] = "匹配条件必须包含至少一个允许的 TDC 数据模型键"
             if mode == "manual":
                 fields["enabled"] = "手动模式不能启用自动同步"
+            if isinstance(match_rule, dict) and match_rule.get("reportType"):
+                if self._db.mapping_stability_count(deliverable_id) < 2:
+                    fields["enabled"] = "启用同步前需要连续两次无歧义且目标一致的映射发现证据"
 
         if fields:
             raise ProjectStatusPolicyError(fields)
@@ -682,6 +708,8 @@ class ProjectStatusUpdateService:
             _json_dumps(match_rule),
             _json_dumps(mapping),
             normalized_authority,
+            credential_ref=credential_ref,
+            interval_minutes=interval_minutes,
         )
         raw = self._db.get_project_status_update_policy(deliverable_id)
         assert raw is not None
@@ -730,6 +758,7 @@ class ProjectStatusUpdateService:
             "matchRule": _json_loads(binding["match_rule_json"]),
             "mapping": _json_loads(binding["mapping_json"]),
             "intervalMinutes": binding.get("interval_minutes"),
+            "credentialAvailable": bool(binding.get("credential_ref")),
             "lastAttemptAt": binding.get("last_attempt_at"),
             "lastSuccessAt": binding.get("last_success_at"),
             "syncState": binding.get("sync_state"),

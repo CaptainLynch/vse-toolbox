@@ -704,10 +704,11 @@ def test_attempt_always_one(
 # ── 生产 registry 为空 ─────────────────────────────────────────
 
 
-def test_production_registry_is_empty() -> None:
+def test_production_registry_has_fixed_connectors() -> None:
     reg = create_production_registry()
-    assert reg.registered_types == ()
-    assert reg.get("tdc") is None
+    assert reg.registered_types == ("aras", "tdc")
+    assert reg.get("tdc") is not None
+    assert reg.get("aras") is not None
 
 
 # ── 回归：P1 修复后的额外隔离测试 ───────────────────────────────

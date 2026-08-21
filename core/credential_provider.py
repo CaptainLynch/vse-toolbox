@@ -72,9 +72,14 @@ class WindowsCredentialManagerProvider:
         blob = raw.get("CredentialBlob", b"")
         if isinstance(blob, bytes):
             try:
-                password = blob.decode("utf-16-le")
-            except UnicodeDecodeError:
-                password = blob.decode("utf-8", errors="strict")
+                looks_utf16 = blob.startswith((b"\xff\xfe", b"\xfe\xff")) or (
+                    len(blob) >= 2 and len(blob) % 2 == 0 and b"\x00" in blob[1::2]
+                )
+                password = blob.decode("utf-16-le" if looks_utf16 else "utf-8")
+            except UnicodeDecodeError as exc:
+                raise CredentialProviderError(
+                    "credential reference has an unsupported value encoding"
+                ) from exc
         else:
             password = str(blob or "")
         if not username or not password:

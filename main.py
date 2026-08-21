@@ -38,6 +38,7 @@ from core.db_manager import DatabaseManager
 from core.diagnostics import DiagnosticOptions, MarkdownDiagnosticReport
 from core.redaction import redact_sensitive_text, safe_display_value
 from core.runtime_paths import app_root
+from core.archive_store import ArchiveStore
 from services.excel_toolbox import ExcelToolbox
 from services.feishu_imap import FeishuImapParser
 from services.office_toolbox import OfficeToolbox
@@ -1470,7 +1471,18 @@ def _parse_sync_args(argv: Sequence[str]) -> argparse.Namespace:
 
 
 _SYNC_SUBCOMMAND = "project-status-sync"
+_ARCHIVE_CLEANUP_SUBCOMMAND = "project-status-archive-cleanup"
 _PROBE_SUBCOMMAND = "tdc-contract-probe"
+
+
+def _parse_archive_cleanup_args(argv: Sequence[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="main.py project-status-archive-cleanup",
+        description="计划或显式执行受控交付物归档保留清理。",
+    )
+    parser.add_argument("--retention-days", type=int, default=90)
+    parser.add_argument("--execute", action="store_true", default=False)
+    return parser.parse_args(argv)
 
 
 def _parse_probe_args(argv: Sequence[str]) -> argparse.Namespace:
@@ -1498,6 +1510,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     - tdc-contract-probe 时进入只读探测，不构造 DatabaseManager。
     """
     raw_argv = list(sys.argv[1:] if argv is None else argv)
+
+    if raw_argv and raw_argv[0] == _ARCHIVE_CLEANUP_SUBCOMMAND:
+        args = _parse_archive_cleanup_args(raw_argv[1:])
+        try:
+            archive = ArchiveStore()
+            plan = archive.plan_retention(retention_days=args.retention_days)
+            if not args.execute:
+                console.print(
+                    f"[dim]dry-run: {len(plan)} 个归档文件符合 {args.retention_days} 天保留清理条件；未删除。[/]"
+                )
+                return EXIT_OK
+            removed = archive.execute_retention(plan)
+            console.print(f"[dim]已删除 {len(removed)} 个受控归档文件。[/]")
+            return EXIT_OK
+        except (OSError, ValueError) as exc:
+            console.print(
+                f"[red]归档清理失败: {redact_sensitive_text(str(exc), limit=500)}[/]"
+            )
+            return EXIT_FAILED
 
     # tdc-contract-probe：在任何 DatabaseManager 构造之前拦截。
     # 该命令不接触数据库，不初始化 SQLite，不进入菜单。

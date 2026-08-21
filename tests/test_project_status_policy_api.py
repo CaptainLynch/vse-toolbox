@@ -111,13 +111,13 @@ def test_policy_patch_rejects_invalid_configuration(client, payload, field) -> N
     assert field in response.get_json()["error"]["fields"]
 
 
-def test_policy_patch_rejects_non_pilot_automation(client) -> None:  # type: ignore[no-untyped-def]
+def test_policy_patch_allows_confirmed_ewo_target_mode(client) -> None:  # type: ignore[no-untyped-def]
     response = client.patch(
         "/api/project-status/deliverables/VPI-T2-D3/update-policy",
         json={"mode": "hybrid"},
     )
-    assert response.status_code == 422
-    assert "mode" in response.get_json()["error"]["fields"]
+    assert response.status_code == 200
+    assert response.get_json()["data"]["mode"] == "hybrid"
 
     response = client.patch(
         "/api/project-status/deliverables/VPI-T2-D3/update-policy",

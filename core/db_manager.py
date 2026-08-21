@@ -290,6 +290,25 @@ TABLE_DEFINITIONS: list[str] = [
         ON project_status_sync_artifacts(run_id);
     """,
     """
+    CREATE TABLE IF NOT EXISTS project_status_mapping_observations (
+        id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+        deliverable_id         TEXT NOT NULL,
+        source_type            TEXT NOT NULL,
+        result_state           TEXT NOT NULL CHECK (result_state IN ('matched','not_found','ambiguous','missing_fields','key_changed')),
+        external_key           TEXT,
+        candidate_fingerprint  TEXT,
+        candidate_count        INTEGER NOT NULL,
+        candidate_summary_json TEXT NOT NULL DEFAULT '[]',
+        field_report_json      TEXT NOT NULL DEFAULT '{}',
+        created_at             TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        FOREIGN KEY (deliverable_id) REFERENCES project_status_deliverables(id) ON DELETE CASCADE
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_ps_mapping_observations
+        ON project_status_mapping_observations(deliverable_id, id DESC);
+    """,
+    """
     CREATE TABLE IF NOT EXISTS project_status_field_authority (
         deliverable_id TEXT NOT NULL,
         field_name     TEXT NOT NULL,
@@ -478,10 +497,10 @@ class DatabaseManager:
         )
         deliverables = (
             ("VPI-T2-D1", "子系统开发策略", "已完成", "王晨", "2026-05-12", "2026-05-10", 100, "无", "内网"),
-            ("VPI-T2-D2", "SOR 定点流程", "已完成", "周敏", "2026-06-18", "2026-06-17", 100, "无", "内网"),
-            ("VPI-T2-D3", "EWO 定点流程", "进行中", "李珊", "2026-08-22", None, 72, "按计划推进", "飞书"),
-            ("VPI-T2-D4", "造型 VDR 审批流程", "待审批", "陈璇", "2026-08-15", None, 90, "等待设计总监审批", "内网"),
-            ("VPI-T2-D5", "数模审批流程", "已逾期", "赵岩", "2026-08-08", None, 82, "逾期 5 天", "内网"),
+            ("VPI-T2-D2", "SOR 定点流程", "已完成", "周敏", "2026-06-18", "2026-06-17", 100, "无", "TDC SOR"),
+            ("VPI-T2-D3", "EWO 定点流程", "进行中", "李珊", "2026-08-22", None, 72, "按计划推进", "ARAS EWO"),
+            ("VPI-T2-D4", "造型 VDR 审批流程", "待审批", "陈璇", "2026-08-15", None, 90, "等待设计总监审批", "TDC A 面（待契约确认）"),
+            ("VPI-T2-D5", "数模审批流程", "已逾期", "赵岩", "2026-08-08", None, 82, "逾期 5 天", "TDC 数模"),
         )
         conn.executemany(
             """
@@ -497,8 +516,13 @@ class DatabaseManager:
         conn.execute(
             """
             UPDATE project_status_update_bindings
-            SET source_type = 'none'
-            WHERE deliverable_id <> 'VPI-T2-D5'
+            SET source_type = CASE deliverable_id
+                WHEN 'VPI-T2-D2' THEN 'tdc'
+                WHEN 'VPI-T2-D3' THEN 'aras'
+                WHEN 'VPI-T2-D4' THEN 'tdc'
+                WHEN 'VPI-T2-D5' THEN 'tdc'
+                ELSE 'none' END
+            WHERE deliverable_id IN ('VPI-T2-D1','VPI-T2-D2','VPI-T2-D3','VPI-T2-D4','VPI-T2-D5')
               AND mode = 'manual' AND enabled = 0
               AND external_key IS NULL AND match_rule_json = '{}' AND mapping_json = '{}'
               AND last_attempt_at IS NULL AND last_success_at IS NULL
@@ -507,8 +531,13 @@ class DatabaseManager:
         conn.execute(
             """
             UPDATE project_status_field_authority
-            SET source_type = 'none'
-            WHERE deliverable_id <> 'VPI-T2-D5'
+            SET source_type = CASE deliverable_id
+                WHEN 'VPI-T2-D2' THEN 'tdc'
+                WHEN 'VPI-T2-D3' THEN 'aras'
+                WHEN 'VPI-T2-D4' THEN 'tdc'
+                WHEN 'VPI-T2-D5' THEN 'tdc'
+                ELSE 'none' END
+            WHERE deliverable_id IN ('VPI-T2-D1','VPI-T2-D2','VPI-T2-D3','VPI-T2-D4','VPI-T2-D5')
               AND authority = 'manual' AND locked_at IS NULL
             """
         )
@@ -601,8 +630,11 @@ class DatabaseManager:
 
     @staticmethod
     def _ensure_project_status_policy(conn: sqlite3.Connection, deliverable_id: str) -> None:
-        """幂等补齐默认手动策略；仅数模试点绑定 TDC。"""
-        source_type = "tdc" if deliverable_id == "VPI-T2-D5" else "none"
+        """Idempotently seed the confirmed authoritative source assignment."""
+        source_type = {
+            "VPI-T2-D2": "tdc", "VPI-T2-D3": "aras",
+            "VPI-T2-D4": "tdc", "VPI-T2-D5": "tdc",
+        }.get(deliverable_id, "none")
         conn.execute(
             """
             INSERT OR IGNORE INTO project_status_update_bindings
@@ -722,7 +754,8 @@ class DatabaseManager:
                 SELECT id, deliverable_id, mode, source_type, external_key,
                        match_rule_json, mapping_json, enabled, interval_minutes,
                        last_attempt_at, last_success_at, sync_state,
-                       last_error_type, last_error_message, created_at, updated_at
+                        last_error_type, last_error_message, credential_ref,
+                        created_at, updated_at
                 FROM project_status_update_bindings
                 WHERE deliverable_id = ?
                 """,
@@ -763,6 +796,8 @@ class DatabaseManager:
         match_rule_json: str,
         mapping_json: str,
         field_authority: dict[str, str],
+        credential_ref: str | None = None,
+        interval_minutes: int = 60,
     ) -> None:
         """原子写入绑定与字段归属，自动归属同时解除人工锁。"""
         unknown = set(field_authority) - set(PROJECT_STATUS_EDITABLE_FIELDS)
@@ -780,18 +815,19 @@ class DatabaseManager:
                 """
                 UPDATE project_status_update_bindings
                 SET mode = ?, enabled = ?, external_key = ?, match_rule_json = ?,
-                    mapping_json = ?,
+                    mapping_json = ?, credential_ref = ?, interval_minutes = ?,
                     updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now', 'localtime')
                 WHERE deliverable_id = ?
                 """,
-                (mode, int(enabled), external_key, match_rule_json, mapping_json, deliverable_id),
+                (mode, int(enabled), external_key, match_rule_json, mapping_json,
+                 credential_ref, interval_minutes, deliverable_id),
             )
             for field_name, authority in field_authority.items():
                 conn.execute(
                     """
                     INSERT INTO project_status_field_authority
                         (deliverable_id, field_name, authority, source_type, locked_at, updated_at)
-                    VALUES (?, ?, ?, 'tdc',
+                    VALUES (?, ?, ?, (SELECT source_type FROM project_status_update_bindings WHERE deliverable_id = ?),
                             CASE WHEN ? = 'automatic' THEN NULL
                                  ELSE strftime('%Y-%m-%d %H:%M:%f', 'now', 'localtime') END,
                             strftime('%Y-%m-%d %H:%M:%f', 'now', 'localtime'))
@@ -801,7 +837,7 @@ class DatabaseManager:
                         locked_at = excluded.locked_at,
                         updated_at = excluded.updated_at
                     """,
-                    (deliverable_id, field_name, authority, authority),
+                    (deliverable_id, field_name, authority, deliverable_id, authority),
                 )
 
     def list_project_status_update_audit(
@@ -1583,6 +1619,28 @@ class DatabaseManager:
             ).fetchall()
             return [dict(row) for row in rows]
 
+    def list_sync_runs(
+        self, deliverable_id: str | None = None, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """Return bounded run history without binding secrets or raw payloads."""
+        bounded = max(1, min(int(limit), 500))
+        sql = """
+            SELECT id, binding_id, deliverable_id, trigger_type, run_state,
+                   attempt, external_version, result_summary, error_type,
+                   error_message, created_at, started_at, finished_at
+            FROM project_status_sync_runs
+        """
+        params: tuple[Any, ...]
+        if deliverable_id:
+            sql += " WHERE deliverable_id = ?"
+            params = (deliverable_id, bounded)
+        else:
+            params = (bounded,)
+        sql += " ORDER BY id DESC LIMIT ?"
+        with self.get_connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]
+
     def get_sync_binding_by_deliverable(
         self,
         deliverable_id: str,
@@ -1651,6 +1709,93 @@ class DatabaseManager:
                     """
                 ).fetchall()
             return [dict(row) for row in rows]
+
+    def get_sync_binding_credential_ref(self, binding_id: int) -> str:
+        """Return the opaque credential alias for internal connector execution."""
+        with self.get_connection() as conn:
+            row = conn.execute(
+                "SELECT credential_ref FROM project_status_update_bindings WHERE id = ?",
+                (binding_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(binding_id)
+        value = str(row["credential_ref"] or "").strip()
+        if not value:
+            raise SyncBindingNotReadyError("credential reference is not configured")
+        return value
+
+    def record_mapping_observation(
+        self,
+        deliverable_id: str,
+        source_type: str,
+        result_state: str,
+        external_key: str | None,
+        candidate_fingerprint: str | None,
+        candidate_count: int,
+        candidate_summary_json: str,
+        field_report_json: str,
+    ) -> int:
+        allowed = {"matched", "not_found", "ambiguous", "missing_fields", "key_changed"}
+        if result_state not in allowed:
+            raise ValueError("invalid mapping observation state")
+        with self.get_connection() as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM project_status_deliverables WHERE id = ?", (deliverable_id,)
+            ).fetchone()
+            if exists is None:
+                raise KeyError(deliverable_id)
+            cursor = conn.execute(
+                """
+                INSERT INTO project_status_mapping_observations
+                    (deliverable_id, source_type, result_state, external_key,
+                     candidate_fingerprint, candidate_count,
+                     candidate_summary_json, field_report_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (deliverable_id, source_type, result_state, external_key,
+                 candidate_fingerprint, candidate_count,
+                 _sanitize_json(_json_loads_or_none(candidate_summary_json) or []),
+                 _sanitize_json(_json_loads_or_none(field_report_json) or {})),
+            )
+            conn.execute(
+                """
+                DELETE FROM project_status_mapping_observations
+                WHERE deliverable_id = ? AND id NOT IN (
+                    SELECT id FROM project_status_mapping_observations
+                    WHERE deliverable_id = ? ORDER BY id DESC LIMIT 100
+                )
+                """,
+                (deliverable_id, deliverable_id),
+            )
+            return int(cursor.lastrowid)
+
+    def list_mapping_observations(self, deliverable_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        bounded = max(1, min(int(limit), 100))
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, deliverable_id, source_type, result_state, external_key,
+                       candidate_fingerprint, candidate_count,
+                       candidate_summary_json, field_report_json, created_at
+                FROM project_status_mapping_observations
+                WHERE deliverable_id = ? ORDER BY id DESC LIMIT ?
+                """,
+                (deliverable_id, bounded),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def mapping_stability_count(self, deliverable_id: str) -> int:
+        rows = self.list_mapping_observations(deliverable_id, 2)
+        if not rows or rows[0]["result_state"] != "matched":
+            return 0
+        key = rows[0]["external_key"]
+        fingerprint = rows[0]["candidate_fingerprint"]
+        count = 0
+        for row in rows:
+            if row["result_state"] != "matched" or row["external_key"] != key or row["candidate_fingerprint"] != fingerprint:
+                break
+            count += 1
+        return count
 
     def replace_project_status_milestones(
         self,

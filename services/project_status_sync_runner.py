@@ -90,6 +90,8 @@ class SyncBindingContext:
     mapping: Mapping[str, Any]
     cursor: Mapping[str, Any]
     expected_deliverable_updated_at: str
+    run_id: int = 0
+    credential_ref: str = ""
 
 
 # ── Connector Protocol ──────────────────────────────────────────
@@ -364,6 +366,10 @@ class ProjectStatusSyncRunner:
             self._db.start_sync_run(binding_id, run_id, lease_token)
 
             # 构造只读上下文。
+            try:
+                credential_ref = self._db.get_sync_binding_credential_ref(binding_id)
+            except SyncBindingNotReadyError:
+                credential_ref = ""
             context = SyncBindingContext(
                 binding_id=binding_id,
                 deliverable_id=deliverable_id,
@@ -376,6 +382,8 @@ class ProjectStatusSyncRunner:
                 expected_deliverable_updated_at=str(
                     binding["deliverable_updated_at"]
                 ),
+                run_id=run_id,
+                credential_ref=credential_ref,
             )
 
             # 在数据库事务外调用 connector。
@@ -563,7 +571,24 @@ def create_production_registry() -> ConnectorRegistry:
     本轮不含真实 TDC/Aras connector；所有 source_type 均未注册，
     由 runner 产生 connector_unavailable 结果。M2B 将在此注册首个真实 connector。
     """
-    return ConnectorRegistry()
+    from core.archive_store import ArchiveStore
+    from core.credential_provider import WindowsCredentialManagerProvider
+    from services.project_status_connectors import (
+        ArasProjectStatusConnector,
+        RetryingConnector,
+        TDCProjectStatusConnector,
+    )
+
+    credentials = WindowsCredentialManagerProvider()
+    archive = ArchiveStore()
+    registry = ConnectorRegistry()
+    registry.register(
+        "aras", RetryingConnector(ArasProjectStatusConnector(credentials, archive))
+    )
+    registry.register(
+        "tdc", RetryingConnector(TDCProjectStatusConnector(credentials, archive))
+    )
+    return registry
 
 
 # ── 辅助 ────────────────────────────────────────────────────────

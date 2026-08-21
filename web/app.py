@@ -33,6 +33,8 @@ from services.project_status_updates import (
     ProjectStatusPolicyError,
     ProjectStatusUpdateService,
 )
+from services.project_status_discovery import MappingDiscoveryService
+from services.project_status_analytics import ProjectStatusAnalyticsService
 from core.redaction import redact_sensitive_text
 from services.aras_crawler import (
     ArasCrawlerClient,
@@ -1501,6 +1503,8 @@ def create_app(
     db = DatabaseManager()
     db.init_database()
     update_service = ProjectStatusUpdateService(db)
+    discovery_service = MappingDiscoveryService(db)
+    analytics_service = ProjectStatusAnalyticsService(db)
 
 
     @app.route("/")
@@ -1626,6 +1630,104 @@ def create_app(
             return response
         except Exception as exc:
             logger.exception("api/project-status/updates 查询失败")
+            return _json_error(500, "ServerError", _sanitize_error_message(exc))
+
+    @app.get("/api/project-status/deliverables/<deliverable_id>/mapping-discovery")
+    def api_project_status_mapping_discovery_history(deliverable_id: str):
+        try:
+            response = jsonify({"ok": True, "data": discovery_service.history(deliverable_id)})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except Exception as exc:
+            logger.exception("mapping discovery history failed")
+            return _json_error(500, "ServerError", _sanitize_error_message(exc))
+
+    @app.post("/api/project-status/deliverables/<deliverable_id>/mapping-discovery")
+    def api_project_status_mapping_discovery(deliverable_id: str):
+        payload, error = _request_payload()
+        if error is not None:
+            return error
+        assert payload is not None
+        if deliverable_id == "VPI-T2-D1":
+            return _json_error(409, "ManualOnly", "该交付物仅允许手工维护")
+        if deliverable_id == "VPI-T2-D4":
+            return _json_error(409, "ContractBlocked", AFACE_CONTRACT_BLOCKER)
+        selected = payload.get("selectedExternalKey")
+        if selected is not None and not isinstance(selected, str):
+            return _project_status_validation_error(
+                {"selectedExternalKey": "必须是字符串或 null"}
+            )
+        aras_client: ArasCrawlerClient | None = None
+        try:
+            if deliverable_id in {"VPI-T2-D2", "VPI-T2-D5"}:
+                client = _build_tdc_client_from_payload(
+                    payload, app.config["TDC_ALLOWED_HOSTS"]
+                )
+                if deliverable_id == "VPI-T2-D2":
+                    values = _tdc_filters_from_payload(payload, _TDC_SOR_FILTER_NAMES)
+                    rows = client.crawl_sor_all(
+                        _tdc_sor_filters(values), max_records=1000
+                    ).rows
+                else:
+                    values = _tdc_filters_from_payload(payload, _TDC_DATA_MODEL_FILTER_NAMES)
+                    rows = client.crawl_data_model_all(
+                        _tdc_data_model_filters(values), max_records=1000
+                    ).rows
+                result = discovery_service.observe(deliverable_id, "tdc", rows, selected)
+            elif deliverable_id == "VPI-T2-D3":
+                aras_client = _build_aras_client_from_payload(
+                    payload, app.config["ARAS_ALLOWED_HOSTS"]
+                )
+                rows = aras_client.crawl_ewo_report_all(
+                    _ewo_filters_from_payload(payload), max_records=1000
+                ).rows
+                result = discovery_service.observe(deliverable_id, "aras", rows, selected)
+            else:
+                return _json_error(404, "NotFound", "未找到交付物")
+            return jsonify({"ok": True, "data": result})
+        except (_TDCRequestError, TDCCrawlerError, TDCAuthError) as exc:
+            return _tdc_error_response(exc, "mapping-discovery", "query")
+        except (_ArasRequestError, ArasCrawlerError, ArasAuthError) as exc:
+            return _aras_error_response(exc, aras_client, "mapping-discovery")
+        except Exception as exc:
+            logger.exception("mapping discovery failed")
+            return _json_error(500, "ServerError", _sanitize_error_message(exc))
+
+    @app.get("/api/project-status/analytics")
+    def api_project_status_analytics():
+        try:
+            response = jsonify({"ok": True, "data": analytics_service.overview()})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except Exception as exc:
+            logger.exception("project status analytics failed")
+            return _json_error(500, "ServerError", _sanitize_error_message(exc))
+
+    @app.get("/api/project-status/runs")
+    def api_project_status_runs():
+        deliverable_id = request.args.get("deliverableId")
+        try:
+            limit = _positive_int(request.args.get("limit"), 100)
+            response = jsonify({"ok": True, "data": analytics_service.runs(deliverable_id, limit)})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except (TypeError, ValueError) as exc:
+            return _json_error(422, "ValidationError", _sanitize_error_message(exc))
+        except Exception as exc:
+            logger.exception("project status runs failed")
+            return _json_error(500, "ServerError", _sanitize_error_message(exc))
+
+    @app.get("/api/project-status/runs/<int:run_id>/artifacts")
+    def api_project_status_run_artifacts(run_id: int):
+        try:
+            if db.get_sync_run(run_id) is None:
+                return _json_error(404, "NotFound", "未找到同步运行")
+            data = {"runId": run_id, "artifacts": db.list_sync_artifacts(run_id)}
+            response = jsonify({"ok": True, "data": data})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except Exception as exc:
+            logger.exception("project status artifacts failed")
             return _json_error(500, "ServerError", _sanitize_error_message(exc))
 
     @app.patch("/api/project-status/phases/<phase_id>/milestones")
