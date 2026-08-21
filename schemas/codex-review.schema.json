@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["task_id", "verdict", "reason", "feedback", "risk", "takeover_required"],
+  "properties": {
+    "task_id": {"type": "string"},
+    "verdict": {"enum": ["PASS", "FIX", "REJECT"]},
+    "reason": {"type": "string"},
+    "feedback": {"type": "array", "items": {"type": "string"}},
+    "risk": {"enum": ["low", "medium", "high"]},
+    "takeover_required": {"type": "boolean"}
+  }
+}

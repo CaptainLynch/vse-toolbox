@@ -36,6 +36,7 @@ import json
 import logging
 import math
 import re
+import sys
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -69,6 +70,17 @@ ECM_OIDC_AUTH_PATH = f"/auth/realms/{ECM_OIDC_REALM}/protocol/openid-connect/aut
 SOAP_ROUTE = "Server/InnovatorServer.aspx"
 SOAP_ACTION_VALIDATE_USER = "ValidateUser"
 TIMEZONE_NAME = "China Standard Time"
+# 三段认证链后两段所用的端点：
+# - 外层 OIDC token 仅用于调 userinfo 拿 preferred_username，最终 session 不带它
+# - ADValidate 桥：用 userinfo 字段换出 Innovator 内部账号的 MD5 密码
+# - 内层 Innovator OAuthServer password grant：用 MD5 换 aud 含 Innovator 的 access_token
+USERINFO_PATH = f"/auth/realms/{ECM_OIDC_REALM}/protocol/openid-connect/userinfo"
+ADVALIDATE_PATH = "/ADLogin/ADValidate.asmx/findUserByloginname"
+INNOVATOR_OAUTH_TOKEN_PATH = "/oauthserver/connect/token"
+INNOVATOR_CLIENT_ID = "InnovatorClient"
+INNOVATOR_SCOPE = "openid Innovator"
+ECM_OIDC_TOKEN_SCOPE = "email profile openid"
+_WINHTTP_PROGID = "WinHttp.WinHttpRequest.5.1"
 _SAFE_HEADER_NAMES = {
     "accept",
     "accept-language",
@@ -216,6 +228,8 @@ class ArasECMAuthClient:
         timeout: float = 30.0,
         diagnostic_hook: Callable[[ArasAuthHttpDiagnosticEvent], None] | None = None,
         random_value_factory: Callable[[], str] | None = None,
+        innovator_database: str = "InnovatorSolutions",
+        native_session_factory: Callable[[], Any] | None = None,
     ) -> None:
         self.base_url = _normalize_aras_app_root(base_url)
         if not urlsplit(self.base_url).scheme or not urlsplit(self.base_url).netloc:
@@ -224,6 +238,7 @@ class ArasECMAuthClient:
         self.oidc_client_id = _validate_client_id(oidc_client_id)
         self.redirect_uri = _validate_redirect_uri(redirect_uri)
         self.timeout = _validate_timeout(timeout)
+        self._session_injected = session is not None
         if session is None:
             if requests is None:
                 raise ImportError("ArasECMAuthClient requires requests; install requirements.txt")
@@ -232,9 +247,28 @@ class ArasECMAuthClient:
         self.session = session
         self.diagnostic_hook = diagnostic_hook
         self.random_value_factory = random_value_factory or (lambda: uuid.uuid4().hex)
+        self.innovator_database = str(innovator_database).strip() or "InnovatorSolutions"
+        self.native_session_factory = native_session_factory
+        # 在 frozen/源码 win32 生产环境下，切到 WinHTTP COM 传输，绕开 urllib3
+        # 在某些 frozen 环境对明文 HTTP(80) socket 建链失败的问题（与 tdc_auth 同构）。
+        # 测试通过显式注入 session 触发 _session_injected=True 跳过此切换。
+        if not self._session_injected and (
+            self.native_session_factory is not None or sys.platform == "win32"
+        ):
+            factory = self.native_session_factory or _new_native_aras_session
+            try:
+                self.session = factory()
+            except Exception as exc:
+                raise ArasAuthError(
+                    f"Aras native session creation failed: {type(exc).__name__}",
+                    stage="aras-session-init",
+                ) from exc
 
     def login(self, username: str, password: str) -> ArasLoginResult:
         """Run the OIDC code flow, gate on Aras SOAP ValidateUser, return the session."""
+        # 重复调用 login() 时，先丢弃上一轮残留的 Innovator token，避免它被
+        # _request 合并进本轮外层身份域（account.sgmw.com.cn）请求而跨域泄露。
+        self.session.headers.pop("Authorization", None)
         username_value = str(username).strip()
         password_value = str(password)
         if not username_value:
@@ -342,6 +376,7 @@ class ArasECMAuthClient:
             "code": authorization_code,
             "grant_type": "authorization_code",
             "redirect_uri": self.redirect_uri,
+            "scope": ECM_OIDC_TOKEN_SCOPE,
         }
         try:
             oidc_token = self._request(
@@ -363,14 +398,156 @@ class ArasECMAuthClient:
             token_form["code"] = ""
             authorization_code = ""
         oidc_payload = self._json_response(oidc_token)
-        access_token = oidc_payload.get("access_token")
-        if not isinstance(access_token, str) or not access_token:
+        outer_access_token = oidc_payload.get("access_token")
+        if not isinstance(outer_access_token, str) or not outer_access_token:
             self._reject(oidc_token, "oidc-token-missing", "ECM OIDC response does not contain an access token")
-        token_type = str(oidc_payload.get("token_type") or "Bearer").strip() or "Bearer"
         self._accept(oidc_token, validation="oidc-token-received", json_fields=tuple(sorted(oidc_payload)))
-        # The token lives only in this in-memory session; never persist or log it.
-        self.session.headers["Authorization"] = f"{token_type} {access_token}"
-        access_token = ""
+        # The outer OIDC token is used only to call userinfo and obtain the corporate
+        # preferred_username; it never becomes the session Authorization header (its
+        # aud is ecm-front, which Innovator Server does not accept).
+
+        # --- Stage: 外层 userinfo（用完即丢，绝不让外层 token 进入最终 session）---
+        userinfo_url = urljoin(self.identity_origin, USERINFO_PATH.lstrip("/"))
+        try:
+            self.session.headers["Authorization"] = f"Bearer {outer_access_token}"
+            userinfo_trace = self._request(
+                "POST",
+                userinfo_url,
+                stage="ecm-userinfo",
+                headers={
+                    "Accept": "application/json, text/plain, */*",
+                    "Accept-Language": "zh-CN,zh;q=0.9",
+                    "Content-Type": "application/json",
+                    "User-Agent": DEFAULT_BROWSER_USER_AGENT,
+                },
+                data={},
+                allow_redirects=False,
+            )
+        finally:
+            self.session.headers.pop("Authorization", None)
+            outer_access_token = ""
+        userinfo_payload = self._json_response(userinfo_trace)
+        preferred_username = userinfo_payload.get("preferred_username")
+        if not isinstance(preferred_username, str) or not preferred_username.strip():
+            self._reject(
+                userinfo_trace,
+                "userinfo-missing",
+                "ECM userinfo response does not contain preferred_username",
+            )
+        given_name = userinfo_payload.get("given_name") or "0"
+        family_name = userinfo_payload.get("family_name") or "0"
+        email = userinfo_payload.get("email") or "000000"
+        self._accept(
+            userinfo_trace,
+            validation="userinfo-received",
+            json_fields=tuple(sorted(userinfo_payload)),
+        )
+
+        # --- Stage: ADValidate 桥（ecm 域 http；换出 Innovator 内部账号 MD5 密码）---
+        advalidate_url = urljoin(self.base_url, ADVALIDATE_PATH.lstrip("/"))
+        advalidate_form = {
+            "loginname": preferred_username,
+            "given_name": given_name,
+            "family_name": family_name,
+            "email": email,
+        }
+        try:
+            advalidate_trace = self._request(
+                "POST",
+                advalidate_url,
+                stage="ecm-advalidate",
+                headers={
+                    "Accept": "application/xml, text/xml, */*; q=0.01",
+                    "Accept-Language": "zh-CN,zh;q=0.9",
+                    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Origin": _origin(self.base_url),
+                    "Referer": self.redirect_uri,
+                    "User-Agent": DEFAULT_BROWSER_USER_AGENT,
+                },
+                data=advalidate_form,
+                allow_redirects=False,
+            )
+        finally:
+            advalidate_form["loginname"] = ""
+        # ADValidate 返 XML，不能走 _json_response（其 Content-Type 含 xml 会被拒）。
+        # 先校验 HTTP 状态，避免非 2xx 响应因恰好含成功 XML 而被误判通过。
+        ad_status = int(getattr(advalidate_trace.response, "status_code", 0) or 0)
+        if ad_status not in set(range(200, 300)):
+            self._reject(
+                advalidate_trace,
+                "advalidate-rejected",
+                f"ADValidate returned HTTP {ad_status}",
+            )
+        ad_body = _response_text(advalidate_trace.response)
+        ad_success, innovator_md5 = _parse_advalidate_response(ad_body)
+        if not ad_success or not _is_valid_md5(innovator_md5):
+            self._reject(
+                advalidate_trace,
+                "advalidate-failed",
+                "ADValidate did not return a valid Innovator password",
+            )
+        self._accept(advalidate_trace, validation="innovator-md5-received")
+
+        # --- Stage: 内层 Innovator OAuthServer password grant（用 MD5 换 aud=Innovator 的 token）---
+        innovator_token_url = urljoin(self.base_url, INNOVATOR_OAUTH_TOKEN_PATH.lstrip("/"))
+        innovator_form = {
+            "grant_type": "password",
+            "client_id": INNOVATOR_CLIENT_ID,
+            "username": preferred_username,
+            "password": innovator_md5,
+            "scope": INNOVATOR_SCOPE,
+            "database": self.innovator_database,
+        }
+        try:
+            innovator_token_trace = self._request(
+                "POST",
+                innovator_token_url,
+                stage="ecm-innovator-token",
+                headers={
+                    "Accept": "application/json, text/plain, */*",
+                    "Accept-Language": "zh-CN,zh;q=0.9",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "User-Agent": DEFAULT_BROWSER_USER_AGENT,
+                },
+                data=innovator_form,
+                allow_redirects=False,
+            )
+        finally:
+            innovator_form["password"] = ""
+            innovator_form["username"] = ""
+            # 立即丢弃 MD5 与 username 变量副本，避免在 4xx/解析失败的栈帧中残留
+            innovator_md5 = ""
+            preferred_username = ""
+        inn_status = int(getattr(innovator_token_trace.response, "status_code", 0) or 0)
+        if inn_status not in set(range(200, 300)):
+            # 不回显任意响应正文：服务端可能在 error_description 中回显 MD5/JWT。
+            # 仅取白名单错误码字段（OAuth 标准 error / 自定义 code），不含凭据。
+            err_payload = _parse_json_payload(innovator_token_trace.response)
+            err_code = err_payload.get("error") or err_payload.get("error_code") or err_payload.get("code")
+            msg = f"Innovator token exchange failed: HTTP {inn_status}"
+            if isinstance(err_code, (str, int)) and str(err_code).strip():
+                msg += f" (error={err_code})"
+            self._reject(innovator_token_trace, "innovator-token-rejected", msg)
+        innovator_payload = _parse_json_payload(innovator_token_trace.response)
+        inner_access_token = innovator_payload.get("access_token")
+        if not isinstance(inner_access_token, str) or not inner_access_token:
+            self._reject(
+                innovator_token_trace,
+                "innovator-token-missing",
+                "Innovator token exchange did not return an access token",
+            )
+        innovator_token_type = _safe_token_type(innovator_payload.get("token_type"))
+        self._accept(
+            innovator_token_trace,
+            validation="innovator-token-received",
+            json_fields=tuple(sorted(innovator_payload)),
+        )
+
+        # The Innovator access_token (aud contains Innovator) is the only token that
+        # lives only in this in-memory session; never persist or log it.
+        self.session.headers["Authorization"] = f"{innovator_token_type} {inner_access_token}"
+        inner_access_token = ""
 
         try:
             self._validate_user()
@@ -481,13 +658,16 @@ class ArasECMAuthClient:
     ) -> _RequestTrace:
         request_id = uuid.uuid4().hex[:8]
         started = time.perf_counter()
+        # Merge session-level headers (e.g. Authorization added between stages)
+        # with the stage-specific headers; stage headers win on conflict.
+        merged_headers = {**dict(getattr(self.session, "headers", {}) or {}), **dict(headers)}
         try:
             request_method = getattr(self.session, method.lower())
             response = request_method(
                 url,
                 params=dict(params or {}),
                 data=dict(data) if isinstance(data, Mapping) else data,
-                headers=dict(headers),
+                headers=merged_headers,
                 timeout=self.timeout,
                 allow_redirects=allow_redirects,
             )
@@ -623,6 +803,74 @@ def _parse_login_form(html: str) -> _LoginForm | None:
         if "username" in lowered and "password" in lowered and form.action:
             return form
     return None
+
+
+def _parse_advalidate_response(xml_text: str) -> tuple[bool, str]:
+    """Parse the ADValidate XML envelope. Returns (is_success, md5_password).
+
+    Never raises; malformed bodies simply report failure so the caller can
+    reject with a fixed, secret-free message.
+    """
+    if not xml_text:
+        return False, ""
+    m_ok = re.search(r"<IsSuccess>\s*(\w+)\s*</IsSuccess>", xml_text, re.IGNORECASE)
+    m_pw = re.search(
+        r"<password>\s*([0-9a-fA-F]{32})\s*</password>", xml_text, re.IGNORECASE
+    )
+    success = bool(m_ok and m_ok.group(1).strip().lower() == "true")
+    return success, (m_pw.group(1) if m_pw else "")
+
+
+def _is_valid_md5(value: str) -> bool:
+    return bool(re.fullmatch(r"[0-9a-fA-F]{32}", value or ""))
+
+
+def _safe_token_type(value: Any) -> str:
+    """Sanitize a token_type string, defaulting to Bearer (mirrors tdc_auth)."""
+    token_type = str(value or "Bearer").strip()
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9._~-]{0,31}", token_type or ""):
+        return "Bearer"
+    return token_type or "Bearer"
+
+
+def _parse_json_payload(response: Any) -> dict[str, Any]:
+    """Best-effort JSON parse from a response, never raising (caller prechecks status)."""
+    loader = getattr(response, "json", None)
+    if callable(loader):
+        try:
+            payload = loader()
+        except Exception:
+            payload = None
+        if isinstance(payload, dict):
+            return payload
+    try:
+        payload = json.loads(_response_text(response) or "{}")
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _new_native_aras_session() -> Any:
+    """Create a WinHTTP-backed session for win32 production (mirrors tdc_auth).
+
+    WinHTTP via COM bypasses Python's urllib3/socket path, avoiding frozen-EXE
+    plaintext-HTTP(80) connection failures observed on some Windows hosts.
+    Eagerly import the COM stack here so a missing pywin32 or unregistered
+    WinHttp progid surfaces at session-init (mapped to aras-session-init by the
+    caller) rather than later at the first request stage.
+    """
+    import pythoncom
+    import win32com.client
+    from services.windows_http import WinHTTPSession
+
+    # Probe the COM progid availability now; raise ImportError/DispatchError
+    # here so the __init__ guard maps it to aras-session-init.
+    pythoncom.CoInitialize()
+    try:
+        win32com.client.Dispatch(_WINHTTP_PROGID)
+    finally:
+        pythoncom.CoUninitialize()
+    return WinHTTPSession()
 
 
 def _is_login_page(lowered_body: str) -> bool:

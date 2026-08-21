@@ -102,23 +102,49 @@ VALIDATE_OK_XML = (
     "<user_type>employee</user_type>"
     "</Result></SOAP-ENV:Body></SOAP-ENV:Envelope>"
 )
+USERINFO_PAYLOAD = {
+    "preferred_username": "fictional-user",
+    "given_name": "启航",
+    "family_name": "林",
+    "email": "fictional.user@sgmw.com.cn",
+}
+ADVALIDATE_OK_XML = (
+    '<?xml version="1.0" encoding="utf-8"?>'
+    '<Result xmlns="http://tempuri.org/">'
+    "<IsSuccess>true</IsSuccess>"
+    "<password>31fb5e75856fe1adf8528cb1f53e782c</password>"
+    "</Result>"
+)
+INNOVATOR_TOKEN_PAYLOAD = {
+    "access_token": "fictional-inner-token",
+    "token_type": "Bearer",
+    "expires_in": 108000,
+    "scope": "openid Innovator",
+}
 TOKEN_URL = "https://account.sgmw.com.cn/auth/realms/common/protocol/openid-connect/token"
+USERINFO_URL = "https://account.sgmw.com.cn/auth/realms/common/protocol/openid-connect/userinfo"
+ADVALIDATE_URL = "http://ecm.sgmw.com.cn/innovatorserver/ADLogin/ADValidate.asmx/findUserByloginname"
+INNOVATOR_TOKEN_URL = "http://ecm.sgmw.com.cn/innovatorserver/oauthserver/connect/token"
 METADATA_URL = "https://account.sgmw.com.cn/auth/realms/common/.well-known/openid-configuration"
 
 
 def successful_responses() -> list[FakeResponse]:
     return [
+        # 0: OIDC auth discovery (login form)
         FakeResponse(
             status_code=200,
             url=ECM_AUTH_URL,
             headers={"Content-Type": "text/html; charset=utf-8"},
             text=LOGIN_HTML,
         ),
+        # 1: credentials POST -> 302 to callback
         FakeResponse(status_code=302, headers={"Location": CALLBACK_URL}),
+        # 2: OIDC metadata discovery
         FakeResponse(
             headers={"Content-Type": "application/json"},
             payload={"token_endpoint": TOKEN_URL},
         ),
+        # 3: outer OIDC token exchange
         FakeResponse(
             headers={"Content-Type": "application/json"},
             payload={
@@ -127,6 +153,22 @@ def successful_responses() -> list[FakeResponse]:
                 "expires_in": 300,
             },
         ),
+        # 4: outer userinfo
+        FakeResponse(
+            headers={"Content-Type": "application/json"},
+            payload=USERINFO_PAYLOAD,
+        ),
+        # 5: ADValidate bridge -> Innovator MD5
+        FakeResponse(
+            headers={"Content-Type": "text/xml; charset=utf-8"},
+            text=ADVALIDATE_OK_XML,
+        ),
+        # 6: inner Innovator OAuthServer password grant
+        FakeResponse(
+            headers={"Content-Type": "application/json"},
+            payload=INNOVATOR_TOKEN_PAYLOAD,
+        ),
+        # 7: SOAP ValidateUser -> Result/id
         FakeResponse(
             headers={"Content-Type": "text/xml; charset=UTF-8"},
             text=VALIDATE_OK_XML,
@@ -151,9 +193,13 @@ def test_password_login_completes_oidc_flow_and_gates_on_validate_user() -> None
 
     assert result.session is session
     assert result.auth_mode == "password"
-    # Token lives only in the in-memory session Authorization header.
-    assert session.headers["Authorization"] == "Bearer fictional-ecm-token"
-    assert [call["method"] for call in session.calls] == ["GET", "POST", "GET", "POST", "POST"]
+    # 最终 session 只带内层 Innovator token（aud 含 Innovator），外层 ecm-front token 不留
+    assert session.headers["Authorization"] == "Bearer fictional-inner-token"
+    # 8 步：discovery(GET) credentials(POST) metadata(GET) ecm-token(POST)
+    #       userinfo(POST) advalidate(POST) innovator-token(POST) validate(POST)
+    assert [call["method"] for call in session.calls] == [
+        "GET", "POST", "GET", "POST", "POST", "POST", "POST", "POST",
+    ]
 
     auth_call = session.calls[0]
     assert auth_call["url"].startswith("https://account.sgmw.com.cn/auth/realms/common/protocol/openid-connect/auth?")
@@ -187,11 +233,38 @@ def test_password_login_completes_oidc_flow_and_gates_on_validate_user() -> None
         "code": "fictional-code",
         "grant_type": "authorization_code",
         "redirect_uri": ECM_REDIRECT_URI,
+        "scope": "email profile openid",
     }
     assert "client_secret" not in token_call["data"]
     assert "secret" not in token_call["data"]
 
-    validate_call = session.calls[4]
+    # 外层 userinfo：拿 preferred_username 给后续 ADValidate
+    userinfo_call = session.calls[4]
+    assert userinfo_call["url"] == USERINFO_URL
+    assert userinfo_call["headers"]["Authorization"] == "Bearer fictional-ecm-token"
+
+    # ADValidate 桥：用 userinfo 字段换 Innovator 内部账号 MD5 密码
+    advalidate_call = session.calls[5]
+    assert advalidate_call["url"] == ADVALIDATE_URL
+    assert advalidate_call["headers"]["X-Requested-With"] == "XMLHttpRequest"
+    assert advalidate_call["data"]["loginname"] == "fictional-user"
+    assert advalidate_call["data"]["given_name"] == "启航"
+    assert advalidate_call["data"]["family_name"] == "林"
+    assert advalidate_call["data"]["email"] == "fictional.user@sgmw.com.cn"
+
+    # 内层 Innovator OAuthServer password grant：MD5 换 aud=Innovator 的 token
+    innovator_call = session.calls[6]
+    assert innovator_call["url"] == INNOVATOR_TOKEN_URL
+    assert innovator_call["data"]["grant_type"] == "password"
+    assert innovator_call["data"]["client_id"] == "InnovatorClient"
+    assert innovator_call["data"]["scope"] == "openid Innovator"
+    assert innovator_call["data"]["database"] == "InnovatorSolutions"
+    assert innovator_call["data"]["username"] == "fictional-user"
+    assert "fictional-password-secret" not in str(innovator_call["data"])
+    # MD5 在 form body，不进 headers，亦不应在诊断里裸露
+    assert "31fb5e75856fe1adf8528cb1f53e782c" not in str(innovator_call["headers"])
+
+    validate_call = session.calls[7]
     assert validate_call["url"] == "http://ecm.sgmw.com.cn/innovatorserver/Server/InnovatorServer.aspx"
     assert validate_call["headers"]["SOAPAction"] == SOAP_ACTION_VALIDATE_USER
     assert validate_call["headers"]["TIMEZONE_NAME"] == "China Standard Time"
@@ -208,6 +281,9 @@ def test_password_login_completes_oidc_flow_and_gates_on_validate_user() -> None
         "ecm-credentials",
         "ecm-oidc-discovery",
         "ecm-token",
+        "ecm-userinfo",
+        "ecm-advalidate",
+        "ecm-innovator-token",
         "ecm-validate-user",
     ]
     assert events[0].validation == "login-form-ready"
@@ -221,9 +297,11 @@ def test_password_login_completes_oidc_flow_and_gates_on_validate_user() -> None
         "fictional-password-secret",
         "fictional-code",
         "fictional-ecm-token",
+        "fictional-inner-token",
         "fictional-state-value",
         "fictional-session",
         "FICTIONAL-USER-ID",
+        "31fb5e75856fe1adf8528cb1f53e782c",
     ):
         assert secret not in rendered
     assert "[redacted]" in rendered
@@ -423,7 +501,7 @@ def test_token_response_without_access_token_is_rejected_without_leak() -> None:
 
 def test_validate_user_gate_fails_closed_without_user_id() -> None:
     responses = successful_responses()
-    responses[4] = FakeResponse(
+    responses[7] = FakeResponse(
         headers={"Content-Type": "text/xml; charset=UTF-8"},
         text=(
             '<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/">'
@@ -444,10 +522,10 @@ def test_validate_user_gate_fails_closed_without_user_id() -> None:
 
 def test_validate_user_http_rejection_fails_closed() -> None:
     responses = successful_responses()
-    responses[4] = FakeResponse(
+    responses[7] = FakeResponse(
         status_code=401,
         headers={"Content-Type": "text/xml"},
-        text="Authorization: Bearer fictional-ecm-token is invalid",
+        text="Authorization: Bearer fictional-rejection-token is invalid",
     )
     session = FakeSession(responses)
 
@@ -455,12 +533,13 @@ def test_validate_user_http_rejection_fails_closed() -> None:
         make_auth_client(session).login("fictional-user", "fictional-password-secret")
 
     assert "fictional-ecm-token" not in str(excinfo.value)
+    assert "fictional-inner-token" not in str(excinfo.value)
     assert session.headers.get("Authorization") is None
 
 
 def test_validate_user_login_page_rejection_fails_closed() -> None:
     responses = successful_responses()
-    responses[4] = FakeResponse(
+    responses[7] = FakeResponse(
         headers={"Content-Type": "text/html"},
         text='<html><form class="login-form"><input type="password"></form></html>',
     )
@@ -470,6 +549,114 @@ def test_validate_user_login_page_rejection_fails_closed() -> None:
         make_auth_client(session).login("fictional-user", "fictional-password-secret")
 
     assert session.headers.get("Authorization") is None
+
+
+def test_advalidate_failure_rejected_without_secret_leak() -> None:
+    responses = successful_responses()
+    responses[5] = FakeResponse(
+        headers={"Content-Type": "text/xml; charset=utf-8"},
+        text='<?xml version="1.0"?><Result xmlns="http://tempuri.org/">'
+        "<IsSuccess>false</IsSuccess></Result>",
+    )
+    session = FakeSession(responses)
+
+    with pytest.raises(ArasAuthError, match="ADValidate did not return") as excinfo:
+        make_auth_client(session).login("fictional-user", "fictional-password-secret")
+
+    assert excinfo.value.stage == "ecm-advalidate"
+    assert "fictional-password-secret" not in str(excinfo.value)
+    assert "31fb5e75856fe1adf8528cb1f53e782c" not in str(excinfo.value)
+    # ADValidate 失败时尚未把任何 token 写入 session
+    assert session.headers.get("Authorization") is None
+
+
+def test_innovator_token_failure_rejected_without_secret_leak() -> None:
+    responses = successful_responses()
+    responses[6] = FakeResponse(
+        status_code=400,
+        headers={"Content-Type": "application/json"},
+        payload={"error": "invalid_grant", "error_description": "Missing database parameter"},
+    )
+    session = FakeSession(responses)
+
+    with pytest.raises(ArasAuthError, match="Innovator token exchange failed") as excinfo:
+        make_auth_client(session).login("fictional-user", "fictional-password-secret")
+
+    assert excinfo.value.stage == "ecm-innovator-token"
+    assert excinfo.value.status_code == 400
+    assert "fictional-password-secret" not in str(excinfo.value)
+    assert "31fb5e75856fe1adf8528cb1f53e782c" not in str(excinfo.value)
+    # 新：error_description 不回显，仅白名单 error 字段
+    assert "Missing database parameter" not in str(excinfo.value)
+    assert "invalid_grant" in str(excinfo.value)
+
+
+def test_innovator_token_4xx_does_not_echo_md5_from_error_description() -> None:
+    """服务端在 error_description 中回显 MD5/JWT 时，异常消息不得包含这些秘密。"""
+    responses = successful_responses()
+    responses[6] = FakeResponse(
+        status_code=400,
+        headers={"Content-Type": "application/json"},
+        payload={
+            "error": "invalid_grant",
+            "error_description": "bad credentials: password=31fb5e75856fe1adf8528cb1f53e782c token=eyJleaked",
+        },
+    )
+    session = FakeSession(responses)
+
+    with pytest.raises(ArasAuthError, match="Innovator token exchange failed") as excinfo:
+        make_auth_client(session).login("fictional-user", "fictional-password-secret")
+
+    message = str(excinfo.value)
+    assert "31fb5e75856fe1adf8528cb1f53e782c" not in message
+    assert "eyJleaked" not in message
+    assert "bad credentials" not in message
+    assert "invalid_grant" in message  # 白名单 error 字段保留
+
+
+def test_advalidate_non_2xx_rejected_before_xml_parse() -> None:
+    """非 2xx 响应即使 body 恰好含成功 XML，也应按 HTTP 状态先拒收。"""
+    responses = successful_responses()
+    responses[5] = FakeResponse(
+        status_code=500,
+        headers={"Content-Type": "text/xml; charset=utf-8"},
+        text='<?xml version="1.0"?><Result xmlns="http://tempuri.org/">'
+        "<IsSuccess>true</IsSuccess>"
+        "<password>31fb5e75856fe1adf8528cb1f53e782c</password></Result>",
+    )
+    session = FakeSession(responses)
+
+    with pytest.raises(ArasAuthError, match="ADValidate returned HTTP 500") as excinfo:
+        make_auth_client(session).login("fictional-user", "fictional-password-secret")
+
+    assert excinfo.value.stage == "ecm-advalidate"
+    assert excinfo.value.status_code == 500
+    assert session.headers.get("Authorization") is None
+
+
+def test_repeated_login_clears_stale_inner_token_before_outer_requests() -> None:
+    """重复 login() 时，上一轮残留的内层 token 不得被合并进本轮外层身份域请求。"""
+    session = FakeSession(successful_responses())
+    client = make_auth_client(session)
+    client.login("fictional-user", "fictional-password-secret")
+    assert session.headers["Authorization"] == "Bearer fictional-inner-token"
+
+    # 第二次登录：重置 responses，检查 discovery 请求不带旧 inner token
+    session.responses = successful_responses()
+    session.calls = []
+    client.login("fictional-user", "fictional-password-secret")
+
+    # 第一次请求（discovery，account.sgmw.com.cn）的 Authorization 头应为空或外层临时 token，
+    # 绝不是上一轮的 fictional-inner-token
+    discovery_call = session.calls[0]
+    auth_header = next(
+        (v for n, v in discovery_call["headers"].items() if n.lower() == "authorization"),
+        None,
+    )
+    assert auth_header != "Bearer fictional-inner-token"
+    assert "fictional-inner-token" not in str(discovery_call["headers"])
+    # 第二次登录成功后 session 带新 inner token（与第一次同值是 mock 复用，正常）
+    assert session.headers["Authorization"] == "Bearer fictional-inner-token"
 
 
 def test_transport_error_is_generic_and_diagnostics_are_redacted() -> None:
@@ -505,3 +692,39 @@ def test_ecm_auth_module_has_no_live_requests_calls() -> None:
     source = Path("services/aras_auth.py").read_text(encoding="utf-8-sig")
     assert not re.search(r"requests\.(?:get|post|head|request)\(", source)
     assert "getpass" not in source
+
+
+def test_win32_default_uses_native_session_for_full_chain(monkeypatch: pytest.MonkeyPatch) -> None:
+    """win32 生产环境下，未注入 session 时 __init__ 阶段切到 native(WinHTTP) session，
+    且 native session 承接全部 8 步请求（含外层 OIDC，因 ADValidate 是 ecm:80 明文，
+    frozen urllib3 在该步即失败，故必须在 __init__ 就切，不能像 TDC 那样 oidc 后切）。"""
+    import sys as _sys
+
+    native_session = FakeSession(successful_responses())
+    monkeypatch.setattr(_sys, "platform", "win32")
+
+    client = ArasECMAuthClient(
+        random_value_factory=lambda: "fictional-state-value",
+        native_session_factory=lambda: native_session,
+    )
+    result = client.login("fictional-user", "fictional-password-secret")
+
+    assert result.session is native_session
+    # native session 承接全部 8 步（不像 TDC 只承接后段）
+    assert [call["method"] for call in native_session.calls] == [
+        "GET", "POST", "GET", "POST", "POST", "POST", "POST", "POST",
+    ]
+    assert native_session.headers["Authorization"] == "Bearer fictional-inner-token"
+
+
+def test_injected_session_is_never_replaced_by_native_factory() -> None:
+    """测试注入 session 时 _session_injected=True，native 切换不触发，factory 不被调用。"""
+    session = FakeSession(successful_responses())
+
+    def forbidden_factory() -> FakeSession:
+        raise AssertionError("native factory should not be called when session injected")
+
+    result = make_auth_client(
+        session, native_session_factory=forbidden_factory
+    ).login("fictional-user", "fictional-password-secret")
+    assert result.session is session

@@ -38,3 +38,9 @@ chromedriver.exe
 /.tmp_pytest*/
 /.claude/settings.local.json
 /design-previews/
+
+# Local dual-agent harness task state (may include code diffs and diagnostics)
+/.agents/tasks/
+/.agents/runs/
+/.agents/logs/
+/.agents/worktrees/

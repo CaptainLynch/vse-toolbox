@@ -13,6 +13,7 @@ from rich.prompt import Prompt
 import main
 import web.app as web_app
 from core.diagnostics import DiagnosticOptions, MarkdownDiagnosticReport
+from services.aras_auth import ArasAuthError
 from services.aras_crawler import ArasCrawlerError, EWOReportPage, PAAReportPage
 from services.aras_export import CSVExportResult, EWOExportResult
 
@@ -161,6 +162,35 @@ class FakeArasClient:
         target.write_bytes(b"NCR-DETAIL-CONTENT")
         return target
 
+    def download_ncr_progress_file(self, export_result, destination):  # type: ignore[no-untyped-def]
+        if self.fail:
+            raise self.fail
+        self.__class__.calls.append(
+            {
+                "method": "ncr_progress_download",
+                "file_name": export_result.file_name,
+                "destination": destination,
+            }
+        )
+        target = Path(destination) / export_result.file_name
+        target.write_bytes(b"NCR-PROGRESS-CONTENT")
+        return target
+
+
+class FakeWebAuthClient:
+    calls: list[dict[str, object]] = []
+    fail: Exception | None = None
+    session = object()
+
+    def __init__(self, base_url, timeout=30.0, diagnostic_hook=None):  # type: ignore[no-untyped-def]
+        self.__class__.calls.append({"base_url": base_url, "timeout": timeout, "diagnostic_hook": diagnostic_hook})
+
+    def login(self, username, password):  # type: ignore[no-untyped-def]
+        self.__class__.calls.append({"username": username, "password": password})
+        if self.fail:
+            raise self.fail
+        return SimpleNamespace(session=self.session)
+
 
 @pytest.fixture(autouse=True)
 def disable_cli_aras_diagnostics(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -174,6 +204,7 @@ def _make_test_client(monkeypatch, tmp_path, allowed_hosts=None):  # type: ignor
     monkeypatch.setattr(web_app, "ArasCrawlerClient", FakeArasClient)
     db_cls = web_app.DatabaseManager
     monkeypatch.setattr(web_app, "DatabaseManager", lambda: db_cls(tmp_path / "web-test.db"))
+    monkeypatch.setattr(web_app, "DIAGNOSTIC_DIR", tmp_path / "diagnostics")
     app = web_app.create_app(allowed_hosts=allowed_hosts)
     app.config.update(TESTING=True)
     return app.test_client()
@@ -226,6 +257,127 @@ def test_ewo_route_contract_and_no_auth_echo(client) -> None:
     assert method_call["page_size"] == 25
     assert method_call["max_records"] == 100
     assert method_call["filters"].ewo_no == "EWO-1"
+
+
+def test_web_password_auth_injects_authenticated_session_without_echo(monkeypatch, tmp_path) -> None:
+    FakeWebAuthClient.calls = []
+    FakeWebAuthClient.fail = None
+    monkeypatch.setattr(web_app, "ArasECMAuthClient", FakeWebAuthClient)
+    test_client = _make_test_client(monkeypatch, tmp_path, allowed_hosts=["aras.example"])
+
+    resp = test_client.post(
+        "/api/aras/ewo/query",
+        json={
+            "base_url": "http://aras.example",
+            "auth_mode": "password",
+            "username": "fictional-user",
+            "password": "fictional-password-secret",
+            "headers": {"X-Test": "yes"},
+            "filters": {},
+        },
+    )
+
+    assert resp.status_code == 200
+    assert FakeWebAuthClient.calls[-1] == {
+        "username": "fictional-user",
+        "password": "fictional-password-secret",
+    }
+    assert FakeArasClient.calls[0]["session"] is FakeWebAuthClient.session
+    assert FakeArasClient.calls[0]["headers"] == {"X-Test": "yes"}
+    assert callable(FakeArasClient.calls[0]["diagnostic_hook"])
+    body = resp.get_data(as_text=True)
+    assert "fictional-user" not in body
+    assert "fictional-password-secret" not in body
+
+
+def test_web_password_auth_failure_is_401_and_secret_modes_cannot_mix(monkeypatch, tmp_path) -> None:
+    FakeWebAuthClient.calls = []
+    FakeWebAuthClient.fail = ArasAuthError("ECM identity rejected credentials", stage="ecm-credentials")
+    monkeypatch.setattr(web_app, "ArasECMAuthClient", FakeWebAuthClient)
+    test_client = _make_test_client(monkeypatch, tmp_path, allowed_hosts=["aras.example"])
+
+    failed = test_client.post(
+        "/api/aras/ewo/query",
+        json={
+            "base_url": "http://aras.example",
+            "auth_mode": "password",
+            "username": "fictional-user",
+            "password": "fictional-password-secret",
+            "filters": {},
+        },
+    )
+    assert failed.status_code == 401
+    assert failed.get_json()["error"]["type"] == "AuthenticationError"
+    assert "fictional-password-secret" not in failed.get_data(as_text=True)
+    # 认证失败生成诊断报告：路径透传为 .md 且文件真实落盘，不含 secret
+    diag_path = failed.get_json()["error"].get("diagnosticPath")
+    assert isinstance(diag_path, str) and diag_path.endswith(".md")
+    assert Path(diag_path).is_file()
+    assert "fictional-password-secret" not in Path(diag_path).read_text(encoding="utf-8")
+
+    mixed = test_client.post(
+        "/api/aras/ewo/query",
+        json={
+            "base_url": "http://aras.example",
+            "auth_mode": "password",
+            "username": "fictional-user",
+            "password": "fictional-password-secret",
+            "cookie": "sid=fictional-cookie",
+            "filters": {},
+        },
+    )
+    assert mixed.status_code == 400
+    assert mixed.get_json()["error"]["type"] == "AuthenticationModeConflict"
+
+
+def test_web_password_crawler_failure_saves_detailed_diagnostic(monkeypatch, tmp_path) -> None:
+    FakeWebAuthClient.calls = []
+    FakeWebAuthClient.fail = None
+    monkeypatch.setattr(web_app, "ArasECMAuthClient", FakeWebAuthClient)
+
+    def fail_with_invalid_xml(self, filters, page=1, page_size=50, max_records=2000):  # type: ignore[no-untyped-def]
+        assert callable(self.diagnostic_hook)
+        self.diagnostic_hook(
+            SimpleNamespace(
+                stage="soap-ApplyItem",
+                method="POST",
+                url="http://aras.example/innovatorserver/Server/InnovatorServer.aspx",
+                elapsed_ms=12.5,
+                status_code=200,
+                reason="OK",
+                request_headers={"Authorization": "Bearer fictional-token-secret"},
+                response_headers={"Content-Type": "text/html"},
+                response_body="<html>not valid XML token=fictional-token-secret</html>",
+            )
+        )
+        raise ArasCrawlerError("XML response is not valid")
+
+    monkeypatch.setattr(FakeArasClient, "query_ewo_report", fail_with_invalid_xml)
+    test_client = _make_test_client(monkeypatch, tmp_path, allowed_hosts=["aras.example"])
+
+    failed = test_client.post(
+        "/api/aras/ewo/query",
+        json={
+            "base_url": "http://aras.example",
+            "auth_mode": "password",
+            "username": "fictional-user",
+            "password": "fictional-password-secret",
+            "filters": {},
+        },
+    )
+
+    assert failed.status_code == 502
+    body = failed.get_json()
+    assert body["error"]["type"] == "ArasCrawlerError"
+    diagnostic_path = body["error"].get("diagnosticPath")
+    assert isinstance(diagnostic_path, str) and diagnostic_path.endswith(".md")
+    report_text = Path(diagnostic_path).read_text(encoding="utf-8")
+    assert "Aras WebUI Diagnostic" in report_text
+    assert "soap-ApplyItem" in report_text
+    assert "XML response is not valid" in report_text
+    assert "not valid XML" in report_text
+    assert "fictional-password-secret" not in report_text
+    assert "fictional-token-secret" not in report_text
 
 
 def test_ncr_progress_and_detail_routes(client) -> None:
@@ -410,6 +562,16 @@ def test_paa_department_filter_normalizes_and_fails_closed(client) -> None:
     assert unknown.get_json()["error"]["type"] == "ValidationError"
     assert FakeArasClient.calls[-1].get("method") is None  # 未发起查询
 
+    fuzzy = client.post(
+        "/api/aras/paa/query",
+        json={
+            "base_url": "http://aras.example",
+            "filters": {"department": "*车体工程*|*整车*"},
+        },
+    )
+    assert fuzzy.status_code == 200
+    assert FakeArasClient.calls[-1]["filters"].department == "*车体工程*|*整车*"
+
 
 def test_ewo_export_route_streams_csv_with_export_headers(client) -> None:
     resp = client.post(
@@ -527,6 +689,29 @@ def test_ncr_detail_download_route_downloads_file(client) -> None:
     assert detail_call["filters"].section_code == "BE"
     download_call = next(call for call in FakeArasClient.calls if call.get("method") == "ncr_download")
     assert download_call["file_name"] == "detail.xlsx"
+    assert "secret-cookie" not in resp.get_data(as_text=True)
+
+
+def test_ncr_progress_download_route_downloads_vault_file(client) -> None:
+    resp = client.post(
+        "/api/aras/ncr/progress/download",
+        json={
+            "base_url": "http://aras.example",
+            "cookie": "sid=secret-cookie",
+            "filters": {"project_names": ["F610S", "F610S DG"]},
+        },
+    )
+
+    assert resp.status_code == 200
+    assert resp.get_data() == b"NCR-PROGRESS-CONTENT"
+    disposition = resp.headers["Content-Disposition"]
+    assert "attachment" in disposition
+    assert "progress.xlsx" in disposition
+    progress_calls = [call for call in FakeArasClient.calls if call.get("method") == "progress"]
+    assert progress_calls[-1]["filters"].project_names == ("F610S", "F610S DG")
+    download_call = next(call for call in FakeArasClient.calls if call.get("method") == "ncr_progress_download")
+    assert download_call["file_name"] == "progress.xlsx"
+    assert "FILE-secret2" not in resp.get_data(as_text=True)
     assert "secret-cookie" not in resp.get_data(as_text=True)
 
 
@@ -1475,7 +1660,11 @@ def test_static_guards_for_boundaries_and_credentials() -> None:
             "web/static/style.css",
         ]
     )
-    assert not re.search(r"(?:cookie|token|authorization|sessionid|csrf).{0,80}localStorage", cli_web_text, re.IGNORECASE)
+    assert not re.search(
+        r"(?:cookie|token|authorization|sessionid|csrf|password).{0,80}localStorage",
+        cli_web_text,
+        re.IGNORECASE,
+    )
     assert ("session" + "Storage") not in cli_web_text
     assert ("console" + ".log(") not in cli_web_text
     assert not re.search(
@@ -1493,10 +1682,17 @@ def test_static_aras_export_download_markers_and_department_fields() -> None:
     assert html_text.count('placeholder="技术中心-车体工程"') >= 2
     assert 'name="section_code"' in html_text  # NCR 高级字段保留
     assert "BA/BE/BI/EXT/INT/SES/VE" in html_text
+    assert 'placeholder="*310S*|*730S*"' in html_text
+    assert html_text.count('title="支持 * 模糊和 | 并集"') >= 10
+    assert 'title="搜索符号将原样传给 NCR 服务"' in html_text
 
-    # 连接区文案：SSO 登录成功 ≠ SOAP 已授权
-    assert "ECM 已认证 Cookie/Authorization" in html_text
-    assert "普通 SSO 登录成功不等于 SOAP 已授权" in html_text
+    # 连接区默认使用 ECM 密码认证，并保留 Cookie/Header 备用模式
+    assert 'id="aras-auth-mode"' in html_text
+    assert '<option value="password" selected>' in html_text
+    assert '<option value="browser">' in html_text
+    assert 'name="username"' in html_text
+    assert 'name="password"' in html_text
+    assert "SOAP ValidateUser" in html_text
 
     # 按钮 action 标识（预览 / 全量导出 / 生成并下载）
     assert 'data-aras-action="preview"' in html_text
@@ -1509,10 +1705,11 @@ def test_static_aras_export_download_markers_and_department_fields() -> None:
     assert "/api/aras/paa/export" in js_text
     assert "/api/aras/ncr/detail/download" in js_text
 
-    # NCR 进度没有可下载端点（不伪装可下载），但保留业务部门筛选
+    # NCR 进度通过后端 Vault 链路生成并下载，同时保留业务部门筛选
     progress_block = js_text[js_text.index('"ncr-progress"') : js_text.index('"ncr-detail"')]
-    assert "downloadEndpoint" not in progress_block
+    assert 'downloadEndpoint: "/api/aras/ncr/progress/download"' in progress_block
     assert "exportEndpoint" not in progress_block
+    assert 'exportLabel: "生成并下载"' in progress_block
     assert "department" in progress_block
 
     # blob 下载 helper 读取导出状态头并解析 Content-Disposition 文件名
@@ -1525,7 +1722,75 @@ def test_static_aras_export_download_markers_and_department_fields() -> None:
     assert "sessionStorage" not in html_text
     assert "sessionStorage" not in js_text
     assert not re.search(
-        r"(?:cookie|token|authorization|sessionid|csrf).{0,80}localStorage",
+        r"(?:cookie|token|authorization|sessionid|csrf|password).{0,80}localStorage",
         html_text + js_text,
         re.IGNORECASE,
     )
+
+
+def test_aras_auth_error_survives_diagnostic_save_failure(monkeypatch, tmp_path) -> None:
+    """诊断报告 save() 抛 OSError 时，认证错误仍应返 401，不被替换为 500。"""
+    FakeWebAuthClient.calls = []
+    FakeWebAuthClient.fail = ArasAuthError("ECM identity rejected credentials", stage="ecm-credentials")
+    monkeypatch.setattr(web_app, "ArasECMAuthClient", FakeWebAuthClient)
+
+    real_cls = web_app.MarkdownDiagnosticReport
+
+    class FailingSaveReport(real_cls):  # type: ignore[misc, valid-type]
+        def save(self, status: str):  # type: ignore[override]
+            raise OSError("disk full")
+
+    monkeypatch.setattr(web_app, "MarkdownDiagnosticReport", FailingSaveReport)
+    test_client = _make_test_client(monkeypatch, tmp_path, allowed_hosts=["aras.example"])
+
+    failed = test_client.post(
+        "/api/aras/ewo/query",
+        json={
+            "base_url": "http://aras.example",
+            "auth_mode": "password",
+            "username": "fictional-user",
+            "password": "fictional-password-secret",
+            "filters": {},
+        },
+    )
+
+    # 认证错误语义不变：仍 401 AuthenticationError，不因 save 失败变 500
+    assert failed.status_code == 401
+    body = failed.get_json()
+    assert body["error"]["type"] == "AuthenticationError"
+    # 诊断路径降级为不提供（无 diagnosticPath 字段或为 None）
+    assert not body["error"].get("diagnosticPath")
+    assert "fictional-password-secret" not in failed.get_data(as_text=True)
+
+
+def test_aras_crawler_error_survives_diagnostic_save_failure(monkeypatch, tmp_path) -> None:
+    FakeWebAuthClient.calls = []
+    FakeWebAuthClient.fail = None
+    monkeypatch.setattr(web_app, "ArasECMAuthClient", FakeWebAuthClient)
+
+    real_cls = web_app.MarkdownDiagnosticReport
+
+    class FailingSaveReport(real_cls):  # type: ignore[misc, valid-type]
+        def save(self, status: str):  # type: ignore[override]
+            raise OSError("disk full")
+
+    monkeypatch.setattr(web_app, "MarkdownDiagnosticReport", FailingSaveReport)
+    test_client = _make_test_client(monkeypatch, tmp_path, allowed_hosts=["aras.example"])
+    FakeArasClient.fail = ArasCrawlerError("XML response is not valid")
+
+    failed = test_client.post(
+        "/api/aras/ewo/query",
+        json={
+            "base_url": "http://aras.example",
+            "auth_mode": "password",
+            "username": "fictional-user",
+            "password": "fictional-password-secret",
+            "filters": {},
+        },
+    )
+
+    assert failed.status_code == 502
+    body = failed.get_json()
+    assert body["error"]["type"] == "ArasCrawlerError"
+    assert not body["error"].get("diagnosticPath")
+    assert "fictional-password-secret" not in failed.get_data(as_text=True)

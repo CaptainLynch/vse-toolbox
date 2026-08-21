@@ -1,20 +1,31 @@
 ﻿# -*- coding: utf-8 -*-
-"""
-services/__init__.py — 服务层包初始化
+"""Service package exports.
 
-导出各服务模块的主类，便于 main.py 统一导入。
-office_toolbox 使用延迟导入，避免非 Windows 环境因 win32com 报错。
+The package itself stays import-light so focused tools can import one service
+without also loading unrelated integrations such as Excel or IMAP.
 """
+
+from __future__ import annotations
 
 import sys
-
-from services.intranet_scraper import IntranetScraper
-from services.feishu_imap import FeishuImapParser
-
-# win32com 仅 Windows 可用，非 Windows 环境延迟导入
-if sys.platform == "win32":
-    from services.office_toolbox import OfficeToolbox
-else:
-    OfficeToolbox = None  # type: ignore[assignment,misc]
+from typing import Any
 
 __all__ = ["IntranetScraper", "FeishuImapParser", "OfficeToolbox"]
+
+
+def __getattr__(name: str) -> Any:
+    if name == "IntranetScraper":
+        from services.intranet_scraper import IntranetScraper
+
+        return IntranetScraper
+    if name == "FeishuImapParser":
+        from services.feishu_imap import FeishuImapParser
+
+        return FeishuImapParser
+    if name == "OfficeToolbox":
+        if sys.platform != "win32":
+            return None
+        from services.office_toolbox import OfficeToolbox
+
+        return OfficeToolbox
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

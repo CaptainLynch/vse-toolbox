@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>VSE Toolbox 控制台</title>
-  <link rel="stylesheet" href="/static/style.css?v=redesign-20260628" />
+  <link rel="stylesheet" href="/static/style.css?v=overview-20260813" />
 </head>
 <body data-theme="light" data-session-view="overview" data-current-command="ewo">
   <div class="app-shell">
@@ -21,6 +21,7 @@
       <nav class="workspace-tabs" aria-label="工作区导航">
         <a href="#overview" class="active" data-panel-link="overview">概览</a>
         <a href="#aras-panel" data-panel-link="aras-panel">Aras</a>
+        <a href="#deliverables" data-panel-link="deliverables">交付物</a>
         <span class="disabled" aria-disabled="true">设置</span>
       </nav>
 
@@ -32,36 +33,85 @@
     <main class="workspace">
       <div class="workspace-head">
         <div>
-          <p class="eyebrow">工作台</p>
-          <h2 id="session-title">工作台概览</h2>
+          <p class="eyebrow">项目工作台</p>
+          <h2 id="session-title">项目状态</h2>
         </div>
         <div class="command-chip"><span id="command-label">就绪</span></div>
       </div>
 
-      <section id="overview" class="panel-section overview-grid" aria-label="工作台概览">
-        <article class="metric-card">
-          <div class="card-head">
-            <p class="eyebrow">项目</p>
-            <h3>项目状态</h3>
-          </div>
-          <div class="metric-body" id="projects-body"><p class="loading">加载中</p></div>
-        </article>
+      <section id="overview" class="panel-section project-overview" aria-label="项目状态概览">
+        <div class="overview-switch" role="tablist" aria-label="概览视图">
+          <button id="overview-tab-status" class="overview-tab active" type="button" role="tab" aria-selected="true" aria-controls="overview-status-panel">状态总览</button>
+          <button id="overview-tab-details" class="overview-tab" type="button" role="tab" aria-selected="false" aria-controls="overview-details-panel" tabindex="-1">交付物明细</button>
+        </div>
 
-        <article class="metric-card">
-          <div class="card-head">
-            <p class="eyebrow">交付</p>
-            <h3>交付物流转</h3>
-          </div>
-          <div class="metric-body" id="deliverables-body"><p class="loading">加载中</p></div>
-        </article>
+        <div id="overview-status-panel" class="overview-tabpanel" role="tabpanel" aria-labelledby="overview-tab-status">
+          <section class="milestone-timeline overview-band" aria-label="主计划时间轴">
+            <div id="overview-timeline-body"><p class="loading">加载中</p></div>
+          </section>
 
-        <article class="metric-card">
-          <div class="card-head">
-            <p class="eyebrow">同步</p>
-            <h3>飞书同步</h3>
-          </div>
-          <div class="metric-body" id="feishu-body"><p class="loading">加载中</p></div>
-        </article>
+          <section class="phase-summary overview-band" aria-label="当前阶段摘要">
+            <div id="overview-phase-summary"><p class="loading">加载中</p></div>
+          </section>
+
+          <section class="deliverable-status-band overview-band" aria-label="交付物完成状态">
+            <div class="band-head">
+              <div>
+                <p class="eyebrow">交付物</p>
+                <h4>交付物完成状态</h4>
+              </div>
+            </div>
+            <div id="overview-progress-grid" class="deliverable-progress-grid"><p class="loading">加载中</p></div>
+          </section>
+
+          <section class="risk-summary overview-band" aria-label="风险摘要">
+            <div id="overview-risk-summary"><p class="loading">加载中</p></div>
+          </section>
+        </div>
+
+        <div id="overview-details-panel" class="overview-tabpanel" role="tabpanel" aria-labelledby="overview-tab-details" hidden>
+          <section class="overview-band milestone-maintenance-band" aria-label="主计划维护">
+            <div class="band-head">
+              <div>
+                <p class="eyebrow">主计划</p>
+                <h4>主计划维护</h4>
+              </div>
+            </div>
+            <div id="milestone-maintenance" class="milestone-maintenance"><p class="loading">加载中</p></div>
+          </section>
+
+          <section class="overview-band details-summary-band" aria-label="交付物明细摘要">
+            <div id="overview-details-summary"><p class="loading">加载中</p></div>
+          </section>
+
+          <section class="overview-band details-table-band" aria-label="交付物明细表">
+            <div class="band-head">
+              <div>
+                <p class="eyebrow">明细</p>
+                <h4>交付物明细</h4>
+              </div>
+            </div>
+            <div class="overview-table-wrap">
+              <table class="overview-details-table">
+                <thead>
+                  <tr>
+                    <th scope="col">交付物</th>
+                    <th scope="col">状态</th>
+                    <th scope="col">负责人</th>
+                    <th scope="col">计划完成</th>
+                    <th scope="col">实际完成或当前进度</th>
+                    <th scope="col">风险与备注</th>
+                    <th scope="col">数据来源</th>
+                    <th scope="col"><span class="visually-hidden">展开控制</span></th>
+                  </tr>
+                </thead>
+                <tbody id="overview-details-body">
+                  <tr><td colspan="8"><p class="loading">加载中</p></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
       </section>
 
       <section id="aras-panel" class="panel-section aras-workbench" hidden aria-label="Aras 工具">
@@ -88,9 +138,24 @@
             <div class="form-grid">
               <label>
                 <span>Base URL</span>
-                <input id="aras-base-url" name="base_url" type="url" required placeholder="https://aras-host/" />
+                <input id="aras-base-url" name="base_url" type="url" required placeholder="https://aras-host/" value="http://ecm.sgmw.com.cn/innovatorserver" />
               </label>
               <label>
+                <span>认证方式</span>
+                <select id="aras-auth-mode" name="auth_mode">
+                  <option value="password" selected>ECM 账号密码</option>
+                  <option value="browser">浏览器 Cookie / Header</option>
+                </select>
+              </label>
+              <label data-auth-fields="password">
+                <span>ECM 用户名</span>
+                <input id="aras-username" name="username" autocomplete="off" value="l21500249" />
+              </label>
+              <label data-auth-fields="password">
+                <span>ECM 密码</span>
+                <input id="aras-password" name="password" type="password" autocomplete="off" placeholder="在此填入 ECM 密码（临时测试便利，验收后清空此 input 的 value）" />
+              </label>
+              <label data-auth-fields="browser" hidden>
                 <span>Cookie</span>
                 <input id="aras-cookie" name="cookie" type="password" autocomplete="off" />
               </label>
@@ -99,7 +164,7 @@
                 <textarea id="aras-headers" name="headers" rows="3" placeholder="名称: 值"></textarea>
               </label>
             </div>
-            <p class="connection-note">ECM 已认证 Cookie/Authorization；普通 SSO 登录成功不等于 SOAP 已授权</p>
+            <p id="aras-auth-note" class="connection-note">密码仅用于本次请求，由后端完成企业账号登录和 SOAP ValidateUser 校验，不会持久化。</p>
           </section>
 
           <section class="form-block fields-block">
@@ -108,14 +173,14 @@
               <h4>查询字段</h4>
             </div>
             <div class="aras-fields" data-mode-fields="ewo">
-              <label><span>EWO 编号</span><input name="ewo_no" /></label>
-              <label><span>项目代码</span><input name="project_code" /></label>
-              <label><span>主题关键词</span><input name="subject_keyword" /></label>
+              <label><span>EWO 编号</span><input name="ewo_no" placeholder="*171|*172" title="支持 * 模糊和 | 并集" /></label>
+              <label><span>项目代码</span><input name="project_code" placeholder="*310S*|*730S*" title="支持 * 模糊和 | 并集" /></label>
+              <label><span>主题关键词</span><input name="subject_keyword" placeholder="*关键词*" title="支持 * 模糊和 | 并集" /></label>
               <label><span>变更类型</span><input name="change_type" /></label>
               <label><span>变更子类型</span><input name="change_sub_type" /></label>
-              <label><span>区域</span><input name="area" /></label>
+              <label><span>区域</span><input name="area" placeholder="*区域*" title="支持 * 模糊和 | 并集" /></label>
               <label><span>状态</span><input name="state" /></label>
-              <label><span>响应部门</span><input name="rsp_department" /></label>
+              <label><span>响应部门</span><input name="rsp_department" placeholder="*部门*" title="支持 * 模糊和 | 并集" /></label>
               <label><span>提交开始</span><input name="submit_start" type="date" /></label>
               <label><span>提交结束</span><input name="submit_end" type="date" /></label>
               <label><span>页码</span><input name="page" type="number" min="1" value="1" /></label>
@@ -124,13 +189,13 @@
             </div>
 
             <div class="aras-fields" data-mode-fields="paa" hidden>
-              <label><span>PAA 编号</span><input name="paa_no" /></label>
-              <label><span>EWO 编号</span><input name="ewo_no" /></label>
+              <label><span>PAA 编号</span><input name="paa_no" placeholder="*编号*" title="支持 * 模糊和 | 并集" /></label>
+              <label><span>EWO 编号</span><input name="ewo_no" placeholder="*编号*" title="支持 * 模糊和 | 并集" /></label>
               <label><span>状态</span><input name="state" /></label>
-              <label><span>区域</span><input name="area" /></label>
-              <label><span>基地</span><input name="base" /></label>
-              <label><span>业务部门</span><input name="department" placeholder="技术中心-车体工程" /></label>
-              <label><span>车辆关键词</span><input name="vehicle_keyword" /></label>
+              <label><span>区域</span><input name="area" placeholder="*区域*" title="支持 * 模糊和 | 并集" /></label>
+              <label><span>基地</span><input name="base" placeholder="*基地*" title="支持 * 模糊和 | 并集" /></label>
+              <label><span>业务部门</span><input name="department" placeholder="技术中心-车体工程" title="支持 * 模糊和 | 并集" /></label>
+              <label><span>车辆关键词</span><input name="vehicle_keyword" placeholder="*310S*|*730S*" title="支持 * 模糊和 | 并集" /></label>
               <label><span>提交开始</span><input name="submit_start" type="date" /></label>
               <label><span>提交结束</span><input name="submit_end" type="date" /></label>
               <label><span>物料需求开始</span><input name="mtl_rq_start" type="date" /></label>
@@ -146,8 +211,8 @@
               <label><span>采购结束</span><input name="buy_end" type="date" /></label>
               <label><span>PE 开始</span><input name="pe_start" type="date" /></label>
               <label><span>PE 结束</span><input name="pe_end" type="date" /></label>
-              <label><span>NCR 编号</span><input name="ncr_no" /></label>
-              <label><span>项目名称</span><input name="project_names" /></label>
+              <label><span>NCR 编号</span><input name="ncr_no" placeholder="*编号*" title="搜索符号将原样传给 NCR 服务" /></label>
+              <label><span>项目名称</span><input name="project_names" placeholder="F610S,F610S DG 或 *610*" title="逗号分隔项目；搜索符号将原样传给 NCR 服务" /></label>
               <label><span>业务部门</span><input name="department" placeholder="技术中心-车体工程" /></label>
               <label>
                 <span>区段代码（高级字段）</span>
@@ -177,8 +242,57 @@
           <div id="aras-result" class="is-empty">暂无结果</div>
         </section>
       </section>
+
+      <section id="deliverables" class="panel-section deliverables-workbench" hidden aria-label="交付物工作台">
+        <div class="deliverables-head">
+          <div>
+            <p class="eyebrow">目录</p>
+            <h3>交付物工作台</h3>
+          </div>
+          <div class="deliverable-filters">
+            <label class="filter-control">
+              <span>分类</span>
+              <select id="deliverable-category-filter"></select>
+            </label>
+            <label class="filter-control">
+              <span>状态</span>
+              <select id="deliverable-status-filter"></select>
+            </label>
+            <button id="deliverable-refresh" class="segment" type="button">刷新目录</button>
+          </div>
+        </div>
+
+        <div class="deliverables-layout">
+          <aside class="catalog-pane" aria-label="交付物目录">
+            <div id="deliverable-list" class="deliverable-list loading">加载目录中</div>
+          </aside>
+
+          <div class="detail-pane">
+            <article id="deliverable-detail" class="deliverable-detail is-empty">
+              <p class="loading">请选择目录项</p>
+            </article>
+
+            <section id="deliverable-result-panel" class="result-panel" aria-live="polite" hidden>
+              <div class="result-head">
+                <p class="eyebrow">结果</p>
+                <span id="deliverable-result-kind">就绪</span>
+              </div>
+              <div id="deliverable-error" class="error-msg" hidden></div>
+              <div id="deliverable-result" class="is-empty">暂无结果</div>
+            </section>
+
+            <section class="recent-runs" aria-label="最近运行">
+              <div class="recent-head">
+                <p class="eyebrow">页面内存</p>
+                <h4>最近运行</h4>
+              </div>
+              <div id="deliverable-recent" class="recent-list is-empty">暂无运行记录</div>
+            </section>
+          </div>
+        </div>
+      </section>
     </main>
   </div>
-  <script src="/static/app.js?v=redesign-20260628"></script>
+  <script src="/static/app.js?v=overview-20260813"></script>
 </body>
 </html>

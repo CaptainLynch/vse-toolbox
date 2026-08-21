@@ -13,11 +13,12 @@ VSE TOOLBOX (CLI Edition) — 主入口模块
     - 本文件是 CLI 适配层，可使用 rich；service/core 层禁止引入 rich
 """
 
+import argparse
 import logging
 import re
 import sys
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Sequence
 from urllib.parse import urljoin, urlsplit
 
 from rich.console import Console
@@ -70,6 +71,28 @@ from services.tdc_crawler import (
     combine_diagnostic_hooks,
 )
 from services.tdc_auth import TDCAuthError, TDCPasswordAuthClient
+from services.project_status_updates import ProjectStatusUpdateService
+from services.project_status_sync_runner import (
+    BindingRunResult,
+    EXIT_ATTENTION,
+    EXIT_FAILED,
+    EXIT_INTERRUPTED,
+    EXIT_OK,
+    ProjectStatusSyncRunner,
+    RunOnceResult,
+    create_production_registry,
+)
+from services.tdc_contract_probe import (
+    REPORT_DIR_NAME,
+    TDCContractProbeOptions,
+    build_report,
+    get_filter_field_labels,
+    save_report,
+    validate_categorical_fields,
+    validate_filters_non_empty,
+    validate_options,
+)
+import tdc_probe_cli as _probe_cli
 
 PROJECT_ROOT = app_root()
 
@@ -934,6 +957,57 @@ def _run_tdc_report(report_type: str, debug_enabled: bool) -> None:
         logger.warning("TDC CLI operation failed: report_type=%s action=%s type=%s", report_type, action, type(exc).__name__)
 
 
+def _run_tdc_contract_probe(debug_enabled: bool) -> int:
+    """
+    数模同步契约探测（只读）。
+
+    委托给 tdc_probe_cli.run_probe() 共享流程。
+    main.py 在此基础上可选叠加 diagnostics（debug 模式）。
+    不构造 DatabaseManager，不初始化数据库。
+    """
+    diagnostic_hook = None
+    report: MarkdownDiagnosticReport | None = None
+
+    if debug_enabled:
+        report = MarkdownDiagnosticReport(
+            options=DiagnosticOptions(enabled=True, unsafe_raw=False),
+            base_url="",
+            mode="data_model:probe",
+            inputs={"report_type": "data_model", "action": "probe"},
+            report_title="TDC Contract Probe Diagnostic",
+            file_name_prefix="tdc_probe_debug",
+            allow_unsafe_raw=False,
+        )
+        hook = combine_diagnostic_hooks(
+            _tdc_console_debug_hook,
+            report.record_http_event,
+        )
+        diagnostic_hook = hook
+
+    try:
+        exit_code = _probe_cli.run_probe(
+            debug_enabled=debug_enabled,
+            report_dir=PROJECT_ROOT / ".runtime" / REPORT_DIR_NAME,
+            diagnostic_hook=diagnostic_hook,
+        )
+        if report is not None:
+            report.save("success" if exit_code == 0 else "failed")
+        return exit_code
+    except Exception as exc:
+        if report is not None:
+            report.record_exception(exc)
+            report.save("failed")
+        console.print(Panel(Text(_safe_error_message(exc)), title=type(exc).__name__, border_style="#c19191"))
+        return 1
+
+
+def _profile_rows_for_display(rows):
+    """复用 tdc_contract_probe 的 profile_rows 供 CLI 显示。"""
+    from services.tdc_contract_probe import FieldProfile, profile_rows
+    profiles, _, _ = profile_rows(rows)
+    return list(profiles.values()), {}, {}
+
+
 def handle_tdc_crawler(db: DatabaseManager) -> None:
     """Menu 7: TDC report queries and official exports."""
     del db
@@ -946,9 +1020,10 @@ def handle_tdc_crawler(db: DatabaseManager) -> None:
         menu.add_row("2", "SOR 流程报表")
         menu.add_row("3", "造型 A 面冻结发布单")
         menu.add_row("4", f"调试与诊断设置（当前：{'开启' if debug_enabled else '关闭'}）")
+        menu.add_row("5", "数模同步契约探测（只读）")
         menu.add_row("0", "返回主菜单")
         console.print(Panel(menu, title="TDC 报表爬虫", border_style="#88a6a4", box=box.ROUNDED))
-        sub = Prompt.ask("选择 TDC 报表", choices=["0", "1", "2", "3", "4"], default="0")
+        sub = Prompt.ask("选择 TDC 报表", choices=["0", "1", "2", "3", "4", "5"], default="0")
         if sub == "0":
             return
         if sub == "4":
@@ -961,6 +1036,9 @@ def handle_tdc_crawler(db: DatabaseManager) -> None:
             _ = TDCAFaceFilters()
             console.print(Panel(AFACE_CONTRACT_BLOCKER, title="造型 A 面冻结发布单", border_style="#c7ad7a"))
             continue
+        if sub == "5":
+            _run_tdc_contract_probe(debug_enabled)
+            continue  # noqa: ignoring exit code in interactive mode
         _run_tdc_report("data_model" if sub == "1" else "sor", debug_enabled)
 
 
@@ -1297,8 +1375,164 @@ def show_menu() -> None:
     console.print()
 
 
-def main() -> None:
-    """CLI 主循环入口"""
+def _run_sync_once(
+    db: DatabaseManager,
+    deliverable_id: str | None,
+    dry_run: bool,
+) -> int:
+    """非交互式 project-status-sync --once 执行路径。不显示 banner/菜单。"""
+    service = ProjectStatusUpdateService(db)
+    registry = create_production_registry()
+    runner = ProjectStatusSyncRunner(db, service, registry)
+
+    try:
+        result = runner.run_once(
+            deliverable_id=deliverable_id,
+            dry_run=dry_run,
+        )
+    except KeyboardInterrupt:
+        return EXIT_INTERRUPTED
+
+    _print_sync_summary(result)
+    return result.exit_code
+
+
+def _print_sync_summary(result: RunOnceResult) -> None:
+    """打印适合 Task Scheduler 日志的脱敏摘要。不输出敏感字段或 traceback。"""
+    if result.dry_run:
+        if not result.readiness:
+            console.print("[dim]dry-run: 无符合条件的 enabled binding。[/]")
+            return
+        for item in result.readiness:
+            if not item.binding_ready:
+                status = "binding not ready"
+            elif item.connector_available:
+                status = "ready"
+            else:
+                status = "no connector"
+            console.print(
+                f"[dim]dry-run[/] binding {item.binding_id} "
+                f"({item.deliverable_id}, {item.source_type}): {status}"
+            )
+        return
+
+    if not result.results:
+        console.print("[dim]无符合条件的 enabled binding，未执行同步。[/]")
+        return
+
+    for r in result.results:
+        _print_binding_result(r)
+
+
+def _print_binding_result(r: BindingRunResult) -> None:
+    """打印单个 binding 的脱敏结果。"""
+    parts = [
+        f"binding {r.binding_id} ({r.deliverable_id}, {r.source_type})",
+        f"outcome={r.outcome}",
+    ]
+    if r.final_state:
+        parts.append(f"state={r.final_state}")
+    if r.applied_fields:
+        parts.append(f"applied={','.join(r.applied_fields)}")
+    if r.error_type:
+        parts.append(f"error_type={r.error_type}")
+    if r.error_message:
+        parts.append(f"message={r.error_message}")
+    console.print("[dim]sync[/] " + " | ".join(parts))
+
+
+def _parse_sync_args(argv: Sequence[str]) -> argparse.Namespace:
+    """解析 project-status-sync 子命令参数。"""
+    parser = argparse.ArgumentParser(
+        prog="main.py project-status-sync",
+        description="执行一次项目状态同步（适合 Windows Task Scheduler）。",
+        add_help=True,
+    )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        required=True,
+        help="执行一次同步后退出（必选）。",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="只读就绪检查，不获取租约、不创建 run、不调用 connector。",
+    )
+    parser.add_argument(
+        "--deliverable-id",
+        type=str,
+        default=None,
+        help="只同步指定交付物的绑定。",
+    )
+    return parser.parse_args(argv)
+
+
+_SYNC_SUBCOMMAND = "project-status-sync"
+_PROBE_SUBCOMMAND = "tdc-contract-probe"
+
+
+def _parse_probe_args(argv: Sequence[str]) -> argparse.Namespace:
+    """解析 tdc-contract-probe 子命令参数。"""
+    parser = argparse.ArgumentParser(
+        prog="main.py tdc-contract-probe",
+        description="TDC 数模同步契约只读探测（不接触数据库，不启用自动同步）。",
+        add_help=True,
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        default=False,
+        help="开启 TDC 诊断调试报告（仍禁用 unsafe_raw）。",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """
+    CLI 主入口。
+
+    - 无参数或非已知子命令前缀时进入现有交互式菜单。
+    - project-status-sync --once 时进入非交互式单次同步。
+    - tdc-contract-probe 时进入只读探测，不构造 DatabaseManager。
+    """
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+
+    # tdc-contract-probe：在任何 DatabaseManager 构造之前拦截。
+    # 该命令不接触数据库，不初始化 SQLite，不进入菜单。
+    if raw_argv and raw_argv[0] == _PROBE_SUBCOMMAND:
+        args = _parse_probe_args(raw_argv[1:])
+        try:
+            return _run_tdc_contract_probe(args.debug)
+        except KeyboardInterrupt:
+            return EXIT_INTERRUPTED
+        except Exception as exc:
+            console.print(
+                f"[red]探测运行失败: {redact_sensitive_text(str(exc), limit=500)}[/]"
+            )
+            return EXIT_FAILED
+
+    # 非交互式子命令检测。
+    if raw_argv and raw_argv[0] == _SYNC_SUBCOMMAND:
+        args = _parse_sync_args(raw_argv[1:])
+        try:
+            db = DatabaseManager()
+            db.init_database()
+            return _run_sync_once(
+                db,
+                deliverable_id=args.deliverable_id,
+                dry_run=args.dry_run,
+            )
+        except KeyboardInterrupt:
+            return EXIT_INTERRUPTED
+        except Exception as exc:
+            console.print(
+                f"[red]同步运行失败: {redact_sensitive_text(str(exc), limit=500)}[/]"
+            )
+            return EXIT_FAILED
+
+    # 交互式模式：保持现有行为不变。
     logger.info("VSE TOOLBOX 启动")
     show_banner()
 
@@ -1329,7 +1563,9 @@ def main() -> None:
             console.print(f"[red]未预期的错误: {e}[/]")
             logger.exception("主循环中发生未预期异常")
 
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
 

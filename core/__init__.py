@@ -1,10 +1,21 @@
 ﻿# -*- coding: utf-8 -*-
-"""
-core/__init__.py — 核心模块包初始化
+"""Core package exports.
 
-导出核心组件，便于上层模块直接导入。
+Keep package import lightweight.  Several small utilities such as redaction and
+runtime paths are intentionally usable without loading SQLite or creating a
+database connection.
 """
 
-from core.db_manager import DatabaseManager
+from __future__ import annotations
+
+from typing import Any
 
 __all__ = ["DatabaseManager"]
+
+
+def __getattr__(name: str) -> Any:
+    if name == "DatabaseManager":
+        from core.db_manager import DatabaseManager
+
+        return DatabaseManager
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

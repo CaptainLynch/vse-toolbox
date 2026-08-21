@@ -13,9 +13,10 @@ from dataclasses import dataclass
 from html import escape
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
-from urllib.parse import quote, urljoin, urlsplit
+from urllib.parse import quote, urlencode, urljoin, urlsplit
 
 from core.redaction import redact_sensitive_text
+from services.windows_http import WinHTTPTimeoutError
 
 try:
     import requests
@@ -26,6 +27,9 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only in minimal test
 SOAP_ROUTE = "Server/InnovatorServer.aspx"
 CLIENT_ROUTE = "Client/default.aspx"
 TOKEN_ROUTE = "Server/AuthenticationBroker.asmx/GetFileDownloadToken"
+NCR_DETAIL_RECEIVE_TIMEOUT = 240.0
+_MAX_SEARCH_EXPRESSION_LENGTH = 500
+_MAX_SEARCH_ALTERNATIVES = 10
 DEFAULT_BROWSER_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
@@ -204,6 +208,7 @@ class ArasHttpDiagnosticEvent:
     response_headers: Mapping[str, str] | None = None
     response_body: str | None = None
     elapsed_ms: float | None = None
+    timeout: float | tuple[float, float] | None = None
     exception: str | None = None
 
 
@@ -280,6 +285,13 @@ class NCRDetailExportResult:
     raw_xml: str
 
 
+@dataclass(frozen=True)
+class NCRVaultFileLocation:
+    file_name: str
+    vault_id: str
+    vault_url: str
+
+
 class ArasCrawlerClient:
     def __init__(
         self,
@@ -305,7 +317,11 @@ class ArasCrawlerClient:
         self.diagnostic_hook = diagnostic_hook
         self._context_warmed = False
         if cookies:
-            self.session.cookies.update(cookies)
+            scoped_setter = getattr(self.session, "set_cookies", None)
+            if callable(scoped_setter):
+                scoped_setter(cookies, self.base_url)
+            else:
+                self.session.cookies.update(cookies)
 
     def query_ewo_report(
         self,
@@ -420,7 +436,11 @@ class ArasCrawlerClient:
 
     def extract_ncr_approval_detail(self, filters: NCRApprovalFilters) -> NCRDetailExportResult:
         payload = self._build_ncr_payload(filters, "sgmw_downloadFileDetail4C")
-        response = self._post_soap("ApplyMethod", payload)
+        timeout = (self.timeout, max(self.timeout, NCR_DETAIL_RECEIVE_TIMEOUT))
+        try:
+            response = self._post_soap("ApplyMethod", payload, timeout=timeout)
+        except WinHTTPTimeoutError as exc:
+            raise ArasCrawlerError("NCR 明细生成超时，请稍后重试或缩小日期范围") from exc
         return self.parse_ncr_detail_response(response.text)
 
     def download_ncr_detail_file(
@@ -481,6 +501,82 @@ class ArasCrawlerClient:
         _reject_html_download(response, content)
         return _atomic_write_download(_resolve_download_target(destination, name), content)
 
+    def download_ncr_progress_file(
+        self,
+        export_result: NCRExportResult,
+        destination: str | os.PathLike[str],
+    ) -> Path:
+        """Resolve an NCR progress export in Aras Vault and download it safely."""
+        file_id = str(export_result.file_id or "").strip()
+        if not file_id:
+            raise ValueError("file_id is required")
+
+        payload = self._build_ncr_vault_metadata_payload(file_id)
+        metadata_response = self._post_soap("ApplyItem", payload)
+        location = self.parse_ncr_vault_metadata_response(metadata_response.text, file_id)
+        name = _validate_download_file_name(location.file_name or export_result.file_name)
+        vault_url = self._validated_vault_url(location.vault_url)
+        token = self.get_file_download_token(file_id)
+        query = ""
+        download_url = ""
+        headers = self._browser_headers("*/*")
+        headers.update(self.headers)
+        started = time.perf_counter()
+        try:
+            query = urlencode(
+                {
+                    "dbName": "InnovatorSolutions",
+                    "fileId": file_id,
+                    "fileName": name,
+                    "vaultId": location.vault_id,
+                    "token": token,
+                    "contentDispositionAttachment": "1",
+                }
+            )
+            download_url = f"{vault_url}?{query}"
+            response = self.session.get(download_url, headers=headers, timeout=self.timeout)
+        except Exception as exc:
+            self._emit_diagnostic(
+                ArasHttpDiagnosticEvent(
+                    stage="ncr-progress-download",
+                    method="GET",
+                    url=vault_url,
+                    request_headers=headers,
+                    elapsed_ms=_elapsed_ms(started),
+                    timeout=self.timeout,
+                    exception=_redact_diagnostic(repr(exc)),
+                )
+            )
+            raise
+        finally:
+            token = ""
+            query = ""
+            download_url = ""
+
+        self._emit_diagnostic(
+            ArasHttpDiagnosticEvent(
+                stage="ncr-progress-download",
+                method="GET",
+                url=vault_url,
+                request_headers=headers,
+                status_code=getattr(response, "status_code", None),
+                reason=getattr(response, "reason", None),
+                elapsed_ms=_elapsed_ms(started),
+                timeout=self.timeout,
+            )
+        )
+        status = int(getattr(response, "status_code", 200) or 200)
+        if status in {401, 403}:
+            raise ArasAuthenticationError(f"Aras HTTP {status} during NCR progress file download")
+        if status >= 400:
+            raise ArasCrawlerError(f"Aras HTTP {status} during NCR progress file download")
+        response.raise_for_status()
+        content = getattr(response, "content", b"") or b""
+        if not content:
+            raise ArasCrawlerError("NCR progress file download response is empty")
+        _reject_html_download(response, content)
+        return _atomic_write_download(_resolve_download_target(destination, name), content)
+
     def get_file_download_token(self, file_id: str) -> str:
         if not file_id:
             raise ValueError("file_id is required")
@@ -508,7 +604,20 @@ class ArasCrawlerClient:
                 )
             )
             raise
-        self._emit_diagnostic(_event_from_response("download-token", "POST", url, headers, body, response, started))
+        self._emit_diagnostic(
+            ArasHttpDiagnosticEvent(
+                stage="download-token",
+                method="POST",
+                url=url,
+                request_headers=headers,
+                request_body=body,
+                status_code=getattr(response, "status_code", None),
+                reason=getattr(response, "reason", None),
+                response_headers=dict(getattr(response, "headers", {}) or {}),
+                elapsed_ms=_elapsed_ms(started),
+                timeout=self.timeout,
+            )
+        )
         if getattr(response, "status_code", 200) >= 400:
             raise ArasCrawlerError(_format_http_error(response))
         response.raise_for_status()
@@ -558,6 +667,49 @@ class ArasCrawlerClient:
         return NCRDetailExportResult(file_name=file_name, raw_xml=xml_text)
 
     @staticmethod
+    def parse_ncr_vault_metadata_response(xml_text: str, file_id: str) -> NCRVaultFileLocation:
+        root = _parse_xml(xml_text)
+        file_item = next(
+            (
+                node
+                for node in root.iter()
+                if _local_name(node.tag) == "Item"
+                and node.get("type") == "File"
+                and node.get("id", file_id) == file_id
+            ),
+            None,
+        )
+        if file_item is None:
+            raise ArasCrawlerError("NCR progress file metadata does not contain the requested File")
+        filename_node = next(
+            (node for node in file_item.iter() if _local_name(node.tag) == "filename"),
+            None,
+        )
+        file_name = (filename_node.text or "").strip() if filename_node is not None else ""
+        vault_item = next(
+            (
+                node
+                for node in file_item.iter()
+                if _local_name(node.tag) == "Item" and node.get("type") == "Vault"
+            ),
+            None,
+        )
+        if vault_item is None:
+            raise ArasCrawlerError("NCR progress file metadata does not contain a Vault")
+        vault_id = (vault_item.get("id") or "").strip()
+        if not vault_id:
+            id_node = next((node for node in vault_item if _local_name(node.tag) == "id"), None)
+            vault_id = (id_node.text or "").strip() if id_node is not None else ""
+        vault_url_node = next(
+            (node for node in vault_item if _local_name(node.tag) == "vault_url"),
+            None,
+        )
+        vault_url = (vault_url_node.text or "").strip() if vault_url_node is not None else ""
+        if not file_name or not vault_id or not vault_url:
+            raise ArasCrawlerError("NCR progress file metadata is incomplete")
+        return NCRVaultFileLocation(file_name=file_name, vault_id=vault_id, vault_url=vault_url)
+
+    @staticmethod
     def parse_download_token_response(json_text: str) -> str:
         try:
             data = json.loads(json_text)
@@ -568,17 +720,24 @@ class ArasCrawlerClient:
             raise ArasCrawlerError("download token response does not contain d")
         return token
 
-    def _post_soap(self, soap_action: str, payload: str) -> Any:
+    def _post_soap(
+        self,
+        soap_action: str,
+        payload: str,
+        *,
+        timeout: float | tuple[float, float] | None = None,
+    ) -> Any:
         self._prewarm_context()
         url = self._url(SOAP_ROUTE)
         headers = self._headers(soap_action, "text/xml; charset=UTF-8")
+        request_timeout = self.timeout if timeout is None else timeout
         started = time.perf_counter()
         try:
             response = self.session.post(
                 url,
                 data=payload,
                 headers=headers,
-                timeout=self.timeout,
+                timeout=request_timeout,
             )
         except Exception as exc:
             self._emit_diagnostic(
@@ -589,11 +748,23 @@ class ArasCrawlerClient:
                     request_headers=headers,
                     request_body=payload,
                     elapsed_ms=_elapsed_ms(started),
+                    timeout=request_timeout,
                     exception=repr(exc),
                 )
             )
             raise
-        self._emit_diagnostic(_event_from_response(f"soap-{soap_action}", "POST", url, headers, payload, response, started))
+        self._emit_diagnostic(
+            _event_from_response(
+                f"soap-{soap_action}",
+                "POST",
+                url,
+                headers,
+                payload,
+                response,
+                started,
+                timeout=request_timeout,
+            )
+        )
         status = int(getattr(response, "status_code", 200) or 200)
         if status in {401, 403}:
             raise ArasAuthenticationError(_format_http_error(response))
@@ -702,14 +873,14 @@ class ArasCrawlerClient:
             f'pagesize="{page_size}" maxRecords="{max_records}" returnMode="itemsOnly"'
         )
         children = [
-            _element("_no", filters.ewo_no),
-            _element("eplmwriteneplcode", filters.project_code),
-            _element("_subject", filters.subject_keyword, condition="like"),
+            _search_elements("_no", filters.ewo_no),
+            _search_elements("eplmwriteneplcode", filters.project_code),
+            _search_elements("_subject", filters.subject_keyword, default_like=True),
             _element("_sort_type", filters.change_type),
             _element("_sort_sub_type", filters.change_sub_type),
-            _element("_area", filters.area, condition="like"),
+            _search_elements("_area", filters.area, default_like=True),
             _element("state", filters.state),
-            _element("_rsp_department", filters.rsp_department),
+            _search_elements("_rsp_department", filters.rsp_department),
             _element("_submit_time", filters.submit_start, condition="ge"),
             _element("_submit_time", filters.submit_end, condition="le"),
         ]
@@ -730,17 +901,17 @@ class ArasCrawlerClient:
             f'pagesize="{page_size}" maxRecords="{max_records}" returnMode="itemsOnly"'
         )
         children = [
-            _element("_no", filters.paa_no),
-            _element("_ewo_no", filters.ewo_no),
+            _search_elements("_no", filters.paa_no),
+            _search_elements("_ewo_no", filters.ewo_no),
             _element("state", filters.state),
-            _element("_area", filters.area, condition="like"),
-            _element("_base", filters.base, condition="like"),
-            _element("_vehicles", filters.vehicle_keyword, condition="like"),
+            _search_elements("_area", filters.area, default_like=True),
+            _search_elements("_base", filters.base, default_like=True),
+            _search_elements("_vehicles", filters.vehicle_keyword, default_like=True),
             _element("_submit_date", filters.submit_start, condition="ge"),
             _element("_submit_date", filters.submit_end, condition="le"),
             _element("_mtl_rq_date", filters.mtl_rq_start, condition="ge"),
             _element("_mtl_rq_date", filters.mtl_rq_end, condition="le"),
-            _element("_pe_tdc_department", filters.department),
+            _search_elements("_pe_tdc_department", filters.department),
         ]
         body = "".join(child for child in children if child)
         if body:
@@ -762,6 +933,38 @@ class ArasCrawlerClient:
         )
         body = "".join(f"<{name}><![CDATA[{_cdata(value or '')}]]></{name}>" for name, value in nodes)
         return _soap_envelope(f'<ApplyMethod><Item type="Method" action="{method_action}">{body}</Item></ApplyMethod>')
+
+    @staticmethod
+    def _build_ncr_vault_metadata_payload(file_id: str) -> str:
+        return _soap_envelope(
+            '<ApplyItem><Item type="File" action="get" select="id,filename">'
+            '<Relationships><Item type="Located" select="id,related_id,file_version" action="get">'
+            '<related_id><Item type="Vault" select="id,vault_url" action="get"/></related_id>'
+            '</Item></Relationships>'
+            f"<id>{escape(file_id)}</id>"
+            "</Item></ApplyItem>"
+        )
+
+    def _validated_vault_url(self, vault_url: str) -> str:
+        parsed = urlsplit(vault_url)
+        base = urlsplit(self.base_url)
+        try:
+            allowed = (
+                parsed.scheme in {"http", "https"}
+                and bool(parsed.hostname)
+                and parsed.username is None
+                and parsed.password is None
+                and not parsed.query
+                and not parsed.fragment
+                and parsed.path.lower().endswith("/vault/vaultserver.aspx")
+                and parsed.hostname.lower() == (base.hostname or "").lower()
+                and _effective_port(parsed) == _effective_port(base)
+            )
+        except ValueError:
+            allowed = False
+        if not allowed:
+            raise ArasCrawlerError("NCR progress Vault URL is not allowed")
+        return vault_url
 
 
 def _parse_item_rows(root: ET.Element, item_type: str) -> tuple[list[dict[str, str | None]], list[str], int | None]:
@@ -800,6 +1003,26 @@ def _element(name: str, value: str | None, condition: str | None = None) -> str:
         return ""
     attr = f' condition="{condition}"' if condition else ""
     return f"<{name}{attr}>{escape(value)}</{name}>"
+
+
+def _search_elements(name: str, value: str | None, *, default_like: bool = False) -> str:
+    if value is None or value == "":
+        return ""
+    expression = str(value).strip()
+    if len(expression) > _MAX_SEARCH_EXPRESSION_LENGTH:
+        raise ValueError(f"{name} search expression is too long")
+    alternatives = [item.strip() for item in expression.split("|")]
+    if any(not item for item in alternatives):
+        raise ValueError(f"{name} search expression contains an empty alternative")
+    if len(alternatives) > _MAX_SEARCH_ALTERNATIVES:
+        raise ValueError(f"{name} search expression has too many alternatives")
+    nodes = [
+        _element(name, item, condition="like" if default_like or "*" in item else None)
+        for item in alternatives
+    ]
+    if len(nodes) == 1:
+        return nodes[0]
+    return f"<or>{''.join(nodes)}</or>"
 
 
 def _cdata(value: str) -> str:
@@ -954,6 +1177,7 @@ def _event_from_response(
     request_body: str | None,
     response: Any,
     started: float,
+    timeout: float | tuple[float, float] | None = None,
 ) -> ArasHttpDiagnosticEvent:
     return ArasHttpDiagnosticEvent(
         stage=stage,
@@ -966,6 +1190,7 @@ def _event_from_response(
         response_headers=dict(getattr(response, "headers", {}) or {}),
         response_body=getattr(response, "text", None),
         elapsed_ms=_elapsed_ms(started),
+        timeout=timeout,
     )
 
 
@@ -985,6 +1210,16 @@ def _normalize_aras_app_root(base_url: str) -> str:
     if marker_index >= 0:
         return cleaned[: marker_index + len(marker)]
     return urljoin(cleaned, "innovatorserver/")
+
+
+def _effective_port(parsed: Any) -> int | None:
+    if parsed.port is not None:
+        return parsed.port
+    if parsed.scheme == "http":
+        return 80
+    if parsed.scheme == "https":
+        return 443
+    return None
 
 
 def _redact_diagnostic(message: str) -> str:

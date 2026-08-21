@@ -135,7 +135,8 @@ def _write_csv_atomically(
 
 
 def _verify_csv(path: Path, expected_header: Sequence[str]) -> None:
-    content = path.read_text(encoding="utf-8-sig", newline="")
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        content = handle.read()
     if not content:
         raise ValueError(f"refusing to publish empty export at {path}")
     header = next(csv.reader(content.splitlines()), None)

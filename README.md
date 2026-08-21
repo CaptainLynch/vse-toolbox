@@ -1,5 +1,7 @@
 # VSE TOOLBOX (CLI Edition)
 
+> VSE Toolbox development utilities.
+
 汽车行业项目管理自动化工具箱 — 纯命令行架构。
 
 ## 特性
@@ -81,3 +83,4 @@ Aras/EWO 使用浏览器中已登录会话的 Cookie/Authorization，不在本�
 | Architect | 高深度推理 | 架构设计、任务拆解 | 可写文档 |
 | Worker | 结构化推理 | 代码实现、单元测试 | 可写代码 |
 | Reviewer | 高深度推理 | 静态检查、代码审查 | 只读 |
+ACCEPTANCE_TEST

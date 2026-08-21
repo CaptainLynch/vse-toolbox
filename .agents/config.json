@@ -1,0 +1,28 @@
+{
+  "lead_agent": "codex",
+  "worker_agent": "agy-cli",
+  "agy": {
+    "executable": "agy",
+    "model": "gemini-3.7-flash-high",
+    "effort": "high",
+    "mode": "accept-edits",
+    "sandbox": true,
+    "disable_slash_commands": true,
+    "new_project": true,
+    "timeout_seconds": 900
+  },
+  "max_agy_rounds": 3,
+  "max_codex_review_rounds": 2,
+  "max_total_agent_runs": 6,
+  "auto_merge": false,
+  "auto_commit_worker": true,
+  "run_tests": true,
+  "run_lint": true,
+  "run_build": true,
+  "worktree_root": ".agents/worktrees",
+  "checks": [
+    "python -m flake8",
+    "python -m mypy core services web",
+    "python -m pytest"
+  ]
+}

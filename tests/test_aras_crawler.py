@@ -12,8 +12,10 @@ from services.aras_crawler import (
     ArasCrawlerError,
     EWOReportFilters,
     NCRApprovalFilters,
+    NCRExportResult,
     PAAReportFilters,
 )
+from services.windows_http import WinHTTPTimeoutError
 from services.aras_department_mapping import (
     NCR_SECTION_CODES,
     NCR_SECTION_CODES_BY_DEPARTMENT_V1,
@@ -163,6 +165,73 @@ def test_query_paa_report_filters_department_without_requester_condition() -> No
     assert "<_pe_tdc_department condition=" not in payload
     assert "<_requester_department" not in payload
     assert result.rows[0]["_no"] == "PAA-1"
+
+
+def test_ewo_and_paa_search_patterns_generate_like_and_or_aml() -> None:
+    session = FakeSession(
+        [
+            FakeResponse(fixture_text("ewo_query_response.xml")),
+            FakeResponse(
+                '<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/">'
+                "<SOAP-ENV:Body><Result /></SOAP-ENV:Body></SOAP-ENV:Envelope>"
+            ),
+        ]
+    )
+    client = ArasCrawlerClient("http://aras.example", session=session)  # type: ignore[arg-type]
+
+    client.query_ewo_report(
+        EWOReportFilters(ewo_no="*171|*172", project_code="*310S*730S*|*730S*310S*")
+    )
+    client.query_paa_report(PAAReportFilters(vehicle_keyword="*310S*|*730S*"))
+
+    ewo_payload = str(session.calls[0]["data"])
+    paa_payload = str(session.calls[1]["data"])
+    assert (
+        "<or><_no condition=\"like\">*171</_no>"
+        "<_no condition=\"like\">*172</_no></or>"
+    ) in ewo_payload
+    assert (
+        "<or><eplmwriteneplcode condition=\"like\">*310S*730S*</eplmwriteneplcode>"
+        "<eplmwriteneplcode condition=\"like\">*730S*310S*</eplmwriteneplcode></or>"
+    ) in ewo_payload
+    assert (
+        "<or><_vehicles condition=\"like\">*310S*</_vehicles>"
+        "<_vehicles condition=\"like\">*730S*</_vehicles></or>"
+    ) in paa_payload
+
+
+def test_search_patterns_keep_exact_and_enum_fields_exact() -> None:
+    session = FakeSession([FakeResponse(fixture_text("ewo_query_response.xml"))])
+    client = ArasCrawlerClient("http://aras.example", session=session)  # type: ignore[arg-type]
+
+    client.query_ewo_report(
+        EWOReportFilters(
+            ewo_no="EWO-1|*EWO-2*",
+            change_type="PWO",
+            state="OPEN",
+        )
+    )
+
+    payload = str(session.calls[0]["data"])
+    assert (
+        "<or><_no>EWO-1</_no>"
+        "<_no condition=\"like\">*EWO-2*</_no></or>"
+    ) in payload
+    assert "<_sort_type>PWO</_sort_type>" in payload
+    assert "<state>OPEN</state>" in payload
+    assert "<_sort_type condition=" not in payload
+    assert "<state condition=" not in payload
+
+
+@pytest.mark.parametrize(
+    "expression",
+    ["A||B", "|A", "A|", "|".join(f"value-{index}" for index in range(11)), "x" * 501],
+)
+def test_search_patterns_reject_empty_oversized_or_excessive_alternatives(expression: str) -> None:
+    client = ArasCrawlerClient("http://aras.example", session=FakeSession())  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError):
+        client.query_ewo_report(EWOReportFilters(ewo_no=expression))
 
 
 def test_query_ewo_report_emits_diagnostic_http_event() -> None:
@@ -368,6 +437,43 @@ def test_ncr_detail_uses_detail_method_and_parses_file_name() -> None:
     assert "<othercondition><![CDATA[1]]></othercondition>" in payload
     assert result.file_name.endswith(".xlsx")
     assert result.raw_xml.startswith("<SOAP-ENV:Envelope")
+    assert session.calls[0]["timeout"] == (30.0, 240.0)
+
+
+def test_ncr_filters_preserve_server_side_wildcard_and_union_syntax() -> None:
+    session = FakeSession([FakeResponse(fixture_text("ncr_detail_response.xml"))])
+    client = ArasCrawlerClient("http://aras.example", session=session)  # type: ignore[arg-type]
+
+    client.extract_ncr_approval_detail(
+        NCRApprovalFilters(ncr_no="*NCR-9*", project_names=("*610*|*730*",))
+    )
+
+    payload = str(session.calls[0]["data"])
+    assert "<ncrno><![CDATA[*NCR-9*]]></ncrno>" in payload
+    assert "<ncrname><![CDATA[*610*|*730*]]></ncrname>" in payload
+
+
+def test_ncr_detail_timeout_uses_clear_safe_error_and_diagnostic_timeout() -> None:
+    events = []
+
+    class TimeoutSession(FakeSession):
+        def post(self, url: str, **kwargs):  # type: ignore[no-untyped-def]
+            self.calls.append({"method": "POST", "url": url, **kwargs})
+            raise WinHTTPTimeoutError("WinHTTP request timed out")
+
+    session = TimeoutSession()
+    client = ArasCrawlerClient(
+        "http://aras.example",
+        session=session,  # type: ignore[arg-type]
+        diagnostic_hook=events.append,
+    )
+
+    with pytest.raises(ArasCrawlerError, match="NCR 明细生成超时"):
+        client.extract_ncr_approval_detail(NCRApprovalFilters(project_names=("F610S",)))
+
+    assert session.calls[0]["timeout"] == (30.0, 240.0)
+    assert events[-1].timeout == (30.0, 240.0)
+    assert events[-1].exception == "WinHTTPTimeoutError()"
 
 
 def test_get_file_download_token_posts_json_without_real_network() -> None:
@@ -593,3 +699,69 @@ def test_download_ncr_detail_file_diagnostic_omits_response_headers_and_body(tmp
     assert events[0].stage == "ncr-download"
     assert events[0].response_headers is None
     assert events[0].response_body is None
+
+
+def test_download_ncr_progress_file_resolves_vault_and_keeps_token_out_of_diagnostics(tmp_path) -> None:
+    metadata = """<Envelope><Body><Result>
+      <Item type="File" id="FILE123"><filename>NCR progress.xlsx</filename><Relationships>
+        <Item type="Located"><related_id><Item type="Vault" id="VAULT1">
+          <vault_url>http://aras.example/innovatorserver/vault/vaultserver.aspx</vault_url>
+        </Item></related_id></Item>
+      </Relationships></Item>
+    </Result></Body></Envelope>"""
+    payload = b"PK\x03\x04progress-xlsx"
+    events = []
+    session = FakeSession(
+        [
+            FakeResponse(metadata),
+            FakeResponse('{"d":"fictional-download-token"}'),
+            FakeResponse("", content=payload, headers={"Content-Type": "application/octet-stream"}),
+        ]
+    )
+    client = ArasCrawlerClient(
+        "http://aras.example",
+        session=session,  # type: ignore[arg-type]
+        diagnostic_hook=events.append,
+    )
+
+    saved = client.download_ncr_progress_file(
+        NCRExportResult("FILE123", "fallback.xlsx", "REC1", "<xml/>"),
+        tmp_path,
+    )
+
+    assert saved == tmp_path / "NCR progress.xlsx"
+    assert saved.read_bytes() == payload
+    assert [call["method"] for call in session.calls] == ["POST", "POST", "GET"]
+    metadata_call, token_call, download_call = session.calls
+    assert metadata_call["headers"]["SOAPAction"] == "ApplyItem"
+    assert "<id>FILE123</id>" in metadata_call["data"]
+    assert token_call["headers"]["SOAPAction"] == "GetFileDownloadToken"
+    assert "token=fictional-download-token" in download_call["url"]
+    assert "fileName=NCR+progress.xlsx" in download_call["url"]
+    assert "vaultId=VAULT1" in download_call["url"]
+    assert all("fictional-download-token" not in repr(event) for event in events)
+    assert events[-1].stage == "ncr-progress-download"
+    assert events[-1].url == "http://aras.example/innovatorserver/vault/vaultserver.aspx"
+    assert events[-1].response_headers is None
+    assert events[-1].response_body is None
+
+
+def test_download_ncr_progress_file_rejects_cross_origin_vault_url(tmp_path) -> None:
+    metadata = """<Envelope><Body><Result>
+      <Item type="File" id="FILE123"><filename>NCR.xlsx</filename><Relationships>
+        <Item type="Located"><related_id><Item type="Vault" id="VAULT1">
+          <vault_url>http://attacker.example/vault/vaultserver.aspx</vault_url>
+        </Item></related_id></Item>
+      </Relationships></Item>
+    </Result></Body></Envelope>"""
+    session = FakeSession([FakeResponse(metadata)])
+    client = ArasCrawlerClient("http://aras.example", session=session)  # type: ignore[arg-type]
+
+    with pytest.raises(ArasCrawlerError, match="Vault URL is not allowed"):
+        client.download_ncr_progress_file(
+            NCRExportResult("FILE123", "fallback.xlsx", "REC1", "<xml/>"),
+            tmp_path,
+        )
+
+    assert [call["method"] for call in session.calls] == ["POST"]
+    assert list(tmp_path.iterdir()) == []
