@@ -33,7 +33,7 @@ DEFAULT_DB_PATH = DEFAULT_DB_DIR / "vse_toolbox.db"
 #: 当前支持的 schema 版本。迁移完成后写入 PRAGMA user_version。
 #: 旧库 (< CURRENT_SCHEMA_VERSION) 增量升级；高于此版本的库拒绝降级，
 #: 避免新代码误读未知的较新 schema。
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 
 #: 租约时长安全范围（秒）。默认 900s，由调用方在范围内参数化。
 SYNC_LEASE_MIN_SECONDS = 60
@@ -73,6 +73,18 @@ class SyncBindingNotReadyError(ValueError):
 
 class ProjectStatusConcurrentUpdateError(RuntimeError):
     """乐观锁检测到交付物已被并发修改；自动任务不得覆盖人工更新。"""
+
+
+class ArchiveLeaseBusyError(RuntimeError):
+    """归档 job 已有未过期租约。"""
+
+
+class ArchiveLeaseLostError(RuntimeError):
+    """归档 job 的租约 token、run 或有效期不匹配。"""
+
+
+class ArchiveJobNotReadyError(ValueError):
+    """归档 job 缺少启用、凭据或固定合同前置条件。"""
 
 
 def _json_loads_or_none(value: Any) -> Any:
@@ -289,6 +301,78 @@ TABLE_DEFINITIONS: list[str] = [
     CREATE INDEX IF NOT EXISTS idx_ps_sync_artifacts_run
         ON project_status_sync_artifacts(run_id);
     """,
+    # 与首页交付物同步解耦的独立归档任务。PAA/NCR 的 dashboard link 必须为空。
+    """
+    CREATE TABLE IF NOT EXISTS scheduled_archive_jobs (
+        id                            INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_key                       TEXT NOT NULL UNIQUE,
+        source_type                   TEXT NOT NULL CHECK (source_type IN ('aras', 'tdc')),
+        report_type                   TEXT NOT NULL,
+        project_status_deliverable_id TEXT,
+        enabled                       INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+        credential_ref                TEXT,
+        interval_minutes              INTEGER NOT NULL DEFAULT 60 CHECK (interval_minutes > 0),
+        filters_json                  TEXT NOT NULL DEFAULT '{}',
+        output_subdir                 TEXT NOT NULL DEFAULT '',
+        retry_policy_json             TEXT NOT NULL DEFAULT '{"max_attempts":2,"backoff_seconds":1}',
+        sync_state                    TEXT NOT NULL DEFAULT 'idle'
+                                      CHECK (sync_state IN ('idle', 'running', 'success', 'failed', 'needs_attention')),
+        last_attempt_at               TEXT,
+        last_success_at               TEXT,
+        last_error_type               TEXT,
+        last_error_message            TEXT,
+        lease_token                   TEXT,
+        lease_acquired_at             TEXT,
+        lease_expires_at              TEXT,
+        created_at                    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        updated_at                    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        UNIQUE (source_type, report_type),
+        FOREIGN KEY (project_status_deliverable_id)
+            REFERENCES project_status_deliverables(id) ON DELETE SET NULL
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS scheduled_archive_runs (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id         INTEGER NOT NULL,
+        job_key        TEXT NOT NULL,
+        trigger_type   TEXT NOT NULL CHECK (trigger_type IN ('sync_now', 'scheduled')),
+        run_state      TEXT NOT NULL DEFAULT 'leased'
+                       CHECK (run_state IN ('leased', 'running', 'success', 'partial',
+                                            'failed', 'needs_attention', 'expired')),
+        attempt        INTEGER NOT NULL DEFAULT 1 CHECK (attempt BETWEEN 1 AND 2),
+        record_count   INTEGER,
+        result_summary TEXT,
+        error_type     TEXT,
+        error_message  TEXT,
+        created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        started_at     TEXT,
+        finished_at    TEXT,
+        FOREIGN KEY (job_id) REFERENCES scheduled_archive_jobs(id) ON DELETE RESTRICT
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_archive_runs_job
+        ON scheduled_archive_runs(job_id, id DESC);
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS scheduled_archive_artifacts (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id        INTEGER NOT NULL,
+        artifact_type TEXT NOT NULL,
+        relative_path TEXT NOT NULL,
+        display_name  TEXT NOT NULL,
+        size_bytes    INTEGER,
+        sha256        TEXT,
+        created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        UNIQUE (run_id, relative_path),
+        FOREIGN KEY (run_id) REFERENCES scheduled_archive_runs(id) ON DELETE CASCADE
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_archive_artifacts_run
+        ON scheduled_archive_artifacts(run_id);
+    """,
     """
     CREATE TABLE IF NOT EXISTS project_status_mapping_observations (
         id                     INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -423,6 +507,7 @@ class DatabaseManager:
                     "VALUES (1, '未归类', 'system', 'active');"
                 )
                 self._seed_project_status(conn)
+                self._seed_archive_jobs(conn)
 
                 conn.commit()
 
@@ -479,6 +564,7 @@ class DatabaseManager:
             """,
             ("VPI-T2", "进行中", "2026-04-08", "2026-08-30", "2026-08-13", 64, 80, snapshot),
         )
+
         milestones = (
             ("项目启动", "2026-04-08", "已达成", "done"),
             ("策略冻结", "2026-05-12", "已达成", "done"),
@@ -540,6 +626,29 @@ class DatabaseManager:
             WHERE deliverable_id IN ('VPI-T2-D1','VPI-T2-D2','VPI-T2-D3','VPI-T2-D4','VPI-T2-D5')
               AND authority = 'manual' AND locked_at IS NULL
             """
+        )
+
+    @staticmethod
+    def _seed_archive_jobs(conn: sqlite3.Connection) -> None:
+        """Seed only fixed, contract-backed archive jobs; never seed TDC A-face."""
+        jobs = (
+            ("aras_ewo", "aras", "ewo", "VPI-T2-D3"),
+            ("aras_paa", "aras", "paa", None),
+            ("aras_ncr_progress", "aras", "ncr_progress", None),
+            ("aras_ncr_detail", "aras", "ncr_detail", None),
+            ("tdc_data_model", "tdc", "data_model", "VPI-T2-D5"),
+            ("tdc_sor", "tdc", "sor", "VPI-T2-D2"),
+        )
+        conn.executemany(
+            """
+            INSERT OR IGNORE INTO scheduled_archive_jobs
+                (job_key, source_type, report_type,
+                 project_status_deliverable_id, enabled, interval_minutes,
+                 retry_policy_json, sync_state)
+            VALUES (?, ?, ?, ?, 0, 60,
+                    '{"max_attempts":2,"backoff_seconds":1}', 'idle')
+            """,
+            jobs,
         )
 
     def get_project_status(self, phase_id: str) -> tuple[sqlite3.Row | None, list[sqlite3.Row], list[sqlite3.Row]]:
