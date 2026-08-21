@@ -43,6 +43,15 @@ SYNC_LEASE_DEFAULT_SECONDS = 900
 #: 默认重试策略：max_attempts=1 即自动重试 0 次。
 SYNC_DEFAULT_RETRY_POLICY_JSON = '{"max_attempts":1}'
 
+ARCHIVE_JOB_CONTRACTS: dict[str, tuple[str, str, str | None]] = {
+    "aras_ewo": ("aras", "ewo", "VPI-T2-D3"),
+    "aras_paa": ("aras", "paa", None),
+    "aras_ncr_progress": ("aras", "ncr_progress", None),
+    "aras_ncr_detail": ("aras", "ncr_detail", None),
+    "tdc_data_model": ("tdc", "data_model", "VPI-T2-D5"),
+    "tdc_sor": ("tdc", "sor", "VPI-T2-D2"),
+}
+
 #: 数据库生成的 UTC 时间戳 SQL 片段。调度、租约和审计统一使用 UTC，
 #: 不使用 simulated_today（后者仅用于业务展示）。
 _UTC_NOW_SQL = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
@@ -631,13 +640,10 @@ class DatabaseManager:
     @staticmethod
     def _seed_archive_jobs(conn: sqlite3.Connection) -> None:
         """Seed only fixed, contract-backed archive jobs; never seed TDC A-face."""
-        jobs = (
-            ("aras_ewo", "aras", "ewo", "VPI-T2-D3"),
-            ("aras_paa", "aras", "paa", None),
-            ("aras_ncr_progress", "aras", "ncr_progress", None),
-            ("aras_ncr_detail", "aras", "ncr_detail", None),
-            ("tdc_data_model", "tdc", "data_model", "VPI-T2-D5"),
-            ("tdc_sor", "tdc", "sor", "VPI-T2-D2"),
+        jobs = tuple(
+            (job_key, source_type, report_type, deliverable_id)
+            for job_key, (source_type, report_type, deliverable_id)
+            in ARCHIVE_JOB_CONTRACTS.items()
         )
         conn.executemany(
             """
@@ -1039,8 +1045,20 @@ class DatabaseManager:
         ) or norm.startswith("/"):
             raise ValueError("artifact relative_path must be a relative path")
         segments = norm.split("/")
-        if any(segment == ".." for segment in segments):
+        if any(segment in ("", ".", "..") for segment in segments):
             raise ValueError("artifact relative_path must not traverse parent directories")
+        reserved = {
+            "CON", "PRN", "AUX", "NUL",
+            *(f"COM{number}" for number in range(1, 10)),
+            *(f"LPT{number}" for number in range(1, 10)),
+        }
+        if any(
+            ":" in segment
+            or segment.rstrip(" .") != segment
+            or segment.split(".", 1)[0].upper() in reserved
+            for segment in segments
+        ):
+            raise ValueError("artifact relative_path contains an unsafe segment")
         artifact_type = artifact.get("artifact_type")
         if not isinstance(artifact_type, str) or not artifact_type.strip():
             raise ValueError("artifact artifact_type is required")
@@ -1993,6 +2011,334 @@ class DatabaseManager:
             ).fetchone()
             assert row is not None
             return str(row["updated_at"])
+
+    def list_archive_jobs(self, enabled_only: bool = False) -> list[dict[str, Any]]:
+        """Return archive job configuration without credential aliases or lease tokens."""
+        sql = """
+            SELECT id, job_key, source_type, report_type,
+                   project_status_deliverable_id, enabled, interval_minutes,
+                   filters_json, output_subdir, retry_policy_json, sync_state,
+                   last_attempt_at, last_success_at, last_error_type,
+                   last_error_message,
+                   CASE WHEN trim(COALESCE(credential_ref, '')) <> ''
+                        THEN 1 ELSE 0 END AS credential_configured,
+                   created_at, updated_at
+            FROM scheduled_archive_jobs
+        """
+        if enabled_only:
+            sql += " WHERE enabled = 1"
+        sql += " ORDER BY id"
+        with self.get_connection() as conn:
+            rows = conn.execute(sql).fetchall()
+        result = [dict(row) for row in rows]
+        for item in result:
+            item["enabled"] = bool(item["enabled"])
+            item["credential_configured"] = bool(
+                item["credential_configured"]
+            )
+        return result
+
+    def get_archive_job_credential_ref(self, job_id: int) -> str:
+        """Return one opaque alias for internal execution only."""
+        with self.get_connection() as conn:
+            row = conn.execute(
+                "SELECT credential_ref FROM scheduled_archive_jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(job_id)
+        value = str(row["credential_ref"] or "").strip()
+        if not value:
+            raise ArchiveJobNotReadyError(
+                "archive job credential reference is not configured"
+            )
+        return value
+
+    def acquire_archive_job_lease(
+        self,
+        job_id: int,
+        trigger_type: str,
+        lease_seconds: int = SYNC_LEASE_DEFAULT_SECONDS,
+    ) -> dict[str, Any]:
+        """Atomically lease one fixed archive job and create a leased run."""
+        self._validate_trigger_type(trigger_type)
+        self._validate_lease_duration(lease_seconds)
+        with self.get_connection() as conn:
+            job = conn.execute(
+                """
+                SELECT id, job_key, source_type, report_type,
+                       project_status_deliverable_id, enabled, credential_ref,
+                       filters_json, output_subdir, retry_policy_json,
+                       lease_token, lease_expires_at
+                FROM scheduled_archive_jobs WHERE id = ?
+                """,
+                (job_id,),
+            ).fetchone()
+            if job is None:
+                raise KeyError(job_id)
+            contract = ARCHIVE_JOB_CONTRACTS.get(str(job["job_key"]))
+            actual = (
+                str(job["source_type"]),
+                str(job["report_type"]),
+                job["project_status_deliverable_id"],
+            )
+            if contract is None or actual != contract:
+                raise ArchiveJobNotReadyError(
+                    "archive job does not match a fixed approved contract"
+                )
+            if not job["enabled"]:
+                raise ArchiveJobNotReadyError("archive job is not enabled")
+            if not str(job["credential_ref"] or "").strip():
+                raise ArchiveJobNotReadyError(
+                    "archive job credential reference is not configured"
+                )
+            filters = _json_loads_or_none(job["filters_json"])
+            retry_policy = _json_loads_or_none(job["retry_policy_json"])
+            if not isinstance(filters, dict):
+                raise ArchiveJobNotReadyError("archive job filters are invalid")
+            if not isinstance(retry_policy, dict) or retry_policy.get("max_attempts") != 2:
+                raise ArchiveJobNotReadyError("archive job retry policy is invalid")
+
+            now = self._utc_now(conn)
+            lease_token = secrets.token_urlsafe(32)
+            cursor = conn.execute(
+                f"""
+                UPDATE scheduled_archive_jobs
+                SET lease_token = ?, lease_acquired_at = ?,
+                    lease_expires_at = {_utc_offset_sql(lease_seconds)},
+                    sync_state = 'running', last_attempt_at = ?,
+                    updated_at = {_UTC_NOW_SQL}
+                WHERE id = ? AND (
+                    lease_token IS NULL OR lease_expires_at IS NULL
+                    OR lease_expires_at <= ?
+                )
+                """,
+                (lease_token, now, now, job_id, now),
+            )
+            if cursor.rowcount != 1:
+                raise ArchiveLeaseBusyError(
+                    "archive job already has an unexpired lease"
+                )
+            conn.execute(
+                """
+                UPDATE scheduled_archive_runs
+                SET run_state = 'expired', finished_at = ?
+                WHERE job_id = ? AND run_state IN ('leased', 'running')
+                """,
+                (now, job_id),
+            )
+            run_id = conn.execute(
+                """
+                INSERT INTO scheduled_archive_runs
+                    (job_id, job_key, trigger_type, run_state, attempt, created_at)
+                VALUES (?, ?, ?, 'leased', 1, ?)
+                """,
+                (job_id, job["job_key"], trigger_type, now),
+            ).lastrowid
+            expires = conn.execute(
+                "SELECT lease_expires_at FROM scheduled_archive_jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+            return {
+                "job_id": job_id,
+                "job_key": str(job["job_key"]),
+                "source_type": str(job["source_type"]),
+                "report_type": str(job["report_type"]),
+                "project_status_deliverable_id": job[
+                    "project_status_deliverable_id"
+                ],
+                "filters": filters,
+                "output_subdir": str(job["output_subdir"] or ""),
+                "run_id": int(run_id),
+                "lease_token": lease_token,
+                "lease_expires_at": expires["lease_expires_at"],
+                "acquired_at": now,
+            }
+
+    def start_archive_run(
+        self, job_id: int, run_id: int, lease_token: str
+    ) -> None:
+        """Move a lease-owned archive run from leased to running."""
+        with self.get_connection() as conn:
+            self._assert_archive_lease_holder(
+                conn, job_id, run_id, lease_token
+            )
+            now = self._utc_now(conn)
+            cursor = conn.execute(
+                """
+                UPDATE scheduled_archive_runs
+                SET run_state = 'running', started_at = ?
+                WHERE id = ? AND job_id = ? AND run_state = 'leased'
+                """,
+                (now, run_id, job_id),
+            )
+            if cursor.rowcount != 1:
+                raise ArchiveLeaseLostError("archive run is not leased")
+
+    def finalize_archive_run(
+        self,
+        job_id: int,
+        run_id: int,
+        lease_token: str,
+        final_state: str,
+        *,
+        record_count: int | None = None,
+        artifacts: Sequence[dict[str, Any]] = (),
+        result_summary: str | None = None,
+        error_type: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        """Validate metadata and atomically finalize a lease-owned archive run."""
+        allowed = {"success", "partial", "failed", "needs_attention"}
+        if final_state not in allowed:
+            raise ValueError("invalid archive final state")
+        if record_count is not None and (
+            not isinstance(record_count, int)
+            or isinstance(record_count, bool)
+            or record_count < 0
+        ):
+            raise ValueError("record_count must be a non-negative int or None")
+        for artifact in artifacts:
+            self._validate_artifact_metadata(artifact)
+        if final_state == "success" and not artifacts:
+            raise ValueError("successful archive run requires artifacts")
+
+        summary = (
+            redact_sensitive_text(result_summary, limit=1000)
+            if result_summary
+            else None
+        )
+        safe_error_type = (
+            redact_sensitive_text(error_type, limit=200)
+            if error_type
+            else None
+        )
+        safe_error = (
+            redact_sensitive_text(error_message, limit=1000)
+            if error_message
+            else None
+        )
+        with self.get_connection() as conn:
+            self._assert_archive_lease_holder(
+                conn, job_id, run_id, lease_token
+            )
+            now = self._utc_now(conn)
+            for artifact in artifacts:
+                conn.execute(
+                    """
+                    INSERT INTO scheduled_archive_artifacts
+                        (run_id, artifact_type, relative_path, display_name,
+                         size_bytes, sha256, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        run_id,
+                        artifact["artifact_type"],
+                        artifact["relative_path"],
+                        artifact["display_name"],
+                        artifact.get("size_bytes"),
+                        artifact.get("sha256"),
+                        now,
+                    ),
+                )
+            cursor = conn.execute(
+                """
+                UPDATE scheduled_archive_runs
+                SET run_state = ?, record_count = ?, result_summary = ?,
+                    error_type = ?, error_message = ?, finished_at = ?
+                WHERE id = ? AND job_id = ?
+                  AND run_state IN ('leased', 'running')
+                """,
+                (
+                    final_state, record_count, summary, safe_error_type,
+                    safe_error, now, run_id, job_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ArchiveLeaseLostError("archive run is no longer active")
+            last_success = ", last_success_at = ?" if final_state == "success" else ""
+            job_state = (
+                "needs_attention" if final_state == "partial" else final_state
+            )
+            params: list[Any] = [
+                job_state, safe_error_type, safe_error, now,
+            ]
+            if final_state == "success":
+                params.append(now)
+            params.extend([job_id, lease_token])
+            cursor = conn.execute(
+                f"""
+                UPDATE scheduled_archive_jobs
+                SET sync_state = ?, last_error_type = ?,
+                    last_error_message = ?, updated_at = ?,
+                    lease_token = NULL, lease_acquired_at = NULL,
+                    lease_expires_at = NULL{last_success}
+                WHERE id = ? AND lease_token = ?
+                """,
+                params,
+            )
+            if cursor.rowcount != 1:
+                raise ArchiveLeaseLostError("archive job lease was lost")
+
+    @staticmethod
+    def _assert_archive_lease_holder(
+        conn: sqlite3.Connection,
+        job_id: int,
+        run_id: int,
+        lease_token: str,
+    ) -> None:
+        row = conn.execute(
+            f"""
+            SELECT 1
+            FROM scheduled_archive_jobs j
+            INNER JOIN scheduled_archive_runs r
+                ON r.job_id = j.id AND r.id = ?
+            WHERE j.id = ? AND j.lease_token = ?
+              AND j.lease_expires_at > {_UTC_NOW_SQL}
+              AND r.run_state IN ('leased', 'running')
+            """,
+            (run_id, job_id, lease_token),
+        ).fetchone()
+        if row is None:
+            raise ArchiveLeaseLostError(
+                "archive lease expired or token/run mismatch"
+            )
+
+    def list_archive_runs(
+        self, job_key: str | None = None, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """Return sanitized archive run history without lease or credential data."""
+        bounded = max(1, min(int(limit), 500))
+        sql = """
+            SELECT id, job_id, job_key, trigger_type, run_state, attempt,
+                   record_count, result_summary, error_type, error_message,
+                   created_at, started_at, finished_at
+            FROM scheduled_archive_runs
+        """
+        params: tuple[Any, ...]
+        if job_key:
+            sql += " WHERE job_key = ? ORDER BY id DESC LIMIT ?"
+            params = (job_key, bounded)
+        else:
+            sql += " ORDER BY id DESC LIMIT ?"
+            params = (bounded,)
+        with self.get_connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_archive_artifacts(self, run_id: int) -> list[dict[str, Any]]:
+        """Return artifact metadata; never resolve or expose a server absolute path."""
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, run_id, artifact_type, relative_path, display_name,
+                       size_bytes, sha256, created_at
+                FROM scheduled_archive_artifacts
+                WHERE run_id = ? ORDER BY id
+                """,
+                (run_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     @contextmanager
     def get_connection(self) -> Generator[sqlite3.Connection, None, None]:
