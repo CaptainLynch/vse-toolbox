@@ -2700,16 +2700,920 @@ function setupPanels() {
       });
       const isAras = link.dataset.panelLink === "aras-panel";
       const isDeliverables = link.dataset.panelLink === "deliverables";
-      document.body.dataset.sessionView = isAras ? "aras" : isDeliverables ? "deliverables" : "overview";
+      const isArchive = link.dataset.panelLink === "scheduled-archive";
+      document.body.dataset.sessionView = isAras
+        ? "aras"
+        : isDeliverables
+        ? "deliverables"
+        : isArchive
+        ? "scheduled-archive"
+        : "overview";
       document.getElementById("session-title").textContent = isAras
         ? "Aras 查询工具"
-        : isDeliverables ? "交付物工作台" : "项目状态";
+        : isDeliverables
+        ? "交付物工作台"
+        : isArchive
+        ? "定时归档管理"
+        : "项目状态";
       document.getElementById("command-label").textContent = isAras
         ? (COMMAND_LABELS[arasMode] || arasMode)
-        : isDeliverables ? "目录" : "就绪";
+        : isDeliverables
+        ? "目录"
+        : isArchive
+        ? "归档"
+        : "就绪";
       if (isDeliverables) loadDeliverablesCatalog();
+      if (isArchive) loadArchiveJobs();
     });
   });
+}
+
+/* ── Scheduled Archive Administration Module ────────────────────────── */
+
+let archiveJobs = [];
+let archiveJobsLoading = false;
+let selectedArchiveJobKey = "";
+let archiveSelectedRunId = null;
+let archiveHistoryTab = "runs"; // 'runs' | 'audit'
+let archiveMutating = false;
+
+const ARCHIVE_JOB_NAMES = {
+  aras_ewo: "Aras EWO 变更归档",
+  aras_paa: "Aras PAA 变更归档",
+  aras_ncr_progress: "Aras NCR 审批进度归档",
+  aras_ncr_detail: "Aras NCR 审批明细归档",
+  tdc_data_model: "TDC 数据模型归档",
+  tdc_sor: "TDC SOR 零件明细归档",
+};
+
+const ARCHIVE_SOURCE_LABELS = {
+  aras: "Aras PLM",
+  tdc: "TDC 车体",
+};
+
+function archiveEl(tagName, className, text) {
+  const node = document.createElement(tagName);
+  if (className) node.className = className;
+  if (text !== undefined && text !== null) node.textContent = text;
+  return node;
+}
+
+function clearArchiveContainer(container) {
+  if (container) container.textContent = "";
+}
+
+function showArchiveGlobalError(message) {
+  const el = document.getElementById("archive-global-error");
+  if (!el) return;
+  if (message) {
+    el.hidden = false;
+    el.textContent = message;
+  } else {
+    el.hidden = true;
+    el.textContent = "";
+  }
+}
+
+function setArchiveGlobalStatus(message) {
+  const el = document.getElementById("archive-global-status");
+  if (el) el.textContent = message || "";
+}
+
+function archiveFormatDate(isoString) {
+  if (!isoString) return "待确认/未知";
+  try {
+    const d = new Date(isoString);
+    if (isNaN(d.getTime())) return "待确认/未知";
+    const pad = (n) => String(n).padStart(2, "0");
+    const year = d.getFullYear();
+    const month = pad(d.getMonth() + 1);
+    const day = pad(d.getDate());
+    const hours = pad(d.getHours());
+    const mins = pad(d.getMinutes());
+    const secs = pad(d.getSeconds());
+    return `${year}-${month}-${day} ${hours}:${mins}:${secs}`;
+  } catch (_e) {
+    return "待确认/未知";
+  }
+}
+
+function archiveFreshnessChip(freshness) {
+  const chip = archiveEl("span", "archive-chip");
+  if (freshness === "fresh") {
+    chip.classList.add("is-fresh");
+    chip.textContent = "24 小时内";
+  } else if (freshness === "stale") {
+    chip.classList.add("is-stale");
+    chip.textContent = "已陈旧";
+  } else {
+    chip.classList.add("is-unknown");
+    chip.textContent = "待确认/未知";
+  }
+  return chip;
+}
+
+function archiveSyncStateChip(syncState) {
+  const chip = archiveEl("span", "archive-chip");
+  if (syncState === "needs_attention") {
+    chip.classList.add("is-needs-attention");
+    chip.textContent = "需关注";
+  } else if (syncState === "success") {
+    chip.classList.add("is-fresh");
+    chip.textContent = "正常";
+  } else if (syncState === "idle") {
+    chip.classList.add("is-unknown");
+    chip.textContent = "空闲";
+  } else if (syncState === "running") {
+    chip.classList.add("is-running");
+    chip.textContent = "同步中";
+  } else if (syncState === "failed") {
+    chip.classList.add("is-failed");
+    chip.textContent = "失败";
+  } else {
+    chip.classList.add("is-unknown");
+    chip.textContent = "待确认/未知";
+  }
+  return chip;
+}
+
+function archiveRunStateChip(state) {
+  const chip = archiveEl("span", "archive-chip");
+  if (state === "success") {
+    chip.classList.add("is-success");
+    chip.textContent = "成功";
+  } else if (state === "failed") {
+    chip.classList.add("is-failed");
+    chip.textContent = "失败";
+  } else if (state === "running") {
+    chip.classList.add("is-running");
+    chip.textContent = "运行中";
+  } else if (state === "leased") {
+    chip.classList.add("is-running");
+    chip.textContent = "已锁定";
+  } else if (state === "partial") {
+    chip.classList.add("is-stale");
+    chip.textContent = "部分完成";
+  } else if (state === "needs_attention") {
+    chip.classList.add("is-needs-attention");
+    chip.textContent = "需关注";
+  } else if (state === "expired") {
+    chip.classList.add("is-failed");
+    chip.textContent = "已超时";
+  } else {
+    chip.classList.add("is-unknown");
+    chip.textContent = "待确认/未知";
+  }
+  return chip;
+}
+
+async function loadArchiveJobs(keepSelection = true) {
+  const container = document.getElementById("archive-jobs-list");
+  if (!container) return;
+  showArchiveGlobalError("");
+  archiveJobsLoading = true;
+  clearArchiveContainer(container);
+  container.appendChild(archiveEl("p", "loading", "加载任务中..."));
+
+  try {
+    const resp = await fetch("/api/scheduled-archive/jobs", {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+    const body = await resp.json();
+    if (!resp.ok || !body.ok) {
+      const err = (body.error && body.error.message) || "加载归档任务失败";
+      showArchiveGlobalError(err);
+      clearArchiveContainer(container);
+      container.appendChild(archiveEl("p", "is-empty", "加载失败"));
+      return;
+    }
+    archiveJobs = Array.isArray(body.data) ? body.data : [];
+    renderArchiveJobsList(keepSelection);
+  } catch (exc) {
+    showArchiveGlobalError("网络异常或服务器未响应");
+    clearArchiveContainer(container);
+    container.appendChild(archiveEl("p", "is-empty", "加载失败"));
+  } finally {
+    archiveJobsLoading = false;
+  }
+}
+
+function renderArchiveJobsList(keepSelection) {
+  const container = document.getElementById("archive-jobs-list");
+  if (!container) return;
+  clearArchiveContainer(container);
+
+  if (archiveJobs.length === 0) {
+    container.appendChild(archiveEl("p", "is-empty", "暂无归档任务"));
+    renderArchiveConfigCard(null);
+    return;
+  }
+
+  let selectedJob = null;
+  if (keepSelection && selectedArchiveJobKey) {
+    selectedJob = archiveJobs.find((j) => j.jobKey === selectedArchiveJobKey);
+  }
+  if (!selectedJob) {
+    selectedJob = archiveJobs[0];
+    selectedArchiveJobKey = selectedJob.jobKey;
+  }
+
+  archiveJobs.forEach((job) => {
+    const item = archiveEl("button", "archive-job-item");
+    item.type = "button";
+    if (job.jobKey === selectedArchiveJobKey) item.classList.add("active");
+    if (!job.enabled) item.classList.add("is-disabled");
+
+    const head = archiveEl("div", "archive-job-head");
+    const title = archiveEl("span", "archive-job-title", ARCHIVE_JOB_NAMES[job.jobKey] || job.jobKey);
+    const freshness = archiveFreshnessChip(job.freshness);
+    head.appendChild(title);
+    head.appendChild(freshness);
+
+    const meta = archiveEl("div", "archive-job-meta");
+    const sourceText = ARCHIVE_SOURCE_LABELS[job.sourceType] || "未知来源";
+    const reportText = job.reportType || "待确认/未知";
+    const deliverableText = job.deliverableId ? ` | 交付物: ${job.deliverableId}` : "";
+    meta.textContent = `${sourceText} / ${reportText}${deliverableText}`;
+
+    const metrics = archiveEl("div", "archive-job-metrics");
+    const enabledChip = archiveEl("span", "archive-chip", job.enabled ? "已启用" : "已禁用");
+    if (job.enabled) enabledChip.classList.add("is-fresh");
+    else enabledChip.classList.add("is-unknown");
+
+    const credChip = archiveEl("span", "archive-chip", job.credentialConfigured ? "凭据已配" : "凭据未配");
+    if (job.credentialConfigured) credChip.classList.add("is-fresh");
+    else credChip.classList.add("is-needs-attention");
+
+    metrics.appendChild(enabledChip);
+    metrics.appendChild(credChip);
+    metrics.appendChild(archiveSyncStateChip(job.syncState));
+
+    item.appendChild(head);
+    item.appendChild(meta);
+    item.appendChild(metrics);
+
+    item.addEventListener("click", () => {
+      if (selectedArchiveJobKey === job.jobKey) return;
+      selectedArchiveJobKey = job.jobKey;
+      renderArchiveJobsList(true);
+    });
+
+    container.appendChild(item);
+  });
+
+  renderArchiveConfigCard(selectedJob);
+  loadArchiveHistory();
+}
+
+function renderArchiveConfigCard(job) {
+  const card = document.getElementById("archive-config-card");
+  if (!card) return;
+  clearArchiveContainer(card);
+
+  if (!job) {
+    card.classList.add("is-empty");
+    card.appendChild(archiveEl("p", "loading", "请选择归档任务"));
+    return;
+  }
+  card.classList.remove("is-empty");
+
+  const head = archiveEl("div", "archive-config-head");
+  const titleGroup = archiveEl("div");
+  const eyebrow = archiveEl("p", "eyebrow", job.jobKey);
+  const title = archiveEl("h4", null, ARCHIVE_JOB_NAMES[job.jobKey] || job.jobKey);
+  titleGroup.appendChild(eyebrow);
+  titleGroup.appendChild(title);
+
+  const chips = archiveEl("div", "chip-row");
+  chips.appendChild(archiveFreshnessChip(job.freshness));
+  chips.appendChild(archiveSyncStateChip(job.syncState));
+  head.appendChild(titleGroup);
+  head.appendChild(chips);
+  card.appendChild(head);
+
+  // Status Banner
+  const banner = archiveEl("div", "archive-status-banner");
+  const addCell = (label, value) => {
+    const cell = archiveEl("div", "archive-status-cell");
+    const l = archiveEl("span", "archive-cell-label", label);
+    const v = archiveEl("span", "archive-cell-value", value);
+    cell.appendChild(l);
+    cell.appendChild(v);
+    banner.appendChild(cell);
+  };
+  let syncStateText = "待确认/未知";
+  if (job.syncState === "needs_attention") {
+    syncStateText = "需关注";
+  } else if (job.syncState === "success") {
+    syncStateText = "正常";
+  } else if (job.syncState === "idle") {
+    syncStateText = "空闲";
+  } else if (job.syncState === "running") {
+    syncStateText = "同步中";
+  } else if (job.syncState === "failed") {
+    syncStateText = "失败";
+  }
+  addCell("同步状态", syncStateText);
+  const intervalText = (Number.isInteger(job.intervalMinutes) && job.intervalMinutes > 0)
+    ? `${job.intervalMinutes} 分钟`
+    : "待确认/未知";
+  addCell("调度周期", intervalText);
+  addCell("最近成功", archiveFormatDate(job.lastSuccessAt));
+  addCell("最近尝试", archiveFormatDate(job.lastAttemptAt));
+  const retrySummary = (job.retryPolicy && Number.isInteger(job.retryPolicy.max_attempts)
+    && job.retryPolicy.max_attempts > 0)
+    ? `最大 ${job.retryPolicy.max_attempts} 次`
+    : "待确认/未知";
+  addCell("重试策略", retrySummary);
+
+  if (job.lastErrorMessage) {
+    addCell("最近安全错误", `${job.lastErrorType || "未知类型"}: ${job.lastErrorMessage}`);
+  }
+  card.appendChild(banner);
+
+  // Form Container
+  const form = document.createElement("form");
+  form.className = "archive-config-form";
+  form.autocomplete = "off";
+
+  const formBlock = archiveEl("div", "archive-form-block");
+  const formGrid = archiveEl("div", "form-grid");
+
+  // 1. Enabled Checkbox
+  const enabledLabel = archiveEl("label", "archive-checkbox-row wide");
+  const enabledInput = document.createElement("input");
+  enabledInput.type = "checkbox";
+  enabledInput.name = "enabled";
+  enabledInput.checked = Boolean(job.enabled);
+  enabledInput.id = "archive-field-enabled";
+  const enabledSpan = archiveEl("span", null, "启用定时归档任务");
+  enabledLabel.appendChild(enabledInput);
+  enabledLabel.appendChild(enabledSpan);
+  formGrid.appendChild(enabledLabel);
+
+  // 2. Credential Alias Input (Write-only, NEVER PREFILLED)
+  const aliasLabel = archiveEl("label", null);
+  const aliasSpan = archiveEl("span", null, "凭据引用别名 (只写)");
+  const aliasInput = document.createElement("input");
+  aliasInput.type = "password";
+  aliasInput.name = "credentialRef";
+  aliasInput.id = "archive-field-credential-ref";
+  aliasInput.placeholder = job.credentialConfigured ? "已配置凭据（若无需修改请留空）" : "请输入凭据别名（启用前必填）";
+  aliasInput.autocomplete = "new-password";
+  aliasLabel.appendChild(aliasSpan);
+  aliasLabel.appendChild(aliasInput);
+  formGrid.appendChild(aliasLabel);
+
+  // 3. Clear Alias Option Checkbox
+  const clearAliasLabel = archiveEl("label", "archive-checkbox-row");
+  const clearAliasInput = document.createElement("input");
+  clearAliasInput.type = "checkbox";
+  clearAliasInput.name = "clearAlias";
+  clearAliasInput.id = "archive-field-clear-alias";
+  const clearAliasSpan = archiveEl("span", null, "清除已配置的凭据别名");
+  clearAliasLabel.appendChild(clearAliasInput);
+  clearAliasLabel.appendChild(clearAliasSpan);
+  formGrid.appendChild(clearAliasLabel);
+
+  // 4. Output Subdirectory Input
+  const outputSubdirLabel = archiveEl("label", "wide");
+  const outputSubdirSpan = archiveEl("span", null, "输出子目录 (基于安全归档根目录的相对路径)");
+  const outputSubdirInput = document.createElement("input");
+  outputSubdirInput.type = "text";
+  outputSubdirInput.name = "outputSubdir";
+  outputSubdirInput.id = "archive-field-output-subdir";
+  outputSubdirInput.value = job.outputSubdir || "";
+  outputSubdirInput.placeholder = "例如 aras/ewo 或留空使用默认";
+  outputSubdirLabel.appendChild(outputSubdirSpan);
+  outputSubdirLabel.appendChild(outputSubdirInput);
+  formGrid.appendChild(outputSubdirLabel);
+
+  // 5. Allowed Filter Names Info
+  const allowedFilters = Array.isArray(job.allowedFilterNames) ? job.allowedFilterNames : [];
+  const filtersInfoLabel = archiveEl("div", "wide");
+  const filtersInfoSpan = archiveEl("span", null, "支持的筛选键名 (Allowed Filters)");
+  const filtersTagContainer = archiveEl("div", "archive-filter-tags");
+  if (allowedFilters.length > 0) {
+    allowedFilters.forEach((name) => {
+      filtersTagContainer.appendChild(archiveEl("span", "archive-filter-tag", name));
+    });
+  } else {
+    filtersTagContainer.appendChild(archiveEl("span", "archive-filter-tag", "无"));
+  }
+  filtersInfoLabel.appendChild(filtersInfoSpan);
+  filtersInfoLabel.appendChild(filtersTagContainer);
+  formGrid.appendChild(filtersInfoLabel);
+
+  // 6. JSON Filters Textarea
+  const filtersLabel = archiveEl("label", "wide");
+  const filtersSpan = archiveEl("span", null, "筛选配置 (JSON 对象)");
+  const filtersTextarea = document.createElement("textarea");
+  filtersTextarea.name = "filters";
+  filtersTextarea.id = "archive-field-filters";
+  filtersTextarea.rows = 4;
+  filtersTextarea.value = JSON.stringify(job.filters || {}, null, 2);
+  filtersLabel.appendChild(filtersSpan);
+  filtersLabel.appendChild(filtersTextarea);
+  formGrid.appendChild(filtersLabel);
+
+  formBlock.appendChild(formGrid);
+  form.appendChild(formBlock);
+
+  // Field Errors Container
+  const fieldErrorsDiv = archiveEl("div", "error-msg");
+  fieldErrorsDiv.id = "archive-form-errors";
+  fieldErrorsDiv.hidden = true;
+  form.appendChild(fieldErrorsDiv);
+
+  // Action Buttons Row
+  const actionsRow = archiveEl("div", "archive-actions-row");
+  const saveBtn = archiveEl("button", "primary-btn", "保存配置");
+  saveBtn.type = "submit";
+  saveBtn.id = "archive-save-btn";
+
+  const syncNowBtn = archiveEl("button", "archive-btn-secondary", "立即同步 (Sync Now)");
+  syncNowBtn.type = "button";
+  syncNowBtn.id = "archive-sync-now-btn";
+  syncNowBtn.disabled = !job.enabled || !job.credentialConfigured;
+
+  const formStatus = archiveEl("span", "archive-status-msg");
+  formStatus.id = "archive-form-status";
+  formStatus.setAttribute("aria-live", "polite");
+
+  actionsRow.appendChild(saveBtn);
+  actionsRow.appendChild(syncNowBtn);
+  actionsRow.appendChild(formStatus);
+  form.appendChild(actionsRow);
+
+  card.appendChild(form);
+
+  // Event Listeners
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    await handleArchiveSave(job);
+  });
+
+  syncNowBtn.addEventListener("click", async () => {
+    await handleArchiveSyncNow(job);
+  });
+}
+
+function showArchiveFieldErrors(errors) {
+  const el = document.getElementById("archive-form-errors");
+  if (!el) return;
+  clearArchiveContainer(el);
+  if (!errors || Object.keys(errors).length === 0) {
+    el.hidden = true;
+    return;
+  }
+  el.hidden = false;
+  const list = document.createElement("ul");
+  list.style.margin = "0";
+  list.style.paddingLeft = "18px";
+  Object.entries(errors).forEach(([field, msg]) => {
+    const li = document.createElement("li");
+    li.textContent = `${field}: ${msg}`;
+    list.appendChild(li);
+  });
+  el.appendChild(list);
+}
+
+async function handleArchiveSave(job) {
+  if (archiveMutating) return;
+  showArchiveFieldErrors(null);
+  const formStatus = document.getElementById("archive-form-status");
+  const saveBtn = document.getElementById("archive-save-btn");
+  const syncNowBtn = document.getElementById("archive-sync-now-btn");
+  const enabledInput = document.getElementById("archive-field-enabled");
+  const aliasInput = document.getElementById("archive-field-credential-ref");
+  const clearAliasInput = document.getElementById("archive-field-clear-alias");
+  const outputSubdirInput = document.getElementById("archive-field-output-subdir");
+  const filtersTextarea = document.getElementById("archive-field-filters");
+
+  const enabled = Boolean(enabledInput && enabledInput.checked);
+  const aliasVal = (aliasInput && aliasInput.value.trim()) || "";
+  const clearAlias = Boolean(clearAliasInput && clearAliasInput.checked);
+  const outputSubdir = (outputSubdirInput && outputSubdirInput.value.trim()) || "";
+  const filtersRaw = (filtersTextarea && filtersTextarea.value.trim()) || "{}";
+
+  // Client Validation 1: Prevent enabled + clear-alias
+  if (enabled && clearAlias) {
+    showArchiveFieldErrors({ enabled: "不能在启用任务的同时勾选清除凭据别名", clearAlias: "清除凭据别名时任务必须为停用状态" });
+    return;
+  }
+
+  // Client Validation 2: Validate JSON filters is non-array object
+  let parsedFilters = null;
+  try {
+    parsedFilters = JSON.parse(filtersRaw);
+    if (!parsedFilters || typeof parsedFilters !== "object" || Array.isArray(parsedFilters)) {
+      showArchiveFieldErrors({ filters: "筛选配置必须是一个 JSON 对象（不能是数组或基础类型）" });
+      return;
+    }
+  } catch (jsonErr) {
+    showArchiveFieldErrors({ filters: "JSON 格式解析失败，请检查输入语法" });
+    return;
+  }
+
+  // Build Payload
+  const payload = {
+    enabled,
+    filters: parsedFilters,
+    outputSubdir,
+    updatedAt: job.updatedAt,
+  };
+
+  if (clearAlias) {
+    payload.credentialRef = null;
+  } else if (aliasVal) {
+    payload.credentialRef = aliasVal;
+  }
+
+  archiveMutating = true;
+  if (saveBtn) {
+    saveBtn.disabled = true;
+    saveBtn.textContent = "保存中...";
+  }
+  if (syncNowBtn) syncNowBtn.disabled = true;
+  if (formStatus) formStatus.textContent = "正在提交修改...";
+
+  try {
+    const resp = await fetch(`/api/scheduled-archive/jobs/${encodeURIComponent(job.jobKey)}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+    const body = await resp.json();
+    if (!resp.ok || !body.ok) {
+      if (resp.status === 422 && body.error && body.error.fields) {
+        showArchiveFieldErrors(body.error.fields);
+      } else {
+        const msg = (body.error && body.error.message) || "保存配置失败";
+        showArchiveFieldErrors({ error: msg });
+      }
+      if (formStatus) formStatus.textContent = "保存失败";
+      return;
+    }
+    if (formStatus) formStatus.textContent = "配置已保存";
+    await loadArchiveJobs(true);
+  } catch (_e) {
+    showArchiveFieldErrors({ network: "保存请求失败，网络异常或服务器未响应" });
+    if (formStatus) formStatus.textContent = "保存失败";
+  } finally {
+    // Clear write-only alias input in finally
+    if (aliasInput) aliasInput.value = "";
+    if (clearAliasInput) clearAliasInput.checked = false;
+    archiveMutating = false;
+    if (saveBtn) {
+      saveBtn.disabled = false;
+      saveBtn.textContent = "保存配置";
+    }
+    if (syncNowBtn) {
+      syncNowBtn.disabled = !job.enabled || !job.credentialConfigured;
+    }
+  }
+}
+
+async function handleArchiveSyncNow(job) {
+  if (archiveMutating) return;
+  const formStatus = document.getElementById("archive-form-status");
+  const saveBtn = document.getElementById("archive-save-btn");
+  const syncNowBtn = document.getElementById("archive-sync-now-btn");
+
+  archiveMutating = true;
+  if (saveBtn) saveBtn.disabled = true;
+  if (syncNowBtn) {
+    syncNowBtn.disabled = true;
+    syncNowBtn.textContent = "同步执行中...";
+  }
+  if (formStatus) formStatus.textContent = "正在发起立即同步...";
+
+  try {
+    const resp = await fetch(`/api/scheduled-archive/jobs/${encodeURIComponent(job.jobKey)}/sync-now`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+      },
+    });
+    const body = await resp.json();
+    if (!resp.ok || !body.ok) {
+      const msg = (body.error && body.error.message) || "立即同步失败";
+      if (formStatus) formStatus.textContent = `同步失败: ${msg}`;
+      return;
+    }
+    if (formStatus) formStatus.textContent = "立即同步已完成，正在更新状态与历史...";
+    await loadArchiveJobs(true);
+  } catch (_e) {
+    if (formStatus) formStatus.textContent = "同步请求失败，网络异常";
+  } finally {
+    archiveMutating = false;
+    if (saveBtn) saveBtn.disabled = false;
+    if (syncNowBtn) {
+      syncNowBtn.disabled = !job.enabled || !job.credentialConfigured;
+      syncNowBtn.textContent = "立即同步 (Sync Now)";
+    }
+  }
+}
+
+async function loadArchiveHistory() {
+  if (archiveHistoryTab === "runs") {
+    await loadArchiveRuns();
+  } else {
+    await loadArchiveAudit();
+  }
+}
+
+async function loadArchiveRuns() {
+  const container = document.getElementById("archive-runs-list");
+  if (!container) return;
+  clearArchiveContainer(container);
+  container.appendChild(archiveEl("p", "loading", "加载运行历史中..."));
+
+  const artifactsView = document.getElementById("archive-artifacts-view");
+  if (artifactsView) artifactsView.hidden = true;
+  archiveSelectedRunId = null;
+
+  const url = selectedArchiveJobKey
+    ? `/api/scheduled-archive/runs?jobKey=${encodeURIComponent(selectedArchiveJobKey)}&limit=50`
+    : "/api/scheduled-archive/runs?limit=50";
+
+  try {
+    const resp = await fetch(url, { headers: { Accept: "application/json" }, cache: "no-store" });
+    const body = await resp.json();
+    if (!resp.ok || !body.ok) {
+      clearArchiveContainer(container);
+      container.appendChild(archiveEl("p", "is-empty", (body.error && body.error.message) || "加载历史失败"));
+      return;
+    }
+    const runs = Array.isArray(body.data) ? body.data : [];
+    renderArchiveRunsList(runs);
+  } catch (_e) {
+    clearArchiveContainer(container);
+    container.appendChild(archiveEl("p", "is-empty", "加载历史失败"));
+  }
+}
+
+function renderArchiveRunsList(runs) {
+  const container = document.getElementById("archive-runs-list");
+  if (!container) return;
+  clearArchiveContainer(container);
+
+  if (runs.length === 0) {
+    container.appendChild(archiveEl("p", "is-empty", "暂无运行记录"));
+    return;
+  }
+
+  runs.forEach((run) => {
+    const card = archiveEl("div", "archive-run-card");
+    const head = archiveEl("div", "archive-run-head");
+    const headLeft = archiveEl("div");
+    const runTitle = archiveEl("strong", null, `#${run.id} - ${ARCHIVE_JOB_NAMES[run.jobKey] || run.jobKey}`);
+    headLeft.appendChild(runTitle);
+
+    const stateChip = archiveRunStateChip(run.runState);
+    head.appendChild(headLeft);
+    head.appendChild(stateChip);
+
+    const meta = archiveEl("div", "archive-run-meta");
+    const trigger = run.triggerType === "sync_now"
+      ? "手动立即同步"
+      : run.triggerType === "scheduled" ? "定时调度" : "待确认/未知";
+    const records = typeof run.recordCount === "number" ? `${run.recordCount} 条记录` : "";
+    meta.textContent = `${trigger} | 开始: ${archiveFormatDate(run.startedAt || run.createdAt)} | 完成: ${archiveFormatDate(run.finishedAt)} ${records ? `| ${records}` : ""}`;
+
+    card.appendChild(head);
+    card.appendChild(meta);
+
+    if (run.resultSummary) {
+      const summary = archiveEl("div", "archive-run-summary", `摘要: ${run.resultSummary}`);
+      card.appendChild(summary);
+    }
+    if (run.errorMessage) {
+      const err = archiveEl("div", "archive-run-summary", `错误 (${run.errorType || "未知类型"}): ${run.errorMessage}`);
+      err.style.color = "var(--error)";
+      card.appendChild(err);
+    }
+
+    // Artifacts expansion button
+    const artBtn = archiveEl("button", "archive-btn-secondary", "查看产物");
+    artBtn.type = "button";
+    artBtn.style.marginTop = "8px";
+    artBtn.addEventListener("click", () => {
+      loadArchiveArtifacts(run.id);
+    });
+    card.appendChild(artBtn);
+
+    container.appendChild(card);
+  });
+}
+
+async function loadArchiveArtifacts(runId) {
+  archiveSelectedRunId = runId;
+  const view = document.getElementById("archive-artifacts-view");
+  const listContainer = document.getElementById("archive-artifacts-list");
+  if (!view || !listContainer) return;
+  view.hidden = false;
+  clearArchiveContainer(listContainer);
+  listContainer.appendChild(archiveEl("p", "loading", `加载 Run #${runId} 产物...`));
+
+  try {
+    const resp = await fetch(`/api/scheduled-archive/runs/${encodeURIComponent(runId)}/artifacts`, {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+    const body = await resp.json();
+    if (!resp.ok || !body.ok) {
+      clearArchiveContainer(listContainer);
+      listContainer.appendChild(archiveEl("p", "is-empty", (body.error && body.error.message) || "产物加载失败"));
+      return;
+    }
+    const data = body.data || {};
+    const artifacts = Array.isArray(data.artifacts) ? data.artifacts : [];
+    renderArchiveArtifactsList(artifacts);
+  } catch (_e) {
+    clearArchiveContainer(listContainer);
+    listContainer.appendChild(archiveEl("p", "is-empty", "产物加载失败"));
+  }
+}
+
+function renderArchiveArtifactsList(artifacts) {
+  const container = document.getElementById("archive-artifacts-list");
+  if (!container) return;
+  clearArchiveContainer(container);
+
+  if (artifacts.length === 0) {
+    container.appendChild(archiveEl("p", "is-empty", "本次运行未产生落盘产物"));
+    return;
+  }
+
+  const table = document.createElement("table");
+  table.className = "archive-artifacts-table";
+
+  const thead = document.createElement("thead");
+  const headerRow = document.createElement("tr");
+  ["类型", "显示名称", "大小", "SHA-256", "相对路径", "生成时间"].forEach((colName) => {
+    const th = document.createElement("th");
+    th.textContent = colName;
+    headerRow.appendChild(th);
+  });
+  thead.appendChild(headerRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  artifacts.forEach((art) => {
+    const tr = document.createElement("tr");
+
+    const tdType = document.createElement("td");
+    tdType.textContent = art.artifactType || "未知";
+
+    const tdName = document.createElement("td");
+    tdName.textContent = art.displayName || "-";
+
+    const tdSize = document.createElement("td");
+    tdSize.textContent = typeof art.sizeBytes === "number" ? `${art.sizeBytes} B` : "-";
+
+    const tdHash = document.createElement("td");
+    tdHash.textContent = art.sha256 ? String(art.sha256).slice(0, 12) + "..." : "-";
+    if (art.sha256) tdHash.title = art.sha256;
+
+    // Relative path only - strictly no download link, plain textContent
+    const tdPath = document.createElement("td");
+    tdPath.textContent = art.relativePath || "-";
+
+    const tdTime = document.createElement("td");
+    tdTime.textContent = archiveFormatDate(art.createdAt);
+
+    tr.appendChild(tdType);
+    tr.appendChild(tdName);
+    tr.appendChild(tdSize);
+    tr.appendChild(tdHash);
+    tr.appendChild(tdPath);
+    tr.appendChild(tdTime);
+
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+
+  container.appendChild(table);
+}
+
+async function loadArchiveAudit() {
+  const container = document.getElementById("archive-audit-list");
+  if (!container) return;
+  clearArchiveContainer(container);
+  container.appendChild(archiveEl("p", "loading", "加载配置审计中..."));
+
+  const url = selectedArchiveJobKey
+    ? `/api/scheduled-archive/config-audit?jobKey=${encodeURIComponent(selectedArchiveJobKey)}&limit=50`
+    : "/api/scheduled-archive/config-audit?limit=50";
+
+  try {
+    const resp = await fetch(url, { headers: { Accept: "application/json" }, cache: "no-store" });
+    const body = await resp.json();
+    if (!resp.ok || !body.ok) {
+      clearArchiveContainer(container);
+      container.appendChild(archiveEl("p", "is-empty", (body.error && body.error.message) || "加载审计失败"));
+      return;
+    }
+    const auditRecords = Array.isArray(body.data) ? body.data : [];
+    renderArchiveAuditList(auditRecords);
+  } catch (_e) {
+    clearArchiveContainer(container);
+    container.appendChild(archiveEl("p", "is-empty", "加载审计失败"));
+  }
+}
+
+function renderArchiveAuditList(auditRecords) {
+  const container = document.getElementById("archive-audit-list");
+  if (!container) return;
+  clearArchiveContainer(container);
+
+  if (auditRecords.length === 0) {
+    container.appendChild(archiveEl("p", "is-empty", "暂无配置变更记录"));
+    return;
+  }
+
+  auditRecords.forEach((record) => {
+    const card = archiveEl("div", "archive-audit-card");
+    const head = archiveEl("div", "archive-audit-head");
+    const title = archiveEl("strong", null, `${ARCHIVE_JOB_NAMES[record.jobKey] || record.jobKey} - ${record.eventType || "待确认/未知"}`);
+    const actor = archiveEl("span", "archive-audit-meta", `操作者: ${record.actor || "待确认/未知"}`);
+    head.appendChild(title);
+    head.appendChild(actor);
+
+    const meta = archiveEl("div", "archive-audit-meta", `时间: ${archiveFormatDate(record.createdAt)}`);
+
+    card.appendChild(head);
+    card.appendChild(meta);
+
+    if (record.changes && typeof record.changes === "object") {
+      const pre = document.createElement("pre");
+      pre.style.margin = "6px 0 0";
+      pre.style.padding = "8px";
+      pre.style.background = "var(--surface-soft)";
+      pre.style.borderRadius = "4px";
+      pre.style.fontSize = "11px";
+      pre.style.fontFamily = "var(--font-mono)";
+      pre.style.overflowX = "auto";
+      pre.textContent = JSON.stringify(record.changes, null, 2);
+      card.appendChild(pre);
+    }
+
+    container.appendChild(card);
+  });
+}
+
+function setupArchiveAdmin() {
+  const refreshBtn = document.getElementById("archive-refresh-btn");
+  if (refreshBtn) refreshBtn.addEventListener("click", () => loadArchiveJobs(true));
+
+  const refreshRunsBtn = document.getElementById("archive-refresh-runs-btn");
+  if (refreshRunsBtn) refreshRunsBtn.addEventListener("click", () => loadArchiveRuns());
+
+  const refreshAuditBtn = document.getElementById("archive-refresh-audit-btn");
+  if (refreshAuditBtn) refreshAuditBtn.addEventListener("click", () => loadArchiveAudit());
+
+  const closeArtifactsBtn = document.getElementById("archive-close-artifacts-btn");
+  if (closeArtifactsBtn) {
+    closeArtifactsBtn.addEventListener("click", () => {
+      const view = document.getElementById("archive-artifacts-view");
+      if (view) view.hidden = true;
+      archiveSelectedRunId = null;
+    });
+  }
+
+  const tabRuns = document.getElementById("archive-tab-runs");
+  const tabAudit = document.getElementById("archive-tab-audit");
+  const panelRuns = document.getElementById("archive-runs-panel");
+  const panelAudit = document.getElementById("archive-audit-panel");
+
+  if (tabRuns && tabAudit && panelRuns && panelAudit) {
+    tabRuns.addEventListener("click", () => {
+      archiveHistoryTab = "runs";
+      tabRuns.classList.add("active");
+      tabRuns.setAttribute("aria-pressed", "true");
+      tabAudit.classList.remove("active");
+      tabAudit.setAttribute("aria-pressed", "false");
+      panelRuns.hidden = false;
+      panelAudit.hidden = true;
+      loadArchiveRuns();
+    });
+
+    tabAudit.addEventListener("click", () => {
+      archiveHistoryTab = "audit";
+      tabAudit.classList.add("active");
+      tabAudit.setAttribute("aria-pressed", "true");
+      tabRuns.classList.remove("active");
+      tabRuns.setAttribute("aria-pressed", "false");
+      panelAudit.hidden = false;
+      panelRuns.hidden = true;
+      loadArchiveAudit();
+    });
+  }
 }
 
 function updateArasActionButtons() {
@@ -2786,4 +3690,5 @@ document.addEventListener("DOMContentLoaded", () => {
   setupArasAuthentication();
   setupArasForm();
   setupDeliverables();
+  setupArchiveAdmin();
 });

@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>VSE Toolbox 控制台</title>
-  <link rel="stylesheet" href="/static/style.css?v=overview-20260813" />
+  <link rel="stylesheet" href="/static/style.css?v=archive-20260822" />
 </head>
 <body data-theme="light" data-session-view="overview" data-current-command="ewo">
   <div class="app-shell">
@@ -22,6 +22,7 @@
         <a href="#overview" class="active" data-panel-link="overview">概览</a>
         <a href="#aras-panel" data-panel-link="aras-panel">Aras</a>
         <a href="#deliverables" data-panel-link="deliverables">交付物</a>
+        <a href="#scheduled-archive" data-panel-link="scheduled-archive">归档</a>
         <span class="disabled" aria-disabled="true">设置</span>
       </nav>
 
@@ -291,8 +292,68 @@
           </div>
         </div>
       </section>
+
+      <section id="scheduled-archive" class="panel-section scheduled-archive-workbench" hidden aria-label="归档管理">
+        <div class="archive-head">
+          <div>
+            <p class="eyebrow">管理</p>
+            <h3>定时归档管理</h3>
+          </div>
+          <div class="archive-head-actions">
+            <button id="archive-refresh-btn" class="segment" type="button">刷新任务</button>
+          </div>
+        </div>
+
+        <div id="archive-global-error" class="error-msg" hidden></div>
+        <div id="archive-global-status" class="archive-status-msg" aria-live="polite"></div>
+
+        <div class="archive-layout">
+          <aside class="archive-jobs-pane" aria-label="归档任务列表">
+            <div class="archive-pane-head">
+              <h4>任务列表</h4>
+            </div>
+            <div id="archive-jobs-list" class="archive-jobs-list loading">加载任务中</div>
+          </aside>
+
+          <div class="archive-detail-pane">
+            <article id="archive-config-card" class="archive-config-card is-empty">
+              <p class="loading">请选择归档任务</p>
+            </article>
+
+            <section class="archive-history-band" aria-label="运行历史与审计">
+              <div class="archive-history-switch" aria-label="历史与审计切换">
+                <button id="archive-tab-runs" class="archive-tab active" type="button" aria-pressed="true" aria-controls="archive-runs-panel">运行历史</button>
+                <button id="archive-tab-audit" class="archive-tab" type="button" aria-pressed="false" aria-controls="archive-audit-panel">配置审计</button>
+              </div>
+
+              <div id="archive-runs-panel" class="archive-history-panel" aria-label="最近运行">
+                <div class="archive-panel-toolbar">
+                  <span class="toolbar-title">最近运行</span>
+                  <button id="archive-refresh-runs-btn" class="segment" type="button">刷新历史</button>
+                </div>
+                <div id="archive-runs-list" class="archive-runs-list is-empty">暂无运行记录</div>
+                <div id="archive-artifacts-view" class="archive-artifacts-view" hidden>
+                  <div class="artifacts-head">
+                    <h5>产物清单 (只读元数据)</h5>
+                    <button id="archive-close-artifacts-btn" class="segment" type="button">收起</button>
+                  </div>
+                  <div id="archive-artifacts-list" class="archive-artifacts-list is-empty">暂无产物</div>
+                </div>
+              </div>
+
+              <div id="archive-audit-panel" class="archive-history-panel" aria-label="配置变更审计" hidden>
+                <div class="archive-panel-toolbar">
+                  <span class="toolbar-title">配置变更审计</span>
+                  <button id="archive-refresh-audit-btn" class="segment" type="button">刷新审计</button>
+                </div>
+                <div id="archive-audit-list" class="archive-audit-list is-empty">暂无审计记录</div>
+              </div>
+            </section>
+          </div>
+        </div>
+      </section>
     </main>
   </div>
-  <script src="/static/app.js?v=overview-20260813"></script>
+  <script src="/static/app.js?v=archive-20260822"></script>
 </body>
 </html>
