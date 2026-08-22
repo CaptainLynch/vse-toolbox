@@ -33,7 +33,7 @@ DEFAULT_DB_PATH = DEFAULT_DB_DIR / "vse_toolbox.db"
 #: 当前支持的 schema 版本。迁移完成后写入 PRAGMA user_version。
 #: 旧库 (< CURRENT_SCHEMA_VERSION) 增量升级；高于此版本的库拒绝降级，
 #: 避免新代码误读未知的较新 schema。
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 
 #: 租约时长安全范围（秒）。默认 900s，由调用方在范围内参数化。
 SYNC_LEASE_MIN_SECONDS = 60
@@ -125,6 +125,7 @@ def _sanitize_json(value: Any) -> str:
     else:
         sanitized = value
     return _json_dumps_local(sanitized)
+
 
 # ── 建表 DDL ───────────────────────────────────────────────────
 # 每张表均包含 created_at / updated_at 以便追踪
@@ -452,6 +453,77 @@ TABLE_DEFINITIONS: list[str] = [
     """
     CREATE INDEX IF NOT EXISTS idx_ps_audit_deliverable
         ON project_status_update_audit(deliverable_id, created_at);
+    """,
+    # Excel 离线任务主表 (Schema v4)
+    """
+    CREATE TABLE IF NOT EXISTS excel_tasks (
+        id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+        operation            TEXT    NOT NULL
+                             CHECK (operation IN ('merge_append', 'merge_overlay', 'diff_against_baseline')),
+        status               TEXT    NOT NULL DEFAULT 'queued'
+                             CHECK (status IN ('queued', 'leased', 'running', 'succeeded', 'failed', 'cancelled')),
+        idempotency_key_hash TEXT    NOT NULL UNIQUE CHECK (length(idempotency_key_hash) = 64),
+        request_fingerprint  TEXT    NOT NULL CHECK (length(request_fingerprint) = 64),
+        options_json         TEXT    NOT NULL DEFAULT '{}' CHECK (length(options_json) <= 4096),
+        attempt_count        INTEGER NOT NULL DEFAULT 0,
+        max_attempts         INTEGER NOT NULL DEFAULT 1 CHECK (max_attempts BETWEEN 1 AND 5),
+        lease_token          TEXT    CHECK (lease_token IS NULL OR (length(lease_token) >= 16 AND length(lease_token) <= 256)),
+        lease_acquired_at    TEXT,
+        lease_expires_at     TEXT,
+        error_type           TEXT    CHECK (error_type IS NULL OR length(error_type) <= 200),
+        error_message        TEXT    CHECK (error_message IS NULL OR length(error_message) <= 1000),
+        created_at           TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        updated_at           TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        started_at           TEXT,
+        finished_at          TEXT,
+        CHECK (attempt_count BETWEEN 0 AND max_attempts)
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_excel_tasks_status
+        ON excel_tasks(status, created_at);
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_excel_tasks_lease
+        ON excel_tasks(status, lease_expires_at);
+    """,
+    # Excel 任务关联文件引用表
+    """
+    CREATE TABLE IF NOT EXISTS excel_task_files (
+        task_id       INTEGER NOT NULL,
+        role          TEXT    NOT NULL
+                      CHECK (role IN ('source', 'target', 'baseline', 'output')),
+        ordinal       INTEGER NOT NULL DEFAULT 0 CHECK (ordinal >= 0),
+        root_id       TEXT    NOT NULL CHECK (length(root_id) BETWEEN 1 AND 128),
+        relative_path TEXT    NOT NULL CHECK (length(relative_path) BETWEEN 1 AND 1024),
+        PRIMARY KEY (task_id, role, ordinal),
+        FOREIGN KEY (task_id) REFERENCES excel_tasks(id) ON DELETE CASCADE
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_excel_task_files_task
+        ON excel_task_files(task_id, role, ordinal);
+    """,
+    # Excel 任务执行运行历史
+    """
+    CREATE TABLE IF NOT EXISTS excel_task_runs (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id       INTEGER NOT NULL,
+        attempt       INTEGER NOT NULL CHECK (attempt >= 1),
+        run_state     TEXT    NOT NULL DEFAULT 'leased'
+                      CHECK (run_state IN ('leased', 'running', 'succeeded', 'failed', 'expired', 'cancelled')),
+        error_type    TEXT    CHECK (error_type IS NULL OR length(error_type) <= 200),
+        error_message TEXT    CHECK (error_message IS NULL OR length(error_message) <= 1000),
+        created_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        started_at    TEXT,
+        finished_at   TEXT,
+        UNIQUE (task_id, attempt),
+        FOREIGN KEY (task_id) REFERENCES excel_tasks(id) ON DELETE CASCADE
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_excel_task_runs_task
+        ON excel_task_runs(task_id, id DESC);
     """
 ]
 
@@ -1357,7 +1429,6 @@ class DatabaseManager:
                 (run_id,),
             ).fetchone()
             assert run_row is not None
-            current_run_state = run_row["run_state"]
 
             # 读取字段归属，判定哪些自动字段可写。
             deliverable_id_row = conn.execute(

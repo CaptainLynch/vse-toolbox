@@ -3,7 +3,7 @@
 tests/test_archive_jobs.py — 归档任务种子与离线关系约束测试
 
 覆盖验收标准:
-1. 断言 schema 版本为 3，且存在四张 scheduled_archive 表结构及对应索引
+1. 断言 schema 版本为 4，且存在四张 scheduled_archive 表结构及对应索引
 2. 断言 6 个固定 job_key，默认 disabled (enabled=0)，interval_minutes=60，max_attempts=2
 3. 断言 D2/D3/D5 仅关联 SOR/EWO/data-model，PAA/NCR 关联为空，且不存在 A 面任务
 4. 断言重复调用 init_database() 保留已修改的 enabled / interval 等配置
@@ -90,12 +90,12 @@ def _enable_archive_job(
 
 
 def test_archive_schema_version_and_tables(db: DatabaseManager) -> None:
-    """断言版本为 3 且四张 scheduled_archive 表与索引已建立。"""
-    assert CURRENT_SCHEMA_VERSION == 3
+    """断言版本为 4 且四张 scheduled_archive 表与索引已建立。"""
+    assert CURRENT_SCHEMA_VERSION == 4
 
     with db.get_connection() as conn:
         user_version = conn.execute("PRAGMA user_version").fetchone()[0]
-        assert user_version == 3, f"PRAGMA user_version 应为 3，实际为 {user_version}"
+        assert user_version == 4, f"PRAGMA user_version 应为 4，实际为 {user_version}"
 
     expected_tables = {
         "scheduled_archive_jobs",
