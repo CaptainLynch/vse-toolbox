@@ -121,11 +121,11 @@ class MappingDiscoveryService:
         }
 
     def candidate_preview(self, deliverable_id: str) -> dict[str, Any]:
-        with self.db.get_connection() as conn:
-            deliverable_row = conn.execute(
-                "SELECT * FROM project_status_deliverables WHERE id = ?",
-                (deliverable_id,),
-            ).fetchone()
+        _, _, deliverables = self.db.get_project_status("VPI-T2")
+        deliverable_row = next(
+            (row for row in deliverables if row["id"] == deliverable_id),
+            None,
+        )
 
         if deliverable_row is None:
             return {
@@ -272,6 +272,8 @@ class MappingDiscoveryService:
         for target_field, db_col in approved_target_fields.items():
             if target_field not in mapping:
                 continue
+            if authorities.get(db_col) != "automatic":
+                continue
             source_field = mapping[target_field]
             if not isinstance(source_field, str) or not source_field.strip():
                 continue
@@ -304,8 +306,6 @@ class MappingDiscoveryService:
                     "stability": {"confirmed": confirmed_stability, "required": 2, "ready": False},
                     "differences": [],
                 }
-            if authorities.get(db_col) != "automatic":
-                continue
             valid_comparisons.append((target_field, source_field, db_col))
 
         if not valid_comparisons:

@@ -269,6 +269,24 @@ def test_candidate_preview_unapproved_and_manual_field_exclusion(tmp_path):
     assert len(preview["differences"]) == 1
     assert preview["differences"][0]["targetField"] == "owner"
 
+    # A manual field is excluded before its source mapping is validated. It
+    # must not block an otherwise approved automatic preview.
+    db.set_project_status_update_policy(
+        deliverable_id="VPI-T2-D5",
+        mode="automatic",
+        enabled=True,
+        external_key="FLOW-1",
+        match_rule_json='{"incident":"FLOW-1"}',
+        mapping_json='{"owner":"currentApprover","note":"password"}',
+        field_authority={"owner": "automatic", "remark": "manual"},
+    )
+    preview_with_sensitive_manual = service.candidate_preview("VPI-T2-D5")
+    assert preview_with_sensitive_manual["stability"]["ready"] is True
+    assert [
+        item["targetField"] for item in preview_with_sensitive_manual["differences"]
+    ] == ["owner"]
+    assert "password" not in str(preview_with_sensitive_manual)
+
     # If all mapped fields are manual -> unapproved_mapping
     db.set_project_status_update_policy(
         deliverable_id="VPI-T2-D5",
