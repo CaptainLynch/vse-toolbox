@@ -127,9 +127,36 @@ class ArchiveStore:
         except KeyError as exc:
             raise ArchiveSafetyError("approved archive root is unknown") from exc
 
-    def run_directory(self, source: str, report: str, run_id: str | int, *, root_id: str = "default", day: date | None = None) -> Path:
+    @classmethod
+    def _subdirectory_parts(cls, value: object) -> tuple[str, ...]:
+        text = unicodedata.normalize("NFKC", str(value or "")).strip()
+        if not text:
+            return ()
+        if text.startswith(("/", "\\")) or "\\" in text or ":" in text:
+            raise ArchiveSafetyError("archive output subdirectory must be relative")
+        raw_parts = text.split("/")
+        if any(not part or part in {".", ".."} for part in raw_parts):
+            raise ArchiveSafetyError("archive output subdirectory is invalid")
+        return tuple(cls._component(part) for part in raw_parts)
+
+    def run_directory(
+        self,
+        source: str,
+        report: str,
+        run_id: str | int,
+        *,
+        root_id: str = "default",
+        output_subdir: str = "",
+        day: date | None = None,
+    ) -> Path:
         root = self.root(root_id)
-        parts = (self._component(source), self._component(report), (day or date.today()).isoformat(), self._component(run_id))
+        parts = (
+            *self._subdirectory_parts(output_subdir),
+            self._component(source),
+            self._component(report),
+            (day or date.today()).isoformat(),
+            self._component(run_id),
+        )
         directory = root.joinpath(*parts)
         self._assert_no_link(root, directory)
         directory.mkdir(parents=True, exist_ok=True)
@@ -159,8 +186,14 @@ class ArchiveStore:
         if free < required:
             raise ArchiveCapacityError("insufficient free disk space for archive")
 
-    def _write_chunks(self, chunks: Iterable[bytes], *, source: str, report: str, run_id: str | int, file_name: str, artifact_type: str, root_id: str = "default", expected_size: int | None = None) -> ArchiveArtifact:
-        directory = self.run_directory(source, report, run_id, root_id=root_id)
+    def _write_chunks(self, chunks: Iterable[bytes], *, source: str, report: str, run_id: str | int, file_name: str, artifact_type: str, root_id: str = "default", output_subdir: str = "", expected_size: int | None = None) -> ArchiveArtifact:
+        directory = self.run_directory(
+            source,
+            report,
+            run_id,
+            root_id=root_id,
+            output_subdir=output_subdir,
+        )
         self._preflight(directory, expected_size)
         fd, temp_name = tempfile.mkstemp(prefix=".partial-", dir=directory)
         total = 0
