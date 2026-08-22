@@ -145,8 +145,22 @@ class ExcelToolbox:
         for book in reversed(books):
             try:
                 book.close()
-            except Exception as exc:
-                logger.debug("Ignoring Excel book close failure: %s", exc)
+            except Exception:
+                logger.warning("Excel workbook close failed during task cleanup")
+
+    @staticmethod
+    def _close_app(app: Any) -> None:
+        """Close the task-owned Excel process without masking task failures."""
+        try:
+            app.quit()
+        except Exception:
+            logger.warning("Excel application quit failed during task cleanup")
+        kill = getattr(app, "kill", None)
+        if callable(kill):
+            try:
+                kill()
+            except Exception:
+                logger.warning("Excel application kill failed during task cleanup")
 
     @staticmethod
     def _configure_app(app: Any) -> None:
@@ -223,7 +237,7 @@ class ExcelToolbox:
         finally:
             self._close_books(books)
             if app is not None:
-                app.quit()
+                self._close_app(app)
 
     def merge_overlay(
         self,
@@ -294,7 +308,7 @@ class ExcelToolbox:
         finally:
             self._close_books(books)
             if app is not None:
-                app.quit()
+                self._close_app(app)
 
     def diff_against_baseline(
         self,
@@ -364,4 +378,4 @@ class ExcelToolbox:
         finally:
             self._close_books(books)
             if app is not None:
-                app.quit()
+                self._close_app(app)
