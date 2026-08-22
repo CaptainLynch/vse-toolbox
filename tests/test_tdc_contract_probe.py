@@ -334,10 +334,10 @@ def test_no_database_manager_import() -> None:
     assert not hasattr(probe_mod, "db_manager")
 
 
-# 20. production ConnectorRegistry still empty
-def test_production_connector_registry_empty() -> None:
+# 20. production ConnectorRegistry registered connectors
+def test_production_connector_registry_registered() -> None:
     registry = create_production_registry()
-    assert registry.registered_types == ()
+    assert registry.registered_types == ("aras", "tdc")
 
 
 # 21. field not present in sample rejected

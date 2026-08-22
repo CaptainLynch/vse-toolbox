@@ -1005,9 +1005,9 @@ def test_tdc_contract_probe_cli_no_args_interactive_mode_not_regressed(
     assert called["menu"] is True
 
 
-def test_tdc_contract_probe_cli_production_connector_registry_still_empty() -> None:
-    """15. 生产 ConnectorRegistry 保持为空，不注册未受控连接器。"""
+def test_tdc_contract_probe_cli_production_connector_registry_registered() -> None:
+    """15. 生产 ConnectorRegistry 注册预期的生产连接器。"""
     from services.project_status_sync_runner import create_production_registry
 
     reg = create_production_registry()
-    assert reg.registered_types == ()
+    assert reg.registered_types == ("aras", "tdc")

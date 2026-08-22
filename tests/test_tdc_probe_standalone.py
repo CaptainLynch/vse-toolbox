@@ -18,7 +18,7 @@ tests/test_tdc_probe_standalone.py — TDC 数模同步契约探测独立入口�
 13. 用户取消退出码：Confirm.ask 为 False 时 main([]) 返回 0。
 14. 认证失败退出码：TDCAuthError 时 main([]) 返回 1。
 15. 中断退出码：KeyboardInterrupt 时 main([]) 返回 130。
-16. 生产注册表安全性：create_production_registry 保持为空。
+16. 生产注册表安全性：create_production_registry 注册预期的生产连接器。
 """
 
 from __future__ import annotations
@@ -502,12 +502,12 @@ def test_keyboard_interrupt_returns_130(
     assert ret == 130
 
 
-# ── 16. 生产 ConnectorRegistry 为空 ──────────────────────────────
+# ── 16. 生产 ConnectorRegistry 注册 ──────────────────────────────
 
 
-def test_production_registry_still_empty() -> None:
-    """16. 生产 ConnectorRegistry 保持为空，不注册未受控连接器。"""
+def test_production_registry_registered() -> None:
+    """16. 生产 ConnectorRegistry 注册预期的生产连接器。"""
     from services.project_status_sync_runner import create_production_registry
 
     reg = create_production_registry()
-    assert reg.registered_types == ()
+    assert reg.registered_types == ("aras", "tdc")
