@@ -83,3 +83,382 @@ def test_selected_key_removes_multirow_ambiguity(tmp_path):
     assert result["state"] == "matched"
     assert result["externalKey"] == "B"
     assert len(result["candidates"]) == 1
+
+
+def test_candidate_preview_ready_with_differences_and_unchanged_values(tmp_path):
+    db = DatabaseManager(tmp_path / "db.sqlite")
+    db.init_database()
+    service = MappingDiscoveryService(db)
+
+    # Initial deliverable row in DB (VPI-T2-D5 seeded values)
+    # Configure update policy
+    db.set_project_status_update_policy(
+        deliverable_id="VPI-T2-D5",
+        mode="automatic",
+        enabled=True,
+        external_key="FLOW-1",
+        match_rule_json='{"incident":"FLOW-1","reportType":"DataModelReport"}',
+        mapping_json='{"owner":"currentApprover","plannedDate":"targetDate","note":"summaryNote"}',
+        field_authority={"owner": "automatic", "planned_date": "automatic", "remark": "automatic"},
+    )
+
+    # Deliverable row in DB has: owner="赵岩", planned_date="2026-08-08", remark="逾期 5 天"
+    candidate_row = {
+        "incident": "FLOW-1",
+        "currentApprover": "李四",  # changed
+        "targetDate": "2026-08-08",  # unchanged
+        "summaryNote": "更新备注",  # changed
+        "password": "secret-must-not-leak",
+    }
+    service.observe("VPI-T2-D5", "tdc", [candidate_row])
+    service.observe("VPI-T2-D5", "tdc", [candidate_row])
+
+    preview = service.candidate_preview("VPI-T2-D5")
+    assert preview["deliverableId"] == "VPI-T2-D5"
+    assert preview["state"] == "matched"
+    assert preview["reason"] is None
+    assert preview["externalKey"] == "FLOW-1"
+    assert preview["stability"] == {"confirmed": 2, "required": 2, "ready": True}
+
+    diffs = preview["differences"]
+    assert len(diffs) == 3
+
+    owner_diff = next(d for d in diffs if d["targetField"] == "owner")
+    assert owner_diff["sourceField"] == "currentApprover"
+    assert owner_diff["currentValue"] == "赵岩"
+    assert owner_diff["candidateValue"] == "李四"
+    assert owner_diff["changed"] is True
+
+    date_diff = next(d for d in diffs if d["targetField"] == "plannedDate")
+    assert date_diff["sourceField"] == "targetDate"
+    assert date_diff["currentValue"] == "2026-08-08"
+    assert date_diff["candidateValue"] == "2026-08-08"
+    assert date_diff["changed"] is False
+
+    note_diff = next(d for d in diffs if d["targetField"] == "note")
+    assert note_diff["sourceField"] == "summaryNote"
+    assert note_diff["currentValue"] == "逾期 5 天"
+    assert note_diff["candidateValue"] == "更新备注"
+    assert note_diff["changed"] is True
+
+    # Ensure no sensitive keys / candidate fingerprints / raw responses leaked
+    serialized = str(preview)
+    assert "password" not in serialized
+    assert "secret-must-not-leak" not in serialized
+    assert "candidate_fingerprint" not in serialized
+    assert "credential_ref" not in serialized
+
+
+def test_candidate_preview_no_evidence(tmp_path):
+    db = DatabaseManager(tmp_path / "db.sqlite")
+    db.init_database()
+    service = MappingDiscoveryService(db)
+
+    db.set_project_status_update_policy(
+        deliverable_id="VPI-T2-D5",
+        mode="automatic",
+        enabled=True,
+        external_key="FLOW-1",
+        match_rule_json='{"incident":"FLOW-1"}',
+        mapping_json='{"owner":"currentApprover"}',
+        field_authority={"owner": "automatic"},
+    )
+
+    preview = service.candidate_preview("VPI-T2-D5")
+    assert preview["deliverableId"] == "VPI-T2-D5"
+    assert preview["state"] == "not_found"
+    assert preview["reason"] == "no_observation"
+    assert preview["stability"] == {"confirmed": 0, "required": 2, "ready": False}
+    assert preview["differences"] == []
+
+
+def test_candidate_preview_ambiguous_and_latest_reset(tmp_path):
+    db = DatabaseManager(tmp_path / "db.sqlite")
+    db.init_database()
+    service = MappingDiscoveryService(db)
+
+    db.set_project_status_update_policy(
+        deliverable_id="VPI-T2-D5",
+        mode="automatic",
+        enabled=True,
+        external_key="FLOW-1",
+        match_rule_json='{"incident":"FLOW-1"}',
+        mapping_json='{"owner":"currentApprover"}',
+        field_authority={"owner": "automatic"},
+    )
+
+    # 2 matched observations -> stable
+    service.observe("VPI-T2-D5", "tdc", [{"incident": "FLOW-1", "currentApprover": "Alice"}])
+    service.observe("VPI-T2-D5", "tdc", [{"incident": "FLOW-1", "currentApprover": "Alice"}])
+    ready_preview = service.candidate_preview("VPI-T2-D5")
+    assert ready_preview["stability"]["ready"] is True
+
+    # 3rd observation is ambiguous -> resets stability and readiness
+    service.observe("VPI-T2-D5", "tdc", [
+        {"incident": "FLOW-1", "currentApprover": "Alice"},
+        {"incident": "FLOW-1", "currentApprover": "Bob"},
+    ])
+    preview = service.candidate_preview("VPI-T2-D5")
+    assert preview["stability"]["ready"] is False
+    assert preview["reason"] == "observation_not_matched"
+    assert preview["differences"] == []
+
+
+def test_candidate_preview_source_and_key_mismatch(tmp_path):
+    db = DatabaseManager(tmp_path / "db.sqlite")
+    db.init_database()
+    service = MappingDiscoveryService(db)
+
+    db.set_project_status_update_policy(
+        deliverable_id="VPI-T2-D5",
+        mode="automatic",
+        enabled=True,
+        external_key="FLOW-1",
+        match_rule_json='{"incident":"FLOW-1"}',
+        mapping_json='{"owner":"currentApprover"}',
+        field_authority={"owner": "automatic"},
+    )
+
+    # Observation has key FLOW-2 instead of FLOW-1
+    service.observe("VPI-T2-D5", "tdc", [{"incident": "FLOW-2", "currentApprover": "Alice"}])
+    service.observe("VPI-T2-D5", "tdc", [{"incident": "FLOW-2", "currentApprover": "Alice"}])
+    preview_key_mismatch = service.candidate_preview("VPI-T2-D5")
+    assert preview_key_mismatch["stability"]["ready"] is False
+    assert preview_key_mismatch["reason"] == "key_mismatch"
+    assert preview_key_mismatch["differences"] == []
+
+    # Deliverable VPI-T2-D2 has source tdc in binding, observe with aras
+    db.set_project_status_update_policy(
+        deliverable_id="VPI-T2-D2",
+        mode="automatic",
+        enabled=True,
+        external_key="EWO-100",
+        match_rule_json='{"ewoNo":"EWO-100"}',
+        mapping_json='{"owner":"currentApprover"}',
+        field_authority={"owner": "automatic"},
+    )
+    service.observe("VPI-T2-D2", "aras", [{"item_number": "EWO-100", "currentApprover": "Alice"}])
+    service.observe("VPI-T2-D2", "aras", [{"item_number": "EWO-100", "currentApprover": "Alice"}])
+    preview_source_mismatch = service.candidate_preview("VPI-T2-D2")
+    assert preview_source_mismatch["stability"]["ready"] is False
+    assert preview_source_mismatch["reason"] == "source_mismatch"
+    assert preview_source_mismatch["differences"] == []
+
+
+def test_candidate_preview_unapproved_and_manual_field_exclusion(tmp_path):
+    db = DatabaseManager(tmp_path / "db.sqlite")
+    db.init_database()
+    service = MappingDiscoveryService(db)
+
+    # owner is automatic, note is manual
+    db.set_project_status_update_policy(
+        deliverable_id="VPI-T2-D5",
+        mode="automatic",
+        enabled=True,
+        external_key="FLOW-1",
+        match_rule_json='{"incident":"FLOW-1"}',
+        mapping_json='{"owner":"currentApprover","note":"comment"}',
+        field_authority={"owner": "automatic", "remark": "manual"},
+    )
+
+    service.observe("VPI-T2-D5", "tdc", [{"incident": "FLOW-1", "currentApprover": "Alice", "comment": "Note"}])
+    service.observe("VPI-T2-D5", "tdc", [{"incident": "FLOW-1", "currentApprover": "Alice", "comment": "Note"}])
+
+    preview = service.candidate_preview("VPI-T2-D5")
+    assert preview["stability"]["ready"] is True
+    assert len(preview["differences"]) == 1
+    assert preview["differences"][0]["targetField"] == "owner"
+
+    # If all mapped fields are manual -> unapproved_mapping
+    db.set_project_status_update_policy(
+        deliverable_id="VPI-T2-D5",
+        mode="automatic",
+        enabled=True,
+        external_key="FLOW-1",
+        match_rule_json='{"incident":"FLOW-1"}',
+        mapping_json='{"owner":"currentApprover"}',
+        field_authority={"owner": "manual"},
+    )
+    preview_all_manual = service.candidate_preview("VPI-T2-D5")
+    assert preview_all_manual["stability"]["ready"] is False
+    assert preview_all_manual["reason"] == "unapproved_mapping"
+    assert preview_all_manual["differences"] == []
+
+    # If mapping is empty dict -> unapproved_mapping
+    db.set_project_status_update_policy(
+        deliverable_id="VPI-T2-D5",
+        mode="automatic",
+        enabled=True,
+        external_key="FLOW-1",
+        match_rule_json='{"incident":"FLOW-1"}',
+        mapping_json='{}',
+        field_authority={"owner": "automatic"},
+    )
+    preview_empty = service.candidate_preview("VPI-T2-D5")
+    assert preview_empty["stability"]["ready"] is False
+    assert preview_empty["reason"] == "unapproved_mapping"
+    assert preview_empty["differences"] == []
+
+
+def test_candidate_preview_forbidden_target_exclusion(tmp_path):
+    db = DatabaseManager(tmp_path / "db.sqlite")
+    db.init_database()
+    service = MappingDiscoveryService(db)
+
+    # Mapping contains forbidden fields: status, actualDate, progress
+    db.set_project_status_update_policy(
+        deliverable_id="VPI-T2-D5",
+        mode="automatic",
+        enabled=True,
+        external_key="FLOW-1",
+        match_rule_json='{"incident":"FLOW-1"}',
+        mapping_json='{"owner":"approver","status":"st","actualDate":"ad","progress":"pct"}',
+        field_authority={"owner": "automatic", "status": "automatic", "actual_date": "automatic"},
+    )
+
+    service.observe("VPI-T2-D5", "tdc", [{
+        "incident": "FLOW-1", "approver": "Alice", "st": "已完成", "ad": "2026-03-01", "pct": "100"
+    }])
+    service.observe("VPI-T2-D5", "tdc", [{
+        "incident": "FLOW-1", "approver": "Alice", "st": "已完成", "ad": "2026-03-01", "pct": "100"
+    }])
+
+    preview = service.candidate_preview("VPI-T2-D5")
+    assert preview["stability"]["ready"] is True
+    # Only owner allowed in differences
+    target_fields = [d["targetField"] for d in preview["differences"]]
+    assert target_fields == ["owner"]
+    assert "status" not in target_fields
+    assert "actualDate" not in target_fields
+    assert "progress" not in target_fields
+
+
+def test_candidate_preview_disabled_policy(tmp_path):
+    db = DatabaseManager(tmp_path / "db.sqlite")
+    db.init_database()
+    service = MappingDiscoveryService(db)
+
+    db.set_project_status_update_policy(
+        deliverable_id="VPI-T2-D5",
+        mode="automatic",
+        enabled=False,  # disabled
+        external_key="FLOW-1",
+        match_rule_json='{"incident":"FLOW-1"}',
+        mapping_json='{"owner":"currentApprover"}',
+        field_authority={"owner": "automatic"},
+    )
+
+    service.observe("VPI-T2-D5", "tdc", [{"incident": "FLOW-1", "currentApprover": "Alice"}])
+    service.observe("VPI-T2-D5", "tdc", [{"incident": "FLOW-1", "currentApprover": "Alice"}])
+
+    preview = service.candidate_preview("VPI-T2-D5")
+    assert preview["stability"]["ready"] is False
+    assert preview["reason"] == "policy_disabled"
+    assert preview["differences"] == []
+
+
+def test_candidate_preview_scalar_limit_and_sanitization(tmp_path):
+    db = DatabaseManager(tmp_path / "db.sqlite")
+    db.init_database()
+    service = MappingDiscoveryService(db)
+
+    db.set_project_status_update_policy(
+        deliverable_id="VPI-T2-D5",
+        mode="automatic",
+        enabled=True,
+        external_key="FLOW-1",
+        match_rule_json='{"incident":"FLOW-1"}',
+        mapping_json='{"owner":"approver","note":"longNote"}',
+        field_authority={"owner": "automatic", "remark": "automatic"},
+    )
+
+    long_text = "A" * 300
+    sensitive_approver = "Alice Bearer eyJhbGciOiJIUzI1NiJ9.test"
+    service.observe("VPI-T2-D5", "tdc", [{
+        "incident": "FLOW-1",
+        "approver": sensitive_approver,
+        "longNote": long_text,
+    }])
+    service.observe("VPI-T2-D5", "tdc", [{
+        "incident": "FLOW-1",
+        "approver": sensitive_approver,
+        "longNote": long_text,
+    }])
+
+    preview = service.candidate_preview("VPI-T2-D5")
+    assert preview["stability"]["ready"] is True
+    note_diff = next(d for d in preview["differences"] if d["targetField"] == "note")
+    assert len(note_diff["candidateValue"]) <= 200
+    owner_diff = next(d for d in preview["differences"] if d["targetField"] == "owner")
+    assert "[redacted]" in owner_diff["candidateValue"]
+
+
+def test_candidate_preview_unapproved_source_field_validation(tmp_path):
+    db = DatabaseManager(tmp_path / "db.sqlite")
+    db.init_database()
+    service = MappingDiscoveryService(db)
+
+    # 1. Automatic mapping references a field absent from the latest field report
+    db.set_project_status_update_policy(
+        deliverable_id="VPI-T2-D5",
+        mode="automatic",
+        enabled=True,
+        external_key="FLOW-1",
+        match_rule_json='{"incident":"FLOW-1"}',
+        mapping_json='{"owner":"nonExistentField"}',
+        field_authority={"owner": "automatic"},
+    )
+    service.observe("VPI-T2-D5", "tdc", [{"incident": "FLOW-1", "currentApprover": "Alice"}])
+    service.observe("VPI-T2-D5", "tdc", [{"incident": "FLOW-1", "currentApprover": "Alice"}])
+    preview = service.candidate_preview("VPI-T2-D5")
+    assert preview["stability"]["ready"] is False
+    assert preview["reason"] == "unapproved_mapping"
+    assert preview["differences"] == []
+    assert "nonExistentField" not in str(preview)
+
+    # 2. Sensitive field such as password or credential_ref
+    for sensitive_name in ["password", "credential_ref", "Bearer eyJhbGciOiJIUzI1NiJ9.test", "sessionToken"]:
+        db.set_project_status_update_policy(
+            deliverable_id="VPI-T2-D5",
+            mode="automatic",
+            enabled=True,
+            external_key="FLOW-1",
+            match_rule_json='{"incident":"FLOW-1"}',
+            mapping_json=f'{{"owner":"{sensitive_name}"}}',
+            field_authority={"owner": "automatic"},
+        )
+        preview_sensitive = service.candidate_preview("VPI-T2-D5")
+        assert preview_sensitive["stability"]["ready"] is False
+        assert preview_sensitive["reason"] == "unapproved_mapping"
+        assert preview_sensitive["differences"] == []
+        assert sensitive_name not in str(preview_sensitive)
+
+    # 3. Source-field name longer than 200 characters
+    long_source_field = "custom_field_" + ("x" * 250)
+    db.set_project_status_update_policy(
+        deliverable_id="VPI-T2-D5",
+        mode="automatic",
+        enabled=True,
+        external_key="FLOW-1",
+        match_rule_json='{"incident":"FLOW-1"}',
+        mapping_json=f'{{"owner":"{long_source_field}"}}',
+        field_authority={"owner": "automatic"},
+    )
+    preview_long = service.candidate_preview("VPI-T2-D5")
+    assert preview_long["stability"]["ready"] is False
+    assert preview_long["reason"] == "unapproved_mapping"
+    assert preview_long["differences"] == []
+    assert long_source_field not in str(preview_long)
+
+
+def test_candidate_preview_nonexistent_deliverable(tmp_path):
+    db = DatabaseManager(tmp_path / "db.sqlite")
+    db.init_database()
+    service = MappingDiscoveryService(db)
+
+    preview = service.candidate_preview("NONEXISTENT-DELIV")
+    assert preview["deliverableId"] == "NONEXISTENT-DELIV"
+    assert preview["state"] == "not_found"
+    assert preview["reason"] == "deliverable_not_found"
+    assert preview["stability"]["ready"] is False
+    assert preview["differences"] == []

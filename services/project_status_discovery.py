@@ -119,3 +119,226 @@ class MappingDiscoveryService:
                 for row in rows
             ],
         }
+
+    def candidate_preview(self, deliverable_id: str) -> dict[str, Any]:
+        with self.db.get_connection() as conn:
+            deliverable_row = conn.execute(
+                "SELECT * FROM project_status_deliverables WHERE id = ?",
+                (deliverable_id,),
+            ).fetchone()
+
+        if deliverable_row is None:
+            return {
+                "deliverableId": deliverable_id,
+                "state": "not_found",
+                "reason": "deliverable_not_found",
+                "externalKey": None,
+                "stability": {"confirmed": 0, "required": 2, "ready": False},
+                "differences": [],
+            }
+
+        policy = self.db.get_project_status_update_policy(deliverable_id)
+        if policy is None:
+            return {
+                "deliverableId": deliverable_id,
+                "state": "not_found",
+                "reason": "policy_not_found",
+                "externalKey": None,
+                "stability": {"confirmed": 0, "required": 2, "ready": False},
+                "differences": [],
+            }
+
+        binding = policy["binding"]
+        authorities = {
+            row["field_name"]: row["authority"]
+            for row in policy.get("authorities", [])
+        }
+
+        observations = self.db.list_mapping_observations(deliverable_id, limit=2)
+        confirmed_stability = self.db.mapping_stability_count(deliverable_id)
+
+        if not observations:
+            return {
+                "deliverableId": deliverable_id,
+                "state": "not_found",
+                "reason": "no_observation",
+                "externalKey": None,
+                "stability": {"confirmed": 0, "required": 2, "ready": False},
+                "differences": [],
+            }
+
+        latest = observations[0]
+        latest_state = latest["result_state"]
+        latest_key = latest["external_key"]
+        latest_source = latest["source_type"]
+        candidate_count = latest["candidate_count"]
+
+        if latest_state != "matched":
+            return {
+                "deliverableId": deliverable_id,
+                "state": latest_state,
+                "reason": "observation_not_matched",
+                "externalKey": latest_key,
+                "stability": {"confirmed": confirmed_stability, "required": 2, "ready": False},
+                "differences": [],
+            }
+
+        try:
+            candidates = json.loads(latest["candidate_summary_json"])
+        except Exception:
+            candidates = []
+
+        if candidate_count != 1 or len(candidates) != 1:
+            return {
+                "deliverableId": deliverable_id,
+                "state": latest_state,
+                "reason": "candidate_not_unique",
+                "externalKey": latest_key,
+                "stability": {"confirmed": confirmed_stability, "required": 2, "ready": False},
+                "differences": [],
+            }
+
+        if confirmed_stability < 2:
+            return {
+                "deliverableId": deliverable_id,
+                "state": latest_state,
+                "reason": "insufficient_stability",
+                "externalKey": latest_key,
+                "stability": {"confirmed": confirmed_stability, "required": 2, "ready": False},
+                "differences": [],
+            }
+
+        binding_source = str(binding.get("source_type") or "").strip()
+        if binding_source != latest_source:
+            return {
+                "deliverableId": deliverable_id,
+                "state": latest_state,
+                "reason": "source_mismatch",
+                "externalKey": latest_key,
+                "stability": {"confirmed": confirmed_stability, "required": 2, "ready": False},
+                "differences": [],
+            }
+
+        binding_key = str(binding.get("external_key") or "").strip() or None
+        if binding_key != latest_key:
+            return {
+                "deliverableId": deliverable_id,
+                "state": latest_state,
+                "reason": "key_mismatch",
+                "externalKey": latest_key,
+                "stability": {"confirmed": confirmed_stability, "required": 2, "ready": False},
+                "differences": [],
+            }
+
+        if not binding.get("enabled"):
+            return {
+                "deliverableId": deliverable_id,
+                "state": latest_state,
+                "reason": "policy_disabled",
+                "externalKey": latest_key,
+                "stability": {"confirmed": confirmed_stability, "required": 2, "ready": False},
+                "differences": [],
+            }
+
+        try:
+            mapping = json.loads(binding.get("mapping_json") or "{}")
+        except Exception:
+            mapping = {}
+
+        if not isinstance(mapping, dict) or not mapping:
+            return {
+                "deliverableId": deliverable_id,
+                "state": latest_state,
+                "reason": "unapproved_mapping",
+                "externalKey": latest_key,
+                "stability": {"confirmed": confirmed_stability, "required": 2, "ready": False},
+                "differences": [],
+            }
+
+        try:
+            field_report = json.loads(latest["field_report_json"])
+        except Exception:
+            field_report = {}
+
+        sanitized_fields = set(field_report.get("fields", [])) if isinstance(field_report, dict) else set()
+
+        approved_target_fields = {
+            "owner": "owner",
+            "plannedDate": "planned_date",
+            "note": "remark",
+        }
+
+        valid_comparisons = []
+        for target_field, db_col in approved_target_fields.items():
+            if target_field not in mapping:
+                continue
+            source_field = mapping[target_field]
+            if not isinstance(source_field, str) or not source_field.strip():
+                continue
+            source_field = source_field.strip()
+            if len(source_field) > _VALUE_LIMIT or _SENSITIVE_FIELD.search(source_field):
+                return {
+                    "deliverableId": deliverable_id,
+                    "state": latest_state,
+                    "reason": "unapproved_mapping",
+                    "externalKey": latest_key,
+                    "stability": {"confirmed": confirmed_stability, "required": 2, "ready": False},
+                    "differences": [],
+                }
+            redacted_source = redact_sensitive_text(source_field, limit=_VALUE_LIMIT, collapse_newlines=True).strip()
+            if redacted_source != source_field:
+                return {
+                    "deliverableId": deliverable_id,
+                    "state": latest_state,
+                    "reason": "unapproved_mapping",
+                    "externalKey": latest_key,
+                    "stability": {"confirmed": confirmed_stability, "required": 2, "ready": False},
+                    "differences": [],
+                }
+            if source_field not in sanitized_fields:
+                return {
+                    "deliverableId": deliverable_id,
+                    "state": latest_state,
+                    "reason": "unapproved_mapping",
+                    "externalKey": latest_key,
+                    "stability": {"confirmed": confirmed_stability, "required": 2, "ready": False},
+                    "differences": [],
+                }
+            if authorities.get(db_col) != "automatic":
+                continue
+            valid_comparisons.append((target_field, source_field, db_col))
+
+        if not valid_comparisons:
+            return {
+                "deliverableId": deliverable_id,
+                "state": latest_state,
+                "reason": "unapproved_mapping",
+                "externalKey": latest_key,
+                "stability": {"confirmed": confirmed_stability, "required": 2, "ready": False},
+                "differences": [],
+            }
+
+        candidate_fields = candidates[0].get("fields", {})
+        if not isinstance(candidate_fields, dict):
+            candidate_fields = {}
+
+        differences = []
+        for target_field, source_field, db_col in valid_comparisons:
+            current_val = _scalar(deliverable_row[db_col])
+            cand_val = _scalar(candidate_fields.get(source_field))
+            differences.append({
+                "targetField": target_field,
+                "sourceField": source_field,
+                "currentValue": current_val,
+                "candidateValue": cand_val,
+                "changed": current_val != cand_val,
+            })
+
+        return {
+            "deliverableId": deliverable_id,
+            "state": latest_state,
+            "reason": None,
+            "externalKey": latest_key,
+            "stability": {"confirmed": confirmed_stability, "required": 2, "ready": True},
+            "differences": differences,
+        }
