@@ -82,6 +82,23 @@ def _safe_exception_message(exc: BaseException) -> str:
     return messages[_error_type(exc)]
 
 
+def _required_int(values: Mapping[str, object], key: str) -> int:
+    value = values[key]
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f"archive {key} is invalid")
+    return value
+
+
+def _required_mapping(
+    values: Mapping[str, object],
+    key: str,
+) -> Mapping[str, object]:
+    value = values[key]
+    if not isinstance(value, Mapping):
+        raise ValueError(f"archive {key} is invalid")
+    return value
+
+
 @dataclass(frozen=True)
 class ArchiveJobContext:
     """Secret-free, fixed-contract input visible to one connector."""
@@ -122,7 +139,8 @@ class ArchiveConnector(Protocol):
         self,
         context: ArchiveJobContext,
         credential: ResolvedCredential,
-    ) -> ArchiveCollection: ...
+    ) -> ArchiveCollection:
+        ...
 
 
 class ArchiveConnectorRegistry:
@@ -215,7 +233,7 @@ class ArchiveSyncRunner:
                 trigger_type,
                 lease_seconds=self._lease_seconds,
             )
-            run_id = int(lease["run_id"])
+            run_id = _required_int(lease, "run_id")
             lease_token = str(lease["lease_token"])
             job_key = str(lease["job_key"])
             self._db.start_archive_run(job_id, run_id, lease_token)
@@ -236,7 +254,7 @@ class ArchiveSyncRunner:
                 job_key=job_key,
                 source_type=str(lease["source_type"]),
                 report_type=str(lease["report_type"]),
-                filters=dict(lease["filters"]),  # type: ignore[arg-type]
+                filters=dict(_required_mapping(lease, "filters")),
                 output_subdir=str(lease["output_subdir"]),
                 run_id=run_id,
             )
@@ -327,7 +345,7 @@ class ArchiveSyncRunner:
         results: list[ArchiveJobRunResult] = []
         for job in jobs:
             key = str(job["job_key"])
-            job_id = int(job["id"])
+            job_id = _required_int(job, "id")
             if trigger_type == "scheduled" and not self._is_due(job):
                 results.append(ArchiveJobRunResult(job_id, key, "not_due"))
                 continue
@@ -401,9 +419,9 @@ class ArchiveSyncRunner:
         lease: Mapping[str, object],
         exc: BaseException,
     ) -> ArchiveJobRunResult:
-        job_id = int(lease["job_id"])
+        job_id = _required_int(lease, "job_id")
         job_key = str(lease["job_key"])
-        run_id = int(lease["run_id"])
+        run_id = _required_int(lease, "run_id")
         lease_token = str(lease["lease_token"])
         category = _error_type(exc)
         message = _safe_exception_message(exc)
@@ -452,8 +470,8 @@ class ArchiveSyncRunner:
     ) -> None:
         try:
             self._db.finalize_archive_run(
-                int(lease["job_id"]),
-                int(lease["run_id"]),
+                _required_int(lease, "job_id"),
+                _required_int(lease, "run_id"),
                 str(lease["lease_token"]),
                 "failed",
                 error_type=category,
@@ -477,7 +495,7 @@ class ArchiveSyncRunner:
             now = self._clock()
             if now.tzinfo is None:
                 now = now.replace(tzinfo=timezone.utc)
-            interval = int(job["interval_minutes"])
+            interval = _required_int(job, "interval_minutes")
             elapsed = (
                 now.astimezone(timezone.utc)
                 - parsed.astimezone(timezone.utc)
