@@ -3,13 +3,26 @@
   "worker_agent": "agy-cli",
   "agy": {
     "executable": "agy",
-    "model": "gemini-3.7-flash-low",
+    "model": "gemini-3.7-flash-high",
     "effort": "high",
     "mode": "accept-edits",
     "sandbox": true,
     "disable_slash_commands": true,
     "new_project": true,
-    "timeout_seconds": 2400
+    "timeout_seconds": 2400,
+    "allowed_models": [
+      "gemini-3.7-flash-high",
+      "gemini-3.7-flash-low"
+    ],
+    "model_policy": {
+      "default": "gemini-3.7-flash-high",
+      "categories": {
+        "mechanical": "gemini-3.7-flash-high",
+        "test-only": "gemini-3.7-flash-high",
+        "ui": "gemini-3.7-flash-high",
+        "ordinary-implementation": "gemini-3.7-flash-high"
+      }
+    }
   },
   "max_agy_rounds": 3,
   "max_codex_review_rounds": 2,

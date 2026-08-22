@@ -46,12 +46,23 @@ python tools/agents/supervisor.py doctor
 ```
 
 The profile, AGY executable, model, effort, mode, sandbox, repair attempts, and timeout
-are configured in `.agents/config.json`. The harness invokes the local CLI directly with an
-argument array, `--sandbox`, JSON output, and the checked-in worker schema. It does not use
-`shell=True`, a Codex subagent, a remote model API, or `--dangerously-skip-permissions`.
+are configured in `.agents/config.json`. The configuration also defines an explicit `allowed_models`
+allowlist (`gemini-3.7-flash-high` and `gemini-3.7-flash-low`) and `model_policy` under `agy` with
+a `default` model and per-category mappings for delegable low-risk categories (`mechanical`,
+`test-only`, `ui`, `ordinary-implementation`). Only non-empty models present in `allowed_models`
+may be selected; invalid defaults or category mappings safely fall back to the configured `agy.model`.
+All delegable categories and the fallback default to `gemini-3.7-flash-high`, while configuration
+allows selected categories to be switched to `gemini-3.7-flash-low` without code changes. Unknown
+or missing low-risk categories use the configured policy default. High-risk categories always remain
+`codex-controlled`.
+
+The harness invokes the local CLI directly with an argument array, `--sandbox`, JSON output, and
+the checked-in worker schema. It does not use `shell=True`, a Codex subagent, a remote model API,
+or `--dangerously-skip-permissions`.
 
 Sign in to both CLIs using their normal interactive flows if a real run reports
-an authentication error. `doctor` deliberately does not inspect credentials.
+an authentication error. `doctor` reports whether every configured policy model is available
+in `agy models` output, but deliberately does not inspect credentials.
 
 ## Use
 

@@ -101,9 +101,15 @@ def normalize_task(raw: dict[str, Any], generated_id: str | None = None) -> dict
     if raw.get("profile"):
         task_dict["profile"] = str(raw["profile"])
     if raw.get("category"):
-        task_dict["category"] = str(raw["category"])
+        cat = str(raw["category"]).strip().lower().replace("_", "-")
+        if cat == "implementation":
+            cat = "ordinary-implementation"
+        task_dict["category"] = cat
     if raw.get("risk_class"):
-        task_dict["risk_class"] = str(raw["risk_class"])
+        rc = str(raw["risk_class"]).strip().lower().replace("_", "-")
+        if rc == "implementation":
+            rc = "ordinary-implementation"
+        task_dict["risk_class"] = rc
     if raw.get("review_policy"):
         task_dict["review_policy"] = str(raw["review_policy"])
     if raw.get("agy_self_repair_attempts") is not None:
@@ -171,6 +177,77 @@ def resolve_profile(
     if requested == "agy-heavy" and review_policy == "codex-required":
         return "codex-controlled", requested, "Review policy codex-required forced to codex-controlled profile"
     return requested, requested, None
+
+
+DEFAULT_ALLOWED_MODELS: tuple[str, ...] = ("gemini-3.7-flash-high", "gemini-3.7-flash-low")
+DEFAULT_MODEL: str = "gemini-3.7-flash-high"
+
+
+def get_allowed_models(cfg: dict[str, Any]) -> list[str]:
+    agy_settings = cfg.get("agy", {})
+    allowed = agy_settings.get("allowed_models")
+    if allowed is None:
+        model_policy = agy_settings.get("model_policy") or cfg.get("model_policy") or {}
+        if isinstance(model_policy, dict):
+            allowed = model_policy.get("allowed_models")
+    if allowed is None:
+        allowed = cfg.get("allowed_models")
+    if isinstance(allowed, list):
+        parsed = [str(m).strip() for m in allowed if isinstance(m, str) and str(m).strip()]
+        if parsed:
+            return parsed
+    return list(DEFAULT_ALLOWED_MODELS)
+
+
+def resolve_model(task: dict[str, Any], cfg: dict[str, Any]) -> str:
+    allowed_models = get_allowed_models(cfg)
+    agy_settings = cfg.get("agy", {})
+    raw_configured_model = str(agy_settings.get("model", DEFAULT_MODEL)).strip() or DEFAULT_MODEL
+    fallback_model = raw_configured_model if raw_configured_model in allowed_models else DEFAULT_MODEL
+    model_policy = agy_settings.get("model_policy")
+    if model_policy is None:
+        model_policy = cfg.get("model_policy", {})
+
+    if not isinstance(model_policy, dict):
+        return fallback_model
+
+    raw_default = str(model_policy.get("default", fallback_model)).strip() or fallback_model
+    default_model = raw_default if raw_default in allowed_models else fallback_model
+
+    categories_map = model_policy.get("categories")
+    merged_categories: dict[str, Any] = dict(categories_map) if isinstance(categories_map, dict) else {}
+    for k, v in model_policy.items():
+        if k not in ("default", "categories", "allowed_models") and isinstance(v, str):
+            merged_categories[k] = v
+
+    normalized_policy_map: dict[str, str] = {}
+    for cat_name, mod_val in merged_categories.items():
+        normalized_key = cat_name.strip().lower().replace("_", "-")
+        if normalized_key == "implementation":
+            normalized_key = "ordinary-implementation"
+        if isinstance(mod_val, str) and mod_val.strip() and mod_val.strip() in allowed_models:
+            model_val = mod_val.strip()
+        else:
+            model_val = fallback_model
+        normalized_policy_map[normalized_key] = model_val
+        normalized_policy_map[cat_name.strip()] = model_val
+
+    raw_category = (
+        task.get("category")
+        or task.get("risk_class")
+        or task.get("context", {}).get("category")
+        or task.get("context", {}).get("risk_class")
+    )
+    if raw_category:
+        norm_cat = str(raw_category).strip().lower().replace("_", "-")
+        if norm_cat == "implementation":
+            norm_cat = "ordinary-implementation"
+        if norm_cat in normalized_policy_map:
+            return normalized_policy_map[norm_cat]
+        if str(raw_category).strip() in normalized_policy_map:
+            return normalized_policy_map[str(raw_category).strip()]
+
+    return default_model
 
 
 def build_contract_plan(task: dict[str, Any], reason: str = "Local agy-heavy task contract") -> dict[str, Any]:
@@ -412,6 +489,10 @@ def recover_context_canceled_worker(
 def run(root: Path, task: dict[str, Any], dry_run: bool, profile: str | None = None) -> int:
     cfg = config(root)
     effective_profile, requested_profile, override_reason = resolve_profile(task, cfg, profile)
+    resolved_model = resolve_model(task, cfg)
+    effective_agy_settings = dict(cfg.get("agy", {}))
+    effective_agy_settings["model"] = resolved_model
+
     run_dir = root / ".agents" / "runs" / task["task_id"]
     if run_dir.exists():
         raise FileExistsError(f"Task run already exists: {task['task_id']}")
@@ -434,6 +515,7 @@ def run(root: Path, task: dict[str, Any], dry_run: bool, profile: str | None = N
         "route": plan["route"],
         "profile": effective_profile,
         "requested_profile": requested_profile,
+        "model": resolved_model,
         "dry_run": dry_run,
         "worktree": None,
         "round": 0,
@@ -453,12 +535,11 @@ def run(root: Path, task: dict[str, Any], dry_run: bool, profile: str | None = N
 
     if dry_run:
         state["status"] = "dry-run-complete"
-        agy_settings = cfg.get("agy", {})
         expected_checks = task.get("verification_commands") if effective_profile == "agy-heavy" else command_checks(root, task)
         state["expected_commands"] = {
             "checks": expected_checks,
             "worker": agy_cli.build_command(
-                agy_settings,
+                effective_agy_settings,
                 ROOT / "schemas" / "worker-result.schema.json",
                 "<structured-task-json>",
                 resolve_executable=False,
@@ -512,7 +593,7 @@ def run(root: Path, task: dict[str, Any], dry_run: bool, profile: str | None = N
             task,
             tree,
             run_dir,
-            cfg.get("agy", {}),
+            effective_agy_settings,
             plan["worker_effort"],
             max_repair_attempts=repair_attempts,
         )
@@ -591,7 +672,7 @@ def run(root: Path, task: dict[str, Any], dry_run: bool, profile: str | None = N
             worker_task,
             tree,
             run_dir,
-            cfg.get("agy", {}),
+            effective_agy_settings,
             plan["worker_effort"],
             max_repair_attempts=repair_attempts,
         )
@@ -648,7 +729,51 @@ def doctor(root: Path) -> int:
     agy_version = _command_line([agy_path, "--version"], root) if agy_path else "MISSING"
     models = _command_line([agy_path, "models"], root) if agy_path else ""
     configured_model = str(agy_settings.get("model", "DEFAULT"))
-    model_available = "OK" if configured_model in models else "UNKNOWN" if agy_path else "MISSING"
+    model_policy = agy_settings.get("model_policy") or cfg.get("model_policy") or {}
+    default_policy_model = (
+        str(model_policy.get("default", configured_model))
+        if isinstance(model_policy, dict)
+        else configured_model
+    )
+    allowed_models = get_allowed_models(cfg)
+
+    policy_models: list[str] = []
+    if configured_model and configured_model != "DEFAULT":
+        policy_models.append(configured_model)
+    if default_policy_model and default_policy_model != "DEFAULT" and default_policy_model not in policy_models:
+        policy_models.append(default_policy_model)
+    if isinstance(model_policy, dict):
+        cats = model_policy.get("categories")
+        if isinstance(cats, dict):
+            for m in cats.values():
+                if isinstance(m, str) and m.strip() and m.strip() not in policy_models:
+                    policy_models.append(m.strip())
+        for k, v in model_policy.items():
+            if (
+                k not in ("default", "categories", "allowed_models")
+                and isinstance(v, str)
+                and v.strip()
+                and v.strip() not in policy_models
+            ):
+                policy_models.append(v.strip())
+    for m in allowed_models:
+        if m not in policy_models:
+            policy_models.append(m)
+
+    if not agy_path:
+        model_available = "MISSING"
+        policy_available = "MISSING"
+    elif not models:
+        model_available = "UNKNOWN"
+        policy_available = "UNKNOWN"
+    else:
+        model_available = "OK" if (configured_model in models and configured_model != "DEFAULT") else "MISSING"
+        missing_policy = [m for m in policy_models if m not in models]
+        if not missing_policy:
+            policy_available = "OK"
+        else:
+            policy_available = f"MISSING ({', '.join(missing_policy)})"
+
     configured_profile = str(cfg.get("profile", "agy-heavy"))
     rows = [
         ("Git", "OK" if shutil.which("git") else "MISSING"),
@@ -659,7 +784,10 @@ def doctor(root: Path) -> int:
         ("AGY executable", agy_path or "MISSING"),
         ("AGY version", agy_version or "UNKNOWN"),
         ("AGY configured model", configured_model),
+        ("AGY default model policy", default_policy_model),
+        ("AGY allowed models", ", ".join(allowed_models)),
         ("AGY model available", model_available),
+        ("AGY policy models available", policy_available),
         ("AGY sandbox", "ENABLED" if agy_settings.get("sandbox", True) else "DISABLED"),
         ("AGY authentication", "UNKNOWN (not probed)"),
         ("AGY smoke call", "SKIPPED"),
@@ -667,7 +795,7 @@ def doctor(root: Path) -> int:
         ("Project checks", "; ".join(" ".join(x) for x in checks_found) or "NONE"),
     ]
     for name, value in rows:
-        print(f"{name:<24} {value}")
+        print(f"{name:<28} {value}")
     return 0 if git_ok else 1
 
 

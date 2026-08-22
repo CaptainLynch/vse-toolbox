@@ -151,3 +151,58 @@ def test_invoke_uses_configured_max_repair_attempts(monkeypatch, tmp_path):
     # Default without config is 3
     agy_cli.invoke(task, tmp_path, tmp_path / "run", config={})
     assert "You may perform up to 3 self-repair attempts" in captured["prompt"]
+
+
+def test_build_command_uses_flash_low_without_separate_effort(monkeypatch, tmp_path):
+    monkeypatch.setattr(agy_cli.shutil, "which", lambda _: "C:/tools/agy.exe")
+    command = agy_cli.build_command(
+        {
+            "model": "gemini-3.7-flash-low",
+            "effort": "high",
+            "mode": "accept-edits",
+            "sandbox": True,
+            "new_project": True,
+            "timeout_seconds": 120,
+        },
+        tmp_path / "schema.json",
+        "structured prompt",
+    )
+
+    assert command[command.index("--model") + 1] == "gemini-3.7-flash-low"
+    assert "--effort" not in command
+
+
+def test_invoke_records_resolved_model_in_process_evidence(monkeypatch, tmp_path):
+    monkeypatch.setattr(agy_cli, "executable", lambda _: "agy")
+    monkeypatch.setattr(
+        agy_cli.subprocess,
+        "run",
+        lambda *args, **kwargs: type(
+            "Completed",
+            (),
+            {
+                "stdout": json.dumps({
+                    "task_id": "TASK-PROC-MODEL",
+                    "status": "completed",
+                    "summary": "ok",
+                    "changed_files": [],
+                    "tests": [],
+                    "commands_executed": [],
+                    "risks": [],
+                    "unresolved": [],
+                    "needs_review": True,
+                }),
+                "stderr": "",
+                "returncode": 0,
+            },
+        )(),
+    )
+
+    config = {"model": "gemini-3.7-flash-high"}
+    task = {"task_id": "TASK-PROC-MODEL", "objective": "test"}
+    result = agy_cli.invoke(task, tmp_path, tmp_path / "run", config=config)
+    assert result["process"]["model"] == "gemini-3.7-flash-high"
+
+    config_low = {"model": "gemini-3.7-flash-low"}
+    result_low = agy_cli.invoke(task, tmp_path, tmp_path / "run", config=config_low)
+    assert result_low["process"]["model"] == "gemini-3.7-flash-low"
