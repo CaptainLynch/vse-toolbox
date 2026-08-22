@@ -503,3 +503,19 @@ class ArchiveSyncRunner:
             return elapsed >= interval * 60
         except (KeyError, TypeError, ValueError, OverflowError):
             return True
+
+
+def create_production_archive_runner(
+    db: DatabaseManager,
+) -> ArchiveSyncRunner:
+    """Construct the one-shot production runner with the fixed registry."""
+    from core.credential_provider import WindowsCredentialManagerProvider
+    from services.scheduled_archive_connectors import (
+        create_production_archive_registry,
+    )
+
+    return ArchiveSyncRunner(
+        db,
+        WindowsCredentialManagerProvider(),
+        create_production_archive_registry(),
+    )

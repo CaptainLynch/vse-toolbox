@@ -83,6 +83,11 @@ from services.project_status_sync_runner import (
     RunOnceResult,
     create_production_registry,
 )
+from services.scheduled_archive_runner import (
+    ArchiveJobRunResult,
+    ArchiveRunOnceResult,
+    create_production_archive_runner,
+)
 from services.tdc_contract_probe import (
     REPORT_DIR_NAME,
     TDCContractProbeOptions,
@@ -1470,7 +1475,62 @@ def _parse_sync_args(argv: Sequence[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _run_archive_sync_once(
+    db: DatabaseManager,
+    job_key: str | None,
+    dry_run: bool,
+) -> int:
+    """Execute one independent scheduled archive pass."""
+    runner = create_production_archive_runner(db)
+    result = runner.run_once(
+        trigger_type="scheduled",
+        job_key=job_key,
+        dry_run=dry_run,
+    )
+    _print_archive_sync_summary(result)
+    return result.exit_code
+
+
+def _print_archive_sync_summary(result: ArchiveRunOnceResult) -> None:
+    if not result.results:
+        console.print("[dim]无符合条件的 enabled archive job。[/]")
+        return
+    prefix = "archive dry-run" if result.dry_run else "archive"
+    for item in result.results:
+        _print_archive_job_result(prefix, item)
+
+
+def _print_archive_job_result(
+    prefix: str,
+    item: ArchiveJobRunResult,
+) -> None:
+    parts = [
+        f"job {item.job_id if item.job_id is not None else '-'}",
+        f"key={item.job_key or '-'}",
+        f"outcome={item.outcome}",
+    ]
+    if item.final_state:
+        parts.append(f"state={item.final_state}")
+    if item.error_type:
+        parts.append(f"error_type={item.error_type}")
+    if item.error_message:
+        parts.append(f"message={item.error_message}")
+    console.print(f"[dim]{prefix}[/] " + " | ".join(parts))
+
+
+def _parse_archive_sync_args(argv: Sequence[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="main.py scheduled-archive",
+        description="执行一次独立交付物归档（适合 Windows Task Scheduler）。",
+    )
+    parser.add_argument("--once", action="store_true", required=True)
+    parser.add_argument("--dry-run", action="store_true", default=False)
+    parser.add_argument("--job-key", type=str, default=None)
+    return parser.parse_args(argv)
+
+
 _SYNC_SUBCOMMAND = "project-status-sync"
+_ARCHIVE_SYNC_SUBCOMMAND = "scheduled-archive"
 _ARCHIVE_CLEANUP_SUBCOMMAND = "project-status-archive-cleanup"
 _PROBE_SUBCOMMAND = "tdc-contract-probe"
 
@@ -1510,6 +1570,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     - tdc-contract-probe 时进入只读探测，不构造 DatabaseManager。
     """
     raw_argv = list(sys.argv[1:] if argv is None else argv)
+
+    if raw_argv and raw_argv[0] == _ARCHIVE_SYNC_SUBCOMMAND:
+        args = _parse_archive_sync_args(raw_argv[1:])
+        try:
+            db = DatabaseManager()
+            db.init_database()
+            return _run_archive_sync_once(
+                db,
+                job_key=args.job_key,
+                dry_run=args.dry_run,
+            )
+        except KeyboardInterrupt:
+            return EXIT_INTERRUPTED
+        except Exception:
+            console.print("[red]独立归档运行失败。[/]")
+            return EXIT_FAILED
 
     if raw_argv and raw_argv[0] == _ARCHIVE_CLEANUP_SUBCOMMAND:
         args = _parse_archive_cleanup_args(raw_argv[1:])
