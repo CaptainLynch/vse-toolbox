@@ -479,8 +479,8 @@ def _origin_tuple(value: str) -> tuple[str, str, int] | None:
     return parsed.scheme.lower(), parsed.hostname.rstrip(".").lower(), port
 
 
-def _local_archive_mutation_error():
-    """Reject cross-host/cross-site archive writes in the local-only WebUI."""
+def _local_web_mutation_error():
+    """Reject cross-host/cross-site writes in the local-only WebUI."""
     if not _loopback_hostname(request.remote_addr):
         return _json_error(403, "LocalAccessRequired", "此操作仅允许从本机访问")
     try:
@@ -1623,7 +1623,7 @@ def create_app(
 
     @app.patch("/api/scheduled-archive/jobs/<job_key>")
     def api_scheduled_archive_job_update(job_key: str):
-        local_error = _local_archive_mutation_error()
+        local_error = _local_web_mutation_error()
         if local_error is not None:
             return local_error
         payload = request.get_json(silent=True)
@@ -1702,7 +1702,7 @@ def create_app(
 
     @app.post("/api/scheduled-archive/jobs/<job_key>/sync-now")
     def api_scheduled_archive_sync_now(job_key: str):
-        local_error = _local_archive_mutation_error()
+        local_error = _local_web_mutation_error()
         if local_error is not None:
             return local_error
         try:
@@ -1734,6 +1734,9 @@ def create_app(
 
     @app.patch("/api/project-status/deliverables/<deliverable_id>")
     def api_project_status_deliverable_update(deliverable_id: str):
+        local_error = _local_web_mutation_error()
+        if local_error is not None:
+            return local_error
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict):
             return _json_error(400, "ValidationError", "JSON object body is required")
@@ -1795,6 +1798,9 @@ def create_app(
 
     @app.patch("/api/project-status/deliverables/<deliverable_id>/update-policy")
     def api_project_status_update_policy_write(deliverable_id: str):
+        local_error = _local_web_mutation_error()
+        if local_error is not None:
+            return local_error
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict):
             return _json_error(400, "ValidationError", "JSON object body is required")
@@ -1839,6 +1845,9 @@ def create_app(
 
     @app.post("/api/project-status/deliverables/<deliverable_id>/mapping-discovery")
     def api_project_status_mapping_discovery(deliverable_id: str):
+        local_error = _local_web_mutation_error()
+        if local_error is not None:
+            return local_error
         payload, error = _request_payload()
         if error is not None:
             return error
@@ -1927,6 +1936,9 @@ def create_app(
 
     @app.patch("/api/project-status/phases/<phase_id>/milestones")
     def api_project_status_milestones_update(phase_id: str):
+        local_error = _local_web_mutation_error()
+        if local_error is not None:
+            return local_error
         if phase_id != "VPI-T2":
             return _json_error(404, "NotFound", "未找到项目阶段")
         payload = request.get_json(silent=True)
