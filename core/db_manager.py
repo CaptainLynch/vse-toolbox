@@ -19,7 +19,7 @@ import sqlite3
 import logging
 from pathlib import Path
 from contextlib import contextmanager
-from typing import Any, Generator, Sequence
+from typing import Any, Generator, Mapping, Sequence
 
 from core.redaction import redact_sensitive_text
 from core.runtime_paths import app_root
@@ -33,7 +33,7 @@ DEFAULT_DB_PATH = DEFAULT_DB_DIR / "vse_toolbox.db"
 #: 当前支持的 schema 版本。迁移完成后写入 PRAGMA user_version。
 #: 旧库 (< CURRENT_SCHEMA_VERSION) 增量升级；高于此版本的库拒绝降级，
 #: 避免新代码误读未知的较新 schema。
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 #: 租约时长安全范围（秒）。默认 900s，由调用方在范围内参数化。
 SYNC_LEASE_MIN_SECONDS = 60
@@ -51,6 +51,8 @@ ARCHIVE_JOB_CONTRACTS: dict[str, tuple[str, str, str | None]] = {
     "tdc_data_model": ("tdc", "data_model", "VPI-T2-D5"),
     "tdc_sor": ("tdc", "sor", "VPI-T2-D2"),
 }
+
+ARCHIVE_CREDENTIAL_UNCHANGED = object()
 
 #: 数据库生成的 UTC 时间戳 SQL 片段。调度、租约和审计统一使用 UTC，
 #: 不使用 simulated_today（后者仅用于业务展示）。
@@ -381,6 +383,22 @@ TABLE_DEFINITIONS: list[str] = [
     """
     CREATE INDEX IF NOT EXISTS idx_archive_artifacts_run
         ON scheduled_archive_artifacts(run_id);
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS scheduled_archive_config_audit (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id       INTEGER NOT NULL,
+        job_key      TEXT NOT NULL,
+        actor        TEXT NOT NULL CHECK (actor IN ('local_web', 'cli')),
+        event_type   TEXT NOT NULL CHECK (event_type = 'configuration_updated'),
+        changes_json TEXT NOT NULL,
+        created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        FOREIGN KEY (job_id) REFERENCES scheduled_archive_jobs(id) ON DELETE RESTRICT
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_archive_config_audit_job
+        ON scheduled_archive_config_audit(job_id, id DESC);
     """,
     """
     CREATE TABLE IF NOT EXISTS project_status_mapping_observations (
@@ -2011,6 +2029,167 @@ class DatabaseManager:
             ).fetchone()
             assert row is not None
             return str(row["updated_at"])
+
+    def update_archive_job_config(
+        self,
+        job_key: str,
+        *,
+        enabled: bool,
+        filters: Mapping[str, object],
+        output_subdir: str,
+        expected_updated_at: str,
+        actor: str,
+        credential_ref: object = ARCHIVE_CREDENTIAL_UNCHANGED,
+    ) -> dict[str, Any]:
+        """Optimistically update one fixed job and append a secret-free audit."""
+        from core.archive_store import ArchiveStore
+
+        if job_key not in ARCHIVE_JOB_CONTRACTS:
+            raise KeyError(job_key)
+        if not isinstance(enabled, bool):
+            raise TypeError("enabled must be a bool")
+        if not isinstance(filters, Mapping) or any(
+            not isinstance(key, str) for key in filters
+        ):
+            raise ValueError("archive filters must be an object with string keys")
+        sensitive_names = {
+            "authorization", "cookie", "token", "password", "secret",
+            "credential", "session", "csrf",
+        }
+        for key, value in filters.items():
+            lowered = key.strip().lower()
+            if not lowered or any(name in lowered for name in sensitive_names):
+                raise ValueError("archive filter name is not allowed")
+            if value is None or isinstance(value, str):
+                continue
+            if isinstance(value, list) and all(
+                isinstance(item, str) for item in value
+            ):
+                continue
+            raise ValueError("archive filter values must be strings or string lists")
+        filters_json = json.dumps(
+            dict(filters), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        if len(filters_json.encode("utf-8")) > 16 * 1024:
+            raise ValueError("archive filters exceed the configured limit")
+        safe_subdir = ArchiveStore.validate_output_subdir(output_subdir)
+        if not isinstance(expected_updated_at, str) or not expected_updated_at:
+            raise ValueError("expected_updated_at is required")
+        if actor not in {"local_web", "cli"}:
+            raise ValueError("archive configuration actor is invalid")
+
+        with self.get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT id, enabled, credential_ref, filters_json,
+                       output_subdir, updated_at, lease_token, lease_expires_at
+                FROM scheduled_archive_jobs WHERE job_key = ?
+                """,
+                (job_key,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(job_key)
+            if str(row["updated_at"]) != expected_updated_at:
+                raise RuntimeError("archive job configuration has changed")
+            now = self._utc_now(conn)
+            if (
+                row["lease_token"] is not None
+                and row["lease_expires_at"] is not None
+                and str(row["lease_expires_at"]) > now
+            ):
+                raise ArchiveLeaseBusyError(
+                    "archive job configuration cannot change during an active lease"
+                )
+
+            current_ref = str(row["credential_ref"] or "").strip()
+            if credential_ref is ARCHIVE_CREDENTIAL_UNCHANGED:
+                next_ref: str | None = current_ref or None
+            elif credential_ref is None:
+                next_ref = None
+            elif isinstance(credential_ref, str):
+                next_ref = credential_ref.strip()
+                if (
+                    not next_ref
+                    or len(next_ref) > 256
+                    or any(ord(char) < 32 for char in next_ref)
+                ):
+                    raise ValueError("credential reference alias is invalid")
+            else:
+                raise TypeError("credential_ref must be a string, null, or omitted")
+            if enabled and not next_ref:
+                raise ArchiveJobNotReadyError(
+                    "enabled archive job requires a credential reference alias"
+                )
+
+            changed: list[str] = []
+            if bool(row["enabled"]) != enabled:
+                changed.append("enabled")
+            if current_ref != str(next_ref or ""):
+                changed.append("credentialRef")
+            if str(row["filters_json"]) != filters_json:
+                changed.append("filters")
+            if str(row["output_subdir"] or "") != safe_subdir:
+                changed.append("outputSubdir")
+            if changed:
+                cursor = conn.execute(
+                    f"""
+                    UPDATE scheduled_archive_jobs
+                    SET enabled = ?, credential_ref = ?, filters_json = ?,
+                        output_subdir = ?, interval_minutes = 60,
+                        sync_state = ?, updated_at = {_UTC_NOW_SQL}
+                    WHERE id = ? AND updated_at = ?
+                    """,
+                    (
+                        int(enabled), next_ref, filters_json, safe_subdir,
+                        "needs_attention" if enabled else "idle",
+                        int(row["id"]), expected_updated_at,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise RuntimeError("archive job configuration has changed")
+                changes_json = json.dumps(
+                    {
+                        "fields": sorted(changed),
+                        "credentialConfigured": bool(next_ref),
+                    },
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+                conn.execute(
+                    """
+                    INSERT INTO scheduled_archive_config_audit
+                        (job_id, job_key, actor, event_type, changes_json)
+                    VALUES (?, ?, ?, 'configuration_updated', ?)
+                    """,
+                    (int(row["id"]), job_key, actor, changes_json),
+                )
+        result = next(
+            (item for item in self.list_archive_jobs() if item["job_key"] == job_key),
+            None,
+        )
+        if result is None:
+            raise KeyError(job_key)
+        return result
+
+    def list_archive_config_audit(
+        self, job_key: str | None = None, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """Return bounded configuration audit entries without aliases or values."""
+        bounded = max(1, min(int(limit), 500))
+        sql = """
+            SELECT id, job_id, job_key, actor, event_type,
+                   changes_json, created_at
+            FROM scheduled_archive_config_audit
+        """
+        if job_key:
+            sql += " WHERE job_key = ? ORDER BY id DESC LIMIT ?"
+            params: tuple[Any, ...] = (job_key, bounded)
+        else:
+            sql += " ORDER BY id DESC LIMIT ?"
+            params = (bounded,)
+        with self.get_connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]
 
     def list_archive_jobs(self, enabled_only: bool = False) -> list[dict[str, Any]]:
         """Return archive job configuration without credential aliases or lease tokens."""
