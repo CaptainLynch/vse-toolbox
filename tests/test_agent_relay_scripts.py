@@ -4,12 +4,15 @@ import os
 import re
 import shutil
 import subprocess
+import tomllib
 from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SETUP_SCRIPT = REPO_ROOT / "tools" / "agents" / "setup_codex_relay_profile.ps1"
 RUN_SCRIPT = REPO_ROOT / "tools" / "agents" / "run_supervisor.ps1"
+DESKTOP_SWITCH_SCRIPT = REPO_ROOT / "tools" / "agents" / "switch_codex_desktop.ps1"
+START_SCRIPT = REPO_ROOT / "start-supervisor.ps1"
 CONFIG_JSON = REPO_ROOT / ".agents" / "config.json"
 
 
@@ -87,6 +90,34 @@ def run_ps_supervisor(args: tuple[str, ...], env_vars: dict[str, str] | None = N
     )
 
 
+def run_ps_desktop(args: tuple[str, ...], env_vars: dict[str, str] | None = None):
+    ps = find_powershell()
+    cmd = [
+        ps,
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(DESKTOP_SWITCH_SCRIPT),
+        *args,
+    ]
+    env = os.environ.copy()
+    env.pop("CODEX_RELAY_API_KEY", None)
+    if env_vars:
+        env.update(env_vars)
+    return subprocess.run(
+        cmd,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+        check=False,
+    )
+
+
 def test_checked_in_setup_script_parameters_and_toml_content():
     """Verify checked-in relay parameters match exact requirements."""
     content = SETUP_SCRIPT.read_text(encoding="utf-8")
@@ -126,6 +157,8 @@ def test_no_embedded_secrets_in_scripts_and_config():
         RUN_SCRIPT,
         CONFIG_JSON,
         REPO_ROOT / "tools" / "agents" / "supervisor.py",
+        DESKTOP_SWITCH_SCRIPT,
+        START_SCRIPT,
     ]
     for path in files_to_check:
         text = path.read_text(encoding="utf-8")
@@ -314,3 +347,73 @@ def test_run_supervisor_rejects_task_file_outside_repo(tmp_path):
     assert res.returncode != 0
     combined = normalize_ps_output(res.stdout + res.stderr)
     assert "Task file must remain inside the repository" in combined
+
+
+def test_desktop_switch_relay_then_restores_exact_official_config(tmp_path):
+    original = 'model = "gpt-5.6-sol"\n\n[features]\njs_repl = false\n'
+    config = tmp_path / "config.toml"
+    config.write_text(original, encoding="utf-8")
+
+    relay = run_ps_desktop(
+        ("-CodexProfile", "relay", "-CodexHome", str(tmp_path), "-ConfigureOnly"),
+        env_vars={"CODEX_RELAY_API_KEY": "dummy-process-key"},
+    )
+    assert relay.returncode == 0, relay.stderr
+    relay_config = config.read_text(encoding="utf-8")
+    parsed = tomllib.loads(relay_config)
+    assert 'model = "GPT-5.6 SOL"' in relay_config
+    assert 'model_provider = "vse_relay"' in relay_config
+    assert 'base_url = "https://node-cf.sssaicodeapi.com/api/v1"' in relay_config
+    assert 'wire_api = "responses"' in relay_config
+    assert parsed["model"] == "GPT-5.6 SOL"
+    assert parsed["model_provider"] == "vse_relay"
+    assert parsed["model_providers"]["vse_relay"]["wire_api"] == "responses"
+
+    state_path = tmp_path / ".vse-profile-switch" / "state.json"
+    state_text = state_path.read_text(encoding="utf-8")
+    assert "dummy-process-key" not in state_text
+    assert "CODEX_RELAY_API_KEY" not in state_text
+
+    official = run_ps_desktop(
+        ("-CodexProfile", "official", "-CodexHome", str(tmp_path), "-ConfigureOnly")
+    )
+    assert official.returncode == 0, official.stderr
+    assert config.read_text(encoding="utf-8") == original
+    assert not state_path.exists()
+    assert not (tmp_path / ".vse-profile-switch" / "official.config.toml").exists()
+
+
+def test_desktop_switch_missing_relay_key_does_not_change_config(tmp_path):
+    original = 'model = "gpt-5.6-sol"\n'
+    config = tmp_path / "config.toml"
+    config.write_text(original, encoding="utf-8")
+
+    result = run_ps_desktop(
+        ("-CodexProfile", "relay", "-CodexHome", str(tmp_path), "-ConfigureOnly")
+    )
+    assert result.returncode != 0
+    assert "CODEX_RELAY_API_KEY" in normalize_ps_output(result.stdout + result.stderr)
+    assert config.read_text(encoding="utf-8") == original
+    assert not (tmp_path / ".vse-profile-switch").exists()
+
+
+def test_desktop_restore_refuses_to_discard_changes_made_in_relay_mode(tmp_path):
+    config = tmp_path / "config.toml"
+    config.write_text('model = "gpt-5.6-sol"\n', encoding="utf-8")
+    relay = run_ps_desktop(
+        ("-CodexProfile", "relay", "-CodexHome", str(tmp_path), "-ConfigureOnly"),
+        env_vars={"CODEX_RELAY_API_KEY": "dummy-process-key"},
+    )
+    assert relay.returncode == 0, relay.stderr
+    with config.open("a", encoding="utf-8") as stream:
+        stream.write("\n[desktop]\nconversationDetailMode = \"STEPS_COMMANDS\"\n")
+    changed = config.read_text(encoding="utf-8")
+
+    restore = run_ps_desktop(
+        ("-CodexProfile", "official", "-CodexHome", str(tmp_path), "-ConfigureOnly")
+    )
+    assert restore.returncode != 0
+    assert "Refusing to discard those changes" in normalize_ps_output(
+        restore.stdout + restore.stderr
+    )
+    assert config.read_text(encoding="utf-8") == changed

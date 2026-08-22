@@ -108,6 +108,22 @@ to the child process tree, and clears/restores it afterward:
 .\tools\agents\run_supervisor.ps1 -CodexProfile official -TaskFile .agents/tasks/my-task.json
 ```
 
+To switch both the supervisor and Codex Desktop, close important in-progress
+Desktop work and run the repository launcher from an external PowerShell
+window. The launcher restarts Desktop, so the current Desktop task is not
+migrated:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\start-supervisor.ps1 -CodexProfile relay -RestartDesktop
+powershell -ExecutionPolicy Bypass -File .\start-supervisor.ps1 -CodexProfile official -RestartDesktop
+```
+
+The Desktop switcher preserves the complete official `config.toml` as an
+exact backup, writes the relay config atomically, and verifies hashes before
+restoring. It refuses to discard configuration changes made while relay mode
+is active. The relay key remains process-only and is inherited by the newly
+started Desktop process; it is not persisted in the profile-switch state.
+
 The wrapper defaults to the `codex-controlled` orchestration profile. Use
 `-SupervisorProfile agy-heavy` only for tasks that should remain AGY-only; in
 that mode the selected Codex provider is recorded but not called. Never place
