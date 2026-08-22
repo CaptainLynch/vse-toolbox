@@ -107,7 +107,9 @@ _ARAS_NCR_KEYS = {
 def _text(value: object) -> str | None:
     if value is None:
         return None
-    result = str(value).strip()
+    if not isinstance(value, str):
+        raise ValueError("archive scalar filter must be a string")
+    result = value.strip()
     if not result:
         return None
     if len(result) > _MAX_TEXT or any(ord(char) < 32 for char in result):
