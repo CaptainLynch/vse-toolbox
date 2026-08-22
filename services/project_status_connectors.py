@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import tempfile
 import time
 from datetime import datetime, timezone
@@ -29,6 +30,7 @@ _IDENTITY_FIELDS = (
     "id", "ewo_no", "item_number", "itemNumber",
 )
 _MAX_ROWS = 10000
+logger = logging.getLogger(__name__)
 
 
 def _now() -> str:
@@ -54,6 +56,17 @@ def _identity(row: Mapping[str, Any]) -> str:
         if value:
             return value
     return ""
+
+
+def _close_session(session: Any) -> None:
+    """Best-effort close without allowing cleanup errors to mask sync results."""
+    close = getattr(session, "close", None)
+    if not callable(close):
+        return
+    try:
+        close()
+    except Exception:
+        logger.warning("project-status external session close failed")
 
 
 def _snapshot(context: SyncBindingContext, rows: Sequence[Mapping[str, Any]], artifacts: Sequence[Mapping[str, Any]]) -> ConnectorSnapshot:
@@ -114,22 +127,25 @@ class TDCProjectStatusConnector:
             raise ValueError("TDC reportType must be data_model or sor")
         with self.credentials.resolve(context.credential_ref) as secret:
             login = self.auth_factory(timeout=self.timeout).login(secret.username, secret.password)
-            with tempfile.TemporaryDirectory() as temp:
-                crawler = self.crawler_factory(session=login.session, timeout=self.timeout, output_dir=Path(temp))
-                if report == "data_model":
-                    filters = self._data_model_filters(context.match_rule)
-                    result = crawler.crawl_data_model_all(filters, max_records=_MAX_ROWS)
-                    official = crawler.export_data_model(filters)
-                else:
-                    filters = self._sor_filters(context.match_rule)
-                    result = crawler.crawl_sor_all(filters, max_records=_MAX_ROWS)
-                    official = crawler.export_sor(filters)
-                with official.path.open("rb") as handle:
-                    xlsx = self.archive.write_stream(
-                        handle, source="tdc", report=report, run_id=context.run_id,
-                        file_name=official.file_name, artifact_type="xlsx",
-                        expected_size=official.byte_count,
-                    )
+            try:
+                with tempfile.TemporaryDirectory() as temp:
+                    crawler = self.crawler_factory(session=login.session, timeout=self.timeout, output_dir=Path(temp))
+                    if report == "data_model":
+                        filters = self._data_model_filters(context.match_rule)
+                        result = crawler.crawl_data_model_all(filters, max_records=_MAX_ROWS)
+                        official = crawler.export_data_model(filters)
+                    else:
+                        filters = self._sor_filters(context.match_rule)
+                        result = crawler.crawl_sor_all(filters, max_records=_MAX_ROWS)
+                        official = crawler.export_sor(filters)
+                    with official.path.open("rb") as handle:
+                        xlsx = self.archive.write_stream(
+                            handle, source="tdc", report=report, run_id=context.run_id,
+                            file_name=official.file_name, artifact_type="xlsx",
+                            expected_size=official.byte_count,
+                        )
+            finally:
+                _close_session(login.session)
         artifacts = [xlsx.as_metadata()]
         artifacts.extend(self._normalized("tdc", report, context.run_id, result.rows))
         return _snapshot(context, result.rows, artifacts)
@@ -175,13 +191,16 @@ class ArasProjectStatusConnector:
         with self.credentials.resolve(context.credential_ref) as secret:
             auth = self.auth_factory(timeout=self.timeout)
             login = auth.login(secret.username, secret.password)
-            crawler = self.crawler_factory(auth.base_url, session=login.session, timeout=self.timeout, prewarm=False)
-            filters = EWOReportFilters(
-                ewo_no=_clean_scalar(context.match_rule.get("ewoNo")),
-                project_code=_clean_scalar(context.match_rule.get("projectCode")),
-                subject_keyword=_clean_scalar(context.match_rule.get("subjectKeyword")),
-            )
-            result = crawler.crawl_ewo_report_all(filters, max_records=2000)
+            try:
+                crawler = self.crawler_factory(auth.base_url, session=login.session, timeout=self.timeout, prewarm=False)
+                filters = EWOReportFilters(
+                    ewo_no=_clean_scalar(context.match_rule.get("ewoNo")),
+                    project_code=_clean_scalar(context.match_rule.get("projectCode")),
+                    subject_keyword=_clean_scalar(context.match_rule.get("subjectKeyword")),
+                )
+                result = crawler.crawl_ewo_report_all(filters, max_records=2000)
+            finally:
+                _close_session(login.session)
         fields = sorted({str(key) for row in result.rows for key in row})
         csv_item = self.archive.write_csv(result.rows, fields, source="aras", report="ewo", run_id=context.run_id, file_name="ewo.csv", artifact_type="csv")
         json_item = self.archive.write_json(result.rows, source="aras", report="ewo", run_id=context.run_id, file_name="ewo.json", artifact_type="json")

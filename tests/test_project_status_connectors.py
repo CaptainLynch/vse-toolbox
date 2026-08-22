@@ -35,6 +35,14 @@ class FakeAuth:
         return SimpleNamespace(session=object())
 
 
+class TrackingSession:
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
 class FakeTDC:
     def __init__(self, **kwargs):
         self.output_dir = kwargs["output_dir"]
@@ -74,6 +82,28 @@ def test_tdc_zero_match_needs_attention_without_guess(tmp_path: Path):
     assert connector.collect(context()).match_state == "not_found"
 
 
+def test_tdc_session_closes_when_crawl_fails(tmp_path: Path):
+    session = TrackingSession()
+
+    class TrackingAuth(FakeAuth):
+        def login(self, username, password):
+            return SimpleNamespace(session=session)
+
+    class FailingTDC(FakeTDC):
+        def crawl_data_model_all(self, filters, max_records):
+            raise RuntimeError("offline failure")
+
+    connector = TDCProjectStatusConnector(
+        MemoryCredentialProvider({"ref": ("user", "pass")}),
+        ArchiveStore({"default": tmp_path}, reserve_bytes=0),
+        auth_factory=TrackingAuth,
+        crawler_factory=FailingTDC,
+    )
+    with pytest.raises(RuntimeError, match="offline failure"):
+        connector.collect(context())
+    assert session.closed is True
+
+
 def test_retry_is_bounded_to_two_attempts():
     calls = []
 
@@ -98,3 +128,30 @@ def test_aras_rejects_unapproved_report_before_auth(tmp_path: Path):
     value = SyncBindingContext(**{**value.__dict__, "match_rule": {"reportType": "paa"}})
     with pytest.raises(ValueError, match="EWO only"):
         connector.collect(value)
+
+
+def test_aras_session_closes_when_crawl_fails(tmp_path: Path):
+    session = TrackingSession()
+
+    class TrackingAuth(FakeAuth):
+        def login(self, username, password):
+            return SimpleNamespace(session=session)
+
+    class FailingAras:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def crawl_ewo_report_all(self, filters, max_records):
+            raise RuntimeError("offline failure")
+
+    connector = ArasProjectStatusConnector(
+        MemoryCredentialProvider({"ref": ("user", "pass")}),
+        ArchiveStore({"default": tmp_path}, reserve_bytes=0),
+        auth_factory=TrackingAuth,
+        crawler_factory=FailingAras,
+    )
+    value = context("aras")
+    value = SyncBindingContext(**{**value.__dict__, "match_rule": {"reportType": "ewo"}})
+    with pytest.raises(RuntimeError, match="offline failure"):
+        connector.collect(value)
+    assert session.closed is True
