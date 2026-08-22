@@ -795,6 +795,21 @@ def _positive_int(value: Any, default: int) -> int:
     return parsed if parsed > 0 else default
 
 
+def _archive_history_limit(value: Any, default: int = 100) -> int:
+    """Parse archive history limits strictly; invalid input is never defaulted."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        raise ValueError("limit must be a positive integer")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("limit must be a positive integer") from exc
+    if parsed < 1:
+        raise ValueError("limit must be a positive integer")
+    return parsed
+
+
 def _safe_attachment_basename(name: str, fallback: str = "ncr_detail") -> str:
     """服务端安全 basename（去路径与控制字符），用于 Content-Disposition。"""
     base = Path(str(name or "")).name
@@ -1639,7 +1654,7 @@ def create_app(
     def api_scheduled_archive_runs():
         job_key = request.args.get("jobKey") or None
         try:
-            limit = _positive_int(request.args.get("limit"), 100)
+            limit = _archive_history_limit(request.args.get("limit"))
             data = archive_admin_service.list_runs(job_key, limit)
             response = jsonify({"ok": True, "data": data})
             response.headers["Cache-Control"] = "no-store"
@@ -1672,7 +1687,7 @@ def create_app(
     def api_scheduled_archive_config_audit():
         job_key = request.args.get("jobKey") or None
         try:
-            limit = _positive_int(request.args.get("limit"), 100)
+            limit = _archive_history_limit(request.args.get("limit"))
             data = archive_admin_service.list_audit(job_key, limit)
             response = jsonify({"ok": True, "data": data})
             response.headers["Cache-Control"] = "no-store"
