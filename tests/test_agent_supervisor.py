@@ -1261,3 +1261,377 @@ def test_doctor_reports_policy_model_availability_missing_and_unknown(monkeypatc
     assert supervisor.doctor(tmp_path) == 0
     captured = capsys.readouterr().out
     assert "MISSING" in captured
+
+
+def test_resolve_codex_profile_official_and_relay():
+    cfg = {
+        "codex": {
+            "profile": "official",
+            "allowed_profiles": ["official", "relay"],
+            "profiles": {
+                "official": {"cli_profile": None, "required_env": None},
+                "relay": {"cli_profile": "vse-relay", "required_env": "CODEX_RELAY_API_KEY"},
+            },
+        }
+    }
+    # Default resolution
+    assert supervisor.resolve_codex_profile(cfg) == {
+        "name": "official",
+        "cli_profile": None,
+        "required_env": None,
+    }
+    # Explicit official
+    assert supervisor.resolve_codex_profile(cfg, "official") == {
+        "name": "official",
+        "cli_profile": None,
+        "required_env": None,
+    }
+    # Explicit relay
+    assert supervisor.resolve_codex_profile(cfg, "relay") == {
+        "name": "relay",
+        "cli_profile": "vse-relay",
+        "required_env": "CODEX_RELAY_API_KEY",
+    }
+    # Case insensitivity and whitespace trimming
+    assert supervisor.resolve_codex_profile(cfg, " RELAY ") == {
+        "name": "relay",
+        "cli_profile": "vse-relay",
+        "required_env": "CODEX_RELAY_API_KEY",
+    }
+
+
+def test_resolve_codex_profile_rejects_unsupported_or_malformed():
+    import pytest
+
+    cfg = {
+        "codex": {
+            "profile": "official",
+            "allowed_profiles": ["official", "relay"],
+            "profiles": {
+                "official": {"cli_profile": None, "required_env": None},
+                "relay": {"cli_profile": "vse-relay", "required_env": "CODEX_RELAY_API_KEY"},
+            },
+        }
+    }
+    with pytest.raises(ValueError, match="Unsupported Codex profile"):
+        supervisor.resolve_codex_profile(cfg, "unsupported-provider")
+
+    # Non-dict profile settings
+    bad_cfg = {"codex": {"allowed_profiles": ["bad"], "profiles": {"bad": "invalid"}}}
+    with pytest.raises(ValueError, match="Invalid Codex profile configuration"):
+        supervisor.resolve_codex_profile(bad_cfg, "bad")
+
+    # Malformed cli_profile (empty string)
+    bad_cli_cfg = {"codex": {"allowed_profiles": ["bad"], "profiles": {"bad": {"cli_profile": "   "}}}}
+    with pytest.raises(ValueError, match="Invalid Codex CLI profile configuration"):
+        supervisor.resolve_codex_profile(bad_cli_cfg, "bad")
+
+    # Malformed required_env (empty string)
+    bad_env_cfg = {"codex": {"allowed_profiles": ["bad"], "profiles": {"bad": {"required_env": "   "}}}}
+    with pytest.raises(ValueError, match="Invalid Codex credential reference configuration"):
+        supervisor.resolve_codex_profile(bad_env_cfg, "bad")
+
+
+def test_codex_structured_command_construction_official_vs_relay(monkeypatch, tmp_path):
+    executed_commands = []
+
+    def mock_run(command, **kwargs):
+        executed_commands.append(command)
+        out_path = Path(command[command.index("-o") + 1])
+        out_path.write_text(json.dumps({"task_id": "T1", "route": "agy"}), encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    monkeypatch.setattr(supervisor.shutil, "which", lambda _: "C:\\fake\\codex.exe")
+
+    schema_file = tmp_path / "schema.json"
+    schema_file.write_text("{}", encoding="utf-8")
+    out_file = tmp_path / "plan.json"
+
+    # Official profile: No --profile argument
+    official_profile = {"name": "official", "cli_profile": None, "required_env": None}
+    plan, source = supervisor.codex_structured(
+        tmp_path, schema_file, "prompt text", out_file, codex_profile=official_profile
+    )
+    assert plan == {"task_id": "T1", "route": "agy"}
+    cmd_official = executed_commands[-1]
+    assert cmd_official[0] == "C:\\fake\\codex.exe"
+    assert cmd_official[1] == "exec"
+    assert "--profile" not in cmd_official
+    assert "--sandbox" in cmd_official
+
+    # Relay profile: --profile vse-relay present
+    monkeypatch.setenv("CODEX_RELAY_API_KEY", "dummy-test-key")
+    relay_profile = {"name": "relay", "cli_profile": "vse-relay", "required_env": "CODEX_RELAY_API_KEY"}
+    plan, source = supervisor.codex_structured(
+        tmp_path, schema_file, "prompt text", out_file, codex_profile=relay_profile
+    )
+    assert plan == {"task_id": "T1", "route": "agy"}
+    cmd_relay = executed_commands[-1]
+    assert cmd_relay[0] == "C:\\fake\\codex.exe"
+    assert cmd_relay[1] == "exec"
+    assert "--profile" in cmd_relay
+    profile_idx = cmd_relay.index("--profile")
+    assert cmd_relay[profile_idx + 1] == "vse-relay"
+    # Ensure credential value is never passed as command argument
+    assert "dummy-test-key" not in " ".join(cmd_relay)
+
+
+def test_codex_structured_missing_relay_api_key_fails_before_subprocess(monkeypatch, tmp_path):
+    import pytest
+
+    monkeypatch.delenv("CODEX_RELAY_API_KEY", raising=False)
+    monkeypatch.setattr(supervisor.shutil, "which", lambda _: "C:\\fake\\codex.exe")
+
+    def subprocess_should_not_be_called(*args, **kwargs):
+        raise AssertionError("subprocess.run must not be invoked when required credential env is missing")
+
+    monkeypatch.setattr(subprocess, "run", subprocess_should_not_be_called)
+
+    relay_profile = {"name": "relay", "cli_profile": "vse-relay", "required_env": "CODEX_RELAY_API_KEY"}
+    schema_file = tmp_path / "schema.json"
+    schema_file.write_text("{}", encoding="utf-8")
+    out_file = tmp_path / "plan.json"
+
+    with pytest.raises(supervisor.CodexProfileUnavailable, match="CODEX_RELAY_API_KEY"):
+        supervisor.codex_structured(
+            tmp_path, schema_file, "prompt", out_file, codex_profile=relay_profile
+        )
+
+
+def test_create_plan_relay_missing_key_fails_closed_without_heuristic_fallback(monkeypatch, tmp_path):
+    import pytest
+
+    monkeypatch.delenv("CODEX_RELAY_API_KEY", raising=False)
+    monkeypatch.setattr(supervisor.shutil, "which", lambda _: "C:\\fake\\codex.exe")
+
+    def fail_heuristic(*args, **kwargs):
+        raise AssertionError("heuristic_plan must not be used when relay fails")
+
+    monkeypatch.setattr(supervisor, "heuristic_plan", fail_heuristic)
+
+    relay_profile = {"name": "relay", "cli_profile": "vse-relay", "required_env": "CODEX_RELAY_API_KEY"}
+    task = supervisor.normalize_task({
+        "task_id": "TASK-RELAY-FAIL",
+        "objective": "test relay fail closed",
+        "scope": ["README.md"],
+        "constraints": [],
+        "acceptance_criteria": ["fails closed"],
+    })
+    run_dir = tmp_path / "runs" / task["task_id"]
+    run_dir.mkdir(parents=True)
+
+    with pytest.raises(supervisor.CodexProfileUnavailable, match="CODEX_RELAY_API_KEY"):
+        supervisor.create_plan(tmp_path, run_dir, task, dry_run=False, codex_profile=relay_profile)
+
+
+def test_create_plan_relay_invalid_plan_fails_closed_without_heuristic_fallback(monkeypatch, tmp_path):
+    import pytest
+
+    monkeypatch.setattr(supervisor, "codex_structured", lambda *args, **kwargs: (None, "codex exec failed"))
+
+    def fail_heuristic(*args, **kwargs):
+        raise AssertionError("heuristic_plan must not be used when relay plan fails")
+
+    monkeypatch.setattr(supervisor, "heuristic_plan", fail_heuristic)
+
+    relay_profile = {"name": "relay", "cli_profile": "vse-relay", "required_env": "CODEX_RELAY_API_KEY"}
+    task = supervisor.normalize_task({
+        "task_id": "TASK-RELAY-PLAN-FAIL",
+        "objective": "test relay invalid plan fail closed",
+        "scope": ["README.md"],
+        "constraints": [],
+        "acceptance_criteria": ["fails closed"],
+    })
+    run_dir = tmp_path / "runs" / task["task_id"]
+    run_dir.mkdir(parents=True)
+
+    with pytest.raises(supervisor.CodexProfileUnavailable, match="failed to produce a valid plan"):
+        supervisor.create_plan(tmp_path, run_dir, task, dry_run=False, codex_profile=relay_profile)
+
+
+def test_create_plan_official_fallback_to_heuristic_when_codex_fails(monkeypatch, tmp_path):
+    monkeypatch.setattr(supervisor, "codex_structured", lambda *args, **kwargs: (None, "codex CLI not found"))
+
+    official_profile = {"name": "official", "cli_profile": None, "required_env": None}
+    task = supervisor.normalize_task({
+        "task_id": "TASK-OFFICIAL-FALLBACK",
+        "objective": "mechanical edit",
+        "category": "mechanical",
+        "scope": ["README.md"],
+        "constraints": [],
+        "acceptance_criteria": ["passes"],
+    })
+    run_dir = tmp_path / "runs" / task["task_id"]
+    run_dir.mkdir(parents=True)
+
+    plan = supervisor.create_plan(tmp_path, run_dir, task, dry_run=False, codex_profile=official_profile)
+    assert plan["planning_source"] == "heuristic-fallback"
+    assert plan["route"] == "agy"
+
+
+def test_run_codex_controlled_relay_missing_key_records_state_without_credentials(monkeypatch, tmp_path):
+    monkeypatch.delenv("CODEX_RELAY_API_KEY", raising=False)
+    config = {
+        "profile": "codex-controlled",
+        "codex": {
+            "profile": "official",
+            "allowed_profiles": ["official", "relay"],
+            "profiles": {
+                "official": {"cli_profile": None, "required_env": None},
+                "relay": {"cli_profile": "vse-relay", "required_env": "CODEX_RELAY_API_KEY"},
+            },
+        },
+        "agy": {},
+        "worktree_root": ".agents/worktrees",
+    }
+    monkeypatch.setattr(supervisor, "config", lambda _: config)
+
+    def fail_if_worktree_created(*args, **kwargs):
+        raise AssertionError("Worktree must not be created when preflight fails")
+
+    monkeypatch.setattr(supervisor.worktrees, "create", fail_if_worktree_created)
+
+    task = supervisor.normalize_task({
+        "task_id": "TASK-RUN-RELAY-NO-KEY",
+        "objective": "security update auth logic",
+        "category": "security",
+        "scope": ["core/auth.py"],
+        "constraints": [],
+        "acceptance_criteria": ["stops on missing key"],
+    })
+
+    exit_code = supervisor.run(tmp_path, task, dry_run=False, codex_profile="relay")
+    assert exit_code == 0
+
+    run_dir = tmp_path / ".agents" / "runs" / "TASK-RUN-RELAY-NO-KEY"
+    state_file = run_dir / "state.json"
+    assert state_file.exists()
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+
+    assert state["status"] == "codex-profile-unavailable"
+    assert state["codex_profile"] == "relay"
+    assert "CODEX_RELAY_API_KEY" in state["error"]
+    assert state["worktree"] is None
+
+    events = (run_dir / "events.jsonl").read_text(encoding="utf-8")
+    assert "profile-preflight" in events
+
+
+def test_run_agy_heavy_records_codex_profile_and_uses_contract_plan(monkeypatch, tmp_path):
+    config = {
+        "profile": "agy-heavy",
+        "codex": {
+            "profile": "official",
+            "allowed_profiles": ["official", "relay"],
+            "profiles": {
+                "official": {"cli_profile": None, "required_env": None},
+                "relay": {"cli_profile": "vse-relay", "required_env": "CODEX_RELAY_API_KEY"},
+            },
+        },
+        "agy": {},
+        "worktree_root": ".agents/worktrees",
+    }
+    monkeypatch.setattr(supervisor, "config", lambda _: config)
+
+    def fail_if_codex_called(*args, **kwargs):
+        raise AssertionError("Codex must not be called in agy-heavy profile")
+
+    monkeypatch.setattr(supervisor, "codex_structured", fail_if_codex_called)
+
+    task = supervisor.normalize_task({
+        "task_id": "TASK-AGY-HEAVY-RELAY",
+        "objective": "Add ui button",
+        "category": "ui",
+        "scope": ["button.py"],
+        "constraints": [],
+        "acceptance_criteria": ["Button added"],
+        "verification_commands": [["python", "-m", "pytest", "tests/test_ui.py"]],
+    })
+
+    exit_code = supervisor.run(tmp_path, task, dry_run=True, codex_profile="relay")
+    assert exit_code == 0
+
+    state = json.loads(
+        (tmp_path / ".agents" / "runs" / "TASK-AGY-HEAVY-RELAY" / "state.json").read_text(encoding="utf-8")
+    )
+    assert state["codex_profile"] == "relay"
+    assert state["profile"] == "agy-heavy"
+    assert state["status"] == "dry-run-complete"
+
+
+def test_codex_review_relay_profile_unavailable_fails_closed_as_reject(monkeypatch, tmp_path):
+    worker_tree = tmp_path / "worker"
+    worker_tree.mkdir()
+    subprocess.run(["git", "init"], cwd=worker_tree, check=True, capture_output=True)
+
+    config = {
+        "profile": "codex-controlled",
+        "codex": {
+            "profile": "relay",
+            "allowed_profiles": ["official", "relay"],
+            "profiles": {
+                "relay": {"cli_profile": "vse-relay", "required_env": "CODEX_RELAY_API_KEY"},
+            },
+        },
+        "agy": {},
+        "worktree_root": ".agents/worktrees",
+        "max_agy_rounds": 1,
+        "max_codex_review_rounds": 1,
+        "max_total_agent_runs": 2,
+    }
+    monkeypatch.setattr(supervisor, "config", lambda _: config)
+    monkeypatch.setattr(supervisor.worktrees, "create", lambda *args: worker_tree)
+    monkeypatch.setattr(
+        supervisor,
+        "create_plan",
+        lambda *args, **kwargs: {
+            "route": "agy",
+            "worker_effort": "medium",
+            "scope": ["auth.py"],
+            "constraints": [],
+            "acceptance_criteria": [],
+            "planning_source": "codex",
+        },
+    )
+    monkeypatch.setattr(
+        supervisor.agy_cli,
+        "invoke",
+        lambda *args, **kwargs: {
+            "task_id": "TASK-REVIEW-FAIL",
+            "status": "completed",
+            "summary": "Done",
+            "changed_files": ["auth.py"],
+            "tests": [],
+            "commands_executed": [],
+            "risks": [],
+            "unresolved": [],
+            "needs_review": True,
+        },
+    )
+    monkeypatch.setattr(supervisor.checks, "run_checks", lambda *args: [{"command": ["test"], "exit_code": 0}])
+
+    def mock_review_codex_structured(root, schema, prompt, output, codex_profile=None):
+        raise supervisor.CodexProfileUnavailable("Relay key missing during review")
+
+    monkeypatch.setattr(supervisor, "codex_structured", mock_review_codex_structured)
+
+    task = supervisor.normalize_task({
+        "task_id": "TASK-REVIEW-FAIL",
+        "objective": "review test",
+        "category": "security",
+        "scope": ["auth.py"],
+        "constraints": [],
+        "acceptance_criteria": ["done"],
+        "verification_commands": [["test"]],
+    })
+
+    supervisor.run(tmp_path, task, dry_run=False, codex_profile="relay")
+    run_dir = tmp_path / ".agents" / "runs" / "TASK-REVIEW-FAIL"
+    review = json.loads((run_dir / "review-round-1.json").read_text(encoding="utf-8"))
+    assert review["verdict"] == "REJECT"
+    assert "Relay key missing during review" in review["reason"]
+    assert review["takeover_required"] is True
+
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    assert state["status"] == "codex-takeover-required"
