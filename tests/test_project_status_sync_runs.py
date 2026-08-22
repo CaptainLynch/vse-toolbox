@@ -39,26 +39,84 @@ def service(db: DatabaseManager) -> ProjectStatusUpdateService:
     return ProjectStatusUpdateService(db)
 
 
-def _enable_pilot_binding(service: ProjectStatusUpdateService) -> int:
+def _record_two_observations_for_d5(
+    db: DatabaseManager,
+    deliverable_id: str = "VPI-T2-D5",
+    source_type: str = "tdc",
+    external_key: str = "FM-1",
+    fields: list[str] | None = None,
+) -> None:
+    """Record two matched tdc observations for the same external key."""
+    field_list = fields if fields is not None else [
+        "currentApprover", "approvalComment", "incident", "reportType",
+    ]
+    report = {
+        "fields": field_list,
+        "statusOrApprovalFields": [],
+        "suggestedStatusMapping": [],
+        "suggestedAutomaticFields": [],
+        "requiresConfirmation": True,
+    }
+    db.record_mapping_observation(
+        deliverable_id=deliverable_id,
+        source_type=source_type,
+        result_state="matched",
+        external_key=external_key,
+        candidate_fingerprint="fp1",
+        candidate_count=1,
+        candidate_summary_json=json.dumps([{"externalKey": external_key, "fields": {}}]),
+        field_report_json=json.dumps(report),
+    )
+    db.record_mapping_observation(
+        deliverable_id=deliverable_id,
+        source_type=source_type,
+        result_state="matched",
+        external_key=external_key,
+        candidate_fingerprint="fp2",
+        candidate_count=1,
+        candidate_summary_json=json.dumps([{"externalKey": external_key, "fields": {}}]),
+        field_report_json=json.dumps(report),
+    )
+
+
+def _enable_pilot_binding(
+    service: ProjectStatusUpdateService,
+    external_key: str = "FM-1",
+    credential_ref: str = "placeholder_cred_alias",
+) -> int:
     """启用 VPI-T2-D5 试点绑定并返回 binding_id。"""
+    db = service._db
+    _record_two_observations_for_d5(
+        db,
+        deliverable_id="VPI-T2-D5",
+        source_type="tdc",
+        external_key=external_key,
+    )
     service.update_update_policy(
         "VPI-T2-D5",
         {
             "mode": "hybrid",
             "enabled": True,
-            "externalKey": "FM-1",
-            "matchRule": {"incident": "FM-1"},
+            "externalKey": external_key,
+            "matchRule": {"reportType": "data_model", "incident": external_key},
             "mapping": {"owner": "currentApprover", "note": "approvalComment"},
             "fieldAuthority": {"owner": "automatic", "note": "automatic"},
-            "credentialRef": "test-credential-ref",
+            "credentialRef": credential_ref,
         },
     )
-    binding = _get_binding(db := service._db, "VPI-T2-D5")
+    binding = _get_binding(db, "VPI-T2-D5")
+    assert binding is not None
     return int(binding["id"])
 
 
 def _get_binding(db: DatabaseManager, deliverable_id: str):
     return db.get_sync_binding_by_deliverable(deliverable_id)
+
+
+def _current_deliverable(db: DatabaseManager, deliverable_id: str):
+    phase, _, deliverables = db.get_project_status("VPI-T2")
+    assert phase is not None
+    return next(row for row in deliverables if row["id"] == deliverable_id)
 
 
 def _current_updated_at(db: DatabaseManager, deliverable_id: str) -> str:
@@ -257,7 +315,7 @@ def test_concurrent_lease_acquire_only_one_succeeds(
     """两个并发运行器竞争同一 binding：有且仅有一个拿到租约。"""
     import threading
 
-    binding_id = _enable_pilot_binding(service)
+    _enable_pilot_binding(service)
     results: list[Any] = []
     lock = threading.Lock()
 
@@ -370,18 +428,8 @@ def test_acquire_readiness_rejection_before_run_lease_or_last_attempt_mutation(
     service: ProjectStatusUpdateService, db: DatabaseManager
 ) -> None:
     """就绪检查失败时不创建 run、不分配 lease_token、不更新 last_attempt_at 或 sync_state。"""
-    # 配置 enabled=True 但缺少 credential_ref 的绑定
-    service.update_update_policy(
-        "VPI-T2-D5",
-        {
-            "mode": "hybrid",
-            "enabled": True,
-            "externalKey": "FM-1",
-            "matchRule": {"incident": "FM-1"},
-            "mapping": {"owner": "currentApprover", "note": "approvalComment"},
-            "fieldAuthority": {"owner": "automatic", "note": "automatic"},
-        },
-    )
+    # 先配置完整合规的绑定，再通过 DB 测试 seam 移除被测条件（credential_ref）
+    _enable_pilot_binding(service)
     with db.get_connection() as conn:
         conn.execute(
             "UPDATE project_status_update_bindings SET credential_ref = NULL, last_attempt_at = '2026-01-01T00:00:00.000Z', sync_state = 'idle' WHERE deliverable_id = 'VPI-T2-D5'"
@@ -456,13 +504,18 @@ def test_successful_sync_updates_automatic_fields(service: ProjectStatusUpdateSe
 
 
 def test_manually_locked_field_not_overwritten(service: ProjectStatusUpdateService, db: DatabaseManager) -> None:
-    binding_id = _enable_pilot_binding(service)
-    # 手动保存 note 字段 → 建立人工锁。
-    service.update_update_policy(
-        "VPI-T2-D5",
-        {"fieldAuthority": {"note": "manual"}},
-    )
+    _enable_pilot_binding(service)
     lease = service.acquire_sync_lease("VPI-T2-D5", "scheduled")
+
+    # 手动保存 note 字段 → 建立人工锁。
+    row = _current_deliverable(db, "VPI-T2-D5")
+    service.apply_manual_update(
+        "VPI-T2-D5",
+        "VPI-T2",
+        {"status": row["status"], "owner": row["owner"], "remark": "人工修改备注"},
+        str(row["updated_at"]),
+    )
+
     snapshot = _matched_snapshot(db, owner="赵岩2", note="应被跳过")
 
     result = service.apply_sync_update(
@@ -477,19 +530,26 @@ def test_manually_locked_field_not_overwritten(service: ProjectStatusUpdateServi
             "SELECT owner, remark FROM project_status_deliverables WHERE id='VPI-T2-D5'"
         ).fetchone()
         assert row["owner"] == "赵岩2"
-        assert row["remark"] == "逾期 5 天"  # 人工值保留
+        assert row["remark"] == "人工修改备注"  # 人工值保留
 
 
 def test_all_fields_locked_yields_partial_and_cursor_advances(
     service: ProjectStatusUpdateService, db: DatabaseManager
 ) -> None:
     _enable_pilot_binding(service)
-    service.update_update_policy(
-        "VPI-T2-D5",
-        {"fieldAuthority": {"owner": "manual", "note": "manual"}},
-    )
     binding = _get_binding(db, "VPI-T2-D5")
+    assert binding is not None
     lease = service.acquire_sync_lease("VPI-T2-D5", "scheduled")
+
+    # 手动更新所有自动映射的字段（owner 与 note），建立人工锁
+    row = _current_deliverable(db, "VPI-T2-D5")
+    service.apply_manual_update(
+        "VPI-T2-D5",
+        "VPI-T2",
+        {"status": row["status"], "owner": "人工所有者", "remark": "人工备注"},
+        str(row["updated_at"]),
+    )
+
     snapshot = _matched_snapshot(db, owner="x", note="y")
 
     result = service.apply_sync_update(
@@ -514,7 +574,7 @@ def test_all_fields_locked_yields_partial_and_cursor_advances(
 
 
 def test_idempotent_external_version_skipped(service: ProjectStatusUpdateService, db: DatabaseManager) -> None:
-    binding_id = _enable_pilot_binding(service)
+    _enable_pilot_binding(service)
     lease = service.acquire_sync_lease("VPI-T2-D5", "scheduled")
     snapshot = _matched_snapshot(db, owner="第一次")
 
@@ -711,7 +771,7 @@ def test_success_transaction_rollback_on_internal_error(
 
     def boom(*args, **kwargs):
         # 先让业务更新成功，再在写入审计前抛错 → 整事务回滚。
-        result = original(*args, **kwargs)
+        original(*args, **kwargs)
         raise sqlite3.OperationalError("injected failure after update")
 
     monkeypatch.setattr(DatabaseManager, "_update_project_status_deliverable_row", staticmethod(boom))
@@ -825,11 +885,6 @@ def test_policy_api_does_not_leak_internal_columns(
 
 def test_artifact_one_to_many_metadata(db: DatabaseManager, service: ProjectStatusUpdateService) -> None:
     binding_id = _enable_pilot_binding(service)
-    # 将 owner 设为 automatic，使字段可应用。
-    service.update_update_policy(
-        "VPI-T2-D5",
-        {"fieldAuthority": {"owner": "automatic", "note": "automatic"}},
-    )
     lease = db.acquire_sync_lease(binding_id, "scheduled")
     expected_at = _current_updated_at(db, "VPI-T2-D5")
     artifacts = [
@@ -871,10 +926,6 @@ def test_artifact_one_to_many_metadata(db: DatabaseManager, service: ProjectStat
 
 def test_artifact_rejects_absolute_and_traversal_paths(db: DatabaseManager, service: ProjectStatusUpdateService) -> None:
     binding_id = _enable_pilot_binding(service)
-    service.update_update_policy(
-        "VPI-T2-D5",
-        {"fieldAuthority": {"owner": "automatic", "note": "automatic"}},
-    )
     lease = db.acquire_sync_lease(binding_id, "scheduled")
     expected_at = _current_updated_at(db, "VPI-T2-D5")
     for bad in ("C:/evil.xlsx", "/etc/passwd", "../escape.xlsx", "runs/../x.xlsx"):

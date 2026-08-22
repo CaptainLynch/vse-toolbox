@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from core.db_manager import DatabaseManager
@@ -16,6 +18,46 @@ from services.project_status_updates import (
 @pytest.fixture()
 def service(tmp_db: DatabaseManager) -> ProjectStatusUpdateService:
     return ProjectStatusUpdateService(tmp_db)
+
+
+def _record_two_observations_for_d5(
+    db: DatabaseManager,
+    deliverable_id: str = "VPI-T2-D5",
+    source_type: str = "tdc",
+    external_key: str = "FM-1",
+    fields: list[str] | None = None,
+) -> None:
+    """Record two matched tdc observations for the same external key."""
+    field_list = fields if fields is not None else [
+        "currentApprover", "approvalComment", "incident", "reportType",
+    ]
+    report = {
+        "fields": field_list,
+        "statusOrApprovalFields": [],
+        "suggestedStatusMapping": [],
+        "suggestedAutomaticFields": [],
+        "requiresConfirmation": True,
+    }
+    db.record_mapping_observation(
+        deliverable_id=deliverable_id,
+        source_type=source_type,
+        result_state="matched",
+        external_key=external_key,
+        candidate_fingerprint="fp1",
+        candidate_count=1,
+        candidate_summary_json=json.dumps([{"externalKey": external_key, "fields": {}}]),
+        field_report_json=json.dumps(report),
+    )
+    db.record_mapping_observation(
+        deliverable_id=deliverable_id,
+        source_type=source_type,
+        result_state="matched",
+        external_key=external_key,
+        candidate_fingerprint="fp2",
+        candidate_count=1,
+        candidate_summary_json=json.dumps([{"externalKey": external_key, "fields": {}}]),
+        field_report_json=json.dumps(report),
+    )
 
 
 def _current_deliverable(db: DatabaseManager, deliverable_id: str):
@@ -125,19 +167,27 @@ def test_enable_requires_external_key_and_allowed_match_rule(service) -> None:
         )
     assert "matchRule" in exc.value.fields
 
+    _record_two_observations_for_d5(
+        service._db,
+        deliverable_id="VPI-T2-D5",
+        source_type="tdc",
+        external_key="FM-1",
+    )
     policy = service.update_update_policy(
         "VPI-T2-D5",
         {
             "mode": "hybrid",
             "enabled": True,
             "externalKey": "FM-1",
-            "matchRule": {"incident": "FM-1"},
+            "credentialRef": "placeholder_cred_alias",
+            "matchRule": {"reportType": "data_model", "incident": "FM-1"},
             "mapping": {"owner": "currentApprover"},
+            "fieldAuthority": {"owner": "automatic"},
         },
     )
     assert policy["enabled"] is True
     assert policy["externalKey"] == "FM-1"
-    assert policy["matchRule"] == {"incident": "FM-1"}
+    assert policy["matchRule"] == {"reportType": "data_model", "incident": "FM-1"}
 
 
 @pytest.mark.parametrize(
