@@ -136,7 +136,7 @@ class ProjectStatusAnalyticsService:
                 risk_summary = saved_error
             elif is_non_matched_mapping and latest_mapping_state:
                 risk_summary = _MAPPING_STATE_SUMMARIES.get(
-                    latest_mapping_state, f"mapping observation: {latest_mapping_state}"
+                    latest_mapping_state, "mapping observation requires attention"
                 )
             else:
                 risk_summary = None
