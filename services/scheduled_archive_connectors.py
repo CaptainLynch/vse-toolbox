@@ -142,6 +142,22 @@ def _checked_filters(
     return value
 
 
+def archive_filter_names(job_key: str) -> tuple[str, ...]:
+    """Return the fixed, non-secret filter contract for one archive job."""
+    contracts = {
+        "tdc_data_model": _TDC_DATA_MODEL_KEYS,
+        "tdc_sor": _TDC_SOR_KEYS,
+        "aras_ewo": _ARAS_EWO_KEYS,
+        "aras_paa": _ARAS_PAA_KEYS,
+        "aras_ncr_progress": _ARAS_NCR_KEYS,
+        "aras_ncr_detail": _ARAS_NCR_KEYS,
+    }
+    try:
+        return tuple(sorted(contracts[job_key]))
+    except KeyError as exc:
+        raise KeyError(job_key) from exc
+
+
 def _close_session(session: object) -> None:
     close = getattr(session, "close", None)
     if callable(close):
@@ -471,3 +487,26 @@ def create_production_archive_registry(
     ):
         registry.register(key, aras)
     return registry
+
+
+def validate_archive_filters(
+    job_key: str,
+    filters: Mapping[str, object],
+) -> dict[str, object]:
+    """Validate filters against the connector contract without external I/O."""
+    if not isinstance(filters, Mapping):
+        raise ValueError("archive filters must be an object")
+    normalized = dict(filters)
+    if job_key == "tdc_data_model":
+        TDCArchiveConnector._data_model_filters(normalized)
+    elif job_key == "tdc_sor":
+        TDCArchiveConnector._sor_filters(normalized)
+    elif job_key == "aras_ewo":
+        ArasArchiveConnector._ewo_filters(normalized)
+    elif job_key == "aras_paa":
+        ArasArchiveConnector._paa_filters(normalized)
+    elif job_key in {"aras_ncr_progress", "aras_ncr_detail"}:
+        ArasArchiveConnector._ncr_filters(normalized)
+    else:
+        raise KeyError(job_key)
+    return normalized

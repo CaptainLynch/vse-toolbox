@@ -10,6 +10,7 @@ web/app.py — WEB 适配层：Flask 应用工厂 + /api/overview 路由
 """
 
 import io
+import ipaddress
 import logging
 import re
 import shutil
@@ -27,7 +28,12 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from core.config import DIAGNOSTIC_DIR, FLASK_HOST, FLASK_PORT
-from core.db_manager import DatabaseManager
+from core.archive_store import ArchiveSafetyError
+from core.db_manager import (
+    ArchiveJobNotReadyError,
+    ArchiveLeaseBusyError,
+    DatabaseManager,
+)
 from core.diagnostics import DiagnosticOptions, MarkdownDiagnosticReport
 from services.project_status_updates import (
     ProjectStatusPolicyError,
@@ -35,6 +41,10 @@ from services.project_status_updates import (
 )
 from services.project_status_discovery import MappingDiscoveryService
 from services.project_status_analytics import ProjectStatusAnalyticsService
+from services.scheduled_archive_admin import (
+    ArchiveAdminValidationError,
+    ScheduledArchiveAdminService,
+)
 from core.redaction import redact_sensitive_text
 from services.aras_crawler import (
     ArasCrawlerClient,
@@ -429,7 +439,70 @@ def _json_error(status: int, error_type: str, message: str, diagnostic_path: Pat
     error: dict[str, Any] = {"type": error_type, "message": message}
     if diagnostic_path is not None:
         error["diagnosticPath"] = str(diagnostic_path)
-    return jsonify({"ok": False, "error": error}), status
+    response = jsonify({"ok": False, "error": error})
+    response.headers["Cache-Control"] = "no-store"
+    return response, status
+
+
+def _loopback_hostname(value: str | None) -> bool:
+    if not value:
+        return False
+    hostname = value.strip().rstrip(".").lower()
+    if hostname == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return False
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        return address.ipv4_mapped.is_loopback
+    return address.is_loopback
+
+
+def _origin_tuple(value: str) -> tuple[str, str, int] | None:
+    try:
+        parsed = urlsplit(value)
+        invalid = any((
+            parsed.scheme not in {"http", "https"},
+            not parsed.hostname,
+            parsed.username is not None,
+            parsed.password is not None,
+            parsed.path not in {"", "/"},
+            bool(parsed.query),
+            bool(parsed.fragment),
+        ))
+        if invalid:
+            return None
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except ValueError:
+        return None
+    return parsed.scheme.lower(), parsed.hostname.rstrip(".").lower(), port
+
+
+def _local_archive_mutation_error():
+    """Reject cross-host/cross-site archive writes in the local-only WebUI."""
+    if not _loopback_hostname(request.remote_addr):
+        return _json_error(403, "LocalAccessRequired", "此操作仅允许从本机访问")
+    try:
+        host_url = urlsplit(f"//{request.host}")
+        host_name = host_url.hostname
+        host_port = host_url.port or (443 if request.scheme == "https" else 80)
+    except ValueError:
+        return _json_error(403, "LocalAccessRequired", "请求主机不受信任")
+    if not _loopback_hostname(host_name):
+        return _json_error(403, "LocalAccessRequired", "请求主机不受信任")
+    if request.headers.get("Sec-Fetch-Site", "").strip().lower() == "cross-site":
+        return _json_error(403, "CrossSiteRequest", "拒绝跨站写操作")
+    origin = request.headers.get("Origin")
+    if origin is not None:
+        expected = (
+            request.scheme.lower(),
+            str(host_name).rstrip(".").lower(),
+            host_port,
+        )
+        if _origin_tuple(origin.strip()) != expected:
+            return _json_error(403, "CrossSiteRequest", "请求来源与本机服务不一致")
+    return None
 
 
 def _save_web_diagnostic_report(
@@ -1145,7 +1218,7 @@ def _project_status_payload(db: DatabaseManager, phase_id: str) -> dict[str, Any
 
 
 def _project_status_validation_error(fields: dict[str, str]):
-    return jsonify(
+    response = jsonify(
         {
             "ok": False,
             "error": {
@@ -1154,7 +1227,9 @@ def _project_status_validation_error(fields: dict[str, str]):
                 "fields": fields,
             },
         }
-    ), 422
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response, 422
 
 
 def _validate_project_status_update(
@@ -1505,7 +1580,8 @@ def create_app(
     update_service = ProjectStatusUpdateService(db)
     discovery_service = MappingDiscoveryService(db)
     analytics_service = ProjectStatusAnalyticsService(db)
-
+    archive_admin_service = ScheduledArchiveAdminService(db)
+    app.extensions["scheduled_archive_admin"] = archive_admin_service
 
     @app.route("/")
     def index():
@@ -1519,6 +1595,111 @@ def create_app(
         except Exception as e:
             logger.exception("api/overview 查询失败")
             return jsonify({"error": str(e)}), 500
+
+    @app.get("/api/scheduled-archive/jobs")
+    def api_scheduled_archive_jobs():
+        try:
+            response = jsonify({"ok": True, "data": archive_admin_service.list_jobs()})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except Exception as exc:
+            logger.exception("scheduled archive jobs query failed")
+            return _json_error(500, "ServerError", _sanitize_error_message(exc))
+
+    @app.patch("/api/scheduled-archive/jobs/<job_key>")
+    def api_scheduled_archive_job_update(job_key: str):
+        local_error = _local_archive_mutation_error()
+        if local_error is not None:
+            return local_error
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return _json_error(400, "ValidationError", "JSON object body is required")
+        try:
+            data = archive_admin_service.update_job(job_key, payload)
+            response = jsonify({"ok": True, "data": data})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except ArchiveAdminValidationError as exc:
+            return _project_status_validation_error(exc.fields)
+        except KeyError:
+            return _json_error(404, "NotFound", "未找到归档任务")
+        except (ArchiveLeaseBusyError, RuntimeError):
+            return _json_error(409, "Conflict", "任务正在运行或配置已更新，请刷新后重试")
+        except ArchiveJobNotReadyError:
+            return _json_error(409, "NotReady", "启用任务前必须配置凭据引用")
+        except (ArchiveSafetyError, TypeError, ValueError) as exc:
+            return _project_status_validation_error(
+                {"request": _sanitize_error_message(exc)}
+            )
+        except Exception as exc:
+            logger.exception("scheduled archive job update failed")
+            return _json_error(500, "ServerError", _sanitize_error_message(exc))
+
+    @app.get("/api/scheduled-archive/runs")
+    def api_scheduled_archive_runs():
+        job_key = request.args.get("jobKey") or None
+        try:
+            limit = _positive_int(request.args.get("limit"), 100)
+            data = archive_admin_service.list_runs(job_key, limit)
+            response = jsonify({"ok": True, "data": data})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except KeyError:
+            return _json_error(404, "NotFound", "未找到归档任务")
+        except (TypeError, ValueError) as exc:
+            return _json_error(422, "ValidationError", _sanitize_error_message(exc))
+        except Exception as exc:
+            logger.exception("scheduled archive runs query failed")
+            return _json_error(500, "ServerError", _sanitize_error_message(exc))
+
+    @app.get("/api/scheduled-archive/runs/<int:run_id>/artifacts")
+    def api_scheduled_archive_artifacts(run_id: int):
+        try:
+            if db.get_archive_run(run_id) is None:
+                return _json_error(404, "NotFound", "未找到归档运行")
+            data = {
+                "runId": run_id,
+                "artifacts": archive_admin_service.list_artifacts(run_id),
+            }
+            response = jsonify({"ok": True, "data": data})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except Exception as exc:
+            logger.exception("scheduled archive artifacts query failed")
+            return _json_error(500, "ServerError", _sanitize_error_message(exc))
+
+    @app.get("/api/scheduled-archive/config-audit")
+    def api_scheduled_archive_config_audit():
+        job_key = request.args.get("jobKey") or None
+        try:
+            limit = _positive_int(request.args.get("limit"), 100)
+            data = archive_admin_service.list_audit(job_key, limit)
+            response = jsonify({"ok": True, "data": data})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except KeyError:
+            return _json_error(404, "NotFound", "未找到归档任务")
+        except (TypeError, ValueError) as exc:
+            return _json_error(422, "ValidationError", _sanitize_error_message(exc))
+        except Exception as exc:
+            logger.exception("scheduled archive audit query failed")
+            return _json_error(500, "ServerError", _sanitize_error_message(exc))
+
+    @app.post("/api/scheduled-archive/jobs/<job_key>/sync-now")
+    def api_scheduled_archive_sync_now(job_key: str):
+        local_error = _local_archive_mutation_error()
+        if local_error is not None:
+            return local_error
+        try:
+            data = archive_admin_service.sync_now(job_key)
+            response = jsonify({"ok": True, "data": data})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except KeyError:
+            return _json_error(404, "NotFound", "未找到归档任务")
+        except Exception as exc:
+            logger.exception("scheduled archive sync-now failed")
+            return _json_error(500, "ServerError", _sanitize_error_message(exc))
 
     @app.get("/api/project-status")
     def api_project_status():
@@ -1583,7 +1764,6 @@ def create_app(
         except Exception as exc:
             logger.exception("api/project-status/deliverables 更新失败")
             return _json_error(500, "ServerError", _sanitize_error_message(exc))
-
 
     @app.get("/api/project-status/deliverables/<deliverable_id>/update-policy")
     def api_project_status_update_policy(deliverable_id: str):

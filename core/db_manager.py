@@ -2505,6 +2505,22 @@ class DatabaseManager:
             rows = conn.execute(sql, params).fetchall()
         return [dict(row) for row in rows]
 
+    def get_archive_run(self, run_id: int) -> dict[str, Any] | None:
+        """Return one sanitized archive run, or None when it does not exist."""
+        if not isinstance(run_id, int) or isinstance(run_id, bool) or run_id < 1:
+            return None
+        with self.get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT id, job_id, job_key, trigger_type, run_state, attempt,
+                       record_count, result_summary, error_type, error_message,
+                       created_at, started_at, finished_at
+                FROM scheduled_archive_runs WHERE id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
     def list_archive_artifacts(self, run_id: int) -> list[dict[str, Any]]:
         """Return artifact metadata; never resolve or expose a server absolute path."""
         with self.get_connection() as conn:
