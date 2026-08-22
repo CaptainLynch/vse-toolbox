@@ -129,13 +129,20 @@ class ArchiveStore:
 
     @classmethod
     def _subdirectory_parts(cls, value: object) -> tuple[str, ...]:
-        text = unicodedata.normalize("NFKC", str(value or "")).strip()
+        text = unicodedata.normalize("NFKC", str(value or ""))
         if not text:
             return ()
+        if text != text.strip():
+            raise ArchiveSafetyError("archive output subdirectory is invalid")
         if text.startswith(("/", "\\")) or "\\" in text or ":" in text:
             raise ArchiveSafetyError("archive output subdirectory must be relative")
         raw_parts = text.split("/")
-        if any(not part or part in {".", ".."} for part in raw_parts):
+        if any(
+            not part
+            or part in {".", ".."}
+            or part != part.rstrip(". ")
+            for part in raw_parts
+        ):
             raise ArchiveSafetyError("archive output subdirectory is invalid")
         return tuple(cls._component(part) for part in raw_parts)
 
