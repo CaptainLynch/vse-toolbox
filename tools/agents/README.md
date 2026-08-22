@@ -81,6 +81,38 @@ python tools/agents/supervisor.py status TASK-20260821-120000
 python tools/agents/supervisor.py cleanup TASK-20260821-120000
 ```
 
+## Temporary Codex provider profiles
+
+Supervisor Codex planning/review supports two logical provider profiles:
+
+- `official` uses the existing local Codex authentication and does not pass a
+  CLI configuration profile.
+- `relay` passes `--profile vse-relay`, requires the process-only
+  `CODEX_RELAY_API_KEY` environment variable, and fails closed when the key or
+  approved profile is unavailable. It never falls back to official usage.
+
+Install or verify the approved Responses API relay profile without storing a
+key:
+
+```powershell
+.\tools\agents\setup_codex_relay_profile.ps1
+.\tools\agents\setup_codex_relay_profile.ps1 -CheckOnly
+```
+
+Run a task with an explicit provider. The relay wrapper securely prompts for a
+key only when the current process does not already provide one, passes it only
+to the child process tree, and clears/restores it afterward:
+
+```powershell
+.\tools\agents\run_supervisor.ps1 -CodexProfile relay -TaskFile .agents/tasks/my-task.json
+.\tools\agents\run_supervisor.ps1 -CodexProfile official -TaskFile .agents/tasks/my-task.json
+```
+
+The wrapper defaults to the `codex-controlled` orchestration profile. Use
+`-SupervisorProfile agy-heavy` only for tasks that should remain AGY-only; in
+that mode the selected Codex provider is recorded but not called. Never place
+the relay key in task JSON, TOML, source control, command arguments, or logs.
+
 Task JSON must satisfy `schemas/agent-task.schema.json`. A worker may commit in
 its own branch, but the supervisor never merges; inspect the state and diff,
 then merge only after an explicit human review.

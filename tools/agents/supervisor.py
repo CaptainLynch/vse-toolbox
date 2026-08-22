@@ -5,6 +5,7 @@ import argparse
 import datetime as dt
 import importlib.util
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -53,6 +54,10 @@ IMPLEMENTATION = re.compile(
     r"\b(ui|css|component|crud|test|lint|type|document|refactor|bug|feature|api|form|mechanical|ordinary[-_]?implementation)\b",
     re.I,
 )
+
+
+class CodexProfileUnavailable(RuntimeError):
+    """Selected Codex provider profile cannot be used safely."""
 
 
 def now() -> str:
@@ -179,6 +184,33 @@ def resolve_profile(
     return requested, requested, None
 
 
+def resolve_codex_profile(cfg: dict[str, Any], cli_profile: str | None = None) -> dict[str, str | None]:
+    settings = cfg.get("codex", {})
+    if not isinstance(settings, dict):
+        settings = {}
+    requested = str(cli_profile or settings.get("profile") or "official").strip().lower()
+    allowed = settings.get("allowed_profiles", ["official", "relay"])
+    if not isinstance(allowed, list) or requested not in {
+        str(value).strip().lower() for value in allowed if isinstance(value, str)
+    }:
+        raise ValueError(f"Unsupported Codex profile: {requested}")
+    profiles = settings.get("profiles", {})
+    profile_settings = profiles.get(requested, {}) if isinstance(profiles, dict) else {}
+    if not isinstance(profile_settings, dict):
+        raise ValueError(f"Invalid Codex profile configuration: {requested}")
+    cli_name = profile_settings.get("cli_profile")
+    required_env = profile_settings.get("required_env")
+    if cli_name is not None and (not isinstance(cli_name, str) or not cli_name.strip()):
+        raise ValueError(f"Invalid Codex CLI profile configuration: {requested}")
+    if required_env is not None and (not isinstance(required_env, str) or not required_env.strip()):
+        raise ValueError(f"Invalid Codex credential reference configuration: {requested}")
+    return {
+        "name": requested,
+        "cli_profile": cli_name.strip() if isinstance(cli_name, str) else None,
+        "required_env": required_env.strip() if isinstance(required_env, str) else None,
+    }
+
+
 DEFAULT_ALLOWED_MODELS: tuple[str, ...] = ("gemini-3.7-flash-high", "gemini-3.7-flash-low")
 DEFAULT_MODEL: str = "gemini-3.7-flash-high"
 
@@ -287,11 +319,27 @@ def heuristic_plan(task: dict[str, Any], root: Path, reason: str = "Local fallba
     }
 
 
-def codex_structured(root: Path, schema: Path, prompt: str, output: Path) -> tuple[dict[str, Any] | None, str]:
+def codex_structured(
+    root: Path,
+    schema: Path,
+    prompt: str,
+    output: Path,
+    codex_profile: dict[str, str | None] | None = None,
+) -> tuple[dict[str, Any] | None, str]:
     codex = shutil.which("codex")
     if not codex:
         return None, "codex CLI not found"
-    command = [codex, "exec", "--sandbox", "read-only", "--output-schema", str(schema), "-o", str(output), "-"]
+    selected = codex_profile or {"name": "official", "cli_profile": None, "required_env": None}
+    required_env = selected.get("required_env")
+    if required_env and not os.environ.get(required_env):
+        raise CodexProfileUnavailable(
+            f"Codex profile '{selected.get('name')}' requires credential environment variable '{required_env}'."
+        )
+    command = [codex, "exec"]
+    cli_profile = selected.get("cli_profile")
+    if cli_profile:
+        command.extend(["--profile", cli_profile])
+    command.extend(["--sandbox", "read-only", "--output-schema", str(schema), "-o", str(output), "-"])
     try:
         result = subprocess.run(command, cwd=root, text=True, encoding="utf-8", errors="replace", input=prompt, capture_output=True, timeout=900, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -306,11 +354,27 @@ def codex_structured(root: Path, schema: Path, prompt: str, output: Path) -> tup
         return None, str(exc)
 
 
-def create_plan(root: Path, run_dir: Path, task: dict[str, Any], dry_run: bool) -> dict[str, Any]:
+def create_plan(
+    root: Path,
+    run_dir: Path,
+    task: dict[str, Any],
+    dry_run: bool,
+    codex_profile: dict[str, str | None] | None = None,
+) -> dict[str, Any]:
     prompt = """You are Codex Lead Engineer. Return only the requested JSON plan. Route `agy` only for bounded, implementation-heavy low-risk work executed by the local AGY CLI. Route `codex` for complex reasoning; route `manual` for security, destructive, deployment, or unclear-risk work. Do not modify files.\n\nTASK:\n""" + json.dumps(task, ensure_ascii=False)
     plan_file = run_dir / "plan.json"
-    plan, source = codex_structured(root, ROOT / "schemas" / "codex-plan.schema.json", prompt, plan_file)
+    plan, source = codex_structured(
+        root,
+        ROOT / "schemas" / "codex-plan.schema.json",
+        prompt,
+        plan_file,
+        codex_profile,
+    )
     if not plan:
+        if codex_profile and codex_profile.get("name") != "official":
+            raise CodexProfileUnavailable(
+                f"Codex profile '{codex_profile.get('name')}' failed to produce a valid plan; see Codex run logs."
+            )
         plan = heuristic_plan(task, root, f"{source}; heuristic fallback used")
         plan["planning_source"] = "heuristic-fallback"
         write_json(plan_file, plan)
@@ -486,9 +550,16 @@ def recover_context_canceled_worker(
     return recovered
 
 
-def run(root: Path, task: dict[str, Any], dry_run: bool, profile: str | None = None) -> int:
+def run(
+    root: Path,
+    task: dict[str, Any],
+    dry_run: bool,
+    profile: str | None = None,
+    codex_profile: str | None = None,
+) -> int:
     cfg = config(root)
     effective_profile, requested_profile, override_reason = resolve_profile(task, cfg, profile)
+    selected_codex_profile = resolve_codex_profile(cfg, codex_profile)
     resolved_model = resolve_model(task, cfg)
     effective_agy_settings = dict(cfg.get("agy", {}))
     effective_agy_settings["model"] = resolved_model
@@ -506,7 +577,26 @@ def run(root: Path, task: dict[str, Any], dry_run: bool, profile: str | None = N
         append_event(run_dir, "supervisor", "plan", "ok")
     else:
         started = time.monotonic()
-        plan = create_plan(root, run_dir, task, dry_run)
+        try:
+            plan = create_plan(root, run_dir, task, dry_run, selected_codex_profile)
+        except CodexProfileUnavailable as exc:
+            state = {
+                "task_id": task["task_id"],
+                "status": "codex-profile-unavailable",
+                "route": "codex",
+                "profile": effective_profile,
+                "requested_profile": requested_profile,
+                "codex_profile": selected_codex_profile["name"],
+                "dry_run": dry_run,
+                "worktree": None,
+                "round": 0,
+                "updated_at": now(),
+                "error": str(exc),
+            }
+            write_json(run_dir / "state.json", state)
+            append_event(run_dir, "codex", "profile-preflight", "failed", time.monotonic() - started)
+            print(f"{task['task_id']}: {state['status']} - {state['error']}")
+            return 0
         append_event(run_dir, "codex", "plan", "ok", time.monotonic() - started)
 
     state: dict[str, Any] = {
@@ -515,6 +605,7 @@ def run(root: Path, task: dict[str, Any], dry_run: bool, profile: str | None = N
         "route": plan["route"],
         "profile": effective_profile,
         "requested_profile": requested_profile,
+        "codex_profile": selected_codex_profile["name"],
         "model": resolved_model,
         "dry_run": dry_run,
         "worktree": None,
@@ -696,7 +787,17 @@ def run(root: Path, task: dict[str, Any], dry_run: bool, profile: str | None = N
             append_event(run_dir, "supervisor", f"worker-round-{round_no}-transport-recovered", "partial")
         review_prompt = """You are Codex reviewing a local AGY CLI worker worktree. Do not trust the worker claim. Review the task, plan, worker result, complete scoped change evidence, check results, and acceptance criteria. Return PASS only if the evidence satisfies them. A transport_recovered partial result may PASS when the independent scoped evidence and focused checks fully prove the implementation contract; report the missing raw AGY structured response as a material warning, not an automatic failure. Return FIX with precise feedback where repair is feasible; REJECT for unsafe/unsound work. Do not modify files.\n\n""" + json.dumps({"task": task, "plan": plan, "worker_result": worker, "checks": check_results, "change_evidence": evidence}, ensure_ascii=False)
         review_file = run_dir / f"review-round-{round_no}.json"
-        review, review_source = codex_structured(root, ROOT / "schemas" / "codex-review.schema.json", review_prompt, review_file)
+        try:
+            review, review_source = codex_structured(
+                root,
+                ROOT / "schemas" / "codex-review.schema.json",
+                review_prompt,
+                review_file,
+                selected_codex_profile,
+            )
+        except CodexProfileUnavailable as exc:
+            review = None
+            review_source = str(exc)
         if not review:
             review = {"task_id": task["task_id"], "verdict": "REJECT", "reason": f"Codex review unavailable: {review_source}", "feedback": [], "risk": "medium", "takeover_required": True}
             write_json(review_file, review)
@@ -832,6 +933,7 @@ def main() -> int:
     run_p.add_argument("objective", nargs="?")
     run_p.add_argument("--task-file", type=Path)
     run_p.add_argument("--profile", choices=["agy-heavy", "codex-controlled"], default=None, help="Supervisor execution profile")
+    run_p.add_argument("--codex-profile", choices=["official", "relay"], default=None, help="Codex provider profile")
     run_p.add_argument("--dry-run", action="store_true")
     sub.add_parser("doctor")
     status_p = sub.add_parser("status")
@@ -849,7 +951,13 @@ def main() -> int:
     if bool(args.objective) == bool(args.task_file):
         parser.error("run requires exactly one objective or --task-file")
     raw = read_json(args.task_file) if args.task_file else {"objective": args.objective, "scope": [], "constraints": ["Preserve unrelated user changes", "Use the isolated worktree"], "acceptance_criteria": ["Relevant configured checks pass"]}
-    return run(root, normalize_task(raw), args.dry_run, profile=args.profile)
+    return run(
+        root,
+        normalize_task(raw),
+        args.dry_run,
+        profile=args.profile,
+        codex_profile=args.codex_profile,
+    )
 
 
 if __name__ == "__main__":
