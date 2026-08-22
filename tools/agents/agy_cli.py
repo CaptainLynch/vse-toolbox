@@ -53,7 +53,7 @@ def build_command(
     return command
 
 
-def build_prompt(task: dict[str, Any]) -> str:
+def build_prompt(task: dict[str, Any], max_repair_attempts: int = 3) -> str:
     instructions = (
         "Act as a bounded implementation worker in the current Git worktree. "
         "Follow only the structured task below. Do not push, rebase, reset, clean, "
@@ -63,7 +63,10 @@ def build_prompt(task: dict[str, Any]) -> str:
         "used for workspace paths. Do not request administrator escalation. "
         "For a read-only exploration task, return compact findings with title, "
         "file-and-line evidence, and implication; do not hide the report in prose. "
-        "Run only relevant project checks and finish with JSON matching the supplied "
+        f"You may perform up to {max_repair_attempts} self-repair attempts for focused check failures within scope. "
+        "Stop and escalate on architecture, security, authentication, authorization, "
+        "concurrency, migration, public contract, or scope expansion. "
+        "Run only the verification_commands specified in the task and finish with JSON matching the supplied "
         "output schema."
     )
     return f"{instructions}\n\n{json.dumps(task, ensure_ascii=False, indent=2)}"
@@ -75,6 +78,7 @@ def invoke(
     run_dir: Path,
     config: dict[str, Any],
     effort: str | None = None,
+    max_repair_attempts: int | None = None,
 ) -> dict[str, Any]:
     """Run one local AGY model turn and return a normalized worker result."""
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -84,7 +88,21 @@ def invoke(
         effective["effort"] = effort
     timeout = int(effective.get("timeout_seconds", 900))
     schema = Path(__file__).resolve().parents[2] / "schemas" / "worker-result.schema.json"
-    prompt = build_prompt(task)
+    task_repair = task.get("agy_self_repair_attempts")
+    if max_repair_attempts is not None:
+        try:
+            repair_attempts = max(1, min(5, int(max_repair_attempts)))
+        except (ValueError, TypeError):
+            repair_attempts = 3
+    elif task_repair is not None:
+        try:
+            repair_attempts = max(1, min(5, int(task_repair)))
+        except (ValueError, TypeError):
+            repair_attempts = 3
+    else:
+        default_cfg = int(effective.get("max_agy_repair_attempts", effective.get("max_repair_attempts", 3)))
+        repair_attempts = max(1, min(5, default_cfg))
+    prompt = build_prompt(task, max_repair_attempts=repair_attempts)
     try:
         command = build_command(effective, schema, prompt)
     except FileNotFoundError as exc:

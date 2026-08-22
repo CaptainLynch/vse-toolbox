@@ -33,8 +33,26 @@ DEFAULT_FORBIDDEN = [
     "git push --force", "git reset --hard", "git clean -fd", "git checkout .", "git restore .", "git rebase",
     "delete repository or user files", "access credentials, cookies, SSH keys, or credential stores", "production deployment",
 ]
-HIGH_RISK = re.compile(r"\b(auth|authori[sz]|security|credential|token|password|migration|schema|database|concurren|transaction|deploy|production|delete|remove)\b", re.I)
-IMPLEMENTATION = re.compile(r"\b(ui|css|component|crud|test|lint|type|document|refactor|bug|feature|api|form)\b", re.I)
+
+HIGH_RISK_CATEGORIES = {
+    "architecture", "security", "authentication", "authorization",
+    "concurrency", "migration", "public-contract", "destructive",
+}
+
+LOW_RISK_CATEGORIES = {
+    "mechanical", "test-only", "ui", "ordinary-implementation",
+    "test_only", "ordinary_implementation", "implementation",
+}
+
+HIGH_RISK = re.compile(
+    r"\b(auth\w*|authori[sz]\w*|security|credential\w*|token\w*|password\w*|migration\w*|schema\w*|database\w*|"
+    r"concurren\w*|transaction\w*|deploy\w*|production|delete\w*|remove\w*|architect\w*|public[-_\s]?contract\w*|destructive)\b",
+    re.I,
+)
+IMPLEMENTATION = re.compile(
+    r"\b(ui|css|component|crud|test|lint|type|document|refactor|bug|feature|api|form|mechanical|ordinary[-_]?implementation)\b",
+    re.I,
+)
 
 
 def now() -> str:
@@ -69,7 +87,7 @@ def normalize_task(raw: dict[str, Any], generated_id: str | None = None) -> dict
     absent = [key for key in required if key not in raw]
     if absent:
         raise ValueError("Task JSON is missing: " + ", ".join(absent))
-    return {
+    task_dict = {
         "task_id": raw.get("task_id") or generated_id or task_id(),
         "objective": str(raw["objective"]),
         "scope": list(raw["scope"]),
@@ -80,6 +98,20 @@ def normalize_task(raw: dict[str, Any], generated_id: str | None = None) -> dict
         "context": dict(raw.get("context", {})),
         "review_feedback": list(raw.get("review_feedback", [])),
     }
+    if raw.get("profile"):
+        task_dict["profile"] = str(raw["profile"])
+    if raw.get("category"):
+        task_dict["category"] = str(raw["category"])
+    if raw.get("risk_class"):
+        task_dict["risk_class"] = str(raw["risk_class"])
+    if raw.get("review_policy"):
+        task_dict["review_policy"] = str(raw["review_policy"])
+    if raw.get("agy_self_repair_attempts") is not None:
+        val = raw["agy_self_repair_attempts"]
+        if isinstance(val, bool) or not isinstance(val, int) or not 1 <= val <= 5:
+            raise ValueError("agy_self_repair_attempts must be an integer between 1 and 5")
+        task_dict["agy_self_repair_attempts"] = val
+    return task_dict
 
 
 def _normalize_commands(raw: Any) -> list[list[str]]:
@@ -93,15 +125,89 @@ def _normalize_commands(raw: Any) -> list[list[str]]:
     return commands
 
 
+def evaluate_risk(task: dict[str, Any]) -> str:
+    labels = [
+        str(value).strip().lower().replace("_", "-")
+        for value in (
+            task.get("risk_class"),
+            task.get("category"),
+            task.get("context", {}).get("risk_class"),
+            task.get("context", {}).get("category"),
+        )
+        if value
+    ]
+    objective = str(task.get("objective", ""))
+    risk_field = str(task.get("risk") or task.get("context", {}).get("risk") or "").strip().lower()
+
+    if (
+        any(label in HIGH_RISK_CATEGORIES or HIGH_RISK.search(label) for label in labels)
+        or HIGH_RISK.search(objective)
+        or risk_field == "high"
+    ):
+        return "high"
+    if any(label in LOW_RISK_CATEGORIES for label in labels) or risk_field == "low":
+        return "low"
+    if IMPLEMENTATION.search(objective) or any(IMPLEMENTATION.search(label) for label in labels):
+        return "low"
+    return "medium"
+
+
+def resolve_profile(
+    task: dict[str, Any],
+    cfg: dict[str, Any],
+    cli_profile: str | None = None,
+) -> tuple[str, str, str | None]:
+    requested = cli_profile or task.get("profile") or cfg.get("profile", "agy-heavy")
+    if requested not in ("agy-heavy", "codex-controlled"):
+        requested = "agy-heavy"
+    risk = evaluate_risk(task)
+    review_policy = str(
+        task.get("review_policy")
+        or task.get("context", {}).get("review_policy")
+        or ""
+    ).strip().lower()
+    if requested == "agy-heavy" and risk == "high":
+        return "codex-controlled", requested, "High-risk task forced to codex-controlled profile"
+    if requested == "agy-heavy" and review_policy == "codex-required":
+        return "codex-controlled", requested, "Review policy codex-required forced to codex-controlled profile"
+    return requested, requested, None
+
+
+def build_contract_plan(task: dict[str, Any], reason: str = "Local agy-heavy task contract") -> dict[str, Any]:
+    risk = evaluate_risk(task)
+    route = "agy" if risk == "low" else "codex"
+    return {
+        "task_id": task["task_id"],
+        "route": route,
+        "reason": reason,
+        "risk": risk,
+        "worker_effort": "high" if route == "agy" else "medium",
+        "scope": task["scope"] or ["repository"],
+        "constraints": task["constraints"],
+        "acceptance_criteria": task["acceptance_criteria"],
+        "planning_source": "task-contract",
+    }
+
+
 def heuristic_plan(task: dict[str, Any], root: Path, reason: str = "Local fallback router") -> dict[str, Any]:
-    objective = task["objective"]
-    if HIGH_RISK.search(objective):
-        route, risk = ("manual", "high")
-    elif IMPLEMENTATION.search(objective):
-        route, risk = ("agy", "low")
+    risk = evaluate_risk(task)
+    if risk == "high":
+        route = "manual"
+    elif risk == "low":
+        route = "agy"
     else:
-        route, risk = ("codex", "medium")
-    return {"task_id": task["task_id"], "route": route, "reason": reason, "risk": risk, "worker_effort": "high" if route == "agy" else "medium", "scope": task["scope"] or ["repository"], "constraints": task["constraints"], "acceptance_criteria": task["acceptance_criteria"]}
+        route = "codex"
+    return {
+        "task_id": task["task_id"],
+        "route": route,
+        "reason": reason,
+        "risk": risk,
+        "worker_effort": "high" if route == "agy" else "medium",
+        "scope": task["scope"] or ["repository"],
+        "constraints": task["constraints"],
+        "acceptance_criteria": task["acceptance_criteria"],
+        "planning_source": "heuristic-fallback",
+    }
 
 
 def codex_structured(root: Path, schema: Path, prompt: str, output: Path) -> tuple[dict[str, Any] | None, str]:
@@ -110,8 +216,6 @@ def codex_structured(root: Path, schema: Path, prompt: str, output: Path) -> tup
         return None, "codex CLI not found"
     command = [codex, "exec", "--sandbox", "read-only", "--output-schema", str(schema), "-o", str(output), "-"]
     try:
-        # Codex exec requires UTF-8 stdin. Windows' process locale may otherwise
-        # encode Chinese task text as a legacy code page.
         result = subprocess.run(command, cwd=root, text=True, encoding="utf-8", errors="replace", input=prompt, capture_output=True, timeout=900, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return None, str(exc)
@@ -164,9 +268,31 @@ def _path_in_scope(relative_path: str, scope: list[str]) -> bool:
         candidate = candidate[2:]
     for item in scope:
         allowed = str(item).replace("\\", "/").strip("/")
+        if allowed in ("", ".", "repository"):
+            return True
         if allowed and (candidate == allowed or candidate.startswith(allowed + "/")):
             return True
     return False
+
+
+def compute_changed_paths(root: Path, base_commit: str | None = None) -> list[str]:
+    changed: list[str] = []
+    if base_commit:
+        diff_res = _git(root, "diff", "--name-only", base_commit)
+        if diff_res.returncode == 0:
+            changed.extend([p.strip().strip('"') for p in diff_res.stdout.splitlines() if p.strip()])
+        else:
+            status_res = _git(root, "status", "--porcelain=v1", "--untracked-files=all")
+            changed.extend(_status_paths(status_res.stdout))
+    else:
+        status_res = _git(root, "status", "--porcelain=v1", "--untracked-files=all")
+        changed.extend(_status_paths(status_res.stdout))
+
+    untracked_res = _git(root, "ls-files", "--others", "--exclude-standard", "-z")
+    if untracked_res.returncode == 0:
+        changed.extend([p.strip().strip('"') for p in untracked_res.stdout.split("\0") if p.strip()])
+
+    return sorted(list(dict.fromkeys(changed)))
 
 
 def _status_paths(status: str) -> list[str]:
@@ -189,47 +315,81 @@ def dirty_scope_conflicts(root: Path, task: dict[str, Any]) -> list[str]:
     return [path for path in dirty_paths if _path_in_scope(path, task["scope"])]
 
 
-def collect_change_evidence(root: Path, scope: list[str], max_file_bytes: int = 262_144, max_total_bytes: int = 1_048_576) -> dict[str, Any]:
+def collect_change_evidence(
+    root: Path,
+    scope: list[str],
+    max_file_bytes: int = 262_144,
+    max_total_bytes: int = 1_048_576,
+    base_commit: str | None = None,
+) -> dict[str, Any]:
     status_result = _git(root, "status", "--porcelain=v1", "--untracked-files=all")
-    diff_result = _git(root, "diff", "--binary", "--no-ext-diff")
+    if base_commit:
+        diff_result = _git(root, "diff", "--binary", "--no-ext-diff", base_commit)
+        if diff_result.returncode != 0:
+            diff_result = _git(root, "diff", "--binary", "--no-ext-diff")
+    else:
+        diff_result = _git(root, "diff", "--binary", "--no-ext-diff")
+
     untracked_result = _git(root, "ls-files", "--others", "--exclude-standard", "-z")
     untracked_files: list[dict[str, Any]] = []
+    untracked_diff_chunks: list[str] = []
     total_bytes = 0
-    for relative_path in filter(None, untracked_result.stdout.split("\0")):
-        record: dict[str, Any] = {"path": relative_path}
-        if not _path_in_scope(relative_path, scope):
-            record["omitted_reason"] = "outside explicit task scope"
-        else:
-            path = (root / relative_path).resolve()
-            try:
-                payload = path.read_bytes()
-                if len(payload) > max_file_bytes or total_bytes + len(payload) > max_total_bytes:
-                    record["omitted_reason"] = "evidence size limit"
-                elif b"\0" in payload:
-                    record["omitted_reason"] = "binary file"
-                else:
-                    record["content"] = payload.decode("utf-8", errors="replace")
-                    record["size_bytes"] = len(payload)
-                    total_bytes += len(payload)
-            except OSError as exc:
-                record["omitted_reason"] = f"read failed: {exc}"
-        untracked_files.append(record)
+    if untracked_result.returncode == 0:
+        for relative_path in filter(None, untracked_result.stdout.split("\0")):
+            record: dict[str, Any] = {"path": relative_path}
+            if not _path_in_scope(relative_path, scope):
+                record["omitted_reason"] = "outside explicit task scope"
+            else:
+                path = (root / relative_path).resolve()
+                try:
+                    payload = path.read_bytes()
+                    if len(payload) > max_file_bytes or total_bytes + len(payload) > max_total_bytes:
+                        record["omitted_reason"] = "evidence size limit"
+                    elif b"\0" in payload:
+                        record["omitted_reason"] = "binary file"
+                    else:
+                        record["content"] = payload.decode("utf-8", errors="replace")
+                        record["size_bytes"] = len(payload)
+                        total_bytes += len(payload)
+                except OSError as exc:
+                    record["omitted_reason"] = f"read failed: {exc}"
+
+                untracked_diff = _git(root, "diff", "--no-index", "--binary", "--", "/dev/null", relative_path)
+                if untracked_diff.stdout:
+                    untracked_diff_chunks.append(untracked_diff.stdout)
+
+            untracked_files.append(record)
+
+    patch_parts: list[str] = []
+    if diff_result.stdout:
+        patch_parts.append(diff_result.stdout)
+    if untracked_diff_chunks:
+        patch_parts.extend(untracked_diff_chunks)
+    full_patch = "".join(patch_parts)
+
+    changed_paths = compute_changed_paths(root, base_commit)
+
     return {
         "status": status_result.stdout,
         "status_error": status_result.stderr,
         "tracked_diff": diff_result.stdout,
         "diff_error": diff_result.stderr,
         "untracked_files": untracked_files,
+        "patch": full_patch,
+        "changed_paths": changed_paths,
+        "base_commit": base_commit,
     }
 
 
-def recover_context_canceled_worker(worker: dict[str, Any], evidence: dict[str, Any], check_results: list[dict[str, Any]]) -> dict[str, Any]:
+def recover_context_canceled_worker(
+    worker: dict[str, Any], evidence: dict[str, Any], check_results: list[dict[str, Any]]
+) -> dict[str, Any]:
     diagnostics = "\n".join(str(item) for item in worker.get("unresolved", []))
     if worker.get("status") != "failed" or "context canceled" not in diagnostics.lower():
         return worker
     if not check_results or any(result.get("exit_code") != 0 for result in check_results):
         return worker
-    changed_files = _status_paths(str(evidence.get("status", "")))
+    changed_files = evidence.get("changed_paths") or _status_paths(str(evidence.get("status", "")))
     if not changed_files:
         return worker
     recovered = dict(worker)
@@ -249,23 +409,54 @@ def recover_context_canceled_worker(worker: dict[str, Any], evidence: dict[str, 
     return recovered
 
 
-def run(root: Path, task: dict[str, Any], dry_run: bool) -> int:
+def run(root: Path, task: dict[str, Any], dry_run: bool, profile: str | None = None) -> int:
     cfg = config(root)
+    effective_profile, requested_profile, override_reason = resolve_profile(task, cfg, profile)
     run_dir = root / ".agents" / "runs" / task["task_id"]
     if run_dir.exists():
         raise FileExistsError(f"Task run already exists: {task['task_id']}")
     run_dir.mkdir(parents=True)
     write_json(run_dir / "task.json", task)
     append_event(run_dir, "supervisor", "task-created", "ok")
-    started = time.monotonic()
-    plan = create_plan(root, run_dir, task, dry_run)
-    append_event(run_dir, "codex", "plan", "ok", time.monotonic() - started)
-    state: dict[str, Any] = {"task_id": task["task_id"], "status": "planned", "route": plan["route"], "dry_run": dry_run, "worktree": None, "round": 0, "updated_at": now()}
+
+    if effective_profile == "agy-heavy":
+        plan = build_contract_plan(task)
+        write_json(run_dir / "plan.json", plan)
+        append_event(run_dir, "supervisor", "plan", "ok")
+    else:
+        started = time.monotonic()
+        plan = create_plan(root, run_dir, task, dry_run)
+        append_event(run_dir, "codex", "plan", "ok", time.monotonic() - started)
+
+    state: dict[str, Any] = {
+        "task_id": task["task_id"],
+        "status": "planned",
+        "route": plan["route"],
+        "profile": effective_profile,
+        "requested_profile": requested_profile,
+        "dry_run": dry_run,
+        "worktree": None,
+        "round": 0,
+        "updated_at": now(),
+    }
+    if override_reason:
+        state["profile_override_reason"] = override_reason
+
+    if effective_profile == "agy-heavy" and not task.get("verification_commands"):
+        state["status"] = "verification-commands-required"
+        state["error"] = "agy-heavy profile requires non-empty verification_commands before creating a worktree."
+        state["updated_at"] = now()
+        write_json(run_dir / "state.json", state)
+        append_event(run_dir, "supervisor", "verification-commands-check", "failed")
+        print(f"{task['task_id']}: {state['status']} - {state['error']}")
+        return 0
+
     if dry_run:
         state["status"] = "dry-run-complete"
         agy_settings = cfg.get("agy", {})
+        expected_checks = task.get("verification_commands") if effective_profile == "agy-heavy" else command_checks(root, task)
         state["expected_commands"] = {
-            "checks": command_checks(root, task),
+            "checks": expected_checks,
             "worker": agy_cli.build_command(
                 agy_settings,
                 ROOT / "schemas" / "worker-result.schema.json",
@@ -277,12 +468,14 @@ def run(root: Path, task: dict[str, Any], dry_run: bool) -> int:
         append_event(run_dir, "supervisor", "dry-run", "ok")
         print(json.dumps({"task": task, "plan": plan, "state": state}, ensure_ascii=False, indent=2))
         return 0
+
     if plan["route"] != "agy":
         state["status"] = "awaiting-codex-or-manual"
         write_json(run_dir / "state.json", state)
         append_event(run_dir, "supervisor", "route", "stopped")
         print(f"{task['task_id']}: routed to {plan['route']}; no worker was started.")
         return 0
+
     dirty_conflicts = dirty_scope_conflicts(root, task)
     if dirty_conflicts:
         state["status"] = "awaiting-codex-or-manual"
@@ -293,11 +486,100 @@ def run(root: Path, task: dict[str, Any], dry_run: bool) -> int:
         append_event(run_dir, "supervisor", "dirty-worktree-preflight", "stopped")
         print(f"{task['task_id']}: dirty scope conflicts require Codex/manual handling.")
         return 0
+
     tree = worktrees.create(root, task["task_id"], cfg["worktree_root"])
+    base_commit_res = _git(tree, "rev-parse", "HEAD")
+    base_commit = base_commit_res.stdout.strip() if base_commit_res.returncode == 0 else None
     state.update({"status": "worker-running", "worktree": str(tree)})
+    if base_commit:
+        state["base_commit"] = base_commit
     write_json(run_dir / "state.json", state)
-    # Each worker attempt needs a separate Codex review. Enforce every configured
-    # ceiling rather than allowing a later loop to exceed the review/run budget.
+
+    default_repair = int(cfg.get("max_agy_repair_attempts", cfg.get("max_repair_attempts", 3)))
+    task_repair = task.get("agy_self_repair_attempts")
+    if task_repair is not None:
+        try:
+            repair_attempts = max(1, min(5, int(task_repair)))
+        except (ValueError, TypeError):
+            repair_attempts = max(1, min(5, default_repair))
+    else:
+        repair_attempts = max(1, min(5, default_repair))
+
+    if effective_profile == "agy-heavy":
+        state["round"] = 1
+        started = time.monotonic()
+        worker = agy_cli.invoke(
+            task,
+            tree,
+            run_dir,
+            cfg.get("agy", {}),
+            plan["worker_effort"],
+            max_repair_attempts=repair_attempts,
+        )
+        write_json(run_dir / "worker-round-1.json", worker)
+        append_event(run_dir, "agy-cli", "worker-round-1", worker["status"], time.monotonic() - started)
+
+        if worker["status"] == "blocked":
+            state["status"] = "codex-takeover-required"
+            state["takeover_reason"] = worker["summary"]
+            state["updated_at"] = now()
+            write_json(run_dir / "state.json", state)
+            append_event(run_dir, "supervisor", "worker-round-1-blocked", "stopped")
+            print(f"{task['task_id']}: worker blocked: {worker['summary']}")
+            return 0
+
+        check_results = checks.run_checks(tree, task["verification_commands"])
+        write_json(run_dir / "checks-round-1.json", check_results)
+        evidence = collect_change_evidence(tree, task["scope"], base_commit=base_commit)
+        write_json(run_dir / "change-evidence-round-1.json", evidence)
+        (run_dir / "git-diff-round-1.patch").write_text(evidence["patch"], encoding="utf-8")
+        worker = recover_context_canceled_worker(worker, evidence, check_results)
+        if worker.get("transport_recovered"):
+            write_json(run_dir / "worker-round-1.json", worker)
+            append_event(run_dir, "supervisor", "worker-round-1-transport-recovered", "partial")
+
+        worker_ok = worker.get("status") == "completed" or bool(worker.get("transport_recovered"))
+        checks_ok = bool(check_results) and all(r.get("exit_code") == 0 for r in check_results)
+
+        if not worker_ok:
+            state["status"] = "codex-takeover-required"
+            state["takeover_reason"] = f"Worker finished with status '{worker.get('status')}': {worker.get('summary', '')}"
+            state["updated_at"] = now()
+            write_json(run_dir / "state.json", state)
+            append_event(run_dir, "supervisor", "worker-round-1-failed", "failed")
+            print(f"{task['task_id']}: {state['status']} - {state['takeover_reason']}")
+            return 0
+
+        if not checks_ok:
+            failed_cmds = [" ".join(r.get("command", [])) for r in check_results if r.get("exit_code") != 0]
+            state["status"] = "codex-takeover-required"
+            state["takeover_reason"] = f"Verification checks failed: {', '.join(failed_cmds)}"
+            state["updated_at"] = now()
+            write_json(run_dir / "state.json", state)
+            append_event(run_dir, "supervisor", "checks-round-1-failed", "failed")
+            print(f"{task['task_id']}: {state['status']} - {state['takeover_reason']}")
+            return 0
+
+        changed_paths = evidence.get("changed_paths") or compute_changed_paths(tree, base_commit)
+        out_of_scope = [path for path in changed_paths if not _path_in_scope(path, task["scope"])]
+        if out_of_scope:
+            state["status"] = "codex-takeover-required"
+            state["takeover_reason"] = f"Changes outside declared task scope detected: {', '.join(out_of_scope)}"
+            state["out_of_scope_changes"] = out_of_scope
+            state["updated_at"] = now()
+            write_json(run_dir / "state.json", state)
+            append_event(run_dir, "supervisor", "scope-validation-failed", "failed")
+            print(f"{task['task_id']}: {state['status']} - {state['takeover_reason']}")
+            return 0
+
+        state["status"] = "worker-complete-awaiting-manual-review"
+        state["updated_at"] = now()
+        write_json(run_dir / "state.json", state)
+        append_event(run_dir, "supervisor", "worker-completed", "ok")
+        print(f"{task['task_id']}: {state['status']} (worktree: {tree})")
+        return 0
+
+    # codex-controlled profile loop
     max_agy_rounds = cfg.get("max_agy_rounds", cfg.get("max_antigravity_rounds", 3))
     round_limit = min(max_agy_rounds, cfg["max_codex_review_rounds"], cfg["max_total_agent_runs"] // 2)
     for round_no in range(1, round_limit + 1):
@@ -305,7 +587,14 @@ def run(root: Path, task: dict[str, Any], dry_run: bool) -> int:
         worker_task = dict(task)
         worker_task["review_feedback"] = state.get("review_feedback", [])
         started = time.monotonic()
-        worker = agy_cli.invoke(worker_task, tree, run_dir, cfg.get("agy", {}), plan["worker_effort"])
+        worker = agy_cli.invoke(
+            worker_task,
+            tree,
+            run_dir,
+            cfg.get("agy", {}),
+            plan["worker_effort"],
+            max_repair_attempts=repair_attempts,
+        )
         write_json(run_dir / f"worker-round-{round_no}.json", worker)
         append_event(run_dir, "agy-cli", f"worker-round-{round_no}", worker["status"], time.monotonic() - started)
         if worker["status"] == "blocked":
@@ -317,9 +606,9 @@ def run(root: Path, task: dict[str, Any], dry_run: bool) -> int:
             break
         check_results = checks.run_checks(tree, command_checks(tree, task))
         write_json(run_dir / f"checks-round-{round_no}.json", check_results)
-        evidence = collect_change_evidence(tree, task["scope"])
+        evidence = collect_change_evidence(tree, task["scope"], base_commit=base_commit)
         write_json(run_dir / f"change-evidence-round-{round_no}.json", evidence)
-        (run_dir / f"git-diff-round-{round_no}.patch").write_text(evidence["tracked_diff"], encoding="utf-8")
+        (run_dir / f"git-diff-round-{round_no}.patch").write_text(evidence["patch"], encoding="utf-8")
         worker = recover_context_canceled_worker(worker, evidence, check_results)
         if worker.get("transport_recovered"):
             write_json(run_dir / f"worker-round-{round_no}.json", worker)
@@ -360,10 +649,12 @@ def doctor(root: Path) -> int:
     models = _command_line([agy_path, "models"], root) if agy_path else ""
     configured_model = str(agy_settings.get("model", "DEFAULT"))
     model_available = "OK" if configured_model in models else "UNKNOWN" if agy_path else "MISSING"
+    configured_profile = str(cfg.get("profile", "agy-heavy"))
     rows = [
         ("Git", "OK" if shutil.which("git") else "MISSING"),
         ("Repository", "OK" if git_ok else "MISSING"),
         ("Python", sys.version.split()[0]),
+        ("Supervisor profile", configured_profile),
         ("Codex CLI", "OK" if shutil.which("codex") else "MISSING"),
         ("AGY executable", agy_path or "MISSING"),
         ("AGY version", agy_version or "UNKNOWN"),
@@ -412,6 +703,7 @@ def main() -> int:
     run_p = sub.add_parser("run")
     run_p.add_argument("objective", nargs="?")
     run_p.add_argument("--task-file", type=Path)
+    run_p.add_argument("--profile", choices=["agy-heavy", "codex-controlled"], default=None, help="Supervisor execution profile")
     run_p.add_argument("--dry-run", action="store_true")
     sub.add_parser("doctor")
     status_p = sub.add_parser("status")
@@ -429,7 +721,7 @@ def main() -> int:
     if bool(args.objective) == bool(args.task_file):
         parser.error("run requires exactly one objective or --task-file")
     raw = read_json(args.task_file) if args.task_file else {"objective": args.objective, "scope": [], "constraints": ["Preserve unrelated user changes", "Use the isolated worktree"], "acceptance_criteria": ["Relevant configured checks pass"]}
-    return run(root, normalize_task(raw), args.dry_run)
+    return run(root, normalize_task(raw), args.dry_run, profile=args.profile)
 
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@
     "sandbox": true,
     "disable_slash_commands": true,
     "new_project": true,
-    "timeout_seconds": 900
+    "timeout_seconds": 2400
   },
   "max_agy_rounds": 3,
   "max_codex_review_rounds": 2,
@@ -24,5 +24,7 @@
     "python -m flake8",
     "python -m mypy core services web",
     "python -m pytest"
-  ]
+  ],
+  "profile": "agy-heavy",
+  "max_agy_repair_attempts": 3
 }

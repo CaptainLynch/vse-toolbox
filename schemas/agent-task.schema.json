@@ -19,6 +19,14 @@
     },
     "forbidden_actions": {"type": "array", "items": {"type": "string"}},
     "context": {"type": "object"},
-    "review_feedback": {"type": "array", "items": {"type": "string"}}
+    "review_feedback": {"type": "array", "items": {"type": "string"}},
+    "profile": {"type": "string", "enum": ["agy-heavy", "codex-controlled"]},
+    "category": {"type": "string"},
+    "risk_class": {
+      "type": "string",
+      "enum": ["architecture", "security", "authentication", "authorization", "concurrency", "migration", "public-contract", "destructive", "mechanical", "test-only", "ui", "ordinary-implementation"]
+    },
+    "review_policy": {"type": "string", "enum": ["manual-final", "codex-required"]},
+    "agy_self_repair_attempts": {"type": "integer", "minimum": 1, "maximum": 5}
   }
 }

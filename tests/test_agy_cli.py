@@ -92,10 +92,62 @@ def test_build_prompt_workspace_edit_and_escalation_rules():
         "task_id": "TASK-123",
         "objective": "Test objective",
     }
-    prompt = agy_cli.build_prompt(task)
+    prompt = agy_cli.build_prompt(task, max_repair_attempts=3)
 
     assert "write_to_file is artifact-only and must not be used for workspace paths" in prompt
     assert "Apply workspace edits through terminal commands inside the current isolated worktree" in prompt
     assert "Do not request administrator escalation" in prompt
     assert "return compact findings" in prompt
+    assert "You may perform up to 3 self-repair attempts" in prompt
+    assert "Stop and escalate on architecture, security, authentication, authorization" in prompt
+    assert "Run only the verification_commands specified in the task" in prompt
     assert '"task_id": "TASK-123"' in prompt
+
+
+def test_invoke_uses_configured_max_repair_attempts(monkeypatch, tmp_path):
+    monkeypatch.setattr(agy_cli, "executable", lambda _: "agy")
+    captured = {}
+
+    def mock_build_command(cfg, schema, prompt, resolve_executable=True):
+        captured["prompt"] = prompt
+        return ["agy", "--print", prompt]
+
+    monkeypatch.setattr(agy_cli, "build_command", mock_build_command)
+    monkeypatch.setattr(
+        agy_cli.subprocess,
+        "run",
+        lambda *args, **kwargs: type(
+            "Completed",
+            (),
+            {
+                "stdout": json.dumps({
+                    "task_id": "TASK-R",
+                    "status": "completed",
+                    "summary": "ok",
+                    "changed_files": [],
+                    "tests": [],
+                    "commands_executed": [],
+                    "risks": [],
+                    "unresolved": [],
+                    "needs_review": True,
+                }),
+                "stderr": "",
+                "returncode": 0,
+            },
+        )(),
+    )
+
+    # Configured in config
+    config = {"max_agy_repair_attempts": 4}
+    task = {"task_id": "TASK-R", "objective": "test"}
+    agy_cli.invoke(task, tmp_path, tmp_path / "run", config)
+    assert "You may perform up to 4 self-repair attempts" in captured["prompt"]
+
+    # Per-task field overrides default
+    task_with_field = {"task_id": "TASK-R", "objective": "test", "agy_self_repair_attempts": 5}
+    agy_cli.invoke(task_with_field, tmp_path, tmp_path / "run", config={})
+    assert "You may perform up to 5 self-repair attempts" in captured["prompt"]
+
+    # Default without config is 3
+    agy_cli.invoke(task, tmp_path, tmp_path / "run", config={})
+    assert "You may perform up to 3 self-repair attempts" in captured["prompt"]
