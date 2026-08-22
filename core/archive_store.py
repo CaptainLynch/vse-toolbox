@@ -128,6 +128,11 @@ class ArchiveStore:
             raise ArchiveSafetyError("approved archive root is unknown") from exc
 
     @classmethod
+    def validate_output_subdir(cls, value: object) -> str:
+        """Return a normalized approved-root-relative subdirectory string."""
+        return "/".join(cls._subdirectory_parts(value))
+
+    @classmethod
     def _subdirectory_parts(cls, value: object) -> tuple[str, ...]:
         text = unicodedata.normalize("NFKC", str(value or ""))
         if not text:
