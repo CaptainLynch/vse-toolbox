@@ -512,7 +512,8 @@ function deliverablePolicyModeLabel(mode) {
 }
 
 function deliverableSyncStateLabel(policy) {
-  if (!policy || !policy.enabled) return "未启用";
+  if (policy && policy.enabled === false) return "未启用";
+  if (!policy || policy.enabled !== true) return "未知";
   const labels = {
     idle: "等待同步",
     running: "同步中",
@@ -520,7 +521,7 @@ function deliverableSyncStateLabel(policy) {
     failed: "同步失败",
     needs_attention: "需要处理",
   };
-  return labels[policy.syncState] || "未启用";
+  return labels[policy.syncState] || "未知";
 }
 
 function updatePolicyStatusMessage(region, message, isError = false) {
@@ -869,9 +870,19 @@ function renderDeliverableEvidence(container, item, bundle, statusInfo = null) {
   // 1. Authoritative Summary Grid
   const grid = overviewEl("dl", "evidence-overview-grid");
   const freshnessLabel = analytics.freshness === "fresh" ? "及时" : (analytics.freshness === "stale" ? "滞后" : "未知");
-  const credentialLabel = policy.credentialAvailable ? "已配置" : "未配置";
-  const confirmedCount = analytics.mappingStability ? analytics.mappingStability.confirmed : (mapping.stability ? mapping.stability.confirmed : 0);
-  const mappingProgressText = `${Math.min(Math.max(Number(confirmedCount) || 0, 0), 2)}/2`;
+  const credentialLabel = policy.credentialAvailable === true
+    ? "已配置"
+    : (policy.credentialAvailable === false ? "未配置" : "未知");
+  const confirmedCount = analytics.mappingStability
+    ? analytics.mappingStability.confirmed
+    : (mapping.stability ? mapping.stability.confirmed : null);
+  const hasConfirmedCount = confirmedCount !== null
+    && confirmedCount !== undefined
+    && confirmedCount !== ""
+    && Number.isFinite(Number(confirmedCount));
+  const mappingProgressText = hasConfirmedCount
+    ? `${Math.min(Math.max(Number(confirmedCount), 0), 2)}/2`
+    : "待确认";
   const latestObs = mapping.observations && mapping.observations.length > 0 ? mapping.observations[0] : null;
   const mappingStateText = formatMappingStateLabel(latestObs ? latestObs.state : (analytics.mappingEvidence ? analytics.mappingEvidence.state : null));
   const recordCountText = analytics.externalRecordCount !== null && analytics.externalRecordCount !== undefined
@@ -885,7 +896,9 @@ function renderDeliverableEvidence(container, item, bundle, statusInfo = null) {
     ["时效性", freshnessLabel],
     ["最近尝试", safeDisplayValue(analytics.lastAttemptAt || policy.lastAttemptAt || "无")],
     ["最近成功", safeDisplayValue(analytics.lastSuccessAt || policy.lastSuccessAt || "无")],
-    ["失败次数", `${analytics.failureCount ?? 0} 次`],
+    ["失败次数", analytics.failureCount === null || analytics.failureCount === undefined
+      ? "未知"
+      : `${analytics.failureCount} 次`],
     ["外部记录数", recordCountText],
     ["映射状态", mappingStateText],
     ["映射进度", mappingProgressText],
@@ -908,10 +921,14 @@ function renderDeliverableEvidence(container, item, bundle, statusInfo = null) {
 
   // 3. Sync-now Action Bar
   const stabilityReady = Boolean(
-    (analytics.mappingStability && analytics.mappingStability.ready) ||
-    (mapping.stability && mapping.stability.confirmed >= 2)
+    (analytics.mappingStability && analytics.mappingStability.ready === true) ||
+    (mapping.stability && Number(mapping.stability.confirmed) >= 2)
   );
-  const syncReady = Boolean(policy.enabled && policy.credentialAvailable && stabilityReady);
+  const syncReady = Boolean(
+    policy.enabled === true
+    && policy.credentialAvailable === true
+    && stabilityReady
+  );
 
   const syncActionBar = overviewEl("div", "evidence-sync-bar");
   const syncBtn = overviewEl("button", "evidence-sync-btn", "立即同步");
@@ -920,8 +937,8 @@ function renderDeliverableEvidence(container, item, bundle, statusInfo = null) {
 
   if (!syncReady) {
     const missing = [];
-    if (!policy.enabled) missing.push("更新策略未启用");
-    if (!policy.credentialAvailable) missing.push("凭据未配置");
+    if (policy.enabled !== true) missing.push("更新策略未启用或状态未知");
+    if (policy.credentialAvailable !== true) missing.push("凭据未配置或状态未知");
     if (!stabilityReady) missing.push(`映射稳定性未就绪 (${mappingProgressText})`);
     syncBtn.title = `不可同步：${missing.join("，")}`;
   }
@@ -961,7 +978,7 @@ function renderDeliverableEvidence(container, item, bundle, statusInfo = null) {
         const msg = redactSensitiveText(resResult.errorMessage || resData.errorMessage || "任务处理中");
         resultStatusText = `同步进行中：${msg}`;
         resultStatusClass = "evidence-sync-status is-busy";
-      } else if (finalState === "success" && outcome === "success") {
+      } else if (finalState === "success" && outcome === "completed") {
         resultStatusText = "同步完成：成功";
         resultStatusClass = "evidence-sync-status is-success";
       } else if (finalState === "partial" || outcome === "partial") {
@@ -1193,7 +1210,20 @@ function renderDeliverableEvidence(container, item, bundle, statusInfo = null) {
           artBox.appendChild(artTable);
         } catch (err) {
           artBox.setAttribute("role", "alert");
-          artBox.textContent = `读取产物失败：${redactSensitiveText(err instanceof Error ? err.message : String(err))}`;
+          artBox.textContent = "";
+          artBox.appendChild(overviewEl(
+            "p",
+            "error-msg",
+            `读取产物失败：${redactSensitiveText(err instanceof Error ? err.message : String(err))}`,
+          ));
+          const retryArtifactBtn = overviewEl("button", "evidence-retry-btn", "重试读取产物");
+          retryArtifactBtn.type = "button";
+          retryArtifactBtn.addEventListener("click", () => {
+            artTr.hidden = true;
+            artifactBtn.textContent = "查看产物";
+            artifactBtn.click();
+          });
+          artBox.appendChild(retryArtifactBtn);
         }
       });
     });

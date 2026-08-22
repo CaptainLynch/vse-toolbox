@@ -378,8 +378,10 @@ def test_overview_deliverable_evidence_structure_and_labels() -> None:
     ):
         assert f'"{deliverable_id}": "{source_label}"' in overview_js
 
-    assert "mappingProgressText = `${Math.min(Math.max(Number(confirmedCount) || 0, 0), 2)}/2`" in overview_js
-    assert 'policy.credentialAvailable ? "已配置" : "未配置"' in overview_js
+    assert "const hasConfirmedCount = confirmedCount !== null" in overview_js
+    assert "Number.isFinite(Number(confirmedCount))" in overview_js
+    assert 'mappingProgressText = hasConfirmedCount' in overview_js
+    assert 'policy.credentialAvailable === true' in overview_js
 
     for field_name in ("owner", "plannedDate", "note"):
         assert field_name in overview_js
@@ -399,15 +401,21 @@ def test_overview_deliverable_evidence_restrictions_and_guard() -> None:
     assert 'item.id === "VPI-T2-D4"' in overview_js
     assert "TDC A 面契约待验证/阻断" in overview_js
 
-    assert "policy.enabled && policy.credentialAvailable && stabilityReady" in overview_js
+    assert "policy.enabled === true" in overview_js
+    assert "policy.credentialAvailable === true" in overview_js
     assert "window.confirm" in overview_js
 
     assert 'finalState === "busy" || outcome === "busy"' in overview_js
-    assert 'finalState === "success" && outcome === "success"' in overview_js
+    assert 'finalState === "success" && outcome === "completed"' in overview_js
     assert 'finalState === "partial" || outcome === "partial"' in overview_js
     assert 'finalState === "needs_attention" || outcome === "needs_attention"' in overview_js
 
     assert "exitCode" not in overview_js
+    assert 'enabled: true' not in overview_js
+    assert 'method: "POST"' in overview_js
+    assert overview_js.count('method: "POST"') == 1
+    assert 'preview.candidates' not in overview_js
+    assert 'mapping.candidates' not in overview_js
 
     for forbidden in (
         "credentialRef",
@@ -460,12 +468,17 @@ def test_overview_deliverable_evidence_accessibility_and_fallbacks() -> None:
     assert 'emptyRuns.setAttribute("role", "status")' in overview_js
     assert 'artBox.setAttribute("role", "status")' in overview_js
     assert 'artBox.setAttribute("role", "alert")' in overview_js
+    assert 'retryArtifactBtn.type = "button"' in overview_js
+    assert 'artifactBtn.click()' in overview_js
 
     # Unknown enum fallbacks
     assert '(state && map[state]) || "待确认"' in overview_js
     assert '(reason && map[reason]) || "待确认"' in overview_js
     assert '(trigger && map[trigger]) || "未知"' in overview_js
     assert '(state && map[state]) || "未知"' in overview_js
+    assert 'labels[policy.syncState] || "未知"' in overview_js
+    assert 'analytics.failureCount ?? 0' not in overview_js
+    assert 'Number(confirmedCount) || 0' not in overview_js
 
     # Start and finish timestamps, and non-fabricated attempt
     assert "safeDisplayValue(run.finished_at || \"未知\")" in overview_js
@@ -475,6 +488,12 @@ def test_overview_deliverable_evidence_accessibility_and_fallbacks() -> None:
 
     # Visible post-sync refresh preserving status
     assert "expandOverviewDetail(deliverableIndex, { text: resultStatusText, className: resultStatusClass })" in overview_js
+
+    d1_guard = overview_js.index('if (item.id === "VPI-T2-D1")')
+    d4_guard = overview_js.index('if (item.id === "VPI-T2-D4")')
+    first_evidence_fetch = overview_js.index('const [policyRes, analyticsRes')
+    sync_button = overview_js.index('const syncBtn = overviewEl')
+    assert d1_guard < d4_guard < first_evidence_fetch < sync_button
 
 
 def test_overview_deliverable_evidence_css_contract() -> None:
