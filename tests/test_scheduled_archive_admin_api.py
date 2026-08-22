@@ -619,7 +619,7 @@ def test_patch_job_errors_never_reflect_credential_ref(client, error_payload_bui
 # ── 4. GET /api/scheduled-archive/runs ─────────────────────────────────────────
 
 
-def test_get_runs_and_filtering(client, test_db: DatabaseManager, monkeypatch) -> None:
+def test_get_runs_and_filtering(client, test_db: DatabaseManager) -> None:
     """GET runs returns 200 with no-store, respects jobKey filter, and handles limits / 422 validation."""
     with test_db.get_connection() as conn:
         conn.execute(
@@ -662,11 +662,6 @@ def test_get_runs_and_filtering(client, test_db: DatabaseManager, monkeypatch) -
     assert len(resp_limit.get_json()["data"]) == 1
 
     # 5. Invalid limit error handling returning 422
-    monkeypatch.setattr(
-        ScheduledArchiveAdminService,
-        "list_runs",
-        MagicMock(side_effect=ValueError("limit must be a positive integer")),
-    )
     for invalid_limit in ["invalid_str", "0", "-5"]:
         resp_invalid = client.get(f"/api/scheduled-archive/runs?limit={invalid_limit}")
         assert resp_invalid.status_code == 422
@@ -732,7 +727,7 @@ def test_get_artifacts_endpoint(client, test_db: DatabaseManager) -> None:
 # ── 6. GET /api/scheduled-archive/config-audit ────────────────────────────────
 
 
-def test_get_config_audit_endpoint(client, test_db: DatabaseManager, monkeypatch) -> None:
+def test_get_config_audit_endpoint(client, test_db: DatabaseManager) -> None:
     """GET config-audit returns 200 with no-store, handles jobKey filter, limits, and 422 validation."""
     # 1. Update a job to create an audit record
     headers = _loopback_headers()
@@ -780,11 +775,6 @@ def test_get_config_audit_endpoint(client, test_db: DatabaseManager, monkeypatch
     assert len(resp_limit.get_json()["data"]) == 1
 
     # 6. Invalid limit error handling returning 422
-    monkeypatch.setattr(
-        ScheduledArchiveAdminService,
-        "list_audit",
-        MagicMock(side_effect=ValueError("limit must be a positive integer")),
-    )
     for invalid_limit in ["invalid_str", "0", "-5"]:
         resp_invalid = client.get(f"/api/scheduled-archive/config-audit?limit={invalid_limit}")
         assert resp_invalid.status_code == 422
