@@ -1848,6 +1848,19 @@ def create_app(
             logger.exception("mapping discovery history failed")
             return _json_error(500, "ServerError", _sanitize_error_message(exc))
 
+    @app.get("/api/project-status/deliverables/<deliverable_id>/candidate-preview")
+    def api_project_status_candidate_preview(deliverable_id: str):
+        try:
+            data = discovery_service.candidate_preview(deliverable_id)
+            if data.get("reason") == "deliverable_not_found":
+                return _json_error(404, "NotFound", "未找到交付物")
+            response = jsonify({"ok": True, "data": data})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except Exception as exc:
+            logger.exception("candidate preview failed")
+            return _json_error(500, "ServerError", _sanitize_error_message(exc))
+
     @app.post("/api/project-status/deliverables/<deliverable_id>/mapping-discovery")
     def api_project_status_mapping_discovery(deliverable_id: str):
         local_error = _local_web_mutation_error()
