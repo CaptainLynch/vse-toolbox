@@ -231,6 +231,7 @@ class ProjectStatusSyncRunner:
         self,
         deliverable_id: str | None = None,
         dry_run: bool = False,
+        trigger_type: str = "scheduled",
     ) -> RunOnceResult:
         """
         执行一次同步。
@@ -242,6 +243,8 @@ class ProjectStatusSyncRunner:
         Returns:
             RunOnceResult 汇总。
         """
+        if trigger_type not in {"scheduled", "sync_now"}:
+            raise ValueError("unsupported project-status trigger_type")
         bindings = self._db.list_eligible_sync_bindings(deliverable_id)
 
         if deliverable_id is not None and not bindings:
@@ -253,7 +256,7 @@ class ProjectStatusSyncRunner:
         results: list[BindingRunResult] = []
         for binding in bindings:
             try:
-                result = self._run_single_binding(binding)
+                result = self._run_single_binding(binding, trigger_type)
             except KeyboardInterrupt:
                 raise
             except BaseException as exc:
@@ -282,7 +285,11 @@ class ProjectStatusSyncRunner:
         readiness_items: list[BindingReadiness] = []
         for binding in bindings:
             connector = self._registry.get(str(binding["source_type"]))
-            binding_ready = self._check_binding_ready(binding)
+            try:
+                self._service.assert_sync_ready(str(binding["deliverable_id"]))
+                binding_ready = True
+            except (KeyError, SyncBindingNotReadyError):
+                binding_ready = False
             readiness_items.append(
                 BindingReadiness(
                     binding_id=int(binding["id"]),
@@ -298,22 +305,11 @@ class ProjectStatusSyncRunner:
             dry_run=True,
         )
 
-    @staticmethod
-    def _check_binding_ready(binding: dict[str, Any]) -> bool:
-        """只读检查 binding 是否满足自动同步前置条件（与 acquire_sync_lease 一致）。"""
-        if str(binding.get("source_type") or "") == "none":
-            return False
-        if not binding.get("external_key"):
-            return False
-        match_rule = _safe_json_loads(binding.get("match_rule_json"))
-        mapping = _safe_json_loads(binding.get("mapping_json"))
-        if not match_rule or not mapping:
-            return False
-        if binding.get("credential_configured") is not True:
-            return False
-        return True
-
-    def _run_single_binding(self, binding: dict[str, Any]) -> BindingRunResult:
+    def _run_single_binding(
+        self,
+        binding: dict[str, Any],
+        trigger_type: str,
+    ) -> BindingRunResult:
         """运行单个 binding：获取租约 → start → collect → apply → 归纳结果。"""
         binding_id = int(binding["id"])
         deliverable_id = str(binding["deliverable_id"])
@@ -322,14 +318,14 @@ class ProjectStatusSyncRunner:
         connector = self._registry.get(source_type)
         if connector is None:
             return self._handle_connector_unavailable(
-                binding_id, deliverable_id, source_type
+                binding_id, deliverable_id, source_type, trigger_type
             )
 
         # 获取租约。
         try:
-            lease = self._db.acquire_sync_lease(
-                binding_id,
-                "scheduled",
+            lease = self._service.acquire_sync_lease(
+                deliverable_id,
+                trigger_type,
             )
         except SyncLeaseBusyError:
             return BindingRunResult(
@@ -397,7 +393,7 @@ class ProjectStatusSyncRunner:
                 run_id,
                 lease_token,
                 snapshot,
-                "scheduled",
+                trigger_type,
             )
             return self._result_from_sync(
                 binding_id, deliverable_id, source_type, sync_result
@@ -452,6 +448,7 @@ class ProjectStatusSyncRunner:
         binding_id: int,
         deliverable_id: str,
         source_type: str,
+        trigger_type: str,
     ) -> BindingRunResult:
         """
         source_type 未注册 connector 时的确定结果。
@@ -460,7 +457,9 @@ class ProjectStatusSyncRunner:
         不清除 last_success_at，不推进 cursor。
         """
         try:
-            lease = self._db.acquire_sync_lease(binding_id, "scheduled")
+            lease = self._service.acquire_sync_lease(
+                deliverable_id, trigger_type
+            )
         except SyncLeaseBusyError:
             return BindingRunResult(
                 binding_id=binding_id,

@@ -1948,10 +1948,14 @@ class DatabaseManager:
         if not rows or rows[0]["result_state"] != "matched":
             return 0
         key = rows[0]["external_key"]
-        fingerprint = rows[0]["candidate_fingerprint"]
+        source_type = rows[0]["source_type"]
         count = 0
         for row in rows:
-            if row["result_state"] != "matched" or row["external_key"] != key or row["candidate_fingerprint"] != fingerprint:
+            if (
+                row["result_state"] != "matched"
+                or row["external_key"] != key
+                or row["source_type"] != source_type
+            ):
                 break
             count += 1
         return count

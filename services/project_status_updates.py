@@ -138,6 +138,33 @@ ALLOWED_TDC_MATCH_KEYS = frozenset(
     }
 )
 
+PROJECT_STATUS_SYNC_CONTRACTS: dict[str, dict[str, object]] = {
+    "VPI-T2-D2": {
+        "sourceType": "tdc",
+        "reportType": "sor",
+        "matchKeys": frozenset({
+            "processNo", "carTypeProject", "applicant", "title",
+            "partNumber", "sorNumber", "approvalStatus", "reportType",
+        }),
+    },
+    "VPI-T2-D3": {
+        "sourceType": "aras",
+        "reportType": "ewo",
+        "matchKeys": frozenset({
+            "ewoNo", "projectCode", "subjectKeyword", "reportType",
+        }),
+    },
+    "VPI-T2-D5": {
+        "sourceType": "tdc",
+        "reportType": "data_model",
+        "matchKeys": frozenset({
+            "incident", "applicant", "department", "section",
+            "applicationStart", "applicationEnd", "projectModel",
+            "partNumber", "modelNumber", "reportType",
+        }),
+    },
+}
+
 _FORBIDDEN_CONFIG_FRAGMENTS = (
     "url",
     "host",
@@ -272,6 +299,7 @@ class ProjectStatusUpdateService:
         返回内部 Lease 对象（含 binding_id/run_id/lease_token）。
         lease_token 不得记录到日志、审计或 Web 响应。
         """
+        self.assert_sync_ready(deliverable_id)
         binding = self._db.get_sync_binding_by_deliverable(deliverable_id)
         if binding is None:
             raise KeyError(deliverable_id)
@@ -279,6 +307,85 @@ class ProjectStatusUpdateService:
         if lease_seconds is not None:
             kwargs["lease_seconds"] = lease_seconds
         return self._db.acquire_sync_lease(int(binding["id"]), **kwargs)
+
+    def assert_sync_ready(self, deliverable_id: str) -> dict[str, Any]:
+        """Validate the persisted approval gate before any external sync call."""
+        raw = self._db.get_project_status_update_policy(deliverable_id)
+        if raw is None:
+            raise KeyError(deliverable_id)
+        binding = raw["binding"]
+        contract = PROJECT_STATUS_SYNC_CONTRACTS.get(deliverable_id)
+        if contract is None:
+            raise SyncBindingNotReadyError("deliverable is manual or contract-blocked")
+        if not binding["enabled"] or binding["mode"] not in {"automatic", "hybrid"}:
+            raise SyncBindingNotReadyError("binding is not enabled for automatic sync")
+        if binding["source_type"] != contract["sourceType"]:
+            raise SyncBindingNotReadyError("binding source does not match the fixed contract")
+        external_key = str(binding["external_key"] or "").strip() or None
+        match_rule = _json_loads(binding["match_rule_json"])
+        mapping = _json_loads(binding["mapping_json"])
+        if not str(binding.get("credential_ref") or "").strip():
+            raise SyncBindingNotReadyError("credential reference is not configured")
+        if (
+            match_rule.get("reportType") != contract["reportType"]
+            or len(match_rule) < 2
+            or not set(match_rule).issubset(set(contract["matchKeys"]))
+            or _contains_forbidden_config_key(match_rule)
+        ):
+            raise SyncBindingNotReadyError("match rule is not approved for the fixed report")
+        automatic_fields = {
+            PROJECT_STATUS_FIELD_NAME_TO_API[row["field_name"]]
+            for row in raw["authorities"]
+            if row["authority"] == "automatic"
+        }
+        if (
+            not automatic_fields
+            or set(mapping) != automatic_fields
+            or not set(mapping).issubset(PROJECT_STATUS_AUTOMATIC_API_FIELDS)
+            or _contains_forbidden_config_key(mapping)
+        ):
+            raise SyncBindingNotReadyError("automatic field mapping is not approved")
+        evidence_error = self._mapping_evidence_error(
+            deliverable_id,
+            str(contract["sourceType"]),
+            external_key,
+            mapping,
+        )
+        if evidence_error:
+            raise SyncBindingNotReadyError(evidence_error)
+        return binding
+
+    def _mapping_evidence_error(
+        self,
+        deliverable_id: str,
+        source_type: str,
+        external_key: str | None,
+        mapping: Mapping[str, object],
+    ) -> str | None:
+        observations = self._db.list_mapping_observations(deliverable_id, 2)
+        if len(observations) < 2:
+            return "启用同步前需要连续两次无歧义且目标一致的映射发现证据"
+        for row in observations:
+            if (
+                row["result_state"] != "matched"
+                or row["source_type"] != source_type
+                or row["external_key"] != external_key
+            ):
+                return "映射发现证据与当前来源或外部稳定键不一致"
+        report = _json_loads(observations[0]["field_report_json"])
+        observed_fields = {
+            str(value) for value in report.get("fields", [])
+            if isinstance(value, str)
+        }
+        mapped_source_fields = {
+            str(value).strip() for value in mapping.values()
+            if isinstance(value, str) and value.strip()
+        }
+        if not mapped_source_fields or not mapped_source_fields.issubset(
+            observed_fields
+        ):
+            return "自动字段映射必须来自最新的脱敏字段报告并由用户确认"
+        return None
 
     def apply_sync_update(
         self,
@@ -558,6 +665,7 @@ class ProjectStatusUpdateService:
         if raw is None:
             raise KeyError(deliverable_id)
         binding = raw["binding"]
+        contract = PROJECT_STATUS_SYNC_CONTRACTS.get(deliverable_id)
         fields: dict[str, str] = {}
 
         unknown = set(payload) - {
@@ -634,7 +742,10 @@ class ProjectStatusUpdateService:
         if not isinstance(match_rule, dict):
             fields["matchRule"] = "匹配规则必须是 JSON 对象"
         else:
-            bad_keys = set(match_rule) - ALLOWED_TDC_MATCH_KEYS
+            allowed_match_keys = (
+                contract["matchKeys"] if contract else ALLOWED_TDC_MATCH_KEYS
+            )
+            bad_keys = set(match_rule) - set(allowed_match_keys)
             if bad_keys:
                 fields["matchRule"] = "包含不允许的匹配键"
             elif _contains_forbidden_config_key(match_rule):
@@ -658,7 +769,7 @@ class ProjectStatusUpdateService:
             elif len(_json_dumps(mapping)) > _TEXT_LIMITS["mapping"]:
                 fields["mapping"] = "字段映射过长"
 
-        automatic_targets = {"VPI-T2-D2", "VPI-T2-D3", "VPI-T2-D5"}
+        automatic_targets = set(PROJECT_STATUS_SYNC_CONTRACTS)
         if deliverable_id not in automatic_targets:
             if mode != "manual":
                 fields["mode"] = "此交付物当前保持手工或映射发现模式"
@@ -689,9 +800,33 @@ class ProjectStatusUpdateService:
                 fields["matchRule"] = "匹配条件必须包含至少一个允许的 TDC 数据模型键"
             if mode == "manual":
                 fields["enabled"] = "手动模式不能启用自动同步"
-            if isinstance(match_rule, dict) and match_rule.get("reportType"):
-                if self._db.mapping_stability_count(deliverable_id) < 2:
-                    fields["enabled"] = "启用同步前需要连续两次无歧义且目标一致的映射发现证据"
+            if not credential_ref:
+                fields["credentialRef"] = "启用自动同步前必须配置凭据引用别名"
+            if contract and isinstance(match_rule, dict):
+                required_report = str(contract["reportType"])
+                if match_rule.get("reportType") != required_report:
+                    fields["matchRule"] = (
+                        f"此交付物的 reportType 必须为 {required_report}"
+                    )
+                elif len(match_rule) < 2:
+                    fields["matchRule"] = "匹配规则必须包含至少一个筛选条件"
+            automatic_fields = {
+                key for key, value in field_authority.items()
+                if value == "automatic"
+            }
+            if not automatic_fields:
+                fields["fieldAuthority"] = "启用同步前必须明确至少一个自动字段"
+            elif not isinstance(mapping, dict) or set(mapping) != automatic_fields:
+                fields["mapping"] = "字段映射必须与已确认的自动字段完全一致"
+            if contract:
+                evidence_error = self._mapping_evidence_error(
+                    deliverable_id,
+                    str(contract["sourceType"]),
+                    external_key,
+                    mapping if isinstance(mapping, dict) else {},
+                )
+                if evidence_error:
+                    fields["enabled"] = evidence_error
 
         if fields:
             raise ProjectStatusPolicyError(fields)
