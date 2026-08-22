@@ -689,7 +689,522 @@ async function loadDeliverablePolicy(container, item) {
   }
 }
 
-function toggleDeliverableDetail(row, data, index) {
+const DELIVERABLE_FIXED_SOURCES = {
+  "VPI-T2-D1": "仅手工维护",
+  "VPI-T2-D2": "TDC SOR",
+  "VPI-T2-D3": "ARAS EWO",
+  "VPI-T2-D4": "TDC A 面（契约待验证）",
+  "VPI-T2-D5": "TDC 数模",
+};
+
+const DELIVERABLE_FIELD_LABELS = {
+  owner: "负责人",
+  plannedDate: "计划完成日期",
+  note: "风险与备注",
+  status: "状态",
+  progress: "进度",
+  actualDate: "实际完成日期",
+};
+
+function formatMappingStateLabel(state) {
+  const map = {
+    matched: "已匹配",
+    not_found: "未找到",
+    ambiguous: "存在歧义",
+    key_changed: "稳定键变更",
+  };
+  return (state && map[state]) || "待确认";
+}
+
+function formatCandidateReasonLabel(reason) {
+  const map = {
+    no_observation: "无观测记录",
+    observation_not_matched: "最新观测未匹配",
+    insufficient_stability: "稳定性不足（需连续2次匹配）",
+    unapproved_mapping: "映射未确认或未配置",
+    policy_disabled: "更新策略未启用",
+    candidate_not_unique: "外部候选非唯一",
+    source_mismatch: "来源类型不匹配",
+    key_mismatch: "外部键不匹配",
+    deliverable_not_found: "交付物未找到",
+    policy_not_found: "策略未找到",
+  };
+  return (reason && map[reason]) || "待确认";
+}
+
+function formatRunTriggerLabel(trigger) {
+  const map = {
+    sync_now: "手动触发",
+    manual: "手动更新",
+    scheduled: "定时调度",
+    webhook: "外部推送",
+  };
+  return (trigger && map[trigger]) || "未知";
+}
+
+function formatRunStateLabel(state) {
+  const map = {
+    success: "成功",
+    partial: "部分成功",
+    failed: "失败",
+    needs_attention: "需要处理",
+    running: "运行中",
+    expired: "已过期",
+  };
+  return (state && map[state]) || "未知";
+}
+
+function formatArtifactSize(bytes) {
+  if (bytes === null || bytes === undefined || isNaN(bytes)) return "—";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+async function loadDeliverableEvidence(container, item, bundle = null, statusInfo = null) {
+  if (bundle) {
+    renderDeliverableEvidence(container, item, bundle, statusInfo);
+    return;
+  }
+  container.textContent = "";
+  const fixedSource = DELIVERABLE_FIXED_SOURCES[item.id] || item.source || "未知";
+
+  const head = overviewEl("div", "evidence-panel-head");
+  head.append(
+    overviewEl("strong", "evidence-title", "外部同步与证据"),
+    overviewEl("span", "evidence-source", `权威来源 · ${fixedSource}`),
+  );
+  container.appendChild(head);
+
+  if (item.id === "VPI-T2-D1") {
+    const notice = overviewEl("div", "evidence-restriction-card is-manual");
+    notice.append(
+      overviewEl("strong", "evidence-restriction-title", "仅手工维护"),
+      overviewEl("p", "evidence-restriction-desc", "该交付物当前仅允许手工维护，未接入外部系统。"),
+    );
+    container.appendChild(notice);
+    return;
+  }
+
+  if (item.id === "VPI-T2-D4") {
+    const notice = overviewEl("div", "evidence-restriction-card is-blocked");
+    notice.append(
+      overviewEl("strong", "evidence-restriction-title", "TDC A 面契约待验证/阻断"),
+      overviewEl("p", "evidence-restriction-desc", "该交付物外部数据契约待验证，当前已阻断外部同步与映射。"),
+    );
+    container.appendChild(notice);
+    return;
+  }
+
+  const loadingP = overviewEl("p", "loading", "正在读取同步与证据数据...");
+  loadingP.setAttribute("role", "status");
+  loadingP.setAttribute("aria-live", "polite");
+  container.appendChild(loadingP);
+
+  try {
+    const [policyRes, analyticsRes, mappingRes, previewRes, runsRes] = await Promise.all([
+      fetch(`/api/project-status/deliverables/${encodeURIComponent(item.id)}/update-policy`, {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      }),
+      fetch("/api/project-status/analytics", {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      }),
+      fetch(`/api/project-status/deliverables/${encodeURIComponent(item.id)}/mapping-discovery`, {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      }),
+      fetch(`/api/project-status/deliverables/${encodeURIComponent(item.id)}/candidate-preview`, {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      }),
+      fetch(`/api/project-status/runs?deliverableId=${encodeURIComponent(item.id)}&limit=10`, {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      }),
+    ]);
+
+    const [policyBody, analyticsBody, mappingBody, previewBody, runsBody] = await Promise.all([
+      overviewReadJson(policyRes),
+      overviewReadJson(analyticsRes),
+      overviewReadJson(mappingRes),
+      overviewReadJson(previewRes),
+      overviewReadJson(runsRes),
+    ]);
+
+    if (!policyRes.ok || !policyBody || policyBody.ok !== true) throw overviewRequestError(policyBody, policyRes.status);
+    if (!analyticsRes.ok || !analyticsBody || analyticsBody.ok !== true) throw overviewRequestError(analyticsBody, analyticsRes.status);
+    if (!mappingRes.ok || !mappingBody || mappingBody.ok !== true) throw overviewRequestError(mappingBody, mappingRes.status);
+    if (!previewRes.ok || !previewBody || previewBody.ok !== true) throw overviewRequestError(previewBody, previewRes.status);
+    if (!runsRes.ok || !runsBody || runsBody.ok !== true) throw overviewRequestError(runsBody, runsRes.status);
+
+    const policy = policyBody.data || {};
+    const analyticsList = analyticsBody.data && Array.isArray(analyticsBody.data.deliverables) ? analyticsBody.data.deliverables : [];
+    const analytics = analyticsList.find((d) => d.deliverableId === item.id) || {};
+    const mapping = mappingBody.data || {};
+    const preview = previewBody.data || {};
+    const runs = runsBody.data && Array.isArray(runsBody.data.runs) ? runsBody.data.runs : [];
+
+    loadingP.remove();
+    renderDeliverableEvidence(container, item, { policy, analytics, mapping, preview, runs }, statusInfo);
+  } catch (err) {
+    loadingP.remove();
+    const errBox = overviewEl("div", "evidence-load-error");
+    errBox.setAttribute("role", "alert");
+    errBox.setAttribute("aria-live", "assertive");
+    errBox.appendChild(overviewEl("p", "error-msg", `读取证据失败：${redactSensitiveText(err instanceof Error ? err.message : String(err))}`));
+    const retryBtn = overviewEl("button", "evidence-retry-btn", "重试");
+    retryBtn.type = "button";
+    retryBtn.addEventListener("click", () => loadDeliverableEvidence(container, item));
+    errBox.appendChild(retryBtn);
+    container.appendChild(errBox);
+  }
+}
+
+function renderDeliverableEvidence(container, item, bundle, statusInfo = null) {
+  const { policy, analytics, mapping, preview, runs } = bundle;
+  const fixedSource = DELIVERABLE_FIXED_SOURCES[item.id] || item.source || "未知";
+
+  // 1. Authoritative Summary Grid
+  const grid = overviewEl("dl", "evidence-overview-grid");
+  const freshnessLabel = analytics.freshness === "fresh" ? "及时" : (analytics.freshness === "stale" ? "滞后" : "未知");
+  const credentialLabel = policy.credentialAvailable ? "已配置" : "未配置";
+  const confirmedCount = analytics.mappingStability ? analytics.mappingStability.confirmed : (mapping.stability ? mapping.stability.confirmed : 0);
+  const mappingProgressText = `${Math.min(Math.max(Number(confirmedCount) || 0, 0), 2)}/2`;
+  const latestObs = mapping.observations && mapping.observations.length > 0 ? mapping.observations[0] : null;
+  const mappingStateText = formatMappingStateLabel(latestObs ? latestObs.state : (analytics.mappingEvidence ? analytics.mappingEvidence.state : null));
+  const recordCountText = analytics.externalRecordCount !== null && analytics.externalRecordCount !== undefined
+    ? `${analytics.externalRecordCount} 条`
+    : (latestObs && latestObs.candidateCount !== null && latestObs.candidateCount !== undefined ? `${latestObs.candidateCount} 条` : "待确认");
+
+  const summaryPairs = [
+    ["权威来源", fixedSource],
+    ["凭据状态", credentialLabel],
+    ["同步状态", deliverableSyncStateLabel(policy)],
+    ["时效性", freshnessLabel],
+    ["最近尝试", safeDisplayValue(analytics.lastAttemptAt || policy.lastAttemptAt || "无")],
+    ["最近成功", safeDisplayValue(analytics.lastSuccessAt || policy.lastSuccessAt || "无")],
+    ["失败次数", `${analytics.failureCount ?? 0} 次`],
+    ["外部记录数", recordCountText],
+    ["映射状态", mappingStateText],
+    ["映射进度", mappingProgressText],
+  ];
+
+  summaryPairs.forEach(([label, value]) => {
+    grid.append(overviewEl("dt", null, label), overviewEl("dd", null, safeDisplayValue(value)));
+  });
+  container.appendChild(grid);
+
+  // 2. Risk / Needs Attention Alert (if any)
+  if (analytics.needsAttention || analytics.riskSummary) {
+    const riskBox = overviewEl("div", "evidence-risk-box");
+    riskBox.append(
+      overviewEl("strong", "evidence-risk-title", "风险与告警"),
+      overviewEl("p", "evidence-risk-desc", redactSensitiveText(analytics.riskSummary || "映射或同步状态需要关注")),
+    );
+    container.appendChild(riskBox);
+  }
+
+  // 3. Sync-now Action Bar
+  const stabilityReady = Boolean(
+    (analytics.mappingStability && analytics.mappingStability.ready) ||
+    (mapping.stability && mapping.stability.confirmed >= 2)
+  );
+  const syncReady = Boolean(policy.enabled && policy.credentialAvailable && stabilityReady);
+
+  const syncActionBar = overviewEl("div", "evidence-sync-bar");
+  const syncBtn = overviewEl("button", "evidence-sync-btn", "立即同步");
+  syncBtn.type = "button";
+  syncBtn.disabled = !syncReady;
+
+  if (!syncReady) {
+    const missing = [];
+    if (!policy.enabled) missing.push("更新策略未启用");
+    if (!policy.credentialAvailable) missing.push("凭据未配置");
+    if (!stabilityReady) missing.push(`映射稳定性未就绪 (${mappingProgressText})`);
+    syncBtn.title = `不可同步：${missing.join("，")}`;
+  }
+
+  const syncStatus = overviewEl("span", "evidence-sync-status");
+  syncStatus.setAttribute("role", "status");
+  syncStatus.setAttribute("aria-live", "polite");
+
+  if (statusInfo && statusInfo.text) {
+    syncStatus.textContent = statusInfo.text;
+    syncStatus.className = statusInfo.className || "evidence-sync-status";
+  }
+
+  syncBtn.addEventListener("click", async () => {
+    if (!window.confirm(`确定要立即同步 ${item.name} 吗？`)) return;
+    syncBtn.disabled = true;
+    syncStatus.textContent = "正在执行同步...";
+    syncStatus.className = "evidence-sync-status is-busy";
+
+    try {
+      const response = await fetch(`/api/project-status/deliverables/${encodeURIComponent(item.id)}/sync-now`, {
+        method: "POST",
+        headers: { Accept: "application/json" },
+      });
+      const body = await overviewReadJson(response);
+      if (!response.ok || !body || body.ok !== true) throw overviewRequestError(body, response.status);
+
+      const resData = body.data || {};
+      const resResult = resData.result || {};
+      const finalState = resResult.finalState || resData.finalState;
+      const outcome = resResult.outcome || resData.outcome || finalState;
+
+      let resultStatusText = "";
+      let resultStatusClass = "";
+
+      if (finalState === "busy" || outcome === "busy") {
+        const msg = redactSensitiveText(resResult.errorMessage || resData.errorMessage || "任务处理中");
+        resultStatusText = `同步进行中：${msg}`;
+        resultStatusClass = "evidence-sync-status is-busy";
+      } else if (finalState === "success" && outcome === "success") {
+        resultStatusText = "同步完成：成功";
+        resultStatusClass = "evidence-sync-status is-success";
+      } else if (finalState === "partial" || outcome === "partial") {
+        resultStatusText = "同步完成：部分字段已应用";
+        resultStatusClass = "evidence-sync-status is-warning";
+      } else if (finalState === "needs_attention" || outcome === "needs_attention") {
+        const msg = redactSensitiveText(resResult.errorMessage || resData.errorMessage || "未匹配到唯一候选");
+        resultStatusText = `同步需要处理：${msg}`;
+        resultStatusClass = "evidence-sync-status is-warning";
+      } else {
+        const msg = redactSensitiveText(resResult.errorMessage || resData.errorMessage || (finalState ? `状态 ${finalState}` : "未知状态"));
+        resultStatusText = `同步失败：${msg}`;
+        resultStatusClass = "evidence-sync-status is-error";
+      }
+
+      syncStatus.textContent = resultStatusText;
+      syncStatus.className = resultStatusClass;
+
+      const deliverableIndex = overviewSavedState && Array.isArray(overviewSavedState.deliverables)
+        ? overviewSavedState.deliverables.findIndex((d) => d.id === item.id)
+        : -1;
+
+      await loadProjectOverview();
+
+      if (deliverableIndex >= 0) {
+        expandOverviewDetail(deliverableIndex, { text: resultStatusText, className: resultStatusClass });
+      }
+    } catch (err) {
+      syncStatus.textContent = `同步失败：${redactSensitiveText(err instanceof Error ? err.message : String(err))}`;
+      syncStatus.className = "evidence-sync-status is-error";
+      syncBtn.disabled = !syncReady;
+    }
+  });
+
+  syncActionBar.append(syncBtn, syncStatus);
+  container.appendChild(syncActionBar);
+
+  // 4. Candidate Differences Section
+  const diffSection = overviewEl("div", "evidence-sub-section evidence-diff-section");
+  diffSection.appendChild(overviewEl("h5", "evidence-sub-title", "候选字段差异对比"));
+
+  const differences = preview && Array.isArray(preview.differences) ? preview.differences : [];
+  if (differences.length === 0) {
+    const reasonText = formatCandidateReasonLabel(preview && preview.reason);
+    const emptyDiff = overviewEl("p", "evidence-empty-note", `暂无差异证据（${reasonText}）`);
+    emptyDiff.setAttribute("role", "status");
+    diffSection.appendChild(emptyDiff);
+  } else {
+    const tableWrap = overviewEl("div", "overview-table-wrap");
+    const diffTable = overviewEl("table", "overview-details-table evidence-diff-table");
+    const thead = overviewEl("thead");
+    const headerRow = overviewEl("tr");
+    ["目标字段", "来源字段", "当前系统值", "外部候选值", "变更状态"].forEach((text) => {
+      headerRow.appendChild(overviewEl("th", null, text));
+    });
+    thead.appendChild(headerRow);
+    const tbody = overviewEl("tbody");
+    differences.forEach((diff) => {
+      const tr = overviewEl("tr");
+      const targetLabel = DELIVERABLE_FIELD_LABELS[diff.targetField] || diff.targetField;
+      const changedLabel = diff.changed ? "有变更" : "无变更";
+      const changedTone = diff.changed ? "status-text is-warning" : "status-text is-success";
+
+      tr.appendChild(overviewEl("td", null, safeDisplayValue(targetLabel)));
+      tr.appendChild(overviewEl("td", null, safeDisplayValue(diff.sourceField)));
+      tr.appendChild(overviewEl("td", null, safeDisplayValue(diff.currentValue || "(空)")));
+      tr.appendChild(overviewEl("td", null, safeDisplayValue(diff.candidateValue || "(空)")));
+      const changedTd = overviewEl("td");
+      changedTd.appendChild(overviewEl("span", changedTone, changedLabel));
+      tr.appendChild(changedTd);
+      tbody.appendChild(tr);
+    });
+    diffTable.append(thead, tbody);
+    tableWrap.appendChild(diffTable);
+    diffSection.appendChild(tableWrap);
+  }
+  container.appendChild(diffSection);
+
+  // 5. Mapping Evidence View
+  const mappingSection = overviewEl("div", "evidence-sub-section evidence-mapping-section");
+  mappingSection.appendChild(overviewEl("h5", "evidence-sub-title", "映射发现证据"));
+
+  if (!latestObs) {
+    const emptyMapping = overviewEl("p", "evidence-empty-note", "暂无映射发现记录");
+    emptyMapping.setAttribute("role", "status");
+    mappingSection.appendChild(emptyMapping);
+  } else {
+    const obsGrid = overviewEl("dl", "evidence-obs-grid");
+    obsGrid.append(
+      overviewEl("dt", null, "观测状态"),
+      overviewEl("dd", null, formatMappingStateLabel(latestObs.state)),
+      overviewEl("dt", null, "观测时间"),
+      overviewEl("dd", null, safeDisplayValue(latestObs.createdAt)),
+      overviewEl("dt", null, "候选记录数"),
+      overviewEl("dd", null, `${latestObs.candidateCount} 条`),
+    );
+    mappingSection.appendChild(obsGrid);
+
+    const report = latestObs.fieldReport || {};
+    const fields = Array.isArray(report.fields) ? report.fields : [];
+    if (fields.length > 0) {
+      const fieldListWrap = overviewEl("div", "evidence-field-list-wrap");
+      fieldListWrap.appendChild(overviewEl("span", "evidence-field-label", "发现字段名称："));
+      const tags = overviewEl("div", "evidence-field-tags");
+      fields.forEach((f) => {
+        tags.appendChild(overviewEl("span", "evidence-field-tag", String(f)));
+      });
+      fieldListWrap.appendChild(tags);
+      mappingSection.appendChild(fieldListWrap);
+    }
+
+    const statusFields = Array.isArray(report.statusOrApprovalFields) ? report.statusOrApprovalFields : [];
+    if (statusFields.length > 0) {
+      const statusWrap = overviewEl("div", "evidence-status-fields-wrap");
+      statusWrap.appendChild(overviewEl("span", "evidence-field-label", "状态/审批字段采样："));
+      const list = overviewEl("ul", "evidence-status-samples-list");
+      statusFields.forEach((itemField) => {
+        const samples = Array.isArray(itemField.samples) && itemField.samples.length > 0
+          ? itemField.samples.join(", ")
+          : "无采样";
+        list.appendChild(overviewEl("li", null, `${itemField.field}：${samples}`));
+      });
+      statusWrap.appendChild(list);
+      mappingSection.appendChild(statusWrap);
+    }
+
+    const mappingNotice = overviewEl("p", "evidence-mapping-confirmation", "建议状态映射：待用户确认（不自动应用）");
+    mappingSection.appendChild(mappingNotice);
+  }
+  container.appendChild(mappingSection);
+
+  // 6. Run History & Artifacts
+  const runsSection = overviewEl("div", "evidence-sub-section evidence-runs-section");
+  runsSection.appendChild(overviewEl("h5", "evidence-sub-title", "运行历史与产物"));
+
+  if (runs.length === 0) {
+    const emptyRuns = overviewEl("p", "evidence-empty-note", "暂无同步运行记录");
+    emptyRuns.setAttribute("role", "status");
+    runsSection.appendChild(emptyRuns);
+  } else {
+    const tableWrap = overviewEl("div", "overview-table-wrap");
+    const runsTable = overviewEl("table", "overview-details-table evidence-runs-table");
+    const thead = overviewEl("thead");
+    const trHead = overviewEl("tr");
+    ["触发方式", "状态", "尝试", "开始时间", "结束时间", "结果摘要 / 错误", "产物"].forEach((t) => {
+      trHead.appendChild(overviewEl("th", null, t));
+    });
+    thead.appendChild(trHead);
+
+    const tbody = overviewEl("tbody");
+    runs.forEach((run) => {
+      const tr = overviewEl("tr");
+      const summaryText = redactSensitiveText(run.error_message || run.result_summary || "—");
+      const attemptText = (run.attempt !== null && run.attempt !== undefined && run.attempt !== "")
+        ? `第 ${run.attempt} 次`
+        : "未知";
+
+      tr.appendChild(overviewEl("td", null, formatRunTriggerLabel(run.trigger_type)));
+      const stateTd = overviewEl("td");
+      const stateTone = run.run_state === "success" ? "status-text is-success" : (run.run_state === "failed" ? "status-text is-error" : "status-text is-warning");
+      stateTd.appendChild(overviewEl("span", stateTone, formatRunStateLabel(run.run_state)));
+      tr.appendChild(stateTd);
+
+      tr.appendChild(overviewEl("td", null, attemptText));
+      tr.appendChild(overviewEl("td", null, safeDisplayValue(run.started_at || run.created_at || "未知")));
+      tr.appendChild(overviewEl("td", null, safeDisplayValue(run.finished_at || "未知")));
+      tr.appendChild(overviewEl("td", null, summaryText));
+
+      const artifactTd = overviewEl("td");
+      const artifactBtn = overviewEl("button", "evidence-artifact-btn", "查看产物");
+      artifactBtn.type = "button";
+      artifactTd.appendChild(artifactBtn);
+      tr.appendChild(artifactTd);
+
+      tbody.appendChild(tr);
+
+      // Collapsible artifact detail row
+      const artTr = overviewEl("tr", "evidence-artifact-row");
+      artTr.hidden = true;
+      const artTd = overviewEl("td");
+      artTd.colSpan = 7;
+      const artBox = overviewEl("div", "evidence-artifact-box");
+      artTd.appendChild(artBox);
+      artTr.appendChild(artTd);
+      tbody.appendChild(artTr);
+
+      artifactBtn.addEventListener("click", async () => {
+        if (!artTr.hidden) {
+          artTr.hidden = true;
+          artifactBtn.textContent = "查看产物";
+          return;
+        }
+        artTr.hidden = false;
+        artifactBtn.textContent = "收起产物";
+        artBox.setAttribute("role", "status");
+        artBox.setAttribute("aria-live", "polite");
+        artBox.textContent = "正在读取产物元数据...";
+        try {
+          const res = await fetch(`/api/project-status/runs/${encodeURIComponent(run.id)}/artifacts`, {
+            headers: { Accept: "application/json" },
+            cache: "no-store",
+          });
+          const body = await overviewReadJson(res);
+          if (!res.ok || !body || body.ok !== true) throw overviewRequestError(body, res.status);
+          const artifacts = body.data && Array.isArray(body.data.artifacts) ? body.data.artifacts : [];
+          artBox.textContent = "";
+          if (artifacts.length === 0) {
+            const emptyArt = overviewEl("p", "evidence-empty-note", "无产物元数据");
+            emptyArt.setAttribute("role", "status");
+            artBox.appendChild(emptyArt);
+            return;
+          }
+          const artTable = overviewEl("table", "evidence-artifact-table");
+          const artThead = overviewEl("thead");
+          const artHeadRow = overviewEl("tr");
+          ["产物名称", "类型", "大小", "相对路径", "SHA-256"].forEach((h) => artHeadRow.appendChild(overviewEl("th", null, h)));
+          artThead.appendChild(artHeadRow);
+          const artTbody = overviewEl("tbody");
+          artifacts.forEach((art) => {
+            const row = overviewEl("tr");
+            row.appendChild(overviewEl("td", null, safeDisplayValue(art.display_name || "—")));
+            row.appendChild(overviewEl("td", null, safeDisplayValue(art.artifact_type || "—")));
+            row.appendChild(overviewEl("td", null, formatArtifactSize(art.size_bytes)));
+            row.appendChild(overviewEl("td", null, safeDisplayValue(art.relative_path || "—")));
+            row.appendChild(overviewEl("td", null, safeDisplayValue(art.sha256 || "—")));
+            artTbody.appendChild(row);
+          });
+          artTable.append(artThead, artTbody);
+          artBox.appendChild(artTable);
+        } catch (err) {
+          artBox.setAttribute("role", "alert");
+          artBox.textContent = `读取产物失败：${redactSensitiveText(err instanceof Error ? err.message : String(err))}`;
+        }
+      });
+    });
+    runsTable.append(thead, tbody);
+    tableWrap.appendChild(runsTable);
+    runsSection.appendChild(tableWrap);
+  }
+  container.appendChild(runsSection);
+}
+
+function toggleDeliverableDetail(row, data, index, statusInfo = null) {
   const button = row.querySelector(".detail-expand");
   if (!button) return;
   const detailId = button.getAttribute("aria-controls");
@@ -744,6 +1259,9 @@ function toggleDeliverableDetail(row, data, index) {
   const policyPanel = overviewEl("section", "deliverable-policy-panel");
   policyPanel.setAttribute("aria-label", `${item.name} 更新方式`);
   loadDeliverablePolicy(policyPanel, item);
+  const evidencePanel = overviewEl("section", "deliverable-evidence-panel");
+  evidencePanel.setAttribute("aria-label", `${item.name} 外部同步与证据`);
+  loadDeliverableEvidence(evidencePanel, item, null, statusInfo);
   const actions = overviewEl("div", "detail-inline-actions");
   const editButton = overviewEl("button", "detail-edit", null);
   editButton.type = "button";
@@ -757,7 +1275,7 @@ function toggleDeliverableDetail(row, data, index) {
     startDeliverableEdit(index);
   });
   actions.appendChild(editButton);
-  box.append(head, grid, association, policyPanel, actions);
+  box.append(head, grid, association, policyPanel, evidencePanel, actions);
   cell.appendChild(box);
   inlineRow.appendChild(cell);
   row.after(inlineRow);
@@ -967,14 +1485,20 @@ function overviewDetailsRow(index) {
   return tbody.querySelectorAll("tr.deliverable-detail-row")[index] || null;
 }
 
-function expandOverviewDetail(index) {
+function expandOverviewDetail(index, statusInfo = null) {
   const row = overviewDetailsRow(index);
   if (!row) return;
   const button = row.querySelector(".detail-expand");
   if (!button) return;
   const detailId = button.getAttribute("aria-controls");
-  if (!document.getElementById(detailId)) {
-    toggleDeliverableDetail(row, overviewSavedState, index);
+  const existing = document.getElementById(detailId);
+  if (!existing) {
+    toggleDeliverableDetail(row, overviewSavedState, index, statusInfo);
+  } else {
+    const evidencePanel = existing.querySelector(".deliverable-evidence-panel");
+    if (evidencePanel) {
+      loadDeliverableEvidence(evidencePanel, overviewSavedState.deliverables[index], null, statusInfo);
+    }
   }
 }
 

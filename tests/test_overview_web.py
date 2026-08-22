@@ -349,6 +349,8 @@ def test_overview_milestone_maintenance_css_contract() -> None:
         ".milestone-move-btn",
         ".milestone-delete-btn",
         ".milestone-add-btn",
+        ".milestone-request-message",
+        "flex: 1 1 220px;",
         "min-height: 40px",
     ):
         assert marker in overview_css
@@ -356,3 +358,158 @@ def test_overview_milestone_maintenance_css_contract() -> None:
     mobile_break = css_text[css_text.index("@media (max-width: 560px)"):]
     assert ".milestone-edit-row" in mobile_break
     assert "grid-template-columns: 1fr;" in mobile_break
+
+
+def test_overview_deliverable_evidence_structure_and_labels() -> None:
+    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+    start = js_text.index("const OVERVIEW_DETAIL_COLUMNS")
+    end = js_text.index("function parseHeaders")
+    overview_js = js_text[start:end]
+
+    assert "function loadDeliverableEvidence" in overview_js
+    assert "function renderDeliverableEvidence" in overview_js
+
+    for deliverable_id, source_label in (
+        ("VPI-T2-D1", "仅手工维护"),
+        ("VPI-T2-D2", "TDC SOR"),
+        ("VPI-T2-D3", "ARAS EWO"),
+        ("VPI-T2-D4", "TDC A 面（契约待验证）"),
+        ("VPI-T2-D5", "TDC 数模"),
+    ):
+        assert f'"{deliverable_id}": "{source_label}"' in overview_js
+
+    assert "mappingProgressText = `${Math.min(Math.max(Number(confirmedCount) || 0, 0), 2)}/2`" in overview_js
+    assert 'policy.credentialAvailable ? "已配置" : "未配置"' in overview_js
+
+    for field_name in ("owner", "plannedDate", "note"):
+        assert field_name in overview_js
+    for field_col in ("targetField", "sourceField", "currentValue", "candidateValue", "changed"):
+        assert field_col in overview_js
+    assert "暂无差异证据" in overview_js
+    assert "建议状态映射：待用户确认（不自动应用）" in overview_js
+
+
+def test_overview_deliverable_evidence_restrictions_and_guard() -> None:
+    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+    start = js_text.index("const OVERVIEW_DETAIL_COLUMNS")
+    end = js_text.index("function parseHeaders")
+    overview_js = js_text[start:end]
+
+    assert 'item.id === "VPI-T2-D1"' in overview_js
+    assert 'item.id === "VPI-T2-D4"' in overview_js
+    assert "TDC A 面契约待验证/阻断" in overview_js
+
+    assert "policy.enabled && policy.credentialAvailable && stabilityReady" in overview_js
+    assert "window.confirm" in overview_js
+
+    assert 'finalState === "busy" || outcome === "busy"' in overview_js
+    assert 'finalState === "success" && outcome === "success"' in overview_js
+    assert 'finalState === "partial" || outcome === "partial"' in overview_js
+    assert 'finalState === "needs_attention" || outcome === "needs_attention"' in overview_js
+
+    assert "exitCode" not in overview_js
+
+    for forbidden in (
+        "credentialRef",
+        "credential_ref",
+        "credentialAlias",
+        "cookie",
+        "authorization",
+        "lease_token",
+        "leaseToken",
+        "fingerprint",
+        "candidate_summary_json",
+        "raw_response",
+    ):
+        assert forbidden not in overview_js
+
+
+def test_overview_deliverable_evidence_api_and_sync_contract() -> None:
+    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+    start = js_text.index("const OVERVIEW_DETAIL_COLUMNS")
+    end = js_text.index("function parseHeaders")
+    overview_js = js_text[start:end]
+
+    assert "/api/project-status/deliverables/${encodeURIComponent(item.id)}/update-policy" in overview_js
+    assert "/api/project-status/analytics" in overview_js
+    assert "/api/project-status/deliverables/${encodeURIComponent(item.id)}/mapping-discovery" in overview_js
+    assert "/api/project-status/deliverables/${encodeURIComponent(item.id)}/candidate-preview" in overview_js
+    assert "/api/project-status/runs?deliverableId=${encodeURIComponent(item.id)}&limit=10" in overview_js
+    assert "/api/project-status/runs/${encodeURIComponent(run.id)}/artifacts" in overview_js
+    assert "/api/project-status/deliverables/${encodeURIComponent(item.id)}/sync-now" in overview_js
+
+    for art_key in ("display_name", "artifact_type", "size_bytes", "relative_path", "sha256"):
+        assert art_key in overview_js
+
+    assert "innerHTML" not in overview_js
+
+
+def test_overview_deliverable_evidence_accessibility_and_fallbacks() -> None:
+    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+    start = js_text.index("const OVERVIEW_DETAIL_COLUMNS")
+    end = js_text.index("function parseHeaders")
+    overview_js = js_text[start:end]
+
+    # Accessible state regions
+    assert 'loadingP.setAttribute("role", "status")' in overview_js
+    assert 'loadingP.setAttribute("aria-live", "polite")' in overview_js
+    assert 'errBox.setAttribute("role", "alert")' in overview_js
+    assert 'errBox.setAttribute("aria-live", "assertive")' in overview_js
+    assert 'emptyDiff.setAttribute("role", "status")' in overview_js
+    assert 'emptyMapping.setAttribute("role", "status")' in overview_js
+    assert 'emptyRuns.setAttribute("role", "status")' in overview_js
+    assert 'artBox.setAttribute("role", "status")' in overview_js
+    assert 'artBox.setAttribute("role", "alert")' in overview_js
+
+    # Unknown enum fallbacks
+    assert '(state && map[state]) || "待确认"' in overview_js
+    assert '(reason && map[reason]) || "待确认"' in overview_js
+    assert '(trigger && map[trigger]) || "未知"' in overview_js
+    assert '(state && map[state]) || "未知"' in overview_js
+
+    # Start and finish timestamps, and non-fabricated attempt
+    assert "safeDisplayValue(run.finished_at || \"未知\")" in overview_js
+    assert "safeDisplayValue(run.started_at || run.created_at || \"未知\")" in overview_js
+    assert "run.attempt !== null && run.attempt !== undefined && run.attempt !== \"\"" in overview_js
+    assert "artTd.colSpan = 7" in overview_js
+
+    # Visible post-sync refresh preserving status
+    assert "expandOverviewDetail(deliverableIndex, { text: resultStatusText, className: resultStatusClass })" in overview_js
+
+
+def test_overview_deliverable_evidence_css_contract() -> None:
+    css_text = Path("web/static/style.css").read_text(encoding="utf-8-sig")
+    start = css_text.index(".overview-tabpanel[hidden]")
+    end = css_text.index(".loading,\n.is-empty")
+    overview_css = css_text[start:end]
+
+    for marker in (
+        ".deliverable-evidence-panel",
+        ".evidence-panel-head",
+        ".evidence-title",
+        ".evidence-source",
+        ".evidence-restriction-card",
+        ".evidence-overview-grid",
+        ".evidence-risk-box",
+        ".evidence-sync-bar",
+        ".evidence-sync-btn",
+        ".evidence-sync-status",
+        ".evidence-sub-section",
+        ".evidence-sub-title",
+        ".evidence-empty-note",
+        ".evidence-obs-grid",
+        ".evidence-field-tags",
+        ".evidence-field-tag",
+        ".evidence-status-samples-list",
+        ".evidence-mapping-confirmation",
+        ".evidence-artifact-btn",
+        ".evidence-artifact-row",
+        ".evidence-artifact-box",
+        ".evidence-artifact-table",
+        ".evidence-retry-btn",
+    ):
+        assert marker in overview_css
+
+    mobile_break = css_text[css_text.index("@media (max-width: 560px)"):]
+    assert ".evidence-overview-grid" in mobile_break
+    assert ".evidence-obs-grid" in mobile_break
