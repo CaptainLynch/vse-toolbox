@@ -33,6 +33,7 @@ from core.db_manager import (
     ArchiveJobNotReadyError,
     ArchiveLeaseBusyError,
     DatabaseManager,
+    SyncBindingNotReadyError,
 )
 from core.diagnostics import DiagnosticOptions, MarkdownDiagnosticReport
 from services.project_status_updates import (
@@ -41,6 +42,10 @@ from services.project_status_updates import (
 )
 from services.project_status_discovery import MappingDiscoveryService
 from services.project_status_analytics import ProjectStatusAnalyticsService
+from services.project_status_sync_runner import (
+    ProjectStatusSyncRunner,
+    create_production_registry,
+)
 from services.scheduled_archive_admin import (
     ArchiveAdminValidationError,
     ScheduledArchiveAdminService,
@@ -1932,6 +1937,54 @@ def create_app(
             return response
         except Exception as exc:
             logger.exception("project status artifacts failed")
+            return _json_error(500, "ServerError", _sanitize_error_message(exc))
+
+    @app.post("/api/project-status/deliverables/<deliverable_id>/sync-now")
+    def api_project_status_sync_now(deliverable_id: str):
+        local_error = _local_web_mutation_error()
+        if local_error is not None:
+            return local_error
+        if deliverable_id == "VPI-T2-D1":
+            return _json_error(409, "ManualOnly", "该交付物仅允许手工维护")
+        if deliverable_id == "VPI-T2-D4":
+            return _json_error(409, "ContractBlocked", AFACE_CONTRACT_BLOCKER)
+        try:
+            update_service.assert_sync_ready(deliverable_id)
+            runner = ProjectStatusSyncRunner(
+                db,
+                update_service,
+                create_production_registry(),
+            )
+            result = runner.run_once(
+                deliverable_id=deliverable_id,
+                trigger_type="sync_now",
+            )
+            if len(result.results) != 1:
+                return _json_error(409, "SyncNotReady", "同步绑定不可用")
+            item = result.results[0]
+            data = {
+                "exitCode": result.exit_code,
+                "result": {
+                    "deliverableId": item.deliverable_id,
+                    "sourceType": item.source_type,
+                    "outcome": item.outcome,
+                    "runId": item.run_id,
+                    "finalState": item.final_state,
+                    "appliedFields": list(item.applied_fields),
+                    "skippedFields": dict(item.skipped_fields),
+                    "errorType": item.error_type,
+                    "errorMessage": item.error_message,
+                },
+            }
+            response = jsonify({"ok": True, "data": data})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except KeyError:
+            return _json_error(404, "NotFound", "未找到交付物")
+        except SyncBindingNotReadyError as exc:
+            return _json_error(409, "SyncNotReady", _sanitize_error_message(exc))
+        except Exception as exc:
+            logger.exception("project status sync-now failed")
             return _json_error(500, "ServerError", _sanitize_error_message(exc))
 
     @app.patch("/api/project-status/phases/<phase_id>/milestones")
