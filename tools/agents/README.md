@@ -118,6 +118,14 @@ powershell -ExecutionPolicy Bypass -File .\start-supervisor.ps1 -CodexProfile re
 powershell -ExecutionPolicy Bypass -File .\start-supervisor.ps1 -CodexProfile official -RestartDesktop
 ```
 
+To restart only Desktop without selecting a supervisor task, add
+`-DesktopOnly`. This is also the required way to relaunch Desktop while the
+process-only relay key is in use:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\start-supervisor.ps1 -CodexProfile relay -RestartDesktop -DesktopOnly
+```
+
 The Desktop switcher preserves the complete official `config.toml` as an
 exact backup, writes the relay config atomically, and verifies hashes before
 restoring. It refuses to discard configuration changes made while relay mode

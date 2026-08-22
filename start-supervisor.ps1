@@ -10,6 +10,8 @@ param(
 
     [switch]$RestartDesktop,
 
+    [switch]$DesktopOnly,
+
     [string]$DesktopExecutable,
 
     [switch]$DryRun
@@ -26,6 +28,9 @@ $tasksRoot = Join-Path $repoRoot ".agents\tasks"
 
 if (-not (Test-Path -LiteralPath $runner -PathType Leaf)) {
     throw "Supervisor runner was not found: $runner"
+}
+if ($DesktopOnly -and -not $RestartDesktop) {
+    throw "DesktopOnly requires RestartDesktop."
 }
 
 if ($CodexProfile -eq "relay") {
@@ -72,7 +77,7 @@ if ($CodexProfile -eq "relay" -and $RestartDesktop -and
 }
 
 try {
-    if ([string]::IsNullOrWhiteSpace($TaskFile)) {
+    if (-not $DesktopOnly -and [string]::IsNullOrWhiteSpace($TaskFile)) {
         $tasks = @(Get-ChildItem -LiteralPath $tasksRoot -Filter "*.json" -File | Sort-Object Name)
         if ($tasks.Count -eq 0) {
             throw "No task JSON files were found under $tasksRoot"
@@ -92,13 +97,15 @@ try {
         $TaskFile = $tasks[$selectedNumber - 1].FullName
     }
 
-    $arguments = @{
-        TaskFile = $TaskFile
-        CodexProfile = $CodexProfile
-        SupervisorProfile = $SupervisorProfile
-    }
-    if ($DryRun) {
-        $arguments.DryRun = $true
+    if (-not $DesktopOnly) {
+        $arguments = @{
+            TaskFile = $TaskFile
+            CodexProfile = $CodexProfile
+            SupervisorProfile = $SupervisorProfile
+        }
+        if ($DryRun) {
+            $arguments.DryRun = $true
+        }
     }
 
     if ($RestartDesktop) {
@@ -112,9 +119,14 @@ try {
         & $desktopSwitcher @desktopArguments
     }
 
-    Write-Host "Starting supervisor: Codex=$CodexProfile, orchestration=$SupervisorProfile"
-    & $runner @arguments
-    $exitCode = $LASTEXITCODE
+    if ($DesktopOnly) {
+        $exitCode = 0
+    }
+    else {
+        Write-Host "Starting supervisor: Codex=$CodexProfile, orchestration=$SupervisorProfile"
+        & $runner @arguments
+        $exitCode = $LASTEXITCODE
+    }
 }
 finally {
     if ($temporaryCredential) {
