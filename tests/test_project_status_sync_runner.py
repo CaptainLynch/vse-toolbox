@@ -4,27 +4,20 @@
 from __future__ import annotations
 
 import json
-import sqlite3
-from typing import Any
 
 import pytest
 
-from core.db_manager import (
-    DatabaseManager,
-    SyncLeaseBusyError,
-)
+from core.db_manager import DatabaseManager
 from services.project_status_updates import (
     ConnectorCandidate,
     ConnectorSnapshot,
     ProjectStatusUpdateService,
 )
 from services.project_status_sync_runner import (
-    BindingRunResult,
     ConnectorRegistry,
     EXIT_ATTENTION,
     EXIT_FAILED,
     EXIT_OK,
-    ProjectStatusConnector,
     ProjectStatusSyncRunner,
     SyncBindingContext,
     create_production_registry,
@@ -60,14 +53,62 @@ def runner(
     return ProjectStatusSyncRunner(db, service, registry)
 
 
+def _record_two_observations_for_runner(
+    db: DatabaseManager,
+    deliverable_id: str = "VPI-T2-D5",
+    source_type: str = "tdc",
+    external_key: str = "FM-1",
+    fields: list[str] | None = None,
+) -> None:
+    field_list = fields if fields is not None else [
+        "currentApprover", "approvalComment", "incident",
+        "reportType", "ewoNo", "projectCode", "subjectKeyword",
+    ]
+
+    report = {
+        "fields": field_list,
+        "statusOrApprovalFields": [],
+        "suggestedStatusMapping": [],
+        "suggestedAutomaticFields": [],
+        "requiresConfirmation": True,
+    }
+    db.record_mapping_observation(
+        deliverable_id=deliverable_id,
+        source_type=source_type,
+        result_state="matched",
+        external_key=external_key,
+        candidate_fingerprint="fp1",
+        candidate_count=1,
+        candidate_summary_json=json.dumps([{"externalKey": external_key, "fields": {}}]),
+        field_report_json=json.dumps(report),
+    )
+    db.record_mapping_observation(
+        deliverable_id=deliverable_id,
+        source_type=source_type,
+        result_state="matched",
+        external_key=external_key,
+        candidate_fingerprint="fp2",
+        candidate_count=1,
+        candidate_summary_json=json.dumps([{"externalKey": external_key, "fields": {}}]),
+        field_report_json=json.dumps(report),
+    )
+
+
 def _enable_pilot(service: ProjectStatusUpdateService) -> int:
+    _record_two_observations_for_runner(
+        service._db,
+        deliverable_id="VPI-T2-D5",
+        source_type="tdc",
+        external_key="FM-1",
+        fields=["currentApprover", "approvalComment", "incident", "reportType"],
+    )
     service.update_update_policy(
         "VPI-T2-D5",
         {
             "mode": "hybrid",
             "enabled": True,
             "externalKey": "FM-1",
-            "matchRule": {"incident": "FM-1"},
+            "matchRule": {"reportType": "data_model", "incident": "FM-1"},
             "mapping": {"owner": "currentApprover", "note": "approvalComment"},
             "fieldAuthority": {"owner": "automatic", "note": "automatic"},
             "credentialRef": "test-credential-ref",
@@ -82,15 +123,22 @@ def _enable_pilot(service: ProjectStatusUpdateService) -> int:
 
 
 def _enable_second_deliverable(db: DatabaseManager) -> int:
-    """直接在数据库层面启用 VPI-T2-D3 绑定，绕过试点限制（仅测试用）。"""
+    """在数据库层面配置并启用 VPI-T2-D3 绑定（符合 aras/ewo 契约与证据要求）。"""
+    _record_two_observations_for_runner(
+        db,
+        deliverable_id="VPI-T2-D3",
+        source_type="aras",
+        external_key="FM-3",
+        fields=["currentApprover", "ewoNo", "reportType", "projectCode", "approvalComment"],
+    )
     with db.get_connection() as conn:
         conn.execute(
             """
             UPDATE project_status_update_bindings
-            SET mode='hybrid', source_type='tdc', enabled=1,
+            SET mode='hybrid', source_type='aras', enabled=1,
                 external_key='FM-3',
                 credential_ref='test-credential-ref',
-                match_rule_json='{"incident":"FM-3"}',
+                match_rule_json='{"reportType":"ewo","ewoNo":"FM-3"}',
                 mapping_json='{"owner":"currentApprover"}'
             WHERE deliverable_id='VPI-T2-D3'
             """
@@ -99,18 +147,18 @@ def _enable_second_deliverable(db: DatabaseManager) -> int:
             """
             INSERT INTO project_status_field_authority
                 (deliverable_id, field_name, authority, source_type)
-            VALUES ('VPI-T2-D3', 'owner', 'automatic', 'tdc')
+            VALUES ('VPI-T2-D3', 'owner', 'automatic', 'aras')
             ON CONFLICT(deliverable_id, field_name) DO UPDATE SET
-                authority='automatic', source_type='tdc', locked_at=NULL
+                authority='automatic', source_type='aras', locked_at=NULL
             """
         )
         conn.execute(
             """
             INSERT INTO project_status_field_authority
                 (deliverable_id, field_name, authority, source_type)
-            VALUES ('VPI-T2-D3', 'note', 'automatic', 'tdc')
+            VALUES ('VPI-T2-D3', 'note', 'manual', 'aras')
             ON CONFLICT(deliverable_id, field_name) DO UPDATE SET
-                authority='automatic', source_type='tdc', locked_at=NULL
+                authority='manual', source_type='aras', locked_at=NULL
             """
         )
         conn.commit()
@@ -229,29 +277,15 @@ def test_multiple_bindings_stable_order(
     runner: ProjectStatusSyncRunner, db: DatabaseManager,
     service: ProjectStatusUpdateService, registry: ConnectorRegistry,
 ) -> None:
-    id5 = _enable_pilot(service)
-    id3 = _enable_second_deliverable(db)
+    _enable_pilot(service)
+    _enable_second_deliverable(db)
 
-    snap5 = _snapshot_for(db, "VPI-T2-D5", "FM-1", "v-5", owner="D5owner")
+    snap5 = _snapshot_for(db, "VPI-T2-D5", "FM-1", "v-5", owner="D5owner", note="D5note")
     snap3 = _snapshot_for(db, "VPI-T2-D3", "FM-3", "v-3", owner="D3owner")
     connector5 = FakeConnector(snapshot=snap5)
     connector3 = FakeConnector(snapshot=snap3)
     registry.register("tdc", connector5)
-
-    # 只能注册一个 tdc connector，两个 binding 都是 tdc → 用同一 connector。
-    # 为了区分 snapshot，让 connector 根据 deliverable_id 返回。
-    class MultiFake:
-        def __init__(self):
-            self.calls: list[SyncBindingContext] = []
-
-        def collect(self, context: SyncBindingContext) -> ConnectorSnapshot:
-            self.calls.append(context)
-            if context.deliverable_id == "VPI-T2-D5":
-                return snap5
-            return snap3
-
-    multi = MultiFake()
-    registry.register("tdc", multi)
+    registry.register("aras", connector3)
 
     result = runner.run_once()
     assert len(result.results) == 2
@@ -271,19 +305,13 @@ def test_single_failure_does_not_block_others(
     _enable_pilot(service)
     _enable_second_deliverable(db)
 
-    class FailFirst:
-        def __init__(self):
-            self.count = 0
-
-        def collect(self, context: SyncBindingContext) -> ConnectorSnapshot:
-            self.count += 1
-            if context.deliverable_id == "VPI-T2-D3":
-                raise RuntimeError("boom password=secret")
-            return _snapshot_for(
-                db, "VPI-T2-D5", "FM-1", "v-ok", owner="ok"
-            )
-
-    registry.register("tdc", FailFirst())
+    registry.register("aras", FakeConnector(exc=RuntimeError("boom password=secret")))
+    registry.register(
+        "tdc",
+        FakeConnector(
+            snapshot=_snapshot_for(db, "VPI-T2-D5", "FM-1", "v-ok", owner="ok", note="ok")
+        ),
+    )
     result = runner.run_once()
     assert len(result.results) == 2
     outcomes = {r.deliverable_id: r.outcome for r in result.results}
@@ -565,17 +593,19 @@ def test_failed_and_attention_yields_exit_1(
     _enable_pilot(service)
     _enable_second_deliverable(db)
 
-    class FailD5:
-        def collect(self, context: SyncBindingContext) -> ConnectorSnapshot:
-            if context.deliverable_id == "VPI-T2-D5":
-                raise RuntimeError("boom")
-            return ConnectorSnapshot(
-                match_state="not_found", candidates=[],
-                external_version="v-x", fetched_at="2026-08-20T00:00:00.000Z",
+    registry.register("tdc", FakeConnector(exc=RuntimeError("boom")))
+    registry.register(
+        "aras",
+        FakeConnector(
+            snapshot=ConnectorSnapshot(
+                match_state="not_found",
+                candidates=[],
+                external_version="v-x",
+                fetched_at="2026-08-20T00:00:00.000Z",
                 expected_deliverable_updated_at=_current_updated_at(db, "VPI-T2-D3"),
             )
-
-    registry.register("tdc", FailD5())
+        ),
+    )
     result = runner.run_once()
     assert result.exit_code == EXIT_FAILED
 
@@ -729,13 +759,13 @@ def test_binding_deleted_mid_batch_does_not_abort(
             return _snapshot_for(db, context.deliverable_id, context.external_key, "v", owner="ok")
 
     registry.register("tdc", DeleteD5Connector())
+    registry.register(
+        "aras",
+        FakeConnector(snapshot=_snapshot_for(db, "VPI-T2-D3", "FM-3", "v-3", owner="D3owner")),
+    )
 
     # 在 run_once 前删除 D5 的交付物（级联删除 binding）。
     with db.get_connection() as conn:
-        # 先获取 D5 binding_id。
-        d5_bid = int(conn.execute(
-            "SELECT id FROM project_status_update_bindings WHERE deliverable_id='VPI-T2-D5'"
-        ).fetchone()["id"])
         conn.execute("DELETE FROM project_status_deliverables WHERE id='VPI-T2-D5'")
         conn.commit()
 
@@ -774,19 +804,31 @@ def test_finalize_failure_secondary_exception_does_not_mask_ki(
 
 
 def test_runner_needs_attention_when_binding_not_ready_zero_runs(
-    runner: ProjectStatusSyncRunner, db: DatabaseManager, service: ProjectStatusUpdateService, registry: ConnectorRegistry
+    runner: ProjectStatusSyncRunner,
+    db: DatabaseManager,
+    service: ProjectStatusUpdateService,
+    registry: ConnectorRegistry,
 ) -> None:
+
     """当 binding 未就绪（例如无 credential_ref）时，runner 返回 needs_attention，零 connector 调用且零 run 产生。"""
-    # 配置 mode=hybrid, enabled=1，但不设置 credential_ref
+    # 记录有效证据并配置合规规则，然后清除 credential_ref 模拟未就绪
+    _record_two_observations_for_runner(
+        db,
+        deliverable_id="VPI-T2-D5",
+        source_type="tdc",
+        external_key="FM-1",
+        fields=["currentApprover", "approvalComment", "incident", "reportType"],
+    )
     service.update_update_policy(
         "VPI-T2-D5",
         {
             "mode": "hybrid",
             "enabled": True,
             "externalKey": "FM-1",
-            "matchRule": {"incident": "FM-1"},
+            "matchRule": {"reportType": "data_model", "incident": "FM-1"},
             "mapping": {"owner": "currentApprover", "note": "approvalComment"},
             "fieldAuthority": {"owner": "automatic", "note": "automatic"},
+            "credentialRef": "temp-alias",
         },
     )
     # 显式清除 credential_ref
@@ -796,7 +838,7 @@ def test_runner_needs_attention_when_binding_not_ready_zero_runs(
         )
         conn.commit()
 
-    connector = FakeConnector(snapshot=_matched_snapshot(db, owner="ok"))
+    connector = FakeConnector(snapshot=_matched_snapshot(db, owner="ok", note="ok"))
     registry.register("tdc", connector)
 
     result = runner.run_once()
@@ -814,18 +856,30 @@ def test_runner_needs_attention_when_binding_not_ready_zero_runs(
 
 
 def test_dry_run_binding_not_ready_returns_attention(
-    runner: ProjectStatusSyncRunner, db: DatabaseManager, service: ProjectStatusUpdateService, registry: ConnectorRegistry
+    runner: ProjectStatusSyncRunner,
+    db: DatabaseManager,
+    service: ProjectStatusUpdateService,
+    registry: ConnectorRegistry,
 ) -> None:
+
     """dry-run 下 binding 未配置 credential_ref 时 binding_ready=False 且 exit_code=EXIT_ATTENTION。"""
+    _record_two_observations_for_runner(
+        db,
+        deliverable_id="VPI-T2-D5",
+        source_type="tdc",
+        external_key="FM-1",
+        fields=["currentApprover", "approvalComment", "incident", "reportType"],
+    )
     service.update_update_policy(
         "VPI-T2-D5",
         {
             "mode": "hybrid",
             "enabled": True,
             "externalKey": "FM-1",
-            "matchRule": {"incident": "FM-1"},
+            "matchRule": {"reportType": "data_model", "incident": "FM-1"},
             "mapping": {"owner": "currentApprover", "note": "approvalComment"},
             "fieldAuthority": {"owner": "automatic", "note": "automatic"},
+            "credentialRef": "temp-alias",
         },
     )
     with db.get_connection() as conn:
@@ -872,3 +926,127 @@ def test_eligible_rows_credential_configured_bool_and_credential_ref_absent(
     assert d5_row2["credential_configured"] is False
     assert isinstance(d5_row2["credential_configured"], bool)
     assert "credential_ref" not in d5_row2
+
+
+def test_legacy_binding_lacking_approval_evidence_refuses_sync(
+    runner: ProjectStatusSyncRunner, db: DatabaseManager, registry: ConnectorRegistry
+) -> None:
+    """Runner refuses a legacy enabled binding without approval evidence before connector call and creates no run."""
+    # 直接在数据库写入 legacy enabled 记录（无 mapping observations 证据）
+    with db.get_connection() as conn:
+        conn.execute(
+            """
+            UPDATE project_status_update_bindings
+            SET mode='hybrid', source_type='tdc', enabled=1,
+                external_key='LEGACY-1',
+                credential_ref='legacy-alias',
+                match_rule_json='{"reportType":"data_model","incident":"LEGACY-1"}',
+                mapping_json='{"owner":"currentApprover"}'
+            WHERE deliverable_id='VPI-T2-D5'
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO project_status_field_authority
+                (deliverable_id, field_name, authority, source_type)
+            VALUES ('VPI-T2-D5', 'owner', 'automatic', 'tdc')
+            ON CONFLICT(deliverable_id, field_name) DO UPDATE SET
+                authority='automatic', source_type='tdc', locked_at=NULL
+            """
+        )
+        conn.commit()
+
+    fake_conn = FakeConnector(snapshot=_matched_snapshot(db, external_key="LEGACY-1", owner="new-owner"))
+    registry.register("tdc", fake_conn)
+
+    result = runner.run_once(deliverable_id="VPI-T2-D5")
+    assert len(result.results) == 1
+    r = result.results[0]
+    assert r.outcome == "needs_attention"
+    assert r.final_state == "needs_attention"
+    assert r.error_type == "binding_not_ready"
+    assert "证据" in (r.error_message or "")
+    assert r.run_id is None
+    assert result.exit_code == EXIT_ATTENTION
+
+    # Connector 零调用，零 run 产生
+    assert len(fake_conn.collect_calls) == 0
+    assert _count_runs(db) == 0
+
+
+def test_run_once_trigger_type_sync_now(
+    runner: ProjectStatusSyncRunner,
+    db: DatabaseManager,
+    service: ProjectStatusUpdateService,
+    registry: ConnectorRegistry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """run_once(trigger_type='sync_now') records sync_now in run/audit and passes it to apply_sync_update."""
+    binding_id = _enable_pilot(service)
+    snap = _matched_snapshot(db, owner="新负责人", note="同步备注")
+    connector = FakeConnector(snapshot=snap)
+    registry.register("tdc", connector)
+
+    apply_calls = []
+    original_apply = service.apply_sync_update
+
+    def spy_apply(binding_id, run_id, lease_token, snapshot, trigger_type):
+        apply_calls.append({
+            "binding_id": binding_id,
+            "run_id": run_id,
+            "lease_token": lease_token,
+            "snapshot": snapshot,
+            "trigger_type": trigger_type,
+        })
+        return original_apply(binding_id, run_id, lease_token, snapshot, trigger_type)
+
+    monkeypatch.setattr(service, "apply_sync_update", spy_apply)
+
+    result = runner.run_once(trigger_type="sync_now")
+    assert len(result.results) == 1
+    assert result.results[0].outcome == "completed"
+    assert result.results[0].final_state == "success"
+    assert result.exit_code == EXIT_OK
+
+    # 验证 apply_sync_update 显式收到 sync_now 参数
+    assert len(apply_calls) == 1
+    assert apply_calls[0]["trigger_type"] == "sync_now"
+
+    # 验证 run 表中 trigger_type 为 sync_now
+    with db.get_connection() as conn:
+        run = conn.execute(
+            "SELECT trigger_type FROM project_status_sync_runs WHERE binding_id = ?",
+            (binding_id,),
+        ).fetchone()
+        assert run is not None
+        assert run["trigger_type"] == "sync_now"
+
+        # 验证 audit 表中 trigger_type 为 sync_now
+        audit = conn.execute(
+            """
+            SELECT trigger_type FROM project_status_update_audit
+            WHERE deliverable_id = 'VPI-T2-D5' ORDER BY id DESC LIMIT 1
+            """
+        ).fetchone()
+        assert audit is not None
+        assert audit["trigger_type"] == "sync_now"
+
+
+def test_run_once_rejects_unsupported_trigger_type_without_writes(
+    runner: ProjectStatusSyncRunner,
+    db: DatabaseManager,
+    service: ProjectStatusUpdateService,
+) -> None:
+    """Unsupported trigger values are rejected without any database writes."""
+    _enable_pilot(service)
+    runs_before = _count_runs(db)
+    audit_before = _count_audit(db)
+
+    with pytest.raises(ValueError, match="unsupported"):
+        runner.run_once(trigger_type="manual")
+
+    with pytest.raises(ValueError, match="unsupported"):
+        runner.run_once(trigger_type="invalid_trigger")
+
+    assert _count_runs(db) == runs_before
+    assert _count_audit(db) == audit_before

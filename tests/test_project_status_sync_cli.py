@@ -4,8 +4,6 @@
 from __future__ import annotations
 
 import json
-import sys
-from typing import Any
 
 import pytest
 
@@ -29,7 +27,34 @@ def cli_db(monkeypatch, tmp_path) -> DatabaseManager:
 
 
 def _enable_pilot_direct(db: DatabaseManager) -> int:
-    """直接在 DB 层启用 D5 试点绑定。"""
+    """在 DB 层配置合规证据并启用 D5 试点绑定。"""
+    report = {
+        "fields": ["currentApprover", "approvalComment", "incident", "reportType"],
+        "statusOrApprovalFields": [],
+        "suggestedStatusMapping": [],
+        "suggestedAutomaticFields": [],
+        "requiresConfirmation": True,
+    }
+    db.record_mapping_observation(
+        deliverable_id="VPI-T2-D5",
+        source_type="tdc",
+        result_state="matched",
+        external_key="FM-1",
+        candidate_fingerprint="fp1",
+        candidate_count=1,
+        candidate_summary_json=json.dumps([{"externalKey": "FM-1", "fields": {}}]),
+        field_report_json=json.dumps(report),
+    )
+    db.record_mapping_observation(
+        deliverable_id="VPI-T2-D5",
+        source_type="tdc",
+        result_state="matched",
+        external_key="FM-1",
+        candidate_fingerprint="fp2",
+        candidate_count=1,
+        candidate_summary_json=json.dumps([{"externalKey": "FM-1", "fields": {}}]),
+        field_report_json=json.dumps(report),
+    )
     with db.get_connection() as conn:
         conn.execute(
             """
@@ -37,7 +62,7 @@ def _enable_pilot_direct(db: DatabaseManager) -> int:
             SET mode='hybrid', source_type='tdc', enabled=1,
                 external_key='FM-1',
                 credential_ref='test-credential-ref',
-                match_rule_json='{"incident":"FM-1"}',
+                match_rule_json='{"reportType":"data_model","incident":"FM-1"}',
                 mapping_json='{"owner":"currentApprover","note":"approvalComment"}'
             WHERE deliverable_id='VPI-T2-D5'
             """
@@ -55,7 +80,7 @@ def _enable_pilot_direct(db: DatabaseManager) -> int:
             """
             INSERT INTO project_status_field_authority
                 (deliverable_id, field_name, authority, source_type)
-            VALUES ('VPI-T2-D5', 'note', 'automatic', 'tdc')
+            VALUES ('VPI-T2-D5', 'remark', 'automatic', 'tdc')
             ON CONFLICT(deliverable_id, field_name) DO UPDATE SET
                 authority='automatic', source_type='tdc', locked_at=NULL
             """
@@ -138,6 +163,7 @@ def test_cli_output_no_sensitive_data(monkeypatch, cli_db, capsys) -> None:
     )
 
     code = main_module.main(["project-status-sync", "--once"])
+    assert code == 2
     captured = capsys.readouterr()
     output = captured.out + captured.err
     assert "test-credential-ref" not in output
@@ -249,7 +275,6 @@ def test_cli_db_init_failure_exit_1(monkeypatch, tmp_path) -> None:
         lambda: DatabaseManager(db_path=bad_path),
     )
     # 让目录创建后但 init_database 抛错。
-    original_init = DatabaseManager.init_database
 
     def boom(self):
         raise RuntimeError("corrupt db password=secret")

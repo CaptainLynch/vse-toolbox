@@ -60,12 +60,63 @@ def test_update_policy_defaults_and_status_summary(client) -> None:  # type: ign
     assert summary["syncState"] == "idle"
 
 
+def _record_two_observations(
+    client,
+    deliverable_id: str = "VPI-T2-D5",
+    source_type: str = "tdc",
+    external_key: str = "FM-1",
+    fields: list[str] | None = None,
+) -> None:
+    """Helper to record two consecutive stable observations directly in test DB."""
+    import json
+    field_list = fields if fields is not None else [
+        "currentApprover", "approvalComment", "incident", "reportType"
+    ]
+    report = {
+        "fields": field_list,
+        "statusOrApprovalFields": [],
+        "suggestedStatusMapping": [],
+        "suggestedAutomaticFields": [],
+        "requiresConfirmation": True,
+    }
+    db = web_app.DatabaseManager()
+
+    db.record_mapping_observation(
+        deliverable_id=deliverable_id,
+        source_type=source_type,
+        result_state="matched",
+        external_key=external_key,
+        candidate_fingerprint="fp1",
+        candidate_count=1,
+        candidate_summary_json=json.dumps([{"externalKey": external_key, "fields": {}}]),
+        field_report_json=json.dumps(report),
+    )
+    db.record_mapping_observation(
+        deliverable_id=deliverable_id,
+        source_type=source_type,
+        result_state="matched",
+        external_key=external_key,
+        candidate_fingerprint="fp2",
+        candidate_count=1,
+        candidate_summary_json=json.dumps([{"externalKey": external_key, "fields": {}}]),
+        field_report_json=json.dumps(report),
+    )
+
+
 def test_policy_patch_enables_pilot_and_persists(client) -> None:  # type: ignore[no-untyped-def]
+    _record_two_observations(
+        client,
+        deliverable_id="VPI-T2-D5",
+        source_type="tdc",
+        external_key="FM-1",
+        fields=["currentApprover", "incident", "reportType"],
+    )
     payload = {
         "mode": "hybrid",
         "enabled": True,
         "externalKey": "FM-1",
-        "matchRule": {"incident": "FM-1"},
+        "credentialRef": "test-alias",
+        "matchRule": {"reportType": "data_model", "incident": "FM-1"},
         "mapping": {"owner": "currentApprover"},
         "fieldAuthority": {"owner": "automatic"},
     }
@@ -78,7 +129,11 @@ def test_policy_patch_enables_pilot_and_persists(client) -> None:  # type: ignor
     assert data["mode"] == "hybrid"
     assert data["enabled"] is True
     assert data["externalKey"] == "FM-1"
-    assert data["matchRule"] == {"incident": "FM-1"}
+    assert isinstance(data["credentialAvailable"], bool)
+    assert data["credentialAvailable"] is True
+    credential_keys = {key for key in data if "credential" in key.lower()}
+    assert credential_keys == {"credentialAvailable"}
+    assert data["matchRule"] == {"reportType": "data_model", "incident": "FM-1"}
     assert data["mapping"] == {"owner": "currentApprover"}
     assert data["fieldAuthority"]["owner"] == "automatic"
 
@@ -97,9 +152,109 @@ def test_policy_patch_enables_pilot_and_persists(client) -> None:  # type: ignor
         ({"mapping": {"status": "approvalStatus"}}, "mapping"),
         ({"mapping": {"owner": ""}}, "mapping"),
         ({"fieldAuthority": {"status": "automatic"}}, "fieldAuthority"),
-        ({"mode": "manual", "enabled": True, "externalKey": "k", "matchRule": {"incident": "k"}}, "enabled"),
+        (
+            {
+                "mode": "manual",
+                "enabled": True,
+                "externalKey": "FM-1",
+                "credentialRef": "alias",
+                "matchRule": {"reportType": "data_model", "incident": "FM-1"},
+                "mapping": {"owner": "currentApprover"},
+                "fieldAuthority": {"owner": "automatic"},
+            },
+            "enabled",
+        ),
         ({"sourceType": "feishu"}, "request"),
         ({"mode": "scheduled"}, "mode"),
+        # Missing or wrong reportType when enabling
+        (
+            {
+                "mode": "hybrid",
+                "enabled": True,
+                "externalKey": "FM-1",
+                "credentialRef": "alias",
+                "matchRule": {"incident": "FM-1"},
+                "mapping": {"owner": "currentApprover"},
+                "fieldAuthority": {"owner": "automatic"},
+            },
+            "matchRule",
+        ),
+        (
+            {
+                "mode": "hybrid",
+                "enabled": True,
+                "externalKey": "FM-1",
+                "credentialRef": "alias",
+                "matchRule": {"reportType": "wrong_type", "incident": "FM-1"},
+                "mapping": {"owner": "currentApprover"},
+                "fieldAuthority": {"owner": "automatic"},
+            },
+            "matchRule",
+        ),
+        # Missing additional match key
+        (
+            {
+                "mode": "hybrid",
+                "enabled": True,
+                "externalKey": "FM-1",
+                "credentialRef": "alias",
+                "matchRule": {"reportType": "data_model"},
+                "mapping": {"owner": "currentApprover"},
+                "fieldAuthority": {"owner": "automatic"},
+            },
+            "matchRule",
+        ),
+        # Absent credential alias
+        (
+            {
+                "mode": "hybrid",
+                "enabled": True,
+                "externalKey": "FM-1",
+                "matchRule": {"reportType": "data_model", "incident": "FM-1"},
+                "mapping": {"owner": "currentApprover"},
+                "fieldAuthority": {"owner": "automatic"},
+            },
+            "credentialRef",
+        ),
+        # Automatic authority empty when enabling
+        (
+            {
+                "mode": "hybrid",
+                "enabled": True,
+                "externalKey": "FM-1",
+                "credentialRef": "alias",
+                "matchRule": {"reportType": "data_model", "incident": "FM-1"},
+                "mapping": {"owner": "currentApprover"},
+                "fieldAuthority": {},
+            },
+            "fieldAuthority",
+        ),
+        # Mapping keys differ from automatic authority
+        (
+            {
+                "mode": "hybrid",
+                "enabled": True,
+                "externalKey": "FM-1",
+                "credentialRef": "alias",
+                "matchRule": {"reportType": "data_model", "incident": "FM-1"},
+                "mapping": {"owner": "currentApprover", "note": "approvalComment"},
+                "fieldAuthority": {"owner": "automatic"},
+            },
+            "mapping",
+        ),
+        # No evidence recorded (<2 observations)
+        (
+            {
+                "mode": "hybrid",
+                "enabled": True,
+                "externalKey": "FM-1",
+                "credentialRef": "alias",
+                "matchRule": {"reportType": "data_model", "incident": "FM-1"},
+                "mapping": {"owner": "currentApprover"},
+                "fieldAuthority": {"owner": "automatic"},
+            },
+            "enabled",
+        ),
     ],
 )
 def test_policy_patch_rejects_invalid_configuration(client, payload, field) -> None:  # type: ignore[no-untyped-def]
@@ -109,6 +264,77 @@ def test_policy_patch_rejects_invalid_configuration(client, payload, field) -> N
     )
     assert response.status_code == 422
     assert field in response.get_json()["error"]["fields"]
+
+
+def test_policy_patch_rejects_evidence_mismatches(client) -> None:  # type: ignore[no-untyped-def]
+    import json
+    db = web_app.DatabaseManager()
+    report = {
+        "fields": ["currentApprover", "incident"],
+        "statusOrApprovalFields": [],
+        "suggestedStatusMapping": [],
+        "suggestedAutomaticFields": [],
+        "requiresConfirmation": True,
+    }
+    # 1. Evidence with different external key
+    db.record_mapping_observation(
+        "VPI-T2-D5", "tdc", "matched", "DIFF-KEY", "fp", 1, "[]", json.dumps(report)
+    )
+    db.record_mapping_observation(
+        "VPI-T2-D5", "tdc", "matched", "DIFF-KEY", "fp", 1, "[]", json.dumps(report)
+    )
+    payload = {
+        "mode": "hybrid",
+        "enabled": True,
+        "externalKey": "FM-1",
+        "credentialRef": "alias",
+        "matchRule": {"reportType": "data_model", "incident": "FM-1"},
+        "mapping": {"owner": "currentApprover"},
+        "fieldAuthority": {"owner": "automatic"},
+    }
+    res = client.patch("/api/project-status/deliverables/VPI-T2-D5/update-policy", json=payload)
+    assert res.status_code == 422
+    assert "enabled" in res.get_json()["error"]["fields"]
+
+    # 2. Mapped source field absent from latest fieldReport
+    _record_two_observations(
+        client,
+        deliverable_id="VPI-T2-D5",
+        source_type="tdc",
+        external_key="FM-1",
+        fields=["otherField"],  # currentApprover absent
+    )
+    res2 = client.patch("/api/project-status/deliverables/VPI-T2-D5/update-policy", json=payload)
+    assert res2.status_code == 422
+    assert "enabled" in res2.get_json()["error"]["fields"]
+
+    # 3. Two observations with differing sources
+    db.record_mapping_observation(
+        "VPI-T2-D5", "tdc", "matched", "FM-1", "fp1", 1, "[]", json.dumps(report)
+    )
+    db.record_mapping_observation(
+        "VPI-T2-D5", "aras", "matched", "FM-1", "fp2", 1, "[]", json.dumps(report)
+    )
+    res3 = client.patch("/api/project-status/deliverables/VPI-T2-D5/update-policy", json=payload)
+    assert res3.status_code == 422
+    assert "enabled" in res3.get_json()["error"]["fields"]
+
+    # 4. Exactly one observation
+    payload_d3 = {
+        "mode": "hybrid",
+        "enabled": True,
+        "externalKey": "FM-3",
+        "credentialRef": "alias",
+        "matchRule": {"reportType": "ewo", "ewoNo": "FM-3"},
+        "mapping": {"owner": "currentApprover"},
+        "fieldAuthority": {"owner": "automatic"},
+    }
+    db.record_mapping_observation(
+        "VPI-T2-D3", "aras", "matched", "FM-3", "fp", 1, "[]", json.dumps(report)
+    )
+    res4 = client.patch("/api/project-status/deliverables/VPI-T2-D3/update-policy", json=payload_d3)
+    assert res4.status_code == 422
+    assert "enabled" in res4.get_json()["error"]["fields"]
 
 
 @pytest.mark.parametrize("blocked_id", ["VPI-T2-D1", "VPI-T2-D4"])
