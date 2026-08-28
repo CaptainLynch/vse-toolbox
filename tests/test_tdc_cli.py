@@ -105,7 +105,7 @@ class FakeTDCClient:
             unique_count=1,
             duplicate_count=0,
             stop_reason="single_page",
-            record_granularity="workflow",
+            record_granularity="part_detail",
         )
 
     def query_data_model_page(self, filters, **kwargs):  # type: ignore[no-untyped-def]
@@ -126,7 +126,7 @@ class FakeTDCClient:
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             signature_valid=True,
             elapsed_ms=3.5,
-            record_granularity="workflow",
+            record_granularity="part_detail",
         )
 
     def query_sor_page(self, filters, **kwargs):  # type: ignore[no-untyped-def]

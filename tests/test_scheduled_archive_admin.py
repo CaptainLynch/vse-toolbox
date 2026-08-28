@@ -146,6 +146,47 @@ def test_job_freshness_naive_clock_handling(db: DatabaseManager) -> None:
     assert jobs["aras_ewo"]["freshness"] == "fresh"
 
 
+def test_update_job_accepts_task_retry_policy_override(service: ScheduledArchiveAdminService) -> None:
+    """A task can choose one or two total attempts without changing the default contract."""
+    job = next(item for item in service.list_jobs() if item["jobKey"] == "aras_ewo")
+    updated = service.update_job(
+        "aras_ewo",
+        {
+            "enabled": False,
+            "filters": {},
+            "outputSubdir": "",
+            "intervalMinutes": 60,
+            "retryPolicy": {"max_attempts": 1},
+            "updatedAt": job["updatedAt"],
+        },
+    )
+    assert updated["retryPolicy"] == {"max_attempts": 1, "backoff_seconds": 1}
+
+
+def test_update_job_checks_production_credential_availability_before_enable(
+    db: DatabaseManager,
+) -> None:
+    """An enabled production task cannot be marked ready with an unavailable vault reference."""
+    provider = MagicMock()
+    provider.is_available.return_value = False
+    service = ScheduledArchiveAdminService(db, credential_provider=provider)
+    job = next(item for item in service.list_jobs() if item["jobKey"] == "aras_ewo")
+    with pytest.raises(ArchiveAdminValidationError) as exc_info:
+        service.update_job(
+            "aras_ewo",
+            {
+                "enabled": True,
+                "credentialRef": "domain",
+                "filters": {},
+                "outputSubdir": "",
+                "intervalMinutes": 60,
+                "updatedAt": job["updatedAt"],
+            },
+        )
+    assert "credentialRef" in exc_info.value.fields
+    provider.is_available.assert_called_once_with("domain")
+
+
 # ── 2. update_job Validation & Opaque Alias Handling ──────────────────────────
 
 
@@ -359,6 +400,7 @@ def test_update_job_passes_opaque_alias_and_updates_config(
         output_subdir="aras/ewo",
         expected_updated_at=initial_job["updatedAt"],
         actor="local_web",
+        interval_minutes=60,
     )
 
     assert updated["enabled"] is True
@@ -388,6 +430,7 @@ def test_update_job_passes_opaque_alias_and_updates_config(
         output_subdir="aras/ewo",
         expected_updated_at=updated["updatedAt"],
         actor="local_web",
+        interval_minutes=60,
     )
     assert second_updated["credentialConfigured"] is True
     assert second_updated["filters"] == {"changeType": "ECO"}

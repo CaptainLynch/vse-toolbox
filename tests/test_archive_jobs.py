@@ -3,7 +3,7 @@
 tests/test_archive_jobs.py — 归档任务种子与离线关系约束测试
 
 覆盖验收标准:
-1. 断言 schema 版本为 4，且存在四张 scheduled_archive 表结构及对应索引
+1. 断言 schema 版本为 5，且存在四张 scheduled_archive 表结构及对应索引
 2. 断言 6 个固定 job_key，默认 disabled (enabled=0)，interval_minutes=60，max_attempts=2
 3. 断言 D2/D3/D5 仅关联 SOR/EWO/data-model，PAA/NCR 关联为空，且不存在 A 面任务
 4. 断言重复调用 init_database() 保留已修改的 enabled / interval 等配置
@@ -90,12 +90,12 @@ def _enable_archive_job(
 
 
 def test_archive_schema_version_and_tables(db: DatabaseManager) -> None:
-    """断言版本为 4 且四张 scheduled_archive 表与索引已建立。"""
-    assert CURRENT_SCHEMA_VERSION == 4
+    """断言归档任务 schema 为 10 且四张 scheduled_archive 表与索引已建立。"""
+    assert CURRENT_SCHEMA_VERSION == 10
 
     with db.get_connection() as conn:
         user_version = conn.execute("PRAGMA user_version").fetchone()[0]
-        assert user_version == 4, f"PRAGMA user_version 应为 4，实际为 {user_version}"
+        assert user_version == 10, f"PRAGMA user_version 应为 10，实际为 {user_version}"
 
     expected_tables = {
         "scheduled_archive_jobs",
@@ -119,6 +119,7 @@ def test_archive_schema_version_and_tables(db: DatabaseManager) -> None:
             "interval_minutes",
             "filters_json",
             "output_subdir",
+            "output_directory",
             "retry_policy_json",
             "sync_state",
             "last_attempt_at",
@@ -731,6 +732,19 @@ def test_concurrent_lease_acquire_only_one_winner_and_no_second_run(db: Database
             (job_id_2,),
         ).fetchone()[0]
         assert run_count_2 == 1, "并发竞争失败方不得插入 run 记录"
+
+
+def test_archive_lease_renewal_extends_only_the_active_run(db: DatabaseManager) -> None:
+    job_id = _enable_archive_job(db, "aras_ewo", credential_ref="alias_renew")
+    lease = db.acquire_archive_job_lease(job_id, "sync_now", lease_seconds=300)
+    run_id = lease["run_id"]
+    token = lease["lease_token"]
+    db.start_archive_run(job_id, run_id, token)
+
+    renewed_until = db.renew_archive_job_lease(job_id, run_id, token, lease_seconds=600)
+    assert renewed_until
+    with pytest.raises(ArchiveLeaseLostError):
+        db.renew_archive_job_lease(job_id, run_id, "invalid_fake_token", lease_seconds=600)
 
 
 def test_start_and_finalize_token_mismatch_and_expired_lease_rejection(db: DatabaseManager) -> None:

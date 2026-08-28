@@ -18,11 +18,42 @@ from core.excel_tasks import (
     ExcelInvalidStateError,
     ExcelLeaseLostError,
     ExcelPathSafetyError,
+    ExcelTaskArtifactMetadata,
     ExcelTaskFileRef,
     ExcelTaskRepository,
     compute_request_fingerprint,
+    load_production_excel_roots,
+    parse_excel_roots_json,
     validate_task_request,
 )
+
+
+def _start_artifact_task(
+    root_path: Path,
+    repo: ExcelTaskRepository,
+    key: str,
+) -> tuple[int, int, str, ExcelTaskFileRef, bytes]:
+    source = root_path / f"{key}_source.xlsx"
+    output = root_path / f"{key}_output.xlsx"
+    source.write_bytes(b"source")
+    output_bytes = f"artifact:{key}".encode("utf-8")
+    output_ref = ExcelTaskFileRef("output", "default", output.name)
+    task = repo.create_task(
+        "merge_append",
+        [ExcelTaskFileRef("source", "default", source.name), output_ref],
+        key,
+    )
+    lease = repo.lease_next(lease_seconds=300)
+    assert lease is not None
+    repo.start(lease["task_id"], lease["run_id"], lease["lease_token"])
+    output.write_bytes(output_bytes)
+    return (
+        int(task["id"]),
+        int(lease["run_id"]),
+        str(lease["lease_token"]),
+        output_ref,
+        output_bytes,
+    )
 
 
 @pytest.fixture
@@ -1040,3 +1071,346 @@ def test_deterministic_concurrent_lease_next_multiple_tasks(
     with repo._db.get_connection() as conn:
         runs_count = conn.execute("SELECT COUNT(*) FROM excel_task_runs").fetchone()[0]
         assert runs_count == 2
+
+
+def test_finish_success_records_artifact_atomically(
+    roots_dir: tuple[Path, ApprovedExcelRoots],
+    repo: ExcelTaskRepository,
+) -> None:
+    root_path, _ = roots_dir
+    task_id, run_id, lease_token, output_ref, output_bytes = _start_artifact_task(
+        root_path,
+        repo,
+        "artifact_success",
+    )
+    metadata = ExcelTaskArtifactMetadata(
+        output_ref=output_ref,
+        size_bytes=len(output_bytes),
+        sha256=hashlib.sha256(output_bytes).hexdigest(),
+    )
+
+    artifact = repo.finish_success_with_artifact(
+        task_id,
+        run_id,
+        lease_token,
+        metadata,
+    )
+
+    assert artifact["task_id"] == task_id
+    assert artifact["run_id"] == run_id
+    assert artifact["root_id"] == "default"
+    assert artifact["relative_path"] == output_ref.relative_path
+    assert artifact["display_name"] == Path(output_ref.relative_path).name
+    assert artifact["size_bytes"] == len(output_bytes)
+    assert artifact["sha256"] == hashlib.sha256(output_bytes).hexdigest()
+    assert repo.get_task(task_id)["status"] == "succeeded"  # type: ignore[index]
+    assert repo.list_task_runs(task_id)[0]["run_state"] == "succeeded"
+    assert repo.get_artifact(artifact["id"]) == artifact
+    assert repo.list_task_artifacts(task_id) == [artifact]
+
+
+def test_finish_success_artifact_failure_rolls_back_task_and_run(
+    roots_dir: tuple[Path, ApprovedExcelRoots],
+    repo: ExcelTaskRepository,
+) -> None:
+    root_path, _ = roots_dir
+    task_id, run_id, lease_token, output_ref, output_bytes = _start_artifact_task(
+        root_path,
+        repo,
+        "artifact_rollback",
+    )
+    metadata = ExcelTaskArtifactMetadata(
+        output_ref=output_ref,
+        size_bytes=len(output_bytes),
+        sha256=hashlib.sha256(output_bytes).hexdigest(),
+    )
+
+    with pytest.raises(ExcelLeaseLostError):
+        repo.finish_success_with_artifact(
+            task_id,
+            run_id + 999,
+            lease_token,
+            metadata,
+        )
+
+    task = repo.get_task(task_id)
+    assert task is not None and task["status"] == "running"
+    assert repo.list_task_runs(task_id)[0]["run_state"] == "running"
+    assert repo.list_task_artifacts(task_id) == []
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        ExcelTaskArtifactMetadata(
+            ExcelTaskFileRef("output", "default", "ok.xlsx"),
+            0,
+            "0" * 64,
+        ),
+    ],
+)
+def test_artifact_metadata_normalizes_digest(metadata: ExcelTaskArtifactMetadata) -> None:
+    assert metadata.sha256 == "0" * 64
+
+
+def test_artifact_metadata_rejects_invalid_values() -> None:
+    with pytest.raises(ValueError):
+        ExcelTaskArtifactMetadata(
+            ExcelTaskFileRef("source", "default", "source.xlsx"),
+            1,
+            "0" * 64,
+        )
+    with pytest.raises(ValueError):
+        ExcelTaskArtifactMetadata(
+            ExcelTaskFileRef("output", "default", "out.xlsx"),
+            -1,
+            "0" * 64,
+        )
+    with pytest.raises(ValueError):
+        ExcelTaskArtifactMetadata(
+            ExcelTaskFileRef("output", "default", "out.xlsx"),
+            1,
+            "not-a-digest",
+        )
+
+
+# ── Excel Artifact Download Audit & Production Roots Tests ────────
+def test_repo_record_and_list_artifact_download_audit(
+    roots_dir: tuple[Path, ApprovedExcelRoots],
+    repo: ExcelTaskRepository,
+) -> None:
+    root_path, _ = roots_dir
+    task_id, run_id, lease_token, output_ref, data = _start_artifact_task(
+        root_path,
+        repo,
+        "audit_repo_test",
+    )
+    artifact = repo.finish_success_with_artifact(
+        task_id,
+        run_id,
+        lease_token,
+        ExcelTaskArtifactMetadata(
+            output_ref=output_ref,
+            size_bytes=len(data),
+            sha256=hashlib.sha256(data).hexdigest(),
+        ),
+    )
+    artifact_id = int(artifact["id"])
+
+    # 1. Record a succeeded download audit
+    audit1 = repo.record_artifact_download_audit(
+        artifact_id=artifact_id,
+        task_id=task_id,
+        result="succeeded",
+        reason_code="verified",
+        served_size_bytes=len(data),
+    )
+    assert audit1["artifact_id"] == artifact_id
+    assert audit1["task_id"] == task_id
+    assert audit1["result"] == "succeeded"
+    assert audit1["reason_code"] == "verified"
+    assert audit1["served_size_bytes"] == len(data)
+
+    # 2. Record a rejected download audit
+    audit2 = repo.record_artifact_download_audit(
+        artifact_id=artifact_id,
+        task_id=task_id,
+        result="rejected",
+        reason_code="integrity_mismatch",
+    )
+    assert audit2["artifact_id"] == artifact_id
+    assert audit2["task_id"] == task_id
+    assert audit2["result"] == "rejected"
+    assert audit2["reason_code"] == "integrity_mismatch"
+    assert audit2["served_size_bytes"] is None
+
+    # 3. List audits newest-first
+    audits = repo.list_artifact_download_audits(artifact_id, limit=50)
+    assert len(audits) == 2
+    assert audits[0]["id"] == audit2["id"]
+    assert audits[1]["id"] == audit1["id"]
+
+    # 4. Unknown artifact returns empty list
+    assert repo.list_artifact_download_audits(999999) == []
+    assert repo.list_artifact_download_audits(-1) == []
+
+
+def test_repo_record_artifact_download_audit_validation(
+    roots_dir: tuple[Path, ApprovedExcelRoots],
+    repo: ExcelTaskRepository,
+) -> None:
+    root_path, _ = roots_dir
+    task_id, run_id, lease_token, output_ref, data = _start_artifact_task(
+        root_path,
+        repo,
+        "audit_repo_val_test",
+    )
+    artifact = repo.finish_success_with_artifact(
+        task_id,
+        run_id,
+        lease_token,
+        ExcelTaskArtifactMetadata(
+            output_ref=output_ref,
+            size_bytes=len(data),
+            sha256=hashlib.sha256(data).hexdigest(),
+        ),
+    )
+    artifact_id = int(artifact["id"])
+
+    # Invalid artifact_id
+    with pytest.raises(ValueError):
+        repo.record_artifact_download_audit(0, task_id, "succeeded", "verified", served_size_bytes=10)
+
+    # Invalid task_id
+    with pytest.raises(ValueError):
+        repo.record_artifact_download_audit(artifact_id, 0, "succeeded", "verified", served_size_bytes=10)
+
+    # Invalid result
+    with pytest.raises(ValueError):
+        repo.record_artifact_download_audit(artifact_id, task_id, "unknown_result", "verified")
+
+    # Invalid reason_code
+    with pytest.raises(ValueError):
+        repo.record_artifact_download_audit(artifact_id, task_id, "rejected", "")
+    with pytest.raises(ValueError):
+        repo.record_artifact_download_audit(artifact_id, task_id, "rejected", "r" * 65)
+
+    # Invalid served_size_bytes on success
+    with pytest.raises(ValueError):
+        repo.record_artifact_download_audit(artifact_id, task_id, "succeeded", "verified", served_size_bytes=None)
+    with pytest.raises(ValueError):
+        repo.record_artifact_download_audit(artifact_id, task_id, "succeeded", "verified", served_size_bytes=-1)
+
+
+def test_parse_excel_roots_json_valid(tmp_path: Path) -> None:
+    root1 = (tmp_path / "root1").resolve()
+    root2 = (tmp_path / "root2").resolve()
+
+    # None and empty strings
+    assert parse_excel_roots_json(None) is None
+    assert parse_excel_roots_json("") is None
+    assert parse_excel_roots_json("   ") is None
+    assert parse_excel_roots_json("{}") is None
+
+    # Valid single root
+    raw = json.dumps({"business": str(root1)})
+    parsed = parse_excel_roots_json(raw)
+    assert parsed == {"business": root1}
+
+    # Valid multi roots
+    raw_multi = json.dumps({"root_a": str(root1), "root_b": str(root2)})
+    parsed_multi = parse_excel_roots_json(raw_multi)
+    assert parsed_multi == {"root_a": root1, "root_b": root2}
+
+
+def test_parse_excel_roots_json_rejections(tmp_path: Path) -> None:
+    # Malformed JSON
+    with pytest.raises(ExcelPathSafetyError):
+        parse_excel_roots_json("not valid json {")
+
+    # Non-object JSON
+    with pytest.raises(ExcelPathSafetyError):
+        parse_excel_roots_json('["not", "an", "object"]')
+    with pytest.raises(ExcelPathSafetyError):
+        parse_excel_roots_json('"just a string"')
+    with pytest.raises(ExcelPathSafetyError):
+        parse_excel_roots_json("12345")
+    with pytest.raises(ExcelPathSafetyError):
+        parse_excel_roots_json("true")
+
+    # Non-string input
+    with pytest.raises(ExcelPathSafetyError):
+        parse_excel_roots_json(123)  # type: ignore
+
+    # Empty root ID
+    with pytest.raises(ExcelPathSafetyError):
+        parse_excel_roots_json(json.dumps({"": str(tmp_path)}))
+
+    # Empty root path
+    with pytest.raises(ExcelPathSafetyError):
+        parse_excel_roots_json(json.dumps({"valid_id": ""}))
+
+    # Non-absolute path
+    with pytest.raises(ExcelPathSafetyError):
+        parse_excel_roots_json(json.dumps({"rel_id": "relative/path/dir"}))
+
+    # Duplicate canonical root IDs
+    with pytest.raises(ExcelPathSafetyError):
+        parse_excel_roots_json(json.dumps({"root1": str(tmp_path), "root１": str(tmp_path)}))
+
+    # More than 16 roots
+    too_many = {f"root_{i}": str(tmp_path) for i in range(17)}
+    with pytest.raises(ExcelPathSafetyError):
+        parse_excel_roots_json(json.dumps(too_many))
+
+
+def test_load_production_excel_roots_from_env(tmp_path: Path) -> None:
+    root = (tmp_path / "prod_root").resolve()
+    env_mapping = {"VSE_EXCEL_ROOTS_JSON": json.dumps({"prod": str(root)})}
+    loaded = load_production_excel_roots(env=env_mapping)
+    assert loaded == {"prod": root}
+
+    # Unset in env
+    assert load_production_excel_roots(env={}) is None
+
+
+def test_repo_list_retention_candidates(
+    roots_dir: tuple[Path, ApprovedExcelRoots],
+    repo: ExcelTaskRepository,
+) -> None:
+    root_path, _ = roots_dir
+    # Create 3 artifact records
+    t1, r1, tok1, out1, d1 = _start_artifact_task(root_path, repo, "ret_1")
+    art1 = repo.finish_success_with_artifact(
+        t1, r1, tok1,
+        ExcelTaskArtifactMetadata(output_ref=out1, size_bytes=len(d1), sha256=hashlib.sha256(d1).hexdigest()),
+    )
+    t2, r2, tok2, out2, d2 = _start_artifact_task(root_path, repo, "ret_2")
+    art2 = repo.finish_success_with_artifact(
+        t2, r2, tok2,
+        ExcelTaskArtifactMetadata(output_ref=out2, size_bytes=len(d2), sha256=hashlib.sha256(d2).hexdigest()),
+    )
+    t3, r3, tok3, out3, d3 = _start_artifact_task(root_path, repo, "ret_3")
+    art3 = repo.finish_success_with_artifact(
+        t3, r3, tok3,
+        ExcelTaskArtifactMetadata(output_ref=out3, size_bytes=len(d3), sha256=hashlib.sha256(d3).hexdigest()),
+    )
+
+    # Seed deterministic timestamps
+    with repo._db.get_connection() as conn:
+        conn.execute(
+            "UPDATE excel_task_artifacts SET created_at = '2026-01-01T00:00:00.000Z' WHERE id = ?",
+            (art1["id"],),
+        )
+        conn.execute(
+            "UPDATE excel_task_artifacts SET created_at = '2026-01-02T00:00:00.000Z' WHERE id = ?",
+            (art2["id"],),
+        )
+        conn.execute(
+            "UPDATE excel_task_artifacts SET created_at = '2026-01-03T00:00:00.000Z' WHERE id = ?",
+            (art3["id"],),
+        )
+
+    # Query cutoff at 2026-01-02T12:00:00.000Z -> should return art1 and art2
+    candidates, truncated = repo.list_retention_candidates("2026-01-02T12:00:00.000Z", limit=10)
+    assert len(candidates) == 2
+    assert not truncated
+    assert candidates[0]["id"] == art1["id"]
+    assert candidates[1]["id"] == art2["id"]
+
+    # Query with limit=1 -> should return art1 and truncated=True
+    c_lim, trunc_lim = repo.list_retention_candidates("2026-01-02T12:00:00.000Z", limit=1)
+    assert len(c_lim) == 1
+    assert trunc_lim is True
+    assert c_lim[0]["id"] == art1["id"]
+
+    # Query cutoff before all -> should return empty
+    c_empty, trunc_empty = repo.list_retention_candidates("2025-12-31T23:59:59.999Z", limit=10)
+    assert c_empty == []
+    assert trunc_empty is False
+
+    # Invalid cutoff raises ValueError
+    with pytest.raises(ValueError):
+        repo.list_retention_candidates("")
+    with pytest.raises(ValueError):
+        repo.list_retention_candidates("   ")

@@ -44,3 +44,12 @@ chromedriver.exe
 /.agents/runs/
 /.agents/logs/
 /.agents/worktrees/
+
+# 本地运行时 / 构建产物 / 工作区缓存（不入库）
+.runtime/
+artifacts/
+.zcode/
+.agents/
+.excel_workbench/
+dist-probe/
+tmp/

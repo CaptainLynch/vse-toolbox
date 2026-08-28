@@ -49,6 +49,30 @@ def test_stability_persists_across_fingerprint_and_field_value_differences(tmp_p
     assert db.mapping_stability_count("VPI-T2-D5") == 2
 
 
+def test_aras_ewo_row_keyed_by_no_field(tmp_path):
+    """ARAS EWO rows carry their number in `_no`; discovery must key on it."""
+    db = DatabaseManager(tmp_path / "db.sqlite")
+    db.init_database()
+    service = MappingDiscoveryService(db)
+    ewo_row = {
+        "_no": "EWO-049039",
+        "_subject": "车门密封条更改",
+        "_rsp_name": "张三",
+        "_required_date": "2026-09-15",
+        "_change_description": "初始版本",
+    }
+    first = service.observe("VPI-T2-D3", "aras", [ewo_row])
+    assert first["state"] == "matched"
+    assert first["externalKey"] == "EWO-049039"
+    assert first["candidateCount"] == 1
+    second = service.observe(
+        "VPI-T2-D3", "aras", [dict(ewo_row, _rsp_name="李四")], selected_external_key="EWO-049039"
+    )
+    assert second["stability"] == {"confirmed": 2, "required": 2, "ready": True}
+    # The `_no` field must surface in the sanitized field report for confirmation flows.
+    assert "_no" in second["fieldReport"]["fields"]
+
+
 def test_zero_ambiguous_and_key_change_reset_stability(tmp_path):
     db = DatabaseManager(tmp_path / "db.sqlite")
     db.init_database()

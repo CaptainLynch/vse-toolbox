@@ -356,6 +356,47 @@ def test_successful_sync_full_lifecycle(
     assert ctx.deliverable_id == "VPI-T2-D5"
 
 
+def test_successful_sync_publishes_analysis_cache(
+    db: DatabaseManager,
+    service: ProjectStatusUpdateService,
+    registry: ConnectorRegistry,
+) -> None:
+    _enable_pilot(service)
+    base = _matched_snapshot(db, owner="新负责人", note="ok")
+    snapshot = ConnectorSnapshot(
+        match_state=base.match_state,
+        candidates=base.candidates,
+        external_version=base.external_version,
+        fetched_at=base.fetched_at,
+        expected_deliverable_updated_at=base.expected_deliverable_updated_at,
+        analysis_rows=(
+            {
+                "id": "analysis-1",
+                "name": "冻结发布单确认",
+                "department": "质量科",
+                "status": "进行中",
+                "dueDate": "2026-08-18",
+            },
+            {
+                "id": "analysis-2",
+                "name": "审批关闭",
+                "department": "项目管理科",
+                "status": "已完成",
+            },
+        ),
+    )
+    registry.register("tdc", FakeConnector(snapshot=snapshot))
+
+    result = ProjectStatusSyncRunner(db, service, registry).run_once()
+    assert result.exit_code == EXIT_OK
+    snapshots = db.list_project_status_analysis_snapshots("VPI-T2-D5")
+    assert len(snapshots) == 1
+    assert snapshots[0]["total_count"] == 2
+    assert snapshots[0]["completed_count"] == 1
+    items = db.list_project_status_analysis_items("VPI-T2-D5")
+    assert {item["department"] for item in items} == {"质量科", "项目管理科"}
+
+
 # ── 5. fake connector 返回 not_found/ambiguous ──────────────────
 
 

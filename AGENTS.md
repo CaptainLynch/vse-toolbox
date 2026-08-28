@@ -29,86 +29,15 @@
 
 Use exactly one runtime section.
 
-- In OpenAI Codex, when `use-v4-flash-worker` and `v4_flash_worker` are
-  actually available, follow **Codex Runtime Rules** only.
+- In OpenAI Codex, follow **Local AGY CLI Delegation** for delegated project
+  work. Do not use `v4_flash_worker`, a DeepSeek-backed Codex subagent, or the
+  DeepSeek Harness for ordinary VSE Toolbox tasks. Use DeepSeek only when the
+  user explicitly requests it for the current task.
 - In ZCode, follow **ZCode Runtime Rules** only.
 - Do not invoke, request, or emulate another runtime's agents, skills, or
   orchestration merely because both sections appear in this file. Determine the
   runtime from the available tools, skills, and agent names; never start both
   worker systems for one task.
-
-## Codex Runtime Rules
-
-Use Codex for high-value architectural reasoning and final accountability. Use
-`v4_flash_worker` for bounded, high-volume exploration, implementation, and
-log processing whenever doing so does not weaken security or design quality.
-
-The target split for suitable tasks is approximately:
-
-- Codex: 20-35% of the work, focused on decisions and verification.
-- v4 Flash: 65-80% of the work, focused on execution and reduction.
-
-These percentages are guidance, not a reason to delegate tightly coupled or
-high-risk decisions.
-
-### Codex Responsibilities
-
-Codex retains ownership of:
-
-- architecture, module boundaries, interfaces, and data flow;
-- security, authentication, authorization, privacy, and secret handling;
-- root-cause judgment and decisions between meaningful alternatives;
-- cross-module changes, migrations, and compatibility policy;
-- implementation contracts and acceptance criteria;
-- final code review, regression assessment, release verification, and user
-  communication.
-
-Use higher reasoning effort only when architecture, security, difficult root
-cause analysis, or consequential tradeoffs show a measured need for it.
-Routine coordination and verification should use the normal reasoning level.
-
-### v4 Flash Responsibilities
-
-Prefer `v4_flash_worker` for bounded tasks such as:
-
-- repository searches, file enumeration, and call-chain tracing;
-- reading and reducing large HAR files, logs, test output, and build output;
-- implementing a defined design in explicitly owned files;
-- focused tests, repetitive edits, mechanical migrations, and documentation;
-- extracting evidence, comparing contracts, and reporting concise findings.
-
-Do not delegate work when it requires continuous architectural judgment,
-changes public contracts without a settled design, performs irreversible
-operations, or handles unresolved security decisions.
-
-### Required Workflow
-
-For substantial work, use this sequence when applicable:
-
-1. v4 Flash explores the relevant code or evidence and returns a compact,
-   structured report.
-2. Codex decides the architecture, invariants, security constraints, file
-   ownership, and acceptance criteria.
-3. v4 Flash implements the bounded contract directly in the assigned files and
-   runs focused tests.
-4. Codex reviews the relevant diff, contract boundaries, test summary, and
-   material risks.
-5. v4 Flash performs narrowly specified follow-up fixes when needed.
-6. Codex runs or confirms final regression tests, packaging, and smoke checks.
-
-Before spawning or continuing `v4_flash_worker`, use the installed
-`use-v4-flash-worker` skill and its plaintext Hook workflow. Spawn it with
-`fork_turns="none"`. Workers must not revert unrelated edits.
-
-### Worker Output
-
-The normal worker report is limited to:
-
-1. changed files;
-2. one concise explanation per file;
-3. test commands and summarized results;
-4. no more than five remaining risks;
-5. questions requiring Codex architectural judgment.
 
 ## Local AGY CLI Delegation
 

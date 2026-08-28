@@ -339,6 +339,24 @@ def test_low_risk_categories_evaluate_to_low():
             assert supervisor.evaluate_risk(task) == "low"
 
 
+def test_medium_or_unclassified_task_forces_codex_controlled_profile():
+    config = {"profile": "agy-heavy"}
+    task = {
+        "task_id": "TASK-MEDIUM-RISK",
+        "objective": "Investigate the current workflow",
+        "scope": ["core.py"],
+        "constraints": [],
+        "acceptance_criteria": ["Findings are documented"],
+        "verification_commands": [["python", "-m", "pytest"]],
+    }
+
+    assert supervisor.evaluate_risk(task) == "medium"
+    effective, requested, reason = supervisor.resolve_profile(task, config)
+    assert effective == "codex-controlled"
+    assert requested == "agy-heavy"
+    assert "medium-risk" in (reason or "")
+
+
 def test_high_risk_objective_overrides_low_risk_classification():
     config = {"profile": "agy-heavy"}
     high_risk_signals = [

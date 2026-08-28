@@ -16,7 +16,7 @@ _SAMPLE_LIMIT = 5
 _VALUE_LIMIT = 200
 _STATUS_HINT = re.compile(r"status|state|node|stage|approval|approve|状态|节点|审批", re.I)
 _SENSITIVE_FIELD = re.compile(r"authorization|cookie|token|secret|password|session|csrf", re.I)
-_IDENTITY_FIELDS = ("formId", "incident", "documentNo", "processInstanceId", "processNo", "id", "ewo_no", "item_number", "itemNumber")
+_IDENTITY_FIELDS = ("formId", "incident", "documentNo", "processInstanceId", "processNo", "id", "ewo_no", "_no", "item_number", "itemNumber")
 
 
 def _scalar(value: Any) -> str | None:

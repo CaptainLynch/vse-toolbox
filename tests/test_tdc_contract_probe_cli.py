@@ -47,7 +47,7 @@ def _fake_paged_result(rows: list[dict[str, Any]]) -> TDCPagedResult:
         unique_count=len(rows),
         duplicate_count=0,
         stop_reason="reported_pages",
-        record_granularity="workflow",
+        record_granularity="part_detail",
     )
 
 

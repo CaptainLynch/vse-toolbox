@@ -261,6 +261,7 @@ class EWOReportPage:
     page: int | None
     item_ids: list[str]
     raw_xml: str
+    request_xml: str = ""
 
 
 @dataclass(frozen=True)
@@ -269,6 +270,7 @@ class PAAReportPage:
     page: int | None
     item_ids: list[str]
     raw_xml: str
+    request_xml: str = ""
 
 
 @dataclass(frozen=True)
@@ -341,6 +343,7 @@ class ArasCrawlerClient:
             page=result.page,
             item_ids=result.item_ids[:limit],
             raw_xml=result.raw_xml,
+            request_xml=payload,
         )
 
     def crawl_ewo_report_all(
@@ -357,6 +360,7 @@ class ArasCrawlerClient:
         rows: list[dict[str, str | None]] = []
         item_ids: list[str] = []
         raw_pages: list[str] = []
+        request_pages: list[str] = []
         last_page: int | None = None
         page = 1
         while page <= max_pages and len(rows) < max_records:
@@ -368,6 +372,7 @@ class ArasCrawlerClient:
                 select_fields=select_fields,
             )
             raw_pages.append(current.raw_xml)
+            request_pages.append(current.request_xml)
             if current.page is not None:
                 last_page = current.page
             if not current.rows:
@@ -378,7 +383,13 @@ class ArasCrawlerClient:
             if len(current.rows) < page_size or len(rows) >= max_records:
                 break
             page += 1
-        return EWOReportPage(rows=rows, page=last_page, item_ids=item_ids, raw_xml="\n".join(raw_pages))
+        return EWOReportPage(
+            rows=rows,
+            page=last_page,
+            item_ids=item_ids,
+            raw_xml="\n".join(raw_pages),
+            request_xml="\n".join(request_pages),
+        )
 
     def query_paa_report(
         self,
@@ -391,7 +402,14 @@ class ArasCrawlerClient:
         _validate_page_limits(page, page_size, max_records)
         payload = self._build_paa_payload(filters or PAAReportFilters(), page, page_size, max_records, select_fields)
         response = self._post_soap("ApplyItem", payload)
-        return self.parse_paa_report_response(response.text)
+        result = self.parse_paa_report_response(response.text)
+        return PAAReportPage(
+            rows=result.rows,
+            page=result.page,
+            item_ids=result.item_ids,
+            raw_xml=result.raw_xml,
+            request_xml=payload,
+        )
 
     def crawl_paa_report_all(
         self,
@@ -406,6 +424,7 @@ class ArasCrawlerClient:
         rows: list[dict[str, str | None]] = []
         item_ids: list[str] = []
         raw_pages: list[str] = []
+        request_pages: list[str] = []
         last_page: int | None = None
         page = 1
         while page <= max_pages and len(rows) < max_records:
@@ -417,6 +436,7 @@ class ArasCrawlerClient:
                 select_fields=select_fields,
             )
             raw_pages.append(current.raw_xml)
+            request_pages.append(current.request_xml)
             if current.page is not None:
                 last_page = current.page
             if not current.rows:
@@ -427,7 +447,13 @@ class ArasCrawlerClient:
             if len(current.rows) < page_size or len(rows) >= max_records:
                 break
             page += 1
-        return PAAReportPage(rows=rows, page=last_page, item_ids=item_ids, raw_xml="\n".join(raw_pages))
+        return PAAReportPage(
+            rows=rows,
+            page=last_page,
+            item_ids=item_ids,
+            raw_xml="\n".join(raw_pages),
+            request_xml="\n".join(request_pages),
+        )
 
     def query_ncr_approval_progress(self, filters: NCRApprovalFilters) -> NCRExportResult:
         payload = self._build_ncr_payload(filters, "sgmw_downloadFileProgressC")
@@ -986,7 +1012,16 @@ def _parse_item_rows(root: ET.Element, item_type: str) -> tuple[list[dict[str, s
                 page = None
         row: dict[str, str | None] = {}
         for child in list(item):
-            row[_local_name(child.tag)] = None if child.get("is_null") == "1" else child.text
+            field_name = _local_name(child.tag)
+            row[field_name] = None if child.get("is_null") == "1" else child.text
+            # Aras relationship properties carry the display value in XML
+            # attributes while the element text is only an internal GUID.
+            # Preserve those display attributes under deterministic companion
+            # keys so report contracts can use names without losing the raw ID.
+            for attribute_name in ("keyed_name", "name"):
+                attribute_value = child.get(attribute_name)
+                if attribute_value:
+                    row[f"{field_name}__{attribute_name}"] = attribute_value
         rows.append(row)
     return rows, item_ids, page
 

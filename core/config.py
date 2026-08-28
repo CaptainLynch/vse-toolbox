@@ -37,3 +37,6 @@ DEFAULT_IMAP_PORT: int = 993
 # ── Flask WEB 服务默认绑定 ──────────────────────────────────────
 FLASK_HOST: str = "127.0.0.1"
 FLASK_PORT: int = 5000
+
+# ── Excel 任务生产受控根配置环境变量 ──────────────────────────
+VSE_EXCEL_ROOTS_ENV_VAR: str = "VSE_EXCEL_ROOTS_JSON"

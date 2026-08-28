@@ -31,6 +31,7 @@ DEFAULT_TDC_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
 )
+TDC_EXPORT_RECEIVE_TIMEOUT = 120.0
 
 DATA_MODEL_PAGE_PATH = "/tpc/dataAdmin/dataModelDesign/index"
 DATA_MODEL_LIST_PATH = "/uwf/procuwfpe3ddigitalmodeldesignreview/list"
@@ -94,7 +95,7 @@ class TDCHttpDiagnosticEvent:
     page: int | None = None
     page_size: int | None = None
     attempt: int = 1
-    timeout: float | None = None
+    timeout: float | tuple[float, float] | None = None
     status_code: int | None = None
     elapsed_ms: float | None = None
     content_type: str | None = None
@@ -154,6 +155,7 @@ class TDCSORFilters:
     serial_number: str | None = None
     process_type: str | None = None
     car_type_project: str | None = None
+    car_type_project_id: str | None = None
     applicant: str | None = None
     title: str | None = None
     department: str | None = None
@@ -191,8 +193,12 @@ class TDCSORFilters:
                 "processInstanceStatus": self.approval_status,
             }
         )
-        # The captured TDC request sends both fields for the same project selector.
-        if "carTypeProject" in params:
+        # The visible project number and the selected project's internal ID are
+        # separate values in the production selector.  Keep the old text-only
+        # fallback for callers that do not have the project list metadata.
+        if self.car_type_project_id:
+            params["carTypeProjectAll[0]"] = self.car_type_project_id.strip()
+        elif "carTypeProject" in params:
             params["carTypeProjectAll[0]"] = params["carTypeProject"]
         return params
 
@@ -268,7 +274,7 @@ class TDCCrawlerClient:
             filter_params=(filters or TDCDataModelFilters()).to_params(),
             page=page,
             page_size=page_size,
-            record_granularity="workflow",
+            record_granularity="part_detail",
         )
 
     def crawl_data_model_all(
@@ -286,7 +292,7 @@ class TDCCrawlerClient:
             page_size=page_size,
             max_pages=max_pages,
             max_records=max_records,
-            record_granularity="workflow",
+            record_granularity="part_detail",
         )
 
     def export_data_model(
@@ -304,7 +310,7 @@ class TDCCrawlerClient:
             params=params,
             file_name=file_name,
             default_name="tdc_data_model.xlsx",
-            record_granularity="workflow",
+            record_granularity="part_detail",
         )
 
     def list_car_type_projects(self) -> list[dict[str, Any]]:
@@ -707,16 +713,27 @@ class TDCCrawlerClient:
         url = self._url(route)
         headers = self._headers(
             referer_path,
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/octet-stream;q=0.9,*/*;q=0.8",
+            "application/json, text/plain, */*",
         )
+        export_timeout = (self.timeout, max(self.timeout, TDC_EXPORT_RECEIVE_TIMEOUT))
         started = time.perf_counter()
         try:
-            response = self.session.get(url, params=dict(params), headers=headers, timeout=self.timeout)
+            response = self.session.get(url, params=dict(params), headers=headers, timeout=export_timeout)
         except Exception as exc:
             elapsed = _elapsed_ms(started)
             self._emit(
                 self._exception_event(
-                    report_type, "export", request_id, route, params, headers, None, None, elapsed, exc
+                    report_type,
+                    "export",
+                    request_id,
+                    route,
+                    params,
+                    headers,
+                    None,
+                    None,
+                    elapsed,
+                    exc,
+                    timeout=export_timeout,
                 )
             )
             raise TDCCrawlerError(
@@ -738,7 +755,7 @@ class TDCCrawlerClient:
             origin=self._origin(),
             path=route,
             query=_safe_query(params),
-            timeout=self.timeout,
+            timeout=export_timeout,
             status_code=status,
             elapsed_ms=elapsed,
             content_type=content_type,
@@ -763,6 +780,31 @@ class TDCCrawlerClient:
                 status_code=status,
             )
         if not _is_xlsx_content_type(content_type):
+            if _is_json_content_type(content_type):
+                api_code, reason, json_fields = _export_json_summary(response)
+                is_api_error = api_code not in (None, 0, 200, "0", "200")
+                validation = "api-error" if is_api_error else "rejected-json-response"
+                self._emit(
+                    TDCHttpDiagnosticEvent(
+                        **event_args,
+                        validation=validation,
+                        json_fields=json_fields,
+                        reason=reason,
+                    )
+                )
+                if is_api_error:
+                    raise TDCCrawlerError(
+                        f"TDC export API error code {api_code}: {reason}",
+                        stage="api-validation",
+                        request_id=request_id,
+                        status_code=status,
+                    )
+                raise TDCCrawlerError(
+                    f"TDC export returned JSON instead of an XLSX file: {reason}",
+                    stage="export-validation",
+                    request_id=request_id,
+                    status_code=status,
+                )
             self._emit(TDCHttpDiagnosticEvent(**event_args, validation="rejected-content-type"))
             raise TDCCrawlerError(
                 f"TDC export returned unsupported Content-Type: {content_type or '<missing>'}",
@@ -854,6 +896,8 @@ class TDCCrawlerClient:
         page_size: int | None,
         elapsed_ms: float,
         exc: Exception,
+        *,
+        timeout: float | tuple[float, float] | None = None,
     ) -> TDCHttpDiagnosticEvent:
         return TDCHttpDiagnosticEvent(
             timestamp=_timestamp(),
@@ -866,7 +910,7 @@ class TDCCrawlerClient:
             query=_safe_query(params),
             page=page,
             page_size=page_size,
-            timeout=self.timeout,
+            timeout=self.timeout if timeout is None else timeout,
             elapsed_ms=elapsed_ms,
             request_headers=_safe_headers(headers),
             exception_type=type(exc).__name__,
@@ -1052,6 +1096,29 @@ def _is_json_content_type(content_type: str) -> bool:
     return lowered == "application/json" or lowered.endswith("+json")
 
 
+def _export_json_summary(response: Any) -> tuple[Any, str, tuple[str, ...]]:
+    """Extract only safe, short diagnostics from a JSON response to export."""
+    try:
+        reader = getattr(response, "json", None)
+        payload = reader() if callable(reader) else json.loads(getattr(response, "text", ""))
+    except Exception:
+        return None, "TDC export returned JSON instead of an XLSX file", ()
+    if not isinstance(payload, Mapping):
+        return None, "TDC export returned JSON instead of an XLSX file", ()
+
+    code = payload.get("code")
+    message = payload.get("msg")
+    if message is None:
+        message = payload.get("message")
+    if message is None:
+        message = payload.get("error")
+    if not isinstance(message, (str, int, float, bool)):
+        message = "TDC export API returned JSON instead of an XLSX file"
+    reason = redact_sensitive_text(message, limit=240, collapse_newlines=True)
+    fields = tuple(sorted(str(key) for key in payload.keys()))
+    return code, reason, fields
+
+
 def _is_xlsx_content_type(content_type: str) -> bool:
     lowered = content_type.lower().split(";", 1)[0].strip()
     return lowered in {
@@ -1084,11 +1151,21 @@ def _safe_filename(value: str) -> str:
 
 
 def _row_identity(report_type: str, row: Mapping[str, Any]) -> str:
-    candidates = (
-        ("formId", "incident", "documentNo")
-        if report_type == "data_model"
-        else ("id", "processInstanceId", "processNo")
-    )
+    if report_type == "data_model":
+        workflow_key = next(
+            (
+                f"{key}:{str(row.get(key)).strip()}"
+                for key in ("incident", "documentNo", "formId")
+                if row.get(key) is not None and str(row.get(key)).strip()
+            ),
+            "workflow:unknown",
+        )
+        detail = tuple(str(row.get(key) or "").strip() for key in ("partNumber", "modelNumber", "partName"))
+        if any(detail):
+            return "data_model:" + workflow_key + ":" + "\x1f".join(detail)
+        return "data_model:" + workflow_key
+
+    candidates = ("id", "processInstanceId", "processNo")
     for key in candidates:
         value = row.get(key)
         if value is not None and str(value).strip():
@@ -1117,6 +1194,7 @@ __all__ = [
     "DATA_MODEL_EXPORT_PATH",
     "DATA_MODEL_LIST_PATH",
     "DEFAULT_TDC_BASE_URL",
+    "TDC_EXPORT_RECEIVE_TIMEOUT",
     "SOR_EXPORT_PATH",
     "SOR_LIST_PATH",
     "SOR_PROJECT_LIST_PATH",

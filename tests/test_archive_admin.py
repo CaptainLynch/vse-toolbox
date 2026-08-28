@@ -3,7 +3,7 @@
 tests/test_archive_admin.py — 归档任务配置管理与安全审计契约测试
 
 覆盖验收标准:
-1. 断言 schema 版本为 4，且 scheduled_archive_config_audit 表与索引存在
+1. 断言 schema 版本为 5，且 scheduled_archive_config_audit 表与索引存在
 2. 成功更新覆盖: enable, alias configured 布尔, filters, 嵌套 output_subdir,
    固定 60 分钟 interval, needs_attention 状态, 乐观 updatedAt 变更, 无秘钥审计
 3. 省略 alias 保留原值, null 仅在 disabled 时清空, enabled 缺失 alias 时拒绝
@@ -78,12 +78,12 @@ def _get_raw_audits(db: DatabaseManager, job_key: str | None = None) -> list[dic
 
 
 def test_archive_admin_schema_and_audit_table_exists(db: DatabaseManager) -> None:
-    """断言 schema 版本为 4 且 scheduled_archive_config_audit 表与索引存在。"""
-    assert CURRENT_SCHEMA_VERSION == 4
+    """断言 schema 版本为 8 且 scheduled_archive_config_audit 表与索引存在。"""
+    assert CURRENT_SCHEMA_VERSION == 10
 
     with db.get_connection() as conn:
         user_version = conn.execute("PRAGMA user_version").fetchone()[0]
-        assert user_version == 4
+        assert user_version == 10
 
     assert db.table_exists("scheduled_archive_config_audit")
 

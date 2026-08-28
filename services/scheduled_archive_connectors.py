@@ -13,6 +13,8 @@ from typing import Any, Callable, Mapping, Sequence
 
 from core.archive_store import ArchiveArtifact, ArchiveStore
 from core.credential_provider import ResolvedCredential
+from core.report_contracts import report_contracts
+from core.redaction import redact_sensitive_text
 from services.aras_auth import ArasECMAuthClient
 from services.aras_crawler import (
     ArasCrawlerClient,
@@ -31,11 +33,22 @@ from services.tdc_crawler import (
     TDCDataModelFilters,
     TDCSORFilters,
 )
+from services.xlsx_preview import XLSXPreviewError, read_xlsx_preview
 
 _MAX_TEXT = 512
 _TDC_MAX_RECORDS = 10000
 _ARAS_EWO_MAX_RECORDS = 2000
 _ARAS_PAA_MAX_RECORDS = 12000
+_ARCHIVE_SENSITIVE_KEY_PARTS = (
+    "authorization",
+    "cookie",
+    "password",
+    "token",
+    "secret",
+    "session",
+    "csrf",
+    "raw_xml",
+)
 
 _TDC_DATA_MODEL_KEYS = {
     "incident",
@@ -164,12 +177,60 @@ def _close_session(session: object) -> None:
         close()
 
 
+def _is_sensitive_archive_key(key: object) -> bool:
+    normalized = str(key).strip().lower().replace("-", "_")
+    return any(part in normalized for part in _ARCHIVE_SENSITIVE_KEY_PARTS)
+
+
+def _sanitize_archive_value(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {
+            str(key): _sanitize_archive_value(item)
+            for key, item in value.items()
+            if not _is_sensitive_archive_key(key)
+        }
+    if isinstance(value, list):
+        return [_sanitize_archive_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sanitize_archive_value(item) for item in value)
+    if isinstance(value, str):
+        return redact_sensitive_text(value)
+    return value
+
+
+def _sanitize_archive_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[dict[str, object], ...]:
+    return tuple(
+        {
+            str(key): _sanitize_archive_value(value)
+            for key, value in row.items()
+            if not _is_sensitive_archive_key(key)
+        }
+        for row in rows
+    )
+
+
+def _archive_for_context(
+    archive: ArchiveStore,
+    context: ArchiveJobContext,
+) -> ArchiveStore:
+    """Use a task-level directory override while preserving global limits."""
+    selected = str(getattr(context, "output_directory", "") or "").strip()
+    if not selected:
+        return archive
+    return ArchiveStore(
+        {"default": selected},
+        max_bytes=archive.max_bytes,
+        reserve_bytes=archive.reserve_bytes,
+    )
+
+
 def _normalized_artifacts(
     archive: ArchiveStore,
     context: ArchiveJobContext,
     rows: Sequence[Mapping[str, Any]],
 ) -> tuple[ArchiveArtifact, ArchiveArtifact]:
-    fields = sorted({str(key) for row in rows for key in row})
+    safe_rows = _sanitize_archive_rows(rows)
+    fields = sorted({str(key) for row in safe_rows for key in row})
     common = {
         "source": context.source_type,
         "report": context.report_type,
@@ -177,19 +238,55 @@ def _normalized_artifacts(
         "output_subdir": context.output_subdir,
     }
     csv_item = archive.write_csv(
-        rows,
+        safe_rows,
         fields,
         file_name=f"{context.report_type}.csv",
         artifact_type="normalized_csv",
         **common,
     )
     json_item = archive.write_json(
-        list(rows),
+        list(safe_rows),
         file_name=f"{context.report_type}.json",
         artifact_type="normalized_json",
         **common,
     )
     return csv_item, json_item
+
+
+def _official_workbook_rows(path: Path, report_type: str) -> tuple[dict[str, object], ...] | None:
+    """Read bounded normalized rows from one official TDC workbook.
+
+    ``None`` means the test double or an older endpoint did not provide a
+    readable XLSX; callers may then use the legacy list fallback.  A readable
+    official workbook with a wrong header is a contract error and must not be
+    silently replaced with list data.
+    """
+    try:
+        preview = read_xlsx_preview(path, max_rows=_TDC_MAX_RECORDS + 1)
+    except XLSXPreviewError:
+        return None
+    if not preview.rows:
+        return ()
+    raw_header = preview.rows[0]
+    headers = [str(value or "").strip() for value in raw_header]
+    if report_type in {"data_model", "sor"}:
+        contract_key = f"tdc_{report_type}"
+        expected = [
+            str(value or "").strip()
+            for value in report_contracts()[contract_key]["headerRows"][0]
+        ]
+        if headers[: len(expected)] != expected or any(headers[len(expected) :]):
+            raise ValueError(f"official TDC {report_type} export header does not match the approved contract")
+        headers = expected
+    else:
+        headers = [value or f"column_{index + 1}" for index, value in enumerate(headers)]
+    result: list[dict[str, object]] = []
+    for row in preview.rows[1:]:
+        if not row or not any(value not in (None, "") for value in row):
+            continue
+        values = list(row) + [None] * max(0, len(headers) - len(row))
+        result.append({headers[index]: values[index] for index in range(len(headers))})
+    return tuple(result)
 
 
 class TDCArchiveConnector:
@@ -220,7 +317,11 @@ class TDCArchiveConnector:
             credential.password,
         )
         try:
-            return self._collect_authenticated(context, login.session)
+            return self._collect_authenticated(
+                context,
+                login.session,
+                _archive_for_context(self._archive, context),
+            )
         finally:
             _close_session(login.session)
 
@@ -228,6 +329,7 @@ class TDCArchiveConnector:
         self,
         context: ArchiveJobContext,
         session: object,
+        archive: ArchiveStore,
     ) -> ArchiveCollection:
         with tempfile.TemporaryDirectory() as temp_dir:
             crawler = self._crawler_factory(
@@ -236,21 +338,27 @@ class TDCArchiveConnector:
                 output_dir=Path(temp_dir),
             )
             if context.job_key == "tdc_data_model":
-                filters = self._data_model_filters(context.filters)
-                result = crawler.crawl_data_model_all(
-                    filters,
-                    max_records=_TDC_MAX_RECORDS,
-                )
-                official = crawler.export_data_model(filters)
+                data_model_filters = self._data_model_filters(context.filters)
+                official = crawler.export_data_model(data_model_filters)
+                rows = _official_workbook_rows(official.path, "data_model")
+                if rows is None:
+                    result = crawler.crawl_data_model_all(
+                        data_model_filters,
+                        max_records=_TDC_MAX_RECORDS,
+                    )
+                    rows = tuple(dict(row) for row in result.rows)
             else:
-                filters = self._sor_filters(context.filters)
-                result = crawler.crawl_sor_all(
-                    filters,
-                    max_records=_TDC_MAX_RECORDS,
-                )
-                official = crawler.export_sor(filters)
+                sor_filters = self._sor_filters(context.filters)
+                official = crawler.export_sor(sor_filters)
+                rows = _official_workbook_rows(official.path, "sor")
+                if rows is None:
+                    result = crawler.crawl_sor_all(
+                        sor_filters,
+                        max_records=_TDC_MAX_RECORDS,
+                    )
+                    rows = tuple(dict(row) for row in result.rows)
             with official.path.open("rb") as stream:
-                xlsx = self._archive.write_stream(
+                xlsx = archive.write_stream(
                     stream,
                     source=context.source_type,
                     report=context.report_type,
@@ -260,8 +368,7 @@ class TDCArchiveConnector:
                     artifact_type="official_xlsx",
                     expected_size=official.byte_count,
                 )
-        rows = tuple(dict(row) for row in result.rows)
-        normalized = _normalized_artifacts(self._archive, context, rows)
+        normalized = _normalized_artifacts(archive, context, rows)
         return ArchiveCollection(len(rows), (xlsx, *normalized))
 
     @staticmethod
@@ -336,6 +443,7 @@ class ArasArchiveConnector:
                 auth.base_url,
                 login.session,
                 context,
+                _archive_for_context(self._archive, context),
             )
         finally:
             _close_session(login.session)
@@ -345,6 +453,7 @@ class ArasArchiveConnector:
         base_url: str,
         session: object,
         context: ArchiveJobContext,
+        archive: ArchiveStore,
     ) -> ArchiveCollection:
         crawler = self._crawler_factory(
             base_url,
@@ -360,7 +469,7 @@ class ArasArchiveConnector:
             rows = tuple(dict(row) for row in result.rows)
             return ArchiveCollection(
                 len(rows),
-                _normalized_artifacts(self._archive, context, rows),
+                _normalized_artifacts(archive, context, rows),
             )
         if context.job_key == "aras_paa":
             result = crawler.crawl_paa_report_all(
@@ -370,14 +479,15 @@ class ArasArchiveConnector:
             rows = tuple(dict(row) for row in result.rows)
             return ArchiveCollection(
                 len(rows),
-                _normalized_artifacts(self._archive, context, rows),
+                _normalized_artifacts(archive, context, rows),
             )
-        return self._collect_ncr(crawler, context)
+        return self._collect_ncr(crawler, context, archive)
 
     def _collect_ncr(
         self,
         crawler: Any,
         context: ArchiveJobContext,
+        archive: ArchiveStore,
     ) -> ArchiveCollection:
         filters = self._ncr_filters(context.filters)
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -394,7 +504,7 @@ class ArasArchiveConnector:
                     Path(temp_dir),
                 )
             with downloaded.open("rb") as stream:
-                official = self._archive.write_stream(
+                official = archive.write_stream(
                     stream,
                     source=context.source_type,
                     report=context.report_type,
@@ -404,7 +514,7 @@ class ArasArchiveConnector:
                     artifact_type="official_xlsx",
                     expected_size=downloaded.stat().st_size,
                 )
-        manifest = self._archive.write_json(
+        manifest = archive.write_json(
             {
                 "jobKey": context.job_key,
                 "recordCount": None,

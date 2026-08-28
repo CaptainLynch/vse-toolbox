@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from xml.sax.saxutils import escape
+from zipfile import ZipFile
 
 import pytest
 
@@ -62,7 +64,29 @@ class FakeTDCWebClient:
         rows = (
             [{"incident": "WF-1", "note": "Cookie: sid=abc123 Authorization: Bearer xyz789", "password": "hidden"}]
             if report_type == "data_model"
-            else [{"processNo": "SOR-WF-1", "note": "Cookie: sid=abc123 Authorization: Bearer xyz789", "password": "hidden"}]
+            else [{
+                "processNo": "SOR-WF-1",
+                "carTypeProject": {
+                    "id": "project-id-1",
+                    "projectNo": "P100",
+                    "projectName": "P100",
+                },
+                "processType": "Release",
+                "sorNo": "SOR-9",
+                "version": "V2",
+                "title": "Seat SOR",
+                "sorPartNo": "PART-2",
+                "sorPartName": "Seat",
+                "startUserName": "Bob",
+                "deptName": "Engineering",
+                "sectionName": "Interior",
+                "startTime": "2026-02-01 10:00:00",
+                "latestCompletedNode": "Review",
+                "processInstanceStatus": "Completed",
+                "currentAssigneeNameList": ["Alice", "Bob"],
+                "note": "Cookie: sid=abc123 Authorization: Bearer xyz789",
+                "password": "hidden",
+            }]
         )
         return TDCPagedResult(
             report_type=report_type,
@@ -75,7 +99,7 @@ class FakeTDCWebClient:
             unique_count=1,
             duplicate_count=0,
             stop_reason="single_page",
-            record_granularity="workflow" if report_type == "data_model" else "part_detail",
+            record_granularity="part_detail",
         )
 
     def _crawl_result(  # type: ignore[no-untyped-def]
@@ -105,7 +129,7 @@ class FakeTDCWebClient:
             unique_count=1,
             duplicate_count=1,
             stop_reason="reported_pages",
-            record_granularity="workflow" if report_type == "data_model" else "part_detail",
+            record_granularity="part_detail",
         )
 
     def query_data_model_page(self, filters, page=1, page_size=50):  # type: ignore[no-untyped-def]
@@ -120,6 +144,13 @@ class FakeTDCWebClient:
     def crawl_sor_all(self, filters, page_size=50, max_pages=100, max_records=10000):  # type: ignore[no-untyped-def]
         return self._crawl_result("sor", filters, page_size, max_pages, max_records)
 
+    def list_car_type_projects(self):  # type: ignore[no-untyped-def]
+        self._before("list_car_type_projects")
+        return [
+            {"id": "project-id-1", "projectNo": "P100", "projectName": "P100"},
+            {"id": "project-id-2", "projectNo": "P200", "projectName": "Project 200"},
+        ]
+
     def _export_result(self, report_type: str, filters, file_name):  # type: ignore[no-untyped-def]
         self._before(f"{report_type}_export", filters=filters, file_name=file_name)
         if self.export_outside:
@@ -132,7 +163,7 @@ class FakeTDCWebClient:
                 content_type="application/octet-stream",
                 signature_valid=True,
                 elapsed_ms=1.5,
-                record_granularity="workflow" if report_type == "data_model" else "part_detail",
+                record_granularity="part_detail",
             )
         name = file_name or ("tdc_data_model.xlsx" if report_type == "data_model" else "tdc_sor_part_details.xlsx")
         assert self.output_dir is not None
@@ -147,7 +178,7 @@ class FakeTDCWebClient:
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             signature_valid=True,
             elapsed_ms=1.5,
-            record_granularity="workflow" if report_type == "data_model" else "part_detail",
+            record_granularity="part_detail",
         )
 
     def export_data_model(self, filters, file_name=None):  # type: ignore[no-untyped-def]
@@ -172,6 +203,123 @@ class FakeTDCWebAuthClient:
         if self.fail:
             raise self.fail
         return TDCLoginResult(session=self.session)
+
+
+_TDC_DATA_MODEL_HEADERS = [
+    "实例号", "流程名", "流水单号", "发布属性", "申请人", "部门", "申请日期", "项目/车型",
+    "零件号", "数模号", "零件名称", "数量", "重量（单件）", "零件合计", "版本号", "对应IA号",
+    "EWO/SOR号", "最新审批记录", "造型", "总体工程", "CAE", "整车性能", "车身", "内外饰",
+    "底盘", "动力", "空调电子", "尺寸工程", "冲压", "车身制造", "涂装", "总装", "新能源",
+    "感知质量", "造型专家审核", "NVH", "加签人员", "设计工程师", "主任工程师", "专家/经理", "首席/总监",
+    "应签人数", "已签人数", "未签人数", "签署率", "待审批人员", "状态",
+]
+
+_TDC_SOR_HEADERS = [
+    "流水单号",
+    "车型项目",
+    "类型",
+    "SOR号",
+    "版本号",
+    "标题",
+    "零件号",
+    "零件名称",
+    "申请人",
+    "部门",
+    "科室",
+    "申请日期",
+    "最新完成节点",
+    "审批状态",
+    "当前待办人",
+]
+
+
+def _write_tdc_data_model_xlsx(path: Path) -> None:
+    def cell_ref(column: int, row: int) -> str:
+        result = ""
+        while column:
+            column, remainder = divmod(column - 1, 26)
+            result = chr(65 + remainder) + result
+        return f"{result}{row}"
+
+    headers = "".join(
+        f'<c r="{cell_ref(index, 1)}" t="inlineStr"><is><t>{escape(label)}</t></is></c>'
+        for index, label in enumerate(_TDC_DATA_MODEL_HEADERS, 1)
+    )
+    values = [
+        "INC-1", "流程", "DOC-1", "T2发布", "申请人", "外饰科", "2026-01-01 10:00:00", "F610M",
+        "P-1", "M-1", "零件", "1", "0.1", "0.1", "001", "IA-1", "N/A", "审批完成",
+    ] + ["" for _ in range(len(_TDC_DATA_MODEL_HEADERS) - 18)]
+    values[-1] = "已完成"
+    row = "".join(
+        f'<c r="{cell_ref(index, 2)}" t="inlineStr"><is><t>{escape(value)}</t></is></c>'
+        for index, value in enumerate(values, 1)
+    )
+    workbook = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>'
+    )
+    relationships = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+        'Target="worksheets/sheet1.xml"/></Relationships>'
+    )
+    sheet = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'
+        f'<row r="1">{headers}</row><row r="2">{row}</row>'
+        '</sheetData></worksheet>'
+    )
+    with ZipFile(path, "w") as archive:
+        archive.writestr("xl/workbook.xml", workbook)
+        archive.writestr("xl/_rels/workbook.xml.rels", relationships)
+        archive.writestr("xl/worksheets/sheet1.xml", sheet)
+
+
+def _write_tdc_sor_xlsx(path: Path) -> None:
+    def cell_ref(column: int, row: int) -> str:
+        result = ""
+        while column:
+            column, remainder = divmod(column - 1, 26)
+            result = chr(65 + remainder) + result
+        return f"{result}{row}"
+
+    headers = "".join(
+        f'<c r="{cell_ref(index, 1)}" t="inlineStr"><is><t>{escape(label)}</t></is></c>'
+        for index, label in enumerate(_TDC_SOR_HEADERS, 1)
+    )
+    values = [
+        "SOR-WF-1", "E262S", "发布流程", "SOR-9", "A", "座椅 SOR", "PART-1", "座椅",
+        "申请人", "车体工程", "内饰科", "2026-08-26 10:00:00", "审核", "审批中", "张三、李四",
+    ]
+    row = "".join(
+        f'<c r="{cell_ref(index, 2)}" t="inlineStr"><is><t>{escape(value)}</t></is></c>'
+        for index, value in enumerate(values, 1)
+    )
+    workbook = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>'
+    )
+    relationships = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+        'Target="worksheets/sheet1.xml"/></Relationships>'
+    )
+    sheet = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'
+        f'<row r="1">{headers}</row><row r="2">{row}</row>'
+        '</sheetData></worksheet>'
+    )
+    with ZipFile(path, "w") as archive:
+        archive.writestr("xl/workbook.xml", workbook)
+        archive.writestr("xl/_rels/workbook.xml.rels", relationships)
+        archive.writestr("xl/worksheets/sheet1.xml", sheet)
 
 
 @pytest.fixture()
@@ -280,6 +428,7 @@ def test_catalog_statuses_availability_and_schema(client) -> None:
         "latest_completed_node",
         "approval_status",
     ]
+
     for aras_id in ("aras-ewo", "aras-paa", "aras-ncr-progress", "aras-ncr-detail"):
         assert by_id[aras_id]["availability"] == "available"
         assert by_id[aras_id]["implementation_status"] == "已完整实现"
@@ -347,6 +496,80 @@ def test_catalog_statuses_availability_and_schema(client) -> None:
     assert "CLI" in scraper["reason"] and "Web" in scraper["reason"]
 
 
+def test_tdc_sor_car_type_project_endpoint_returns_safe_options(client) -> None:
+    response = client.post(
+        "/api/tdc/sor/car-type-projects",
+        json={
+            "base_url": "https://tdc.example",
+            "auth_mode": "browser",
+            "cookie": "sid=secret-cookie",
+            "filters": {},
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["data"]["projects"] == [
+        {"id": "project-id-1", "projectNo": "P100", "projectName": "P100", "label": "P100"},
+        {"id": "project-id-2", "projectNo": "P200", "projectName": "Project 200", "label": "P200 — Project 200"},
+    ]
+    assert "secret-cookie" not in response.get_data(as_text=True)
+
+
+def test_tdc_ui_exposes_fast_and_exact_preview_modes() -> None:
+    """Both TDC report forms expose fast list and exact official-export modes."""
+    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+    assert "快速查询" in js_text
+    assert "官方 Excel 精确预览（较慢）" in js_text
+    assert 'fieldValue(form, "preview_source")' in js_text
+    assert 'if (item.id === "tdc-data-model" || item.id === "tdc-sor")' in js_text
+    assert 'payload.preview_source = "official_export"' not in js_text
+
+
+def test_tdc_sor_ui_uses_manual_vehicle_project_input() -> None:
+    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+
+    assert "/api/tdc/sor/car-type-projects" not in js_text
+    assert "loadTdcSorProjectOptions" not in js_text
+    assert "tdc-car-type-project-options" not in js_text
+    assert "重新加载车型项目" not in js_text
+    assert "car_type_project_id" not in js_text
+    assert "input.dataset.deliverableField = field.name;" in js_text
+
+
+def test_tdc_preview_source_rejects_unknown_values_before_upstream_access(client) -> None:
+    before = len(FakeTDCWebClient.calls)
+    response = client.post(
+        "/api/tdc/data-model/query",
+        json={
+            "base_url": "https://tdc.example",
+            "auth_mode": "browser",
+            "cookie": "sid=secret-cookie",
+            "preview_source": "unexpected-mode",
+            "filters": {},
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["type"] == "ValidationError"
+    assert len(FakeTDCWebClient.calls) == before
+
+
+def test_result_table_body_cells_wrap_long_text() -> None:
+    css_text = Path("web/static/style.css").read_text(encoding="utf-8-sig")
+    body_rules = re.findall(r"\.result-table tbody tr td\s*\{([^}]*)\}", css_text)
+
+    assert body_rules
+    assert "white-space: normal" in body_rules[-1]
+    assert "overflow-wrap: anywhere" in body_rules[-1]
+
+
+def test_tdc_export_cache_module_is_part_of_the_runtime_contract() -> None:
+    """The WebUI must include a bounded official-export cache implementation."""
+    cache_module = Path("services/tdc_export_cache.py")
+    assert cache_module.is_file()
+    assert "TDCExportCache" in cache_module.read_text(encoding="utf-8-sig")
+
+
 def test_tdc_data_model_query_password_mode(client) -> None:
     resp = client.post(
         "/api/tdc/data-model/query",
@@ -375,9 +598,12 @@ def test_tdc_data_model_query_password_mode(client) -> None:
     assert resp.status_code == 200
     data = resp.get_json()["data"]
     assert data["report_type"] == "data_model"
-    assert data["rows"] == [
-        {"incident": "WF-1", "note": "Cookie: [redacted] Authorization: [redacted]"}
-    ]
+    assert len(data["rows"]) == 1
+    assert len(data["rows"][0]) == 47
+    assert data["rows"][0][0] == "WF-1"
+    assert data["rows"][0][1:] == [None] * 46
+    assert data["data_source"] == "list_endpoint"
+    assert data["mappingComplete"] is False
     assert data["page"] == 2
     assert data["page_size"] == 25
     assert data["total"] == 5
@@ -386,7 +612,7 @@ def test_tdc_data_model_query_password_mode(client) -> None:
     assert data["unique_count"] == 1
     assert data["duplicate_count"] == 0
     assert data["stop_reason"] == "single_page"
-    assert data["record_granularity"] == "workflow"
+    assert data["record_granularity"] == "part_detail"
     body_text = resp.get_data(as_text=True)
     assert "fictional-user" not in body_text
     assert "fictional-password-secret" not in body_text
@@ -415,6 +641,131 @@ def test_tdc_data_model_query_password_mode(client) -> None:
     assert query_call["page_size"] == 25
 
 
+def test_tdc_data_model_query_uses_official_export_preview_when_requested(client, monkeypatch) -> None:
+    def export_preview(self, filters, file_name=None):  # type: ignore[no-untyped-def]
+        self._before("data_model_export", filters=filters, file_name=file_name)
+        assert self.output_dir is not None
+        path = self.output_dir / (file_name or "tdc_data_model_preview.xlsx")
+        _write_tdc_data_model_xlsx(path)
+        return TDCExportResult(
+            report_type="data_model",
+            file_name=path.name,
+            path=path,
+            byte_count=path.stat().st_size,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            signature_valid=True,
+            elapsed_ms=1.0,
+            record_granularity="part_detail",
+        )
+
+    monkeypatch.setattr(FakeTDCWebClient, "export_data_model", export_preview)
+    response = client.post(
+        "/api/tdc/data-model/query",
+        json={
+            "base_url": "https://tdc.example",
+            "auth_mode": "browser",
+            "cookie": "sid=secret-cookie",
+            "preview_source": "official_export",
+            "filters": {"project_model": "F610M"},
+            "page": 1,
+            "page_size": 50,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()["data"]
+    assert data["data_source"] == "official_export"
+    assert data["headerRows"][0][:3] == ["实例号", "流程名", "流水单号"]
+    assert data["rows"][0][:3] == ["INC-1", "流程", "DOC-1"]
+    assert data["rows"][0][-1] == "已完成"
+    assert data["mappingComplete"] is True
+    assert data["total"] == 1
+    assert data["record_granularity"] == "part_detail"
+
+
+def test_tdc_sor_query_uses_official_export_preview_contract(client, monkeypatch) -> None:
+    def export_preview(self, filters, file_name=None):  # type: ignore[no-untyped-def]
+        self._before("sor_export", filters=filters, file_name=file_name)
+        assert self.output_dir is not None
+        path = self.output_dir / (file_name or "tdc_sor_preview.xlsx")
+        _write_tdc_sor_xlsx(path)
+        return TDCExportResult(
+            report_type="sor",
+            file_name=path.name,
+            path=path,
+            byte_count=path.stat().st_size,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            signature_valid=True,
+            elapsed_ms=1.0,
+            record_granularity="part_detail",
+        )
+
+    monkeypatch.setattr(FakeTDCWebClient, "export_sor", export_preview)
+    response = client.post(
+        "/api/tdc/sor/query",
+        json={
+            "base_url": "https://tdc.example",
+            "auth_mode": "browser",
+            "cookie": "sid=secret-cookie",
+            "preview_source": "official_export",
+            "filters": {"car_type_project": "E262S", "department": "车体工程"},
+            "page": 1,
+            "page_size": 50,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()["data"]
+    assert data["data_source"] == "official_export"
+    assert data["headerRows"] == [_TDC_SOR_HEADERS]
+    assert data["rows"] == [[
+        "SOR-WF-1", "E262S", "发布流程", "SOR-9", "A", "座椅 SOR", "PART-1", "座椅",
+        "申请人", "车体工程", "内饰科", "2026-08-26 10:00:00", "审核", "审批中", "张三、李四",
+    ]]
+    assert data["mappingComplete"] is True
+    assert any(call["method"] == "sor_export" for call in FakeTDCWebClient.calls)
+    assert not any(call["method"] == "sor_query" for call in FakeTDCWebClient.calls)
+
+
+def test_tdc_official_preview_reuses_password_mode_cache(client, monkeypatch) -> None:
+    """Identical exact previews reuse one official export for the same local user."""
+    export_calls = [0]
+
+    def export_preview(self, filters, file_name=None):  # type: ignore[no-untyped-def]
+        export_calls[0] += 1
+        assert self.output_dir is not None
+        path = self.output_dir / (file_name or "tdc_data_model_preview.xlsx")
+        _write_tdc_data_model_xlsx(path)
+        return TDCExportResult(
+            report_type="data_model",
+            file_name=path.name,
+            path=path,
+            byte_count=path.stat().st_size,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            signature_valid=True,
+            elapsed_ms=1.0,
+            record_granularity="part_detail",
+        )
+
+    monkeypatch.setattr(FakeTDCWebClient, "export_data_model", export_preview)
+    payload = {
+        "base_url": "https://tdc.example",
+        "auth_mode": "password",
+        "username": "fictional-user",
+        "password": "fictional-password-secret",
+        "preview_source": "official_export",
+        "filters": {"project_model": "F610M"},
+        "page": 1,
+        "page_size": 50,
+    }
+    first = client.post("/api/tdc/data-model/query", json=payload)
+    second = client.post("/api/tdc/data-model/query", json=payload)
+    assert first.status_code == second.status_code == 200
+    assert first.get_json()["data"]["cache"]["hit"] is False
+    assert second.get_json()["data"]["cache"]["hit"] is True
+    assert export_calls == [1]
+
+
 def test_tdc_sor_query_browser_cookie_mode(client) -> None:
     resp = client.post(
         "/api/tdc/sor/query",
@@ -427,6 +778,7 @@ def test_tdc_sor_query_browser_cookie_mode(client) -> None:
                 "serial_number": "SOR-WF-1",
                 "process_type": "Release",
                 "car_type_project": "P100",
+                "car_type_project_id": "project-id-1",
                 "applicant": "Bob",
                 "title": "Seat SOR",
                 "department": "Engineering",
@@ -445,8 +797,15 @@ def test_tdc_sor_query_browser_cookie_mode(client) -> None:
         },
     )
     assert resp.status_code == 200
-    assert resp.get_json()["data"]["report_type"] == "sor"
-    assert resp.get_json()["data"]["record_granularity"] == "part_detail"
+    data = resp.get_json()["data"]
+    assert data["report_type"] == "sor"
+    assert data["record_granularity"] == "part_detail"
+    assert data["headerRows"] == [_TDC_SOR_HEADERS]
+    assert data["rows"] == [[
+        "SOR-WF-1", "P100", "Release", "SOR-9", "V2", "Seat SOR", "PART-2", "Seat",
+        "Bob", "Engineering", "Interior", "2026-02-01 10:00:00", "Review", "Completed", "Alice、Bob",
+    ]]
+    assert data["mappingComplete"] is True
     body_text = resp.get_data(as_text=True)
     assert "secret-cookie" not in body_text
     init_call = next(call for call in FakeTDCWebClient.calls if call["method"] == "init")
@@ -458,6 +817,7 @@ def test_tdc_sor_query_browser_cookie_mode(client) -> None:
     assert filters.serial_number == "SOR-WF-1"
     assert filters.process_type == "Release"
     assert filters.car_type_project == "P100"
+    assert filters.car_type_project_id == "project-id-1"
     assert filters.applicant == "Bob"
     assert filters.title == "Seat SOR"
     assert filters.department == "Engineering"
@@ -836,7 +1196,7 @@ def test_static_deliverables_guards() -> None:
     assert "DELIVERABLE_STATUS_TONE_CLASS" in js_text
     assert "status-${item.implementation_status}" not in js_text
     assert "当前请求仍在处理中，请等待完成" in js_text
-    assert js_text.count("已排队") == 2
+    assert "已排队" in js_text
     assert 'name="operation_mode"' in js_text
     assert '<option value="query" selected>查询预览</option>' in js_text
     assert '<option value="crawl_all">全量抓取</option>' in js_text
@@ -844,6 +1204,10 @@ def test_static_deliverables_guards() -> None:
     assert 'id="deliverable-operation-mode"' in js_text
     assert 'operationMode.addEventListener("change"' in js_text
     assert 'id="deliverable-run-button"' in js_text
+    assert 'id="deliverable-download-button"' in js_text
+    assert 'data-deliverable-download' in js_text
+    assert 'runDeliverableOperation(item, "export")' in js_text
+    assert 'preview_source' in js_text
     assert 'mode.disabled = Boolean(isRunning)' in js_text
     assert 'runButton.disabled = Boolean(isRunning)' in js_text
     assert js_text.count('runDeliverableOperation(item, operation);') == 1

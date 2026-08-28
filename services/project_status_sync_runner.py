@@ -27,6 +27,9 @@ from core.db_manager import (
     SyncLeaseLostError,
 )
 from core.redaction import redact_sensitive_text
+from services.project_status_deliverable_analysis import (
+    ProjectStatusDeliverableAnalysisService,
+)
 from services.project_status_updates import (
     ConnectorSnapshot,
     ProjectStatusUpdateService,
@@ -222,10 +225,12 @@ class ProjectStatusSyncRunner:
         db: DatabaseManager,
         service: ProjectStatusUpdateService,
         registry: ConnectorRegistry,
+        analysis_service: ProjectStatusDeliverableAnalysisService | None = None,
     ) -> None:
         self._db = db
         self._service = service
         self._registry = registry
+        self._analysis_service = analysis_service or ProjectStatusDeliverableAnalysisService(db)
 
     def run_once(
         self,
@@ -395,6 +400,22 @@ class ProjectStatusSyncRunner:
                 snapshot,
                 trigger_type,
             )
+            if sync_result.final_state in {"success", "partial"} and snapshot.analysis_rows:
+                analysis_mapping = context.match_rule.get("analysisMapping")
+                try:
+                    self._analysis_service.publish(
+                        deliverable_id,
+                        run_id,
+                        snapshot.analysis_rows,
+                        snapshot_at=snapshot.fetched_at,
+                        mapping=(analysis_mapping if isinstance(analysis_mapping, Mapping) else None),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "deliverable analysis cache publish failed for %s: %s",
+                        deliverable_id,
+                        _sanitize(str(exc)),
+                    )
             return self._result_from_sync(
                 binding_id, deliverable_id, source_type, sync_result
             )

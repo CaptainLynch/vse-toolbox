@@ -4,7 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>VSE Toolbox 控制台</title>
-  <link rel="stylesheet" href="/static/style.css?v=archive-20260822" />
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="/static/style.css?v=credential-sor-20260827-r1" />
 </head>
 <body data-theme="light" data-session-view="overview" data-current-command="ewo">
   <div class="app-shell">
@@ -22,8 +23,9 @@
         <a href="#overview" class="active" data-panel-link="overview">概览</a>
         <a href="#aras-panel" data-panel-link="aras-panel">Aras</a>
         <a href="#deliverables" data-panel-link="deliverables">交付物</a>
-        <a href="#scheduled-archive" data-panel-link="scheduled-archive">归档</a>
-        <span class="disabled" aria-disabled="true">设置</span>
+        <a href="#excel-tasks" data-panel-link="excel-tasks">Excel</a>
+        <a href="#scheduled-archive" data-panel-link="scheduled-archive">自动下载与留存</a>
+        <a href="#settings-panel" data-panel-link="settings-panel">设置</a>
       </nav>
 
       <button id="theme-toggle" class="theme-toggle" type="button" aria-label="切换主题">
@@ -44,6 +46,7 @@
         <div class="overview-switch" role="tablist" aria-label="概览视图">
           <button id="overview-tab-status" class="overview-tab active" type="button" role="tab" aria-selected="true" aria-controls="overview-status-panel">状态总览</button>
           <button id="overview-tab-details" class="overview-tab" type="button" role="tab" aria-selected="false" aria-controls="overview-details-panel" tabindex="-1">交付物明细</button>
+          <button id="overview-tab-plan" class="overview-tab" type="button" role="tab" aria-selected="false" aria-controls="overview-plan-panel" tabindex="-1">主计划维护</button>
         </div>
 
         <div id="overview-status-panel" class="overview-tabpanel" role="tabpanel" aria-labelledby="overview-tab-status">
@@ -71,6 +74,44 @@
         </div>
 
         <div id="overview-details-panel" class="overview-tabpanel" role="tabpanel" aria-labelledby="overview-tab-details" hidden>
+          <div id="overview-deliverables-list-view">
+            <section class="overview-band details-summary-band" aria-label="交付物明细摘要">
+              <div id="overview-details-summary"><p class="loading">加载中</p></div>
+            </section>
+
+            <section class="overview-band details-table-band" aria-label="交付物明细表">
+              <div class="band-head">
+                <div>
+                  <p class="eyebrow">明细</p>
+                  <h4>交付物明细</h4>
+                </div>
+              </div>
+              <div class="overview-table-wrap">
+                <table class="overview-details-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">交付物</th>
+                      <th scope="col">状态</th>
+                      <th scope="col">负责人</th>
+                      <th scope="col">计划完成</th>
+                      <th scope="col">实际完成或当前进度</th>
+                      <th scope="col">风险与备注</th>
+                      <th scope="col">数据来源</th>
+                      <th scope="col"><span class="visually-hidden">展开控制</span></th>
+                    </tr>
+                  </thead>
+                  <tbody id="overview-details-body">
+                    <tr><td colspan="8"><p class="loading">加载中</p></td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+
+          <div id="overview-deliverable-detail-view" class="overview-deliverable-detail-view" hidden aria-label="交付物明细与分析"></div>
+        </div>
+
+        <div id="overview-plan-panel" class="overview-tabpanel" role="tabpanel" aria-labelledby="overview-tab-plan" hidden>
           <section class="overview-band milestone-maintenance-band" aria-label="主计划维护">
             <div class="band-head">
               <div>
@@ -79,38 +120,6 @@
               </div>
             </div>
             <div id="milestone-maintenance" class="milestone-maintenance"><p class="loading">加载中</p></div>
-          </section>
-
-          <section class="overview-band details-summary-band" aria-label="交付物明细摘要">
-            <div id="overview-details-summary"><p class="loading">加载中</p></div>
-          </section>
-
-          <section class="overview-band details-table-band" aria-label="交付物明细表">
-            <div class="band-head">
-              <div>
-                <p class="eyebrow">明细</p>
-                <h4>交付物明细</h4>
-              </div>
-            </div>
-            <div class="overview-table-wrap">
-              <table class="overview-details-table">
-                <thead>
-                  <tr>
-                    <th scope="col">交付物</th>
-                    <th scope="col">状态</th>
-                    <th scope="col">负责人</th>
-                    <th scope="col">计划完成</th>
-                    <th scope="col">实际完成或当前进度</th>
-                    <th scope="col">风险与备注</th>
-                    <th scope="col">数据来源</th>
-                    <th scope="col"><span class="visually-hidden">展开控制</span></th>
-                  </tr>
-                </thead>
-                <tbody id="overview-details-body">
-                  <tr><td colspan="8"><p class="loading">加载中</p></td></tr>
-                </tbody>
-              </table>
-            </div>
           </section>
         </div>
       </section>
@@ -124,13 +133,12 @@
           <div class="mode-toolbar" role="tablist" aria-label="Aras 查询模式">
             <button type="button" class="segment active" data-aras-mode="ewo">EWO</button>
             <button type="button" class="segment" data-aras-mode="paa">PAA</button>
-            <button type="button" class="segment" data-aras-mode="paa-all">PAA 全量</button>
             <button type="button" class="segment" data-aras-mode="ncr-progress">NCR 进度</button>
             <button type="button" class="segment" data-aras-mode="ncr-detail">NCR 明细</button>
           </div>
         </div>
 
-        <form id="aras-form" class="aras-form" autocomplete="off">
+        <form id="aras-form" class="aras-form" autocomplete="on">
           <section class="form-block connection-block">
             <div class="block-title">
               <p class="eyebrow">连接</p>
@@ -139,7 +147,7 @@
             <div class="form-grid">
               <label>
                 <span>Base URL</span>
-                <input id="aras-base-url" name="base_url" type="url" required placeholder="https://aras-host/" value="http://ecm.sgmw.com.cn/innovatorserver" />
+                <input id="aras-base-url" name="base_url" type="url" required placeholder="https://aras-host/" value="http://ecm.sgmw.com.cn/innovatorserver" autocomplete="url" />
               </label>
               <label>
                 <span>认证方式</span>
@@ -150,11 +158,11 @@
               </label>
               <label data-auth-fields="password">
                 <span>ECM 用户名</span>
-                <input id="aras-username" name="username" autocomplete="off" value="l21500249" />
+                <input id="aras-username" name="username" autocomplete="username" value="" />
               </label>
               <label data-auth-fields="password">
                 <span>ECM 密码</span>
-                <input id="aras-password" name="password" type="password" autocomplete="off" placeholder="在此填入 ECM 密码（临时测试便利，验收后清空此 input 的 value）" />
+                <input id="aras-password" name="password" type="password" autocomplete="current-password" placeholder="在此填入 ECM 密码" />
               </label>
               <label data-auth-fields="browser" hidden>
                 <span>Cookie</span>
@@ -227,8 +235,18 @@
 
           <section class="form-block actions-block">
             <button id="aras-submit" class="primary-btn" type="submit" data-aras-action="preview">查询预览</button>
+            <button id="aras-crawl-all" class="primary-btn" type="button" data-aras-action="crawl-all" hidden>获取全部结果</button>
             <button id="aras-export" class="primary-btn" type="button" data-aras-action="export" hidden>全量导出 CSV</button>
             <button id="aras-download" class="primary-btn" type="button" data-aras-action="download" hidden>生成并下载</button>
+            <label id="aras-xml-toggle" class="xml-capture-toggle">
+              <input id="aras-include-xml" type="checkbox" />
+              <span>保存 Aras XML（请求 + 返回）</span>
+            </label>
+            <div id="aras-xml-actions" class="xml-capture-actions" hidden aria-live="polite">
+              <span class="xml-capture-label">XML 取证：</span>
+              <button id="aras-download-request-xml" class="secondary-btn" type="button" data-aras-xml-action="request">下载请求 XML</button>
+              <button id="aras-download-response-xml" class="secondary-btn" type="button" data-aras-xml-action="response">下载返回 XML</button>
+            </div>
             <span id="aras-status" aria-live="polite"></span>
           </section>
         </form>
@@ -293,11 +311,251 @@
         </div>
       </section>
 
-      <section id="scheduled-archive" class="panel-section scheduled-archive-workbench" hidden aria-label="归档管理">
+      <section id="excel-tasks" class="panel-section excel-task-workbench" hidden aria-label="Excel 文件处理">
+        <div class="excel-task-head">
+          <div>
+            <p class="eyebrow">本地文件</p>
+            <h3>Excel 文件处理</h3>
+          </div>
+          <div class="excel-worker-controls" aria-label="文件处理服务控制">
+            <span id="excel-worker-state" class="excel-status-chip is-unknown">未配置</span>
+            <button id="excel-worker-start-btn" class="segment" type="button">启动</button>
+            <button id="excel-worker-stop-btn" class="segment" type="button">停止</button>
+            <button id="excel-task-refresh-btn" class="segment" type="button">刷新</button>
+            <button id="excel-task-examples-btn" class="segment" type="button">查看操作示例</button>
+          </div>
+        </div>
+
+        <div id="excel-task-error" class="error-msg" hidden></div>
+        <div id="excel-task-status" class="archive-status-msg" aria-live="polite"></div>
+
+        <form id="excel-task-create-form" class="excel-task-create-form" autocomplete="off">
+          <div class="excel-task-create-head">
+            <div>
+              <p class="eyebrow">新建</p>
+              <h4>创建 Excel 处理任务</h4>
+            </div>
+            <button id="excel-task-create-btn" class="primary-btn" type="submit">开始处理</button>
+          </div>
+          <div class="excel-task-create-grid">
+            <label>
+              <span>处理方式</span>
+              <select id="excel-task-operation" name="operation">
+                <option value="merge_append">追加合并</option>
+                <option value="merge_overlay">覆盖合并</option>
+                <option value="diff_against_baseline">基线差异比对</option>
+              </select>
+            </label>
+            <label data-excel-create-field="sources">
+              <span>文件所在位置</span>
+              <select id="excel-source-root" data-excel-root-select></select>
+            </label>
+            <label class="excel-task-field-wide" data-excel-create-field="sources">
+              <span>要处理的文件</span>
+              <textarea id="excel-source-paths" rows="3" placeholder="source-a.xlsx&#10;source-b.xlsx"></textarea>
+            </label>
+            <label data-excel-create-field="target" hidden>
+              <span>文件所在位置</span>
+              <select id="excel-target-root" data-excel-root-select></select>
+            </label>
+            <label data-excel-create-field="target" hidden>
+              <span>目标模板</span>
+              <input id="excel-target-path" type="text" placeholder="target.xlsx" />
+            </label>
+            <label data-excel-create-field="baseline">
+              <span>文件所在位置</span>
+              <select id="excel-baseline-root" data-excel-root-select></select>
+            </label>
+            <label data-excel-create-field="baseline">
+              <span>对比基准</span>
+              <input id="excel-baseline-path" type="text" placeholder="baseline.xlsx" />
+            </label>
+            <label>
+              <span>保存位置</span>
+              <select id="excel-output-root" data-excel-root-select></select>
+            </label>
+            <label>
+              <span>输出文件名</span>
+              <input id="excel-output-path" type="text" placeholder="output/result.xlsx" required />
+            </label>
+          </div>
+          <details class="excel-advanced-disclosure">
+            <summary>高级信息</summary>
+            <label class="excel-task-field-wide">
+              <span>防重标识</span>
+              <div class="excel-idempotency-control">
+                <input id="excel-idempotency-key" type="text" readonly />
+                <button id="excel-regenerate-key-btn" class="segment" type="button">重新生成</button>
+              </div>
+            </label>
+          </details>
+        </form>
+
+        <dialog id="excel-examples-dialog" class="excel-examples-dialog" aria-label="Excel 操作示例">
+          <div class="excel-examples-dialog-head">
+            <div>
+              <p class="eyebrow">操作指南</p>
+              <h4>Excel 文件处理操作示例</h4>
+            </div>
+            <div class="excel-examples-head-actions">
+              <button id="excel-examples-pause-btn" class="segment" type="button">暂停动画</button>
+              <button id="excel-examples-close-btn" class="segment" type="button">关闭</button>
+            </div>
+          </div>
+          <div id="excel-examples-container" class="excel-examples-container">
+            <article class="excel-example-card" aria-label="追加合并示例">
+              <div class="excel-example-card-head">
+                <span class="excel-example-tag">追加合并</span>
+                <h5>将多个来源文件的记录行垂直拼接</h5>
+              </div>
+              <p class="excel-example-desc">读取选中的多个 Excel 文件的有效数据行，按顺序追加合并至一个输出文件中，保留相同表头结构。</p>
+              <div class="excel-anim-stage anim-append">
+                <div class="anim-file anim-file-a">
+                  <div class="anim-file-header">文件 A (行 1..2)</div>
+                  <div class="anim-file-row">Row A1</div>
+                  <div class="anim-file-row">Row A2</div>
+                </div>
+                <div class="anim-arrow">+</div>
+                <div class="anim-file anim-file-b">
+                  <div class="anim-file-header">文件 B (行 1..2)</div>
+                  <div class="anim-file-row">Row B1</div>
+                  <div class="anim-file-row">Row B2</div>
+                </div>
+                <div class="anim-arrow">→</div>
+                <div class="anim-file anim-file-output">
+                  <div class="anim-file-header">合并输出 (行 1..4)</div>
+                  <div class="anim-file-row row-a">Row A1</div>
+                  <div class="anim-file-row row-a">Row A2</div>
+                  <div class="anim-file-row row-b">Row B1</div>
+                  <div class="anim-file-row row-b">Row B2</div>
+                </div>
+              </div>
+            </article>
+
+            <article class="excel-example-card" aria-label="覆盖合并示例">
+              <div class="excel-example-card-head">
+                <span class="excel-example-tag">覆盖合并</span>
+                <h5>基于目标模板填入来源数据</h5>
+              </div>
+              <p class="excel-example-desc">以指定的目标模板为基准格式，将来源文件中的字段按列映射关系覆盖填充到目标模板对应单元格中。</p>
+              <div class="excel-anim-stage anim-overlay">
+                <div class="anim-file anim-file-template">
+                  <div class="anim-file-header">目标模板 (空表格)</div>
+                  <div class="anim-cell-grid">
+                    <div class="anim-cell cell-ph">[待填数据]</div>
+                    <div class="anim-cell cell-ph">[待填数据]</div>
+                  </div>
+                </div>
+                <div class="anim-arrow">+</div>
+                <div class="anim-file anim-file-src">
+                  <div class="anim-file-header">来源数据</div>
+                  <div class="anim-cell-grid">
+                    <div class="anim-cell cell-val">Val 1</div>
+                    <div class="anim-cell cell-val">Val 2</div>
+                  </div>
+                </div>
+                <div class="anim-arrow">→</div>
+                <div class="anim-file anim-file-output">
+                  <div class="anim-file-header">填充后模板</div>
+                  <div class="anim-cell-grid">
+                    <div class="anim-cell cell-filled">Val 1 (已填充)</div>
+                    <div class="anim-cell cell-filled">Val 2 (已填充)</div>
+                  </div>
+                </div>
+              </div>
+            </article>
+
+            <article class="excel-example-card" aria-label="基线差异比对示例">
+              <div class="excel-example-card-head">
+                <span class="excel-example-tag">基线差异比对</span>
+                <h5>比对最新文件与对比基准的变更</h5>
+              </div>
+              <p class="excel-example-desc">以对比基准文件为对照，逐行逐列比对最新文件的差异，标记新增、修改或删除的记录项并输出比对报告。</p>
+              <div class="excel-anim-stage anim-diff">
+                <div class="anim-file anim-file-base">
+                  <div class="anim-file-header">对比基准 (Baseline)</div>
+                  <div class="anim-diff-row">条目 1: 旧数值</div>
+                  <div class="anim-diff-row">条目 2: 保持不变</div>
+                </div>
+                <div class="anim-arrow">vs</div>
+                <div class="anim-file anim-file-current">
+                  <div class="anim-file-header">最新文件 (Current)</div>
+                  <div class="anim-diff-row">条目 1: 新数值</div>
+                  <div class="anim-diff-row">条目 2: 保持不变</div>
+                </div>
+                <div class="anim-arrow">→</div>
+                <div class="anim-file anim-file-output">
+                  <div class="anim-file-header">差异比对报告</div>
+                  <div class="anim-diff-row diff-modified">条目 1: 已修改 (旧→新)</div>
+                  <div class="anim-diff-row diff-unchanged">条目 2: 一致</div>
+                </div>
+              </div>
+            </article>
+          </div>
+        </dialog>
+
+        <div class="excel-task-layout">
+          <aside class="excel-task-list-pane" aria-label="Excel 处理记录">
+            <div class="excel-task-list-toolbar">
+              <h4>处理记录</h4>
+              <label class="filter-control">
+                <span>状态</span>
+                <select id="excel-task-status-filter">
+                  <option value="">全部</option>
+                  <option value="queued">等待处理</option>
+                  <option value="leased">准备处理</option>
+                  <option value="running">处理中</option>
+                  <option value="succeeded">已完成</option>
+                  <option value="failed">失败</option>
+                  <option value="cancelled">已取消</option>
+                </select>
+              </label>
+            </div>
+            <div id="excel-task-list" class="excel-task-list is-empty">暂无处理记录</div>
+          </aside>
+
+          <div class="excel-task-detail-pane">
+            <article id="excel-task-detail" class="excel-task-detail is-empty">
+              <p class="loading">请选择处理记录</p>
+            </article>
+
+            <section class="excel-task-history" aria-label="Excel 处理历史">
+              <div class="excel-task-section-head">
+                <h4>处理历史</h4>
+              </div>
+              <div id="excel-task-runs" class="excel-task-table-wrap is-empty">暂无处理记录</div>
+            </section>
+
+            <section class="excel-task-artifacts" aria-label="Excel 输出文件">
+              <div class="excel-task-section-head">
+                <h4>输出文件</h4>
+              </div>
+              <div id="excel-task-artifact-list" class="excel-task-table-wrap is-empty">暂无输出文件</div>
+            </section>
+
+            <section class="excel-task-retention" aria-label="Excel 文件清理建议">
+              <div class="excel-task-section-head">
+                <h4>文件清理建议</h4>
+                <div class="excel-retention-controls">
+                  <label>
+                    <span>保留天数</span>
+                    <input id="excel-retention-days" type="number" min="1" max="3650" value="90" />
+                  </label>
+                  <button id="excel-retention-preview-btn" class="segment" type="button">查看建议</button>
+                </div>
+              </div>
+              <div id="excel-retention-plan" class="excel-task-table-wrap is-empty">尚未生成清理建议</div>
+            </section>
+          </div>
+        </div>
+      </section>
+
+      <section id="scheduled-archive" class="panel-section scheduled-archive-workbench" hidden aria-label="自动下载与留存">
         <div class="archive-head">
           <div>
-            <p class="eyebrow">管理</p>
-            <h3>定时归档管理</h3>
+            <p class="eyebrow">自动同步</p>
+            <h3>定时任务</h3>
+            <p class="archive-purpose-note">自动下载与留存服务：定期自动获取业务数据并安全留存至指定目录，方便随时查看历史记录与配置变更。</p>
           </div>
           <div class="archive-head-actions">
             <button id="archive-refresh-btn" class="segment" type="button">刷新任务</button>
@@ -308,22 +566,24 @@
         <div id="archive-global-status" class="archive-status-msg" aria-live="polite"></div>
 
         <div class="archive-layout">
-          <aside class="archive-jobs-pane" aria-label="归档任务列表">
+          <aside class="archive-jobs-pane" aria-label="自动下载任务列表">
             <div class="archive-pane-head">
-              <h4>任务列表</h4>
+              <h4>自动下载任务</h4>
+              <button id="archive-create-job-btn" class="segment" type="button">新建任务</button>
             </div>
+            <div id="archive-create-menu" class="archive-create-menu" hidden></div>
             <div id="archive-jobs-list" class="archive-jobs-list loading">加载任务中</div>
           </aside>
 
           <div class="archive-detail-pane">
             <article id="archive-config-card" class="archive-config-card is-empty">
-              <p class="loading">请选择归档任务</p>
+              <p class="loading">请选择自动下载任务</p>
             </article>
 
-            <section class="archive-history-band" aria-label="运行历史与审计">
-              <div class="archive-history-switch" aria-label="历史与审计切换">
-                <button id="archive-tab-runs" class="archive-tab active" type="button" aria-pressed="true" aria-controls="archive-runs-panel">运行历史</button>
-                <button id="archive-tab-audit" class="archive-tab" type="button" aria-pressed="false" aria-controls="archive-audit-panel">配置审计</button>
+            <section class="archive-history-band" aria-label="下载记录与设置变更记录">
+              <div class="archive-history-switch" aria-label="下载记录与设置变更记录切换">
+                <button id="archive-tab-runs" class="archive-tab active" type="button" aria-pressed="true" aria-controls="archive-runs-panel">下载记录</button>
+                <button id="archive-tab-audit" class="archive-tab" type="button" aria-pressed="false" aria-controls="archive-audit-panel">设置变更记录</button>
               </div>
 
               <div id="archive-runs-panel" class="archive-history-panel" aria-label="最近运行">
@@ -334,26 +594,200 @@
                 <div id="archive-runs-list" class="archive-runs-list is-empty">暂无运行记录</div>
                 <div id="archive-artifacts-view" class="archive-artifacts-view" hidden>
                   <div class="artifacts-head">
-                    <h5>产物清单 (只读元数据)</h5>
+                    <h5>已保存文件</h5>
                     <button id="archive-close-artifacts-btn" class="segment" type="button">收起</button>
                   </div>
-                  <div id="archive-artifacts-list" class="archive-artifacts-list is-empty">暂无产物</div>
+                  <div id="archive-artifacts-list" class="archive-artifacts-list is-empty">暂无已保存文件</div>
                 </div>
               </div>
 
-              <div id="archive-audit-panel" class="archive-history-panel" aria-label="配置变更审计" hidden>
+              <div id="archive-audit-panel" class="archive-history-panel" aria-label="设置变更记录" hidden>
                 <div class="archive-panel-toolbar">
-                  <span class="toolbar-title">配置变更审计</span>
-                  <button id="archive-refresh-audit-btn" class="segment" type="button">刷新审计</button>
+                  <span class="toolbar-title">设置变更记录</span>
+                  <button id="archive-refresh-audit-btn" class="segment" type="button">刷新记录</button>
                 </div>
-                <div id="archive-audit-list" class="archive-audit-list is-empty">暂无审计记录</div>
+                <div id="archive-audit-list" class="archive-audit-list is-empty">暂无设置变更记录</div>
               </div>
             </section>
           </div>
         </div>
       </section>
+
+      <section id="settings-panel" class="panel-section settings-workbench" hidden aria-label="系统设置">
+        <div class="settings-head">
+          <div>
+            <p class="eyebrow">本地配置</p>
+            <h3>系统设置</h3>
+          </div>
+          <div class="settings-head-actions">
+            <button id="settings-refresh-btn" class="segment" type="button">刷新设置</button>
+          </div>
+        </div>
+
+        <div id="settings-global-error" class="error-msg" hidden></div>
+        <div id="settings-global-status" class="archive-status-msg" aria-live="polite"></div>
+
+        <div class="settings-layout">
+          <form id="settings-form" class="settings-form" autocomplete="off">
+            <div class="settings-card">
+              <div class="settings-card-head">
+                <p class="eyebrow">目录与文件</p>
+                <h4>基础目录配置</h4>
+              </div>
+              <div class="settings-grid">
+                <label class="wide">
+                  <span>归档保存目录 (archiveDirectory)</span>
+                  <div class="settings-path-control">
+                    <input id="settings-field-archive-dir" name="archiveDirectory" type="text" placeholder="留空使用程序默认归档目录" />
+                    <button id="settings-browse-archive-btn" class="segment" type="button">选择目录</button>
+                  </div>
+                  <div id="settings-archive-picker" class="archive-folder-picker" hidden></div>
+                </label>
+                <label class="wide">
+                  <span>Excel 工作目录 (excelDirectory)</span>
+                  <div class="settings-path-control">
+                    <input id="settings-field-excel-dir" name="excelDirectory" type="text" placeholder="留空使用默认 data/excel" />
+                    <button id="settings-browse-excel-btn" class="segment" type="button">选择目录</button>
+                  </div>
+                  <div id="settings-excel-picker" class="archive-folder-picker" hidden></div>
+                </label>
+                <label>
+                  <span>临时文件目录 (temporaryDirectory)</span>
+                  <input id="settings-field-temp-dir" name="temporaryDirectory" type="text" placeholder="留空使用系统临时目录" />
+                </label>
+                <label>
+                  <span>诊断报告目录 (diagnosticDirectory)</span>
+                  <input id="settings-field-diag-dir" name="diagnosticDirectory" type="text" placeholder="留空使用默认 logs" />
+                </label>
+              </div>
+            </div>
+
+            <div class="settings-card">
+              <div class="settings-card-head">
+                <p class="eyebrow">数值与策略</p>
+                <h4>数值与保留策略配置</h4>
+              </div>
+              <div class="settings-grid">
+                <label>
+                  <span>默认定时下载频率（分钟）</span>
+                  <input id="settings-field-download-minutes" name="defaultDownloadMinutes" type="number" min="5" max="10080" value="60" />
+                </label>
+                <label>
+                  <span>通用失败重试次数（归档任务请在任务卡设置）</span>
+                  <input id="settings-field-retry-count" name="retryCount" type="number" min="0" max="10" value="2" />
+                </label>
+                <label>
+                  <span>临期预警天数</span>
+                  <input id="settings-field-due-soon-days" name="dueSoonDays" type="number" min="0" max="365" value="7" />
+                </label>
+                <label>
+                  <span>缓存快照数量</span>
+                  <input id="settings-field-cache-snapshots" name="cacheSnapshotCount" type="number" min="1" max="365" value="30" />
+                </label>
+                <label>
+                  <span>文件保留天数</span>
+                  <input id="settings-field-retention-days" name="retentionDays" type="number" min="1" max="3650" value="90" />
+                </label>
+              </div>
+            </div>
+
+            <div class="settings-actions-row">
+              <button id="settings-save-btn" class="primary-btn" type="submit">保存设置</button>
+              <span id="settings-form-status" class="archive-status-msg" aria-live="polite"></span>
+            </div>
+          </form>
+
+          <div class="settings-side-pane">
+            <div id="settings-sessions-card" class="settings-card">
+              <div class="settings-card-head">
+                <p class="eyebrow">域账号与会话</p>
+                <h4>企业认证会话状态</h4>
+              </div>
+
+              <div class="session-status-list">
+                <div class="session-status-item">
+                  <div class="session-info">
+                    <strong>Aras PLM 会话</strong>
+                    <span id="settings-aras-session-user" class="session-user">未登录</span>
+                  </div>
+                  <span id="settings-aras-session-status" class="archive-chip is-unknown">未认证</span>
+                </div>
+                <div class="session-status-item">
+                  <div class="session-info">
+                    <strong>TDC 车体流程会话</strong>
+                    <span id="settings-tdc-session-user" class="session-user">未登录</span>
+                  </div>
+                  <span id="settings-tdc-session-status" class="archive-chip is-unknown">未认证</span>
+                </div>
+                <div class="session-status-item">
+                  <div class="session-info">
+                    <strong>Windows 凭据保护库</strong>
+                    <span id="settings-vault-detail" class="session-user">用于后台定时任务自动登录</span>
+                  </div>
+                  <span id="settings-vault-status" class="archive-chip is-unknown">未配置</span>
+                </div>
+              </div>
+
+              <form id="domain-login-form" class="domain-login-form" autocomplete="on">
+                <h5>统一域账号登录</h5>
+                <p class="field-note">同时为 Aras 和 TDC 系统发起域登录校验，不保存明文密码。</p>
+                <div class="domain-login-grid">
+                  <label>
+                    <span>域用户名</span>
+                    <input id="domain-login-username" name="username" autocomplete="username" placeholder="请输入域账号用户名" required />
+                  </label>
+                  <label>
+                    <span>域密码</span>
+                    <input id="domain-login-password" name="password" type="password" autocomplete="current-password" placeholder="请输入域账号密码" required />
+                  </label>
+                  <label class="archive-checkbox-row wide">
+                    <input type="checkbox" id="domain-login-save-vault" name="saveForScheduled" />
+                    <span>保存至凭据保护库（供后台定时下载使用）</span>
+                  </label>
+                </div>
+                <div class="domain-login-actions">
+                  <button id="domain-login-btn" class="primary-btn" type="submit">登录 / 重新登录</button>
+                  <span id="domain-login-status" class="archive-status-msg" aria-live="polite"></span>
+                </div>
+              </form>
+
+              <div class="session-clear-actions">
+                <h5>清除已保存会话</h5>
+                <div class="session-buttons-row">
+                  <button id="settings-clear-aras-btn" class="segment" type="button">清除 Aras 会话</button>
+                  <button id="settings-clear-tdc-btn" class="segment" type="button">清除 TDC 会话</button>
+                  <button id="settings-clear-all-btn" class="segment" type="button">清除全部会话与凭据</button>
+                </div>
+              </div>
+            </div>
+
+            <div id="settings-excel-service-card" class="settings-card">
+              <div class="settings-card-head">
+                <p class="eyebrow">服务状态</p>
+                <h4>Excel 文件处理服务</h4>
+              </div>
+              <div class="session-status-list">
+                <div class="session-status-item">
+                  <div class="session-info">
+                    <strong>Excel 服务配置</strong>
+                    <span id="settings-excel-config-info" class="session-user">检查 ExcelTaskAdminService</span>
+                  </div>
+                  <span id="settings-excel-service-status" class="archive-chip is-unknown">待确认</span>
+                </div>
+                <div class="session-status-item">
+                  <div class="session-info">
+                    <strong>Worker 进程状态</strong>
+                    <span id="settings-excel-worker-info" class="session-user">后台处理工作进程</span>
+                  </div>
+                  <span id="settings-excel-worker-status" class="archive-chip is-unknown">未运行</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
     </main>
   </div>
-  <script src="/static/app.js?v=archive-20260822"></script>
+  <script src="/static/app.js?v=credential-sor-20260827-r1"></script>
 </body>
 </html>

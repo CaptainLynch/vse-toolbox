@@ -141,6 +141,8 @@ def test_query_ewo_report_maps_route_headers_filters_and_parses_rows() -> None:
     assert result.rows[0]["_no"] is not None
     assert "_affect_service_type" in result.rows[0]
     assert result.raw_xml.startswith("<SOAP-ENV:Envelope")
+    assert result.request_xml.startswith("<SOAP-ENV:Envelope")
+    assert '<Item type="EWO_O" action="get" page="2"' in result.request_xml
 
 
 def test_query_paa_report_filters_department_without_requester_condition() -> None:
@@ -165,6 +167,8 @@ def test_query_paa_report_filters_department_without_requester_condition() -> No
     assert "<_pe_tdc_department condition=" not in payload
     assert "<_requester_department" not in payload
     assert result.rows[0]["_no"] == "PAA-1"
+    assert result.request_xml.startswith("<SOAP-ENV:Envelope")
+    assert '<Item type="PAA_O" action="get" page="1"' in result.request_xml
 
 
 def test_ewo_and_paa_search_patterns_generate_like_and_or_aml() -> None:

@@ -102,16 +102,17 @@ def _enable_job(
     *,
     credential_ref: str = "alias_test",
     output_subdir: str = "",
+    output_directory: str = "",
     interval_minutes: int = 60,
 ) -> int:
     with db.get_connection() as conn:
         conn.execute(
             """
             UPDATE scheduled_archive_jobs
-            SET enabled = 1, credential_ref = ?, output_subdir = ?, interval_minutes = ?
+            SET enabled = 1, credential_ref = ?, output_subdir = ?, output_directory = ?, interval_minutes = ?
             WHERE job_key = ?
             """,
-            (credential_ref, output_subdir, interval_minutes, job_key),
+            (credential_ref, output_subdir, output_directory, interval_minutes, job_key),
         )
         row = conn.execute("SELECT id FROM scheduled_archive_jobs WHERE job_key = ?", (job_key,)).fetchone()
     assert row is not None
@@ -232,6 +233,35 @@ def test_successful_run_job_lifecycle_and_cleared_credential(
     assert job_row["lease_token"] is None
 
 
+def test_runner_passes_task_output_directory_to_connector(
+    db: DatabaseManager,
+    registry: ArchiveConnectorRegistry,
+    tmp_path: Path,
+) -> None:
+    """The selected task directory is carried through the lease into connector context."""
+    selected = tmp_path / "task-output"
+    selected.mkdir()
+    job_id = _enable_job(
+        db,
+        "aras_ewo",
+        credential_ref="alias_task_output",
+        output_directory=str(selected),
+    )
+    connector = FakeConnector()
+    registry.register("aras_ewo", connector)
+    runner, _ = _setup_runner(
+        db,
+        registry,
+        credentials={"alias_task_output": ("user", "password")},
+    )
+
+    result = runner.run_job(job_id)
+
+    assert result.outcome == "completed"
+    assert connector.last_context is not None
+    assert Path(connector.last_context.output_directory).resolve() == selected.resolve()
+
+
 # ── 3. Needs attention (missing connector or alias) ──────────────────────────
 
 
@@ -280,6 +310,11 @@ def test_transient_error_retries_and_recovers_with_backoff(
     registry: ArchiveConnectorRegistry,
 ) -> None:
     job_id = _enable_job(db, "aras_ewo", credential_ref="alias_retry")
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE scheduled_archive_jobs SET retry_policy_json = ? WHERE id = ?",
+            ('{"max_attempts":2,"backoff_seconds":2}', job_id),
+        )
     connector = FakeConnector(exceptions=[TimeoutError("first attempt timed out")])
     slept: list[float] = []
     runner, _ = _setup_runner(
@@ -301,6 +336,11 @@ def test_transient_error_exhausts_retries_and_fails(
     registry: ArchiveConnectorRegistry,
 ) -> None:
     job_id = _enable_job(db, "aras_ewo", credential_ref="alias_retry")
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE scheduled_archive_jobs SET retry_policy_json = ? WHERE id = ?",
+            ('{"max_attempts":2,"backoff_seconds":1.5}', job_id),
+        )
     connector = FakeConnector(exceptions=[ConnectionError("first failed"), ConnectionError("second failed")])
     slept: list[float] = []
     runner, _ = _setup_runner(
@@ -319,6 +359,34 @@ def test_transient_error_exhausts_retries_and_fails(
 
     run_row = _get_run_row(db, result.run_id)
     assert run_row["run_state"] == "failed" and run_row["error_type"] == "connection_error"
+
+
+def test_job_retry_policy_can_disable_transient_retry(
+    db: DatabaseManager,
+    registry: ArchiveConnectorRegistry,
+) -> None:
+    """A task configured for one total attempt must not inherit the runner's two-attempt default."""
+    job_id = _enable_job(db, "aras_ewo", credential_ref="alias_no_retry")
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE scheduled_archive_jobs SET retry_policy_json = ? WHERE id = ?",
+            ('{"max_attempts":1,"backoff_seconds":1}', job_id),
+        )
+    connector = FakeConnector(exception=TimeoutError("single attempt timeout"))
+    slept: list[float] = []
+    runner, _ = _setup_runner(
+        db,
+        registry,
+        credentials={"alias_no_retry": ("u", "p")},
+        connectors={"aras_ewo": connector},
+        max_attempts=2,
+        sleeper=slept.append,
+    )
+
+    result = runner.run_job(job_id)
+    assert result.outcome == "failed"
+    assert connector.call_count == 1
+    assert slept == []
 
 
 def test_non_transient_validation_error_fails_immediately_without_retry(

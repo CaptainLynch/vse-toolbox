@@ -4,7 +4,7 @@ param(
     [string]$CodexProfile = "relay",
 
     [ValidateSet("agy-heavy", "codex-controlled")]
-    [string]$SupervisorProfile = "codex-controlled",
+    [string]$SupervisorProfile = "agy-heavy",
 
     [string]$TaskFile,
 

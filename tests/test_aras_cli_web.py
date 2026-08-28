@@ -63,6 +63,8 @@ class FakeArasClient:
             rows=[
                 {
                     "_no": "EWO-1",
+                    "_sort_sub_type": "PWO-EWO定点",
+                    "created_by_id__keyed_name": "Cookie: sid=abc123; ArasAuth=secret2; JSESSIONID=secret3 Authorization: Bearer xyz789",
                     "state": "Open",
                     "note": "Cookie: sid=abc123; ArasAuth=secret2; JSESSIONID=secret3 Authorization: Bearer xyz789",
                     "cookie": "sid=secret-cookie",
@@ -103,6 +105,8 @@ class FakeArasClient:
             rows=[
                 {
                     "_no": "PAA-1",
+                    "_auth_type": "Open",
+                    "created_by_id__keyed_name": "Set-Cookie: sid=abc123; ArasAuth=secret2; JSESSIONID=secret3 Authorization: Bearer xyz789",
                     "state": "Open",
                     "note": "Set-Cookie: sid=abc123; ArasAuth=secret2; JSESSIONID=secret3 Authorization: Bearer xyz789",
                     "cookie": "sid=secret-cookie",
@@ -130,6 +134,8 @@ class FakeArasClient:
             rows=[
                 {
                     "_no": "PAA-2",
+                    "_auth_type": "Closed",
+                    "created_by_id__keyed_name": "Cookie: sid=abc123; ArasAuth=secret2; JSESSIONID=secret3 Authorization: Bearer xyz789 token=tok123",
                     "state": "Closed",
                     "note": "Cookie: sid=abc123; ArasAuth=secret2; JSESSIONID=secret3 Authorization: Bearer xyz789 token=tok123",
                     "raw_xml": "<secret-xml/>",
@@ -232,15 +238,15 @@ def test_ewo_route_contract_and_no_auth_echo(client) -> None:
 
     assert resp.status_code == 200
     payload = resp.get_json()
-    assert payload == {
-        "ok": True,
-        "data": {
-            "rows": [{"_no": "EWO-1", "state": "Open", "note": "Cookie: [redacted] Authorization: [redacted]"}],
-            "page": 2,
-            "item_ids": ["ID-1"],
-            "count": 1,
-        },
-    }
+    assert payload["ok"] is True
+    data = payload["data"]
+    assert "headerRows" in data
+    assert "columns" in data
+    assert data["defaultVisibleCount"] == 12
+    assert data["page"] == 2
+    assert data["item_ids"] == ["ID-1"]
+    assert data["count"] == 1
+    assert data["rows"][0][:3] == ["EWO-1", "EWO定点", "Cookie: [redacted] Authorization: [redacted]"]
     init_call = FakeArasClient.calls[0]
     assert init_call["base_url"] == "http://aras.example"
     assert init_call["headers"]["Cookie"] == "sid=secret-cookie"  # type: ignore[index]
@@ -257,6 +263,74 @@ def test_ewo_route_contract_and_no_auth_echo(client) -> None:
     assert method_call["page_size"] == 25
     assert method_call["max_records"] == 100
     assert method_call["filters"].ewo_no == "EWO-1"
+
+
+def test_ewo_route_can_return_sanitized_request_and_response_xml(client, monkeypatch) -> None:
+    request_xml = (
+        '<SOAP-ENV:Envelope><SOAP-ENV:Body><ApplyItem><Item type="EWO_O" action="get">'
+        "<_no>EWO-1</_no></Item></ApplyItem></SOAP-ENV:Body></SOAP-ENV:Envelope>"
+    )
+    response_xml = (
+        '<SOAP-ENV:Envelope><Result><Item type="EWO_O"><_no>EWO-1</_no>'
+        "<token>fictional-token-secret</token></Item></Result></SOAP-ENV:Envelope>"
+    )
+
+    def query_with_xml(*args, **kwargs):  # type: ignore[no-untyped-def]
+        return SimpleNamespace(
+            rows=[{"_no": "EWO-1"}],
+            page=1,
+            item_ids=["ID-1"],
+            raw_xml=response_xml,
+            request_xml=request_xml,
+        )
+
+    monkeypatch.setattr(FakeArasClient, "query_ewo_report", query_with_xml)
+    response = client.post(
+        "/api/aras/ewo/query",
+        json={
+            "base_url": "http://aras.example",
+            "include_xml": True,
+            "filters": {},
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    xml = body["data"]["xml"]
+    assert xml["requestXml"] == request_xml
+    assert "<Result>" in xml["responseXml"]
+    assert "EWO-1" in xml["responseXml"]
+    assert "fictional-token-secret" not in response.get_data(as_text=True)
+    assert "<token>[redacted]</token>" in xml["responseXml"]
+
+
+def test_paa_route_can_return_sanitized_request_and_response_xml(client, monkeypatch) -> None:
+    request_xml = '<Envelope><ApplyItem><Item type="PAA_O" action="get" /></ApplyItem></Envelope>'
+    response_xml = '<Envelope><Result><Item type="PAA_O"><_no>PAA-1</_no></Item></Result></Envelope>'
+
+    def query_with_xml(*args, **kwargs):  # type: ignore[no-untyped-def]
+        return SimpleNamespace(
+            rows=[{"_no": "PAA-1"}],
+            page=1,
+            item_ids=["ID-1"],
+            raw_xml=response_xml,
+            request_xml=request_xml,
+        )
+
+    monkeypatch.setattr(FakeArasClient, "query_paa_report", query_with_xml)
+    response = client.post(
+        "/api/aras/paa/query",
+        json={
+            "base_url": "http://aras.example",
+            "include_xml": True,
+            "filters": {},
+        },
+    )
+
+    assert response.status_code == 200
+    xml = response.get_json()["data"]["xml"]
+    assert xml["requestXml"] == request_xml
+    assert "PAA-1" in xml["responseXml"]
 
 
 def test_web_password_auth_injects_authenticated_session_without_echo(monkeypatch, tmp_path) -> None:
@@ -394,12 +468,23 @@ def test_ncr_progress_and_detail_routes(client) -> None:
     detail = client.post("/api/aras/ncr/detail", json=common)
 
     assert progress.status_code == 200
-    assert progress.get_json()["data"] == {"file_name": "progress.xlsx", "record_id": "REC-1"}
+    p_data = progress.get_json()["data"]
+    assert p_data["file_name"] == "progress.xlsx"
+    assert p_data["record_id"] == "REC-1"
+    assert "headerRows" in p_data
+    assert "columns" in p_data
+    assert p_data["rows"] == []
+    assert p_data["defaultVisibleCount"] == 12
     assert "file_id" not in progress.get_data(as_text=True)
     assert "FILE-secret2" not in progress.get_data(as_text=True)
     assert "secret2" not in progress.get_data(as_text=True)
     assert detail.status_code == 200
-    assert detail.get_json()["data"] == {"file_name": "detail.xlsx"}
+    d_data = detail.get_json()["data"]
+    assert d_data["file_name"] == "detail.xlsx"
+    assert "headerRows" in d_data
+    assert "columns" in d_data
+    assert d_data["rows"] == []
+    assert d_data["defaultVisibleCount"] == 17
     progress_call = next(call for call in FakeArasClient.calls if call.get("method") == "progress")
     assert progress_call["filters"].project_names == ("F610S", "F610S DG")
     assert progress_call["filters"].othercondition == "1"
@@ -443,13 +528,25 @@ def test_paa_routes_contract_and_no_auth_echo(client) -> None:
     )
 
     assert query.status_code == 200
-    assert query.get_json()["data"]["rows"] == [
-        {"_no": "PAA-1", "state": "Open", "note": "Set-Cookie: [redacted] Authorization: [redacted]"}
+    query_data = query.get_json()["data"]
+    assert "headerRows" in query_data
+    assert "columns" in query_data
+    assert query_data["defaultVisibleCount"] == 12
+    assert query_data["rows"][0][:3] == [
+        "PAA-1",
+        "Open",
+        "Set-Cookie: [redacted] Authorization: [redacted]",
     ]
-    assert query.get_json()["data"]["page"] == 3
+    assert query_data["page"] == 3
     assert crawl.status_code == 200
-    assert crawl.get_json()["data"]["rows"] == [
-        {"_no": "PAA-2", "state": "Closed", "note": "Cookie: [redacted] Authorization: [redacted] token=[redacted]"}
+    crawl_data = crawl.get_json()["data"]
+    assert "headerRows" in crawl_data
+    assert "columns" in crawl_data
+    assert crawl_data["defaultVisibleCount"] == 12
+    assert crawl_data["rows"][0][:3] == [
+        "PAA-2",
+        "Closed",
+        "Cookie: [redacted] Authorization: [redacted] token=[redacted]",
     ]
     query_call = next(call for call in FakeArasClient.calls if call.get("method") == "paa")
     assert query_call["filters"].paa_no == "PAA-1"
@@ -745,6 +842,17 @@ def test_route_validation_and_aras_error_are_sanitized(client) -> None:
     assert "secret3" not in text
     assert "xyz789" not in text
     assert "tok123" not in text
+
+
+def test_remote_report_mutations_are_rejected_before_upstream_access(client) -> None:
+    for endpoint in ("/api/aras/ewo/query", "/api/tdc/data-model/query"):
+        response = client.post(
+            endpoint,
+            json={"base_url": "http://aras.example", "filters": {}},
+            environ_overrides={"REMOTE_ADDR": "192.0.2.10"},
+        )
+        assert response.status_code == 403
+        assert response.get_json()["error"]["type"] == "LocalAccessRequired"
 
     cli_text = main._safe_error_message(
         ArasCrawlerError(
@@ -1676,6 +1784,7 @@ def test_static_guards_for_boundaries_and_credentials() -> None:
 def test_static_aras_export_download_markers_and_department_fields() -> None:
     html_text = Path("web/templates/dashboard.html").read_text(encoding="utf-8-sig")
     js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+    css_text = Path("web/static/style.css").read_text(encoding="utf-8-sig")
 
     # 业务部门字段：PAA（分页与全量共用字段组）与 NCR 进度/明细都要有
     assert html_text.count('name="department"') >= 2
@@ -1699,11 +1808,38 @@ def test_static_aras_export_download_markers_and_department_fields() -> None:
     assert 'data-aras-action="export"' in html_text
     assert 'data-aras-action="download"' in html_text
     assert 'type="button"' in html_text
+    assert 'id="aras-include-xml"' in html_text
+    assert 'id="aras-xml-actions"' in html_text
+    assert 'id="aras-download-request-xml"' in html_text
+    assert 'id="aras-download-response-xml"' in html_text
+    assert 'style.css?v=credential-sor-20260827-r1' in html_text
+    assert 'app.js?v=credential-sor-20260827-r1' in html_text
 
     # 导出 / 下载端点在前端配置中
     assert "/api/aras/ewo/export" in js_text
     assert "/api/aras/paa/export" in js_text
     assert "/api/aras/ncr/detail/download" in js_text
+    assert "include_xml" in js_text
+    assert "downloadArasXml" in js_text
+    assert "requestXml" in js_text
+    assert "responseXml" in js_text
+    download_block = js_text[js_text.index("function downloadArasXml") : js_text.index("function showArasError")]
+    assert "setTimeout" in download_block
+    assert "showArasError" in download_block
+
+    actions_rule = re.search(r"\.actions-block\s*\{([^}]*)\}", css_text)
+    assert actions_rule is not None
+    assert "flex-wrap: wrap" in actions_rule.group(1)
+    xml_actions_rule = re.search(r"\.xml-capture-actions\s*\{([^}]*)\}", css_text)
+    assert xml_actions_rule is not None
+    assert "flex: 1 1 100%" in xml_actions_rule.group(1)
+    secondary_rule = re.search(r"\.xml-capture-actions \.secondary-btn\s*\{([^}]*)\}", css_text)
+    assert secondary_rule is not None
+    assert "white-space: nowrap" in secondary_rule.group(1)
+
+    # XML 取证只挂在用户批准的 EWO/PAA 查询上，不应误出现在 NCR
+    paa_block = js_text[js_text.index("paa: ") : js_text.index('"ncr-progress"')]
+    assert "xmlCapture: true" in paa_block
 
     # NCR 进度通过后端 Vault 链路生成并下载，同时保留业务部门筛选
     progress_block = js_text[js_text.index('"ncr-progress"') : js_text.index('"ncr-detail"')]
@@ -1711,6 +1847,7 @@ def test_static_aras_export_download_markers_and_department_fields() -> None:
     assert "exportEndpoint" not in progress_block
     assert 'exportLabel: "生成并下载"' in progress_block
     assert "department" in progress_block
+    assert "xmlCapture: true" not in progress_block
 
     # blob 下载 helper 读取导出状态头并解析 Content-Disposition 文件名
     assert "X-Export-Row-Count" in js_text

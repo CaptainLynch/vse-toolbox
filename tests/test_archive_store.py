@@ -82,6 +82,29 @@ def test_valid_nested_output_subdir(tmp_path: Path):
     assert (tmp_path / art.relative_path).read_bytes() == b"payload data"
 
 
+def test_validate_output_directory_accepts_absolute_local_directory(tmp_path: Path):
+    selected = tmp_path / "selected-archive"
+    selected.mkdir()
+
+    normalized = ArchiveStore.validate_output_directory(str(selected))
+
+    assert Path(normalized).resolve() == selected.resolve()
+
+
+@pytest.mark.parametrize("bad_directory", ["relative/archive", "../outside", r"\\server\share\archive"])
+def test_validate_output_directory_rejects_non_local_or_relative_paths(bad_directory: str):
+    with pytest.raises(ArchiveSafetyError):
+        ArchiveStore.validate_output_directory(bad_directory)
+
+
+def test_validate_output_directory_rejects_existing_file(tmp_path: Path):
+    selected_file = tmp_path / "not-a-directory.txt"
+    selected_file.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(ArchiveSafetyError):
+        ArchiveStore.validate_output_directory(str(selected_file))
+
+
 @pytest.mark.parametrize(
     "bad_subdir",
     [
@@ -140,6 +163,25 @@ def test_rejects_reparse_escape_in_output_subdir(tmp_path: Path):
     s = store(tmp_path)
     with pytest.raises(ArchiveSafetyError):
         s.run_directory("tdc", "sor", "run-1", root_id="root", output_subdir="reparse_sub")
+
+
+def test_lists_only_safe_relative_subdirectories(tmp_path: Path):
+    (tmp_path / "Aras" / "EWO").mkdir(parents=True)
+    (tmp_path / "TDC").mkdir()
+    (tmp_path / "file.txt").write_text("not a directory", encoding="utf-8")
+    s = store(tmp_path)
+
+    assert s.list_subdirectories(root_id="root") == [
+        {"name": "Aras", "relativePath": "Aras"},
+        {"name": "TDC", "relativePath": "TDC"},
+    ]
+    assert s.list_subdirectories("Aras", root_id="root") == [
+        {"name": "EWO", "relativePath": "Aras/EWO"},
+    ]
+    with pytest.raises(ArchiveSafetyError):
+        s.list_subdirectories("../outside", root_id="root")
+    with pytest.raises(FileNotFoundError):
+        s.list_subdirectories("missing", root_id="root")
 
 
 def test_limit_failure_removes_partial_file(tmp_path: Path):

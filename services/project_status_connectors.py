@@ -70,13 +70,14 @@ def _close_session(session: Any) -> None:
 
 
 def _snapshot(context: SyncBindingContext, rows: Sequence[Mapping[str, Any]], artifacts: Sequence[Mapping[str, Any]]) -> ConnectorSnapshot:
+    analysis_rows = tuple(dict(row) for row in rows)
     matches = [dict(row) for row in rows if _identity(row) == context.external_key]
     fetched = _now()
     if len(matches) != 1:
         marker = hashlib.sha256(f"{len(matches)}:{context.external_key}".encode()).hexdigest()
         return ConnectorSnapshot(
             "not_found" if not matches else "ambiguous", (), marker, fetched,
-            context.expected_deliverable_updated_at, artifacts,
+            context.expected_deliverable_updated_at, artifacts, analysis_rows,
         )
     row = matches[0]
     version = _stable_version(row)
@@ -87,7 +88,7 @@ def _snapshot(context: SyncBindingContext, rows: Sequence[Mapping[str, Any]], ar
     candidate = ConnectorCandidate(context.external_key, version, values, fetched)
     return ConnectorSnapshot(
         "matched", (candidate,), version, fetched,
-        context.expected_deliverable_updated_at, artifacts,
+        context.expected_deliverable_updated_at, artifacts, analysis_rows,
     )
 
 

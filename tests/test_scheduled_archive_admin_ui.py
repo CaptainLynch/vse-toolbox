@@ -6,7 +6,7 @@ Covers:
 2. Static DOM hooks, semantic elements, unique IDs, role and aria-live attributes.
 3. Safe DOM construction contract (no innerHTML in archive code, using textContent).
 4. Endpoint contracts (/api/scheduled-archive/jobs, PATCH, sync-now, runs, artifacts, config-audit).
-5. Write-only credentialRef alias handling (never prefilled, cleared in finally, clearAlias logic).
+5. Safe credentialRef selection (never prefilled, cleared in finally, clearAlias logic).
 6. Client-side validations (non-array object filters, enabled + clearAlias conflict guard).
 7. Artifact relativePath metadata only (no download links, no arbitrary file paths).
 8. Absence of browser timers/polling loops (pure event-driven refreshes).
@@ -69,6 +69,9 @@ def client(monkeypatch, test_db: DatabaseManager, fake_runner: MagicMock):
         lambda db: ScheduledArchiveAdminService(db, runner_factory=lambda _db: fake_runner),
     )
     app = web_app.create_app()
+    # The production app attaches the DPAPI provider; this isolated API test
+    # uses arbitrary opaque aliases and a fake runner instead.
+    app.extensions["scheduled_archive_admin"].set_credential_provider(None)
     app.config.update(TESTING=True)
     return app.test_client()
 
@@ -77,7 +80,7 @@ def client(monkeypatch, test_db: DatabaseManager, fake_runner: MagicMock):
 
 
 def test_index_renders_archive_nav_and_preserves_panels(client) -> None:
-    """Verify that index page includes 归档 tab while preserving overview, Aras, and deliverables."""
+    """Verify that index page includes 自动下载与留存 tab while preserving overview, Aras, and deliverables."""
     resp = client.get("/")
     assert resp.status_code == 200
     html_text = resp.get_data(as_text=True)
@@ -87,7 +90,7 @@ def test_index_renders_archive_nav_and_preserves_panels(client) -> None:
     assert 'data-panel-link="aras-panel"' in html_text
     assert 'data-panel-link="deliverables"' in html_text
     assert 'data-panel-link="scheduled-archive"' in html_text
-    assert "归档" in html_text
+    assert "自动下载与留存" in html_text
 
     # Main sections exist
     assert 'id="overview"' in html_text
@@ -100,8 +103,8 @@ def test_index_renders_archive_nav_and_preserves_panels(client) -> None:
 def test_dashboard_html_cache_buster_updated() -> None:
     """Verify that cache buster query string in dashboard.html is updated."""
     html_text = Path("web/templates/dashboard.html").read_text(encoding="utf-8-sig")
-    assert '<link rel="stylesheet" href="/static/style.css?v=archive-20260822" />' in html_text
-    assert '<script src="/static/app.js?v=archive-20260822"></script>' in html_text
+    assert '<link rel="stylesheet" href="/static/style.css?v=credential-sor-20260827-r1" />' in html_text
+    assert '<script src="/static/app.js?v=credential-sor-20260827-r1"></script>' in html_text
 
 
 def test_archive_static_dom_hooks_and_unique_ids() -> None:
@@ -126,6 +129,7 @@ def test_archive_static_dom_hooks_and_unique_ids() -> None:
         'id="archive-close-artifacts-btn"',
         'id="archive-artifacts-list"',
         'id="archive-audit-list"',
+        'id="archive-create-menu"',
     )
     for hook in required_hooks:
         assert hook in html_text, f"Missing required hook: {hook}"
@@ -198,19 +202,68 @@ def test_no_download_links_in_archive_artifacts() -> None:
     assert "renderArchiveArtifactsList" in archive_js
 
 
-def test_write_only_credential_ref_handling_and_finally_clearing() -> None:
-    """Verify credentialRef is write-only, never prefilled from state, and cleared in finally."""
+def test_credential_ref_selection_and_finally_clearing() -> None:
+    """Verify the scheduled task exposes the approved DPAPI reference without a secret-looking password field."""
     archive_js = _get_archive_js_module()
 
-    # Never set value from job state
+    # Never set a credential value from job state and do not render it as a password.
     assert 'aliasInput.value = job.credentialRef' not in archive_js
     assert 'aliasInput.value = job.credential_ref' not in archive_js
-    assert 'aliasInput.type = "password"' in archive_js
-    assert 'aliasInput.autocomplete = "new-password"' in archive_js
+    assert 'aliasInput.type = "password"' not in archive_js
+    assert 'aliasInput.type = "text"' not in archive_js
+    assert '"domain"' in archive_js
+    assert "统一域账号" in archive_js
+    assert "保存至凭据保护库" in archive_js
 
     # Cleared in finally
     assert 'aliasInput.value = ""' in archive_js
     assert 'finally' in archive_js
+
+
+def test_archive_ui_uses_api_builtin_contract_and_beginner_controls() -> None:
+    """Verify built-in task lifecycle and visible filter controls follow the API contract."""
+    archive_js = _get_archive_js_module()
+    assert "job.builtin" in archive_js
+    assert "job.isBuiltin" not in archive_js
+    assert "ARCHIVE_FILTER_FIELDS" in archive_js
+    assert "archive-filter-field" in archive_js
+    assert "高级 JSON" in archive_js
+    assert "最多尝试" in archive_js
+    assert "内置任务不可删除" not in archive_js
+    assert "删除内置任务" in archive_js
+
+
+def test_archive_ui_uses_task_directory_picker_contract() -> None:
+    """Verify the local EXE chooses an absolute task directory instead of a subdirectory."""
+    archive_js = _get_archive_js_module()
+    assert "/api/scheduled-archive/folders/native" in archive_js
+    assert "archive-native-folder-btn" in archive_js
+    assert "nativeFolderBtn.addEventListener" in archive_js
+    assert "archive-field-output-directory" in archive_js
+    assert "outputDirectory" in archive_js
+    assert "归档目录" in archive_js
+    assert "Windows 选择文件夹" in archive_js
+    assert "选择安全子目录" not in archive_js
+
+
+def test_archive_ui_has_top_create_submenu_and_task_actions() -> None:
+    """Create controls belong above the task list and each task owns its action area."""
+    html_text = Path("web/templates/dashboard.html").read_text(encoding="utf-8-sig")
+    archive_js = _get_archive_js_module()
+    assert 'id="archive-create-menu"' in html_text
+    assert "archive-create-submenu" in archive_js
+    assert "archive-create-source-btn" in archive_js
+    assert "archive-job-actions" in archive_js
+    assert "archive-job-delete-btn" in archive_js
+    assert "document.body.appendChild(modal)" not in archive_js
+
+
+def test_archive_template_names_match_business_deliverables() -> None:
+    """Template labels use the deliverable names instead of implementation jargon."""
+    archive_js = _get_archive_js_module()
+    assert "数模设计审核流程报表" in archive_js
+    assert "TDC SOR (tdc_sor)" in archive_js
+    assert "TDC SOR 零件明细" not in archive_js
 
 
 def test_client_side_validation_rules_in_js() -> None:
@@ -227,9 +280,10 @@ def test_client_side_validation_rules_in_js() -> None:
 
 
 def test_endpoint_urls_in_archive_js() -> None:
-    """Verify all 6 allowed /api/scheduled-archive endpoints are used in archive JS."""
+    """Verify all 7 allowed /api/scheduled-archive endpoints are used in archive JS."""
     archive_js = _get_archive_js_module()
 
+    assert '"/api/scheduled-archive/folders' in archive_js
     assert '"/api/scheduled-archive/jobs"' in archive_js
     assert '`/api/scheduled-archive/jobs/${encodeURIComponent(job.jobKey)}`' in archive_js
     assert '`/api/scheduled-archive/jobs/${encodeURIComponent(job.jobKey)}/sync-now`' in archive_js
@@ -274,12 +328,12 @@ def test_interval_and_retry_unknown_fallbacks() -> None:
 
 
 def test_sync_now_eligibility_restored_in_finally() -> None:
-    """Verify Sync Now button eligibility (!job.enabled || !job.credentialConfigured) is restored."""
+    """Verify Sync Now button eligibility also reflects real credential availability."""
     archive_js = _get_archive_js_module()
 
     # Both save and sync-now finally blocks must preserve eligibility
-    count = archive_js.count("syncNowBtn.disabled = !job.enabled || !job.credentialConfigured;")
-    assert count >= 2
+    assert "credentialAvailable" in archive_js
+    assert archive_js.count("syncNowBtn.disabled") >= 3
 
 
 # ── 3. CSS Contracts ─────────────────────────────────────────────────────────
@@ -377,3 +431,10 @@ def test_scheduled_archive_api_smoke(client, test_db: DatabaseManager) -> None:
     audits = audit_resp.get_json()["data"]
     assert len(audits) >= 1
     assert "vault_alias_test" not in audit_resp.get_data(as_text=True)
+
+    # 6. GET folders
+    folders_resp = client.get("/api/scheduled-archive/folders")
+    assert folders_resp.status_code == 200
+    folders_data = folders_resp.get_json()["data"]
+    assert "current" in folders_data
+    assert "folders" in folders_data

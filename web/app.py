@@ -10,25 +10,42 @@ web/app.py — WEB 适配层：Flask 应用工厂 + /api/overview 路由
 """
 
 import io
+import hashlib
 import ipaddress
 import logging
+import os
 import re
 import shutil
 import sys
 import tempfile
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import urlsplit
 
-from flask import Flask, jsonify, render_template, request, send_file
+from flask import Flask, current_app, has_app_context, jsonify, render_template, request, send_file
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from core.config import DIAGNOSTIC_DIR, FLASK_HOST, FLASK_PORT
-from core.archive_store import ArchiveSafetyError
+from core.archive_store import ArchiveSafetyError, ArchiveStore
+from core.domain_identity import (
+    CredentialVaultError,
+    DPAPICredentialProvider,
+    DomainSessionRegistry,
+    WindowsDPAPICredentialVault,
+)
+from core.native_folder_picker import NativeFolderPickerError, choose_native_folder
+from core.project_status_contracts import (
+    MILESTONE_STATUSES,
+    current_stage_label,
+    milestone_display_status,
+)
+from core.report_contracts import matrix_payload, report_contracts, table_payload
+from core.runtime_paths import app_root
+from core.settings_store import SettingsStore, SettingsValidationError, validate_local_directory
 from core.db_manager import (
     ArchiveJobNotReadyError,
     ArchiveLeaseBusyError,
@@ -36,12 +53,22 @@ from core.db_manager import (
     SyncBindingNotReadyError,
 )
 from core.diagnostics import DiagnosticOptions, MarkdownDiagnosticReport
+from core.excel_tasks import (
+    ApprovedExcelRoots,
+    ExcelIdempotencyConflictError,
+    ExcelTaskRepository,
+    load_production_excel_roots,
+)
+from core.excel_worker import ExcelTaskWorker
 from services.project_status_updates import (
     ProjectStatusPolicyError,
     ProjectStatusUpdateService,
 )
 from services.project_status_discovery import MappingDiscoveryService
 from services.project_status_analytics import ProjectStatusAnalyticsService
+from services.project_status_deliverable_analysis import (
+    ProjectStatusDeliverableAnalysisService,
+)
 from services.project_status_sync_runner import (
     ProjectStatusSyncRunner,
     create_production_registry,
@@ -50,26 +77,36 @@ from services.scheduled_archive_admin import (
     ArchiveAdminValidationError,
     ScheduledArchiveAdminService,
 )
+from services.aras_xml import ArasXmlCaptureError, sanitize_aras_xml
+from services.xlsx_preview import XLSXPreviewError, read_xlsx_preview
+from services.excel_task_admin import (
+    ExcelArtifactUnavailableError,
+    ExcelTaskAdminService,
+    ExcelTaskAdminValidationError,
+)
+from services.excel_worker_controller import ExcelWorkerController
+from services.excel_worker_process_controller import ExcelWorkerProcessController
 from core.redaction import redact_sensitive_text
 from services.aras_crawler import (
     ArasCrawlerClient,
     ArasCrawlerError,
-    DEFAULT_PAA_SELECT_FIELDS,
     EWOReportFilters,
     NCRApprovalFilters,
     PAAReportFilters,
 )
 from services.aras_auth import ArasAuthError, ArasECMAuthClient
 from services.aras_department_mapping import normalize_departments, resolve_ncr_section_codes
-from services.aras_export import export_ewo_report_csv, export_report_csv
+from services.aras_export import export_report_contract_csv
 from services.tdc_auth import TDCAuthError, TDCPasswordAuthClient
 from services.tdc_crawler import (
     AFACE_CONTRACT_BLOCKER,
     TDCCrawlerClient,
     TDCCrawlerError,
     TDCDataModelFilters,
+    TDCExportResult,
     TDCSORFilters,
 )
+from services.tdc_export_cache import TDCExportCache
 
 logger = logging.getLogger("vse_toolbox.web")
 
@@ -122,6 +159,7 @@ _TDC_MAX_PAGES_MAX = 10000
 _TDC_MAX_RECORDS_MAX = 1_000_000
 _TDC_XLSX_MIMETYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 _TDC_XLSX_NAME_RE = re.compile(r"^[^<>:\"/\\|?*\x00-\x1f]+\.xlsx$", re.IGNORECASE)
+_TDC_OFFICIAL_PREVIEW_MAX_ROWS = 50_001
 
 _DELIVERABLE_CATEGORIES = [
     {"id": "aras", "name": "Aras 报告"},
@@ -481,7 +519,10 @@ def _origin_tuple(value: str) -> tuple[str, str, int] | None:
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
     except ValueError:
         return None
-    return parsed.scheme.lower(), parsed.hostname.rstrip(".").lower(), port
+    hostname = parsed.hostname
+    if hostname is None:
+        return None
+    return parsed.scheme.lower(), hostname.rstrip(".").lower(), port
 
 
 def _local_web_mutation_error():
@@ -542,11 +583,99 @@ def _safe_rows(rows: list[dict[str, Any]]) -> list[dict[str, str | None]]:
     return safe
 
 
+def _safe_tdc_sor_value(
+    value: Any,
+    *,
+    preferred_keys: tuple[str, ...] = (),
+) -> str | None:
+    """Flatten known TDC SOR objects without serializing raw JSON into cells."""
+    if value is None:
+        return None
+    if isinstance(value, Mapping):
+        fallback_keys = (
+            "projectNo",
+            "projectName",
+            "name",
+            "userName",
+            "keyed_name",
+            "label",
+            "code",
+            "value",
+        )
+        for key in (*preferred_keys, *fallback_keys):
+            if key not in value:
+                continue
+            candidate = _safe_tdc_sor_value(value[key], preferred_keys=preferred_keys)
+            if candidate:
+                return candidate
+        return None
+    if isinstance(value, (list, tuple)):
+        parts = [
+            part
+            for item in value
+            if (part := _safe_tdc_sor_value(item, preferred_keys=preferred_keys))
+        ]
+        return "、".join(parts) if parts else None
+    text = redact_sensitive_text(value).strip()
+    return text or None
+
+
+def _safe_tdc_sor_rows(rows: list[dict[str, Any]]) -> list[dict[str, str | None]]:
+    """Return SOR rows with production display fields and no nested raw values."""
+    safe: list[dict[str, str | None]] = []
+    for row in rows:
+        clean: dict[str, str | None] = {}
+        for key, value in row.items():
+            key_text = str(key)
+            if key_text.lower() in _SENSITIVE_RESPONSE_KEYS:
+                continue
+            if key_text == "carTypeProject":
+                clean[key_text] = _safe_tdc_sor_value(
+                    value,
+                    preferred_keys=("projectNo", "projectName"),
+                )
+            elif key_text == "currentAssigneeNameList":
+                clean[key_text] = _safe_tdc_sor_value(
+                    value,
+                    preferred_keys=("name", "userName", "keyed_name"),
+                )
+            else:
+                clean[key_text] = _safe_tdc_sor_value(value)
+        safe.append(clean)
+    return safe
+
+
 def _safe_scalar(value: Any) -> str:
     return redact_sensitive_text(value)
 
 
+def _aras_xml_requested(payload: Mapping[str, Any]) -> bool:
+    value = payload.get("include_xml")
+    return value is True or (
+        isinstance(value, str) and value.strip().lower() in {"1", "true", "yes"}
+    )
+
+
+def _aras_xml_payload(result: Any, payload: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Return bounded request/response XML only when explicitly requested."""
+    if not _aras_xml_requested(payload):
+        return None
+    request_xml = sanitize_aras_xml(getattr(result, "request_xml", ""))
+    response_xml = sanitize_aras_xml(getattr(result, "raw_xml", ""))
+    if not request_xml or not response_xml:
+        raise ArasXmlCaptureError("Aras XML capture is unavailable for this result")
+    return {
+        "requestXml": request_xml,
+        "responseXml": response_xml,
+        "requestBytes": len(request_xml.encode("utf-8")),
+        "responseBytes": len(response_xml.encode("utf-8")),
+    }
+
+
 def _request_payload() -> tuple[dict[str, Any] | None, Any]:
+    local_error = _local_web_mutation_error()
+    if local_error is not None:
+        return None, local_error
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
         return None, _json_error(400, "ValidationError", "JSON object body is required")
@@ -672,15 +801,44 @@ def _build_aras_client_from_payload(
         return client
 
     cookie = payload.get("cookie")
+    cookies = _clean_string_mapping(payload.get("cookies")) or None
+    if not any(name.lower() in {"authorization", "cookie", "set-cookie"} for name in headers):
+        shared = _shared_domain_session("aras")
+        if shared is not None and not (isinstance(cookie, str) and cookie.strip()) and not cookies:
+            return ArasCrawlerClient(base_url, session=shared, headers=headers, timeout=30.0)
     if isinstance(cookie, str) and cookie.strip():
         headers["Cookie"] = cookie.strip()
-    cookies = _clean_string_mapping(payload.get("cookies")) or None
     return ArasCrawlerClient(
         base_url,
         headers=headers,
         cookies=cookies,
         timeout=30.0,
     )
+
+
+def _shared_domain_session(system: str) -> Any | None:
+    if not has_app_context():
+        return None
+    registry = current_app.extensions.get("domain_sessions")
+    if not isinstance(registry, DomainSessionRegistry):
+        return None
+    return registry.session(system)
+
+
+def _close_owned_tdc_client(client: TDCCrawlerClient | None) -> None:
+    """Close one-shot TDC sessions without closing the shared domain session."""
+    if client is None:
+        return
+    session = getattr(client, "session", None)
+    if session is None or session is _shared_domain_session("tdc"):
+        return
+    close = getattr(session, "close", None)
+    if not callable(close):
+        return
+    try:
+        close()
+    except Exception as exc:  # cleanup must not mask the request result
+        logger.debug("TDC one-shot session close failed: %s", type(exc).__name__)
 
 
 def _filter_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -903,6 +1061,7 @@ def _tdc_sor_filters(values: dict[str, str | None]) -> TDCSORFilters:
         serial_number=values.get("serial_number"),
         process_type=values.get("process_type"),
         car_type_project=values.get("car_type_project"),
+        car_type_project_id=values.get("car_type_project_id"),
         applicant=values.get("applicant"),
         title=values.get("title"),
         department=values.get("department"),
@@ -918,8 +1077,21 @@ def _tdc_sor_filters(values: dict[str, str | None]) -> TDCSORFilters:
     )
 
 
+def _tdc_preview_source(payload: Mapping[str, Any]) -> str:
+    """Validate the explicit TDC query source selector."""
+    value = payload.get("preview_source")
+    if value is None:
+        return "list_endpoint"
+    if not isinstance(value, str):
+        raise _TDCRequestError("preview_source must be list_endpoint or official_export")
+    source = value.strip() or "list_endpoint"
+    if source not in {"list_endpoint", "official_export"}:
+        raise _TDCRequestError("preview_source must be list_endpoint or official_export")
+    return source
+
+
 _TDC_DATA_MODEL_FILTER_NAMES = tuple(field["name"] for field in _TDC_DATA_MODEL_FIELDS)
-_TDC_SOR_FILTER_NAMES = tuple(field["name"] for field in _TDC_SOR_FIELDS)
+_TDC_SOR_FILTER_NAMES = tuple(field["name"] for field in _TDC_SOR_FIELDS) + ("car_type_project_id",)
 
 
 def _validate_tdc_base_url(
@@ -1038,6 +1210,11 @@ def _build_tdc_client_from_payload(
         cookie_pairs = "; ".join(f"{key}={value}" for key, value in cookies.items())
         existing = headers.get("Cookie")
         headers["Cookie"] = f"{existing}; {cookie_pairs}" if existing else cookie_pairs
+    shared = _shared_domain_session("tdc")
+    if shared is not None and not headers.get("Cookie"):
+        return TDCCrawlerClient(
+            base_url, session=shared, headers=headers, timeout=30.0, output_dir=output_dir
+        )
     return TDCCrawlerClient(base_url, headers=headers, timeout=30.0, output_dir=output_dir)
 
 
@@ -1106,9 +1283,18 @@ def _tdc_export(
 
 
 def _tdc_result_data(result: Any) -> dict[str, Any]:
+    if result.report_type == "data_model":
+        safe_rows = _safe_rows(result.rows)
+        table = table_payload("tdc_data_model", safe_rows)
+    elif result.report_type == "sor":
+        safe_rows = _safe_tdc_sor_rows(result.rows)
+        table = table_payload("tdc_sor", safe_rows)
+    else:
+        raise ValueError(f"unsupported TDC report type: {result.report_type}")
     return {
+        **table,
         "report_type": result.report_type,
-        "rows": _safe_rows(result.rows),
+        "data_source": "list_endpoint",
         "page": result.page,
         "page_size": result.page_size,
         "total": result.total,
@@ -1121,6 +1307,282 @@ def _tdc_result_data(result: Any) -> dict[str, Any]:
     }
 
 
+def _tdc_export_cache_context(payload: Mapping[str, Any]) -> tuple[TDCExportCache, str] | None:
+    """Return a cache and non-secret namespace for one safe local request."""
+    if not has_app_context():
+        return None
+    cache = current_app.extensions.get("tdc_export_cache")
+    if not isinstance(cache, TDCExportCache):
+        return None
+    headers = payload.get("headers")
+    if isinstance(headers, Mapping) and any(
+        str(key).lower() in {"authorization", "cookie", "set-cookie"} for key in headers
+    ):
+        return None
+    if str(payload.get("cookie") or "").strip() or payload.get("cookies"):
+        return None
+    auth_mode = str(payload.get("auth_mode") or "browser").strip().lower()
+    if auth_mode == "password":
+        username = str(payload.get("username") or "").strip()
+        if not username:
+            return None
+        marker = hashlib.sha256(username.encode("utf-8")).hexdigest()
+        return cache, f"password-user:{marker}"
+    shared = _shared_domain_session("tdc")
+    if shared is None:
+        return None
+    registry = current_app.extensions.get("domain_sessions")
+    marker = ""
+    if isinstance(registry, DomainSessionRegistry):
+        status = registry.payload().get("tdc", {})
+        if isinstance(status, Mapping):
+            marker = str(status.get("updatedAt") or status.get("expiresAt") or "")
+    if not marker:
+        return None
+    return cache, f"shared-session:{marker}:{id(shared)}"
+
+
+def _tdc_sor_project_options(projects: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
+    """Expose only the safe, user-visible fields of TDC project choices."""
+    options: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for project in projects:
+        if not isinstance(project, Mapping):
+            continue
+        project_id = _safe_tdc_sor_value(project.get("id"))
+        project_no = _safe_tdc_sor_value(project.get("projectNo"))
+        project_name = _safe_tdc_sor_value(project.get("projectName"))
+        if not project_id:
+            project_id = project_no or project_name
+        if not project_id:
+            continue
+        identity = (project_id, project_no or "", project_name or "")
+        if identity in seen:
+            continue
+        seen.add(identity)
+        label = project_no or project_name or project_id
+        if project_no and project_name and project_no != project_name:
+            label = f"{project_no} — {project_name}"
+        options.append(
+            {
+                "id": project_id,
+                "projectNo": project_no or "",
+                "projectName": project_name or "",
+                "label": label,
+            }
+        )
+    return options
+
+
+def _tdc_official_export_bytes(
+    payload: Mapping[str, Any],
+    report_type: str,
+    filters: Any,
+    allowed_hosts: Sequence[str],
+    *,
+    file_name: str | None = None,
+) -> tuple[bytes, bool]:
+    """Fetch one official workbook, using only a safe short-lived cache when possible."""
+    cache_context = _tdc_export_cache_context(payload)
+
+    def produce() -> bytes:
+        temp_dir = Path(tempfile.mkdtemp(prefix=f"tdc_{report_type}_export_cache_"))
+        client: TDCCrawlerClient | None = None
+        try:
+            client = _build_tdc_client_from_payload(dict(payload), allowed_hosts, output_dir=temp_dir)
+            exported = _tdc_export(
+                client,
+                report_type,
+                filters,
+                file_name=file_name or f"tdc_{report_type}_cached.xlsx",
+            )
+            saved = Path(exported.path).resolve()
+            if not saved.is_relative_to(temp_dir.resolve()):
+                raise TDCCrawlerError(
+                    "TDC export produced a path outside the temporary output directory",
+                    stage="export-validation",
+                )
+            return saved.read_bytes()
+        finally:
+            _close_owned_tdc_client(client)
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    if cache_context is None:
+        return produce(), False
+    cache, namespace = cache_context
+    key = cache.make_key(
+        report_type=report_type,
+        base_url=str(payload.get("base_url") or ""),
+        filters=filters.to_params(),
+        namespace=namespace,
+    )
+    result = cache.get_or_create(key, produce)
+    return result.content, result.hit
+
+
+def _tdc_data_model_export_bytes(
+    payload: Mapping[str, Any],
+    filters: TDCDataModelFilters,
+    allowed_hosts: Sequence[str],
+    *,
+    file_name: str | None = None,
+) -> tuple[bytes, bool]:
+    return _tdc_official_export_bytes(
+        payload,
+        "data_model",
+        filters,
+        allowed_hosts,
+        file_name=file_name,
+    )
+
+
+def _tdc_sor_export_bytes(
+    payload: Mapping[str, Any],
+    filters: TDCSORFilters,
+    allowed_hosts: Sequence[str],
+    *,
+    file_name: str | None = None,
+) -> tuple[bytes, bool]:
+    return _tdc_official_export_bytes(
+        payload,
+        "sor",
+        filters,
+        allowed_hosts,
+        file_name=file_name,
+    )
+
+
+def _tdc_official_preview(
+    payload: Mapping[str, Any],
+    report_type: str,
+    filters: Any,
+    allowed_hosts: Sequence[str],
+    *,
+    operation: str,
+    page: int = 1,
+    page_size: int = 50,
+    max_records: int = _TDC_MAX_RECORDS_MAX,
+) -> dict[str, Any]:
+    """Preview an official TDC workbook using its approved table contract."""
+    contract_key = "tdc_data_model" if report_type == "data_model" else "tdc_sor"
+    temp_dir = Path(tempfile.mkdtemp(prefix=f"tdc_{report_type}_preview_"))
+    try:
+        if report_type == "data_model":
+            content, cache_hit = _tdc_data_model_export_bytes(payload, filters, allowed_hosts)
+        else:
+            content, cache_hit = _tdc_sor_export_bytes(payload, filters, allowed_hosts)
+        saved = temp_dir / f"tdc_{report_type}_preview.xlsx"
+        saved.write_bytes(content)
+
+        preview = read_xlsx_preview(saved, max_rows=_TDC_OFFICIAL_PREVIEW_MAX_ROWS)
+        expected_header = [
+            str(value or "").strip() for value in report_contracts()[contract_key]["headerRows"][0]
+        ]
+        actual_header = [
+            str(value or "").strip() for value in (preview.rows[0] if preview.rows else [])
+        ]
+        if (
+            len(actual_header) < len(expected_header)
+            or actual_header[: len(expected_header)] != expected_header
+            or any(actual_header[len(expected_header) :])
+        ):
+            raise TDCCrawlerError(
+                f"official TDC {report_type} export header does not match the approved contract",
+                stage="contract-validation",
+            )
+
+        data_rows = [
+            [None if value is None else redact_sensitive_text(value) for value in row]
+            for row in preview.rows[1:]
+            if row and any(value not in (None, "") for value in row)
+        ]
+        total = None if preview.truncated else len(data_rows)
+        pages = None if total is None else (total + page_size - 1) // page_size
+        if operation == "query":
+            start = (page - 1) * page_size
+            selected_rows = data_rows[start : start + page_size]
+            result_page = page
+            result_page_size = page_size
+            stop_reason = "official_export_truncated" if preview.truncated else "official_export"
+        else:
+            selected_rows = data_rows[:max_records]
+            result_page = 1
+            result_page_size = page_size
+            if len(data_rows) > max_records:
+                stop_reason = "max_records"
+            else:
+                stop_reason = "official_export_truncated" if preview.truncated else "official_export"
+
+        table = matrix_payload(contract_key, selected_rows)
+        return {
+            **table,
+            "report_type": report_type,
+            "data_source": "official_export",
+            "page": result_page,
+            "page_size": result_page_size,
+            "total": total,
+            "pages": pages,
+            "fetched_pages": 1,
+            "unique_count": len(selected_rows),
+            "duplicate_count": 0,
+            "stop_reason": stop_reason,
+            "record_granularity": "part_detail",
+            "preview": {
+                "sheetName": preview.sheet_name,
+                "sheetNames": list(preview.sheet_names),
+                "truncated": preview.truncated,
+                "maxRows": _TDC_OFFICIAL_PREVIEW_MAX_ROWS,
+            },
+            "cache": {"hit": cache_hit, "ttlSeconds": 180},
+        }
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def _tdc_official_data_model_preview(
+    payload: Mapping[str, Any],
+    filters: TDCDataModelFilters,
+    allowed_hosts: Sequence[str],
+    *,
+    operation: str,
+    page: int = 1,
+    page_size: int = 50,
+    max_records: int = _TDC_MAX_RECORDS_MAX,
+) -> dict[str, Any]:
+    return _tdc_official_preview(
+        payload,
+        "data_model",
+        filters,
+        allowed_hosts,
+        operation=operation,
+        page=page,
+        page_size=page_size,
+        max_records=max_records,
+    )
+
+
+def _tdc_official_sor_preview(
+    payload: Mapping[str, Any],
+    filters: TDCSORFilters,
+    allowed_hosts: Sequence[str],
+    *,
+    operation: str,
+    page: int = 1,
+    page_size: int = 50,
+    max_records: int = _TDC_MAX_RECORDS_MAX,
+) -> dict[str, Any]:
+    return _tdc_official_preview(
+        payload,
+        "sor",
+        filters,
+        allowed_hosts,
+        operation=operation,
+        page=page,
+        page_size=page_size,
+        max_records=max_records,
+    )
+
+
 _PROJECT_STATUS_VALUES = {"已完成", "进行中", "待审批", "已逾期"}
 _PROJECT_STATUS_TONES = {
     "已完成": "success",
@@ -1130,15 +1592,32 @@ _PROJECT_STATUS_TONES = {
 }
 
 
-def _project_status_payload(db: DatabaseManager, phase_id: str) -> dict[str, Any] | None:
+def _project_status_payload(
+    db: DatabaseManager,
+    phase_id: str,
+    *,
+    today: date | None = None,
+) -> dict[str, Any] | None:
     """把项目状态专用表序列化为前端唯一的已保存状态。"""
     phase_row, milestone_rows, deliverable_rows = db.get_project_status(phase_id)
     if phase_row is None:
         return None
+    current_day = today or date.today()
     deliverables = []
     policy_summaries = db.get_project_status_update_policy_summaries(phase_id)
     for row in deliverable_rows:
         actual_date = row["actual_date"]
+        planned_day = date.fromisoformat(str(row["planned_date"]))
+        schedule_state: str | None = None
+        schedule_days: int | None = None
+        if row["status"] != "已完成":
+            delta = (planned_day - current_day).days
+            if delta < 0:
+                schedule_state = "overdue"
+                schedule_days = abs(delta)
+            elif delta <= 7:
+                schedule_state = "due_soon"
+                schedule_days = delta
         summary = policy_summaries.get(row["id"])
         if summary is None:
             summary = {
@@ -1155,6 +1634,7 @@ def _project_status_payload(db: DatabaseManager, phase_id: str) -> dict[str, Any
         deliverables.append(
             {
                 "id": row["id"],
+                "displayCode": row["display_code"],
                 "phaseId": row["phase_id"],
                 "name": row["name"],
                 "status": row["status"],
@@ -1165,7 +1645,12 @@ def _project_status_payload(db: DatabaseManager, phase_id: str) -> dict[str, Any
                 "progress": row["progress"],
                 "note": row["remark"],
                 "source": row["source"],
+                "department": row["department"],
+                "stage": row["stage"],
+                "updateMethod": row["update_method"],
                 "tone": _PROJECT_STATUS_TONES[row["status"]],
+                "scheduleState": schedule_state,
+                "scheduleDays": schedule_days,
                 "updatedAt": row["updated_at"],
                 "updatePolicy": {
                     "mode": summary["mode"],
@@ -1183,14 +1668,27 @@ def _project_status_payload(db: DatabaseManager, phase_id: str) -> dict[str, Any
         )
 
     completed_count = sum(item["status"] == "已完成" for item in deliverables)
-    risk_count = sum(item["status"] == "已逾期" for item in deliverables)
+    risk_count = sum(
+        item["status"] == "已逾期" or item["scheduleState"] == "overdue"
+        for item in deliverables
+    )
     overall_progress = int(phase_row["overall_progress"])
     planned_progress = int(phase_row["planned_progress"])
-    overdue = next((item for item in deliverables if item["status"] == "已逾期"), None)
+    overdue = next(
+        (
+            item
+            for item in deliverables
+            if item["status"] == "已逾期" or item["scheduleState"] == "overdue"
+        ),
+        None,
+    )
     risk_text = "无"
     if overdue:
-        note = str(overdue["note"])
-        risk_text = f'{overdue["name"]}已{note}' if note.startswith("逾期") else f'{overdue["name"]}：{note}'
+        if overdue["scheduleState"] == "overdue" and overdue["scheduleDays"] is not None:
+            risk_text = f'{overdue["name"]}已逾期 {overdue["scheduleDays"]} 天'
+        else:
+            note = str(overdue["note"])
+            risk_text = f'{overdue["name"]}已{note}' if note.startswith("逾期") else f'{overdue["name"]}：{note}'
     start_date = str(phase_row["start_date"])
     end_date = str(phase_row["end_date"])
     start_month = date.fromisoformat(start_date).replace(day=1)
@@ -1204,10 +1702,11 @@ def _project_status_payload(db: DatabaseManager, phase_id: str) -> dict[str, Any
     return {
         "phase": {
             "id": phase_row["id"],
+            "displayName": phase_row["display_name"],
             "status": phase_row["status"],
             "startDate": start_date,
             "endDate": end_date,
-            "today": phase_row["simulated_today"],
+            "today": current_day.isoformat(),
             "updatedAt": updated_at,
             "overallProgress": overall_progress,
             "completedCount": completed_count,
@@ -1220,12 +1719,21 @@ def _project_status_payload(db: DatabaseManager, phase_id: str) -> dict[str, Any
                 "id": row["id"],
                 "name": row["name"],
                 "date": row["milestone_date"],
-                "status": row["status"],
+                "status": milestone_display_status(
+                    row["status"], row["milestone_date"], current_day
+                ),
                 "type": row["type"],
                 "sortOrder": row["sort_order"],
             }
             for row in milestone_rows
         ],
+        "currentStage": current_stage_label(
+            [
+                {"name": row["name"], "date": row["milestone_date"]}
+                for row in milestone_rows
+            ],
+            current_day,
+        ),
         "deliverables": deliverables,
         "summary": {
             "overall": f"{overall_progress}%",
@@ -1250,6 +1758,55 @@ def _project_status_validation_error(fields: dict[str, str]):
     )
     response.headers["Cache-Control"] = "no-store"
     return response, 422
+
+
+def _validate_project_status_phase(
+    payload: Mapping[str, Any],
+) -> tuple[dict[str, object], dict[str, str]]:
+    errors: dict[str, str] = {}
+    unknown = set(payload) - {"displayName", "status", "startDate", "endDate", "updatedAt"}
+    if unknown:
+        errors["request"] = "包含不允许修改的字段"
+
+    display_name = payload.get("displayName")
+    status = payload.get("status")
+    start_text = payload.get("startDate")
+    end_text = payload.get("endDate")
+
+    if not isinstance(display_name, str) or not display_name.strip():
+        errors["displayName"] = "主计划名称不能为空"
+    elif len(display_name.strip()) > 120:
+        errors["displayName"] = "主计划名称不能超过 120 个字符"
+
+    allowed_statuses = {"未开始", "进行中", "已完成", "暂停"}
+    if status not in allowed_statuses:
+        errors["status"] = "阶段状态无效"
+
+    parsed_start: date | None = None
+    parsed_end: date | None = None
+    for field_name, raw_value in (("startDate", start_text), ("endDate", end_text)):
+        if not isinstance(raw_value, str):
+            errors[field_name] = "必须使用 YYYY-MM-DD 日期"
+            continue
+        try:
+            parsed = date.fromisoformat(raw_value)
+        except ValueError:
+            errors[field_name] = "必须使用 YYYY-MM-DD 日期"
+            continue
+        if field_name == "startDate":
+            parsed_start = parsed
+        else:
+            parsed_end = parsed
+    if parsed_start is not None and parsed_end is not None and parsed_start > parsed_end:
+        errors["endDate"] = "计划完成日期不能早于开始日期"
+
+    values = {
+        "display_name": display_name.strip() if isinstance(display_name, str) else "",
+        "status": status,
+        "start_date": start_text,
+        "end_date": end_text,
+    }
+    return values, errors
 
 
 def _validate_project_status_update(
@@ -1333,16 +1890,10 @@ def _validate_project_status_milestones(
     normalized: list[dict[str, object]] = []
     names: set[str] = set()
     ids: set[int] = set()
-    current_count = 0
     phase = project_status["phase"]
     start_date = date.fromisoformat(str(phase["startDate"]))
     end_date = date.fromisoformat(str(phase["endDate"]))
-    simulated_today = date.fromisoformat(str(phase["today"]))
-    type_status = {
-        "done": "已达成",
-        "current": "当前目标节点",
-        "planned": "计划节点",
-    }
+    status_type = {"已完成": "done", "进行中": "current", "未开始": "planned", "已超期": "planned"}
 
     for index, raw in enumerate(raw_items):
         prefix = f"milestones.{index}"
@@ -1375,15 +1926,15 @@ def _validate_project_status_milestones(
                 errors[f"{prefix}.name"] = "同一阶段的节点名称不能重复"
             names.add(clean_name)
 
-        node_type = raw.get("type")
-        if not isinstance(node_type, str) or node_type not in type_status:
-            errors[f"{prefix}.type"] = "请选择有效节点状态"
-            node_type = "planned"
-        expected_status = type_status[node_type]
-        if raw.get("status") not in (None, expected_status):
-            errors[f"{prefix}.status"] = "节点状态与类型不一致"
-        if node_type == "current":
-            current_count += 1
+        requested_status = raw.get("status")
+        if not isinstance(requested_status, str) or requested_status not in MILESTONE_STATUSES:
+            legacy_type = raw.get("type")
+            requested_status = {"done": "已完成", "current": "进行中", "planned": "未开始"}.get(
+                str(legacy_type), "未开始"
+            )
+        if requested_status == "已超期":
+            requested_status = "未开始"
+        node_type = status_type[requested_status]
 
         date_text = raw.get("date")
         parsed_date = None
@@ -1397,24 +1948,18 @@ def _validate_project_status_milestones(
                 errors[f"{prefix}.date"] = "节点日期格式无效"
         if parsed_date and not start_date <= parsed_date <= end_date:
             errors[f"{prefix}.date"] = "节点日期必须位于阶段周期内"
-        elif parsed_date and node_type == "done" and parsed_date > simulated_today:
-            errors[f"{prefix}.date"] = "已达成节点不能晚于当前日期"
-        elif parsed_date and node_type == "planned" and parsed_date < simulated_today:
-            errors[f"{prefix}.date"] = "计划节点不能早于当前日期"
 
         normalized.append(
             {
                 "id": milestone_id,
                 "name": clean_name,
                 "date": date_text,
-                "status": expected_status,
+                "status": requested_status,
                 "type": node_type,
                 "sort_order": index + 1,
             }
         )
 
-    if current_count != 1:
-        errors["milestones"] = "主计划必须且只能有一个当前目标节点"
     return normalized, errors
 
 
@@ -1443,6 +1988,58 @@ def _send_tdc_xlsx_attachment(result: Any, temp_dir: Path):
     return response
 
 
+_NCR_PREVIEW_MAX_ROWS = 500
+
+
+def _ncr_preview_requested(payload: Mapping[str, Any]) -> bool:
+    value = payload.get("preview")
+    return value is True or (isinstance(value, str) and value.strip().lower() in {"1", "true", "yes"})
+
+
+def _ncr_table_payload(
+    client: ArasCrawlerClient,
+    result: Any,
+    report_type: str,
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return an empty contract or a bounded preview of the official XLSX."""
+    if not _ncr_preview_requested(payload):
+        return {
+            **table_payload(report_type, []),
+            "count": 0,
+            "previewAvailable": False,
+        }
+
+    requested_rows = _positive_int(payload.get("preview_rows"), _NCR_PREVIEW_MAX_ROWS)
+    preview_rows = min(requested_rows, _NCR_PREVIEW_MAX_ROWS)
+    temp_dir = Path(tempfile.mkdtemp(prefix=f"aras_{report_type}_preview_"))
+    try:
+        if report_type == "ncr_progress":
+            saved = client.download_ncr_progress_file(result, temp_dir)
+            header_count = 2
+        else:
+            saved = client.download_ncr_detail_file(result.file_name, temp_dir)
+            header_count = 5
+        workbook = read_xlsx_preview(saved, max_rows=header_count + preview_rows)
+        data_rows = workbook.rows[header_count:]
+        table = matrix_payload(report_type, data_rows)
+        return {
+            **table,
+            "count": len(data_rows),
+            "previewAvailable": True,
+            "preview": {
+                "sheetName": workbook.sheet_name,
+                "sheetNames": list(workbook.sheet_names),
+                "truncated": workbook.truncated,
+                "maxRows": preview_rows,
+            },
+        }
+    except XLSXPreviewError:
+        raise
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 def _aras_error_response(
     exc: Exception,
     client: ArasCrawlerClient | None,
@@ -1463,6 +2060,8 @@ def _aras_error_response(
             _sanitize_error_message(exc),
             diagnostic_path,
         )
+    if isinstance(exc, XLSXPreviewError):
+        return _json_error(502, "ArasCrawlerError", _sanitize_error_message(exc), diagnostic_path)
     if isinstance(exc, ValueError):
         return _json_error(
             400,
@@ -1484,6 +2083,8 @@ def _tdc_error_response(exc: Exception, report_type: str, operation: str):
         return _json_error(exc.status_code, exc.error_type, _sanitize_error_message(exc), exc.diagnostic_path)
     if isinstance(exc, TDCAuthError):
         return _json_error(401, "AuthenticationError", _sanitize_error_message(exc), getattr(exc, "diagnostic_path", None))
+    if isinstance(exc, XLSXPreviewError):
+        return _json_error(502, "TDCCrawlerError", _sanitize_error_message(exc))
     if isinstance(exc, ValueError):
         return _json_error(400, "ValidationError", _sanitize_error_message(exc))
     if isinstance(exc, TDCCrawlerError):
@@ -1503,15 +2104,34 @@ def _tdc_report_query(
     if error_response:
         return error_response
     assert payload is not None
+    client: TDCCrawlerClient | None = None
     try:
         filters = filter_builder(_tdc_filters_from_payload(payload, allowed_names))
         page = _tdc_positive_int(payload.get("page"), "page", 1, _TDC_PAGE_MAX)
         page_size = _tdc_positive_int(payload.get("page_size"), "page_size", 50, _TDC_PAGE_SIZE_MAX)
+        preview_source = _tdc_preview_source(payload)
+        if preview_source == "official_export":
+            preview_builder = (
+                _tdc_official_data_model_preview
+                if report_type == "data_model"
+                else _tdc_official_sor_preview
+            )
+            data = preview_builder(
+                payload,
+                filters,
+                allowed_hosts,
+                operation="query",
+                page=page,
+                page_size=page_size,
+            )
+            return jsonify({"ok": True, "data": data})
         client = _build_tdc_client_from_payload(payload, allowed_hosts)
         result = _tdc_query(client, report_type, filters, page=page, page_size=page_size)
         return jsonify({"ok": True, "data": _tdc_result_data(result)})
     except Exception as exc:
         return _tdc_error_response(exc, report_type, "query")
+    finally:
+        _close_owned_tdc_client(client)
 
 
 def _tdc_report_crawl(
@@ -1524,6 +2144,7 @@ def _tdc_report_crawl(
     if error_response:
         return error_response
     assert payload is not None
+    client: TDCCrawlerClient | None = None
     try:
         filters = filter_builder(_tdc_filters_from_payload(payload, allowed_names))
         page_size = _tdc_positive_int(payload.get("page_size"), "page_size", 50, _TDC_PAGE_SIZE_MAX)
@@ -1531,6 +2152,22 @@ def _tdc_report_crawl(
         max_records = _tdc_positive_int(
             payload.get("max_records"), "max_records", 10000, _TDC_MAX_RECORDS_MAX
         )
+        preview_source = _tdc_preview_source(payload)
+        if preview_source == "official_export":
+            preview_builder = (
+                _tdc_official_data_model_preview
+                if report_type == "data_model"
+                else _tdc_official_sor_preview
+            )
+            data = preview_builder(
+                payload,
+                filters,
+                allowed_hosts,
+                operation="crawl_all",
+                page_size=page_size,
+                max_records=max_records,
+            )
+            return jsonify({"ok": True, "data": data})
         client = _build_tdc_client_from_payload(payload, allowed_hosts)
         result = _tdc_crawl(
             client,
@@ -1543,6 +2180,8 @@ def _tdc_report_crawl(
         return jsonify({"ok": True, "data": _tdc_result_data(result)})
     except Exception as exc:
         return _tdc_error_response(exc, report_type, "crawl-all")
+    finally:
+        _close_owned_tdc_client(client)
 
 
 def _tdc_report_export(
@@ -1556,20 +2195,56 @@ def _tdc_report_export(
         return error_response
     assert payload is not None
     temp_dir = Path(tempfile.mkdtemp(prefix="tdc_export_"))
+    client: TDCCrawlerClient | None = None
     try:
         file_name = _tdc_file_name(payload.get("file_name"))
         filters = filter_builder(_tdc_filters_from_payload(payload, allowed_names))
-        client = _build_tdc_client_from_payload(payload, allowed_hosts, output_dir=temp_dir)
-        result = _tdc_export(client, report_type, filters, file_name=file_name)
+        if report_type == "data_model":
+            safe_name = file_name or "tdc_data_model.xlsx"
+            content, _ = _tdc_data_model_export_bytes(
+                payload,
+                filters,
+                allowed_hosts,
+                file_name=safe_name,
+            )
+            saved = (temp_dir / safe_name).resolve()
+            if not saved.is_relative_to(temp_dir.resolve()):
+                raise TDCCrawlerError(
+                    "TDC export produced a path outside the temporary output directory",
+                    stage="export-validation",
+                )
+            saved.write_bytes(content)
+            result = TDCExportResult(
+                report_type="data_model",
+                file_name=safe_name,
+                path=saved,
+                byte_count=len(content),
+                content_type=_TDC_XLSX_MIMETYPE,
+                signature_valid=content.startswith(b"PK"),
+                elapsed_ms=0.0,
+                record_granularity="part_detail",
+            )
+        else:
+            client = _build_tdc_client_from_payload(payload, allowed_hosts, output_dir=temp_dir)
+            result = _tdc_export(client, report_type, filters, file_name=file_name)
         return _send_tdc_xlsx_attachment(result, temp_dir)
     except Exception as exc:
         shutil.rmtree(temp_dir, ignore_errors=True)
         return _tdc_error_response(exc, report_type, "export")
+    finally:
+        _close_owned_tdc_client(client)
 
 
 def create_app(
     allowed_hosts: Sequence[str] | None = None,
     tdc_allowed_hosts: Sequence[str] | None = None,
+    excel_roots: Mapping[str, Path | str] | None = None,
+    excel_repository: ExcelTaskRepository | None = None,
+    excel_worker_controller: ExcelWorkerController | ExcelWorkerProcessController | None = None,
+    excel_worker_mode: str = "process",
+    excel_clock: Callable[[], datetime] | None = None,
+    project_status_clock: Callable[[], date] | None = None,
+    archive_store: ArchiveStore | None = None,
 ) -> Flask:
     """Flask 应用工厂。
 
@@ -1578,7 +2253,7 @@ def create_app(
     localhost/测试 host 也可在创建后通过对应 app.config 键注入。
     """
     if getattr(sys, "frozen", False):
-        base_dir = Path(sys._MEIPASS) / "web"
+        base_dir = Path(str(getattr(sys, "_MEIPASS"))) / "web"
     else:
         base_dir = Path(__file__).resolve().parent
 
@@ -1600,12 +2275,59 @@ def create_app(
     update_service = ProjectStatusUpdateService(db)
     discovery_service = MappingDiscoveryService(db)
     analytics_service = ProjectStatusAnalyticsService(db)
-    archive_admin_service = ScheduledArchiveAdminService(db)
+    deliverable_analysis_service = ProjectStatusDeliverableAnalysisService(
+        db,
+        clock=project_status_clock,
+    )
+
+    def current_project_status(phase_id: str) -> dict[str, Any] | None:
+        return _project_status_payload(
+            db,
+            phase_id,
+            today=project_status_clock() if project_status_clock else None,
+        )
+
+    settings_store = SettingsStore(db)
+    domain_sessions = DomainSessionRegistry()
+    credential_vault = WindowsDPAPICredentialVault(app_root() / "data" / "domain-credential.dpapi")
+    tdc_export_cache = TDCExportCache()
+    archive_admin_service = (
+        ScheduledArchiveAdminService(db, archive_store=archive_store)
+        if archive_store is not None
+        else ScheduledArchiveAdminService(db)
+    )
+    archive_admin_service.set_credential_provider(DPAPICredentialProvider(credential_vault))
     app.extensions["scheduled_archive_admin"] = archive_admin_service
+    app.extensions["settings_store"] = settings_store
+    app.extensions["domain_sessions"] = domain_sessions
+    app.extensions["domain_credential_vault"] = credential_vault
+    app.extensions["tdc_export_cache"] = tdc_export_cache
+    if excel_roots is not None and excel_repository is not None:
+        raise ValueError("provide excel_roots or excel_repository, not both")
+    if excel_repository is None and excel_roots is not None:
+        excel_repository = ExcelTaskRepository(db, ApprovedExcelRoots(excel_roots))
+    excel_admin_service = (
+        ExcelTaskAdminService(excel_repository, clock=excel_clock)
+        if excel_repository is not None
+        else None
+    )
+    app.extensions["excel_task_admin"] = excel_admin_service
+    if excel_worker_controller is None and excel_repository is not None:
+        if excel_worker_mode == "process":
+            excel_worker_controller = ExcelWorkerProcessController(excel_repository)
+        elif excel_worker_mode == "in_process":
+            excel_worker_controller = ExcelWorkerController(lambda: ExcelTaskWorker(excel_repository))
+        else:
+            raise ValueError("excel_worker_mode must be 'process' or 'in_process'")
+    app.extensions["excel_worker_controller"] = excel_worker_controller
 
     @app.route("/")
     def index():
         return render_template("dashboard.html")
+
+    @app.get("/favicon.ico")
+    def favicon():
+        return "", 204
 
     @app.route("/api/overview")
     def api_overview():
@@ -1616,6 +2338,397 @@ def create_app(
             logger.exception("api/overview 查询失败")
             return jsonify({"error": str(e)}), 500
 
+    @app.get("/api/excel-roots")
+    def api_excel_roots_list():
+        if excel_admin_service is None:
+            return _json_error(503, "NotConfigured", "Excel task roots are not configured")
+        try:
+            data = excel_admin_service.list_roots()
+            response = jsonify({"ok": True, "data": data})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except Exception:
+            logger.exception("Excel roots list failed")
+            return _json_error(500, "ServerError", "Excel roots query failed")
+
+    @app.post("/api/excel-tasks")
+    def api_excel_tasks_create():
+        local_error = _local_web_mutation_error()
+        if local_error is not None:
+            return local_error
+        if excel_admin_service is None:
+            return _json_error(503, "NotConfigured", "Excel task roots are not configured")
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return _json_error(400, "ValidationError", "JSON object body is required")
+        try:
+            data = excel_admin_service.create_task(payload)
+            response = jsonify({"ok": True, "data": data})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except ExcelTaskAdminValidationError as exc:
+            return _project_status_validation_error(exc.fields)
+        except ExcelIdempotencyConflictError:
+            return _json_error(
+                409,
+                "Conflict",
+                "Idempotency key was already used for a different request",
+            )
+        except Exception:
+            logger.exception("Excel task creation failed")
+            return _json_error(500, "ServerError", "Excel task creation failed")
+
+    @app.get("/api/excel-tasks")
+    def api_excel_tasks_list():
+        if excel_admin_service is None:
+            return _json_error(503, "NotConfigured", "Excel task roots are not configured")
+        try:
+            data = excel_admin_service.list_tasks(
+                request.args.get("status"),
+                request.args.get("limit"),
+            )
+            response = jsonify({"ok": True, "data": data})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except ExcelTaskAdminValidationError as exc:
+            return _project_status_validation_error(exc.fields)
+        except Exception:
+            logger.exception("Excel task list failed")
+            return _json_error(500, "ServerError", "Excel task query failed")
+
+    @app.get("/api/excel-worker/status")
+    def api_excel_worker_status():
+        if excel_worker_controller is None:
+            return _json_error(503, "NotConfigured", "Excel worker is not configured")
+        response = jsonify({"ok": True, "data": excel_worker_controller.status().to_dict()})
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.post("/api/excel-worker/start")
+    def api_excel_worker_start():
+        local_error = _local_web_mutation_error()
+        if local_error is not None:
+            return local_error
+        if excel_worker_controller is None:
+            return _json_error(503, "NotConfigured", "Excel worker is not configured")
+        try:
+            status = excel_worker_controller.start()
+            response = jsonify({"ok": True, "data": status.to_dict()})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except RuntimeError:
+            return _json_error(409, "Conflict", "Excel worker is already running")
+        except Exception:
+            logger.exception("Excel worker start failed")
+            return _json_error(500, "ServerError", "Excel worker start failed")
+
+    @app.post("/api/excel-worker/stop")
+    def api_excel_worker_stop():
+        local_error = _local_web_mutation_error()
+        if local_error is not None:
+            return local_error
+        if excel_worker_controller is None:
+            return _json_error(503, "NotConfigured", "Excel worker is not configured")
+        try:
+            status = excel_worker_controller.stop()
+            response = jsonify({"ok": True, "data": status.to_dict()})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except Exception:
+            logger.exception("Excel worker stop failed")
+            return _json_error(500, "ServerError", "Excel worker stop failed")
+
+    @app.get("/api/excel-tasks/<int:task_id>")
+    def api_excel_task_detail(task_id: int):
+        if excel_admin_service is None:
+            return _json_error(503, "NotConfigured", "Excel task roots are not configured")
+        try:
+            data = excel_admin_service.get_task(task_id)
+            response = jsonify({"ok": True, "data": data})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except KeyError:
+            return _json_error(404, "NotFound", "Excel task was not found")
+        except Exception:
+            logger.exception("Excel task detail failed")
+            return _json_error(500, "ServerError", "Excel task query failed")
+
+    @app.get("/api/excel-tasks/<int:task_id>/runs")
+    def api_excel_task_runs(task_id: int):
+        if excel_admin_service is None:
+            return _json_error(503, "NotConfigured", "Excel task roots are not configured")
+        try:
+            data = excel_admin_service.list_runs(task_id)
+            response = jsonify({"ok": True, "data": data})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except KeyError:
+            return _json_error(404, "NotFound", "Excel task was not found")
+        except Exception:
+            logger.exception("Excel task runs failed")
+            return _json_error(500, "ServerError", "Excel task query failed")
+
+    @app.get("/api/excel-tasks/<int:task_id>/artifacts")
+    def api_excel_task_artifacts(task_id: int):
+        if excel_admin_service is None:
+            return _json_error(503, "NotConfigured", "Excel task roots are not configured")
+        try:
+            data = excel_admin_service.list_artifacts(task_id)
+            response = jsonify({"ok": True, "data": data})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except KeyError:
+            return _json_error(404, "NotFound", "Excel task was not found")
+        except Exception:
+            logger.exception("Excel task artifacts failed")
+            return _json_error(500, "ServerError", "Excel artifact query failed")
+
+    @app.get("/api/excel-artifacts/<int:artifact_id>")
+    def api_excel_artifact_detail(artifact_id: int):
+        if excel_admin_service is None:
+            return _json_error(503, "NotConfigured", "Excel task roots are not configured")
+        try:
+            data = excel_admin_service.get_artifact(artifact_id)
+            response = jsonify({"ok": True, "data": data})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except KeyError:
+            return _json_error(404, "NotFound", "Excel artifact was not found")
+        except Exception:
+            logger.exception("Excel artifact detail failed")
+            return _json_error(500, "ServerError", "Excel artifact query failed")
+
+    @app.get("/api/excel-artifacts/<int:artifact_id>/download")
+    def api_excel_artifact_download(artifact_id: int):
+        if excel_admin_service is None:
+            return _json_error(503, "NotConfigured", "Excel task roots are not configured")
+        try:
+            artifact = excel_admin_service.prepare_artifact_download(artifact_id)
+            response = send_file(
+                io.BytesIO(artifact.data),
+                mimetype=artifact.mimetype,
+                as_attachment=True,
+                download_name=_safe_attachment_basename(
+                    artifact.display_name,
+                    fallback="excel-artifact.xlsx",
+                ),
+            )
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            return response
+        except KeyError:
+            return _json_error(404, "NotFound", "Excel artifact was not found")
+        except ExcelArtifactUnavailableError:
+            return _json_error(
+                409,
+                "ArtifactUnavailable",
+                "Excel artifact is unavailable or failed integrity validation",
+            )
+        except Exception:
+            logger.exception("Excel artifact download failed")
+            return _json_error(500, "ServerError", "Excel artifact download failed")
+
+    @app.get("/api/excel-artifacts/<int:artifact_id>/download-audit")
+    def api_excel_artifact_download_audit(artifact_id: int):
+        if excel_admin_service is None:
+            return _json_error(503, "NotConfigured", "Excel task roots are not configured")
+        try:
+            data = excel_admin_service.list_artifact_download_audits(
+                artifact_id,
+                limit=request.args.get("limit"),
+            )
+            response = jsonify({"ok": True, "data": data})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except KeyError:
+            return _json_error(404, "NotFound", "Excel artifact was not found")
+        except ExcelTaskAdminValidationError as exc:
+            return _project_status_validation_error(exc.fields)
+        except Exception:
+            logger.exception("Excel artifact download audit query failed")
+            return _json_error(500, "ServerError", "Excel artifact download audit query failed")
+
+    @app.get("/api/excel-artifacts/retention-plan")
+    def api_excel_artifacts_retention_plan():
+        if excel_admin_service is None:
+            return _json_error(503, "NotConfigured", "Excel task roots are not configured")
+        try:
+            data = excel_admin_service.plan_retention(
+                retention_days=request.args.get("retentionDays"),
+                limit=request.args.get("limit"),
+            )
+            response = jsonify({"ok": True, "data": data})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except ExcelTaskAdminValidationError as exc:
+            return _project_status_validation_error(exc.fields)
+        except Exception:
+            logger.exception("Excel artifact retention plan query failed")
+            return _json_error(500, "ServerError", "Excel artifact retention plan query failed")
+
+    @app.get("/api/scheduled-archive/folders")
+    def api_scheduled_archive_folders():
+        try:
+            data = archive_admin_service.list_folders(request.args.get("path", ""))
+            response = jsonify({"ok": True, "data": data})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except FileNotFoundError:
+            return _json_error(404, "NotFound", "未找到归档目录")
+        except ArchiveSafetyError as exc:
+            return _json_error(422, "ValidationError", _sanitize_error_message(exc))
+        except OSError:
+            logger.exception("scheduled archive folder query failed")
+            return _json_error(500, "ServerError", "无法读取归档目录")
+
+    @app.post("/api/scheduled-archive/folders/native")
+    def api_scheduled_archive_native_folder():
+        local_error = _local_web_mutation_error()
+        if local_error is not None:
+            return local_error
+        if app.config.get("TESTING"):
+            return _json_error(503, "NativeFolderPickerUnavailable", "测试环境不打开本机文件夹选择器")
+        payload = request.get_json(silent=True) or {}
+        initial_directory = payload.get("path", "") if isinstance(payload, dict) else ""
+        if not isinstance(initial_directory, str):
+            return _project_status_validation_error({"path": "必须是本机目录字符串"})
+        try:
+            data = archive_admin_service.pick_native_folder(initial_directory)
+            response = jsonify({"ok": True, "data": data})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except NativeFolderPickerError as exc:
+            return _json_error(503, "NativeFolderPickerUnavailable", _sanitize_error_message(exc))
+        except FileNotFoundError:
+            return _json_error(404, "NotFound", "未找到归档目录")
+        except ArchiveSafetyError as exc:
+            return _json_error(422, "ValidationError", _sanitize_error_message(exc))
+        except OSError:
+            logger.exception("scheduled archive native folder picker failed")
+            return _json_error(500, "ServerError", "无法选择归档目录")
+
+    @app.get("/api/settings")
+    def api_settings_get():
+        response = jsonify(
+            {
+                "ok": True,
+                "data": {
+                    "settings": settings_store.get(),
+                    "sessions": domain_sessions.payload(),
+                    "credentialVaultConfigured": credential_vault.is_configured(),
+                    "excelService": {"configured": excel_admin_service is not None},
+                },
+            }
+        )
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.patch("/api/settings")
+    def api_settings_update():
+        local_error = _local_web_mutation_error()
+        if local_error is not None:
+            return local_error
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return _json_error(400, "ValidationError", "JSON object body is required")
+        try:
+            data = settings_store.update(payload)
+            response = jsonify({"ok": True, "data": {"settings": data}})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except SettingsValidationError as exc:
+            return _project_status_validation_error(exc.fields)
+
+    @app.post("/api/settings/folders/native")
+    def api_settings_native_folder():
+        local_error = _local_web_mutation_error()
+        if local_error is not None:
+            return local_error
+        if app.config.get("TESTING"):
+            return _json_error(503, "NativeFolderPickerUnavailable", "测试环境不打开本机文件夹选择器")
+        payload = request.get_json(silent=True) or {}
+        initial_value = payload.get("path", "") if isinstance(payload, dict) else ""
+        initial_path: Path | None = None
+        if isinstance(initial_value, str) and initial_value.strip():
+            try:
+                initial_path = Path(validate_local_directory(initial_value))
+            except ValueError:
+                initial_path = None
+        try:
+            selected = choose_native_folder(initial_path)
+            selected_path = None if selected is None else validate_local_directory(str(selected))
+            response = jsonify({"ok": True, "data": {"path": selected_path, "cancelled": selected is None}})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except NativeFolderPickerError as exc:
+            return _json_error(503, "NativeFolderPickerUnavailable", _sanitize_error_message(exc))
+        except ValueError as exc:
+            return _project_status_validation_error({"path": _sanitize_error_message(exc)})
+
+    @app.post("/api/settings/domain-login")
+    def api_domain_login():
+        local_error = _local_web_mutation_error()
+        if local_error is not None:
+            return local_error
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return _json_error(400, "ValidationError", "JSON object body is required")
+        username = payload.get("username")
+        password = payload.get("password")
+        if not isinstance(username, str) or not username.strip() or not isinstance(password, str) or not password:
+            return _project_status_validation_error({"credentials": "域用户名和密码不能为空"})
+        results: dict[str, object] = {}
+        try:
+            login_result = ArasECMAuthClient().login(username.strip(), password)
+            domain_sessions.mark_authenticated("aras", login_result.session)
+            results["aras"] = {"ok": True}
+        except Exception as exc:
+            results["aras"] = {"ok": False, "message": _sanitize_error_message(exc)}
+        try:
+            login_result = TDCPasswordAuthClient().login(username.strip(), password)
+            domain_sessions.mark_authenticated("tdc", login_result.session)
+            results["tdc"] = {"ok": True}
+        except Exception as exc:
+            results["tdc"] = {"ok": False, "message": _sanitize_error_message(exc)}
+        if any(isinstance(item, dict) and item.get("ok") for item in results.values()):
+            tdc_export_cache.clear()
+        if bool(payload.get("saveForScheduled")) and any(
+            isinstance(item, dict) and item.get("ok") for item in results.values()
+        ):
+            try:
+                credential_vault.store(username.strip(), password)
+            except CredentialVaultError as exc:
+                return _json_error(503, "CredentialVaultUnavailable", _sanitize_error_message(exc))
+        response = jsonify(
+            {
+                "ok": any(isinstance(item, dict) and item.get("ok") for item in results.values()),
+                "data": {"results": results, "sessions": domain_sessions.payload()},
+            }
+        )
+        response.headers["Cache-Control"] = "no-store"
+        return response, (200 if response.get_json()["ok"] else 401)
+
+    @app.delete("/api/settings/sessions")
+    def api_domain_sessions_clear():
+        local_error = _local_web_mutation_error()
+        if local_error is not None:
+            return local_error
+        payload = request.get_json(silent=True) or {}
+        system = payload.get("system") if isinstance(payload, dict) else None
+        if system not in (None, "aras", "tdc"):
+            return _project_status_validation_error({"system": "仅支持 aras 或 tdc"})
+        domain_sessions.clear(system)
+        if system in (None, "tdc"):
+            tdc_export_cache.clear()
+        if isinstance(payload, dict) and payload.get("clearCredentialVault"):
+            try:
+                credential_vault.clear()
+            except CredentialVaultError as exc:
+                return _json_error(503, "CredentialVaultUnavailable", _sanitize_error_message(exc))
+        response = jsonify({"ok": True, "data": {"sessions": domain_sessions.payload()}})
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
     @app.get("/api/scheduled-archive/jobs")
     def api_scheduled_archive_jobs():
         try:
@@ -1625,6 +2738,24 @@ def create_app(
         except Exception as exc:
             logger.exception("scheduled archive jobs query failed")
             return _json_error(500, "ServerError", _sanitize_error_message(exc))
+
+    @app.post("/api/scheduled-archive/jobs")
+    def api_scheduled_archive_job_create():
+        local_error = _local_web_mutation_error()
+        if local_error is not None:
+            return local_error
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return _json_error(400, "ValidationError", "JSON object body is required")
+        try:
+            data = archive_admin_service.create_job(payload)
+            response = jsonify({"ok": True, "data": data})
+            response.headers["Cache-Control"] = "no-store"
+            return response, 201
+        except ArchiveAdminValidationError as exc:
+            return _project_status_validation_error(exc.fields)
+        except (KeyError, ValueError) as exc:
+            return _project_status_validation_error({"request": _sanitize_error_message(exc)})
 
     @app.patch("/api/scheduled-archive/jobs/<job_key>")
     def api_scheduled_archive_job_update(job_key: str):
@@ -1654,6 +2785,29 @@ def create_app(
         except Exception as exc:
             logger.exception("scheduled archive job update failed")
             return _json_error(500, "ServerError", _sanitize_error_message(exc))
+
+    @app.delete("/api/scheduled-archive/jobs/<job_key>")
+    def api_scheduled_archive_job_archive(job_key: str):
+        local_error = _local_web_mutation_error()
+        if local_error is not None:
+            return local_error
+        payload = request.get_json(silent=True) or {}
+        try:
+            data = archive_admin_service.archive_job(
+                job_key,
+                payload.get("updatedAt") if isinstance(payload, dict) else None,
+            )
+            response = jsonify({"ok": True, "data": data})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except ArchiveAdminValidationError as exc:
+            return _project_status_validation_error(exc.fields)
+        except KeyError:
+            return _json_error(404, "NotFound", "未找到定时任务")
+        except RuntimeError:
+            return _json_error(409, "Conflict", "任务配置已更新，请刷新后重试")
+        except ValueError as exc:
+            return _project_status_validation_error({"request": _sanitize_error_message(exc)})
 
     @app.get("/api/scheduled-archive/runs")
     def api_scheduled_archive_runs():
@@ -1727,7 +2881,7 @@ def create_app(
         if phase_id != "VPI-T2":
             return _json_error(404, "NotFound", "未找到项目阶段")
         try:
-            data = _project_status_payload(db, phase_id)
+            data = current_project_status(phase_id)
             if data is None:
                 return _json_error(404, "NotFound", "未找到项目阶段")
             response = jsonify({"ok": True, "data": data})
@@ -1735,6 +2889,126 @@ def create_app(
             return response
         except Exception as exc:
             logger.exception("api/project-status 查询失败")
+            return _json_error(500, "ServerError", _sanitize_error_message(exc))
+
+    @app.patch("/api/project-status/phases/<phase_id>")
+    def api_project_status_phase_update(phase_id: str):
+        local_error = _local_web_mutation_error()
+        if local_error is not None:
+            return local_error
+        if phase_id != "VPI-T2":
+            return _json_error(404, "NotFound", "未找到项目阶段")
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return _json_error(400, "ValidationError", "JSON object body is required")
+        expected_updated_at = payload.get("updatedAt")
+        if not isinstance(expected_updated_at, str) or not expected_updated_at:
+            return _project_status_validation_error({"updatedAt": "缺少阶段版本"})
+        values, errors = _validate_project_status_phase(payload)
+        if errors:
+            return _project_status_validation_error(errors)
+        try:
+            db.update_project_status_phase(
+                phase_id,
+                values,
+                expected_updated_at,
+            )
+            updated_status = current_project_status(phase_id)
+            assert updated_status is not None
+            response = jsonify({"ok": True, "data": {"projectStatus": updated_status}})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except KeyError:
+            return _json_error(404, "NotFound", "未找到项目阶段")
+        except RuntimeError:
+            return _json_error(409, "Conflict", "主计划已被其他会话更新，请刷新后重试")
+        except Exception as exc:
+            logger.exception("api/project-status/phases 更新失败")
+            return _json_error(500, "ServerError", _sanitize_error_message(exc))
+
+    @app.get("/api/project-status/deliverables/<deliverable_id>/analysis")
+    def api_project_status_deliverable_analysis(deliverable_id: str):
+        try:
+            raw_limit = request.args.get("trendLimit", "8")
+            trend_limit = int(raw_limit)
+            if not 2 <= trend_limit <= 30:
+                raise ValueError("trendLimit must be between 2 and 30")
+            raw_car_type = request.args.get("carType")
+            car_type = None
+            if raw_car_type is not None:
+                car_type = raw_car_type.strip()
+                if len(car_type) > 80:
+                    raise ValueError("carType is too long")
+                if not car_type:
+                    car_type = None
+            data = deliverable_analysis_service.overview(
+                deliverable_id,
+                trend_limit=trend_limit,
+                car_type=car_type,
+            )
+            response = jsonify({"ok": True, "data": data})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except KeyError:
+            return _json_error(404, "NotFound", "未找到交付物")
+        except (TypeError, ValueError) as exc:
+            return _json_error(422, "ValidationError", _sanitize_error_message(exc))
+        except Exception as exc:
+            logger.exception("project status deliverable analysis failed")
+            return _json_error(500, "ServerError", _sanitize_error_message(exc))
+
+    @app.get("/api/project-status/deliverables/<deliverable_id>/analysis/items")
+    def api_project_status_deliverable_analysis_items(deliverable_id: str):
+        try:
+            raw_limit = request.args.get("limit", "200")
+            limit = int(raw_limit)
+            if not 1 <= limit <= 500:
+                raise ValueError("limit must be between 1 and 500")
+            raw_offset = request.args.get("offset", "0")
+            offset = int(raw_offset)
+            if not 0 <= offset <= 100000:
+                raise ValueError("offset must be between 0 and 100000")
+            department = request.args.get("department")
+            if department is not None:
+                department = department.strip()
+                if len(department) > 120:
+                    raise ValueError("department is too long")
+                if not department:
+                    department = None
+            raw_state = request.args.get("state")
+            state = None
+            if raw_state is not None:
+                state = raw_state.strip()
+                if not state or state == "all":
+                    state = None
+                elif state not in {"completed", "incomplete"}:
+                    raise ValueError("unsupported state filter")
+            raw_car_type = request.args.get("carType")
+            car_type = None
+            if raw_car_type is not None:
+                car_type = raw_car_type.strip()
+                if len(car_type) > 80:
+                    raise ValueError("carType is too long")
+                if not car_type:
+                    car_type = None
+            data = deliverable_analysis_service.items(
+                deliverable_id,
+                alert=request.args.get("alert") or None,
+                department=department,
+                state=state,
+                offset=offset,
+                limit=limit,
+                car_type=car_type,
+            )
+            response = jsonify({"ok": True, "data": data})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except KeyError:
+            return _json_error(404, "NotFound", "未找到交付物")
+        except (TypeError, ValueError) as exc:
+            return _json_error(422, "ValidationError", _sanitize_error_message(exc))
+        except Exception as exc:
+            logger.exception("project status deliverable analysis items failed")
             return _json_error(500, "ServerError", _sanitize_error_message(exc))
 
     @app.patch("/api/project-status/deliverables/<deliverable_id>")
@@ -1747,7 +3021,7 @@ def create_app(
             return _json_error(400, "ValidationError", "JSON object body is required")
         phase_id = "VPI-T2"
         try:
-            project_status = _project_status_payload(db, phase_id)
+            project_status = current_project_status(phase_id)
             if project_status is None:
                 return _json_error(404, "NotFound", "未找到项目阶段")
             current = next(
@@ -1769,7 +3043,7 @@ def create_app(
                 expected_updated_at,
             )
 
-            updated_status = _project_status_payload(db, phase_id)
+            updated_status = current_project_status(phase_id)
             assert updated_status is not None
             updated = next(
                 item for item in updated_status["deliverables"] if item["id"] == deliverable_id
@@ -2017,7 +3291,7 @@ def create_app(
         if not isinstance(expected_updated_at, str) or not expected_updated_at:
             return _project_status_validation_error({"updatedAt": "缺少阶段版本"})
         try:
-            project_status = _project_status_payload(db, phase_id)
+            project_status = current_project_status(phase_id)
             if project_status is None:
                 return _json_error(404, "NotFound", "未找到项目阶段")
             milestones, errors = _validate_project_status_milestones(payload, project_status)
@@ -2028,7 +3302,7 @@ def create_app(
                 milestones,
                 expected_updated_at,
             )
-            updated_status = _project_status_payload(db, phase_id)
+            updated_status = current_project_status(phase_id)
             assert updated_status is not None
             return jsonify({"ok": True, "data": {"projectStatus": updated_status}})
         except KeyError:
@@ -2066,14 +3340,20 @@ def create_app(
                 page_size=_positive_int(payload.get("page_size"), 50),
                 max_records=_positive_int(payload.get("max_records"), 2000),
             )
+            table = table_payload("ewo", _safe_rows(result.rows))
             return jsonify(
                 {
                     "ok": True,
                     "data": {
-                        "rows": _safe_rows(result.rows),
+                        **table,
                         "page": result.page,
                         "item_ids": result.item_ids,
                         "count": len(result.rows),
+                        **(
+                            {"xml": _aras_xml_payload(result, payload)}
+                            if _aras_xml_requested(payload)
+                            else {}
+                        ),
                     },
                 }
             )
@@ -2095,14 +3375,20 @@ def create_app(
                 page_size=_positive_int(payload.get("page_size"), 50),
                 max_records=_positive_int(payload.get("max_records"), 2000),
             )
+            table = table_payload("paa", _safe_rows(result.rows))
             return jsonify(
                 {
                     "ok": True,
                     "data": {
-                        "rows": _safe_rows(result.rows),
+                        **table,
                         "page": result.page,
                         "item_ids": result.item_ids,
                         "count": len(result.rows),
+                        **(
+                            {"xml": _aras_xml_payload(result, payload)}
+                            if _aras_xml_requested(payload)
+                            else {}
+                        ),
                     },
                 }
             )
@@ -2124,14 +3410,20 @@ def create_app(
                 max_pages=_positive_int(payload.get("max_pages"), 20),
                 max_records=_positive_int(payload.get("max_records"), 2000),
             )
+            table = table_payload("paa", _safe_rows(result.rows))
             return jsonify(
                 {
                     "ok": True,
                     "data": {
-                        "rows": _safe_rows(result.rows),
+                        **table,
                         "page": result.page,
                         "item_ids": result.item_ids,
                         "count": len(result.rows),
+                        **(
+                            {"xml": _aras_xml_payload(result, payload)}
+                            if _aras_xml_requested(payload)
+                            else {}
+                        ),
                     },
                 }
             )
@@ -2148,12 +3440,14 @@ def create_app(
         try:
             client = _build_aras_client_from_payload(payload, app.config["ARAS_ALLOWED_HOSTS"])
             result = client.query_ncr_approval_progress(_ncr_filters_from_payload(payload))
+            table = _ncr_table_payload(client, result, "ncr_progress", payload)
             return jsonify(
                 {
                     "ok": True,
                     "data": {
                         "file_name": _safe_scalar(result.file_name),
                         "record_id": _safe_scalar(result.record_id),
+                        **table,
                     },
                 }
             )
@@ -2170,7 +3464,16 @@ def create_app(
         try:
             client = _build_aras_client_from_payload(payload, app.config["ARAS_ALLOWED_HOSTS"])
             result = client.extract_ncr_approval_detail(_ncr_filters_from_payload(payload))
-            return jsonify({"ok": True, "data": {"file_name": _safe_scalar(result.file_name)}})
+            table = _ncr_table_payload(client, result, "ncr_detail", payload)
+            return jsonify(
+                {
+                    "ok": True,
+                    "data": {
+                        "file_name": _safe_scalar(result.file_name),
+                        **table,
+                    },
+                }
+            )
         except Exception as e:
             return _aras_error_response(e, client, "NCR detail")
 
@@ -2215,7 +3518,7 @@ def create_app(
                 max_pages=max_pages,
                 max_records=max_records,
             )
-            export = export_ewo_report_csv(page, output_dir=temp_dir)
+            export = export_report_contract_csv("ewo", page.rows, output_dir=temp_dir, file_name="ewo_export.csv")
             return _send_csv_attachment(export.path, page, max_pages, max_records, temp_dir)
         except Exception as e:
             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -2239,12 +3542,7 @@ def create_app(
                 max_pages=max_pages,
                 max_records=max_records,
             )
-            export = export_report_csv(
-                page.rows,
-                output_dir=temp_dir,
-                report_name="paa",
-                preferred_fields=DEFAULT_PAA_SELECT_FIELDS,
-            )
+            export = export_report_contract_csv("paa", page.rows, output_dir=temp_dir, file_name="paa_export.csv")
             return _send_csv_attachment(export.path, page, max_pages, max_records, temp_dir)
         except Exception as e:
             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -2305,6 +3603,22 @@ def create_app(
             app.config["TDC_ALLOWED_HOSTS"],
         )
 
+    @app.post("/api/tdc/sor/car-type-projects")
+    def api_tdc_sor_car_type_projects():
+        payload, error_response = _request_payload()
+        if error_response:
+            return error_response
+        assert payload is not None
+        client: TDCCrawlerClient | None = None
+        try:
+            client = _build_tdc_client_from_payload(payload, app.config["TDC_ALLOWED_HOSTS"])
+            projects = client.list_car_type_projects()
+            return jsonify({"ok": True, "data": {"projects": _tdc_sor_project_options(projects)}})
+        except Exception as exc:
+            return _tdc_error_response(exc, "sor", "car-type-projects")
+        finally:
+            _close_owned_tdc_client(client)
+
     @app.post("/api/tdc/sor/query")
     def api_tdc_sor_query():
         return _tdc_report_query(
@@ -2348,5 +3662,13 @@ def create_app(
 
 
 if __name__ == "__main__":
-    app = create_app()
-    app.run(host=FLASK_HOST, port=FLASK_PORT, debug=False)
+    excel_roots = load_production_excel_roots()
+    app = create_app(excel_roots=excel_roots)
+    raw_port = os.environ.get("VSE_TOOLBOX_PORT", "").strip()
+    try:
+        selected_port = int(raw_port) if raw_port else FLASK_PORT
+    except ValueError:
+        selected_port = FLASK_PORT
+    if not 1 <= selected_port <= 65535:
+        selected_port = FLASK_PORT
+    app.run(host=FLASK_HOST, port=selected_port, debug=False)

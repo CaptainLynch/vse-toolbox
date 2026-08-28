@@ -33,7 +33,7 @@ DEFAULT_DB_PATH = DEFAULT_DB_DIR / "vse_toolbox.db"
 #: 当前支持的 schema 版本。迁移完成后写入 PRAGMA user_version。
 #: 旧库 (< CURRENT_SCHEMA_VERSION) 增量升级；高于此版本的库拒绝降级，
 #: 避免新代码误读未知的较新 schema。
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 10
 
 #: 租约时长安全范围（秒）。默认 900s，由调用方在范围内参数化。
 SYNC_LEASE_MIN_SECONDS = 60
@@ -53,6 +53,8 @@ ARCHIVE_JOB_CONTRACTS: dict[str, tuple[str, str, str | None]] = {
 }
 
 ARCHIVE_CREDENTIAL_UNCHANGED = object()
+ARCHIVE_RETRY_UNCHANGED = object()
+ARCHIVE_OUTPUT_DIRECTORY_UNCHANGED = object()
 
 #: 数据库生成的 UTC 时间戳 SQL 片段。调度、租约和审计统一使用 UTC，
 #: 不使用 simulated_today（后者仅用于业务展示）。
@@ -63,6 +65,24 @@ def _utc_offset_sql(seconds: int) -> str:
     """返回 now + seconds 的 UTC 时间戳 SQL 片段。"""
     sign = "+" if seconds >= 0 else "-"
     return f"strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '{sign}{abs(seconds)} seconds')"
+
+
+def _normalize_archive_retry_policy(value: object) -> dict[str, object]:
+    """Validate the small, task-level archive retry contract."""
+    if not isinstance(value, Mapping):
+        raise ValueError("archive retry policy must be an object")
+    if set(value) - {"max_attempts", "backoff_seconds"}:
+        raise ValueError("archive retry policy contains unsupported fields")
+    attempts = value.get("max_attempts")
+    if isinstance(attempts, bool) or not isinstance(attempts, int) or not 1 <= attempts <= 2:
+        raise ValueError("archive retry max_attempts must be 1 or 2")
+    backoff = value.get("backoff_seconds", 1)
+    if isinstance(backoff, bool) or not isinstance(backoff, (int, float)) or not 0 <= backoff <= 60:
+        raise ValueError("archive retry backoff_seconds must be between 0 and 60")
+    return {
+        "max_attempts": attempts,
+        "backoff_seconds": int(backoff) if isinstance(backoff, int) else float(backoff),
+    }
 
 
 #: 绑定 updated_at 列沿用 localtime 格式，与表默认值及策略写入保持一致，
@@ -190,6 +210,7 @@ TABLE_DEFINITIONS: list[str] = [
     """
     CREATE TABLE IF NOT EXISTS project_status_phases (
         id               TEXT PRIMARY KEY,
+        display_name     TEXT NOT NULL DEFAULT '',
         status           TEXT NOT NULL,
         start_date       TEXT NOT NULL,
         end_date         TEXT NOT NULL,
@@ -215,6 +236,7 @@ TABLE_DEFINITIONS: list[str] = [
     """
     CREATE TABLE IF NOT EXISTS project_status_deliverables (
         id           TEXT PRIMARY KEY,
+        display_code TEXT NOT NULL UNIQUE,
         phase_id     TEXT NOT NULL,
         name         TEXT NOT NULL,
         status       TEXT NOT NULL CHECK (status IN ('已完成', '进行中', '待审批', '已逾期')),
@@ -224,6 +246,9 @@ TABLE_DEFINITIONS: list[str] = [
         progress     INTEGER NOT NULL CHECK (progress BETWEEN 0 AND 100),
         remark       TEXT NOT NULL DEFAULT '',
         source       TEXT NOT NULL,
+        department   TEXT NOT NULL DEFAULT '',
+        stage        TEXT NOT NULL DEFAULT '',
+        update_method TEXT NOT NULL DEFAULT 'manual',
         sort_order   INTEGER NOT NULL,
         updated_at   TEXT NOT NULL,
         FOREIGN KEY (phase_id) REFERENCES project_status_phases(id) ON DELETE CASCADE
@@ -326,6 +351,7 @@ TABLE_DEFINITIONS: list[str] = [
         interval_minutes              INTEGER NOT NULL DEFAULT 60 CHECK (interval_minutes > 0),
         filters_json                  TEXT NOT NULL DEFAULT '{}',
         output_subdir                 TEXT NOT NULL DEFAULT '',
+        output_directory              TEXT NOT NULL DEFAULT '',
         retry_policy_json             TEXT NOT NULL DEFAULT '{"max_attempts":2,"backoff_seconds":1}',
         sync_state                    TEXT NOT NULL DEFAULT 'idle'
                                       CHECK (sync_state IN ('idle', 'running', 'success', 'failed', 'needs_attention')),
@@ -336,6 +362,10 @@ TABLE_DEFINITIONS: list[str] = [
         lease_token                   TEXT,
         lease_acquired_at             TEXT,
         lease_expires_at              TEXT,
+        display_name                  TEXT NOT NULL DEFAULT '',
+        template_key                  TEXT NOT NULL DEFAULT '',
+        builtin                       INTEGER NOT NULL DEFAULT 1 CHECK (builtin IN (0, 1)),
+        archived_at                   TEXT,
         created_at                    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
         updated_at                    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
         UNIQUE (source_type, report_type),
@@ -454,7 +484,61 @@ TABLE_DEFINITIONS: list[str] = [
     CREATE INDEX IF NOT EXISTS idx_ps_audit_deliverable
         ON project_status_update_audit(deliverable_id, created_at);
     """,
-    # Excel 离线任务主表 (Schema v4)
+    # 交付物分析的历史聚合快照。仅保存业务分析所需的计数与科室分布。
+    """
+    CREATE TABLE IF NOT EXISTS project_status_analysis_snapshots (
+        id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+        deliverable_id         TEXT NOT NULL,
+        source_run_id          INTEGER,
+        total_count            INTEGER NOT NULL CHECK (total_count >= 0),
+        completed_count        INTEGER NOT NULL CHECK (completed_count >= 0),
+        incomplete_count       INTEGER NOT NULL CHECK (incomplete_count >= 0),
+        overdue_count          INTEGER NOT NULL CHECK (overdue_count >= 0),
+        due_soon_count         INTEGER NOT NULL CHECK (due_soon_count >= 0),
+        missing_due_date_count INTEGER NOT NULL CHECK (missing_due_date_count >= 0),
+        department_counts_json TEXT NOT NULL DEFAULT '{}',
+        snapshot_at            TEXT NOT NULL,
+        created_at             TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        UNIQUE (deliverable_id, source_run_id),
+        FOREIGN KEY (deliverable_id) REFERENCES project_status_deliverables(id) ON DELETE CASCADE
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS app_settings (
+        setting_key TEXT PRIMARY KEY,
+        value_json  TEXT NOT NULL,
+        updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_ps_analysis_snapshots_deliverable
+        ON project_status_analysis_snapshots(deliverable_id, snapshot_at DESC, id DESC);
+    """,
+    # 最新一次分析使用的规范化任务缓存。旧快照只保留聚合数据，限制数据增长。
+    """
+    CREATE TABLE IF NOT EXISTS project_status_analysis_items (
+        deliverable_id TEXT NOT NULL,
+        item_key       TEXT NOT NULL,
+        display_number TEXT NOT NULL DEFAULT '',
+        title          TEXT NOT NULL,
+        department     TEXT NOT NULL DEFAULT '未归属',
+        owner          TEXT NOT NULL DEFAULT '',
+        pending_signers TEXT NOT NULL DEFAULT '',
+        source_status  TEXT NOT NULL DEFAULT '',
+        is_completed   INTEGER NOT NULL CHECK (is_completed IN (0, 1)),
+        planned_date   TEXT,
+        actual_date    TEXT,
+        source_run_id  INTEGER,
+        updated_at     TEXT NOT NULL,
+        PRIMARY KEY (deliverable_id, item_key),
+        FOREIGN KEY (deliverable_id) REFERENCES project_status_deliverables(id) ON DELETE CASCADE
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_ps_analysis_items_filters
+        ON project_status_analysis_items(deliverable_id, department, is_completed, planned_date);
+    """,
+    # Excel 离线任务主表 (Schema v4; artifact 表在 Schema v5 增加)
     """
     CREATE TABLE IF NOT EXISTS excel_tasks (
         id                   INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -524,6 +608,76 @@ TABLE_DEFINITIONS: list[str] = [
     """
     CREATE INDEX IF NOT EXISTS idx_excel_task_runs_task
         ON excel_task_runs(task_id, id DESC);
+    """,
+    # Excel 任务成功输出 artifact（仅保存受控根与相对路径）
+    """
+    CREATE TABLE IF NOT EXISTS excel_task_artifacts (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id       INTEGER NOT NULL,
+        run_id        INTEGER NOT NULL UNIQUE,
+        artifact_type TEXT    NOT NULL DEFAULT 'output'
+                      CHECK (artifact_type = 'output'),
+        root_id       TEXT    NOT NULL CHECK (length(root_id) BETWEEN 1 AND 128),
+        relative_path TEXT    NOT NULL CHECK (length(relative_path) BETWEEN 1 AND 1024),
+        display_name  TEXT    NOT NULL CHECK (length(display_name) BETWEEN 1 AND 255),
+        size_bytes    INTEGER NOT NULL CHECK (size_bytes >= 0),
+        sha256        TEXT    NOT NULL
+                      CHECK (length(sha256) = 64
+                             AND sha256 = lower(sha256)
+                             AND sha256 NOT GLOB '*[^0-9a-f]*'),
+        created_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        UNIQUE (task_id, relative_path),
+        FOREIGN KEY (task_id) REFERENCES excel_tasks(id) ON DELETE CASCADE,
+        FOREIGN KEY (run_id) REFERENCES excel_task_runs(id) ON DELETE CASCADE
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_excel_task_artifacts_task
+        ON excel_task_artifacts(task_id, id DESC);
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_excel_task_artifact_run_matches_task
+    BEFORE INSERT ON excel_task_artifacts
+    FOR EACH ROW
+    WHEN NOT EXISTS (
+        SELECT 1 FROM excel_task_runs
+        WHERE id = NEW.run_id AND task_id = NEW.task_id
+    )
+    BEGIN
+        SELECT RAISE(ABORT, 'excel artifact run does not belong to task');
+    END;
+    """,
+    # Excel artifact 下载审计记录表 (Schema v6; 仅追加审计记录)
+    """
+    CREATE TABLE IF NOT EXISTS excel_artifact_download_audit (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        artifact_id       INTEGER NOT NULL,
+        task_id           INTEGER NOT NULL,
+        result            TEXT    NOT NULL
+                          CHECK (result IN ('succeeded', 'rejected')),
+        reason_code       TEXT    NOT NULL
+                          CHECK (length(reason_code) BETWEEN 1 AND 64),
+        served_size_bytes INTEGER CHECK (served_size_bytes IS NULL OR served_size_bytes >= 0),
+        created_at        TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        FOREIGN KEY (artifact_id) REFERENCES excel_task_artifacts(id) ON DELETE CASCADE,
+        FOREIGN KEY (task_id) REFERENCES excel_tasks(id) ON DELETE CASCADE
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_excel_artifact_download_audit_artifact
+        ON excel_artifact_download_audit(artifact_id, id DESC);
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_excel_artifact_download_audit_artifact_matches_task
+    BEFORE INSERT ON excel_artifact_download_audit
+    FOR EACH ROW
+    WHEN NOT EXISTS (
+        SELECT 1 FROM excel_task_artifacts
+        WHERE id = NEW.artifact_id AND task_id = NEW.task_id
+    )
+    BEGIN
+        SELECT RAISE(ABORT, 'excel download audit artifact does not belong to task');
+    END;
     """
 ]
 
@@ -647,6 +801,122 @@ class DatabaseManager:
                     f"ADD COLUMN {column} {decl}"
                 )
 
+        phase_columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(project_status_phases)")
+        }
+        if "display_name" not in phase_columns:
+            conn.execute(
+                "ALTER TABLE project_status_phases "
+                "ADD COLUMN display_name TEXT NOT NULL DEFAULT ''"
+            )
+        conn.execute(
+            "UPDATE project_status_phases "
+            "SET display_name = id || ' 主计划时间轴' "
+            "WHERE trim(display_name) = ''"
+        )
+
+        deliverable_columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(project_status_deliverables)")
+        }
+        deliverable_additions = [
+            ("display_code", "TEXT"),
+            ("department", "TEXT NOT NULL DEFAULT ''"),
+            ("stage", "TEXT NOT NULL DEFAULT ''"),
+            ("update_method", "TEXT NOT NULL DEFAULT 'manual'"),
+        ]
+        for column, decl in deliverable_additions:
+            if column not in deliverable_columns:
+                conn.execute(
+                    f"ALTER TABLE project_status_deliverables ADD COLUMN {column} {decl}"
+                )
+        rows = conn.execute(
+            "SELECT id FROM project_status_deliverables "
+            "WHERE display_code IS NULL OR trim(display_code) = '' "
+            "ORDER BY sort_order, id"
+        ).fetchall()
+        used_codes = {
+            str(row["display_code"])
+            for row in conn.execute(
+                "SELECT display_code FROM project_status_deliverables "
+                "WHERE display_code IS NOT NULL AND trim(display_code) <> ''"
+            )
+        }
+        next_number = 1
+        for row in rows:
+            while f"DEL-{next_number:03d}" in used_codes:
+                next_number += 1
+            display_code = f"DEL-{next_number:03d}"
+            conn.execute(
+                "UPDATE project_status_deliverables SET display_code = ? WHERE id = ?",
+                (display_code, row["id"]),
+            )
+            used_codes.add(display_code)
+            next_number += 1
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_ps_deliverables_display_code "
+            "ON project_status_deliverables(display_code)"
+        )
+
+        analysis_item_columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(project_status_analysis_items)")
+        }
+        analysis_item_additions = [
+            ("display_number", "TEXT NOT NULL DEFAULT ''"),
+            ("pending_signers", "TEXT NOT NULL DEFAULT ''"),
+        ]
+        for column, decl in analysis_item_additions:
+            if column not in analysis_item_columns:
+                conn.execute(
+                    f"ALTER TABLE project_status_analysis_items ADD COLUMN {column} {decl}"
+                )
+
+        conn.execute(
+            "UPDATE project_status_milestones SET status = CASE "
+            "WHEN status IN ('done', '已达成') OR type = 'done' THEN '已完成' "
+            "WHEN status IN ('current', '当前目标节点') OR type = 'current' THEN '进行中' "
+            "WHEN status IN ('planned', '计划节点') OR type = 'planned' THEN '未开始' "
+            "ELSE status END"
+        )
+
+        archive_columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(scheduled_archive_jobs)")
+        }
+        archive_additions = [
+            ("output_directory", "TEXT NOT NULL DEFAULT ''"),
+            ("display_name", "TEXT NOT NULL DEFAULT ''"),
+            ("template_key", "TEXT NOT NULL DEFAULT ''"),
+            ("builtin", "INTEGER NOT NULL DEFAULT 1"),
+            ("archived_at", "TEXT"),
+        ]
+        for column, decl in archive_additions:
+            if column not in archive_columns:
+                conn.execute(
+                    f"ALTER TABLE scheduled_archive_jobs ADD COLUMN {column} {decl}"
+                )
+        conn.execute(
+            "UPDATE scheduled_archive_jobs SET template_key = job_key "
+            "WHERE trim(template_key) = ''"
+        )
+        conn.execute(
+            "UPDATE scheduled_archive_jobs SET display_name = CASE job_key "
+            "WHEN 'aras_ewo' THEN 'EWO' WHEN 'aras_paa' THEN 'PAA' "
+            "WHEN 'aras_ncr_progress' THEN 'NCR进度' "
+            "WHEN 'aras_ncr_detail' THEN 'NCR明细' "
+            "WHEN 'tdc_data_model' THEN '数模设计审核报表' "
+            "WHEN 'tdc_sor' THEN 'TDC SOR' ELSE job_key END "
+            "WHERE trim(display_name) = ''"
+        )
+        conn.execute(
+            "UPDATE scheduled_archive_jobs "
+            "SET display_name = '数模设计审核报表' "
+            "WHERE job_key = 'tdc_data_model' AND builtin = 1 "
+            "AND display_name = 'TDC数模'"
+        )
+
         if existing_version < CURRENT_SCHEMA_VERSION:
             conn.execute(f"PRAGMA user_version = {CURRENT_SCHEMA_VERSION}")
 
@@ -657,20 +927,30 @@ class DatabaseManager:
         conn.execute(
             """
             INSERT OR IGNORE INTO project_status_phases
-                (id, status, start_date, end_date, simulated_today,
+                (id, display_name, status, start_date, end_date, simulated_today,
                  overall_progress, planned_progress, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            ("VPI-T2", "进行中", "2026-04-08", "2026-08-30", "2026-08-13", 64, 80, snapshot),
+            (
+                "VPI-T2",
+                "VPI-T2 主计划时间轴",
+                "进行中",
+                "2026-04-08",
+                "2026-08-30",
+                "2026-08-13",
+                64,
+                80,
+                snapshot,
+            ),
         )
 
         milestones = (
-            ("项目启动", "2026-04-08", "已达成", "done"),
-            ("策略冻结", "2026-05-12", "已达成", "done"),
-            ("定点流程发布", "2026-06-18", "已达成", "done"),
-            ("设计冻结", "2026-07-15", "已达成", "done"),
-            ("VDR 决策", "2026-08-15", "当前目标节点", "current"),
-            ("VPI-T2 Gate", "2026-08-30", "计划节点", "planned"),
+            ("项目启动", "2026-04-08", "已完成", "done"),
+            ("策略冻结", "2026-05-12", "已完成", "done"),
+            ("定点流程发布", "2026-06-18", "已完成", "done"),
+            ("设计冻结", "2026-07-15", "已完成", "done"),
+            ("VDR 决策", "2026-08-15", "进行中", "current"),
+            ("VPI-T2 Gate", "2026-08-30", "未开始", "planned"),
         )
         conn.executemany(
             """
@@ -685,16 +965,29 @@ class DatabaseManager:
             ("VPI-T2-D2", "SOR 定点流程", "已完成", "周敏", "2026-06-18", "2026-06-17", 100, "无", "TDC SOR"),
             ("VPI-T2-D3", "EWO 定点流程", "进行中", "李珊", "2026-08-22", None, 72, "按计划推进", "ARAS EWO"),
             ("VPI-T2-D4", "造型 VDR 审批流程", "待审批", "陈璇", "2026-08-15", None, 90, "等待设计总监审批", "TDC A 面（待契约确认）"),
-            ("VPI-T2-D5", "数模审批流程", "已逾期", "赵岩", "2026-08-08", None, 82, "逾期 5 天", "TDC 数模"),
+            ("VPI-T2-D5", "数模设计审核流程报表", "已逾期", "赵岩", "2026-08-08", None, 82, "逾期 5 天", "TDC 数模设计审核流程报表"),
         )
         conn.executemany(
             """
             INSERT OR IGNORE INTO project_status_deliverables
-                (id, phase_id, name, status, owner, planned_date, actual_date,
+                (id, display_code, phase_id, name, status, owner, planned_date, actual_date,
                  progress, remark, source, sort_order, updated_at)
-            VALUES (?, 'VPI-T2', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, 'VPI-T2', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            [(*item, index, snapshot) for index, item in enumerate(deliverables, start=1)],
+            [
+                (item[0], f"DEL-{index:03d}", *item[1:], index, snapshot)
+                for index, item in enumerate(deliverables, start=1)
+            ],
+        )
+        conn.execute(
+            """
+            UPDATE project_status_deliverables
+            SET name = '数模设计审核流程报表',
+                source = 'TDC 数模设计审核流程报表'
+            WHERE id = 'VPI-T2-D5'
+              AND name = '数模审批流程'
+              AND source = 'TDC 数模'
+            """
         )
         for item_id in (item[0] for item in deliverables):
             DatabaseManager._ensure_project_status_policy(conn, str(item_id))
@@ -740,11 +1033,18 @@ class DatabaseManager:
             INSERT OR IGNORE INTO scheduled_archive_jobs
                 (job_key, source_type, report_type,
                  project_status_deliverable_id, enabled, interval_minutes,
-                 retry_policy_json, sync_state)
+                 retry_policy_json, sync_state, display_name, template_key, builtin)
             VALUES (?, ?, ?, ?, 0, 60,
-                    '{"max_attempts":2,"backoff_seconds":1}', 'idle')
+                    '{"max_attempts":2,"backoff_seconds":1}', 'idle',
+                    CASE ?
+                        WHEN 'aras_ewo' THEN 'EWO' WHEN 'aras_paa' THEN 'PAA'
+                        WHEN 'aras_ncr_progress' THEN 'NCR进度'
+                        WHEN 'aras_ncr_detail' THEN 'NCR明细'
+                        WHEN 'tdc_data_model' THEN '数模设计审核报表'
+                        WHEN 'tdc_sor' THEN 'TDC SOR' ELSE ? END,
+                    ?, 1)
             """,
-            jobs,
+            [(*job, job[0], job[0], job[0]) for job in jobs],
         )
 
     def get_project_status(self, phase_id: str) -> tuple[sqlite3.Row | None, list[sqlite3.Row], list[sqlite3.Row]]:
@@ -765,6 +1065,303 @@ class DatabaseManager:
                 (phase_id,),
             ).fetchall()
             return phase, milestones, deliverables
+
+    def create_project_status_deliverable(
+        self,
+        phase_id: str,
+        values: Mapping[str, object],
+    ) -> dict[str, Any]:
+        """Create a deliverable while preserving the internal ID/display-code split."""
+        required = {"id", "name", "status", "owner", "planned_date", "progress", "source"}
+        missing = required - set(values)
+        if missing:
+            raise ValueError(f"missing deliverable fields: {sorted(missing)}")
+        with self.get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            phase = conn.execute(
+                "SELECT 1 FROM project_status_phases WHERE id = ?", (phase_id,)
+            ).fetchone()
+            if phase is None:
+                raise KeyError(phase_id)
+            existing_codes = {
+                str(row["display_code"])
+                for row in conn.execute(
+                    "SELECT display_code FROM project_status_deliverables WHERE display_code IS NOT NULL"
+                )
+            }
+            number = 1
+            while f"DEL-{number:03d}" in existing_codes:
+                number += 1
+            display_code = f"DEL-{number:03d}"
+            sort_order = int(
+                conn.execute(
+                    "SELECT COALESCE(MAX(sort_order), 0) + 1 FROM project_status_deliverables WHERE phase_id = ?",
+                    (phase_id,),
+                ).fetchone()[0]
+            )
+            now = conn.execute(f"SELECT {_LOCAL_NOW_SQL}").fetchone()[0]
+            conn.execute(
+                """
+                INSERT INTO project_status_deliverables (
+                    id, display_code, phase_id, name, status, owner, planned_date,
+                    actual_date, progress, remark, source, department, stage,
+                    update_method, sort_order, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(values["id"]), display_code, phase_id, str(values["name"]),
+                    str(values["status"]), str(values["owner"]), str(values["planned_date"]),
+                    values.get("actual_date"), int(str(values["progress"])),
+                    str(values.get("remark") or ""), str(values["source"]),
+                    str(values.get("department") or ""), str(values.get("stage") or ""),
+                    str(values.get("update_method") or "manual"), sort_order, str(now),
+                ),
+            )
+            self._ensure_project_status_policy(conn, str(values["id"]))
+            row = conn.execute(
+                "SELECT * FROM project_status_deliverables WHERE id = ?", (str(values["id"]),)
+            ).fetchone()
+            assert row is not None
+            return dict(row)
+
+    def get_app_settings(self) -> dict[str, object]:
+        with self.get_connection() as conn:
+            rows = conn.execute("SELECT setting_key, value_json FROM app_settings").fetchall()
+        result: dict[str, object] = {}
+        for row in rows:
+            value = _json_loads_or_none(row["value_json"])
+            if value is not None:
+                result[str(row["setting_key"])] = value
+        return result
+
+    def update_app_settings(self, values: Mapping[str, object]) -> dict[str, object]:
+        with self.get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.executemany(
+                """
+                INSERT INTO app_settings(setting_key, value_json, updated_at)
+                VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                ON CONFLICT(setting_key) DO UPDATE SET
+                    value_json = excluded.value_json,
+                    updated_at = excluded.updated_at
+                """,
+                [(str(key), _json_dumps_local(value)) for key, value in values.items()],
+            )
+        return self.get_app_settings()
+
+    def update_project_status_phase(
+        self,
+        phase_id: str,
+        values: Mapping[str, object],
+        expected_updated_at: str,
+    ) -> str:
+        """Update editable phase metadata using the phase timestamp as an optimistic lock."""
+        columns = {
+            "display_name": "display_name",
+            "status": "status",
+            "start_date": "start_date",
+            "end_date": "end_date",
+        }
+        unknown = set(values) - set(columns)
+        if unknown:
+            raise ValueError(f"unknown project phase field: {sorted(unknown)}")
+        if not values:
+            return expected_updated_at
+        assignments = [f"{columns[key]} = ?" for key in values]
+        with self.get_connection() as conn:
+            existing = conn.execute(
+                "SELECT updated_at FROM project_status_phases WHERE id = ?",
+                (phase_id,),
+            ).fetchone()
+            if existing is None:
+                raise KeyError(phase_id)
+            cursor = conn.execute(
+                f"UPDATE project_status_phases SET {', '.join(assignments)}, "
+                f"updated_at = {_LOCAL_NOW_SQL} "
+                "WHERE id = ? AND updated_at = ?",
+                (*[values[key] for key in values], phase_id, expected_updated_at),
+            )
+            if cursor.rowcount != 1:
+                raise ProjectStatusConcurrentUpdateError("project status phase has changed")
+            row = conn.execute(
+                "SELECT updated_at FROM project_status_phases WHERE id = ?",
+                (phase_id,),
+            ).fetchone()
+            assert row is not None
+            return str(row["updated_at"])
+
+    def replace_project_status_analysis_cache(
+        self,
+        deliverable_id: str,
+        source_run_id: int,
+        snapshot: Mapping[str, object],
+        items: Sequence[Mapping[str, object]],
+        *,
+        retention_snapshots: int = 30,
+    ) -> None:
+        """Atomically publish one aggregate snapshot and replace the latest normalized items."""
+        bounded_retention = max(2, min(int(retention_snapshots), 365))
+        department_counts_json = json.dumps(
+            snapshot.get("department_counts", {}),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        with self.get_connection() as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM project_status_deliverables WHERE id = ?",
+                (deliverable_id,),
+            ).fetchone()
+            if exists is None:
+                raise KeyError(deliverable_id)
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                """
+                INSERT INTO project_status_analysis_snapshots (
+                    deliverable_id, source_run_id, total_count, completed_count,
+                    incomplete_count, overdue_count, due_soon_count,
+                    missing_due_date_count, department_counts_json, snapshot_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(deliverable_id, source_run_id) DO UPDATE SET
+                    total_count = excluded.total_count,
+                    completed_count = excluded.completed_count,
+                    incomplete_count = excluded.incomplete_count,
+                    overdue_count = excluded.overdue_count,
+                    due_soon_count = excluded.due_soon_count,
+                    missing_due_date_count = excluded.missing_due_date_count,
+                    department_counts_json = excluded.department_counts_json,
+                    snapshot_at = excluded.snapshot_at
+                """,
+                (
+                    deliverable_id,
+                    source_run_id,
+                    int(str(snapshot["total_count"])),
+                    int(str(snapshot["completed_count"])),
+                    int(str(snapshot["incomplete_count"])),
+                    int(str(snapshot["overdue_count"])),
+                    int(str(snapshot["due_soon_count"])),
+                    int(str(snapshot["missing_due_date_count"])),
+                    department_counts_json,
+                    str(snapshot["snapshot_at"]),
+                ),
+            )
+            conn.execute(
+                "DELETE FROM project_status_analysis_items WHERE deliverable_id = ?",
+                (deliverable_id,),
+            )
+            conn.executemany(
+                """
+                INSERT INTO project_status_analysis_items (
+                    deliverable_id, item_key, display_number, title, department, owner,
+                    pending_signers, source_status, is_completed, planned_date, actual_date,
+                    source_run_id, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        deliverable_id,
+                        str(item["item_key"]),
+                        str(item.get("display_number") or ""),
+                        str(item["title"]),
+                        str(item["department"]),
+                        str(item["owner"]),
+                        str(item.get("pending_signers") or ""),
+                        str(item["source_status"]),
+                        1 if bool(item["is_completed"]) else 0,
+                        item.get("planned_date"),
+                        item.get("actual_date"),
+                        source_run_id,
+                        str(snapshot["snapshot_at"]),
+                    )
+                    for item in items
+                ],
+            )
+            conn.execute(
+                """
+                DELETE FROM project_status_analysis_snapshots
+                WHERE deliverable_id = ? AND id NOT IN (
+                    SELECT id FROM project_status_analysis_snapshots
+                    WHERE deliverable_id = ?
+                    ORDER BY snapshot_at DESC, id DESC LIMIT ?
+                )
+                """,
+                (deliverable_id, deliverable_id, bounded_retention),
+            )
+
+    def list_project_status_analysis_snapshots(
+        self,
+        deliverable_id: str,
+        limit: int = 8,
+    ) -> list[dict[str, Any]]:
+        bounded = max(1, min(int(limit), 100))
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, deliverable_id, source_run_id, total_count,
+                       completed_count, incomplete_count, overdue_count,
+                       due_soon_count, missing_due_date_count,
+                       department_counts_json, snapshot_at, created_at
+                FROM project_status_analysis_snapshots
+                WHERE deliverable_id = ?
+                ORDER BY snapshot_at DESC, id DESC LIMIT ?
+                """,
+                (deliverable_id, bounded),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def list_project_status_analysis_items(
+        self,
+        deliverable_id: str,
+        *,
+        department: str | None = None,
+        completed: bool | None = None,
+        offset: int = 0,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        bounded_limit = max(1, min(int(limit), 1000))
+        bounded_offset = max(0, int(offset))
+        sql = """
+            SELECT deliverable_id, item_key, title, department, owner,
+                   display_number, pending_signers, source_status, is_completed, planned_date, actual_date,
+                   source_run_id, updated_at
+            FROM project_status_analysis_items
+            WHERE deliverable_id = ?
+        """
+        params: list[object] = [deliverable_id]
+        if department:
+            sql += " AND department = ?"
+            params.append(department)
+        if completed is not None:
+            sql += " AND is_completed = ?"
+            params.append(int(completed))
+        sql += " ORDER BY is_completed ASC, planned_date ASC, title ASC LIMIT ? OFFSET ?"
+        params.extend([bounded_limit, bounded_offset])
+        with self.get_connection() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+            return [dict(row) for row in rows]
+
+    def count_project_status_analysis_items(
+        self,
+        deliverable_id: str,
+        *,
+        department: str | None = None,
+        completed: bool | None = None,
+    ) -> int:
+        sql = """
+            SELECT COUNT(*) AS total
+            FROM project_status_analysis_items
+            WHERE deliverable_id = ?
+        """
+        params: list[object] = [deliverable_id]
+        if department:
+            sql += " AND department = ?"
+            params.append(department)
+        if completed is not None:
+            sql += " AND is_completed = ?"
+            params.append(int(completed))
+        with self.get_connection() as conn:
+            row = conn.execute(sql, tuple(params)).fetchone()
+            return int(row["total"]) if row is not None else 0
 
     def update_project_status_deliverable(
         self,
@@ -2112,15 +2709,18 @@ class DatabaseManager:
         enabled: bool,
         filters: Mapping[str, object],
         output_subdir: str,
+        output_directory: object = ARCHIVE_OUTPUT_DIRECTORY_UNCHANGED,
         expected_updated_at: str,
         actor: str,
         credential_ref: object = ARCHIVE_CREDENTIAL_UNCHANGED,
+        interval_minutes: int = 60,
+        retry_policy: object = ARCHIVE_RETRY_UNCHANGED,
     ) -> dict[str, Any]:
         """Optimistically update one fixed job and append a secret-free audit."""
         from core.archive_store import ArchiveStore
 
-        if job_key not in ARCHIVE_JOB_CONTRACTS:
-            raise KeyError(job_key)
+        if isinstance(interval_minutes, bool) or not 5 <= int(interval_minutes) <= 10080:
+            raise ValueError("archive interval must be between 5 and 10080 minutes")
         if not isinstance(enabled, bool):
             raise TypeError("enabled must be a bool")
         if not isinstance(filters, Mapping) or any(
@@ -2157,12 +2757,15 @@ class DatabaseManager:
             row = conn.execute(
                 """
                 SELECT id, enabled, credential_ref, filters_json,
-                       output_subdir, updated_at, lease_token, lease_expires_at
+                       output_subdir, output_directory, interval_minutes, retry_policy_json, updated_at,
+                       lease_token, lease_expires_at, template_key, archived_at
                 FROM scheduled_archive_jobs WHERE job_key = ?
                 """,
                 (job_key,),
             ).fetchone()
             if row is None:
+                raise KeyError(job_key)
+            if row["archived_at"] is not None or str(row["template_key"]) not in ARCHIVE_JOB_CONTRACTS:
                 raise KeyError(job_key)
             if str(row["updated_at"]) != expected_updated_at:
                 raise RuntimeError("archive job configuration has changed")
@@ -2174,6 +2777,17 @@ class DatabaseManager:
             ):
                 raise ArchiveLeaseBusyError(
                     "archive job configuration cannot change during an active lease"
+                )
+
+            if output_directory is ARCHIVE_OUTPUT_DIRECTORY_UNCHANGED:
+                safe_output_directory = str(row["output_directory"] or "")
+            else:
+                safe_output_directory = ArchiveStore.validate_output_directory(
+                    output_directory
+                )
+            if safe_output_directory and safe_subdir:
+                raise ValueError(
+                    "archive output directory cannot be combined with a legacy output subdirectory"
                 )
 
             current_ref = str(row["credential_ref"] or "").strip()
@@ -2196,6 +2810,21 @@ class DatabaseManager:
                     "enabled archive job requires a credential reference alias"
                 )
 
+            current_retry = _json_loads_or_none(row["retry_policy_json"])
+            if not isinstance(current_retry, dict):
+                raise ValueError("archive retry policy is invalid")
+            if retry_policy is ARCHIVE_RETRY_UNCHANGED:
+                next_retry = current_retry
+                next_retry_json = str(row["retry_policy_json"])
+            else:
+                next_retry = _normalize_archive_retry_policy(retry_policy)
+                next_retry_json = json.dumps(
+                    next_retry,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+
             changed: list[str] = []
             if bool(row["enabled"]) != enabled:
                 changed.append("enabled")
@@ -2205,17 +2834,24 @@ class DatabaseManager:
                 changed.append("filters")
             if str(row["output_subdir"] or "") != safe_subdir:
                 changed.append("outputSubdir")
+            if str(row["output_directory"] or "") != safe_output_directory:
+                changed.append("outputDirectory")
+            if int(row["interval_minutes"]) != int(interval_minutes):
+                changed.append("intervalMinutes")
+            if str(row["retry_policy_json"]) != next_retry_json:
+                changed.append("retryPolicy")
             if changed:
                 cursor = conn.execute(
                     f"""
                     UPDATE scheduled_archive_jobs
                     SET enabled = ?, credential_ref = ?, filters_json = ?,
-                        output_subdir = ?, interval_minutes = 60,
+                        output_subdir = ?, output_directory = ?, interval_minutes = ?, retry_policy_json = ?,
                         sync_state = ?, updated_at = {_UTC_NOW_SQL}
                     WHERE id = ? AND updated_at = ?
                     """,
                     (
                         int(enabled), next_ref, filters_json, safe_subdir,
+                        safe_output_directory, int(interval_minutes), next_retry_json,
                         "needs_attention" if enabled else "idle",
                         int(row["id"]), expected_updated_at,
                     ),
@@ -2266,12 +2902,15 @@ class DatabaseManager:
             rows = conn.execute(sql, params).fetchall()
         return [dict(row) for row in rows]
 
-    def list_archive_jobs(self, enabled_only: bool = False) -> list[dict[str, Any]]:
+    def list_archive_jobs(
+        self, enabled_only: bool = False, include_archived: bool = False
+    ) -> list[dict[str, Any]]:
         """Return archive job configuration without credential aliases or lease tokens."""
         sql = """
-            SELECT id, job_key, source_type, report_type,
+            SELECT id, job_key, source_type, report_type, display_name,
+                   template_key, builtin, archived_at,
                    project_status_deliverable_id, enabled, interval_minutes,
-                   filters_json, output_subdir, retry_policy_json, sync_state,
+                   filters_json, output_subdir, output_directory, retry_policy_json, sync_state,
                    last_attempt_at, last_success_at, last_error_type,
                    last_error_message,
                    CASE WHEN trim(COALESCE(credential_ref, '')) <> ''
@@ -2279,8 +2918,13 @@ class DatabaseManager:
                    created_at, updated_at
             FROM scheduled_archive_jobs
         """
+        conditions = []
         if enabled_only:
-            sql += " WHERE enabled = 1"
+            conditions.append("enabled = 1")
+        if not include_archived:
+            conditions.append("archived_at IS NULL")
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
         sql += " ORDER BY id"
         with self.get_connection() as conn:
             rows = conn.execute(sql).fetchall()
@@ -2290,7 +2934,81 @@ class DatabaseManager:
             item["credential_configured"] = bool(
                 item["credential_configured"]
             )
+            item["builtin"] = bool(item["builtin"])
         return result
+
+    def create_archive_job_from_template(
+        self,
+        template_key: str,
+        *,
+        display_name: str,
+        copy_from_job_key: str | None = None,
+    ) -> dict[str, Any]:
+        contract = ARCHIVE_JOB_CONTRACTS.get(template_key)
+        if contract is None:
+            raise KeyError(template_key)
+        clean_name = str(display_name or "").strip()
+        if not clean_name or len(clean_name) > 100:
+            raise ValueError("archive task display name is invalid")
+        with self.get_connection() as conn:
+            source = None
+            if copy_from_job_key:
+                source = conn.execute(
+                    "SELECT * FROM scheduled_archive_jobs WHERE job_key = ? AND archived_at IS NULL",
+                    (copy_from_job_key,),
+                ).fetchone()
+                if source is None or str(source["template_key"]) != template_key:
+                    raise KeyError(copy_from_job_key)
+            token = secrets.token_hex(5)
+            job_key = f"{template_key}_{token}"
+            source_type, canonical_report_type, deliverable_id = contract
+            cursor = conn.execute(
+                """
+                INSERT INTO scheduled_archive_jobs (
+                    job_key, source_type, report_type, project_status_deliverable_id,
+                    enabled, credential_ref, interval_minutes, filters_json,
+                    output_subdir, output_directory, retry_policy_json, sync_state,
+                    display_name, template_key, builtin
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'idle', ?, ?, 0)
+                """,
+                (
+                    job_key,
+                    source_type,
+                    f"{canonical_report_type}:{token}",
+                    deliverable_id,
+                    int(bool(source["enabled"])) if source else 0,
+                    source["credential_ref"] if source else None,
+                    int(source["interval_minutes"]) if source else 60,
+                    source["filters_json"] if source else "{}",
+                    source["output_subdir"] if source else "",
+                    source["output_directory"] if source else "",
+                    source["retry_policy_json"] if source else '{"max_attempts":2,"backoff_seconds":1}',
+                    clean_name,
+                    template_key,
+                ),
+            )
+            job_id = int(cursor.lastrowid)
+        return next(item for item in self.list_archive_jobs() if int(item["id"]) == job_id)
+
+    def archive_archive_job(self, job_key: str, expected_updated_at: str) -> dict[str, Any]:
+        with self.get_connection() as conn:
+            row = conn.execute(
+                "SELECT id, builtin, updated_at, archived_at FROM scheduled_archive_jobs WHERE job_key = ?",
+                (job_key,),
+            ).fetchone()
+            if row is None or row["archived_at"] is not None:
+                raise KeyError(job_key)
+            cursor = conn.execute(
+                f"UPDATE scheduled_archive_jobs SET enabled = 0, archived_at = {_UTC_NOW_SQL}, "
+                f"updated_at = {_UTC_NOW_SQL} WHERE id = ? AND updated_at = ?",
+                (int(row["id"]), expected_updated_at),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("archive job configuration has changed")
+        archived = next(
+            item for item in self.list_archive_jobs(include_archived=True) if item["job_key"] == job_key
+        )
+        return archived
 
     def get_archive_job_credential_ref(self, job_id: int) -> str:
         """Return one opaque alias for internal execution only."""
@@ -2320,9 +3038,9 @@ class DatabaseManager:
         with self.get_connection() as conn:
             job = conn.execute(
                 """
-                SELECT id, job_key, source_type, report_type,
+                SELECT id, job_key, source_type, report_type, template_key, archived_at,
                        project_status_deliverable_id, enabled, credential_ref,
-                       filters_json, output_subdir, retry_policy_json,
+                       filters_json, output_subdir, output_directory, retry_policy_json,
                        lease_token, lease_expires_at
                 FROM scheduled_archive_jobs WHERE id = ?
                 """,
@@ -2330,13 +3048,14 @@ class DatabaseManager:
             ).fetchone()
             if job is None:
                 raise KeyError(job_id)
-            contract = ARCHIVE_JOB_CONTRACTS.get(str(job["job_key"]))
+            template_key = str(job["template_key"] or job["job_key"])
+            contract = ARCHIVE_JOB_CONTRACTS.get(template_key)
             actual = (
                 str(job["source_type"]),
-                str(job["report_type"]),
+                contract[1] if contract else str(job["report_type"]),
                 job["project_status_deliverable_id"],
             )
-            if contract is None or actual != contract:
+            if contract is None or actual != contract or job["archived_at"] is not None:
                 raise ArchiveJobNotReadyError(
                     "archive job does not match a fixed approved contract"
                 )
@@ -2350,7 +3069,9 @@ class DatabaseManager:
             retry_policy = _json_loads_or_none(job["retry_policy_json"])
             if not isinstance(filters, dict):
                 raise ArchiveJobNotReadyError("archive job filters are invalid")
-            if not isinstance(retry_policy, dict) or retry_policy.get("max_attempts") != 2:
+            try:
+                retry_policy = _normalize_archive_retry_policy(retry_policy)
+            except (TypeError, ValueError):
                 raise ArchiveJobNotReadyError("archive job retry policy is invalid")
 
             now = self._utc_now(conn)
@@ -2395,14 +3116,17 @@ class DatabaseManager:
             ).fetchone()
             return {
                 "job_id": job_id,
-                "job_key": str(job["job_key"]),
+                "job_key": template_key,
+                "task_key": str(job["job_key"]),
                 "source_type": str(job["source_type"]),
-                "report_type": str(job["report_type"]),
+                "report_type": contract[1],
                 "project_status_deliverable_id": job[
                     "project_status_deliverable_id"
                 ],
                 "filters": filters,
                 "output_subdir": str(job["output_subdir"] or ""),
+                "output_directory": str(job["output_directory"] or ""),
+                "retry_policy": retry_policy,
                 "run_id": int(run_id),
                 "lease_token": lease_token,
                 "lease_expires_at": expires["lease_expires_at"],
@@ -2428,6 +3152,52 @@ class DatabaseManager:
             )
             if cursor.rowcount != 1:
                 raise ArchiveLeaseLostError("archive run is not leased")
+
+    def renew_archive_job_lease(
+        self,
+        job_id: int,
+        run_id: int,
+        lease_token: str,
+        lease_seconds: int = SYNC_LEASE_DEFAULT_SECONDS,
+    ) -> str:
+        """Atomically extend an active archive lease owned by one run."""
+        self._validate_lease_duration(lease_seconds)
+        if (
+            not isinstance(job_id, int)
+            or isinstance(job_id, bool)
+            or not isinstance(run_id, int)
+            or isinstance(run_id, bool)
+            or not isinstance(lease_token, str)
+            or not lease_token
+        ):
+            raise ValueError("archive lease identity is invalid")
+        with self.get_connection() as conn:
+            cursor = conn.execute(
+                f"""
+                UPDATE scheduled_archive_jobs
+                SET lease_expires_at = {_utc_offset_sql(lease_seconds)},
+                    updated_at = {_UTC_NOW_SQL}
+                WHERE id = ?
+                  AND lease_token = ?
+                  AND lease_expires_at > {_UTC_NOW_SQL}
+                  AND EXISTS (
+                      SELECT 1
+                      FROM scheduled_archive_runs r
+                      WHERE r.id = ? AND r.job_id = scheduled_archive_jobs.id
+                        AND r.run_state IN ('leased', 'running')
+                  )
+                """,
+                (job_id, lease_token, run_id),
+            )
+            if cursor.rowcount != 1:
+                raise ArchiveLeaseLostError("archive lease expired or token/run mismatch")
+            row = conn.execute(
+                "SELECT lease_expires_at FROM scheduled_archive_jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+            if row is None or not row["lease_expires_at"]:
+                raise ArchiveLeaseLostError("archive lease renewal did not persist")
+            return str(row["lease_expires_at"])
 
     def finalize_archive_run(
         self,

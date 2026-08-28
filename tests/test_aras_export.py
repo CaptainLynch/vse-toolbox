@@ -5,7 +5,12 @@ import csv
 import pytest
 
 from services.aras_crawler import EWOReportPage
-from services.aras_export import CSVExportResult, export_ewo_report_csv, export_report_csv
+from services.aras_export import (
+    CSVExportResult,
+    export_ewo_report_csv,
+    export_report_contract_csv,
+    export_report_csv,
+)
 
 
 def test_export_ewo_csv_is_excel_compatible_bounded_and_credential_safe(tmp_path) -> None:
@@ -54,6 +59,31 @@ def test_export_empty_ewo_csv_still_writes_stable_headers(tmp_path) -> None:
     assert result.row_count == 0
     assert "_no" in result.columns
     assert result.path.read_text(encoding="utf-8-sig").startswith("_affect_3c,")
+
+
+def test_export_report_contract_csv_uses_chinese_headers_and_source_keys(tmp_path) -> None:
+    result = export_report_contract_csv(
+        "ewo",
+        [
+            {
+                "state": "DRAFT1",
+                "_sort_sub_type": "PWO-EWO定点",
+                "created_by_id__keyed_name": "User A",
+                "_rsp_name": "User B",
+                "_rsp_smt": "视觉工程科",
+                "_subject": "Subject",
+                "_no": "EWO-1",
+            }
+        ],
+        output_dir=tmp_path,
+        file_name="contract.csv",
+    )
+
+    assert result.path.name == "contract.csv"
+    with result.path.open(encoding="utf-8-sig", newline="") as stream:
+        rows = list(csv.reader(stream))
+    assert rows[0][:6] == ["EWO编号", "二级WO类别", "起草人", "责任工程师名称", "责任工程师专业科室", "主题"]
+    assert rows[1][:6] == ["EWO-1", "EWO定点", "User A", "User B", "视觉工程科", "Subject"]
 
 
 def test_export_report_csv_preferred_fields_first_then_first_appearance_with_stable_json(tmp_path) -> None:

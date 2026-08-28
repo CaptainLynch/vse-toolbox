@@ -11,11 +11,14 @@ import secrets
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Mapping, Sequence
+from xml.sax.saxutils import escape
+from zipfile import ZipFile
 
 import pytest
 
 from core.archive_store import ArchiveStore
 from core.credential_provider import ResolvedCredential
+from core.report_contracts import report_contracts
 from services.aras_crawler import (
     EWOReportFilters,
     NCRApprovalFilters,
@@ -24,6 +27,8 @@ from services.aras_crawler import (
 from services.scheduled_archive_connectors import (
     ArasArchiveConnector,
     TDCArchiveConnector,
+    _official_workbook_rows,
+    _sanitize_archive_rows,
     create_production_archive_registry,
 )
 from services.scheduled_archive_runner import (
@@ -188,6 +193,68 @@ def make_store(tmp_path: Path) -> ArchiveStore:
     return ArchiveStore({"default": tmp_path}, reserve_bytes=0)
 
 
+def _cell_ref(column: int, row: int) -> str:
+    result = ""
+    while column:
+        column, remainder = divmod(column - 1, 26)
+        result = chr(65 + remainder) + result
+    return f"{result}{row}"
+
+
+def _write_official_data_model_xlsx(path: Path) -> None:
+    headers = report_contracts()["tdc_data_model"]["headerRows"][0]
+    values = ["INC-REAL", "流程", "DOC-REAL"] + [""] * (len(headers) - 3)
+    values[-1] = "已完成"
+    header_cells = "".join(
+        f'<c r="{_cell_ref(index, 1)}" t="inlineStr"><is><t>{escape(str(value))}</t></is></c>'
+        for index, value in enumerate(headers, 1)
+    )
+    value_cells = "".join(
+        f'<c r="{_cell_ref(index, 2)}" t="inlineStr"><is><t>{escape(str(value))}</t></is></c>'
+        for index, value in enumerate(values, 1)
+    )
+    workbook = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>'
+    )
+    relationships = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+        'Target="worksheets/sheet1.xml"/></Relationships>'
+    )
+    sheet = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'
+        f'<row r="1">{header_cells}</row><row r="2">{value_cells}</row>'
+        '</sheetData></worksheet>'
+    )
+    with ZipFile(path, "w") as archive:
+        archive.writestr("xl/workbook.xml", workbook)
+        archive.writestr("xl/_rels/workbook.xml.rels", relationships)
+        archive.writestr("xl/worksheets/sheet1.xml", sheet)
+
+
+def test_official_data_model_workbook_rows_are_used_for_normalization(tmp_path: Path) -> None:
+    path = tmp_path / "official-data-model.xlsx"
+    _write_official_data_model_xlsx(path)
+
+    rows = _official_workbook_rows(path, "data_model")
+
+    assert rows == (
+        {
+            "实例号": "INC-REAL",
+            "流程名": "流程",
+            "流水单号": "DOC-REAL",
+            **{str(header): ("已完成" if index == len(report_contracts()["tdc_data_model"]["headerRows"][0]) - 1 else "")
+               for index, header in enumerate(report_contracts()["tdc_data_model"]["headerRows"][0][3:], 3)},
+        },
+    )
+
+
 def make_context(
     job_key: str,
     *,
@@ -195,12 +262,13 @@ def make_context(
     report_type: str = "data_model",
     filters: Mapping[str, Any] | None = None,
     output_subdir: str = "",
+    output_directory: str = "",
     run_id: int = 1,
 ) -> ArchiveJobContext:
     return ArchiveJobContext(
         job_id=10, job_key=job_key, source_type=source_type,
         report_type=report_type, filters=filters or {},
-        output_subdir=output_subdir, run_id=run_id,
+        output_subdir=output_subdir, output_directory=output_directory, run_id=run_id,
     )
 
 
@@ -245,6 +313,27 @@ def make_harness(
     crawler_factory: Callable[..., Any] = tdc_factory if connector_cls is TDCArchiveConnector else aras_factory
     connector = connector_cls(make_store(tmp_path), auth_factory=auth_factory, crawler_factory=crawler_factory)
     return connector, auths, crawlers
+
+
+def test_normalized_archive_rows_drop_secret_fields_and_redact_nested_values() -> None:
+    rows = _sanitize_archive_rows(
+        [
+            {
+                "incident": "INC-1",
+                "cookie": "sid=secret-cookie",
+                "note": "Authorization: Bearer secret-token",
+                "metadata": {"password": "secret-password", "owner": "Tester"},
+            }
+        ]
+    )
+
+    assert rows == (
+        {
+            "incident": "INC-1",
+            "note": "Authorization: [redacted]",
+            "metadata": {"owner": "Tester"},
+        },
+    )
 
 
 def test_production_registry_approved_job_keys(tmp_path: Path) -> None:
@@ -334,6 +423,28 @@ def test_tdc_connector_collect_success(
     for art in collection.artifacts:
         assert art.relative_path.startswith(f"custom_tdc_subdir/{source_type}/{report_type}/")
         assert (tmp_path / art.relative_path).is_file()
+
+
+def test_tdc_connector_writes_to_task_output_directory(
+    tmp_path: Path,
+) -> None:
+    """An explicit task directory becomes the archive root for all generated artifacts."""
+    connector, _, _ = make_harness(tmp_path, TDCArchiveConnector)
+    selected = tmp_path.parent / f"{tmp_path.name}-selected-archive"
+    selected.mkdir()
+    context = make_context(
+        "tdc_data_model",
+        output_directory=str(selected),
+        run_id=43,
+    )
+    credential, _, _ = random_credential()
+
+    collection = connector.collect(context, credential)
+
+    assert collection.artifacts
+    for artifact in collection.artifacts:
+        assert (selected / artifact.relative_path).is_file()
+        assert not (tmp_path / artifact.relative_path).exists()
 
 
 @pytest.mark.parametrize(

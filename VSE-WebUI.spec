@@ -1,10 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_submodules
 
-hiddenimports = ['pythoncom', 'pywintypes', 'win32timezone', 'win32com.client', 'win32com.client.gencache', 'requests', 'imapclient', 'pytz', 'flask']
+hiddenimports = ['requests', 'imapclient', 'pytz', 'flask', 'tkinter', 'tkinter.filedialog']
+# WinHTTP via COM (WinHttp.WinHttpRequest.5.1) is the WebUI's HTTP transport for
+# Aras/TDC auth on win32; pythoncom + pywintypes + win32com.client are imported
+# lazily inside services/windows_http.py and services/aras_auth.py, so PyInstaller
+# static analysis cannot see them. xlwings (Excel automation) stays excluded.
+hiddenimports += ['pythoncom', 'pywintypes', 'win32crypt', 'win32timezone', 'win32com.client', 'win32com.client.gencache']
 hiddenimports += collect_submodules('rich')
-hiddenimports += collect_submodules('win32com')
-hiddenimports += collect_submodules('xlwings')
 hiddenimports += collect_submodules('selenium')
 hiddenimports += collect_submodules('flask')
 
@@ -13,12 +16,16 @@ a = Analysis(
     ['web\\app.py'],
     pathex=[],
     binaries=[],
-    datas=[('web/templates', 'web/templates'), ('web/static', 'web/static')],
+    datas=[
+        ('web/templates', 'web/templates'),
+        ('web/static', 'web/static'),
+        ('core/report_headers.json', 'core'),
+    ],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['xlwings'],
     noarchive=False,
     optimize=0,
 )

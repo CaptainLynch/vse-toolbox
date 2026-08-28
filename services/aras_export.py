@@ -10,9 +10,10 @@ import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Mapping, Sequence, cast
 
 from core.config import OUTPUT_DIR
+from core.report_contracts import table_payload
 from core.redaction import redact_sensitive_text
 from services.aras_crawler import DEFAULT_EWO_SELECT_FIELDS, EWOReportPage
 
@@ -93,6 +94,25 @@ def export_ewo_report_csv(
     return EWOExportResult(path=result.path, row_count=result.row_count, columns=result.fieldnames)
 
 
+def export_report_contract_csv(
+    report_type: str,
+    rows: Sequence[Mapping[str, object]],
+    *,
+    output_dir: Path | None = None,
+    file_name: str | None = None,
+) -> CSVExportResult:
+    """Write a Chinese workbook-contract CSV using explicit source-key mapping."""
+    table = table_payload(report_type, rows)
+    table_columns = cast(list[dict[str, object]], table["columns"])
+    table_rows = cast(list[list[object]], table["rows"])
+    columns = tuple(str(column["label"]) for column in table_columns)
+    destination = Path(output_dir or OUTPUT_DIR)
+    destination.mkdir(parents=True, exist_ok=True)
+    path = destination / _safe_csv_name(file_name or f"{report_type}_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+    _write_table_csv_atomically(path, columns, table_rows)
+    return CSVExportResult(path=path, row_count=len(table_rows), fieldnames=columns)
+
+
 def _select_columns(
     rows: Sequence[Mapping[str, object]],
     preferred_columns: Sequence[str] | None,
@@ -126,6 +146,28 @@ def _write_csv_atomically(
             writer.writerow(columns)
             for row in rows:
                 writer.writerow(_safe_csv_value(row.get(column)) for column in columns)
+        _verify_csv(temp_path, columns)
+        os.replace(temp_path, path)
+    except BaseException:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+        raise
+
+
+def _write_table_csv_atomically(
+    path: Path,
+    columns: Sequence[str],
+    rows: Sequence[Sequence[object]],
+) -> None:
+    temp_path: Path | None = None
+    try:
+        fd, temp_name = tempfile.mkstemp(dir=str(path.parent), prefix=".export_", suffix=".tmp")
+        temp_path = Path(temp_name)
+        with os.fdopen(fd, "w", encoding="utf-8-sig", newline="") as stream:
+            writer = csv.writer(stream, lineterminator="\n")
+            writer.writerow(columns)
+            for row in rows:
+                writer.writerow(_safe_csv_value(value) for value in row)
         _verify_csv(temp_path, columns)
         os.replace(temp_path, path)
     except BaseException:
@@ -195,4 +237,10 @@ def _is_sensitive_column(name: str) -> bool:
     return normalized in _SENSITIVE_COLUMNS or bool(set(normalized.split("_")) & sensitive_parts)
 
 
-__all__ = ["CSVExportResult", "EWOExportResult", "export_report_csv", "export_ewo_report_csv"]
+__all__ = [
+    "CSVExportResult",
+    "EWOExportResult",
+    "export_report_contract_csv",
+    "export_report_csv",
+    "export_ewo_report_csv",
+]

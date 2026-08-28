@@ -179,6 +179,12 @@ def resolve_profile(
     ).strip().lower()
     if requested == "agy-heavy" and risk == "high":
         return "codex-controlled", requested, "High-risk task forced to codex-controlled profile"
+    if requested == "agy-heavy" and risk == "medium":
+        return (
+            "codex-controlled",
+            requested,
+            "Unclassified or medium-risk task forced to codex-controlled profile",
+        )
     if requested == "agy-heavy" and review_policy == "codex-required":
         return "codex-controlled", requested, "Review policy codex-required forced to codex-controlled profile"
     return requested, requested, None

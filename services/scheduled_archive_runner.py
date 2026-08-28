@@ -8,6 +8,8 @@ entry point; no permanent scheduler is hosted in Flask.
 from __future__ import annotations
 
 import time
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable, Mapping, Protocol
@@ -110,6 +112,7 @@ class ArchiveJobContext:
     filters: Mapping[str, object]
     output_subdir: str
     run_id: int
+    output_directory: str = ""
 
 
 @dataclass(frozen=True)
@@ -257,13 +260,20 @@ class ArchiveSyncRunner:
                 filters=dict(_required_mapping(lease, "filters")),
                 output_subdir=str(lease["output_subdir"]),
                 run_id=run_id,
+                output_directory=str(lease.get("output_directory") or ""),
             )
             credential_ref = self._db.get_archive_job_credential_ref(job_id)
-            collection = self._collect_with_retry(
-                connector,
-                context,
-                credential_ref,
-            )
+            retry_policy = _required_mapping(lease, "retry_policy")
+            retry_attempts = _required_int(retry_policy, "max_attempts")
+            retry_backoff = retry_policy.get("backoff_seconds", self._backoff_seconds)
+            with self._lease_heartbeat(job_id, run_id, lease_token):
+                collection = self._collect_with_retry(
+                    connector,
+                    context,
+                    credential_ref,
+                    max_attempts=retry_attempts,
+                    backoff_seconds=retry_backoff,
+                )
             self._db.finalize_archive_run(
                 job_id,
                 run_id,
@@ -372,18 +382,70 @@ class ArchiveSyncRunner:
         connector: ArchiveConnector,
         context: ArchiveJobContext,
         credential_ref: str,
+        *,
+        max_attempts: int | None = None,
+        backoff_seconds: float | None = None,
     ) -> ArchiveCollection:
-        for attempt in range(1, self._max_attempts + 1):
+        attempts = self._max_attempts if max_attempts is None else max_attempts
+        backoff = self._backoff_seconds if backoff_seconds is None else backoff_seconds
+        if isinstance(attempts, bool) or not isinstance(attempts, int) or not 1 <= attempts <= 2:
+            raise ValueError("max_attempts must be between 1 and 2")
+        if isinstance(backoff, bool) or not isinstance(backoff, (int, float)) or backoff < 0:
+            raise ValueError("backoff_seconds must be non-negative")
+        for attempt in range(1, attempts + 1):
             try:
                 with self._credentials.resolve(credential_ref) as credential:
                     return connector.collect(context, credential)
             except _TRANSIENT_ERRORS:
-                if attempt >= self._max_attempts:
+                if attempt >= attempts:
                     raise
                 self._sleeper(
-                    self._backoff_seconds * (2 ** (attempt - 1))
+                    float(backoff) * (2 ** (attempt - 1))
                 )
         raise AssertionError("unreachable")
+
+    @contextmanager
+    def _lease_heartbeat(
+        self,
+        job_id: int,
+        run_id: int,
+        lease_token: str,
+    ):
+        """Keep a long-running external collection from outliving its lease."""
+        stop_event = threading.Event()
+        lease_lost = threading.Event()
+        interval = max(1.0, float(self._lease_seconds) / 3.0)
+
+        def beat() -> None:
+            while not stop_event.wait(interval):
+                try:
+                    self._db.renew_archive_job_lease(
+                        job_id,
+                        run_id,
+                        lease_token,
+                        lease_seconds=self._lease_seconds,
+                    )
+                except ArchiveLeaseLostError:
+                    lease_lost.set()
+                    return
+                except Exception:
+                    # The final lease check remains authoritative. A transient
+                    # database failure must not interrupt the external request.
+                    continue
+
+        thread = threading.Thread(
+            target=beat,
+            name=f"archive-lease-{run_id}",
+            daemon=True,
+        )
+        thread.start()
+        try:
+            yield
+        finally:
+            stop_event.set()
+            thread.join(timeout=min(interval + 1.0, 10.0))
+        if lease_lost.is_set():
+            raise ArchiveLeaseLostError("archive job lease was lost")
 
     def _finalize_attention(
         self,
@@ -509,13 +571,23 @@ def create_production_archive_runner(
     db: DatabaseManager,
 ) -> ArchiveSyncRunner:
     """Construct the one-shot production runner with the fixed registry."""
-    from core.credential_provider import WindowsCredentialManagerProvider
+    from core.archive_store import ArchiveStore
+    from core.domain_identity import DPAPICredentialProvider, WindowsDPAPICredentialVault
+    from core.runtime_paths import app_root
     from services.scheduled_archive_connectors import (
         create_production_archive_registry,
     )
 
+    configured_root = db.get_app_settings().get("archiveDirectory")
+    archive = (
+        ArchiveStore({"default": configured_root.strip()})
+        if isinstance(configured_root, str) and configured_root.strip()
+        else ArchiveStore()
+    )
     return ArchiveSyncRunner(
         db,
-        WindowsCredentialManagerProvider(),
-        create_production_archive_registry(),
+        DPAPICredentialProvider(
+            WindowsDPAPICredentialVault(app_root() / "data" / "domain-credential.dpapi")
+        ),
+        create_production_archive_registry(archive),
     )

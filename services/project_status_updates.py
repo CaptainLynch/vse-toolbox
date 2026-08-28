@@ -86,6 +86,7 @@ class ConnectorSnapshot:
     fetched_at: str
     expected_deliverable_updated_at: str
     artifacts: Sequence[Mapping[str, Any]] = ()
+    analysis_rows: Sequence[Mapping[str, Any]] = field(default=(), repr=False)
 
 
 @dataclass(frozen=True)

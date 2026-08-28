@@ -15,6 +15,7 @@ from services.tdc_crawler import (
     TDCDataModelFilters,
     TDCSORFilters,
 )
+from services.windows_http import WinHTTPTimeoutError
 
 
 class FakeResponse:
@@ -137,6 +138,16 @@ def test_sor_filter_mapping_project_pair_and_validation() -> None:
         TDCSORFilters(approval_status="bad\nvalue").to_params()
 
 
+def test_sor_filter_mapping_uses_project_id_for_selected_project_array() -> None:
+    params = TDCSORFilters(
+        car_type_project="E262S",
+        car_type_project_id="project-id-1",
+    ).to_params()
+
+    assert params["carTypeProject"] == "E262S"
+    assert params["carTypeProjectAll[0]"] == "project-id-1"
+
+
 def test_query_page_contract_headers_and_diagnostic_summary() -> None:
     events = []
     session = FakeSession(
@@ -168,7 +179,7 @@ def test_query_page_contract_headers_and_diagnostic_summary() -> None:
     assert result.page == 2
     assert result.total == 51
     assert result.pages == 3
-    assert result.record_granularity == "workflow"
+    assert result.record_granularity == "part_detail"
     event = events[0]
     assert event.request_id
     assert event.path == DATA_MODEL_LIST_PATH
@@ -202,6 +213,33 @@ def test_full_crawl_deduplicates_and_records_stop_reason() -> None:
     assert pagination[-1].unique_count == 3
     assert pagination[-1].duplicate_count == 1
     assert pagination[-1].stop_reason == "reported_pages"
+
+
+def test_data_model_crawl_keeps_part_rows_with_the_same_workflow() -> None:
+    page_one = [
+        {"formId": "FORM-1", "incident": "INC-1", "documentNo": "DOC-1", "partNumber": "P-1", "modelNumber": "M-1", "partName": "左件"},
+        {"formId": "FORM-1", "incident": "INC-1", "documentNo": "DOC-1", "partNumber": "P-2", "modelNumber": "M-2", "partName": "右件"},
+    ]
+    page_two = [
+        {"formId": "FORM-1", "incident": "INC-1", "documentNo": "DOC-1", "partNumber": "P-2", "modelNumber": "M-2", "partName": "右件"},
+        {"formId": "FORM-1", "incident": "INC-1", "documentNo": "DOC-1", "partNumber": "P-3", "modelNumber": "M-3", "partName": "第三件"},
+    ]
+    client = TDCCrawlerClient(
+        "https://tdc.example",
+        session=FakeSession(
+            [
+                FakeResponse(page_payload(page_one, current=1, total=4, pages=2)),
+                FakeResponse(page_payload(page_two, current=2, total=4, pages=2)),
+            ]
+        ),
+    )
+
+    result = client.crawl_data_model_all(page_size=2, max_pages=2, max_records=10)
+
+    assert [row["partNumber"] for row in result.rows] == ["P-1", "P-2", "P-3"]
+    assert result.unique_count == 3
+    assert result.duplicate_count == 1
+    assert result.record_granularity == "part_detail"
 
 
 def test_full_crawl_page_and_record_fuses() -> None:
@@ -279,6 +317,77 @@ def test_invalid_json_and_content_type_are_rejected() -> None:
         TDCCrawlerClient("https://tdc.example", session=wrong_type).query_sor_page()
 
 
+def test_xlsx_export_json_error_surfaces_sanitized_api_reason() -> None:
+    events = []
+    response = FakeResponse(
+        {"code": 401, "msg": "session expired Cookie: sid=secret-cookie"},
+        headers={"Content-Type": "application/json; charset=utf-8"},
+        text='{"code":401,"msg":"session expired Cookie: sid=secret-cookie"}',
+    )
+
+    with pytest.raises(TDCCrawlerError) as excinfo:
+        TDCCrawlerClient(
+            "https://tdc.example",
+            session=FakeSession([response]),
+            diagnostic_hook=events.append,
+        ).export_data_model(TDCDataModelFilters(project_model="F610M"))
+
+    error = excinfo.value
+    assert error.stage == "api-validation"
+    assert error.status_code == 200
+    assert str(error).startswith("TDC export API error code 401: session expired Cookie: [redacted]")
+    assert "secret-cookie" not in str(error)
+    assert events[0].validation == "api-error"
+    assert events[0].reason == "session expired Cookie: [redacted]"
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        FakeResponse(
+            {"code": 200},
+            headers={"Content-Type": "application/json"},
+            text='{"code":200}',
+        ),
+        FakeResponse(
+            ValueError("invalid JSON"),
+            headers={"Content-Type": "application/json"},
+            text="not-json",
+        ),
+    ],
+)
+def test_xlsx_export_json_without_api_error_is_still_rejected(response: FakeResponse) -> None:
+    events = []
+    with pytest.raises(TDCCrawlerError, match="returned JSON instead of an XLSX file") as excinfo:
+        TDCCrawlerClient(
+            "https://tdc.example",
+            session=FakeSession([response]),
+            diagnostic_hook=events.append,
+        ).export_data_model(TDCDataModelFilters(project_model="F610M"))
+
+    assert excinfo.value.stage == "export-validation"
+    assert events[0].validation == "rejected-json-response"
+
+
+def test_xlsx_export_uses_long_receive_timeout_for_slow_official_generation() -> None:
+    class TimeoutSession(FakeSession):
+        def get(self, url: str, **kwargs):  # type: ignore[no-untyped-def]
+            self.calls.append({"method": "GET", "url": url, **kwargs})
+            raise WinHTTPTimeoutError("WinHTTP request timed out")
+
+    events = []
+    session = TimeoutSession([])
+    with pytest.raises(TDCCrawlerError, match="WinHTTPTimeoutError"):
+        TDCCrawlerClient(
+            "https://tdc.example",
+            session=session,
+            diagnostic_hook=events.append,
+        ).export_data_model(TDCDataModelFilters(project_model="F610M"))
+
+    assert session.calls[0]["timeout"] == (30.0, 120.0)
+    assert events[0].timeout == (30.0, 120.0)
+
+
 def test_xlsx_exports_validate_signature_sanitize_name_and_mark_granularity(tmp_path: Path) -> None:
     xlsx = b"PK\x03\x04fictional-minimal-xlsx"
     data_session = FakeSession(
@@ -297,12 +406,13 @@ def test_xlsx_exports_validate_signature_sanitize_name_and_mark_granularity(tmp_
         TDCDataModelFilters(project_model="P100"), file_name="../bad:name?.xlsx"
     )
     assert data_session.calls[0]["url"] == "https://tdc.example" + DATA_MODEL_EXPORT_PATH
+    assert data_session.calls[0]["headers"]["Accept"] == "application/json, text/plain, */*"  # type: ignore[index]
     assert data_session.calls[0]["params"]["pagePath"] == "https://tdc.example/tpc/dataAdmin/dataModelDesign/index"  # type: ignore[index]
     assert result.file_name == "bad_name_.xlsx"
     assert result.path == (tmp_path / "bad_name_.xlsx").resolve()
     assert result.path.read_bytes() == xlsx
     assert result.signature_valid is True
-    assert result.record_granularity == "workflow"
+    assert result.record_granularity == "part_detail"
 
     sor_session = FakeSession(
         [

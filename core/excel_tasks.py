@@ -91,6 +91,29 @@ class ExcelTaskFileRef:
         }
 
 
+@dataclass(frozen=True)
+class ExcelTaskArtifactMetadata:
+    """Immutable metadata for one committed Excel output artifact."""
+
+    output_ref: ExcelTaskFileRef
+    size_bytes: int
+    sha256: str
+
+    def __post_init__(self) -> None:
+        if self.output_ref.role != "output":
+            raise ValueError("artifact output_ref must use the output role")
+        if (
+            not isinstance(self.size_bytes, int)
+            or isinstance(self.size_bytes, bool)
+            or self.size_bytes < 0
+        ):
+            raise ValueError("artifact size_bytes must be a non-negative integer")
+        digest = str(self.sha256).lower()
+        if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise ValueError("artifact sha256 must be a 64-character hexadecimal digest")
+        object.__setattr__(self, "sha256", digest)
+
+
 # ── ApprovedExcelRoots ─────────────────────────────────────────
 class ApprovedExcelRoots:
     """
@@ -264,6 +287,77 @@ class ApprovedExcelRoots:
         return target
 
 
+def parse_excel_roots_json(raw_json: str | None) -> dict[str, Path] | None:
+    """
+    Parse and strictly validate the VSE_EXCEL_ROOTS_JSON environment variable value.
+
+    Rules:
+      - None, empty, or whitespace-only returns None (unconfigured).
+      - Must be valid JSON mapping root_id strings to absolute directory paths.
+      - Non-object, non-string, empty ID/path, or non-absolute paths are rejected.
+      - Maximum 16 roots allowed.
+      - Never logs or exposes raw configuration values in error messages.
+    """
+    if raw_json is None:
+        return None
+    if not isinstance(raw_json, str):
+        raise ExcelPathSafetyError("VSE_EXCEL_ROOTS_JSON must be a string or None")
+    stripped = raw_json.strip()
+    if not stripped:
+        return None
+
+    try:
+        data = json.loads(stripped)
+    except Exception:
+        raise ExcelPathSafetyError("VSE_EXCEL_ROOTS_JSON must be valid JSON") from None
+
+    if not isinstance(data, dict) or isinstance(data, (list, bool, int, float, str)):
+        raise ExcelPathSafetyError(
+            "VSE_EXCEL_ROOTS_JSON must be a JSON object mapping root IDs to absolute paths"
+        )
+
+    if len(data) == 0:
+        return None
+    if len(data) > 16:
+        raise ExcelPathSafetyError("VSE_EXCEL_ROOTS_JSON exceeds maximum allowed roots (16)")
+
+    roots_dict: dict[str, Path] = {}
+    for raw_id, raw_path in data.items():
+        if not isinstance(raw_id, str) or not raw_id.strip():
+            raise ExcelPathSafetyError("root ID in VSE_EXCEL_ROOTS_JSON must be a non-empty string")
+        try:
+            canonical_id = ApprovedExcelRoots.canonicalize_root_id(raw_id)
+        except Exception:
+            raise ExcelPathSafetyError("invalid root ID in VSE_EXCEL_ROOTS_JSON") from None
+
+        if canonical_id in roots_dict:
+            raise ExcelPathSafetyError(f"duplicate canonical root ID in VSE_EXCEL_ROOTS_JSON: {canonical_id!r}")
+
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            raise ExcelPathSafetyError("root path in VSE_EXCEL_ROOTS_JSON must be a non-empty string")
+        p_val = Path(raw_path.strip())
+        if not p_val.is_absolute():
+            raise ExcelPathSafetyError("root path in VSE_EXCEL_ROOTS_JSON must be an absolute path")
+
+        roots_dict[canonical_id] = p_val
+
+    return roots_dict
+
+
+def load_production_excel_roots(
+    env: Mapping[str, str] | None = None,
+) -> dict[str, Path] | None:
+    """
+    Load production approved Excel roots from the environment without logging raw values.
+    """
+    import os
+    from core.config import VSE_EXCEL_ROOTS_ENV_VAR
+
+    source_env = os.environ if env is None else env
+    raw = source_env.get(VSE_EXCEL_ROOTS_ENV_VAR)
+    return parse_excel_roots_json(raw)
+
+
 # ── 请求校验与指纹 ──────────────────────────────────────────
 def validate_task_request(
     operation: str,
@@ -361,6 +455,11 @@ class ExcelTaskRepository:
         self._db = db_manager
         self._roots = roots
 
+    @property
+    def roots(self) -> ApprovedExcelRoots:
+        """Approved roots used to revalidate task file references at execution time."""
+        return self._roots
+
     def _begin_immediate(self, conn: sqlite3.Connection) -> None:
         """执行 BEGIN IMMEDIATE 获取 SQLite 写锁（作为并发控制与测试同步接缝）。"""
         conn.execute("BEGIN IMMEDIATE")
@@ -448,7 +547,9 @@ class ExcelTaskRepository:
                     """,
                     (operation, key_hash, fingerprint, options_json, max_attempts),
                 )
-                task_id = cursor.lastrowid
+                if cursor.lastrowid is None:
+                    raise RuntimeError("Excel task insert did not return an id")
+                task_id = int(cursor.lastrowid)
 
                 for ref in canonical_refs:
                     conn.execute(
@@ -856,61 +957,140 @@ class ExcelTaskRepository:
         safe_error_msg = redact_sensitive_text(error_message, limit=1000) if error_message else None
 
         with self._db.get_connection() as conn:
-            # 1. CAS 完成 task（终态只允许从 running 进入）
-            task_cursor = conn.execute(
-                """
-                UPDATE excel_tasks
-                SET status = ?,
-                    error_type = ?,
-                    error_message = ?,
-                    lease_token = NULL,
-                    lease_acquired_at = NULL,
-                    lease_expires_at = NULL,
-                    finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-                WHERE id = ?
-                  AND status = 'running'
-                  AND lease_token = ?
-                  AND lease_expires_at IS NOT NULL
-                  AND lease_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-                """,
-                (status, safe_error_type, safe_error_msg, task_id, lease_token),
-            )
-            if task_cursor.rowcount != 1:
-                task = conn.execute(
-                    "SELECT id, status, lease_token, lease_expires_at FROM excel_tasks WHERE id = ?",
-                    (task_id,),
-                ).fetchone()
-                if task is None:
-                    raise ExcelLeaseLostError(f"task {task_id} not found")
-                if task["status"] != "running":
-                    raise ExcelInvalidStateError(f"task {task_id} is in invalid state: {task['status']!r}")
-                if task["lease_token"] != lease_token:
-                    raise ExcelLeaseLostError("lease token mismatch")
-                raise ExcelLeaseLostError("lease expired")
+            try:
+                self._finish_rows(
+                    conn,
+                    task_id,
+                    run_id,
+                    lease_token,
+                    status,
+                    safe_error_type,
+                    safe_error_msg,
+                )
+            except BaseException:
+                conn.rollback()
+                raise
 
-            # 2. CAS 完成 run（终态只允许从 running 进入）
-            run_cursor = conn.execute(
-                """
-                UPDATE excel_task_runs
-                SET run_state = ?,
-                    error_type = ?,
-                    error_message = ?,
-                    finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-                WHERE id = ?
-                  AND task_id = ?
-                  AND run_state = 'running'
-                """,
-                (status, safe_error_type, safe_error_msg, run_id, task_id),
-            )
-            if run_cursor.rowcount != 1:
-                run = conn.execute(
-                    "SELECT id, run_state FROM excel_task_runs WHERE id = ? AND task_id = ?",
-                    (run_id, task_id),
-                ).fetchone()
-                if run is None:
-                    raise ExcelLeaseLostError(f"run {run_id} for task {task_id} not found")
-                raise ExcelInvalidStateError(f"run {run_id} is in invalid state: {run['run_state']!r}")
+    @staticmethod
+    def _finish_rows(
+        conn: sqlite3.Connection,
+        task_id: int,
+        run_id: int,
+        lease_token: str,
+        status: str,
+        error_type: str | None,
+        error_message: str | None,
+    ) -> None:
+        """Apply lease-guarded task/run terminal state updates on one transaction."""
+        # 1. CAS 完成 task（终态只允许从 running 进入）
+        task_cursor = conn.execute(
+            """
+            UPDATE excel_tasks
+            SET status = ?,
+                error_type = ?,
+                error_message = ?,
+                lease_token = NULL,
+                lease_acquired_at = NULL,
+                lease_expires_at = NULL,
+                finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            WHERE id = ?
+              AND status = 'running'
+              AND lease_token = ?
+              AND lease_expires_at IS NOT NULL
+              AND lease_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            """,
+            (status, error_type, error_message, task_id, lease_token),
+        )
+        if task_cursor.rowcount != 1:
+            task = conn.execute(
+                "SELECT id, status, lease_token, lease_expires_at FROM excel_tasks WHERE id = ?",
+                (task_id,),
+            ).fetchone()
+            if task is None:
+                raise ExcelLeaseLostError(f"task {task_id} not found")
+            if task["status"] != "running":
+                raise ExcelInvalidStateError(f"task {task_id} is in invalid state: {task['status']!r}")
+            if task["lease_token"] != lease_token:
+                raise ExcelLeaseLostError("lease token mismatch")
+            raise ExcelLeaseLostError("lease expired")
+
+        # 2. CAS 完成 run（终态只允许从 running 进入）
+        run_cursor = conn.execute(
+            """
+            UPDATE excel_task_runs
+            SET run_state = ?,
+                error_type = ?,
+                error_message = ?,
+                finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            WHERE id = ?
+              AND task_id = ?
+              AND run_state = 'running'
+            """,
+            (status, error_type, error_message, run_id, task_id),
+        )
+        if run_cursor.rowcount != 1:
+            run = conn.execute(
+                "SELECT id, run_state FROM excel_task_runs WHERE id = ? AND task_id = ?",
+                (run_id, task_id),
+            ).fetchone()
+            if run is None:
+                raise ExcelLeaseLostError(f"run {run_id} for task {task_id} not found")
+            raise ExcelInvalidStateError(f"run {run_id} is in invalid state: {run['run_state']!r}")
+
+    def finish_success_with_artifact(
+        self,
+        task_id: int,
+        run_id: int,
+        lease_token: str,
+        artifact: ExcelTaskArtifactMetadata,
+    ) -> dict[str, Any]:
+        """Atomically record the output artifact and finalize its task/run."""
+        if not isinstance(artifact, ExcelTaskArtifactMetadata):
+            raise TypeError("artifact must be ExcelTaskArtifactMetadata")
+        output_ref = artifact.output_ref
+        display_name = Path(output_ref.relative_path).name
+
+        with self._db.get_connection() as conn:
+            self._begin_immediate(conn)
+            try:
+                self._finish_rows(
+                    conn,
+                    task_id,
+                    run_id,
+                    lease_token,
+                    "succeeded",
+                    None,
+                    None,
+                )
+                cursor = conn.execute(
+                    """
+                    INSERT INTO excel_task_artifacts (
+                        task_id, run_id, artifact_type, root_id, relative_path,
+                        display_name, size_bytes, sha256, created_at
+                    ) VALUES (?, ?, 'output', ?, ?, ?, ?, ?,
+                              strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                    """,
+                    (
+                        task_id,
+                        run_id,
+                        output_ref.root_id,
+                        output_ref.relative_path,
+                        display_name,
+                        artifact.size_bytes,
+                        artifact.sha256,
+                    ),
+                )
+                if cursor.lastrowid is None:
+                    raise RuntimeError("artifact insert did not return an id")
+                artifact_id = int(cursor.lastrowid)
+                row = self._get_artifact_row(conn, artifact_id)
+                if row is None:
+                    raise RuntimeError("artifact insert did not produce a readable record")
+                return row
+            except BaseException:
+                conn.rollback()
+                raise
 
     finish_task = finish
 
@@ -942,3 +1122,144 @@ class ExcelTaskRepository:
                 (task_id,),
             ).fetchall()
             return [dict(r) for r in rows]
+
+    @staticmethod
+    def _get_artifact_row(
+        conn: sqlite3.Connection,
+        artifact_id: int,
+    ) -> dict[str, Any] | None:
+        row = conn.execute(
+            """
+            SELECT id, task_id, run_id, artifact_type, root_id, relative_path,
+                   display_name, size_bytes, sha256, created_at
+            FROM excel_task_artifacts
+            WHERE id = ?
+            """,
+            (artifact_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def get_artifact(self, artifact_id: int) -> dict[str, Any] | None:
+        if not isinstance(artifact_id, int) or isinstance(artifact_id, bool) or artifact_id < 1:
+            return None
+        with self._db.get_connection() as conn:
+            return self._get_artifact_row(conn, artifact_id)
+
+    def list_task_artifacts(self, task_id: int) -> list[dict[str, Any]]:
+        if not isinstance(task_id, int) or isinstance(task_id, bool) or task_id < 1:
+            return []
+        with self._db.get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, task_id, run_id, artifact_type, root_id, relative_path,
+                       display_name, size_bytes, sha256, created_at
+                FROM excel_task_artifacts
+                WHERE task_id = ?
+                ORDER BY id ASC
+                """,
+                (task_id,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def record_artifact_download_audit(
+        self,
+        artifact_id: int,
+        task_id: int,
+        result: str,
+        reason_code: str,
+        *,
+        served_size_bytes: int | None = None,
+    ) -> dict[str, Any]:
+        if not isinstance(artifact_id, int) or isinstance(artifact_id, bool) or artifact_id < 1:
+            raise ValueError("artifact_id must be a positive integer")
+        if not isinstance(task_id, int) or isinstance(task_id, bool) or task_id < 1:
+            raise ValueError("task_id must be a positive integer")
+        if result not in ("succeeded", "rejected"):
+            raise ValueError(f"result must be 'succeeded' or 'rejected', got {result!r}")
+        if not isinstance(reason_code, str) or not reason_code.strip():
+            raise ValueError("reason_code must be a non-empty string")
+        clean_reason = reason_code.strip()
+        if len(clean_reason) > 64:
+            raise ValueError("reason_code exceeds maximum length (64)")
+
+        size: int | None = None
+        if result == "succeeded":
+            if (
+                not isinstance(served_size_bytes, int)
+                or isinstance(served_size_bytes, bool)
+                or served_size_bytes < 0
+            ):
+                raise ValueError(
+                    "served_size_bytes must be a non-negative integer when result is succeeded"
+                )
+            size = served_size_bytes
+        else:
+            size = None
+
+        with self._db.get_connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO excel_artifact_download_audit (
+                    artifact_id, task_id, result, reason_code, served_size_bytes, created_at
+                ) VALUES (?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """,
+                (artifact_id, task_id, result, clean_reason, size),
+            )
+            if cursor.lastrowid is None:
+                raise RuntimeError("artifact download audit insert did not return an id")
+            audit_id = int(cursor.lastrowid)
+            row = conn.execute(
+                """
+                SELECT id, artifact_id, task_id, result, reason_code, served_size_bytes, created_at
+                FROM excel_artifact_download_audit
+                WHERE id = ?
+                """,
+                (audit_id,),
+            ).fetchone()
+            return dict(row)
+
+    def list_artifact_download_audits(
+        self,
+        artifact_id: int,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        if not isinstance(artifact_id, int) or isinstance(artifact_id, bool) or artifact_id < 1:
+            return []
+        bounded = max(1, min(int(limit), 200))
+        with self._db.get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, artifact_id, task_id, result, reason_code, served_size_bytes, created_at
+                FROM excel_artifact_download_audit
+                WHERE artifact_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (artifact_id, bounded),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def list_retention_candidates(
+        self,
+        cutoff_iso: str,
+        limit: int = 200,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Query committed output artifacts created at or before cutoff_iso without filesystem access."""
+        if not isinstance(cutoff_iso, str) or not cutoff_iso.strip():
+            raise ValueError("cutoff_iso must be a non-empty string")
+        bounded = max(1, min(int(limit), 500))
+        with self._db.get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, task_id, run_id, artifact_type, root_id, relative_path,
+                       display_name, size_bytes, sha256, created_at
+                FROM excel_task_artifacts
+                WHERE created_at <= ?
+                ORDER BY created_at ASC, id ASC
+                LIMIT ?
+                """,
+                (cutoff_iso.strip(), bounded + 1),
+            ).fetchall()
+            truncated = len(rows) > bounded
+            selected = rows[:bounded]
+            return [dict(r) for r in selected], truncated

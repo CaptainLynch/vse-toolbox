@@ -69,6 +69,9 @@ def client(monkeypatch, test_db: DatabaseManager, fake_runner: MagicMock):
         lambda db: ScheduledArchiveAdminService(db, runner_factory=lambda _db: fake_runner),
     )
     app = web_app.create_app()
+    # Isolated API tests use fake opaque aliases; production availability is
+    # covered separately with an injected provider.
+    app.extensions["scheduled_archive_admin"].set_credential_provider(None)
     app.config.update(TESTING=True)
     return app.test_client()
 
@@ -577,6 +580,65 @@ def test_patch_job_success_and_never_reflects_credential_ref(client) -> None:
     assert "credential_ref" not in data
     assert "credentialRef" not in data
     assert data["filters"] == {"changeType": "ECR"}
+
+
+def test_patch_job_accepts_task_output_directory(client, tmp_path: Path) -> None:
+    """The HTTP contract persists an absolute task directory and supports clearing it."""
+    headers = _loopback_headers()
+    environ = {"REMOTE_ADDR": "127.0.0.1"}
+    selected = tmp_path / "task-output"
+    selected.mkdir()
+
+    job = next(
+        item for item in client.get("/api/scheduled-archive/jobs").get_json()["data"]
+        if item["jobKey"] == "aras_ewo"
+    )
+    response = client.patch(
+        "/api/scheduled-archive/jobs/aras_ewo",
+        json={
+            "enabled": False,
+            "filters": {},
+            "outputSubdir": "",
+            "outputDirectory": str(selected),
+            "updatedAt": job["updatedAt"],
+        },
+        headers=headers,
+        environ_base=environ,
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()["data"]
+    assert Path(data["outputDirectory"]).resolve() == selected.resolve()
+    assert data["outputSubdir"] == ""
+
+
+def test_delete_builtin_task_soft_archives_and_removes_it_from_active_api(
+    client,
+    test_db: DatabaseManager,
+) -> None:
+    """Built-in task deletion follows the same history-preserving archive contract."""
+    headers = _loopback_headers()
+    jobs = client.get("/api/scheduled-archive/jobs").get_json()["data"]
+    builtin = next(item for item in jobs if item["jobKey"] == "aras_ewo")
+
+    response = client.delete(
+        "/api/scheduled-archive/jobs/aras_ewo",
+        json={"updatedAt": builtin["updatedAt"]},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["data"]["archivedAt"] is not None
+    active_keys = {
+        item["jobKey"]
+        for item in client.get("/api/scheduled-archive/jobs").get_json()["data"]
+    }
+    assert "aras_ewo" not in active_keys
+    archived = next(
+        item for item in test_db.list_archive_jobs(include_archived=True)
+        if item["job_key"] == "aras_ewo"
+    )
+    assert archived["archived_at"] is not None
 
 
 @pytest.mark.parametrize(

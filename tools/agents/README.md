@@ -25,9 +25,11 @@ The supervisor supports two execution profiles:
    - Completes in the state `worker-complete-awaiting-manual-review` without invoking
      automatic Codex review when `review_policy` is `manual-final`.
    - High-risk categories (`architecture`, `security`, `authentication`, `authorization`,
-     `concurrency`, `migration`, `public-contract`, `destructive`) or tasks whose objectives
-     contain high-risk signals (security, auth, credentials, concurrency, migration, public contract)
-     are automatically forced to `codex-controlled`, even if marked with a low-risk category or `manual-final`.
+      `concurrency`, `migration`, `public-contract`, `destructive`) or tasks whose objectives
+      contain high-risk signals (security, auth, credentials, concurrency, migration, public contract)
+      are automatically forced to `codex-controlled`, even if marked with a low-risk category or `manual-final`.
+   - Medium or unclassified tasks are also forced to `codex-controlled`; only tasks positively
+     classified as low risk may remain in `agy-heavy`.
    - Tasks configured with `review_policy: "codex-required"` are forced to `codex-controlled`.
 
 2. **`codex-controlled`**:
@@ -132,10 +134,12 @@ restoring. It refuses to discard configuration changes made while relay mode
 is active. The relay key remains process-only and is inherited by the newly
 started Desktop process; it is not persisted in the profile-switch state.
 
-The wrapper defaults to the `codex-controlled` orchestration profile. Use
-`-SupervisorProfile agy-heavy` only for tasks that should remain AGY-only; in
-that mode the selected Codex provider is recorded but not called. Never place
-the relay key in task JSON, TOML, source control, command arguments, or logs.
+The wrapper defaults to the `agy-heavy` orchestration profile. Only tasks
+positively classified as low risk remain AGY-only; medium, unclassified, and
+high-risk tasks are automatically forced to `codex-controlled`. Use an explicit
+`-SupervisorProfile codex-controlled` when required. In `agy-heavy`, the selected
+Codex provider is recorded but not called. Never place the relay key in task JSON,
+TOML, source control, command arguments, or logs.
 
 Task JSON must satisfy `schemas/agent-task.schema.json`. A worker may commit in
 its own branch, but the supervisor never merges; inspect the state and diff,

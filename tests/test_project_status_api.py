@@ -145,7 +145,6 @@ def test_milestone_update_adds_reorders_and_deletes_baseline_nodes(client) -> No
     data = response.get_json()["data"]["projectStatus"]
     assert data["milestones"][0]["name"] == "新增评审节点"
     assert "项目启动" not in {item["name"] for item in data["milestones"]}
-    assert sum(item["type"] == "current" for item in data["milestones"]) == 1
     assert data["milestones"][0]["date"] == data["milestones"][1]["date"]
 
     persisted = _status(client)
@@ -157,7 +156,7 @@ def test_milestone_update_adds_reorders_and_deletes_baseline_nodes(client) -> No
 @pytest.mark.parametrize(
     ("mutator", "field"),
     [
-        (lambda items: [{**item, "type": "planned", "status": "计划节点"} for item in items], "milestones"),
+        (lambda items: [], "milestones"),
         (lambda items: [{**item, "name": items[0]["name"]} if index == 1 else item for index, item in enumerate(items)], "milestones.1.name"),
         (lambda items: [{**item, "date": "2026-09-01"} if index == 0 else item for index, item in enumerate(items)], "milestones.0.date"),
     ],

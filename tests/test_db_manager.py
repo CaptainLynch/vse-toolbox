@@ -6,7 +6,7 @@ tests/test_db_manager.py — DatabaseManager 单元测试（E2）
     1. 兜底项目 id=1 名称='未归类' 在 init_database() 后存在
     2. 重复调用 init_database() 不增加 projects 行数（幂等）
     3. get_connection() 在异常时回滚（无脏数据）
-    4. Excel Phase A schema v4 可新建、迁移并保持初始化幂等
+    4. Excel schema v5 可新建、迁移并保持初始化幂等
 """
 
 from pathlib import Path
@@ -74,7 +74,7 @@ def test_get_connection_rollback_on_error(tmp_path: Path) -> None:
 
 
 def test_table_exists(tmp_db: DatabaseManager) -> None:
-    """所有必需表均应存在（含 Schema v4 Excel 任务表）。"""
+    """所有必需表均应存在（含 Schema v6 Excel artifact audit 表）。"""
     for table in (
         "projects",
         "deliverables",
@@ -82,6 +82,10 @@ def test_table_exists(tmp_db: DatabaseManager) -> None:
         "excel_tasks",
         "excel_task_files",
         "excel_task_runs",
+        "excel_task_artifacts",
+        "excel_artifact_download_audit",
+        "project_status_analysis_snapshots",
+        "project_status_analysis_items",
     ):
         assert tmp_db.table_exists(table), f"表 {table} 不存在"
 
@@ -92,16 +96,16 @@ def test_get_table_row_count(tmp_db: DatabaseManager) -> None:
     assert count >= 2, f"projects 行数应 ≥ 2，实际 {count}"
 
 
-def test_schema_version_is_v4(tmp_db: DatabaseManager) -> None:
-    """验证当前支持的 schema 版本为 4。"""
-    assert CURRENT_SCHEMA_VERSION == 4
+def test_schema_version_is_v10(tmp_db: DatabaseManager) -> None:
+    """验证当前支持的 schema 版本为 10。"""
+    assert CURRENT_SCHEMA_VERSION == 10
     with tmp_db.get_connection() as conn:
         ver = conn.execute("PRAGMA user_version").fetchone()[0]
-    assert ver == 4
+    assert ver == 10
 
 
-def test_v3_to_v4_migration(tmp_path: Path) -> None:
-    """验证从已存在的 v3 数据库平滑升级到 v4。"""
+def test_v3_to_v10_migration(tmp_path: Path) -> None:
+    """验证从已存在的 v3 数据库平滑升级到 v10。"""
     v3_db_path = tmp_path / "v3_legacy.db"
     conn = sqlite3.connect(str(v3_db_path))
     conn.execute("PRAGMA user_version = 3")
@@ -124,26 +128,184 @@ def test_v3_to_v4_migration(tmp_path: Path) -> None:
 
     with db.get_connection() as c:
         ver = c.execute("PRAGMA user_version").fetchone()[0]
-        assert ver == 4
+        assert ver == 10
         assert db.table_exists("excel_tasks")
         assert db.table_exists("excel_task_files")
         assert db.table_exists("excel_task_runs")
+        assert db.table_exists("excel_task_artifacts")
+        assert db.table_exists("excel_artifact_download_audit")
+        assert db.table_exists("project_status_analysis_snapshots")
+        assert db.table_exists("project_status_analysis_items")
+        phase = c.execute(
+            "SELECT display_name FROM project_status_phases WHERE id = 'VPI-T2'"
+        ).fetchone()
+        assert phase[0] == "VPI-T2 主计划时间轴"
         row = c.execute("SELECT name FROM projects WHERE id = 1").fetchone()
         assert row[0] == "未归类"
 
 
-def test_rejects_newer_schema_version(tmp_path: Path) -> None:
-    """验证高于 CURRENT_SCHEMA_VERSION (如 v5) 的库在执行 DDL 前被拒绝。"""
-    v5_db_path = tmp_path / "v5_future.db"
+def test_v5_to_v10_migration(tmp_path: Path) -> None:
+    """验证从已存在的 v5 数据库平滑升级到 v10。"""
+    v5_db_path = tmp_path / "v5_legacy.db"
     conn = sqlite3.connect(str(v5_db_path))
     conn.execute("PRAGMA user_version = 5")
+    conn.execute(
+        """
+        CREATE TABLE projects (
+            id INTEGER PRIMARY KEY,
+            name TEXT,
+            manager TEXT,
+            status TEXT
+        )
+        """
+    )
+    conn.execute("INSERT INTO projects VALUES (1, '未归类', 'system', 'active')")
     conn.commit()
     conn.close()
 
     db = DatabaseManager(db_path=v5_db_path)
+    db.init_database()
+
+    with db.get_connection() as c:
+        ver = c.execute("PRAGMA user_version").fetchone()[0]
+        assert ver == 10
+        assert db.table_exists("excel_artifact_download_audit")
+        assert db.table_exists("project_status_analysis_snapshots")
+
+
+def test_v9_to_v10_migration_adds_analysis_detail_columns(tmp_path: Path) -> None:
+    """A v9 database gains the number and pending-signer columns in place."""
+    db_path = tmp_path / "v9_analysis_legacy.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA user_version = 9")
+    conn.execute(
+        """
+        CREATE TABLE project_status_analysis_items (
+            deliverable_id TEXT NOT NULL,
+            item_key TEXT NOT NULL,
+            title TEXT NOT NULL,
+            department TEXT NOT NULL DEFAULT '未归属',
+            owner TEXT NOT NULL DEFAULT '',
+            source_status TEXT NOT NULL DEFAULT '',
+            is_completed INTEGER NOT NULL,
+            planned_date TEXT,
+            actual_date TEXT,
+            source_run_id INTEGER,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (deliverable_id, item_key)
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    db = DatabaseManager(db_path=db_path)
+    db.init_database()
+
+    with db.get_connection() as c:
+        columns = {
+            row["name"]
+            for row in c.execute("PRAGMA table_info(project_status_analysis_items)")
+        }
+        assert {"display_number", "pending_signers"}.issubset(columns)
+        assert c.execute("PRAGMA user_version").fetchone()[0] == 10
+
+
+def test_rejects_newer_schema_version(tmp_path: Path) -> None:
+    """验证高于 CURRENT_SCHEMA_VERSION (如 v11) 的库在执行 DDL 前被拒绝。"""
+    v11_db_path = tmp_path / "v11_future.db"
+    conn = sqlite3.connect(str(v11_db_path))
+    conn.execute("PRAGMA user_version = 11")
+    conn.commit()
+    conn.close()
+
+    db = DatabaseManager(db_path=v11_db_path)
     with pytest.raises(sqlite3.DatabaseError) as exc_info:
         db.init_database()
-    assert "unsupported schema version 5" in str(exc_info.value)
+    assert "unsupported schema version 11" in str(exc_info.value)
+
+
+def test_excel_task_artifact_schema_contract(tmp_db: DatabaseManager) -> None:
+    """Schema v5 stores only controlled artifact references and integrity metadata."""
+    with tmp_db.get_connection() as conn:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(excel_task_artifacts)")
+        }
+        assert columns == {
+            "id",
+            "task_id",
+            "run_id",
+            "artifact_type",
+            "root_id",
+            "relative_path",
+            "display_name",
+            "size_bytes",
+            "sha256",
+            "created_at",
+        }
+        foreign_keys = {
+            (row["from"], row["table"], row["to"], row["on_delete"])
+            for row in conn.execute("PRAGMA foreign_key_list(excel_task_artifacts)")
+        }
+        assert ("task_id", "excel_tasks", "id", "CASCADE") in foreign_keys
+        assert ("run_id", "excel_task_runs", "id", "CASCADE") in foreign_keys
+        indices = {
+            row["name"]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type = 'index' AND tbl_name = 'excel_task_artifacts'"
+            )
+        }
+        assert "idx_excel_task_artifacts_task" in indices
+        triggers = {
+            row["name"]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type = 'trigger' AND tbl_name = 'excel_task_artifacts'"
+            )
+        }
+        assert "trg_excel_task_artifact_run_matches_task" in triggers
+
+
+def test_excel_artifact_download_audit_schema_contract(tmp_db: DatabaseManager) -> None:
+    """Schema v6 creates excel_artifact_download_audit with foreign keys, constraints, index and trigger."""
+    with tmp_db.get_connection() as conn:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(excel_artifact_download_audit)")
+        }
+        assert columns == {
+            "id",
+            "artifact_id",
+            "task_id",
+            "result",
+            "reason_code",
+            "served_size_bytes",
+            "created_at",
+        }
+        foreign_keys = {
+            (row["from"], row["table"], row["to"], row["on_delete"])
+            for row in conn.execute("PRAGMA foreign_key_list(excel_artifact_download_audit)")
+        }
+        assert ("artifact_id", "excel_task_artifacts", "id", "CASCADE") in foreign_keys
+        assert ("task_id", "excel_tasks", "id", "CASCADE") in foreign_keys
+        indices = {
+            row["name"]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type = 'index' AND tbl_name = 'excel_artifact_download_audit'"
+            )
+        }
+        assert "idx_excel_artifact_download_audit_artifact" in indices
+        triggers = {
+            row["name"]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type = 'trigger' AND tbl_name = 'excel_artifact_download_audit'"
+            )
+        }
+        assert "trg_excel_artifact_download_audit_artifact_matches_task" in triggers
 
 
 def test_excel_task_files_composite_pk_and_no_id_column(tmp_db: DatabaseManager) -> None:
@@ -184,7 +346,7 @@ def test_excel_task_files_composite_pk_and_no_id_column(tmp_db: DatabaseManager)
 
 
 def test_excel_tasks_schema_check_constraints(tmp_db: DatabaseManager) -> None:
-    """验证 Schema v4 数据库级 CHECK 约束。"""
+    """验证 Schema v5 数据库级 CHECK 约束。"""
     with tmp_db.get_connection() as conn:
         # 1. invalid operation
         with pytest.raises(sqlite3.IntegrityError):

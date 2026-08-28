@@ -9,8 +9,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import main as main_module
-from core.credential_provider import WindowsCredentialManagerProvider
 from core.db_manager import DatabaseManager
+from core.domain_identity import DPAPICredentialProvider
 from services.scheduled_archive_connectors import (
     ArasArchiveConnector,
     TDCArchiveConnector,
@@ -404,17 +404,17 @@ def test_main_unexpected_exception_returns_1_with_safe_message(
 
 
 def test_create_production_archive_runner_wiring(cli_db: DatabaseManager, tmp_path: Path) -> None:
-    """Production factory wires WindowsCredentialManagerProvider and exact fixed registry."""
+    """Production factory wires DPAPICredentialProvider and exact fixed registry."""
     fake_archive = MagicMock()
     fake_archive.root = tmp_path / "fake_archive_root"
 
     with (
         patch(
-            "core.credential_provider.WindowsCredentialManagerProvider.resolve",
+            "core.domain_identity.DPAPICredentialProvider.resolve",
             side_effect=AssertionError("resolve must not be called during factory construction"),
         ) as mock_resolve,
         patch(
-            "core.credential_provider.WindowsCredentialManagerProvider.is_available",
+            "core.domain_identity.DPAPICredentialProvider.is_available",
             side_effect=AssertionError("is_available must not be called during factory construction"),
         ) as mock_is_available,
         patch(
@@ -425,7 +425,7 @@ def test_create_production_archive_runner_wiring(cli_db: DatabaseManager, tmp_pa
             "services.scheduled_archive_connectors.ArasArchiveConnector.collect",
             side_effect=AssertionError("Aras collect must not be called during factory construction"),
         ) as mock_aras_collect,
-        patch("services.scheduled_archive_connectors.ArchiveStore", return_value=fake_archive) as mock_store_cls,
+        patch("core.archive_store.ArchiveStore", return_value=fake_archive) as mock_store_cls,
         patch("services.scheduled_archive_runner.ArchiveSyncRunner") as mock_runner_cls,
     ):
         runner = create_production_archive_runner(cli_db)
@@ -441,7 +441,7 @@ def test_create_production_archive_runner_wiring(cli_db: DatabaseManager, tmp_pa
 
         call_args = mock_runner_cls.call_args[0]
         assert call_args[0] is cli_db
-        assert isinstance(call_args[1], WindowsCredentialManagerProvider)
+        assert isinstance(call_args[1], DPAPICredentialProvider)
 
         registry = call_args[2]
         expected_keys = (

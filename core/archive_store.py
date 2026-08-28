@@ -127,6 +127,92 @@ class ArchiveStore:
         except KeyError as exc:
             raise ArchiveSafetyError("approved archive root is unknown") from exc
 
+    def relative_subdir_for_path(
+        self,
+        path: Path | str,
+        *,
+        root_id: str = "default",
+    ) -> str:
+        """Convert one existing approved-root path to a safe relative subdirectory."""
+        root = self.root(root_id)
+        target = Path(path).expanduser().absolute()
+        self._assert_no_link(root, target)
+        if not target.exists():
+            raise FileNotFoundError("archive directory was not found")
+        if not target.is_dir():
+            raise ArchiveSafetyError("archive path is not a directory")
+        resolved = target.resolve(strict=True)
+        if not resolved.is_relative_to(root):
+            raise ArchiveSafetyError("archive path escapes approved root")
+        return resolved.relative_to(root).as_posix()
+
+    @classmethod
+    def validate_output_directory(cls, value: object) -> str:
+        """Normalize one absolute local directory override without creating it.
+
+        A task-level directory is allowed to be outside the global archive root,
+        but it must still be an absolute local path.  Existing path components
+        are checked for reparse points so a later run cannot silently follow a
+        junction or symlink into an unintended location.
+        """
+        if not isinstance(value, str):
+            raise ArchiveSafetyError("archive output directory must be a path string")
+        text = value.strip()
+        if not text:
+            return ""
+        if text.startswith(("\\\\", "//", "\\\\?\\", "\\\\.\\")):
+            raise ArchiveSafetyError("only ordinary local archive directories are allowed")
+        path = Path(text)
+        if not path.is_absolute() or ".." in path.parts:
+            raise ArchiveSafetyError("archive output directory must be an absolute local path")
+
+        absolute = path.absolute()
+        current = absolute
+        while True:
+            if current.exists() and cls._is_reparse(current):
+                raise ArchiveSafetyError(
+                    "links/reparse points are not allowed in archive directories"
+                )
+            if current.parent == current:
+                break
+            current = current.parent
+        try:
+            resolved = absolute.resolve(strict=False)
+        except (OSError, RuntimeError) as exc:
+            raise ArchiveSafetyError("archive output directory cannot be resolved") from exc
+        if resolved.exists() and not resolved.is_dir():
+            raise ArchiveSafetyError("archive output directory must be a directory")
+        return str(resolved)
+
+    def list_subdirectories(
+        self,
+        relative_path: str = "",
+        *,
+        root_id: str = "default",
+    ) -> list[dict[str, str]]:
+        """List safe child directories without exposing approved-root absolute paths."""
+        root = self.root(root_id)
+        parts = self._subdirectory_parts(relative_path)
+        target = root.joinpath(*parts)
+        self._assert_no_link(root, target)
+        if not target.exists():
+            raise FileNotFoundError("archive directory was not found")
+        if not target.is_dir():
+            raise ArchiveSafetyError("archive path is not a directory")
+        resolved = target.resolve(strict=True)
+        if not resolved.is_relative_to(root):
+            raise ArchiveSafetyError("archive path escapes approved root")
+        children: list[dict[str, str]] = []
+        for child in resolved.iterdir():
+            if not child.is_dir() or self._is_reparse(child):
+                continue
+            child_resolved = child.resolve(strict=True)
+            if not child_resolved.is_relative_to(root):
+                continue
+            child_relative = child_resolved.relative_to(root).as_posix()
+            children.append({"name": child.name, "relativePath": child_relative})
+        return sorted(children, key=lambda item: item["name"].casefold())
+
     @classmethod
     def validate_output_subdir(cls, value: object) -> str:
         """Return a normalized approved-root-relative subdirectory string."""
@@ -262,14 +348,14 @@ class ArchiveStore:
 
         def encoded_rows() -> Iterable[bytes]:
             yield b"\xef\xbb\xbf"
-            for row in ({key: key for key in names}, *()):
+            for header_row in ({key: key for key in names}, *()):
                 buffer = io.StringIO(newline="")
-                csv.DictWriter(buffer, fieldnames=names).writerow(row)
+                csv.DictWriter(buffer, fieldnames=names).writerow(header_row)
                 yield buffer.getvalue().encode("utf-8")
-            for row in rows:
+            for data_row in rows:
                 buffer = io.StringIO(newline="")
                 writer = csv.DictWriter(buffer, fieldnames=names, extrasaction="ignore")
-                writer.writerow({key: self._csv_cell(row.get(key)) for key in names})
+                writer.writerow({key: self._csv_cell(data_row.get(key)) for key in names})
                 yield buffer.getvalue().encode("utf-8")
 
         return self._write_chunks(encoded_rows(), **kwargs)
