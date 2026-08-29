@@ -801,6 +801,18 @@ function formatArtifactSize(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+async function requestProjectStatusSync(item) {
+  const response = await fetch(`/api/project-status/deliverables/${encodeURIComponent(item.id)}/sync-now`, {
+    method: "POST",
+    headers: { Accept: "application/json" },
+  });
+  const body = await overviewReadJson(response);
+  if (!response.ok || !body || body.ok !== true) {
+    throw overviewRequestError(body, response.status);
+  }
+  return body.data || {};
+}
+
 async function loadDeliverableEvidence(container, item, bundle = null, statusInfo = null) {
   if (bundle) {
     renderDeliverableEvidence(container, item, bundle, statusInfo);
@@ -1012,14 +1024,7 @@ function renderDeliverableEvidence(container, item, bundle, statusInfo = null) {
     syncStatus.className = "evidence-sync-status is-busy";
 
     try {
-      const response = await fetch(`/api/project-status/deliverables/${encodeURIComponent(item.id)}/sync-now`, {
-        method: "POST",
-        headers: { Accept: "application/json" },
-      });
-      const body = await overviewReadJson(response);
-      if (!response.ok || !body || body.ok !== true) throw overviewRequestError(body, response.status);
-
-      const resData = body.data || {};
+      const resData = await requestProjectStatusSync(item);
       const resResult = resData.result || {};
       const finalState = resResult.finalState || resData.finalState;
       const outcome = resResult.outcome || resData.outcome || finalState;
@@ -1287,7 +1292,7 @@ function renderDeliverableEvidence(container, item, bundle, statusInfo = null) {
   container.appendChild(runsSection);
 }
 
-async function loadDeliverableAnalysis(container, item) {
+async function loadDeliverableAnalysis(container, item, statusChart = null) {
   clearOverviewContainer(container);
   const loadingP = overviewEl("p", "loading", "加载交付物分析与明细...");
   loadingP.setAttribute("role", "status");
@@ -1296,6 +1301,7 @@ async function loadDeliverableAnalysis(container, item) {
 
   try {
     const analysisRes = await fetch(`/api/project-status/deliverables/${encodeURIComponent(item.id)}/analysis`, {
+      method: "GET",
       headers: { Accept: "application/json" },
       cache: "no-store",
     });
@@ -1306,13 +1312,21 @@ async function loadDeliverableAnalysis(container, item) {
     }
     const analysisData = analysisBody.data || {};
 
+    if (statusChart && typeof statusChart.updateEwoSummary === "function") {
+      statusChart.updateEwoSummary(analysisData);
+    }
     renderDeliverableAnalysis(container, item, analysisData);
+    return true;
   } catch (err) {
     clearOverviewContainer(container);
     const errBox = overviewEl("div", "error-msg", formatApiErrorMessage(err, 500));
     errBox.setAttribute("role", "alert");
     errBox.setAttribute("aria-live", "assertive");
     container.appendChild(errBox);
+    if (statusChart && typeof statusChart.setSyncStatus === "function") {
+      statusChart.setSyncStatus(`读取失败：${formatApiErrorMessage(err, 500)}`, "error");
+    }
+    return false;
   }
 }
 
@@ -1467,6 +1481,141 @@ function renderDepartmentDoneChart(summary, departments, onSelect) {
   };
 }
 
+function createSearchMultiSelect({ ariaLabel, placeholder, options, normalizeValue = (value) => value }) {
+  const root = overviewEl("div", "analysis-multi-select");
+  root.setAttribute("role", "group");
+  root.setAttribute("aria-label", ariaLabel);
+  const control = overviewEl("div", "analysis-multi-select-control");
+  const tokens = overviewEl("div", "analysis-multi-select-tokens");
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "analysis-multi-select-input";
+  input.placeholder = placeholder;
+  input.setAttribute("aria-label", ariaLabel);
+  input.setAttribute("autocomplete", "off");
+  tokens.appendChild(input);
+  control.appendChild(tokens);
+
+  const optionsBox = overviewEl("div", "analysis-multi-select-options");
+  optionsBox.setAttribute("role", "listbox");
+  optionsBox.hidden = true;
+  root.append(control, optionsBox);
+
+  const optionItems = (options || []).map((option) => {
+    if (Array.isArray(option)) return { value: String(option[0]), label: String(option[1]) };
+    return { value: String(option), label: String(option) };
+  });
+  let selected = [];
+  let changeHandler = null;
+
+  function renderTokens() {
+    const currentInput = input.value;
+    tokens.textContent = "";
+    selected.forEach((value) => {
+      const token = overviewEl("span", "analysis-filter-token");
+      token.appendChild(overviewEl("span", "analysis-filter-token-label", safeDisplayValue(value)));
+      const remove = overviewEl("button", "analysis-filter-token-remove", "×");
+      remove.type = "button";
+      remove.setAttribute("aria-label", `移除 ${safeDisplayValue(value)}`);
+      remove.addEventListener("click", () => {
+        selected = selected.filter((item) => item !== value);
+        renderTokens();
+        renderOptions();
+        if (changeHandler) changeHandler(getValues());
+        input.focus();
+      });
+      token.appendChild(remove);
+      tokens.appendChild(token);
+    });
+    tokens.appendChild(input);
+    input.value = currentInput;
+  }
+
+  function renderOptions() {
+    const query = input.value.trim().toLocaleLowerCase();
+    optionsBox.textContent = "";
+    const matches = optionItems.filter((option) => {
+      if (selected.includes(option.value)) return false;
+      return !query || option.label.toLocaleLowerCase().includes(query)
+        || option.value.toLocaleLowerCase().includes(query);
+    });
+    matches.slice(0, 30).forEach((option) => {
+      const button = overviewEl("button", "analysis-multi-select-option", option.label);
+      button.type = "button";
+      button.setAttribute("role", "option");
+      button.dataset.value = option.value;
+      button.addEventListener("mousedown", (event) => event.preventDefault());
+      button.addEventListener("click", () => addValue(option.value));
+      optionsBox.appendChild(button);
+    });
+    optionsBox.hidden = matches.length === 0;
+  }
+
+  function addValue(rawValue) {
+    const value = normalizeValue(String(rawValue || "").trim());
+    if (!value || selected.includes(value)) {
+      input.value = "";
+      renderOptions();
+      return false;
+    }
+    selected.push(value);
+    input.value = "";
+    renderTokens();
+    renderOptions();
+    if (changeHandler) changeHandler(getValues());
+    return true;
+  }
+
+  function getValues() {
+    return selected.slice();
+  }
+
+  function setValues(values) {
+    selected = [];
+    (values || []).forEach((value) => {
+      const normalized = normalizeValue(String(value || "").trim());
+      if (normalized && !selected.includes(normalized)) selected.push(normalized);
+    });
+    input.value = "";
+    renderTokens();
+    renderOptions();
+  }
+
+  function clear() {
+    setValues([]);
+  }
+
+  input.addEventListener("focus", renderOptions);
+  input.addEventListener("input", renderOptions);
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === ",") {
+      event.preventDefault();
+      addValue(input.value);
+    } else if (event.key === "Backspace" && !input.value && selected.length > 0) {
+      selected.pop();
+      renderTokens();
+      renderOptions();
+      if (changeHandler) changeHandler(getValues());
+    }
+  });
+  control.addEventListener("click", () => input.focus());
+  root.addEventListener("focusout", (event) => {
+    if (!root.contains(event.relatedTarget)) {
+      optionsBox.hidden = true;
+    }
+  });
+
+  renderTokens();
+  return {
+    el: root,
+    getValues,
+    setValues,
+    clear,
+    focus: () => input.focus(),
+    setOnChange: (handler) => { changeHandler = handler; },
+  };
+}
+
 function renderAnalysisItemsSection(item, departments, onDeptChange) {
   const section = overviewEl("div", "analysis-sub-section");
   const titleEl = overviewEl("h6", "analysis-sub-title", "明细任务清单");
@@ -1474,47 +1623,31 @@ function renderAnalysisItemsSection(item, departments, onDeptChange) {
 
   const PAGE_SIZE = 50;
   const state = {
-    department: null,
-    stage: null,
+    departments: [],
+    stages: [],
     state: "all",
     page: 1,
   };
+  let pendingState = "all";
+  let filtersDirty = false;
   let totalItems = 0;
   let currentSeq = 0;
 
   // Toolbar
   const toolbar = overviewEl("div", "analysis-items-toolbar");
 
-  // Department select
-  const deptSelect = document.createElement("select");
-  deptSelect.className = "analysis-select";
-  deptSelect.setAttribute("aria-label", "按科室筛选");
-  const allDeptOption = document.createElement("option");
-  allDeptOption.value = "all";
-  allDeptOption.textContent = "全部科室";
-  deptSelect.appendChild(allDeptOption);
-
-  const deptNames = Object.keys(departments || {}).sort((a, b) => a.localeCompare(b, "zh-CN"));
-  deptNames.forEach((dept) => {
-    const opt = document.createElement("option");
-    opt.value = dept;
-    opt.textContent = dept;
-    deptSelect.appendChild(opt);
-  });
-
-  // EWO 同步范围固定为五个责任科室；即使某个科室本次没有数据，
-  // 也保留筛选入口，方便用户在后续同步后复用同一交互。
+  // EWO 同步范围固定为五个责任科室；也保留当前缓存中出现的科室，
+  // 方便用户排查历史数据。手工输入的未知科室会得到空结果。
   const ewoDefaultDepartments = ["车身科", "车体科", "外饰科", "内饰科", "车体架构集成科"];
-  if (/ewo/i.test(String(item.source || ""))) {
-    ewoDefaultDepartments.forEach((dept) => {
-      if (!deptNames.includes(dept)) {
-        const opt = document.createElement("option");
-        opt.value = dept;
-        opt.textContent = dept;
-        deptSelect.appendChild(opt);
-      }
-    });
-  }
+  const deptNames = Array.from(new Set([
+    ...((/ewo/i.test(String(item.source || ""))) ? ewoDefaultDepartments : []),
+    ...Object.keys(departments || {}),
+  ])).sort((a, b) => a.localeCompare(b, "zh-CN"));
+  const deptMulti = createSearchMultiSelect({
+    ariaLabel: "按科室筛选",
+    placeholder: "全部科室—搜索或输入后按 Enter",
+    options: deptNames,
+  });
 
   // State select
   const stateSelect = document.createElement("select");
@@ -1531,13 +1664,7 @@ function renderAnalysisItemsSection(item, departments, onDeptChange) {
     stateSelect.appendChild(opt);
   });
 
-  // EWO lifecycle stage select. The empty/default value intentionally omits
-  // the API parameter so the server applies its active-stage default.
-  const stageSelect = document.createElement("select");
-  stageSelect.className = "analysis-select analysis-stage-select";
-  stageSelect.setAttribute("aria-label", "按流程阶段筛选");
-  [
-    ["", "有效阶段（排除 open）"],
+  const stageOptions = [
     ["all", "全部阶段（含 open/未知）"],
     ["open", "open（未纳入统计）"],
     ["draft1", "draft1"],
@@ -1547,12 +1674,24 @@ function renderAnalysisItemsSection(item, departments, onDeptChange) {
     ["proc", "proc"],
     ["impl", "impl"],
     ["close", "close（已关闭）"],
-  ].forEach(([value, label]) => {
-    const opt = document.createElement("option");
-    opt.value = value;
-    opt.textContent = label;
-    stageSelect.appendChild(opt);
+  ];
+  const canonicalStages = new Set(stageOptions.map(([value]) => value));
+  const stageMulti = createSearchMultiSelect({
+    ariaLabel: "按流程阶段筛选",
+    placeholder: "有效阶段（排除 open）—搜索或输入后按 Enter",
+    options: stageOptions,
+    normalizeValue: (value) => {
+      const normalized = String(value || "").trim().toLowerCase();
+      return canonicalStages.has(normalized) ? normalized : "";
+    },
   });
+
+  const applyBtn = overviewEl("button", "btn is-primary analysis-filter-apply", "应用筛选");
+  applyBtn.type = "button";
+  applyBtn.setAttribute("aria-label", "应用科室和流程阶段筛选");
+  const clearBtn = overviewEl("button", "btn is-secondary analysis-filter-clear", "清除筛选");
+  clearBtn.type = "button";
+  clearBtn.setAttribute("aria-label", "清除科室和流程阶段筛选");
 
   const spacer = overviewEl("div", "analysis-toolbar-spacer");
 
@@ -1567,7 +1706,7 @@ function renderAnalysisItemsSection(item, departments, onDeptChange) {
   nextBtn.disabled = true;
   pager.append(pagerInfo, prevBtn, nextBtn);
 
-  toolbar.append(deptSelect, stageSelect, stateSelect, spacer, pager);
+  toolbar.append(deptMulti.el, stageMulti.el, stateSelect, applyBtn, clearBtn, spacer, pager);
   section.appendChild(toolbar);
 
   // Table
@@ -1602,15 +1741,11 @@ function renderAnalysisItemsSection(item, departments, onDeptChange) {
       limit: String(PAGE_SIZE),
       offset: String(offset),
     });
-    if (state.department) {
-      params.set("department", state.department);
-    }
+    state.departments.forEach((department) => params.append("departments", department));
     if (state.state && state.state !== "all") {
       params.set("state", state.state);
     }
-    if (state.stage) {
-      params.set("stage", state.stage);
-    }
+    state.stages.forEach((stage) => params.append("stages", stage));
 
     try {
       const res = await fetch(
@@ -1756,22 +1891,42 @@ function renderAnalysisItemsSection(item, departments, onDeptChange) {
     });
   }
 
-  deptSelect.addEventListener("change", () => {
-    state.department = deptSelect.value === "all" ? null : deptSelect.value;
-    state.page = 1;
-    if (onDeptChange) onDeptChange(state.department);
-    fetchAndRender();
-  });
+  function markFiltersDirty() {
+    filtersDirty = true;
+    applyBtn.classList.add("is-attention");
+  }
 
+  deptMulti.setOnChange((values) => {
+    markFiltersDirty();
+    if (onDeptChange) onDeptChange(values.length === 1 ? values[0] : null);
+  });
+  stageMulti.setOnChange(markFiltersDirty);
   stateSelect.addEventListener("change", () => {
-    state.state = stateSelect.value;
+    pendingState = stateSelect.value;
+    markFiltersDirty();
+  });
+
+  applyBtn.addEventListener("click", () => {
+    state.departments = deptMulti.getValues();
+    state.stages = stageMulti.getValues();
+    state.state = pendingState;
     state.page = 1;
+    filtersDirty = false;
+    applyBtn.classList.remove("is-attention");
     fetchAndRender();
   });
 
-  stageSelect.addEventListener("change", () => {
-    state.stage = stageSelect.value || null;
+  clearBtn.addEventListener("click", () => {
+    deptMulti.clear();
+    stageMulti.clear();
+    stateSelect.value = "all";
+    pendingState = "all";
+    state.departments = [];
+    state.stages = [];
+    state.state = "all";
     state.page = 1;
+    filtersDirty = false;
+    applyBtn.classList.remove("is-attention");
     fetchAndRender();
   });
 
@@ -1796,8 +1951,8 @@ function renderAnalysisItemsSection(item, departments, onDeptChange) {
   return {
     el: section,
     setSelected: (dept) => {
-      state.department = dept || null;
-      deptSelect.value = state.department || "all";
+      deptMulti.setValues(dept ? [dept] : []);
+      state.departments = dept ? [dept] : [];
       state.page = 1;
       fetchAndRender();
     },
@@ -2059,9 +2214,80 @@ function renderTrendSvgChart(trend) {
   return container;
 }
 
-function renderDeliverableStatusChart(item) {
+function projectStatusSyncFeedback(data) {
+  const result = data && data.result ? data.result : (data || {});
+  const finalState = result.finalState || data && data.finalState;
+  const outcome = result.outcome || data && data.outcome || finalState;
+  const errorMessage = redactSensitiveText(result.errorMessage || data && data.errorMessage || "任务处理中");
+  if (finalState === "busy" || outcome === "busy") {
+    return { text: `同步进行中：${errorMessage}`, tone: "busy" };
+  }
+  if (finalState === "success" && outcome === "completed") {
+    return { text: "同步完成：成功", tone: "success" };
+  }
+  if (finalState === "partial" || outcome === "partial") {
+    return { text: "同步完成：部分字段已应用", tone: "warning" };
+  }
+  if (finalState === "needs_attention" || outcome === "needs_attention") {
+    return {
+      text: `同步需要处理：${redactSensitiveText(result.errorMessage || data && data.errorMessage || "未匹配到唯一候选")}`,
+      tone: "warning",
+    };
+  }
+  return {
+    text: `同步失败：${redactSensitiveText(result.errorMessage || data && data.errorMessage || (finalState ? `状态 ${finalState}` : "未知状态"))}`,
+    tone: "error",
+  };
+}
+
+function renderEwoSyncSummary(host, item, analysisData, feedbackText = "", feedbackTone = "") {
+  clearOverviewContainer(host);
+  const summary = analysisData && analysisData.summary ? analysisData.summary : {};
+  const policy = item.updatePolicy || {};
+  const statusLabels = {
+    idle: "空闲",
+    running: "同步中",
+    success: "成功",
+    failed: "失败",
+    needs_attention: "需处理",
+  };
+  const syncState = policy.syncState || "idle";
+  const statusText = feedbackText || statusLabels[syncState] || "未知";
+  const snapshotText = analysisData && analysisData.snapshotAt
+    ? archiveFormatDate(analysisData.snapshotAt)
+    : "暂无快照";
+
+  const titleRow = overviewEl("div", "ewo-sync-summary-head");
+  titleRow.append(
+    overviewEl("h6", "section-sub-title", "EWO 同步摘要"),
+    overviewEl("span", `ewo-sync-summary-status${feedbackTone ? ` is-${feedbackTone}` : ""}`, statusText),
+  );
+  const meta = overviewEl("div", "ewo-sync-summary-meta");
+  meta.append(
+    overviewEl("span", null, `最近同步状态：${statusText}`),
+    overviewEl("span", null, `最近同步时间：${snapshotText}`),
+    overviewEl("span", null, `最近快照：${snapshotText}`),
+  );
+  const metrics = overviewEl("div", "ewo-sync-summary-metrics");
+  [
+    ["总数", summary.total ?? 0],
+    ["已完成", summary.completed ?? 0],
+    ["未完成", summary.incomplete ?? 0],
+    ["逾期", summary.overdue ?? 0],
+  ].forEach(([label, value]) => {
+    const metric = overviewEl("div", "ewo-sync-summary-metric");
+    metric.append(
+      overviewEl("span", "detail-property-label", label),
+      overviewEl("strong", "detail-property-value", String(value)),
+    );
+    metrics.appendChild(metric);
+  });
+  host.append(titleRow, meta, metrics);
+}
+
+function renderDeliverableStatusChart(item, actions = {}) {
   const chart = overviewEl("section", "deliverable-current-status-chart");
-  chart.setAttribute("role", "img");
+  chart.setAttribute("role", "region");
   chart.setAttribute("aria-label", `${safeDisplayValue(item.name)} 当前状态图表`);
 
   const head = overviewEl("div", "deliverable-current-status-head");
@@ -2109,7 +2335,99 @@ function renderDeliverableStatusChart(item) {
   });
 
   chart.append(head, progressBox, timeline);
-  return chart;
+
+  const isEwo = /ewo/i.test(String(item.source || ""));
+  let ewoHost = null;
+  let ewoData = null;
+  let feedbackText = "";
+  let feedbackTone = "";
+  let syncButton = null;
+  let refreshButton = null;
+  if (isEwo) {
+    ewoHost = overviewEl("section", "ewo-sync-summary");
+    ewoHost.setAttribute("aria-live", "polite");
+    renderEwoSyncSummary(ewoHost, item, null);
+    const actionsRow = overviewEl("div", "ewo-sync-summary-actions");
+    syncButton = overviewEl("button", "btn is-primary ewo-sync-now-btn", "立即同步");
+    syncButton.type = "button";
+    refreshButton = overviewEl("button", "btn is-secondary ewo-sync-refresh-btn", "刷新同步数据");
+    refreshButton.type = "button";
+    syncButton.addEventListener("click", () => {
+      if (actions.onSync) actions.onSync();
+    });
+    refreshButton.addEventListener("click", () => {
+      if (actions.onRefresh) actions.onRefresh();
+    });
+    actionsRow.append(syncButton, refreshButton);
+    ewoHost.appendChild(actionsRow);
+    chart.appendChild(ewoHost);
+  }
+
+  function updateEwoSummary(data) {
+    if (!ewoHost) return;
+    ewoData = data || null;
+    renderEwoSyncSummary(ewoHost, item, ewoData, feedbackText, feedbackTone);
+    const actionsRow = overviewEl("div", "ewo-sync-summary-actions");
+    actionsRow.append(syncButton, refreshButton);
+    ewoHost.appendChild(actionsRow);
+  }
+
+  function setSyncStatus(text, tone = "") {
+    feedbackText = String(text || "");
+    feedbackTone = tone;
+    if (ewoHost) updateEwoSummary(ewoData);
+    if (syncButton) syncButton.setAttribute("aria-label", feedbackText ? `立即同步（${feedbackText}）` : "立即同步");
+  }
+
+  function setBusy(busy) {
+    if (syncButton) syncButton.disabled = Boolean(busy);
+    if (refreshButton) refreshButton.disabled = Boolean(busy);
+    chart.classList.toggle("is-sync-busy", Boolean(busy));
+  }
+
+  return {
+    el: chart,
+    updateEwoSummary,
+    setSyncStatus,
+    setBusy,
+  };
+}
+
+async function runEwoSyncFromStatusChart(item, statusChart, analysisPanel) {
+  if (!statusChart) return;
+  if (!window.confirm(`确定要立即同步 ${item.name} 吗？`)) return;
+  statusChart.setBusy(true);
+  statusChart.setSyncStatus("正在执行同步...", "busy");
+  try {
+    const data = await requestProjectStatusSync(item);
+    const feedback = projectStatusSyncFeedback(data);
+    const loaded = await loadDeliverableAnalysis(analysisPanel, item, statusChart);
+    if (loaded) statusChart.setSyncStatus(feedback.text, feedback.tone);
+  } catch (err) {
+    statusChart.setSyncStatus(
+      `同步失败：${redactSensitiveText(err instanceof Error ? err.message : String(err))}`,
+      "error",
+    );
+  } finally {
+    statusChart.setBusy(false);
+  }
+}
+
+async function refreshEwoAnalysisFromStatusChart(item, statusChart, analysisPanel) {
+  if (!statusChart) return;
+  statusChart.setBusy(true);
+  statusChart.setSyncStatus("正在刷新同步数据...", "busy");
+  try {
+    const loaded = await loadDeliverableAnalysis(analysisPanel, item, statusChart);
+    if (loaded) statusChart.setSyncStatus("刷新完成", "success");
+  } catch (err) {
+    statusChart.setSyncStatus(
+      `刷新失败：${redactSensitiveText(err instanceof Error ? err.message : String(err))}`,
+      "error",
+    );
+  } finally {
+    statusChart.setBusy(false);
+  }
 }
 
 function renderDeliverableDetailPage(deliverableId) {
@@ -2192,12 +2510,15 @@ function renderDeliverableDetailPage(deliverableId) {
   // external cross-department analysis follows when a snapshot is available.
   const analysisPanel = overviewEl("section", "deliverable-analysis-panel");
   analysisPanel.setAttribute("aria-label", `${item.name} 各科室完成情况与明细`);
-  loadDeliverableAnalysis(analysisPanel, item);
 
   const metaSection = overviewEl("section", "deliverable-page-meta-section overview-band");
   metaSection.appendChild(overviewEl("h5", "section-sub-title", "交付物配置"));
-  const statusChart = renderDeliverableStatusChart(item);
-  metaSection.appendChild(statusChart);
+  let statusChart = null;
+  statusChart = renderDeliverableStatusChart(item, {
+    onSync: () => runEwoSyncFromStatusChart(item, statusChart, analysisPanel),
+    onRefresh: () => refreshEwoAnalysisFromStatusChart(item, statusChart, analysisPanel),
+  });
+  metaSection.appendChild(statusChart.el);
   metaSection.appendChild(overviewEl("h6", "section-sub-title", "详细明细"));
   const grid = overviewEl("div", "detail-inline-grid");
   const pairs = [
@@ -2231,6 +2552,7 @@ function renderDeliverableDetailPage(deliverableId) {
   metaSection.appendChild(association);
   page.appendChild(metaSection);
   page.appendChild(analysisPanel);
+  loadDeliverableAnalysis(analysisPanel, item, statusChart);
 
   const policyPanel = overviewEl("section", "deliverable-policy-panel");
   policyPanel.setAttribute("aria-label", `${item.name} 更新方式`);

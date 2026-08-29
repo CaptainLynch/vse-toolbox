@@ -1340,8 +1340,10 @@ class DatabaseManager:
         deliverable_id: str,
         *,
         department: str | None = None,
+        departments: Sequence[str] | None = None,
         completed: bool | None = None,
         stage: str | None = None,
+        stages: Sequence[str] | None = None,
         offset: int = 0,
         limit: int = 500,
     ) -> list[dict[str, Any]]:
@@ -1355,13 +1357,27 @@ class DatabaseManager:
             WHERE deliverable_id = ?
         """
         params: list[object] = [deliverable_id]
-        if department:
-            sql += " AND department = ?"
-            params.append(department)
-        if stage not in (None, "", "all"):
+        department_values = tuple(departments) if departments is not None else ((department,) if department else ())
+        if department_values:
+            placeholders = ", ".join("?" for _ in department_values)
+            sql += f" AND department IN ({placeholders})"
+            params.extend(department_values)
+        if stages is not None and tuple(stages) == ("all",):
+            stage_values: tuple[str, ...] = ()
+        elif stages is not None:
+            stage_values = tuple(stages)
+        else:
+            stage_values = ()
+        if stage_values:
+            placeholders = ", ".join("?" for _ in stage_values)
+            sql += f" AND source_stage IN ({placeholders})"
+            params.extend(stage_values)
+        elif stages is None and stage not in (None, "", "all"):
             sql += " AND source_stage = ?"
             params.append(stage)
-        elif stage in (None, ""):
+        elif stages is None and stage == "all":
+            pass
+        elif stages is None and stage in (None, ""):
             # 默认明细对 EWO 只展示活动阶段与 close；非 EWO 缓存的
             # source_type 为空，因此保留原有通用分析行为。
             sql += (
@@ -1382,8 +1398,10 @@ class DatabaseManager:
         deliverable_id: str,
         *,
         department: str | None = None,
+        departments: Sequence[str] | None = None,
         completed: bool | None = None,
         stage: str | None = None,
+        stages: Sequence[str] | None = None,
     ) -> int:
         sql = """
             SELECT COUNT(*) AS total
@@ -1391,13 +1409,29 @@ class DatabaseManager:
             WHERE deliverable_id = ?
         """
         params: list[object] = [deliverable_id]
-        if department:
-            sql += " AND department = ?"
-            params.append(department)
-        if stage not in (None, "", "all"):
+        department_values = tuple(departments) if departments is not None else ((department,) if department else ())
+        if department_values:
+            placeholders = ", ".join("?" for _ in department_values)
+            sql += f" AND department IN ({placeholders})"
+            params.extend(department_values)
+        if stages is not None and tuple(stages) == ("all",):
+            stage_values: tuple[str, ...] = ()
+        elif stages is not None:
+            stage_values = tuple(stages)
+        else:
+            stage_values = ()
+        if stage_values:
+            placeholders = ", ".join("?" for _ in stage_values)
+            sql += f" AND source_stage IN ({placeholders})"
+            params.extend(stage_values)
+        elif stages is None and stage not in (None, "", "all"):
             sql += " AND source_stage = ?"
             params.append(stage)
-        elif stage in (None, ""):
+        elif stages is None and stage == "all":
+            pass
+        elif stages is None and stage in (None, ""):
+            # 默认明细对 EWO 只展示活动阶段与 close；非 EWO 缓存的
+            # source_type 为空，因此保留原有通用分析行为。
             sql += (
                 " AND (source_type NOT IN ('aras', 'ewo', 'aras_ewo', 'aras/ewo') "
                 "OR source_stage IN ('draft1', 'draft2', 'edit1', 'edit2', 'proc', 'impl', 'close'))"

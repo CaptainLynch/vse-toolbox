@@ -496,6 +496,24 @@ def test_overview_deliverable_evidence_accessibility_and_fallbacks() -> None:
     assert d1_guard < d4_guard < first_evidence_fetch < sync_button
 
 
+def test_overview_ewo_analysis_feedback_controls_are_searchable_multiselects() -> None:
+    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+    css_text = Path("web/static/style.css").read_text(encoding="utf-8-sig")
+
+    assert "analysis-multi-select" in js_text
+    assert "createSearchMultiSelect" in js_text
+    assert "departments" in js_text
+    assert "stages" in js_text
+    assert 'params.append("departments", department)' in js_text
+    assert 'params.append("stages", stage)' in js_text
+    assert "应用筛选" in js_text
+    assert "清除筛选" in js_text
+    assert "ewo-sync-summary" in js_text
+    assert "刷新同步数据" in js_text
+    assert "立即同步" in js_text
+    assert ".analysis-multi-select" in css_text
+
+
 def test_overview_deliverable_evidence_css_contract() -> None:
     css_text = Path("web/static/style.css").read_text(encoding="utf-8-sig")
     start = css_text.index(".overview-tabpanel[hidden]")

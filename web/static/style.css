@@ -4001,6 +4001,86 @@ body.aras-running .result-panel {
   border-radius: 8px;
 }
 
+.ewo-sync-summary {
+  display: grid;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--hairline);
+}
+
+.ewo-sync-summary-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.ewo-sync-summary-head .section-sub-title {
+  margin: 0;
+}
+
+.ewo-sync-summary-status {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.ewo-sync-summary-status.is-busy {
+  color: var(--primary);
+}
+
+.ewo-sync-summary-status.is-success {
+  color: var(--success);
+}
+
+.ewo-sync-summary-status.is-warning {
+  color: var(--warning);
+}
+
+.ewo-sync-summary-status.is-error {
+  color: var(--error);
+}
+
+.ewo-sync-summary-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.ewo-sync-summary-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.ewo-sync-summary-metric {
+  display: grid;
+  gap: 3px;
+  padding: 7px 9px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.ewo-sync-summary-metric .detail-property-value {
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ewo-sync-summary-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ewo-sync-summary-actions .btn {
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
 .deliverable-current-status-head {
   display: flex;
   align-items: center;
@@ -4210,6 +4290,124 @@ body.aras-running .result-panel {
 .analysis-select:focus {
   outline: none;
   border-color: var(--primary);
+}
+
+.analysis-multi-select {
+  position: relative;
+  min-width: 220px;
+  flex: 1 1 220px;
+  max-width: 360px;
+}
+
+.analysis-multi-select-control {
+  min-height: 31px;
+  padding: 3px 6px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  cursor: text;
+}
+
+.analysis-multi-select-control:focus-within {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 18%, transparent);
+}
+
+.analysis-multi-select-tokens {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.analysis-filter-token {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--primary) 16%, transparent);
+  color: var(--ink);
+  font-size: 11px;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.analysis-filter-token-remove {
+  border: 0;
+  padding: 0 1px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.analysis-filter-token-remove:hover,
+.analysis-filter-token-remove:focus-visible {
+  color: var(--error);
+}
+
+.analysis-multi-select-input {
+  min-width: 110px;
+  flex: 1 1 110px;
+  border: 0;
+  outline: 0;
+  padding: 3px 2px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.analysis-multi-select-input::placeholder {
+  color: var(--muted);
+}
+
+.analysis-multi-select-options {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--surface);
+  box-shadow: var(--shadow, 0 8px 20px rgba(0, 0, 0, .16));
+}
+
+.analysis-multi-select-option {
+  display: block;
+  width: 100%;
+  border: 0;
+  border-radius: 4px;
+  padding: 6px 8px;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+  font-size: 12px;
+}
+
+.analysis-multi-select-option:hover,
+.analysis-multi-select-option:focus-visible {
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  outline: 0;
+}
+
+.analysis-filter-apply,
+.analysis-filter-clear {
+  padding: 5px 10px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.analysis-filter-apply.is-attention {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 22%, transparent);
 }
 
 .analysis-toolbar-spacer {
@@ -5191,6 +5389,10 @@ body.aras-running .result-panel {
   .analysis-items-toolbar {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .ewo-sync-summary-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .analysis-items-pager {

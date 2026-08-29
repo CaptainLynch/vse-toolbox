@@ -977,6 +977,37 @@ def _positive_int(value: Any, default: int) -> int:
     return parsed if parsed > 0 else default
 
 
+def _analysis_query_values(
+    primary: str,
+    legacy: str,
+    *,
+    kind: str,
+) -> tuple[str, ...] | None:
+    """Read bounded repeated analysis filters, preferring the new key."""
+    if primary in request.args:
+        raw_values = request.args.getlist(primary)
+    elif legacy in request.args:
+        raw_values = [request.args.get(legacy, "")]
+    else:
+        return None
+    if len(raw_values) > 20:
+        raise ValueError(f"{kind} accepts at most 20 values")
+    values: list[str] = []
+    seen: set[str] = set()
+    for raw_value in raw_values:
+        value = str(raw_value or "").strip()
+        if not value:
+            continue
+        if len(value) > 120:
+            raise ValueError(f"{kind} value is too long")
+        if any(ord(char) < 32 or ord(char) == 127 for char in value):
+            raise ValueError(f"{kind} contains control characters")
+        if value not in seen:
+            seen.add(value)
+            values.append(value)
+    return tuple(values)
+
+
 def _archive_history_limit(value: Any, default: int = 100) -> int:
     """Parse archive history limits strictly; invalid input is never defaulted."""
     if value is None:
@@ -3033,21 +3064,12 @@ def create_app(
             offset = int(raw_offset)
             if not 0 <= offset <= 100000:
                 raise ValueError("offset must be between 0 and 100000")
-            department = request.args.get("department")
-            if department is not None:
-                department = department.strip()
-                if len(department) > 120:
-                    raise ValueError("department is too long")
-                if not department:
-                    department = None
-            raw_stage = request.args.get("stage")
-            stage = None
-            if raw_stage is not None:
-                stage = raw_stage.strip()
-                if len(stage) > 40:
-                    raise ValueError("stage is too long")
-                if not stage:
-                    stage = None
+            departments = _analysis_query_values(
+                "departments", "department", kind="departments"
+            )
+            stages = _analysis_query_values(
+                "stages", "stage", kind="stages"
+            )
             raw_state = request.args.get("state")
             state = None
             if raw_state is not None:
@@ -3069,8 +3091,8 @@ def create_app(
             data = deliverable_analysis_service.items(
                 deliverable_id,
                 alert=request.args.get("alert") or None,
-                department=department,
-                stage=stage,
+                departments=departments,
+                stages=stages,
                 state=state,
                 offset=offset,
                 limit=limit,

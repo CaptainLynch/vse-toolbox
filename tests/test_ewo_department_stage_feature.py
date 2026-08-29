@@ -137,6 +137,73 @@ def test_ewo_filter_payload_targets_rsp_smt() -> None:
     assert "<_rsp_department>" not in payload
 
 
+def test_ewo_items_support_multiple_departments_and_stages_and_unknown_department_is_empty(tmp_path: Path) -> None:
+    db = DatabaseManager(tmp_path / "ewo-multi-filter.db")
+    db.init_database()
+    service = ProjectStatusDeliverableAnalysisService(db, clock=lambda: date(2026, 8, 23))
+    service.publish(
+        "VPI-T2-D3",
+        2,
+        [
+            {"_no": "EWO-BODY", "_rsp_smt": "车身科", "state": "IMPL", "_required_date": "2026-09-01"},
+            {"_no": "EWO-TRIM", "_rsp_smt": "内饰科", "state": "CLOSE", "_required_date": "2026-08-01"},
+            {"_no": "EWO-OPEN", "_rsp_smt": "外饰科", "state": "OPEN", "_required_date": "2026-08-01"},
+        ],
+        source_type="aras",
+        snapshot_at="2026-08-23T00:00:00Z",
+    )
+
+    filtered = service.items(
+        "VPI-T2-D3",
+        departments=("车身科", "内饰科"),
+        stages=("impl", "close"),
+    )
+    assert filtered["total"] == 2
+    assert {item["department"] for item in filtered["items"]} == {"车身科", "内饰科"}
+    assert {item["stage"] for item in filtered["items"]} == {"impl", "close"}
+    assert service.items("VPI-T2-D3", departments=("手工输入的未知科室",))["total"] == 0
+
+
+def test_historical_aras_ewo_cache_recalculates_close_without_mutating_snapshot(tmp_path: Path) -> None:
+    db = DatabaseManager(tmp_path / "ewo-legacy-cache.db")
+    db.init_database()
+    service = ProjectStatusDeliverableAnalysisService(db, clock=lambda: date(2026, 8, 23))
+    service.publish(
+        "VPI-T2-D3",
+        3,
+        [{"_no": "EWO-CLOSE", "_rsp_smt": "车体科", "state": "CLOSE", "_required_date": "2026-08-01"}],
+        source_type="aras",
+        snapshot_at="2026-08-23T00:00:00Z",
+    )
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE project_status_analysis_items "
+            "SET source_type = '', source_stage = NULL, is_completed = 0 "
+            "WHERE deliverable_id = ?",
+            ("VPI-T2-D3",),
+        )
+
+    overview = service.overview("VPI-T2-D3")
+    assert overview["summary"] == {
+        "total": 1,
+        "completed": 1,
+        "incomplete": 0,
+        "overdue": 0,
+        "dueSoon": 0,
+        "missingDueDate": 0,
+    }
+    assert service.items("VPI-T2-D3")["items"][0]["stage"] == "close"
+    with db.get_connection() as conn:
+        row = conn.execute(
+            "SELECT source_type, source_stage, is_completed "
+            "FROM project_status_analysis_items WHERE deliverable_id = ?",
+            ("VPI-T2-D3",),
+        ).fetchone()
+    assert row["source_type"] == ""
+    assert row["source_stage"] is None
+    assert row["is_completed"] == 0
+
+
 class ArasProjectStatusFiltersProbe:
     @staticmethod
     def build(filters: EWOReportFilters) -> str:

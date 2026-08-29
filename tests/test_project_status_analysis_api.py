@@ -149,3 +149,40 @@ def test_analysis_api_returns_cache_departments_trend_and_warnings(client_and_db
         "/api/project-status/deliverables/VPI-T2-D5/analysis/items?alert=unknown"
     )
     assert invalid.status_code == 422
+
+
+def test_analysis_api_accepts_repeated_department_and_stage_filters(client_and_db) -> None:
+    client, db = client_and_db
+    service = ProjectStatusDeliverableAnalysisService(db, clock=lambda: date(2026, 8, 23))
+    service.publish(
+        "VPI-T2-D3",
+        88,
+        [
+            {"_no": "EWO-1", "_rsp_smt": "车身科", "state": "IMPL", "_required_date": "2026-08-20"},
+            {"_no": "EWO-2", "_rsp_smt": "内饰科", "state": "CLOSE", "_required_date": "2026-08-20"},
+            {"_no": "EWO-3", "_rsp_smt": "外饰科", "state": "OPEN", "_required_date": "2026-08-20"},
+        ],
+        source_type="aras",
+        snapshot_at="2026-08-23T00:00:00Z",
+    )
+
+    response = client.get(
+        "/api/project-status/deliverables/VPI-T2-D3/analysis/items"
+        "?departments=%E8%BD%A6%E8%BA%AB%E7%A7%91&departments=%E5%86%85%E9%A5%B0%E7%A7%91"
+        "&stages=impl&stages=close"
+    )
+    assert response.status_code == 200
+    data = response.get_json()["data"]
+    assert data["total"] == 2
+    assert {row["stage"] for row in data["items"]} == {"impl", "close"}
+
+    unknown = client.get(
+        "/api/project-status/deliverables/VPI-T2-D3/analysis/items?departments=%E6%9C%AA%E7%9F%A5%E7%A7%91%E5%AE%A4"
+    )
+    assert unknown.status_code == 200
+    assert unknown.get_json()["data"]["total"] == 0
+
+    invalid_stage = client.get(
+        "/api/project-status/deliverables/VPI-T2-D3/analysis/items?stages=not-a-stage"
+    )
+    assert invalid_stage.status_code == 422

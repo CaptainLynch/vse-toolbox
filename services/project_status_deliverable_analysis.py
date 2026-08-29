@@ -135,6 +135,58 @@ def _stage_filter(value: object) -> str | None:
     return stage
 
 
+def _filter_values(values: object, *, kind: str) -> tuple[str, ...]:
+    """Normalize a bounded multi-value filter without ever building SQL text."""
+    if values is None:
+        return ()
+    if isinstance(values, str):
+        raw_values = [values]
+    else:
+        try:
+            raw_values = list(values)  # type: ignore[arg-type]
+        except TypeError as exc:
+            raise ValueError(f"{kind} filter must be a sequence") from exc
+    if len(raw_values) > 20:
+        raise ValueError(f"{kind} filter accepts at most 20 values")
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_values:
+        value = str(raw).strip()
+        if not value:
+            continue
+        if len(value) > 120:
+            raise ValueError(f"{kind} filter value is too long")
+        if any(ord(char) < 32 or ord(char) == 127 for char in value):
+            raise ValueError(f"{kind} filter contains control characters")
+        if kind == "stage":
+            value = _stage_filter(value) or ""
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        normalized.append(value)
+    if kind == "stage" and "all" in seen:
+        return ("all",)
+    return tuple(normalized)
+
+
+def _department_filters(
+    department: str | None = None,
+    departments: Sequence[str] | None = None,
+) -> tuple[str, ...]:
+    """Prefer the new multi-value contract while retaining the old argument."""
+    values: object = departments if departments is not None else department
+    return _filter_values(values, kind="department")
+
+
+def _stage_filters(
+    stage: str | None = None,
+    stages: Sequence[str] | None = None,
+) -> tuple[str, ...]:
+    """Prefer the new multi-value contract while retaining the old argument."""
+    values: object = stages if stages is not None else stage
+    return _filter_values(values, kind="stage")
+
+
 def _item_source_type(item: Mapping[str, Any], source_type: object = None) -> object:
     stored = item.get("source_type")
     return stored if stored not in (None, "") else source_type
@@ -154,14 +206,18 @@ def _item_is_in_scope(
     *,
     source_type: object = None,
     department: str | None = None,
+    departments: Sequence[str] | None = None,
     stage: str | None = None,
+    stages: Sequence[str] | None = None,
 ) -> bool:
-    if department is not None and str(item.get("department") or "未归属") != department:
+    department_values = _department_filters(department, departments)
+    if department_values and str(item.get("department") or "未归属") not in department_values:
         return False
     is_ewo = is_ewo_source_type(_item_source_type(item, source_type))
-    if stage not in (None, "all"):
-        return is_ewo and _item_stage(item, source_type) == stage
-    if is_ewo and stage is None:
+    stage_values = _stage_filters(stage, stages)
+    if stage_values and stage_values != ("all",):
+        return is_ewo and _item_stage(item, source_type) in stage_values
+    if is_ewo and not stage_values:
         current_stage = _item_stage(item, source_type)
         return current_stage in (*EWO_ACTIVE_STAGES, EWO_TERMINAL_STAGE)
     return True
@@ -326,9 +382,12 @@ def summarize_analysis_items(
     today: date | None = None,
     source_type: str | None = None,
     department: str | None = None,
+    departments: Sequence[str] | None = None,
     stage: str | None = None,
+    stages: Sequence[str] | None = None,
 ) -> dict[str, Any]:
-    stage = _stage_filter(stage)
+    department_values = _department_filters(department, departments)
+    stage_values = _stage_filters(stage, stages)
     current = today or date.today()
     department_counts: dict[str, dict[str, int]] = {}
     completed_count = overdue_count = due_soon_count = missing_count = 0
@@ -337,8 +396,8 @@ def summarize_analysis_items(
         if _item_is_in_scope(
             item,
             source_type=source_type,
-            department=department,
-            stage=stage,
+            departments=department_values,
+            stages=stage_values,
         )
     ]
     for item in selected_items:
@@ -423,25 +482,47 @@ class ProjectStatusDeliverableAnalysisService:
                 "dueSoon": int(row["due_soon_count"]),
             })
         department_counts: dict[str, Any] = {}
+        recalculated: dict[str, Any] | None = None
+        cache_items = self._cached_items(deliverable_id, deliverable=deliverable)
+        if latest is not None and self._is_ewo_deliverable(deliverable_id, deliverable):
+            recalculated = summarize_analysis_items(
+                cache_items,
+                snapshot_at=latest["snapshot_at"],
+                today=self._clock(),
+            )
         if latest is not None:
             try:
-                parsed = json.loads(str(latest["department_counts_json"]))
+                parsed = (
+                    recalculated["department_counts"]
+                    if recalculated is not None
+                    else json.loads(str(latest["department_counts_json"]))
+                )
                 if isinstance(parsed, dict):
                     department_counts = parsed
             except (TypeError, ValueError):
                 department_counts = {}
+        summary = None if latest is None else {
+            "total": int(latest["total_count"]),
+            "completed": int(latest["completed_count"]),
+            "incomplete": int(latest["incomplete_count"]),
+            "overdue": int(latest["overdue_count"]),
+            "dueSoon": int(latest["due_soon_count"]),
+            "missingDueDate": int(latest["missing_due_date_count"]),
+        }
+        if recalculated is not None:
+            summary = {
+                "total": int(recalculated["total_count"]),
+                "completed": int(recalculated["completed_count"]),
+                "incomplete": int(recalculated["incomplete_count"]),
+                "overdue": int(recalculated["overdue_count"]),
+                "dueSoon": int(recalculated["due_soon_count"]),
+                "missingDueDate": int(recalculated["missing_due_date_count"]),
+            }
         return {
             "deliverable": deliverable,
             "hasCache": latest is not None,
             "snapshotAt": latest["snapshot_at"] if latest else None,
-            "summary": None if latest is None else {
-                "total": int(latest["total_count"]),
-                "completed": int(latest["completed_count"]),
-                "incomplete": int(latest["incomplete_count"]),
-                "overdue": int(latest["overdue_count"]),
-                "dueSoon": int(latest["due_soon_count"]),
-                "missingDueDate": int(latest["missing_due_date_count"]),
-            },
+            "summary": summary,
             "departments": department_counts,
             "trend": trend,
             "carType": car_type,
@@ -453,65 +534,66 @@ class ProjectStatusDeliverableAnalysisService:
         *,
         alert: str | None = None,
         department: str | None = None,
+        departments: Sequence[str] | None = None,
         stage: str | None = None,
+        stages: Sequence[str] | None = None,
         state: str | None = None,
         offset: int = 0,
         limit: int = 200,
         car_type: str | None = None,
     ) -> dict[str, Any]:
-        self._deliverable(deliverable_id)
-        stage = _stage_filter(stage)
+        deliverable = self._deliverable(deliverable_id)
+        department_values = _department_filters(department, departments)
+        stage_values = _stage_filters(stage, stages)
         if state not in {None, "completed", "incomplete"}:
             raise ValueError("unsupported state filter")
         if alert not in {None, "overdue", "due_soon", "missing_due_date"}:
             raise ValueError("unsupported alert filter")
         if alert is not None and (state is not None or int(offset) != 0):
             raise ValueError("alert filter cannot be combined with state/offset pagination")
-        if department is not None:
-            department = str(department).strip() or None
-            if self._has_ewo_cache(deliverable_id) and department not in EWO_DEFAULT_DEPARTMENTS:
-                raise ValueError("unsupported department filter")
 
         current = self._clock()
-        if alert is not None:
-            bounded_limit = max(1, min(int(limit), 500))
-            rows = self.db.list_project_status_analysis_items(
-                deliverable_id,
-                department=department,
-                stage=stage,
-                limit=bounded_limit,
+        rows = [
+            row for row in self._cached_items(deliverable_id, deliverable=deliverable)
+            if _item_is_in_scope(
+                row,
+                departments=department_values,
+                stages=stage_values,
             )
-            selected = []
+        ]
+        if state is not None:
+            want_completed = state == "completed"
+            rows = [row for row in rows if bool(row.get("is_completed")) is want_completed]
+
+        if alert is not None:
+            alert_rows: list[tuple[Mapping[str, Any], str, int | None]] = []
             for row in rows:
                 alert_type, days = _alert_type(row, current)
-                if alert_type != alert:
-                    continue
-                selected.append(self._serialize_item(row, alert_type, days))
-            order = {"overdue": 0, "due_soon": 1, "missing_due_date": 2, None: 3}
-            selected.sort(key=lambda item: (
-                order[item["alertType"]],
-                item["plannedDate"] or "9999-12-31",
-                item["title"],
+                if alert_type == alert:
+                    alert_rows.append((row, alert_type, days))
+            alert_rows.sort(key=lambda entry: (
+                {"overdue": 0, "due_soon": 1, "missing_due_date": 2}[entry[1]],
+                entry[0].get("planned_date") or "9999-12-31",
+                entry[0].get("title") or "",
             ))
-            total = len(selected)
+            total = len(alert_rows)
+            bounded_limit = max(1, min(int(limit), 500))
+            selected = [
+                self._serialize_item(row, alert_type, days)
+                for row, alert_type, days in alert_rows[:bounded_limit]
+            ]
         else:
-            completed_filter = None if state is None else (state == "completed")
-            rows = self.db.list_project_status_analysis_items(
-                deliverable_id,
-                department=department,
-                completed=completed_filter,
-                stage=stage,
-                offset=offset,
-                limit=limit,
-            )
-            total = self.db.count_project_status_analysis_items(
-                deliverable_id,
-                department=department,
-                completed=completed_filter,
-                stage=stage,
-            )
+            rows.sort(key=lambda row: (
+                int(bool(row.get("is_completed"))),
+                row.get("planned_date") is not None,
+                row.get("planned_date") or "",
+                row.get("title") or "",
+            ))
+            total = len(rows)
+            bounded_offset = max(0, int(offset))
+            bounded_limit = max(1, min(int(limit), 1000))
             selected = []
-            for row in rows:
+            for row in rows[bounded_offset:bounded_offset + bounded_limit]:
                 alert_type, days = _alert_type(row, current)
                 selected.append(self._serialize_item(row, alert_type, days))
 
@@ -524,11 +606,44 @@ class ProjectStatusDeliverableAnalysisService:
             "carType": car_type,
         }
 
-    def _has_ewo_cache(self, deliverable_id: str) -> bool:
-        return any(
-            is_ewo_source_type(source_type)
-            for source_type in self.db.list_project_status_analysis_source_types(deliverable_id)
+    @staticmethod
+    def _is_ewo_deliverable(deliverable_id: str, deliverable: Mapping[str, Any]) -> bool:
+        if deliverable_id != "VPI-T2-D3":
+            return False
+        source = re.sub(r"[\s_-]+", "", str(deliverable.get("source") or "")).casefold()
+        return source == "arasewo"
+
+    def _cached_items(
+        self,
+        deliverable_id: str,
+        *,
+        deliverable: Mapping[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Read current items and apply the narrow legacy ARAS EWO fallback in memory."""
+        if deliverable is None:
+            deliverable = self._deliverable(deliverable_id)
+        historical_ewo = self._is_ewo_deliverable(deliverable_id, deliverable)
+        rows = self.db.list_project_status_analysis_items(
+            deliverable_id,
+            stage="all",
+            limit=1000,
         )
+        normalized: list[dict[str, Any]] = []
+        for row in rows:
+            current = dict(row)
+            stored_source_type = str(current.get("source_type") or "").strip()
+            if historical_ewo and (
+                not stored_source_type or is_ewo_source_type(stored_source_type)
+            ):
+                stage = normalize_ewo_stage(
+                    current.get("source_stage") or current.get("source_status")
+                )
+                if not stored_source_type:
+                    current["source_type"] = "aras"
+                current["source_stage"] = stage
+                current["is_completed"] = stage == EWO_TERMINAL_STAGE
+            normalized.append(current)
+        return normalized
 
     @staticmethod
     def _serialize_item(
