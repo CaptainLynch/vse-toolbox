@@ -4,7 +4,7 @@
 
 **Goal:** 限制 EWO 默认同步科室范围，统一阶段与逾期规则，并在 Web 交付明细中提供科室/阶段筛选。
 
-**Architecture:** Aras 查询层使用受控的五科室并集过滤；共享分析服务将 EWO `state` 规范化为独立 `source_stage` 并按阶段计算统计；Flask API 暴露安全筛选参数，前端交付明细通过同一 API 分页筛选。CLI 不新增交互控件，但复用共享同步逻辑。
+**Architecture:** Aras 查询层使用 EWO `_rsp_smt` 字段的受控五科室并集过滤（`_rsp_department` 保留上级部门语义）；共享分析服务在显式 `source_type` 边界内将 EWO `state` 规范化为独立 `source_stage` 并按阶段计算统计；Flask API 暴露安全筛选参数，前端交付明细通过同一 API 分页筛选。CLI 不新增交互控件，但复用共享同步逻辑。
 
 **Tech Stack:** Python 3.9+, Flask, SQLite, pytest, 原有 Aras SOAP/HTTP crawler, 原生 JavaScript/CSS。
 
@@ -15,7 +15,7 @@
 - 默认科室仅为：车身科、车体科、外饰科、内饰科、车体架构集成科。
 - EWO 阶段仅允许：`open`、`draft1`、`draft2`、`edit1`、`edit2`、`proc`、`impl`、`close`。
 - `open` 默认不计入统计；`close` 为完成且不逾期；`draft1` 至 `impl` 按截止日期判定。
-- 未知阶段不得猜测映射，保留原始状态并进入待处理证据。
+- 未知阶段不得猜测映射，返回 `stage: null`、`stageAttention: true`，且不计入 `total/incomplete/overdue`。
 - 不改变 TDC 逻辑，不新增依赖，不写入凭据或敏感响应。
 - `services`/`core` 不得导入 Flask 或 Rich；前端只通过现有 `{ok,data}` API 契约通信。
 
@@ -24,11 +24,13 @@
 **Files:**
 - Modify: `services/project_status_deliverable_analysis.py`
 - Modify: `services/project_status_connectors.py`
+- Modify: `services/project_status_sync_runner.py` (source_type 发布边界)
 - Test: `tests/test_project_status_deliverable_analysis.py` (若不存在则在现有相关测试文件中加入)
 - Test: `tests/test_project_status_connectors.py`
 
 **Interfaces:**
 - Produces constants for default departments and canonical stages, plus a pure normalizer returning canonical stage or `None`.
+- Analysis publish path accepts explicit `source_type` and applies EWO stage rules only to `aras/ewo`.
 
 - [ ] **Step 1: Write failing tests** for all eight stages, case/whitespace normalization, unknown stage, and default department tuple.
 - [ ] **Step 2: Run focused tests** with `pytest tests/test_project_status_deliverable_analysis.py tests/test_project_status_connectors.py -q` and confirm failure.
@@ -47,7 +49,7 @@
 **Interfaces:**
 - `ArasProjectStatusConnector.collect(context)` must pass a validated `rsp_department` expression when match rules omit a department.
 
-- [ ] **Step 1: Add failing tests** asserting model-info sync sends the five-department OR expression, explicit departments are validated, and missing departments never produce an unbounded query.
+- [ ] **Step 1: Add failing tests** asserting model-info sync sends the fixed five-department `_rsp_smt` OR expression and legacy bindings never produce an unbounded query.
 - [ ] **Step 2: Run the connector tests** and confirm failure.
 - [ ] **Step 3: Implement** the default filter using the existing Aras multi-value search syntax; preserve CLI reuse and session cleanup.
 - [ ] **Step 4: Run connector and sync-runner tests** and confirm pass.
@@ -84,7 +86,7 @@
 - `summarize_analysis_items(..., department=None, stage=None, ...)` validates stage and applies the same filter to rows and totals.
 - `_alert_type` excludes `open`, treats `close` as complete, and date-checks active stages.
 
-- [ ] **Step 1: Add failing tests** for open exclusion, close completion/no alert, active-stage overdue/due-soon/missing-date, unknown stage attention, and combined department/stage pagination.
+- [ ] **Step 1: Add failing tests** for open exclusion, close completion/no alert, active-stage overdue/due-soon/missing-date, unknown stage attention/non-counting, source_type isolation, and combined department/stage pagination.
 - [ ] **Step 2: Run focused tests** and confirm failure.
 - [ ] **Step 3: Implement** stage-aware SQL filtering and summary derivation while preserving generic non-EWO behavior.
 - [ ] **Step 4: Run analysis/paging tests** and confirm pass.
@@ -101,7 +103,7 @@
 - `GET /api/project-status/deliverables/<deliverable_id>/analysis/items` accepts `department` and `stage`.
 - Item payload includes `stage` while retaining `status`.
 
-- [ ] **Step 1: Add failing API tests** for valid filters, invalid stage, unknown department handling, default open exclusion, and total/list consistency.
+- [ ] **Step 1: Add failing API tests** for valid filters, invalid stage, unknown department returning 422, default open/unknown exclusion, stageAttention serialization, alert-branch filtering, and total/list consistency.
 - [ ] **Step 2: Run focused API tests** and confirm failure.
 - [ ] **Step 3: Implement** bounded query parsing, error responses via existing sanitized helpers, and stage serialization.
 - [ ] **Step 4: Run API tests** and confirm pass.
