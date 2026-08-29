@@ -122,6 +122,119 @@ def normalize_ewo_stage(value: object) -> str | None:
     return aliases.get(normalized)
 
 
+# 待签署人员的条目分隔符：换行、分号、中英文逗号。空格只在下一段以新的
+# “ROLE:”前缀开头时才视为分隔，保证历史折叠行与人名内部空格都能正确处理。
+_SIGNER_SPLIT_RE = re.compile(r"[\r\n;；,，]+")
+_SIGNER_ROLE_RE = re.compile(r"^([^\s:；，,]{1,32})[:：](.*)$", re.DOTALL)
+_SIGNER_TOKEN_ROLE_RE = re.compile(r"^[^\s:；，,]{1,32}[:：]")
+
+
+def _signer_role_person(entry: str) -> tuple[str, str] | None:
+    """Split one signer entry into (role, person); empty role means no role."""
+    match = _SIGNER_ROLE_RE.match(entry)
+    if match is None:
+        return ("", entry)
+    role = match.group(1).strip()
+    person = match.group(2).strip()
+    if not person:
+        return None
+    return (role, person)
+
+
+def _signer_entries_from_text(text: str) -> list[str]:
+    """Split signer text into entries, tolerating legacy whitespace-collapsed lines."""
+    entries: list[str] = []
+    current = ""
+
+    def flush() -> None:
+        nonlocal current
+        if current:
+            entries.append(current)
+            current = ""
+
+    for chunk in _SIGNER_SPLIT_RE.split(text):
+        flush()
+        for token in chunk.split():
+            if current and not _SIGNER_TOKEN_ROLE_RE.match(token):
+                current = f"{current} {token}"
+            else:
+                flush()
+                current = token
+    flush()
+    return entries
+
+
+def _signer_pairs(value: object) -> list[tuple[str, str]]:
+    """Collect (role, person) pairs from strings, mappings, arrays and JSON text."""
+    if value is None:
+        return []
+    if isinstance(value, Mapping):
+        pairs: list[tuple[str, str]] = []
+        for key, item in value.items():
+            role = str(key).strip()
+            if not role:
+                continue
+            for entry_role, person in _signer_pairs(item):
+                pairs.append((entry_role or role, person))
+        return pairs
+    if isinstance(value, (list, tuple)):
+        pairs = []
+        for item in value:
+            if isinstance(item, Mapping):
+                fields = {
+                    str(key).strip().casefold(): nested
+                    for key, nested in item.items()
+                    if isinstance(key, str)
+                }
+                role = str(fields.get("role") or "").strip()
+                for entry_role, person in _signer_pairs(fields.get("person")):
+                    pairs.append((entry_role or role, person))
+            else:
+                pairs.extend(_signer_pairs(str(item)))
+        return pairs
+    pairs = []
+    for entry in _signer_entries_from_text(str(value)):
+        pair = _signer_role_person(entry)
+        if pair is not None:
+            pairs.append(pair)
+    return pairs
+
+
+def normalize_pending_signers(value: object) -> str:
+    """Normalize pending signer inputs into one `ROLE:person` line per signer.
+
+    Accepts delimiter-separated strings (newline/semicolon/Chinese-or-English
+    comma), `[{role, person}]` arrays, `{role: person}` mappings and their JSON
+    string encodings. Blank entries are dropped, identical role/person pairs
+    keep their first occurrence, unknown roles are preserved verbatim, and
+    entries without any role are kept as-is. The dedicated pending-signer
+    aliases are the only input source; the responsible-person field is never a
+    fallback.
+    """
+    if value in (None, ""):
+        return ""
+    raw: object = value
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode("utf-8", "replace")
+    if isinstance(raw, str):
+        text = raw.strip()
+        if text[:1] in ("{", "["):
+            try:
+                parsed = json.loads(text)
+            except ValueError:
+                parsed = None
+            if isinstance(parsed, (Mapping, list)):
+                raw = parsed
+    normalized: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for role, person in _signer_pairs(raw):
+        if (role, person) in seen:
+            continue
+        seen.add((role, person))
+        normalized.append(f"{role}:{person}" if role else person)
+    return "\n".join(normalized)
+
+
 def _stage_filter(value: object) -> str | None:
     """Validate/canonicalize a service or API stage filter."""
     if value in (None, ""):
@@ -337,10 +450,12 @@ def normalize_analysis_rows(
         title = _safe_text(_field_value(row, "title", checked_mapping) or raw_key or "未命名任务", limit=240)
         department = _safe_text(_field_value(row, "department", checked_mapping) or "未归属", limit=120)
         owner = _safe_text(_field_value(row, "owner", checked_mapping) or "", limit=120)
-        pending_signers = _safe_text(
-            _field_value(row, "pending_signers", checked_mapping) or "",
+        # 待签署人员只来自专用字段；先规范化为 ROLE:person 行再做脱敏，
+        # 且不折叠换行，保证“每条一行”的输出契约在缓存中保留。
+        pending_signers = redact_sensitive_text(
+            normalize_pending_signers(_field_value(row, "pending_signers", checked_mapping)),
             limit=500,
-        )
+        ).strip()
         status = _safe_text(_field_value(row, "status", checked_mapping) or "", limit=120)
         source_stage = normalize_ewo_stage(status) if ewo_source else None
         stage_attention = ewo_source and source_stage is None
@@ -659,7 +774,8 @@ class ProjectStatusDeliverableAnalysisService:
             "title": row["title"],
             "department": row["department"],
             "owner": row["owner"],
-            "pendingSigners": row.get("pending_signers") or "",
+            # 存量行可能是历史折叠值，读取时再规范化一次（幂等）。
+            "pendingSigners": normalize_pending_signers(row.get("pending_signers")),
             "status": row["source_status"],
             "stage": stage,
             "stageAttention": bool(is_ewo and stage is None),

@@ -706,7 +706,91 @@ function renderDeliverablePolicyEditor(container, item, policy) {
   container.append(titleRow, form);
 }
 
+const EWO_POLICY_MODE_LABELS = {
+  manual: "手动维护",
+  automatic: "自动同步",
+  hybrid: "混合模式",
+};
+const EWO_POLICY_RECOMMENDED_MODE = "automatic";
+
+// 就绪信号只有两个：既有 policy API 的 enabled === true，且 mapping 完整
+// （非空对象且每个值都是非空字段名）。两者缺一显示 未启用，不得声称已同步。
+function deliverablePolicyMappingReady(policy) {
+  if (!policy || policy.enabled !== true) return false;
+  const mapping = policy.mapping;
+  if (!mapping || typeof mapping !== "object" || Array.isArray(mapping)) return false;
+  const keys = Object.keys(mapping);
+  if (keys.length === 0) return false;
+  return keys.every((key) => {
+    const value = mapping[key];
+    return typeof value === "string" && value.trim().length > 0;
+  });
+}
+
+function renderEwoDeliverablePolicy(container, item, policy) {
+  container.textContent = "";
+  const head = overviewEl("div", "policy-editor-head");
+  head.append(
+    overviewEl("strong", "policy-editor-title", "更新方式"),
+    overviewEl("span", "policy-source", "数据来源 · ARAS EWO"),
+  );
+
+  const modeGroup = overviewEl("fieldset", "policy-mode-group");
+  modeGroup.appendChild(overviewEl("legend", null, "更新模式"));
+  const modeList = overviewEl("div", "policy-ewo-modes");
+  const currentMode = policy && typeof policy.mode === "string" ? policy.mode : "";
+  Object.entries(EWO_POLICY_MODE_LABELS).forEach(([value, label]) => {
+    const option = overviewEl(
+      "div",
+      `policy-ewo-mode${value === currentMode ? " is-current" : ""}${value === EWO_POLICY_RECOMMENDED_MODE ? " is-recommended" : ""}`,
+    );
+    option.appendChild(overviewEl("span", "policy-ewo-mode-label", label));
+    if (value === EWO_POLICY_RECOMMENDED_MODE) {
+      option.appendChild(overviewEl("span", "policy-ewo-mode-badge", "推荐：自动同步"));
+    }
+    if (value === currentMode) {
+      option.appendChild(overviewEl("span", "policy-ewo-mode-current", "当前模式"));
+    }
+    modeList.appendChild(option);
+  });
+  modeGroup.appendChild(modeList);
+
+  const ready = deliverablePolicyMappingReady(policy);
+  const readiness = overviewEl(
+    "p",
+    `policy-ewo-readiness ${ready ? "is-ready" : "is-disabled"}`,
+    ready ? "已启用：字段映射已配置" : "未启用",
+  );
+  const note = overviewEl(
+    "p",
+    "policy-ewo-note",
+    "模式展示仅表示策略取向，不代表已启用同步；是否可同步以上方就绪状态为准。",
+  );
+  container.append(head, modeGroup, readiness, note);
+}
+
 async function loadDeliverablePolicy(container, item) {
+  if (/ewo/i.test(String(item.source || ""))) {
+    container.appendChild(overviewEl("p", "policy-loading", "正在读取更新策略..."));
+    try {
+      const response = await fetch(`/api/project-status/deliverables/${encodeURIComponent(item.id)}/update-policy`, {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      });
+      const body = await overviewReadJson(response);
+      if (!response.ok || !body || body.ok !== true) throw overviewRequestError(body, response.status);
+      renderEwoDeliverablePolicy(container, item, body.data);
+    } catch (err) {
+      // 无绑定或读取失败时按未启用展示，并保留脱敏后的错误信息。
+      renderEwoDeliverablePolicy(container, item, null);
+      container.appendChild(overviewEl(
+        "p",
+        "policy-request-status is-error",
+        err instanceof Error ? err.message : String(err),
+      ));
+    }
+    return;
+  }
   if (item.id !== "VPI-T2-D5") {
     container.append(
       overviewEl("strong", "policy-editor-title", "更新方式"),
@@ -1481,7 +1565,13 @@ function renderDepartmentDoneChart(summary, departments, onSelect) {
   };
 }
 
-function createSearchMultiSelect({ ariaLabel, placeholder, options, normalizeValue = (value) => value }) {
+function createSearchMultiSelect({
+  ariaLabel,
+  placeholder,
+  options,
+  normalizeValue = (value) => value,
+  labelFor = (value) => value,
+}) {
   const root = overviewEl("div", "analysis-multi-select");
   root.setAttribute("role", "group");
   root.setAttribute("aria-label", ariaLabel);
@@ -1513,10 +1603,10 @@ function createSearchMultiSelect({ ariaLabel, placeholder, options, normalizeVal
     tokens.textContent = "";
     selected.forEach((value) => {
       const token = overviewEl("span", "analysis-filter-token");
-      token.appendChild(overviewEl("span", "analysis-filter-token-label", safeDisplayValue(value)));
+      token.appendChild(overviewEl("span", "analysis-filter-token-label", safeDisplayValue(labelFor(value))));
       const remove = overviewEl("button", "analysis-filter-token-remove", "×");
       remove.type = "button";
-      remove.setAttribute("aria-label", `移除 ${safeDisplayValue(value)}`);
+      remove.setAttribute("aria-label", `移除 ${safeDisplayValue(labelFor(value))}`);
       remove.addEventListener("click", () => {
         selected = selected.filter((item) => item !== value);
         renderTokens();
@@ -1616,6 +1706,11 @@ function createSearchMultiSelect({ ariaLabel, placeholder, options, normalizeVal
   };
 }
 
+// 阶段值在接口与请求中保持小写规范值，只在所有用户可见位置显示大写。
+function formatEwoStageLabel(stage) {
+  return String(stage || "").trim().toUpperCase();
+}
+
 function renderAnalysisItemsSection(item, departments, onDeptChange) {
   const section = overviewEl("div", "analysis-sub-section");
   const titleEl = overviewEl("h6", "analysis-sub-title", "明细任务清单");
@@ -1665,25 +1760,26 @@ function renderAnalysisItemsSection(item, departments, onDeptChange) {
   });
 
   const stageOptions = [
-    ["all", "全部阶段（含 open/未知）"],
-    ["open", "open（未纳入统计）"],
-    ["draft1", "draft1"],
-    ["draft2", "draft2"],
-    ["edit1", "edit1"],
-    ["edit2", "edit2"],
-    ["proc", "proc"],
-    ["impl", "impl"],
-    ["close", "close（已关闭）"],
+    ["all", "全部阶段（含 OPEN/未知）"],
+    ["open", "OPEN（未纳入统计）"],
+    ["draft1", "DRAFT1"],
+    ["draft2", "DRAFT2"],
+    ["edit1", "EDIT1"],
+    ["edit2", "EDIT2"],
+    ["proc", "PROC"],
+    ["impl", "IMPL"],
+    ["close", "CLOSE（已关闭）"],
   ];
   const canonicalStages = new Set(stageOptions.map(([value]) => value));
   const stageMulti = createSearchMultiSelect({
     ariaLabel: "按流程阶段筛选",
-    placeholder: "有效阶段（排除 open）—搜索或输入后按 Enter",
+    placeholder: "有效阶段（排除 OPEN）—搜索或输入后按 Enter",
     options: stageOptions,
     normalizeValue: (value) => {
       const normalized = String(value || "").trim().toLowerCase();
       return canonicalStages.has(normalized) ? normalized : "";
     },
+    labelFor: formatEwoStageLabel,
   });
 
   const applyBtn = overviewEl("button", "btn is-primary analysis-filter-apply", "应用筛选");
@@ -1815,11 +1911,11 @@ function renderAnalysisItemsSection(item, departments, onDeptChange) {
       // 负责人
       tr.appendChild(overviewEl("td", null, safeDisplayValue(it.owner)));
 
-      // EWO 流程阶段
+      // EWO 流程阶段（接口值为小写，显示统一大写）
       const stageTd = overviewEl("td");
       const stageChip = overviewEl("span", "analysis-stage-chip");
       if (it.stage) {
-        stageChip.textContent = safeDisplayValue(it.stage);
+        stageChip.textContent = safeDisplayValue(formatEwoStageLabel(it.stage));
         if (it.stage === "close") {
           stageChip.className = "analysis-stage-chip is-closed";
         } else if (it.stage === "open") {
@@ -1838,30 +1934,28 @@ function renderAnalysisItemsSection(item, departments, onDeptChange) {
       stageTd.appendChild(stageChip);
       tr.appendChild(stageTd);
 
-      // 状态
+      // 状态列只表达提醒状态：超期/未超期；阶段信息在上一列展示。
       const statusTd = overviewEl("td");
       const chip = overviewEl("span", "analysis-status-chip");
-      const statusText = it.status || (it.completed ? "已完成" : "未完成");
-      chip.textContent = safeDisplayValue(statusText);
-      const sTrim = String(statusText).trim();
-      const sLower = sTrim.toLowerCase();
-      if (it.completed) {
-        chip.className = "analysis-status-chip is-completed";
-      } else if (
-        ["已废弃", "已撤回", "废弃", "撤回", "已作废", "作废"].includes(sTrim) ||
-        ["cancelled", "canceled", "abandoned"].includes(sLower)
-      ) {
-        chip.className = "analysis-status-chip is-abandoned";
-      } else {
-        chip.className = "analysis-status-chip is-incomplete";
-      }
+      const isOverdue = it.alertType === "overdue";
+      chip.textContent = isOverdue ? "超期" : "未超期";
+      chip.className = `analysis-status-chip ${isOverdue ? "is-overdue" : "is-normal"}`;
       statusTd.appendChild(chip);
       tr.appendChild(statusTd);
 
-      // 待签署人员
-      const signersTd = overviewEl("td", "analysis-signers-cell", safeDisplayValue(it.pendingSigners || "无"));
-      if (it.pendingSigners) {
-        signersTd.title = it.pendingSigners;
+      // 待签署人员：按角色逐行显示（ROLE:person），无值显示 无。
+      const signersTd = overviewEl("td", "analysis-signers-cell");
+      const signerLines = String(it.pendingSigners || "")
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean);
+      if (signerLines.length === 0) {
+        signersTd.appendChild(overviewEl("span", "analysis-signers-empty", "无"));
+      } else {
+        signerLines.forEach((line) => {
+          signersTd.appendChild(overviewEl("div", "analysis-signer-line", safeDisplayValue(line)));
+        });
+        signersTd.title = signerLines.map((line) => safeDisplayValue(line)).join("\n");
       }
       tr.appendChild(signersTd);
 
@@ -2266,7 +2360,6 @@ function renderEwoSyncSummary(host, item, analysisData, feedbackText = "", feedb
   meta.append(
     overviewEl("span", null, `最近同步状态：${statusText}`),
     overviewEl("span", null, `最近同步时间：${snapshotText}`),
-    overviewEl("span", null, `最近快照：${snapshotText}`),
   );
   const metrics = overviewEl("div", "ewo-sync-summary-metrics");
   [
@@ -2282,7 +2375,10 @@ function renderEwoSyncSummary(host, item, analysisData, feedbackText = "", feedb
     );
     metrics.appendChild(metric);
   });
-  host.append(titleRow, meta, metrics);
+  // 摘要与手工进度来源不同：明确标注统计来自最近一次 EWO 快照，
+  // 不覆盖 item.progress 等手工字段。
+  const sourceNote = overviewEl("p", "ewo-sync-summary-source", "统计来自最近一次 EWO 快照");
+  host.append(titleRow, meta, metrics, sourceNote);
 }
 
 function renderDeliverableStatusChart(item, actions = {}) {
@@ -2308,7 +2404,7 @@ function renderDeliverableStatusChart(item, actions = {}) {
   const progressBox = overviewEl("div", "deliverable-current-status-progress");
   const progressLabelRow = overviewEl("div", "deliverable-current-status-label");
   progressLabelRow.append(
-    overviewEl("span", null, "当前进度"),
+    overviewEl("span", null, "项目手工进度"),
     overviewEl("strong", null, progressLabel),
   );
   const track = overviewEl("div", "analysis-chart-track");
@@ -2528,7 +2624,7 @@ function renderDeliverableDetailPage(deliverableId) {
     ["所属阶段", item.stage || (overviewSavedState.phase && (overviewSavedState.phase.displayName || overviewSavedState.phase.id)) || ""],
     ["计划完成日期", item.plannedDate],
     ["实际完成日期", item.actualDate || "未完成"],
-    ["当前进度", `${Number(item.progress) || 0}%`],
+    ["项目手工进度", `${Number(item.progress) || 0}%`],
     ["数据来源", item.source || "未设置"],
     ["更新方式", item.updateMethod === "manual" ? "手动维护" : (item.updateMethod || deliverablePolicyModeLabel(item.updatePolicy && item.updatePolicy.mode))],
     ["更新时间", item.updatedAt || (overviewSavedState.phase && overviewSavedState.phase.updatedAt)],

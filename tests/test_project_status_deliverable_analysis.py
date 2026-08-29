@@ -6,6 +6,7 @@ from core.db_manager import DatabaseManager
 from services.project_status_deliverable_analysis import (
     ProjectStatusDeliverableAnalysisService,
     normalize_analysis_rows,
+    normalize_pending_signers,
     summarize_analysis_items,
 )
 
@@ -224,3 +225,96 @@ def test_service_items_exposes_business_number_and_pending_signers(tmp_db: Datab
 
     assert item["itemNumber"] == "WF-2026-002"
     assert item["pendingSigners"] == "钱七"
+
+
+def test_normalize_pending_signers_supports_all_source_forms() -> None:
+    """字符串/映射/数组与历史折叠行都规范为每条一行 ROLE:person。"""
+    # 空值
+    assert normalize_pending_signers(None) == ""
+    assert normalize_pending_signers("") == ""
+    assert normalize_pending_signers("   ") == ""
+    # 分号/换行/中英文逗号/中文分号分隔
+    assert normalize_pending_signers("PE:张三;LEADER:李四") == "PE:张三\nLEADER:李四"
+    assert normalize_pending_signers(
+        "PE:张三\nLEADER:李四，MAJOR:王五,SQE:赵六；QA7:小张"
+    ) == "PE:张三\nLEADER:李四\nMAJOR:王五\nSQE:赵六\nQA7:小张"
+    # 中文冒号归一为英文冒号
+    assert normalize_pending_signers("PE：张三") == "PE:张三"
+    # 完全相同的 role/person 只保留首次
+    assert normalize_pending_signers("PE:张三;LEADER:李四;PE:张三") == "PE:张三\nLEADER:李四"
+    # 空白条目丢弃（含只有角色没有人名的 PE:）
+    assert normalize_pending_signers("PE:张三;;  ,,LEADER:李四;PE:") == "PE:张三\nLEADER:李四"
+    # 同角色多人保留多行
+    assert normalize_pending_signers("PE:张三,PE:李四") == "PE:张三\nPE:李四"
+    # 未知未来角色原样保留
+    assert normalize_pending_signers("QA7:小张") == "QA7:小张"
+    # 无角色条目原样保留（、不是分隔符）
+    assert normalize_pending_signers("李四、王五") == "李四、王五"
+    assert normalize_pending_signers("钱七") == "钱七"
+    # 历史折叠行：空格在 ROLE: 前缀处切分，人名内部空格保留
+    assert normalize_pending_signers("PE:张三 LEADER:李四") == "PE:张三\nLEADER:李四"
+    assert normalize_pending_signers("PE:张三 San LEADER:李四") == "PE:张三 San\nLEADER:李四"
+    # 映射形式
+    assert normalize_pending_signers({"PE": "张三", "LEADER": "李四"}) == "PE:张三\nLEADER:李四"
+    assert normalize_pending_signers({"PE": "张三,李四"}) == "PE:张三\nPE:李四"
+    assert normalize_pending_signers({"PE": ["张三", "李四"]}) == "PE:张三\nPE:李四"
+    # 数组形式（键名大小写不敏感、字符串元素）
+    assert normalize_pending_signers([
+        {"role": "PE", "person": "张三"},
+        {"Role": "SQE", "Person": "赵六"},
+    ]) == "PE:张三\nSQE:赵六"
+    assert normalize_pending_signers(["PE:张三", "LEADER:李四"]) == "PE:张三\nLEADER:李四"
+    # JSON 字符串形式
+    assert normalize_pending_signers('{"PE": "张三"}') == "PE:张三"
+    assert normalize_pending_signers('[{"role": "PE", "person": "张三"}]') == "PE:张三"
+    # 幂等
+    once = normalize_pending_signers("PE:张三;LEADER:李四，SQE:赵六")
+    assert normalize_pending_signers(once) == once
+
+
+def test_pending_signers_never_fall_back_to_owner() -> None:
+    """只有负责人字段时不得把负责人当待签署人员。"""
+    rows = normalize_analysis_rows(
+        [{"id": "T-1", "负责人": "张三", "状态": "进行中"}],
+        source_type="tdc",
+    )
+    assert rows[0]["owner"] == "张三"
+    assert rows[0]["pending_signers"] == ""
+
+
+def test_analysis_rows_store_canonical_signer_lines() -> None:
+    """发布路径把数组/映射等待签署输入规范化为多行文本存储。"""
+    rows = normalize_analysis_rows(
+        [
+            {"id": "E-1", "pendingSigners": [{"role": "PE", "person": "张三"}, {"role": "LEADER", "person": "李四"}]},
+            {"id": "E-2", "pendingSigners": {"SQE": "赵六"}},
+            {"id": "E-3", "待审批人员": "钱七"},
+        ],
+        source_type="aras",
+    )
+    stored = {row["display_number"]: row["pending_signers"] for row in rows}
+    assert stored["E-1"] == "PE:张三\nLEADER:李四"
+    assert stored["E-2"] == "SQE:赵六"
+    assert stored["E-3"] == "钱七"
+
+
+def test_service_items_serializes_pending_signers_per_role_line(tmp_db: DatabaseManager) -> None:
+    """存量逗号折叠值在读取时也按 ROLE:person 行规范输出。"""
+    service = ProjectStatusDeliverableAnalysisService(tmp_db, clock=lambda: date(2026, 8, 23))
+    service.publish(
+        "VPI-T2-D5",
+        104,
+        [
+            {
+                "流水单号": "WF-2026-003",
+                "流程名": "流程三",
+                "申请人": "张三",
+                "部门": "质量科",
+                "当前待办人": "PE:李四;LEADER:王五，SQE:赵六",
+                "状态": "审批中",
+            }
+        ],
+        snapshot_at="2026-08-23T07:00:00Z",
+    )
+    item = service.items("VPI-T2-D5")["items"][0]
+    assert item["pendingSigners"] == "PE:李四\nLEADER:王五\nSQE:赵六"

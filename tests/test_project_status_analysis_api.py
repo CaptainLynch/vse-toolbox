@@ -186,3 +186,39 @@ def test_analysis_api_accepts_repeated_department_and_stage_filters(client_and_d
         "/api/project-status/deliverables/VPI-T2-D3/analysis/items?stages=not-a-stage"
     )
     assert invalid_stage.status_code == 422
+
+
+def test_analysis_api_serializes_pending_signer_lines_and_close_alert(client_and_db) -> None:
+    """API 输出每条一行 ROLE:person；CLOSE 永远无逾期提醒；stage 保持小写规范值。"""
+    client, db = client_and_db
+    service = ProjectStatusDeliverableAnalysisService(db, clock=lambda: date(2026, 8, 23))
+    service.publish(
+        "VPI-T2-D3",
+        91,
+        [
+            {
+                "_no": "EWO-SIGN",
+                "_rsp_smt": "车身科",
+                "state": "IMPL",
+                "_required_date": "2026-08-20",
+                "当前阶段未签署的角色&人员": "PE:张三;LEADER:李四，SQE:赵六",
+            },
+            {
+                "_no": "EWO-CLOSE",
+                "_rsp_smt": "车体科",
+                "state": "CLOSE",
+                "_required_date": "2026-08-01",
+            },
+        ],
+        source_type="aras",
+        snapshot_at="2026-08-23T00:00:00Z",
+    )
+
+    response = client.get("/api/project-status/deliverables/VPI-T2-D3/analysis/items?stage=all")
+    assert response.status_code == 200
+    data = response.get_json()["data"]
+    by_number = {row["itemNumber"]: row for row in data["items"]}
+    assert by_number["EWO-SIGN"]["pendingSigners"] == "PE:张三\nLEADER:李四\nSQE:赵六"
+    # CLOSE 是流程终点：无提醒（前端据此显示 未超期），阶段值保持小写
+    assert by_number["EWO-CLOSE"]["alertType"] is None
+    assert by_number["EWO-CLOSE"]["stage"] == "close"

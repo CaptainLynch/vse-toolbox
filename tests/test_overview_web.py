@@ -496,6 +496,17 @@ def test_overview_deliverable_evidence_accessibility_and_fallbacks() -> None:
     assert d1_guard < d4_guard < first_evidence_fetch < sync_button
 
 
+def _css_rule(css_text: str, selector: str) -> str:
+    """Return the body of one top-level CSS rule for a selector."""
+    start = css_text.index(f"{selector} {{")
+    end = css_text.index("}", start)
+    return css_text[start:end]
+
+
+def _js_slice(js_text: str, start_marker: str, end_marker: str) -> str:
+    return js_text[js_text.index(start_marker):js_text.index(end_marker)]
+
+
 def test_overview_ewo_analysis_feedback_controls_are_searchable_multiselects() -> None:
     js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
     css_text = Path("web/static/style.css").read_text(encoding="utf-8-sig")
@@ -512,6 +523,63 @@ def test_overview_ewo_analysis_feedback_controls_are_searchable_multiselects() -
     assert "刷新同步数据" in js_text
     assert "立即同步" in js_text
     assert ".analysis-multi-select" in css_text
+
+
+def test_overview_ewo_second_round_ui_feedback_contract() -> None:
+    """第二轮浏览器反馈：不透明候选框、大写阶段、两态状态列、签署人分行、更新方式与快照标签。"""
+    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+    css_text = Path("web/static/style.css").read_text(encoding="utf-8-sig")
+
+    # 1. 候选框与控件必须使用已定义的不透明主题变量，并具备层级/边框/阴影。
+    options_block = _css_rule(css_text, ".analysis-multi-select-options")
+    assert "background: var(--surface-card);" in options_block
+    assert "z-index: 30" in options_block
+    assert "border: 1px solid var(--hairline-strong);" in options_block
+    assert "box-shadow:" in options_block
+    control_block = _css_rule(css_text, ".analysis-multi-select-control")
+    assert "background: var(--surface-card);" in control_block
+    select_block = _css_rule(css_text, ".analysis-select")
+    assert "background: var(--surface-card);" in select_block
+    filter_css = css_text[css_text.index(".analysis-select {"):css_text.index(".analysis-filter-apply")]
+    assert "var(--surface)" not in filter_css
+
+    # 2. 阶段在所有用户可见位置大写，请求值保持小写规范值。
+    assert "function formatEwoStageLabel" in js_text
+    assert "formatEwoStageLabel(it.stage)" in js_text
+    assert "labelFor: formatEwoStageLabel" in js_text
+    for label in (
+        "OPEN（未纳入统计）", "DRAFT1", "DRAFT2", "EDIT1", "EDIT2", "PROC", "IMPL", "CLOSE（已关闭）",
+    ):
+        assert label in js_text
+    assert 'params.append("stages", stage)' in js_text
+
+    # 3. 明细表状态列只表达 超期/未超期，阶段列独立展示。
+    items_js = _js_slice(js_text, "function renderAnalysisItemsSection", "function renderDeliverableAnalysis")
+    assert 'const isOverdue = it.alertType === "overdue";' in items_js
+    assert 'chip.textContent = isOverdue ? "超期" : "未超期";' in items_js
+    assert "it.status ||" not in items_js
+
+    # 4. 待签署人员按 ROLE:person 行渲染，无值显示 无。
+    assert 'String(it.pendingSigners || "")' in items_js
+    assert '.split("\\n")' in items_js
+    assert "analysis-signer-line" in items_js
+    assert '"无"' in items_js
+
+    # 5. EWO 更新方式：三模式展示 + 推荐自动同步 + 未启用判定。
+    assert "function deliverablePolicyMappingReady" in js_text
+    assert "policy.enabled !== true" in js_text
+    policy_js = _js_slice(
+        js_text, "const EWO_POLICY_MODE_LABELS", "async function loadDeliverablePolicy"
+    )
+    for label in ("手动维护", "自动同步", "混合模式", "推荐：自动同步", "未启用"):
+        assert label in policy_js
+    assert "/ewo/i.test(String(item.source" in js_text
+
+    # 6. 手工进度与 EWO 快照摘要来源标签互不混淆。
+    assert '"项目手工进度"' in js_text
+    summary_js = _js_slice(js_text, "function renderEwoSyncSummary", "function renderDeliverableStatusChart")
+    assert "来自最近一次 EWO 快照" in summary_js
+    assert "最近同步时间" in summary_js
 
 
 def test_overview_deliverable_evidence_css_contract() -> None:
