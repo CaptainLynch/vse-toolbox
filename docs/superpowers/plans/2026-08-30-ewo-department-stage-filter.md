@@ -104,7 +104,7 @@
 - `GET /api/project-status/deliverables/<deliverable_id>/analysis/items` accepts `department` and `stage`.
 - Item payload includes `stage` while retaining `status`.
 
-- [ ] **Step 1: Add failing API tests** for valid filters, invalid stage, unknown department returning 422, default open/unknown exclusion, stageAttention serialization, alert-branch filtering, and total/list consistency.
+- [ ] **Step 1: Add failing API tests** for valid filters, invalid stage (422), unknown department returning an empty result, default open/unknown exclusion, stageAttention serialization, alert-branch filtering, and total/list consistency.
 - [ ] **Step 2: Run focused API tests** and confirm failure.
 - [ ] **Step 3: Implement** bounded query parsing, error responses via existing sanitized helpers, and stage serialization.
 - [ ] **Step 4: Run API tests** and confirm pass.

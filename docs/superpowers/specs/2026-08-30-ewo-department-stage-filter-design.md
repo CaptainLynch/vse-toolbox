@@ -53,7 +53,7 @@ GET /api/project-status/deliverables/<deliverable_id>/analysis/items
 
 ## 测试与验收
 
-覆盖默认五科室 `_rsp_smt` AML、旧绑定仍被安全限制、八阶段规范化、`open` 排除、`close` 不逾期、活动阶段日期逾期、未知阶段待处理且不计数、API 组合筛选/未知部门 422、分页和 alert 分支一致性、前端控件与阶段列、source_type 隔离，以及 TDC 不可访问不阻断 EWO 的回归场景。
+覆盖默认五科室 `_rsp_smt` AML、旧绑定仍被安全限制、八阶段规范化、`open` 排除、`close` 不逾期、活动阶段日期逾期、未知阶段待处理且不计数、API 组合筛选/未知科室空集/非法参数 422、分页和 alert 分支一致性、前端控件与阶段列、source_type 隔离，以及 TDC 不可访问不阻断 EWO 的回归场景。
 
 不得改变 TDC 登录、查询和契约；不得新增依赖；不得将凭据或敏感上游响应写入日志、数据库或 API。
 
