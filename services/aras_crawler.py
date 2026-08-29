@@ -222,6 +222,9 @@ class EWOReportFilters:
     area: str | None = None
     state: str | None = None
     rsp_department: str | None = None
+    # EWO 的责任科室字段。`_rsp_department` 表示上级部门，不能用于
+    # 交付物分析的科室范围过滤。
+    rsp_smt: str | None = None
     submit_start: str | None = None
     submit_end: str | None = None
     model_info: str | None = None
@@ -908,6 +911,7 @@ class ArasCrawlerClient:
             _search_elements("_area", filters.area, default_like=True),
             _element("state", filters.state),
             _search_elements("_rsp_department", filters.rsp_department),
+            _search_elements("_rsp_smt", filters.rsp_smt),
             _element("_submit_time", filters.submit_start, condition="ge"),
             _element("_submit_time", filters.submit_end, condition="le"),
             _search_elements("_modelinfo", filters.model_info, default_like=True),

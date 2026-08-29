@@ -3040,6 +3040,14 @@ def create_app(
                     raise ValueError("department is too long")
                 if not department:
                     department = None
+            raw_stage = request.args.get("stage")
+            stage = None
+            if raw_stage is not None:
+                stage = raw_stage.strip()
+                if len(stage) > 40:
+                    raise ValueError("stage is too long")
+                if not stage:
+                    stage = None
             raw_state = request.args.get("state")
             state = None
             if raw_state is not None:
@@ -3062,6 +3070,7 @@ def create_app(
                 deliverable_id,
                 alert=request.args.get("alert") or None,
                 department=department,
+                stage=stage,
                 state=state,
                 offset=offset,
                 limit=limit,

@@ -4258,6 +4258,35 @@ body.aras-running .result-panel {
   color: var(--error);
 }
 
+.analysis-stage-chip {
+  display: inline-block;
+  padding: 2px 6px;
+  font-size: 11px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.analysis-stage-chip.is-active {
+  background: color-mix(in srgb, var(--primary) 15%, transparent);
+  color: var(--primary);
+}
+
+.analysis-stage-chip.is-closed {
+  background: color-mix(in srgb, var(--success) 18%, transparent);
+  color: var(--success);
+}
+
+.analysis-stage-chip.is-open,
+.analysis-stage-chip.is-unknown {
+  background: color-mix(in srgb, var(--muted) 18%, transparent);
+  color: var(--muted);
+}
+
+.analysis-stage-chip.is-none {
+  color: var(--muted);
+}
+
 .analysis-signers-cell {
   max-width: 140px;
   overflow: hidden;
@@ -4273,7 +4302,7 @@ body.aras-running .result-panel {
 }
 
 .analysis-items-table {
-  min-width: 820px;
+  min-width: 900px;
 }
 
 .analysis-trend-table th,

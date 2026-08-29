@@ -409,6 +409,7 @@ class ProjectStatusSyncRunner:
                         snapshot.analysis_rows,
                         snapshot_at=snapshot.fetched_at,
                         mapping=(analysis_mapping if isinstance(analysis_mapping, Mapping) else None),
+                        source_type=source_type,
                     )
                 except Exception as exc:
                     logger.warning(

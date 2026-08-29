@@ -18,6 +18,7 @@ from services.aras_auth import ArasECMAuthClient
 from services.aras_crawler import ArasCrawlerClient, EWOReportFilters
 from services.project_status_sync_runner import SyncBindingContext
 from services.project_status_updates import ConnectorCandidate, ConnectorSnapshot
+from services.project_status_deliverable_analysis import EWO_DEFAULT_DEPARTMENTS
 from services.tdc_auth import TDCPasswordAuthClient
 from services.tdc_crawler import (
     TDCCrawlerClient,
@@ -33,6 +34,8 @@ _IDENTITY_FIELDS = (
 )
 _MAX_ROWS = 10000
 logger = logging.getLogger(__name__)
+
+_EWO_DEFAULT_DEPARTMENT_EXPRESSION = "|".join(EWO_DEFAULT_DEPARTMENTS)
 
 
 def _now() -> str:
@@ -198,14 +201,18 @@ class ArasProjectStatusConnector:
                 crawler = self.crawler_factory(auth.base_url, session=login.session, timeout=self.timeout, prewarm=False)
                 model_info = _clean_scalar(context.match_rule.get("modelInfo"))
                 if model_info:
-                    # 车型锚点模式：按车型抓取全部 EWO 供科室分析；业务行仍由
-                    # external_key 在结果集内精确匹配（见 _snapshot）。
-                    filters = EWOReportFilters(model_info=model_info)
+                    # 车型锚点模式按车型抓取 EWO，但科室范围必须从源头受控；
+                    # 业务行仍由 external_key 在结果集内精确匹配（见 _snapshot）。
+                    filters = EWOReportFilters(
+                        model_info=model_info,
+                        rsp_smt=_EWO_DEFAULT_DEPARTMENT_EXPRESSION,
+                    )
                 else:
                     filters = EWOReportFilters(
                         ewo_no=_clean_scalar(context.match_rule.get("ewoNo")),
                         project_code=_clean_scalar(context.match_rule.get("projectCode")),
                         subject_keyword=_clean_scalar(context.match_rule.get("subjectKeyword")),
+                        rsp_smt=_EWO_DEFAULT_DEPARTMENT_EXPRESSION,
                     )
                 result = crawler.crawl_ewo_report_all(filters, max_records=2000)
             finally:

@@ -18,6 +18,38 @@ from typing import Any, Mapping, Sequence
 from core.db_manager import DatabaseManager
 from core.redaction import redact_sensitive_text
 
+# EWO 的业务范围由来源系统的 `_rsp_smt` 字段决定。这里的常量同时供
+# Aras 连接器和交付物分析使用，避免查询范围与展示范围出现两套口径。
+EWO_DEFAULT_DEPARTMENTS: tuple[str, ...] = (
+    "车身科",
+    "车体科",
+    "外饰科",
+    "内饰科",
+    "车体架构集成科",
+)
+EWO_STAGES: tuple[str, ...] = (
+    "open",
+    "draft1",
+    "draft2",
+    "edit1",
+    "edit2",
+    "proc",
+    "impl",
+    "close",
+)
+EWO_ACTIVE_STAGES: tuple[str, ...] = (
+    "draft1",
+    "draft2",
+    "edit1",
+    "edit2",
+    "proc",
+    "impl",
+)
+EWO_TERMINAL_STAGE = "close"
+EWO_IGNORED_STAGE = "open"
+_EWO_SOURCE_TYPES = frozenset({"aras", "ewo", "aras_ewo", "aras/ewo"})
+_EWO_STAGE_FILTERS = frozenset((*EWO_STAGES, "all"))
+
 _FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     "item_key": (
         "incident", "processNo", "formId", "processInstanceId", "_no", "id",
@@ -68,6 +100,71 @@ _COMPLETED_STATUSES = frozenset({
     "completed", "complete", "done", "closed", "approved", "released",
     "已完成", "完成", "已关闭", "已批准", "已审批", "已发布", "通过",
 })
+
+
+def is_ewo_source_type(source_type: object) -> bool:
+    """Return whether an explicit source type is an EWO analysis source."""
+    normalized = str(source_type or "").strip().casefold()
+    return normalized in _EWO_SOURCE_TYPES
+
+
+def normalize_ewo_stage(value: object) -> str | None:
+    """Normalize one EWO lifecycle state to the eight canonical stage names.
+
+    Aras currently returns uppercase state values. Whitespace, underscores and
+    hyphens are tolerated for imported/legacy values, but unknown states are
+    deliberately left unmapped so they cannot affect overdue statistics.
+    """
+    if value in (None, ""):
+        return None
+    normalized = re.sub(r"[\s_-]+", "", str(value).strip()).casefold()
+    aliases = {stage.replace("_", "").casefold(): stage for stage in EWO_STAGES}
+    return aliases.get(normalized)
+
+
+def _stage_filter(value: object) -> str | None:
+    """Validate/canonicalize a service or API stage filter."""
+    if value in (None, ""):
+        return None
+    text = str(value).strip().casefold()
+    if text == "all":
+        return "all"
+    stage = normalize_ewo_stage(text)
+    if stage is None or stage not in _EWO_STAGE_FILTERS:
+        raise ValueError("unsupported stage filter")
+    return stage
+
+
+def _item_source_type(item: Mapping[str, Any], source_type: object = None) -> object:
+    stored = item.get("source_type")
+    return stored if stored not in (None, "") else source_type
+
+
+def _item_stage(item: Mapping[str, Any], source_type: object = None) -> str | None:
+    if not is_ewo_source_type(_item_source_type(item, source_type)):
+        return None
+    stored = item.get("source_stage")
+    if stored not in (None, ""):
+        return normalize_ewo_stage(stored)
+    return normalize_ewo_stage(item.get("source_status"))
+
+
+def _item_is_in_scope(
+    item: Mapping[str, Any],
+    *,
+    source_type: object = None,
+    department: str | None = None,
+    stage: str | None = None,
+) -> bool:
+    if department is not None and str(item.get("department") or "未归属") != department:
+        return False
+    is_ewo = is_ewo_source_type(_item_source_type(item, source_type))
+    if stage not in (None, "all"):
+        return is_ewo and _item_stage(item, source_type) == stage
+    if is_ewo and stage is None:
+        current_stage = _item_stage(item, source_type)
+        return current_stage in (*EWO_ACTIVE_STAGES, EWO_TERMINAL_STAGE)
+    return True
 
 
 def _normalized_key(value: object) -> str:
@@ -134,8 +231,20 @@ def _completed(status: str, actual_date: str | None) -> bool:
     return any(token in normalized for token in ("完成", "关闭", "批准", "发布")) or bool(actual_date)
 
 
-def _alert_type(item: Mapping[str, Any], today: date, due_soon_days: int = 7) -> tuple[str | None, int | None]:
-    if bool(item.get("is_completed")):
+def _alert_type(
+    item: Mapping[str, Any],
+    today: date,
+    due_soon_days: int = 7,
+    *,
+    source_type: object = None,
+) -> tuple[str | None, int | None]:
+    if is_ewo_source_type(_item_source_type(item, source_type)):
+        # EWO 的状态机决定完成与否；不得用通用状态文本或日期把 open、
+        # close、未知阶段误报为逾期。
+        stage = _item_stage(item, source_type)
+        if stage not in EWO_ACTIVE_STAGES:
+            return None, None
+    elif bool(item.get("is_completed")):
         return None, None
     planned = _iso_date(item.get("planned_date"))
     if planned is None:
@@ -152,9 +261,13 @@ def _alert_type(item: Mapping[str, Any], today: date, due_soon_days: int = 7) ->
 def normalize_analysis_rows(
     rows: Sequence[Mapping[str, Any]],
     mapping: Mapping[str, object] | None = None,
+    *,
+    source_type: str | None = None,
 ) -> list[dict[str, Any]]:
     """Extract only the bounded fields needed by the business analysis cache."""
     checked_mapping = mapping or {}
+    normalized_source_type = str(source_type or "").strip().casefold()
+    ewo_source = is_ewo_source_type(normalized_source_type)
     normalized: list[dict[str, Any]] = []
     seen: set[str] = set()
     for row in rows:
@@ -173,6 +286,8 @@ def normalize_analysis_rows(
             limit=500,
         )
         status = _safe_text(_field_value(row, "status", checked_mapping) or "", limit=120)
+        source_stage = normalize_ewo_stage(status) if ewo_source else None
+        stage_attention = ewo_source and source_stage is None
         planned_date = _iso_date(_field_value(row, "planned_date", checked_mapping))
         actual_date = _iso_date(_field_value(row, "actual_date", checked_mapping))
         fingerprint_source = "|".join(
@@ -190,7 +305,14 @@ def normalize_analysis_rows(
             "owner": owner,
             "pending_signers": pending_signers,
             "source_status": status,
-            "is_completed": _completed(status, actual_date),
+            "source_stage": source_stage,
+            "stage_attention": stage_attention,
+            "source_type": normalized_source_type,
+            "is_completed": (
+                source_stage == EWO_TERMINAL_STAGE
+                if ewo_source
+                else _completed(status, actual_date)
+            ),
             "planned_date": planned_date,
             "actual_date": actual_date,
         })
@@ -202,14 +324,27 @@ def summarize_analysis_items(
     *,
     snapshot_at: object,
     today: date | None = None,
+    source_type: str | None = None,
+    department: str | None = None,
+    stage: str | None = None,
 ) -> dict[str, Any]:
+    stage = _stage_filter(stage)
     current = today or date.today()
     department_counts: dict[str, dict[str, int]] = {}
     completed_count = overdue_count = due_soon_count = missing_count = 0
-    for item in items:
-        department = str(item.get("department") or "未归属")
+    selected_items = [
+        item for item in items
+        if _item_is_in_scope(
+            item,
+            source_type=source_type,
+            department=department,
+            stage=stage,
+        )
+    ]
+    for item in selected_items:
+        item_department = str(item.get("department") or "未归属")
         counts = department_counts.setdefault(
-            department,
+            item_department,
             {"total": 0, "completed": 0, "incomplete": 0},
         )
         counts["total"] += 1
@@ -218,14 +353,14 @@ def summarize_analysis_items(
             counts["completed"] += 1
         else:
             counts["incomplete"] += 1
-            alert_type, _ = _alert_type(item, current)
+            alert_type, _ = _alert_type(item, current, source_type=source_type)
             if alert_type == "overdue":
                 overdue_count += 1
             elif alert_type == "due_soon":
                 due_soon_count += 1
             elif alert_type == "missing_due_date":
                 missing_count += 1
-    total_count = len(items)
+    total_count = len(selected_items)
     return {
         "total_count": total_count,
         "completed_count": completed_count,
@@ -251,9 +386,15 @@ class ProjectStatusDeliverableAnalysisService:
         *,
         snapshot_at: object,
         mapping: Mapping[str, object] | None = None,
+        source_type: str | None = None,
     ) -> None:
-        items = normalize_analysis_rows(rows, mapping)
-        snapshot = summarize_analysis_items(items, snapshot_at=snapshot_at, today=self._clock())
+        items = normalize_analysis_rows(rows, mapping, source_type=source_type)
+        snapshot = summarize_analysis_items(
+            items,
+            snapshot_at=snapshot_at,
+            today=self._clock(),
+            source_type=source_type,
+        )
         self.db.replace_project_status_analysis_cache(
             deliverable_id,
             source_run_id,
@@ -312,18 +453,24 @@ class ProjectStatusDeliverableAnalysisService:
         *,
         alert: str | None = None,
         department: str | None = None,
+        stage: str | None = None,
         state: str | None = None,
         offset: int = 0,
         limit: int = 200,
         car_type: str | None = None,
     ) -> dict[str, Any]:
         self._deliverable(deliverable_id)
+        stage = _stage_filter(stage)
         if state not in {None, "completed", "incomplete"}:
             raise ValueError("unsupported state filter")
         if alert not in {None, "overdue", "due_soon", "missing_due_date"}:
             raise ValueError("unsupported alert filter")
         if alert is not None and (state is not None or int(offset) != 0):
             raise ValueError("alert filter cannot be combined with state/offset pagination")
+        if department is not None:
+            department = str(department).strip() or None
+            if self._has_ewo_cache(deliverable_id) and department not in EWO_DEFAULT_DEPARTMENTS:
+                raise ValueError("unsupported department filter")
 
         current = self._clock()
         if alert is not None:
@@ -331,6 +478,7 @@ class ProjectStatusDeliverableAnalysisService:
             rows = self.db.list_project_status_analysis_items(
                 deliverable_id,
                 department=department,
+                stage=stage,
                 limit=bounded_limit,
             )
             selected = []
@@ -338,21 +486,7 @@ class ProjectStatusDeliverableAnalysisService:
                 alert_type, days = _alert_type(row, current)
                 if alert_type != alert:
                     continue
-                selected.append({
-                    "itemKey": row["item_key"],
-                    "itemNumber": row.get("display_number") or row["item_key"],
-                    "title": row["title"],
-                    "department": row["department"],
-                    "owner": row["owner"],
-                    "pendingSigners": row.get("pending_signers") or "",
-                    "status": row["source_status"],
-                    "completed": bool(row["is_completed"]),
-                    "plannedDate": row["planned_date"],
-                    "actualDate": row["actual_date"],
-                    "alertType": alert_type,
-                    "days": days,
-                    "updatedAt": row["updated_at"],
-                })
+                selected.append(self._serialize_item(row, alert_type, days))
             order = {"overdue": 0, "due_soon": 1, "missing_due_date": 2, None: 3}
             selected.sort(key=lambda item: (
                 order[item["alertType"]],
@@ -366,6 +500,7 @@ class ProjectStatusDeliverableAnalysisService:
                 deliverable_id,
                 department=department,
                 completed=completed_filter,
+                stage=stage,
                 offset=offset,
                 limit=limit,
             )
@@ -373,25 +508,12 @@ class ProjectStatusDeliverableAnalysisService:
                 deliverable_id,
                 department=department,
                 completed=completed_filter,
+                stage=stage,
             )
             selected = []
             for row in rows:
                 alert_type, days = _alert_type(row, current)
-                selected.append({
-                    "itemKey": row["item_key"],
-                    "itemNumber": row.get("display_number") or row["item_key"],
-                    "title": row["title"],
-                    "department": row["department"],
-                    "owner": row["owner"],
-                    "pendingSigners": row.get("pending_signers") or "",
-                    "status": row["source_status"],
-                    "completed": bool(row["is_completed"]),
-                    "plannedDate": row["planned_date"],
-                    "actualDate": row["actual_date"],
-                    "alertType": alert_type,
-                    "days": days,
-                    "updatedAt": row["updated_at"],
-                })
+                selected.append(self._serialize_item(row, alert_type, days))
 
         return {
             "deliverableId": deliverable_id,
@@ -400,6 +522,38 @@ class ProjectStatusDeliverableAnalysisService:
             "offset": int(offset),
             "limit": int(limit),
             "carType": car_type,
+        }
+
+    def _has_ewo_cache(self, deliverable_id: str) -> bool:
+        return any(
+            is_ewo_source_type(source_type)
+            for source_type in self.db.list_project_status_analysis_source_types(deliverable_id)
+        )
+
+    @staticmethod
+    def _serialize_item(
+        row: Mapping[str, Any],
+        alert_type: str | None,
+        days: int | None,
+    ) -> dict[str, Any]:
+        stage = _item_stage(row)
+        is_ewo = is_ewo_source_type(_item_source_type(row))
+        return {
+            "itemKey": row["item_key"],
+            "itemNumber": row.get("display_number") or row["item_key"],
+            "title": row["title"],
+            "department": row["department"],
+            "owner": row["owner"],
+            "pendingSigners": row.get("pending_signers") or "",
+            "status": row["source_status"],
+            "stage": stage,
+            "stageAttention": bool(is_ewo and stage is None),
+            "completed": bool(row["is_completed"]),
+            "plannedDate": row["planned_date"],
+            "actualDate": row["actual_date"],
+            "alertType": alert_type,
+            "days": days,
+            "updatedAt": row["updated_at"],
         }
 
     def _deliverable(self, deliverable_id: str) -> dict[str, Any]:

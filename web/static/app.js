@@ -1475,6 +1475,7 @@ function renderAnalysisItemsSection(item, departments, onDeptChange) {
   const PAGE_SIZE = 50;
   const state = {
     department: null,
+    stage: null,
     state: "all",
     page: 1,
   };
@@ -1501,6 +1502,20 @@ function renderAnalysisItemsSection(item, departments, onDeptChange) {
     deptSelect.appendChild(opt);
   });
 
+  // EWO 同步范围固定为五个责任科室；即使某个科室本次没有数据，
+  // 也保留筛选入口，方便用户在后续同步后复用同一交互。
+  const ewoDefaultDepartments = ["车身科", "车体科", "外饰科", "内饰科", "车体架构集成科"];
+  if (/ewo/i.test(String(item.source || ""))) {
+    ewoDefaultDepartments.forEach((dept) => {
+      if (!deptNames.includes(dept)) {
+        const opt = document.createElement("option");
+        opt.value = dept;
+        opt.textContent = dept;
+        deptSelect.appendChild(opt);
+      }
+    });
+  }
+
   // State select
   const stateSelect = document.createElement("select");
   stateSelect.className = "analysis-select";
@@ -1516,6 +1531,29 @@ function renderAnalysisItemsSection(item, departments, onDeptChange) {
     stateSelect.appendChild(opt);
   });
 
+  // EWO lifecycle stage select. The empty/default value intentionally omits
+  // the API parameter so the server applies its active-stage default.
+  const stageSelect = document.createElement("select");
+  stageSelect.className = "analysis-select analysis-stage-select";
+  stageSelect.setAttribute("aria-label", "按流程阶段筛选");
+  [
+    ["", "有效阶段（排除 open）"],
+    ["all", "全部阶段（含 open/未知）"],
+    ["open", "open（未纳入统计）"],
+    ["draft1", "draft1"],
+    ["draft2", "draft2"],
+    ["edit1", "edit1"],
+    ["edit2", "edit2"],
+    ["proc", "proc"],
+    ["impl", "impl"],
+    ["close", "close（已关闭）"],
+  ].forEach(([value, label]) => {
+    const opt = document.createElement("option");
+    opt.value = value;
+    opt.textContent = label;
+    stageSelect.appendChild(opt);
+  });
+
   const spacer = overviewEl("div", "analysis-toolbar-spacer");
 
   // Pager
@@ -1529,7 +1567,7 @@ function renderAnalysisItemsSection(item, departments, onDeptChange) {
   nextBtn.disabled = true;
   pager.append(pagerInfo, prevBtn, nextBtn);
 
-  toolbar.append(deptSelect, stateSelect, spacer, pager);
+  toolbar.append(deptSelect, stageSelect, stateSelect, spacer, pager);
   section.appendChild(toolbar);
 
   // Table
@@ -1537,7 +1575,7 @@ function renderAnalysisItemsSection(item, departments, onDeptChange) {
   const table = overviewEl("table", "analysis-items-table");
   const thead = overviewEl("thead");
   const trHead = overviewEl("tr");
-  ["编号", "名称", "科室", "负责人", "状态", "待签署人员", "申请日期", "提醒"].forEach((col) => {
+  ["编号", "名称", "科室", "负责人", "阶段", "状态", "待签署人员", "申请日期", "提醒"].forEach((col) => {
     trHead.appendChild(overviewEl("th", null, col));
   });
   thead.appendChild(trHead);
@@ -1553,7 +1591,7 @@ function renderAnalysisItemsSection(item, departments, onDeptChange) {
     clearOverviewContainer(tbody);
     const loadingTr = overviewEl("tr");
     const loadingTd = overviewEl("td", "analysis-empty-note", "加载明细任务中...");
-    loadingTd.colSpan = 8;
+    loadingTd.colSpan = 9;
     loadingTd.style.textAlign = "center";
     loadingTd.style.padding = "20px";
     loadingTr.appendChild(loadingTd);
@@ -1569,6 +1607,9 @@ function renderAnalysisItemsSection(item, departments, onDeptChange) {
     }
     if (state.state && state.state !== "all") {
       params.set("state", state.state);
+    }
+    if (state.stage) {
+      params.set("stage", state.stage);
     }
 
     try {
@@ -1591,7 +1632,7 @@ function renderAnalysisItemsSection(item, departments, onDeptChange) {
       clearOverviewContainer(tbody);
       const errTr = overviewEl("tr");
       const errTd = overviewEl("td", "analysis-empty-note is-error", formatApiErrorMessage(err, 500));
-      errTd.colSpan = 8;
+      errTd.colSpan = 9;
       errTd.style.textAlign = "center";
       errTd.style.padding = "20px";
       errTr.appendChild(errTd);
@@ -1619,7 +1660,7 @@ function renderAnalysisItemsSection(item, departments, onDeptChange) {
     if (items.length === 0) {
       const emptyTr = overviewEl("tr");
       const emptyTd = overviewEl("td", "analysis-empty-note is-empty", "暂无明细任务记录");
-      emptyTd.colSpan = 8;
+      emptyTd.colSpan = 9;
       emptyTd.style.textAlign = "center";
       emptyTd.style.padding = "20px";
       emptyTr.appendChild(emptyTd);
@@ -1638,6 +1679,29 @@ function renderAnalysisItemsSection(item, departments, onDeptChange) {
       tr.appendChild(overviewEl("td", null, safeDisplayValue(it.department)));
       // 负责人
       tr.appendChild(overviewEl("td", null, safeDisplayValue(it.owner)));
+
+      // EWO 流程阶段
+      const stageTd = overviewEl("td");
+      const stageChip = overviewEl("span", "analysis-stage-chip");
+      if (it.stage) {
+        stageChip.textContent = safeDisplayValue(it.stage);
+        if (it.stage === "close") {
+          stageChip.className = "analysis-stage-chip is-closed";
+        } else if (it.stage === "open") {
+          stageChip.className = "analysis-stage-chip is-open";
+        } else {
+          stageChip.className = "analysis-stage-chip is-active";
+        }
+      } else if (it.stageAttention) {
+        stageChip.textContent = "未知阶段";
+        stageChip.className = "analysis-stage-chip is-unknown";
+        stageChip.title = "来源阶段未识别，默认不计入统计";
+      } else {
+        stageChip.textContent = "—";
+        stageChip.className = "analysis-stage-chip is-none";
+      }
+      stageTd.appendChild(stageChip);
+      tr.appendChild(stageTd);
 
       // 状态
       const statusTd = overviewEl("td");
@@ -1701,6 +1765,12 @@ function renderAnalysisItemsSection(item, departments, onDeptChange) {
 
   stateSelect.addEventListener("change", () => {
     state.state = stateSelect.value;
+    state.page = 1;
+    fetchAndRender();
+  });
+
+  stageSelect.addEventListener("change", () => {
+    state.stage = stageSelect.value || null;
     state.page = 1;
     fetchAndRender();
   });

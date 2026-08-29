@@ -525,6 +525,8 @@ TABLE_DEFINITIONS: list[str] = [
         owner          TEXT NOT NULL DEFAULT '',
         pending_signers TEXT NOT NULL DEFAULT '',
         source_status  TEXT NOT NULL DEFAULT '',
+        source_stage   TEXT,
+        source_type    TEXT NOT NULL DEFAULT '',
         is_completed   INTEGER NOT NULL CHECK (is_completed IN (0, 1)),
         planned_date   TEXT,
         actual_date    TEXT,
@@ -866,6 +868,8 @@ class DatabaseManager:
         analysis_item_additions = [
             ("display_number", "TEXT NOT NULL DEFAULT ''"),
             ("pending_signers", "TEXT NOT NULL DEFAULT ''"),
+            ("source_stage", "TEXT"),
+            ("source_type", "TEXT NOT NULL DEFAULT ''"),
         ]
         for column, decl in analysis_item_additions:
             if column not in analysis_item_columns:
@@ -1273,9 +1277,9 @@ class DatabaseManager:
                 """
                 INSERT INTO project_status_analysis_items (
                     deliverable_id, item_key, display_number, title, department, owner,
-                    pending_signers, source_status, is_completed, planned_date, actual_date,
-                    source_run_id, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    pending_signers, source_status, source_stage, source_type,
+                    is_completed, planned_date, actual_date, source_run_id, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -1287,6 +1291,8 @@ class DatabaseManager:
                         str(item["owner"]),
                         str(item.get("pending_signers") or ""),
                         str(item["source_status"]),
+                        item.get("source_stage"),
+                        str(item.get("source_type") or ""),
                         1 if bool(item["is_completed"]) else 0,
                         item.get("planned_date"),
                         item.get("actual_date"),
@@ -1335,6 +1341,7 @@ class DatabaseManager:
         *,
         department: str | None = None,
         completed: bool | None = None,
+        stage: str | None = None,
         offset: int = 0,
         limit: int = 500,
     ) -> list[dict[str, Any]]:
@@ -1342,8 +1349,8 @@ class DatabaseManager:
         bounded_offset = max(0, int(offset))
         sql = """
             SELECT deliverable_id, item_key, title, department, owner,
-                   display_number, pending_signers, source_status, is_completed, planned_date, actual_date,
-                   source_run_id, updated_at
+                   display_number, pending_signers, source_status, source_stage, source_type,
+                   is_completed, planned_date, actual_date, source_run_id, updated_at
             FROM project_status_analysis_items
             WHERE deliverable_id = ?
         """
@@ -1351,6 +1358,16 @@ class DatabaseManager:
         if department:
             sql += " AND department = ?"
             params.append(department)
+        if stage not in (None, "", "all"):
+            sql += " AND source_stage = ?"
+            params.append(stage)
+        elif stage in (None, ""):
+            # 默认明细对 EWO 只展示活动阶段与 close；非 EWO 缓存的
+            # source_type 为空，因此保留原有通用分析行为。
+            sql += (
+                " AND (source_type NOT IN ('aras', 'ewo', 'aras_ewo', 'aras/ewo') "
+                "OR source_stage IN ('draft1', 'draft2', 'edit1', 'edit2', 'proc', 'impl', 'close'))"
+            )
         if completed is not None:
             sql += " AND is_completed = ?"
             params.append(int(completed))
@@ -1366,6 +1383,7 @@ class DatabaseManager:
         *,
         department: str | None = None,
         completed: bool | None = None,
+        stage: str | None = None,
     ) -> int:
         sql = """
             SELECT COUNT(*) AS total
@@ -1376,12 +1394,37 @@ class DatabaseManager:
         if department:
             sql += " AND department = ?"
             params.append(department)
+        if stage not in (None, "", "all"):
+            sql += " AND source_stage = ?"
+            params.append(stage)
+        elif stage in (None, ""):
+            sql += (
+                " AND (source_type NOT IN ('aras', 'ewo', 'aras_ewo', 'aras/ewo') "
+                "OR source_stage IN ('draft1', 'draft2', 'edit1', 'edit2', 'proc', 'impl', 'close'))"
+            )
         if completed is not None:
             sql += " AND is_completed = ?"
             params.append(int(completed))
         with self.get_connection() as conn:
             row = conn.execute(sql, tuple(params)).fetchone()
             return int(row["total"]) if row is not None else 0
+
+    def list_project_status_analysis_source_types(
+        self,
+        deliverable_id: str,
+    ) -> tuple[str, ...]:
+        """Return the explicit source types represented in the latest cache."""
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT source_type
+                FROM project_status_analysis_items
+                WHERE deliverable_id = ? AND trim(source_type) <> ''
+                ORDER BY source_type
+                """,
+                (deliverable_id,),
+            ).fetchall()
+            return tuple(str(row["source_type"]) for row in rows)
 
     def update_project_status_deliverable(
         self,
