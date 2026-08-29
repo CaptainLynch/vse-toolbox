@@ -171,3 +171,29 @@
 - Historical fallback is limited to `ARAS EWO`/`VPI-T2-D3`; current summary is recalculated from current cached items without mutating historical snapshot rows.
 - “立即同步” is POST and “刷新同步数据” is GET-only; both disable while busy and refresh the open detail view after completion.
 - 当前状态图表新增独立 EWO 同步摘要区，展示分析 API 的 `total/completed/incomplete/overdue/snapshotAt`，不覆盖手工 `progress/status`。
+
+### Task 9: 修复第二轮浏览器反馈
+
+**Files:**
+- Modify: `web/static/app.js`
+- Modify: `web/static/style.css`
+- Modify: `services/project_status_deliverable_analysis.py`
+- Modify: `web/app.py` only if policy/serialization changes require it
+- Test: `tests/test_project_status_deliverable_analysis.py`
+- Test: `tests/test_project_status_analysis_api.py`
+- Test: `tests/test_overview_web.py`
+
+**Interfaces and acceptance:**
+
+- Multi-select candidate panels are opaque and layered above the table; arbitrary department names entered manually are retained and submitted as parameterized filters.
+- Stage values are rendered uppercase in filter tokens/options and table cells while request values remain canonical lowercase.
+- The table `状态` column renders only `超期`/`未超期`; the `阶段` column renders the uppercase EWO stage. `CLOSE` is always `未超期`.
+- Pending signers are normalized from supported EWO role/person source forms into one `ROLE:person` line per role, including PE/LEADER/MAJOR/SQE and unknown future roles; absent values render `无`.
+- EWO “更新方式” visibly offers manual, automatic-sync, and hybrid modes, recommends automatic-sync, and does not claim unconfigured field mappings are active.
+- Manual project progress is explicitly labeled and remains separate from the EWO snapshot summary; summary labels state that values come from the latest sync snapshot.
+
+- [ ] **Step 1: Add failing tests** for opaque dropdown contract, uppercase stage labels, two-state status, signer normalization, policy modes, and progress/snapshot labels.
+- [ ] **Step 2: Run focused tests and confirm failure.**
+- [ ] **Step 3: Implement the smallest UI/data normalization fixes.**
+- [ ] **Step 4: Run focused tests, JS syntax check, and regression tests.**
+- [ ] **Step 5: Commit** with message `fix: address second-round EWO UI feedback`.
