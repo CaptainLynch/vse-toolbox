@@ -11,6 +11,7 @@ production*/
 data/*.db
 data/*.db-wal
 data/*.db-shm
+data/*.dpapi
 
 # 日志
 data/*.log
@@ -53,3 +54,6 @@ artifacts/
 .excel_workbench/
 dist-probe/
 tmp/
+
+# 本地 Python 虚拟环境（机器本地产物，不入库）
+.venv/

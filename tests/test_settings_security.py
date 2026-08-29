@@ -458,6 +458,16 @@ def test_api_settings_domain_login_and_clear_lifecycle(client: Any, monkeypatch:
 
     monkeypatch.setattr(web_app, "ArasECMAuthClient", lambda: mock_aras)
     monkeypatch.setattr(web_app, "TDCPasswordAuthClient", lambda: mock_tdc)
+    monkeypatch.setattr(
+        web_app,
+        "store_windows_generic_credential",
+        lambda ref, username, password: None,
+    )
+    monkeypatch.setattr(
+        web_app,
+        "delete_windows_generic_credential",
+        lambda ref: True,
+    )
 
     user = _runtime_opaque()
     secret = _runtime_opaque()
@@ -493,3 +503,114 @@ def test_api_settings_domain_login_and_clear_lifecycle(client: Any, monkeypatch:
     )
     assert clear_resp.status_code == 200
     assert client.get("/api/settings").get_json()["data"]["credentialVaultConfigured"] is False
+
+
+def test_domain_login_save_writes_and_clear_removes_windows_credential(
+    client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """统一域账号登录勾选保存时，必须同步写入交付物同步使用的 Windows 凭据库。"""
+    mock_aras = MagicMock()
+    mock_aras.login.return_value = MagicMock(session="aras_session")
+    mock_tdc = MagicMock()
+    mock_tdc.login.return_value = MagicMock(session="tdc_session")
+    monkeypatch.setattr(web_app, "ArasECMAuthClient", lambda: mock_aras)
+    monkeypatch.setattr(web_app, "TDCPasswordAuthClient", lambda: mock_tdc)
+
+    stored: list[tuple[str, str, str]] = []
+    deleted: list[str] = []
+    monkeypatch.setattr(
+        web_app,
+        "store_windows_generic_credential",
+        lambda ref, username, password: stored.append((ref, username, password)),
+    )
+    monkeypatch.setattr(
+        web_app,
+        "delete_windows_generic_credential",
+        lambda ref: deleted.append(ref) or True,
+    )
+
+    user = _runtime_opaque()
+    secret = _runtime_opaque()
+    resp = client.post(
+        "/api/settings/domain-login",
+        json={"username": user, "password": secret, "saveForScheduled": True},
+        headers=_loopback_headers(),
+    )
+    assert resp.status_code == 200
+    assert stored == [(web_app.SYNC_CREDENTIAL_REF, user, secret)]
+
+    clear_resp = client.delete(
+        "/api/settings/sessions",
+        json={"clearCredentialVault": True},
+        headers=_loopback_headers(),
+    )
+    assert clear_resp.status_code == 200
+    assert deleted == [web_app.SYNC_CREDENTIAL_REF]
+
+
+def test_domain_login_windows_credential_failure_returns_503(
+    client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows 凭据库不可用时，统一登录必须显式失败而不是静默丢失同步凭据。"""
+    mock_aras = MagicMock()
+    mock_aras.login.return_value = MagicMock(session="aras_session")
+    mock_tdc = MagicMock()
+    mock_tdc.login.return_value = MagicMock(session="tdc_session")
+    monkeypatch.setattr(web_app, "ArasECMAuthClient", lambda: mock_aras)
+    monkeypatch.setattr(web_app, "TDCPasswordAuthClient", lambda: mock_tdc)
+
+    def _fail(ref: str, username: str, password: str) -> None:
+        raise CredentialProviderError("Windows Credential Manager is unavailable")
+
+    monkeypatch.setattr(web_app, "store_windows_generic_credential", _fail)
+
+    resp = client.post(
+        "/api/settings/domain-login",
+        json={
+            "username": _runtime_opaque(),
+            "password": _runtime_opaque(),
+            "saveForScheduled": True,
+        },
+        headers=_loopback_headers(),
+    )
+    assert resp.status_code == 503
+    assert resp.get_json()["error"]["type"] == "CredentialVaultUnavailable"
+
+
+def test_domain_login_dpapi_failure_rolls_back_windows_credential(
+    client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DPAPI 落库失败时必须回滚 Windows 凭据，且 503 消息说明登录会话已建立。"""
+    mock_aras = MagicMock()
+    mock_aras.login.return_value = MagicMock(session="aras_session")
+    mock_tdc = MagicMock()
+    mock_tdc.login.return_value = MagicMock(session="tdc_session")
+    monkeypatch.setattr(web_app, "ArasECMAuthClient", lambda: mock_aras)
+    monkeypatch.setattr(web_app, "TDCPasswordAuthClient", lambda: mock_tdc)
+    monkeypatch.setattr(web_app, "store_windows_generic_credential", lambda ref, u, p: None)
+    deleted: list[str] = []
+    monkeypatch.setattr(
+        web_app,
+        "delete_windows_generic_credential",
+        lambda ref: deleted.append(ref) or True,
+    )
+
+    def _dpapi_down(self, username: str, password: str) -> None:
+        raise CredentialVaultError("dpapi unavailable")
+
+    monkeypatch.setattr(WindowsDPAPICredentialVault, "store", _dpapi_down)
+
+    resp = client.post(
+        "/api/settings/domain-login",
+        json={
+            "username": _runtime_opaque(),
+            "password": _runtime_opaque(),
+            "saveForScheduled": True,
+        },
+        headers=_loopback_headers(),
+    )
+    assert resp.status_code == 503
+    body = resp.get_json()
+    assert body["error"]["type"] == "CredentialVaultUnavailable"
+    assert "登录会话已建立" in body["error"]["message"]
+    assert deleted == [web_app.SYNC_CREDENTIAL_REF]

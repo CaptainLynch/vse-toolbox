@@ -24,6 +24,31 @@ def context(source: str = "tdc") -> SyncBindingContext:
     )
 
 
+def test_aras_ewo_snapshot_matches_row_by_no_field():
+    """同步执行侧的行匹配必须认得 EWO 行的 `_no` 编号，否则自动同步永远 not_found。"""
+    from services.project_status_connectors import _snapshot
+
+    ctx = SyncBindingContext(
+        binding_id=2, deliverable_id="VPI-T2-D3", phase_id="VPI-T2",
+        source_type="aras", external_key="EWO-049039",
+        match_rule={"reportType": "ewo", "ewoNo": "EWO-049039"},
+        mapping={"owner": "_rsp_name", "plannedDate": "_required_date"},
+        cursor={}, expected_deliverable_updated_at="v1", run_id=8,
+        credential_ref="domain",
+    )
+    row = {
+        "id": "AAAABBBBCCCCDDDDEEEEFFFF00001111",
+        "_no": "EWO-049039", "_rsp_name": "张三",
+        "_required_date": "2026-09-15", "state": "测试中",
+    }
+    snapshot = _snapshot(ctx, [row], [])
+    assert snapshot.match_state == "matched"
+    assert snapshot.candidates[0].external_key == "EWO-049039"
+    assert snapshot.candidates[0].field_values == {
+        "owner": "张三", "plannedDate": "2026-09-15"
+    }
+
+
 class FakeAuth:
     base_url = "https://fixed.example"
 
@@ -155,3 +180,104 @@ def test_aras_session_closes_when_crawl_fails(tmp_path: Path):
     with pytest.raises(RuntimeError, match="offline failure"):
         connector.collect(value)
     assert session.closed is True
+
+
+def test_aras_connector_model_scope_filter_from_match_rule():
+    """matchRule.modelInfo 存在时按车型抓全量 EWO（科室分析用），不再按单号过滤。"""
+    captured = {}
+
+    class FakeAuth:
+        base_url = "http://aras.example"
+
+        def __init__(self, **kwargs):
+            pass
+
+        def login(self, username, password):
+            return SimpleNamespace(session=object())
+
+    class FakeCrawler:
+        def __init__(self, base_url, session=None, timeout=None, prewarm=False):
+            pass
+
+        def crawl_ewo_report_all(self, filters=None, max_records=None):
+            captured["filters"] = filters
+            captured["max_records"] = max_records
+            return SimpleNamespace(
+                rows=[{"_no": "EWO-049039", "_rsp_smt": "车体科", "_rsp_name": "莫仕沾"}],
+                page=1,
+                item_ids=["ID-1"],
+            )
+
+    class FakeArchive:
+        def write_csv(self, *args, **kwargs):
+            return SimpleNamespace(as_metadata=lambda: {})
+
+        def write_json(self, *args, **kwargs):
+            return SimpleNamespace(as_metadata=lambda: {})
+
+    connector = ArasProjectStatusConnector(
+        MemoryCredentialProvider({"domain": ("user", "pass")}),
+        FakeArchive(),
+        auth_factory=FakeAuth,
+        crawler_factory=FakeCrawler,
+    )
+    ctx = SyncBindingContext(
+        binding_id=3, deliverable_id="VPI-T2-D3", phase_id="VPI-T2",
+        source_type="aras", external_key="EWO-049039",
+        match_rule={"reportType": "ewo", "ewoNo": "EWO-049039", "modelInfo": "F610S"},
+        mapping={"owner": "_rsp_name"}, cursor={},
+        expected_deliverable_updated_at="v1", run_id=9, credential_ref="domain",
+    )
+    snapshot = connector.collect(ctx)
+    assert captured["filters"].model_info == "F610S"
+    assert captured["filters"].ewo_no is None
+    assert snapshot.match_state == "matched"
+    assert snapshot.analysis_rows[0]["_rsp_smt"] == "车体科"
+    assert snapshot.candidates[0].external_key == "EWO-049039"
+
+
+def test_aras_connector_keeps_ewo_no_filter_without_model_info():
+    """未配置 modelInfo 的旧绑定保持按单号过滤的行为。"""
+    captured = {}
+
+    class FakeAuth:
+        base_url = "http://aras.example"
+
+        def __init__(self, **kwargs):
+            pass
+
+        def login(self, username, password):
+            return SimpleNamespace(session=object())
+
+    class FakeCrawler:
+        def __init__(self, base_url, session=None, timeout=None, prewarm=False):
+            pass
+
+        def crawl_ewo_report_all(self, filters=None, max_records=None):
+            captured["filters"] = filters
+            return SimpleNamespace(rows=[{"_no": "EWO-049039"}], page=1, item_ids=["ID-1"])
+
+    class FakeArchive:
+        def write_csv(self, *args, **kwargs):
+            return SimpleNamespace(as_metadata=lambda: {})
+
+        def write_json(self, *args, **kwargs):
+            return SimpleNamespace(as_metadata=lambda: {})
+
+    connector = ArasProjectStatusConnector(
+        MemoryCredentialProvider({"domain": ("user", "pass")}),
+        FakeArchive(),
+        auth_factory=FakeAuth,
+        crawler_factory=FakeCrawler,
+    )
+    ctx = SyncBindingContext(
+        binding_id=4, deliverable_id="VPI-T2-D3", phase_id="VPI-T2",
+        source_type="aras", external_key="EWO-049039",
+        match_rule={"reportType": "ewo", "ewoNo": "EWO-049039"},
+        mapping={"owner": "_rsp_name"}, cursor={},
+        expected_deliverable_updated_at="v1", run_id=10, credential_ref="domain",
+    )
+    snapshot = connector.collect(ctx)
+    assert captured["filters"].ewo_no == "EWO-049039"
+    assert captured["filters"].model_info is None
+    assert snapshot.match_state == "matched"

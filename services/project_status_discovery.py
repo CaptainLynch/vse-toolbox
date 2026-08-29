@@ -11,12 +11,17 @@ from typing import Any, Mapping, Sequence
 from core.db_manager import DatabaseManager
 from core.redaction import redact_sensitive_text
 
-_FIELD_LIMIT = 30
+_FIELD_LIMIT = 200
 _SAMPLE_LIMIT = 5
 _VALUE_LIMIT = 200
 _STATUS_HINT = re.compile(r"status|state|node|stage|approval|approve|状态|节点|审批", re.I)
 _SENSITIVE_FIELD = re.compile(r"authorization|cookie|token|secret|password|session|csrf", re.I)
-_IDENTITY_FIELDS = ("formId", "incident", "documentNo", "processInstanceId", "processNo", "id", "ewo_no", "_no", "item_number", "itemNumber")
+_IDENTITY_FIELDS = (
+    # 业务单号必须优先于内部 id：ARAS 会在行里返回 `id`（内部 GUID），
+    # 若它先命中，发现到的稳定键就不是人类可读的 EWO 单号，无法与策略对齐。
+    "_no", "formId", "incident", "documentNo", "processInstanceId",
+    "processNo", "id", "ewo_no", "item_number", "itemNumber",
+)
 
 
 def _scalar(value: Any) -> str | None:
@@ -72,12 +77,15 @@ class MappingDiscoveryService:
 
     @staticmethod
     def _safe_row(row: Mapping[str, Any]) -> dict[str, str | None]:
-        result: dict[str, str | None] = {}
-        for key in sorted(str(key) for key in row)[:_FIELD_LIMIT]:
-            if _SENSITIVE_FIELD.search(key):
-                continue
-            result[key] = _scalar(row.get(key))
-        return result
+        keys = sorted(str(key) for key in row)[:_FIELD_LIMIT]
+        kept = [key for key in keys if not _SENSITIVE_FIELD.search(key)]
+        # 身份字段是候选键提取的唯一来源；真实 EWO 报表约 70 列，`_no` 按字母序
+        # 排在截断点之后，一旦被丢弃 discovery 对线上数据永远 not_found。
+        kept += [
+            key for key in _IDENTITY_FIELDS
+            if key in row and key not in kept and not _SENSITIVE_FIELD.search(key)
+        ]
+        return {key: _scalar(row.get(key)) for key in kept}
 
     @staticmethod
     def _field_report(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:

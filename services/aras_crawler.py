@@ -224,6 +224,7 @@ class EWOReportFilters:
     rsp_department: str | None = None
     submit_start: str | None = None
     submit_end: str | None = None
+    model_info: str | None = None
 
 
 @dataclass(frozen=True)
@@ -909,6 +910,7 @@ class ArasCrawlerClient:
             _search_elements("_rsp_department", filters.rsp_department),
             _element("_submit_time", filters.submit_start, condition="ge"),
             _element("_submit_time", filters.submit_end, condition="le"),
+            _search_elements("_modelinfo", filters.model_info, default_like=True),
         ]
         body = "".join(child for child in children if child)
         return _soap_envelope(f"<ApplyItem><Item {attrs}>{body}</Item></ApplyItem>")

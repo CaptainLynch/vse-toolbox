@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import re
 import tempfile
@@ -213,6 +213,11 @@ def _make_test_client(monkeypatch, tmp_path, allowed_hosts=None):  # type: ignor
     monkeypatch.setattr(web_app, "DIAGNOSTIC_DIR", tmp_path / "diagnostics")
     app = web_app.create_app(allowed_hosts=allowed_hosts)
     app.config.update(TESTING=True)
+    # 统一域账号登录后，路由测试默认处于「已建立共享域会话」的状态。
+    registry = app.extensions.get("domain_sessions")
+    if isinstance(registry, web_app.DomainSessionRegistry):
+        registry.mark_authenticated("aras", object())
+        registry.mark_authenticated("tdc", object())
     return app.test_client()
 
 
@@ -624,6 +629,9 @@ def test_host_allowlist_injectable_via_app_config(monkeypatch, tmp_path) -> None
     app = web_app.create_app()  # 默认仅 ecm.sgmw.com.cn
     app.config["ARAS_ALLOWED_HOSTS"] = ("aras.example",)  # 运行前注入测试 host
     app.config.update(TESTING=True)
+    registry = app.extensions.get("domain_sessions")
+    if isinstance(registry, web_app.DomainSessionRegistry):
+        registry.mark_authenticated("aras", object())
     test_client = app.test_client()
 
     allowed = test_client.post("/api/aras/paa/query", json={"base_url": "http://aras.example", "filters": {}})
@@ -1795,13 +1803,15 @@ def test_static_aras_export_download_markers_and_department_fields() -> None:
     assert html_text.count('title="支持 * 模糊和 | 并集"') >= 10
     assert 'title="搜索符号将原样传给 NCR 服务"' in html_text
 
-    # 连接区默认使用 ECM 密码认证，并保留 Cookie/Header 备用模式
-    assert 'id="aras-auth-mode"' in html_text
-    assert '<option value="password" selected>' in html_text
-    assert '<option value="browser">' in html_text
-    assert 'name="username"' in html_text
-    assert 'name="password"' in html_text
-    assert "SOAP ValidateUser" in html_text
+    # 统一域账号登录后，连接区不再保留账号密码/Cookie 备用模式，
+    # 凭据统一来自「设置 → 统一域账号登录」（该表单是全页唯一账号输入）。
+    assert 'id="aras-auth-mode"' not in html_text
+    assert '<option value="password" selected>' not in html_text
+    assert 'id="aras-username"' not in html_text
+    assert 'id="aras-password"' not in html_text
+    assert html_text.count('name="username"') == 1
+    assert html_text.count('name="password"') == 1
+    assert "统一域账号登录" in html_text
 
     # 按钮 action 标识（预览 / 全量导出 / 生成并下载）
     assert 'data-aras-action="preview"' in html_text
@@ -1812,8 +1822,8 @@ def test_static_aras_export_download_markers_and_department_fields() -> None:
     assert 'id="aras-xml-actions"' in html_text
     assert 'id="aras-download-request-xml"' in html_text
     assert 'id="aras-download-response-xml"' in html_text
-    assert 'style.css?v=credential-sor-20260827-r1' in html_text
-    assert 'app.js?v=credential-sor-20260827-r1' in html_text
+    assert 'style.css?v=domain-unify-20260828-r3' in html_text
+    assert 'app.js?v=domain-unify-20260828-r3' in html_text
 
     # 导出 / 下载端点在前端配置中
     assert "/api/aras/ewo/export" in js_text
@@ -1931,3 +1941,43 @@ def test_aras_crawler_error_survives_diagnostic_save_failure(monkeypatch, tmp_pa
     assert body["error"]["type"] == "ArasCrawlerError"
     assert not body["error"].get("diagnosticPath")
     assert "fictional-password-secret" not in failed.get_data(as_text=True)
+
+
+def test_aras_browser_mode_without_session_or_credentials_is_guided_to_unified_login() -> None:
+    """无共享域会话且无任何凭据时，必须 401 引导用户去统一域账号登录。"""
+    payload = {"base_url": "http://ecm.sgmw.com.cn/innovatorserver"}
+    with pytest.raises(web_app._ArasRequestError) as excinfo:
+        web_app._build_aras_client_from_payload(payload)
+    assert excinfo.value.error_type == "DomainSessionRequired"
+    assert excinfo.value.status_code == 401
+
+
+def test_aras_browser_mode_rejects_username_password_credentials() -> None:
+    """browser 模式与账号密码互斥（与 TDC 侧语义一致），避免凭据被静默忽略。"""
+    payload = {
+        "base_url": "http://ecm.sgmw.com.cn/innovatorserver",
+        "username": "user",
+        "password": "pwd",
+    }
+    with pytest.raises(web_app._ArasRequestError) as excinfo:
+        web_app._build_aras_client_from_payload(payload)
+    assert excinfo.value.error_type == "AuthenticationModeConflict"
+
+
+def test_aras_browser_mode_allows_custom_authorization_header() -> None:
+    """自带 Authorization 等自定义头的 browser 请求不受新门禁影响。"""
+    payload = {
+        "base_url": "http://ecm.sgmw.com.cn/innovatorserver",
+        "headers": {"Authorization": "Bearer token"},
+    }
+    client = web_app._build_aras_client_from_payload(payload)
+    # _normalize_aras_app_root 会补尾斜杠。
+    assert "innovatorserver" in client.base_url
+
+
+def test_tdc_browser_mode_without_session_or_credentials_is_guided_to_unified_login() -> None:
+    payload = {"base_url": "https://tdc.sgmw.com.cn"}
+    with pytest.raises(web_app._TDCRequestError) as excinfo:
+        web_app._build_tdc_client_from_payload(payload)
+    assert excinfo.value.error_type == "DomainSessionRequired"
+    assert excinfo.value.status_code == 401

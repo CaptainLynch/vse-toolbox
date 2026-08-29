@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Mapping, Sequence
 
 from core.db_manager import (
@@ -26,6 +27,20 @@ PROJECT_STATUS_AUTOMATIC_API_FIELDS = frozenset({"owner", "plannedDate", "note"}
 
 #: connector 候选 field_values 允许的 API 字段（与自动归属字段一致）。
 SYNC_CANDIDATE_ALLOWED_FIELDS = frozenset(PROJECT_STATUS_AUTOMATIC_API_FIELDS)
+
+
+def _normalize_iso_date_value(value: str) -> str:
+    """把来源返回的 ISO 日期时间（如 ARAS `2026-09-30T00:00:00`）归一为 ISO 日期。
+
+    业务表的日期列与总览接口的 `date.fromisoformat` 都只接受 `YYYY-MM-DD`；
+    无法解析的值原样返回，保持既有行为不变。
+    """
+    try:
+        parsed = datetime.fromisoformat(str(value).strip())
+    except ValueError:
+        return value
+    return parsed.date().isoformat()
+
 
 #: 匹配状态枚举。
 SYNC_MATCH_STATES = frozenset({"matched", "not_found", "ambiguous"})
@@ -152,7 +167,7 @@ PROJECT_STATUS_SYNC_CONTRACTS: dict[str, dict[str, object]] = {
         "sourceType": "aras",
         "reportType": "ewo",
         "matchKeys": frozenset({
-            "ewoNo", "projectCode", "subjectKeyword", "reportType",
+            "ewoNo", "projectCode", "subjectKeyword", "modelInfo", "reportType",
         }),
     },
     "VPI-T2-D5": {
@@ -463,14 +478,15 @@ class ProjectStatusUpdateService:
 
         # 候选字段值经脱敏后再写入业务表，确保密码/Cookie/token 不落库。
         raw_values = dict(candidate.field_values)
-        deliverable_values: dict[str, object] = {
-            api_name: (
+        deliverable_values: dict[str, object] = {}
+        for api_name, value in raw_values.items():
+            if api_name == "plannedDate" and isinstance(value, str):
+                value = _normalize_iso_date_value(value)
+            deliverable_values[api_name] = (
                 redact_sensitive_text(value, limit=1000)
                 if isinstance(value, str)
                 else value
             )
-            for api_name, value in raw_values.items()
-        }
         proposed_sanitized = _sanitize_value(
             {
                 api_name: deliverable_values.get(api_name)

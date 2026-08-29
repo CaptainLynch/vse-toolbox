@@ -1186,7 +1186,9 @@ def test_static_deliverables_guards() -> None:
     assert "Number(" in js_text
     assert "redactSensitiveText(err.message)" in js_text
     assert "clearDeliverablePayloadSecrets" in js_text
-    assert "clearDeliverableFormSecrets" in js_text
+    # 统一域账号登录后，交付物表单不再保留账号密码输入，凭据清理只剩 payload 侧。
+    assert "clearDeliverableFormSecrets" not in js_text
+    assert 'name="auth_mode"' not in js_text
     assert "payload.headers = {}" in js_text
     assert "tdc-headers" in js_text
     assert 'name="output_format"' in js_text

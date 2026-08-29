@@ -71,15 +71,30 @@ class WindowsCredentialManagerProvider:
         username = str(raw.get("UserName") or "").strip()
         blob = raw.get("CredentialBlob", b"")
         if isinstance(blob, bytes):
+            password = None
             try:
                 looks_utf16 = blob.startswith((b"\xff\xfe", b"\xfe\xff")) or (
                     len(blob) >= 2 and len(blob) % 2 == 0 and b"\x00" in blob[1::2]
                 )
-                password = blob.decode("utf-16-le" if looks_utf16 else "utf-8")
+                if blob.startswith((b"\xff\xfe", b"\xfe\xff")):
+                    # UTF-16 BOM 由 decode("utf-16") 消费，避免密码混入不可见字符。
+                    password = blob.decode("utf-16")
+                elif looks_utf16:
+                    password = blob.decode("utf-16-le")
+                else:
+                    try:
+                        password = blob.decode("utf-8")
+                    except UnicodeDecodeError:
+                        # 纯非 ASCII 的 UTF-16 blob（无 BOM、无 NUL 字节，pywin32 写入形态）。
+                        password = blob.decode("utf-16-le")
             except UnicodeDecodeError as exc:
                 raise CredentialProviderError(
                     "credential reference has an unsupported value encoding"
                 ) from exc
+            if password is None:  # pragma: no cover - 上面分支必然赋值
+                raise CredentialProviderError(
+                    "credential reference has an unsupported value encoding"
+                )
         else:
             password = str(blob or "")
         if not username or not password:
@@ -101,6 +116,51 @@ class WindowsCredentialManagerProvider:
                 return True
         except CredentialProviderError:
             return False
+
+
+def store_windows_generic_credential(ref: str, username: str, password: str) -> None:
+    """把通用凭据写入当前 Windows 用户的凭据管理器（交付物同步经此读取）。"""
+    ref = str(ref or "").strip()
+    if not ref or len(ref) > 256 or any(ord(ch) < 32 for ch in ref):
+        raise CredentialProviderError("credential reference is invalid")
+    try:
+        import win32cred  # type: ignore[import-not-found]
+    except (ImportError, OSError) as exc:
+        raise CredentialProviderError(
+            "Windows Credential Manager is unavailable"
+        ) from exc
+    credential = {
+        "Type": win32cred.CRED_TYPE_GENERIC,
+        "TargetName": ref,
+        "UserName": str(username or "").strip(),
+        # pywin32 要求 str（内部转 UTF-16LE）；bytes 会抛 TypeError。
+        # 纯非 ASCII 密码的识别由读取端的 UTF-16 兜底分支负责。
+        "CredentialBlob": str(password or ""),
+        "Persist": win32cred.CRED_PERSIST_LOCAL_MACHINE,
+    }
+    win32cred.CredWrite(credential, 0)
+
+
+def delete_windows_generic_credential(ref: str) -> bool:
+    """删除当前 Windows 用户凭据管理器中的通用凭据；不存在时返回 False。"""
+    ref = str(ref or "").strip()
+    if not ref or len(ref) > 256 or any(ord(ch) < 32 for ch in ref):
+        raise CredentialProviderError("credential reference is invalid")
+    try:
+        import win32cred  # type: ignore[import-not-found]
+    except (ImportError, OSError) as exc:
+        raise CredentialProviderError(
+            "Windows Credential Manager is unavailable"
+        ) from exc
+    try:
+        win32cred.CredDelete(ref, win32cred.CRED_TYPE_GENERIC, 0)
+    except Exception as exc:
+        if getattr(exc, "winerror", None) == 1168:  # ERROR_NOT_FOUND
+            return False
+        raise CredentialProviderError(
+            f"failed to delete credential reference: {exc}"
+        ) from exc
+    return True
 
 
 class MemoryCredentialProvider:

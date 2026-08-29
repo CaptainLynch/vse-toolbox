@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>VSE Toolbox 控制台</title>
   <link rel="icon" href="data:," />
-  <link rel="stylesheet" href="/static/style.css?v=credential-sor-20260827-r1" />
+  <link rel="stylesheet" href="/static/style.css?v=domain-unify-20260828-r3" />
 </head>
 <body data-theme="light" data-session-view="overview" data-current-command="ewo">
   <div class="app-shell">
@@ -149,31 +149,12 @@
                 <span>Base URL</span>
                 <input id="aras-base-url" name="base_url" type="url" required placeholder="https://aras-host/" value="http://ecm.sgmw.com.cn/innovatorserver" autocomplete="url" />
               </label>
-              <label>
-                <span>认证方式</span>
-                <select id="aras-auth-mode" name="auth_mode">
-                  <option value="password" selected>ECM 账号密码</option>
-                  <option value="browser">浏览器 Cookie / Header</option>
-                </select>
-              </label>
-              <label data-auth-fields="password">
-                <span>ECM 用户名</span>
-                <input id="aras-username" name="username" autocomplete="username" value="" />
-              </label>
-              <label data-auth-fields="password">
-                <span>ECM 密码</span>
-                <input id="aras-password" name="password" type="password" autocomplete="current-password" placeholder="在此填入 ECM 密码" />
-              </label>
-              <label data-auth-fields="browser" hidden>
-                <span>Cookie</span>
-                <input id="aras-cookie" name="cookie" type="password" autocomplete="off" />
-              </label>
               <label class="wide">
                 <span>请求头</span>
                 <textarea id="aras-headers" name="headers" rows="3" placeholder="名称: 值"></textarea>
               </label>
             </div>
-            <p id="aras-auth-note" class="connection-note">密码仅用于本次请求，由后端完成企业账号登录和 SOAP ValidateUser 校验，不会持久化。</p>
+            <p id="aras-auth-note" class="connection-note">统一使用「设置 → 统一域账号登录」建立的会话，无需在此填写账号密码；未登录时请先完成统一登录。</p>
           </section>
 
           <section class="form-block fields-block">
@@ -707,14 +688,14 @@
               <div class="session-status-list">
                 <div class="session-status-item">
                   <div class="session-info">
-                    <strong>Aras PLM 会话</strong>
+                    <strong>ECM 流程会话</strong>
                     <span id="settings-aras-session-user" class="session-user">未登录</span>
                   </div>
                   <span id="settings-aras-session-status" class="archive-chip is-unknown">未认证</span>
                 </div>
                 <div class="session-status-item">
                   <div class="session-info">
-                    <strong>TDC 车体流程会话</strong>
+                    <strong>TDC 研发流程会话</strong>
                     <span id="settings-tdc-session-user" class="session-user">未登录</span>
                   </div>
                   <span id="settings-tdc-session-status" class="archive-chip is-unknown">未认证</span>
@@ -788,6 +769,6 @@
       </section>
     </main>
   </div>
-  <script src="/static/app.js?v=credential-sor-20260827-r1"></script>
+  <script src="/static/app.js?v=domain-unify-20260828-r3"></script>
 </body>
 </html>

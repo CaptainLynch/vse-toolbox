@@ -349,8 +349,11 @@ def test_aras_autofill_and_non_sensitive_preference_storage() -> None:
 
     # 1. Form and input autocomplete attributes
     assert '<form id="aras-form" class="aras-form" autocomplete="on">' in html
-    assert 'id="aras-username" name="username" autocomplete="username"' in html
-    assert 'id="aras-password" name="password" type="password" autocomplete="current-password"' in html
+    # 统一域账号登录后，Aras 工作区表单不得再保留账号密码/Cookie 输入。
+    assert 'id="aras-username"' not in html
+    assert 'id="aras-password"' not in html
+    assert 'id="aras-cookie"' not in html
+    assert 'id="aras-auth-mode"' not in html
 
     # 2. Versioned key and sensitive field exclusions
     assert "vse-toolbox-aras-preferences-v1" in js

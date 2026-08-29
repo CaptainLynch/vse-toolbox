@@ -26,8 +26,10 @@ from services.tdc_crawler import (
 )
 
 _IDENTITY_FIELDS = (
-    "formId", "incident", "documentNo", "processInstanceId", "processNo",
-    "id", "ewo_no", "item_number", "itemNumber",
+    # 与 project_status_discovery 保持一致：业务单号（EWO/PAA 的 `_no`）
+    # 优先于 ARAS 返回的内部 `id`（GUID），否则同步匹配永远对不上策略键。
+    "_no", "formId", "incident", "documentNo", "processInstanceId",
+    "processNo", "id", "ewo_no", "item_number", "itemNumber",
 )
 _MAX_ROWS = 10000
 logger = logging.getLogger(__name__)
@@ -194,11 +196,17 @@ class ArasProjectStatusConnector:
             login = auth.login(secret.username, secret.password)
             try:
                 crawler = self.crawler_factory(auth.base_url, session=login.session, timeout=self.timeout, prewarm=False)
-                filters = EWOReportFilters(
-                    ewo_no=_clean_scalar(context.match_rule.get("ewoNo")),
-                    project_code=_clean_scalar(context.match_rule.get("projectCode")),
-                    subject_keyword=_clean_scalar(context.match_rule.get("subjectKeyword")),
-                )
+                model_info = _clean_scalar(context.match_rule.get("modelInfo"))
+                if model_info:
+                    # 车型锚点模式：按车型抓取全部 EWO 供科室分析；业务行仍由
+                    # external_key 在结果集内精确匹配（见 _snapshot）。
+                    filters = EWOReportFilters(model_info=model_info)
+                else:
+                    filters = EWOReportFilters(
+                        ewo_no=_clean_scalar(context.match_rule.get("ewoNo")),
+                        project_code=_clean_scalar(context.match_rule.get("projectCode")),
+                        subject_keyword=_clean_scalar(context.match_rule.get("subjectKeyword")),
+                    )
                 result = crawler.crawl_ewo_report_all(filters, max_records=2000)
             finally:
                 _close_session(login.session)

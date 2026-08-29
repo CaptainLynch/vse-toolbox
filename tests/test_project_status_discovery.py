@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from core.db_manager import DatabaseManager
+from services.aras_crawler import DEFAULT_EWO_SELECT_FIELDS
 from services.project_status_discovery import MappingDiscoveryService
 
 
@@ -71,6 +72,29 @@ def test_aras_ewo_row_keyed_by_no_field(tmp_path):
     assert second["stability"] == {"confirmed": 2, "required": 2, "ready": True}
     # The `_no` field must surface in the sanitized field report for confirmation flows.
     assert "_no" in second["fieldReport"]["fields"]
+
+
+def test_aras_ewo_wide_row_keeps_identity_and_mapped_fields(tmp_path):
+    """线上 EWO 行约 70 列且 `_no` 按字母序排在证据截断点之后，不能被丢弃。"""
+    db = DatabaseManager(tmp_path / "db.sqlite")
+    db.init_database()
+    service = MappingDiscoveryService(db)
+    wide_row = {field: f"值-{field}" for field in DEFAULT_EWO_SELECT_FIELDS}
+    wide_row["id"] = "AAAABBBBCCCCDDDDEEEEFFFF00001111"
+    wide_row["id__keyed_name"] = "EWO-049039"
+    wide_row["_rsp__keyed_name"] = "EWO-049039"
+    wide_row["_no"] = "EWO-049039"
+    wide_row["_rsp_name"] = "张三"
+    wide_row["_required_date"] = "2026-09-15"
+    first = service.observe("VPI-T2-D3", "aras", [wide_row])
+    # ARAS 返回的内部 `id`（GUID）不能压过业务单号 `_no`。
+    assert first["state"] == "matched"
+    assert first["externalKey"] == "EWO-049039"
+    assert first["candidateCount"] == 1
+    assert first["candidates"][0]["fields"]["_rsp_name"] == "张三"
+    report_fields = set(first["fieldReport"]["fields"])
+    # 启用自动策略时，映射字段必须出现在最新脱敏字段报告中。
+    assert set(DEFAULT_EWO_SELECT_FIELDS).issubset(report_fields)
 
 
 def test_zero_ambiguous_and_key_change_reset_stability(tmp_path):

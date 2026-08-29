@@ -20,25 +20,26 @@ from core.redaction import redact_sensitive_text
 
 _FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     "item_key": (
-        "incident", "processNo", "formId", "processInstanceId", "id", "itemId",
-        "itemNumber",
+        "incident", "processNo", "formId", "processInstanceId", "_no", "id",
+        "itemId", "itemNumber",
         "code", "number", "no", "documentNo", "partNo",
         "编号", "单号", "零件号", "记录编号", "实例号", "流水单号",
         "EWO编号", "PAA编号", "SOR号",
     ),
     "item_number": (
-        "incident", "processNo", "itemNumber", "displayNumber", "formId",
+        "incident", "processNo", "_no", "itemNumber", "displayNumber", "formId",
         "processInstanceId", "documentNo", "number", "no",
         "编号", "单号", "记录编号", "实例号", "流水单号", "EWO编号", "PAA编号", "SOR号",
     ),
     "title": (
-        "title", "name", "subject", "itemName", "documentName", "partName",
+        "title", "name", "subject", "_subject", "itemName", "documentName", "partName",
         "名称", "标题", "主题", "任务名称", "零件名称", "流程名", "报表名称",
         "processName", "projectName",
     ),
     "department": (
         "department", "responsibleDepartment", "responsibleDept", "ownerDepartment",
-        "dept", "deptName", "sectionName", "section", "科室", "部门", "责任部门", "负责科室",
+        "dept", "deptName", "sectionName", "section", "_rsp_smt",
+        "科室", "部门", "责任部门", "负责科室",
     ),
     "owner": (
         "owner", "responsiblePerson", "assignee", "handler", "负责人", "责任人", "处理人",
@@ -55,7 +56,8 @@ _FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     ),
     "planned_date": (
         "plannedDate", "dueDate", "deadline", "planFinishDate", "targetDate",
-        "applicationDate", "applyDate", "计划完成", "计划完成日期", "到期日期", "截止日期", "申请日期",
+        "_required_date", "applicationDate", "applyDate",
+        "计划完成", "计划完成日期", "到期日期", "截止日期", "申请日期",
     ),
     "actual_date": (
         "actualDate", "completedDate", "finishDate", "实际完成", "实际完成日期", "完成日期",

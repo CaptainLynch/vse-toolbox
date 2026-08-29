@@ -139,9 +139,43 @@ def test_v3_to_v10_migration(tmp_path: Path) -> None:
         phase = c.execute(
             "SELECT display_name FROM project_status_phases WHERE id = 'VPI-T2'"
         ).fetchone()
-        assert phase[0] == "VPI-T2 主计划时间轴"
+        assert phase[0] == "F610S"
         row = c.execute("SELECT name FROM projects WHERE id = 1").fetchone()
         assert row[0] == "未归类"
+
+
+def test_seed_renames_legacy_ewo_and_phase_anchor(tmp_path: Path) -> None:
+    """存量库升级时，旧交付物名与旧主计划名必须被幂等迁移到新默认值。"""
+    db = DatabaseManager(db_path=tmp_path / "legacy-names.db")
+    db.init_database()
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE project_status_deliverables SET name = 'EWO 定点流程' WHERE id = 'VPI-T2-D3'"
+        )
+        conn.execute(
+            "UPDATE project_status_phases SET display_name = 'VPI-T2 主计划时间轴' WHERE id = 'VPI-T2'"
+        )
+        # 用户手动改过的名字不在迁移范围内。
+        conn.execute(
+            "UPDATE project_status_deliverables SET name = '我的自定义流程' WHERE id = 'VPI-T2-D5'"
+        )
+        conn.commit()
+
+    db.init_database()  # 模拟应用重启后的再迁移
+
+    with db.get_connection() as conn:
+        ewo = conn.execute(
+            "SELECT name FROM project_status_deliverables WHERE id = 'VPI-T2-D3'"
+        ).fetchone()[0]
+        anchor = conn.execute(
+            "SELECT display_name FROM project_status_phases WHERE id = 'VPI-T2'"
+        ).fetchone()[0]
+        custom = conn.execute(
+            "SELECT name FROM project_status_deliverables WHERE id = 'VPI-T2-D5'"
+        ).fetchone()[0]
+    assert ewo == "EWO 流程"
+    assert anchor == "F610S"
+    assert custom == "我的自定义流程"
 
 
 def test_v5_to_v10_migration(tmp_path: Path) -> None:

@@ -224,8 +224,6 @@ h4 {
 
 .panel-section[hidden],
 .aras-fields[hidden],
-[data-auth-fields][hidden],
-[data-tdc-auth-fields][hidden],
 [data-excel-create-field][hidden] { display: none; }
 
 .overview-tabpanel[hidden] { display: none; }

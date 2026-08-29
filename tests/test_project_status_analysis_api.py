@@ -25,9 +25,10 @@ def test_phase_metadata_update_and_dynamic_today(client_and_db) -> None:
     client, _ = client_and_db
     before = client.get("/api/project-status").get_json()["data"]
     assert before["phase"]["today"] == "2026-08-23"
-    assert before["phase"]["displayName"] == "VPI-T2 主计划时间轴"
+    # 主计划名称即车型锚点，种子默认 F610S。
+    assert before["phase"]["displayName"] == "F610S"
     assert before["phase"]["riskCount"] == 3
-    assert before["summary"]["risk"] == "EWO 定点流程已逾期 1 天"
+    assert before["summary"]["risk"] == "EWO 流程已逾期 1 天"
 
     response = client.patch(
         "/api/project-status/phases/VPI-T2",
@@ -55,6 +56,40 @@ def test_phase_metadata_update_and_dynamic_today(client_and_db) -> None:
         },
     )
     assert stale.status_code == 409
+
+
+def test_analysis_car_type_anchor_falls_back_to_phase_display_name(client_and_db) -> None:
+    """未显式传 carType 时，分析接口回显主计划名称作为车型锚点，且跟随手动修改。"""
+    client, _ = client_and_db
+    analysis = client.get("/api/project-status/deliverables/VPI-T2-D3/analysis")
+    assert analysis.status_code == 200
+    assert analysis.get_json()["data"]["carType"] == "F610S"
+
+    items = client.get("/api/project-status/deliverables/VPI-T2-D3/analysis/items")
+    assert items.status_code == 200
+    assert items.get_json()["data"]["carType"] == "F610S"
+
+    before = client.get("/api/project-status").get_json()["data"]
+    renamed = client.patch(
+        "/api/project-status/phases/VPI-T2",
+        json={
+            "displayName": "G610M",
+            "status": "进行中",
+            "startDate": "2026-04-08",
+            "endDate": "2026-09-05",
+            "updatedAt": before["phase"]["updatedAt"],
+        },
+    )
+    assert renamed.status_code == 200
+
+    renamed_analysis = client.get("/api/project-status/deliverables/VPI-T2-D3/analysis")
+    assert renamed_analysis.get_json()["data"]["carType"] == "G610M"
+
+    explicit = client.get(
+        "/api/project-status/deliverables/VPI-T2-D3/analysis?carType=F710S"
+    )
+    # 显式参数仍优先于锚点回退。
+    assert explicit.get_json()["data"]["carType"] == "F710S"
 
 
 def test_analysis_api_returns_cache_departments_trend_and_warnings(client_and_db) -> None:

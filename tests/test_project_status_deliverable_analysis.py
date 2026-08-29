@@ -106,6 +106,48 @@ def test_normalize_preserves_business_number_and_pending_signers() -> None:
     assert english_items[0]["pending_signers"] == "审批人"
 
 
+def test_normalize_maps_aras_ewo_underscore_fields() -> None:
+    """ARAS EWO 行使用 `_` 前缀字段（`_no`/`_subject`/`_rsp_smt`），必须正确映射。
+
+    `_normalized_key` 的 `\\w` 保留前导下划线，裸键别名（no/subject）匹配不到
+    `_no`/`_subject`；别名表必须显式收录，否则编号/名称退化为内部 id（GUID）。
+    科室取 `_rsp_smt`（车体科/外饰科/内饰科/车身科/车体架构集成科等）；
+    `_rsp_department` 是部门名，不得冒充科室。
+    """
+    items = normalize_analysis_rows(
+        [
+            {
+                "id": "AAAABBBBCCCCDDDDEEEEFFFF00001111",
+                "_no": "EWO-049039",
+                "_subject": "F610S 蒙皮总成更改",
+                "_rsp_department": "技术中心_车体工程",
+                "_rsp_smt": "车体科",
+                "_rsp_name": "莫仕沾(m22400106)",
+                "state": "EDIT2",
+                "_required_date": "2026-09-30T00:00:00",
+            },
+            {
+                "id": "BBBBCCCCDDDDEEEEFFFF000011112222",
+                "_no": "EWO-049040",
+                "_subject": "F610S 内饰件更改",
+                "_rsp_department": "技术中心_车体工程",
+                "_rsp_name": "李四",
+                "state": "EDIT2",
+            },
+        ]
+    )
+    first = items[0]
+    # 业务单号必须优先于内部 id（GUID）。
+    assert first["display_number"] == "EWO-049039"
+    assert first["title"] == "F610S 蒙皮总成更改"
+    assert first["department"] == "车体科"
+    assert first["owner"] == "莫仕沾(m22400106)"
+    assert first["source_status"] == "EDIT2"
+    assert first["planned_date"] == "2026-09-30"
+    # 只有部门没有科室的行归入「未归属」，不得把部门名当科室显示。
+    assert items[1]["department"] == "未归属"
+
+
 def test_service_publishes_cache_trend_and_alert_items(tmp_db: DatabaseManager) -> None:
     service = ProjectStatusDeliverableAnalysisService(
         tmp_db,

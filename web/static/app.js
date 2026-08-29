@@ -3467,19 +3467,11 @@ function activeFieldGroup(config) {
 function collectArasPayload(config) {
   const form = document.getElementById("aras-form");
   const group = activeFieldGroup(config);
-  const authMode = fieldValue(form, "auth_mode") || "password";
   const payload = {
     base_url: fieldValue(form, "base_url"),
-    auth_mode: authMode,
     headers: parseHeaders(fieldValue(form, "headers")),
     filters: {},
   };
-  if (authMode === "password") {
-    payload.username = fieldValue(form, "username");
-    payload.password = fieldValue(form, "password");
-  } else {
-    payload.cookie = fieldValue(form, "cookie");
-  }
   config.filterNames.forEach((name) => {
     const value = fieldValue(group, name);
     if (name === "project_names") {
@@ -4110,27 +4102,6 @@ function setDeliverableOperationControls(mode) {
   });
 }
 
-function setupDeliverableAuthentication(form) {
-  const selector = form.querySelector('[name="auth_mode"]');
-  const note = form.querySelector("#tdc-auth-note");
-  const sync = () => {
-    const mode = selector.value === "browser" ? "browser" : "password";
-    form.querySelectorAll("[data-tdc-auth-fields]").forEach((group) => {
-      group.hidden = group.dataset.tdcAuthFields !== mode;
-    });
-    form.querySelectorAll('[name="username"], [name="password"]').forEach((input) => {
-      input.required = mode === "password";
-    });
-    const cookie = form.querySelector('[name="cookie"]');
-    if (cookie) cookie.required = false;
-    note.textContent = mode === "password"
-      ? "密码仅用于本次请求，由后端完成 TDC 登录，不会持久化。"
-      : "使用浏览器已认证的 Cookie；也可在请求头中提供 Authorization。";
-  };
-  selector.addEventListener("change", sync);
-  sync();
-}
-
 function validateDeliverableForm(form) {
   if (form.checkValidity()) return true;
   form.reportValidity();
@@ -4161,31 +4132,12 @@ function buildDeliverableForm(item) {
         <span>Base URL</span>
         <input id="tdc-base-url" name="base_url" type="url" required value="https://tdc.sgmw.com.cn" />
       </label>
-      <label>
-        <span>认证方式</span>
-        <select id="tdc-auth-mode" name="auth_mode">
-          <option value="password" selected>账号密码</option>
-          <option value="browser">浏览器 Cookie / Header</option>
-        </select>
-      </label>
-      <label data-tdc-auth-fields="password">
-        <span>用户名</span>
-        <input id="tdc-username" name="username" autocomplete="off" />
-      </label>
-      <label data-tdc-auth-fields="password">
-        <span>密码</span>
-        <input id="tdc-password" name="password" type="password" autocomplete="off" />
-      </label>
-      <label data-tdc-auth-fields="browser" hidden>
-        <span>Cookie</span>
-        <input id="tdc-cookie" name="cookie" type="password" autocomplete="off" />
-      </label>
       <label class="wide">
         <span>请求头</span>
         <textarea id="tdc-headers" name="headers" rows="3" placeholder="名称: 值"></textarea>
       </label>
     </div>
-    <p id="tdc-auth-note" class="connection-note">密码仅用于本次请求，由后端完成 TDC 登录，不会持久化。</p>`;
+    <p id="tdc-auth-note" class="connection-note">统一使用「设置 → 统一域账号登录」建立的会话，无需在此填写账号密码；未登录时请先完成统一登录。</p>`;
   form.appendChild(connection);
 
   const fieldsSection = document.createElement("section");
@@ -4278,7 +4230,6 @@ function buildDeliverableForm(item) {
     if (!validateDeliverableForm(form)) return;
     runDeliverableOperation(item, operation);
   });
-  setupDeliverableAuthentication(form);
   syncDeliverableOperation();
   return form;
 }
@@ -4347,19 +4298,11 @@ function renderDeliverableDetail(item) {
 
 function collectDeliverablePayload(item, operation) {
   const form = document.getElementById("deliverable-form");
-  const authMode = fieldValue(form, "auth_mode") || "password";
   const payload = {
     base_url: fieldValue(form, "base_url"),
-    auth_mode: authMode,
     headers: parseHeaders(fieldValue(form, "headers")),
     filters: {},
   };
-  if (authMode === "password") {
-    payload.username = fieldValue(form, "username");
-    payload.password = fieldValue(form, "password");
-  } else {
-    payload.cookie = fieldValue(form, "cookie");
-  }
   (item.fields || []).forEach((field) => {
     const value = fieldValue(form, field.name);
     if (value) payload.filters[field.name] = value;
@@ -4389,17 +4332,6 @@ function clearDeliverablePayloadSecrets(payload) {
   payload.cookie = "";
   payload.headers = {};
   delete payload.cookies;
-}
-
-function clearDeliverableFormSecrets(authMode) {
-  ["tdc-password", "tdc-cookie"].forEach((id) => {
-    const el = document.getElementById(id);
-    if (el) el.value = "";
-  });
-  if (authMode === "browser") {
-    const headers = document.getElementById("tdc-headers");
-    if (headers) headers.value = "";
-  }
 }
 
 function setDeliverableStatus(text, isRunning) {
@@ -4512,7 +4444,6 @@ async function runDeliverableOperation(item, operation) {
     deliverableRunning = false;
     setDeliverableStatus("", false);
     clearDeliverablePayloadSecrets(payload);
-    clearDeliverableFormSecrets(payload.auth_mode);
     return;
   }
   try {
@@ -4561,7 +4492,6 @@ async function runDeliverableOperation(item, operation) {
     setDeliverableStatus("", false);
   } finally {
     clearDeliverablePayloadSecrets(payload);
-    clearDeliverableFormSecrets(payload.auth_mode);
     deliverableRunning = false;
   }
 }
@@ -4724,6 +4654,8 @@ function setupPanels() {
       }
     });
   });
+  // 直接带面板哈希打开页面时，hashchange 不会触发，需主动加载该面板数据。
+  handleHashChange();
 }
 
 /* ── Excel Task And Artifact Management ─────────────────────────────── */
@@ -5480,8 +5412,8 @@ const ARCHIVE_JOB_NAMES = {
 };
 
 const ARCHIVE_SOURCE_LABELS = {
-  aras: "Aras PLM",
-  tdc: "TDC 车体",
+  aras: "ECM 流程",
+  tdc: "TDC 研发",
 };
 
 const ARCHIVE_FILTER_FIELDS = {
@@ -6800,8 +6732,8 @@ function openCreateJobModal(sourceJob = null) {
   const sourceButtons = archiveEl("div", "archive-create-source-menu");
   const sourceSubmenu = archiveEl("div", "archive-create-submenu");
   const sourceChoices = [
-    { key: "aras", label: "ARAS PLM" },
-    { key: "tdc", label: "TDC" },
+    { key: "aras", label: "ECM 流程" },
+    { key: "tdc", label: "TDC 研发" },
   ];
   const templateLabel = archiveEl("span", "archive-create-level-label", "第二层：选择报表");
 
@@ -7089,10 +7021,6 @@ function saveArasStoredPreferences(mode) {
     if (baseUrlEl && baseUrlEl.value) {
       modePrefs._baseUrl = baseUrlEl.value;
     }
-    const authModeEl = form.querySelector('[name="auth_mode"]');
-    if (authModeEl && authModeEl.value) {
-      modePrefs._authMode = authModeEl.value;
-    }
 
     current.modes[mode] = modePrefs;
     window.localStorage.setItem(ARAS_PREFERENCES_STORAGE_KEY, JSON.stringify(current)); /* THEME_KEY storage isolation */
@@ -7116,14 +7044,6 @@ function restoreArasStoredPreferences(mode) {
       if (key === "_baseUrl") {
         const baseUrlEl = form.querySelector('[name="base_url"]');
         if (baseUrlEl && modePrefs[key]) baseUrlEl.value = modePrefs[key];
-        return;
-      }
-      if (key === "_authMode") {
-        const authModeEl = form.querySelector('[name="auth_mode"]');
-        if (authModeEl && modePrefs[key]) {
-          authModeEl.value = modePrefs[key];
-          authModeEl.dispatchEvent(new Event("change"));
-        }
         return;
       }
       const el = group.querySelector(`[name="${key}"]`);
@@ -7234,6 +7154,15 @@ async function loadSettings() {
     setSettingsGlobalStatus("");
     showSettingsGlobalError(err instanceof Error ? err.message : String(err));
   }
+}
+
+function formatDateTime(value) {
+  const text = String(value ?? "").trim();
+  if (!text) return "-";
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) return text;
+  const pad = (part) => String(part).padStart(2, "0");
+  return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())} ${pad(parsed.getHours())}:${pad(parsed.getMinutes())}`;
 }
 
 function renderSettingsView(data) {
@@ -7518,22 +7447,6 @@ function setupExcelExamples() {
   }
 }
 
-function setupArasAuthentication() {
-  const selector = document.getElementById("aras-auth-mode");
-  const note = document.getElementById("aras-auth-note");
-  const sync = () => {
-    const mode = selector.value === "browser" ? "browser" : "password";
-    document.querySelectorAll("[data-auth-fields]").forEach((group) => {
-      group.hidden = group.dataset.authFields !== mode;
-    });
-    note.textContent = mode === "password"
-      ? "密码仅用于本次请求，由后端完成企业账号登录和 SOAP ValidateUser 校验，不会持久化。"
-      : "使用已认证的 ECM Cookie/Authorization；普通 SSO 登录成功不等于 SOAP 已授权。";
-  };
-  selector.addEventListener("change", sync);
-  sync();
-}
-
 document.addEventListener("DOMContentLoaded", () => {
   applyTheme(preferredTheme());
   setupTheme();
@@ -7541,7 +7454,6 @@ document.addEventListener("DOMContentLoaded", () => {
   setupOverviewGuards();
   loadProjectOverview();
   setupPanels();
-  setupArasAuthentication();
   setupArasForm();
   setupDeliverables();
   setupExcelTaskAdmin();

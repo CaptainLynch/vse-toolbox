@@ -503,6 +503,43 @@ def test_successful_sync_updates_automatic_fields(service: ProjectStatusUpdateSe
         assert "v-001" in cursor["processed_versions"]
 
 
+def test_apply_normalizes_datetime_shaped_planned_date(
+    service: ProjectStatusUpdateService, db: DatabaseManager
+) -> None:
+    """ARAS 的日期来源带 `T00:00:00` 时间部分，写入业务表必须归一为 ISO 日期。"""
+    _record_two_observations_for_d5(
+        db,
+        fields=["currentApprover", "approvalComment", "incident", "reportType", "requiredDate"],
+    )
+    service.update_update_policy(
+        "VPI-T2-D5",
+        {
+            "mode": "hybrid",
+            "enabled": True,
+            "externalKey": "FM-1",
+            "matchRule": {"reportType": "data_model", "incident": "FM-1"},
+            "mapping": {"owner": "currentApprover", "plannedDate": "requiredDate"},
+            "fieldAuthority": {"owner": "automatic", "plannedDate": "automatic"},
+            "credentialRef": "placeholder_cred_alias",
+        },
+    )
+    lease = service.acquire_sync_lease("VPI-T2-D5", "scheduled")
+    snapshot = _matched_snapshot(db, owner="张三", plannedDate="2026-09-30T00:00:00")
+
+    result = service.apply_sync_update(
+        int(lease["binding_id"]), int(lease["run_id"]),
+        lease["lease_token"], snapshot, "scheduled",
+    )
+    assert result.final_state == "success"
+    assert "plannedDate" in result.applied_fields
+
+    with db.get_connection() as conn:
+        row = conn.execute(
+            "SELECT planned_date FROM project_status_deliverables WHERE id='VPI-T2-D5'"
+        ).fetchone()
+    assert row["planned_date"] == "2026-09-30"
+
+
 def test_manually_locked_field_not_overwritten(service: ProjectStatusUpdateService, db: DatabaseManager) -> None:
     _enable_pilot_binding(service)
     lease = service.acquire_sync_lease("VPI-T2-D5", "scheduled")

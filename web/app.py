@@ -31,12 +31,20 @@ if str(ROOT_DIR) not in sys.path:
 
 from core.config import DIAGNOSTIC_DIR, FLASK_HOST, FLASK_PORT
 from core.archive_store import ArchiveSafetyError, ArchiveStore
+from core.credential_provider import (
+    CredentialProviderError,
+    delete_windows_generic_credential,
+    store_windows_generic_credential,
+)
 from core.domain_identity import (
     CredentialVaultError,
     DPAPICredentialProvider,
     DomainSessionRegistry,
     WindowsDPAPICredentialVault,
 )
+
+#: 交付物同步凭据在 Windows 凭据管理器中的引用名（与统一域账号登录共享）。
+SYNC_CREDENTIAL_REF = "domain"
 from core.native_folder_picker import NativeFolderPickerError, choose_native_folder
 from core.project_status_contracts import (
     MILESTONE_STATUSES,
@@ -800,6 +808,11 @@ def _build_aras_client_from_payload(
         setattr(client, "_web_diagnostic_report", report)
         return client
 
+    if str(payload.get("username") or "").strip() or str(payload.get("password") or ""):
+        raise _ArasRequestError(
+            "browser authentication cannot be combined with username/password",
+            "AuthenticationModeConflict",
+        )
     cookie = payload.get("cookie")
     cookies = _clean_string_mapping(payload.get("cookies")) or None
     if not any(name.lower() in {"authorization", "cookie", "set-cookie"} for name in headers):
@@ -808,6 +821,12 @@ def _build_aras_client_from_payload(
             return ArasCrawlerClient(base_url, session=shared, headers=headers, timeout=30.0)
     if isinstance(cookie, str) and cookie.strip():
         headers["Cookie"] = cookie.strip()
+    if not headers and not (isinstance(cookie, str) and cookie.strip()) and not cookies:
+        raise _ArasRequestError(
+            "尚未建立统一域账号会话：请先在「设置 → 统一域账号登录」完成登录",
+            "DomainSessionRequired",
+            401,
+        )
     return ArasCrawlerClient(
         base_url,
         headers=headers,
@@ -1214,6 +1233,12 @@ def _build_tdc_client_from_payload(
     if shared is not None and not headers.get("Cookie"):
         return TDCCrawlerClient(
             base_url, session=shared, headers=headers, timeout=30.0, output_dir=output_dir
+        )
+    if not headers:
+        raise _TDCRequestError(
+            "尚未建立统一域账号会话：请先在「设置 → 统一域账号登录」完成登录",
+            "DomainSessionRequired",
+            401,
         )
     return TDCCrawlerClient(base_url, headers=headers, timeout=30.0, output_dir=output_dir)
 
@@ -2695,10 +2720,29 @@ def create_app(
         if bool(payload.get("saveForScheduled")) and any(
             isinstance(item, dict) and item.get("ok") for item in results.values()
         ):
+            # 先写 Windows 凭据管理器（失败更常见），再写 DPAPI 凭据库；
+            # 任一步失败都不得出现「一侧已落盘」的半保存状态。
+            try:
+                store_windows_generic_credential(SYNC_CREDENTIAL_REF, username.strip(), password)
+            except CredentialProviderError as exc:
+                return _json_error(
+                    503,
+                    "CredentialVaultUnavailable",
+                    f"登录会话已建立，但同步凭据保存失败：{_sanitize_error_message(exc)}",
+                )
             try:
                 credential_vault.store(username.strip(), password)
             except CredentialVaultError as exc:
-                return _json_error(503, "CredentialVaultUnavailable", _sanitize_error_message(exc))
+                # DPAPI 落库失败：回滚 Windows 凭据，保持两侧一致。
+                try:
+                    delete_windows_generic_credential(SYNC_CREDENTIAL_REF)
+                except CredentialProviderError:
+                    pass
+                return _json_error(
+                    503,
+                    "CredentialVaultUnavailable",
+                    f"登录会话已建立，但定时下载凭据保存失败：{_sanitize_error_message(exc)}",
+                )
         response = jsonify(
             {
                 "ok": any(isinstance(item, dict) and item.get("ok") for item in results.values()),
@@ -2721,6 +2765,12 @@ def create_app(
         if system in (None, "tdc"):
             tdc_export_cache.clear()
         if isinstance(payload, dict) and payload.get("clearCredentialVault"):
+            # 先删 Windows 凭据，再清 DPAPI 凭据库；Windows 删除失败时 DPAPI
+            # 保持原状，避免出现 Windows 侧孤儿凭据。
+            try:
+                delete_windows_generic_credential(SYNC_CREDENTIAL_REF)
+            except CredentialProviderError as exc:
+                return _json_error(503, "CredentialVaultUnavailable", _sanitize_error_message(exc))
             try:
                 credential_vault.clear()
             except CredentialVaultError as exc:
@@ -2926,6 +2976,19 @@ def create_app(
             logger.exception("api/project-status/phases 更新失败")
             return _json_error(500, "ServerError", _sanitize_error_message(exc))
 
+    def _phase_car_type_anchor(deliverable_id: str) -> str | None:
+        """车型锚点：显式传入 carType 优先，否则回退主计划名称（可在主计划维护中修改）。
+
+        主计划名称上限 120 字符（displayName 校验），显式 carType 参数上限 80；
+        锚点取 80 字符截断，与显式参数的存储口径保持一致。
+        """
+        phase_id = str(deliverable_id).rsplit("-", 1)[0]
+        phase_row, _, _ = deliverable_analysis_service.db.get_project_status(phase_id)
+        if phase_row is None:
+            return None
+        name = str(phase_row["display_name"] or "").strip()
+        return name[:80] or None
+
     @app.get("/api/project-status/deliverables/<deliverable_id>/analysis")
     def api_project_status_deliverable_analysis(deliverable_id: str):
         try:
@@ -2941,6 +3004,8 @@ def create_app(
                     raise ValueError("carType is too long")
                 if not car_type:
                     car_type = None
+            if car_type is None:
+                car_type = _phase_car_type_anchor(deliverable_id)
             data = deliverable_analysis_service.overview(
                 deliverable_id,
                 trend_limit=trend_limit,
@@ -2991,6 +3056,8 @@ def create_app(
                     raise ValueError("carType is too long")
                 if not car_type:
                     car_type = None
+            if car_type is None:
+                car_type = _phase_car_type_anchor(deliverable_id)
             data = deliverable_analysis_service.items(
                 deliverable_id,
                 alert=request.args.get("alert") or None,

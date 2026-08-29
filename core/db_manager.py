@@ -933,7 +933,9 @@ class DatabaseManager:
             """,
             (
                 "VPI-T2",
-                "VPI-T2 主计划时间轴",
+                # 主计划名称即后续交付物的车型锚点，初始默认 F610S，可在
+                # 「主计划维护」中手动修改。
+                "F610S",
                 "进行中",
                 "2026-04-08",
                 "2026-08-30",
@@ -963,7 +965,7 @@ class DatabaseManager:
         deliverables = (
             ("VPI-T2-D1", "子系统开发策略", "已完成", "王晨", "2026-05-12", "2026-05-10", 100, "无", "内网"),
             ("VPI-T2-D2", "SOR 定点流程", "已完成", "周敏", "2026-06-18", "2026-06-17", 100, "无", "TDC SOR"),
-            ("VPI-T2-D3", "EWO 定点流程", "进行中", "李珊", "2026-08-22", None, 72, "按计划推进", "ARAS EWO"),
+            ("VPI-T2-D3", "EWO 流程", "进行中", "李珊", "2026-08-22", None, 72, "按计划推进", "ARAS EWO"),
             ("VPI-T2-D4", "造型 VDR 审批流程", "待审批", "陈璇", "2026-08-15", None, 90, "等待设计总监审批", "TDC A 面（待契约确认）"),
             ("VPI-T2-D5", "数模设计审核流程报表", "已逾期", "赵岩", "2026-08-08", None, 82, "逾期 5 天", "TDC 数模设计审核流程报表"),
         )
@@ -987,6 +989,24 @@ class DatabaseManager:
             WHERE id = 'VPI-T2-D5'
               AND name = '数模审批流程'
               AND source = 'TDC 数模'
+            """
+        )
+        # 存量库改名迁移：EWO 定点流程 → EWO 流程（种子 INSERT OR IGNORE 不会更新旧行）。
+        conn.execute(
+            """
+            UPDATE project_status_deliverables
+            SET name = 'EWO 流程'
+            WHERE id = 'VPI-T2-D3'
+              AND name = 'EWO 定点流程'
+            """
+        )
+        # 存量库锚点迁移：主计划名称默认改为车型 F610S（旧默认是「VPI-T2 主计划时间轴」）。
+        conn.execute(
+            """
+            UPDATE project_status_phases
+            SET display_name = 'F610S'
+            WHERE id = 'VPI-T2'
+              AND display_name = 'VPI-T2 主计划时间轴'
             """
         )
         for item_id in (item[0] for item in deliverables):
