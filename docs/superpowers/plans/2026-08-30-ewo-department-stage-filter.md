@@ -47,7 +47,7 @@
 - Test: `tests/test_project_status_sync_runner.py`
 
 **Interfaces:**
-- `ArasProjectStatusConnector.collect(context)` must pass a validated `rsp_department` expression when match rules omit a department.
+- `ArasProjectStatusConnector.collect(context)` must pass the fixed validated `rsp_smt` expression when building an EWO query; the final AML element must be `_rsp_smt`.
 
 - [ ] **Step 1: Add failing tests** asserting model-info sync sends the fixed five-department `_rsp_smt` OR expression and legacy bindings never produce an unbounded query.
 - [ ] **Step 2: Run the connector tests** and confirm failure.
