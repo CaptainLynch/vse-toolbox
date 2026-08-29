@@ -140,3 +140,25 @@
 - [ ] **Step 3: Run full `python -m pytest -q`, recording long output under `.runtime/`.**
 - [ ] **Step 4: Verify CLI project-status sync imports the same default rules without adding prompts or flags.**
 - [ ] **Step 5: Inspect scoped diff, credential redaction boundaries, and `git status --short`; report any pre-existing failures separately.**
+
+### Task 8: 修复第一轮浏览器反馈
+
+**Files:**
+- Modify: `services/project_status_deliverable_analysis.py`
+- Modify: `core/db_manager.py`
+- Modify: `web/app.py`
+- Modify: `web/static/app.js`
+- Modify: `web/static/style.css`
+- Test: `tests/test_ewo_department_stage_feature.py`
+- Test: `tests/test_project_status_analysis_api.py`
+
+**Interfaces:**
+- API 接受重复键 `departments`、`stages`，并兼容旧的 `department`、`stage`。
+- 历史 ARAS EWO 缓存在读取时能按来源回退识别阶段；`close` 不返回逾期。
+- 前端提供可搜索多选、应用/清除筛选和同步状态/立即同步/刷新入口。
+
+- [ ] **Step 1: Write failing tests** for multi-value filters, manual tokens, historical close cache, summary recalculation, and sync refresh controls.
+- [ ] **Step 2: Run focused tests to verify failure.**
+- [ ] **Step 3: Implement the smallest root-cause fixes.**
+- [ ] **Step 4: Run focused tests, JS syntax check, and relevant API tests.**
+- [ ] **Step 5: Commit with message `fix: address EWO browser feedback`.**

@@ -56,3 +56,11 @@ GET /api/project-status/deliverables/<deliverable_id>/analysis/items
 覆盖默认五科室 `_rsp_smt` AML、旧绑定仍被安全限制、八阶段规范化、`open` 排除、`close` 不逾期、活动阶段日期逾期、未知阶段待处理且不计数、API 组合筛选/未知部门 422、分页和 alert 分支一致性、前端控件与阶段列、source_type 隔离，以及 TDC 不可访问不阻断 EWO 的回归场景。
 
 不得改变 TDC 登录、查询和契约；不得新增依赖；不得将凭据或敏感上游响应写入日志、数据库或 API。
+
+## 第一轮浏览器反馈修订
+
+- 科室与阶段筛选改为可搜索多选 token 控件，支持手动输入并回车确认。
+- 筛选工具栏提供“应用筛选”和“清除筛选”，应用时重置分页并提交多值参数；兼容旧单值参数。
+- 查询参数支持重复键：`departments=...&departments=...`、`stages=...&stages=...`。
+- 对历史缺失 `source_type/source_stage` 的 ARAS EWO 缓存，根据交付物来源回退识别 EWO，并重新计算当前汇总，确保 `close` 不显示逾期。
+- EWO 详情状态图表增加最近同步状态、同步时间、立即同步和刷新同步数据入口；同步完成后重载状态、摘要和明细。
