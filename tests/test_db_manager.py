@@ -245,6 +245,73 @@ def test_v9_to_v10_migration_adds_analysis_detail_columns(tmp_path: Path) -> Non
         assert c.execute("PRAGMA user_version").fetchone()[0] == 10
 
 
+def test_analysis_items_department_model_extra_columns_migration(tmp_path: Path) -> None:
+    """project_status_analysis_items 补齐 source_department / model_info / extra_fields_json 三列且迁移幂等。"""
+    db = DatabaseManager(db_path=tmp_path / "analysis-extra-columns.db")
+    db.init_database()
+
+    with db.get_connection() as conn:
+        info = conn.execute("PRAGMA table_info(project_status_analysis_items)").fetchall()
+    columns = {row["name"]: row for row in info}
+    for name in ("source_department", "model_info", "extra_fields_json"):
+        assert name in columns, f"缺少新列 {name}"
+        assert columns[name]["type"] == "TEXT"
+        assert columns[name]["notnull"] == 1
+        assert columns[name]["dflt_value"] == "''"
+
+    # 连续两次 init_database() 幂等：不抛错、列不重复。
+    db.init_database()
+    with db.get_connection() as conn:
+        names = [
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(project_status_analysis_items)")
+        ]
+    assert names.count("source_department") == 1
+    assert names.count("model_info") == 1
+    assert names.count("extra_fields_json") == 1
+
+    # 新列参与缓存写入/读出：source_department 与 model_info 回读，extra_fields_json 默认空串。
+    snapshot = {
+        "total_count": 1,
+        "completed_count": 0,
+        "incomplete_count": 1,
+        "overdue_count": 0,
+        "due_soon_count": 0,
+        "missing_due_date_count": 0,
+        "department_counts": {"车身科": {"total": 1, "completed": 0, "incomplete": 1}},
+        "snapshot_at": "2026-08-23T00:00:00.000Z",
+    }
+    item = {
+        "item_key": "EWO-BODY-KEY",
+        "display_number": "EWO-049039",
+        "title": "蒙皮总成更改",
+        "department": "车身科",
+        "owner": "张三",
+        "pending_signers": "",
+        "source_status": "IMPL",
+        "source_stage": "impl",
+        "source_type": "aras",
+        "is_completed": False,
+        "planned_date": "2026-09-01",
+        "actual_date": None,
+        "source_department": "技术中心_车体工程",
+        "model_info": "F610S",
+    }
+    db.replace_project_status_analysis_cache("VPI-T2-D3", 11, snapshot, [item])
+
+    rows = db.list_project_status_analysis_items("VPI-T2-D3")
+    assert len(rows) == 1
+    assert rows[0]["source_department"] == "技术中心_车体工程"
+    assert rows[0]["model_info"] == "F610S"
+    with db.get_connection() as conn:
+        stored = conn.execute(
+            "SELECT extra_fields_json FROM project_status_analysis_items "
+            "WHERE deliverable_id = ?",
+            ("VPI-T2-D3",),
+        ).fetchone()
+    assert stored["extra_fields_json"] == ""
+
+
 def test_rejects_newer_schema_version(tmp_path: Path) -> None:
     """验证高于 CURRENT_SCHEMA_VERSION (如 v11) 的库在执行 DDL 前被拒绝。"""
     v11_db_path = tmp_path / "v11_future.db"

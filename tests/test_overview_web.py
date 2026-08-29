@@ -582,6 +582,47 @@ def test_overview_ewo_second_round_ui_feedback_contract() -> None:
     assert "最近同步时间" in summary_js
 
 
+def test_overview_ewo_department_scope_model_and_chart_labels_contract() -> None:
+    """部门默认范围落地后的前端契约：车型查找、匹配类型、自定义图表标签。"""
+    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+    css_text = Path("web/static/style.css").read_text(encoding="utf-8-sig")
+
+    # 1. 车型查找：输入 + 模糊/精确切换（默认模糊），随应用筛选提交。
+    assert 'analysisModelFilter = { model: "", match: "fuzzy" }' in js_text
+    assert "analysis-model-input" in js_text
+    assert "analysis-model-match" in js_text
+    assert '"模糊"' in js_text
+    assert '"精确"' in js_text
+    assert 'setAttribute("aria-pressed"' in js_text
+    assert 'params.set("model", analysisModelFilter.model)' in js_text
+    assert 'params.set("modelMatch", analysisModelFilter.match)' in js_text
+    # 分析面板重载带同样的车型参数（统计摘要与明细同口径）。
+    assert 'filterParams.set("model", analysisModelFilter.model)' in js_text
+    assert 'filterParams.set("modelMatch", analysisModelFilter.match)' in js_text
+    # 进入详情页时重置车型筛选状态。
+    assert 'analysisModelFilter.model = ""' in js_text
+
+    # 2. 自定义图表标签：tab 切换 + 设置弹层 + PUT 保存后重载。
+    assert "function renderCustomLabelChart" in js_text
+    assert "analysis-chart-tab" in js_text
+    assert "analysisData.customCharts" in js_text
+    assert "analysis-chart-settings-btn" in js_text
+    assert "chart-labels-editor" in js_text
+    assert "chart-label-field-select" in js_text
+    assert "/api/project-status/deliverables/${encodeURIComponent(item.id)}/chart-labels" in js_text
+    assert 'method: "PUT"' in js_text
+
+    # 3. 图表区与标签编辑器样式存在。
+    for marker in (
+        ".analysis-chart-tab",
+        ".analysis-model-input",
+        ".analysis-model-match",
+        ".chart-labels-editor",
+        ".chart-label-row",
+    ):
+        assert marker in css_text
+
+
 def test_overview_deliverable_evidence_css_contract() -> None:
     css_text = Path("web/static/style.css").read_text(encoding="utf-8-sig")
     start = css_text.index(".overview-tabpanel[hidden]")

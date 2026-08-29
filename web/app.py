@@ -3020,6 +3020,25 @@ def create_app(
         name = str(phase_row["display_name"] or "").strip()
         return name[:80] or None
 
+    def _analysis_model_filters() -> tuple[str | None, str]:
+        """解析 model/modelMatch 查询参数：空 model 表示不按车型过滤。"""
+        raw_model = request.args.get("model")
+        model = None
+        if raw_model is not None:
+            # 控制字符检查必须先于 strip，否则换行等字符会被静默吞掉。
+            if any(ord(char) < 32 or ord(char) == 127 for char in raw_model):
+                raise ValueError("model contains control characters")
+            model = raw_model.strip()
+            if len(model) > 80:
+                raise ValueError("model is too long")
+            if not model:
+                model = None
+        raw_match = (request.args.get("modelMatch") or "fuzzy").strip().casefold()
+        model_match = raw_match or "fuzzy"
+        if model_match not in {"fuzzy", "exact"}:
+            raise ValueError("unsupported model match")
+        return model, model_match
+
     @app.get("/api/project-status/deliverables/<deliverable_id>/analysis")
     def api_project_status_deliverable_analysis(deliverable_id: str):
         try:
@@ -3037,10 +3056,13 @@ def create_app(
                     car_type = None
             if car_type is None:
                 car_type = _phase_car_type_anchor(deliverable_id)
+            model, model_match = _analysis_model_filters()
             data = deliverable_analysis_service.overview(
                 deliverable_id,
                 trend_limit=trend_limit,
                 car_type=car_type,
+                model=model,
+                model_match=model_match,
             )
             response = jsonify({"ok": True, "data": data})
             response.headers["Cache-Control"] = "no-store"
@@ -3088,6 +3110,7 @@ def create_app(
                     car_type = None
             if car_type is None:
                 car_type = _phase_car_type_anchor(deliverable_id)
+            model, model_match = _analysis_model_filters()
             data = deliverable_analysis_service.items(
                 deliverable_id,
                 alert=request.args.get("alert") or None,
@@ -3097,6 +3120,8 @@ def create_app(
                 offset=offset,
                 limit=limit,
                 car_type=car_type,
+                model=model,
+                model_match=model_match,
             )
             response = jsonify({"ok": True, "data": data})
             response.headers["Cache-Control"] = "no-store"
@@ -3107,6 +3132,48 @@ def create_app(
             return _json_error(422, "ValidationError", _sanitize_error_message(exc))
         except Exception as exc:
             logger.exception("project status deliverable analysis items failed")
+            return _json_error(500, "ServerError", _sanitize_error_message(exc))
+
+    @app.get("/api/project-status/deliverables/<deliverable_id>/chart-labels")
+    def api_project_status_chart_labels(deliverable_id: str):
+        try:
+            data = {
+                "labels": deliverable_analysis_service.chart_labels(deliverable_id),
+                "fields": deliverable_analysis_service.chart_field_candidates(deliverable_id),
+            }
+            response = jsonify({"ok": True, "data": data})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except KeyError:
+            return _json_error(404, "NotFound", "未找到交付物")
+        except (TypeError, ValueError) as exc:
+            return _json_error(422, "ValidationError", _sanitize_error_message(exc))
+        except Exception as exc:
+            logger.exception("project status chart labels query failed")
+            return _json_error(500, "ServerError", _sanitize_error_message(exc))
+
+    @app.put("/api/project-status/deliverables/<deliverable_id>/chart-labels")
+    def api_project_status_chart_labels_write(deliverable_id: str):
+        local_error = _local_web_mutation_error()
+        if local_error is not None:
+            return local_error
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return _json_error(400, "ValidationError", "JSON object body is required")
+        try:
+            labels = deliverable_analysis_service.save_chart_labels(
+                deliverable_id,
+                payload.get("labels"),
+            )
+            response = jsonify({"ok": True, "data": {"labels": labels}})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except KeyError:
+            return _json_error(404, "NotFound", "未找到交付物")
+        except (TypeError, ValueError) as exc:
+            return _json_error(422, "ValidationError", _sanitize_error_message(exc))
+        except Exception as exc:
+            logger.exception("project status chart labels update failed")
             return _json_error(500, "ServerError", _sanitize_error_message(exc))
 
     @app.patch("/api/project-status/deliverables/<deliverable_id>")

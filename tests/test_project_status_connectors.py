@@ -7,6 +7,7 @@ import pytest
 
 from core.archive_store import ArchiveStore
 from core.credential_provider import MemoryCredentialProvider
+from services.aras_crawler import EWOReportFilters
 from services.project_status_connectors import (
     ArasProjectStatusConnector,
     RetryingConnector,
@@ -281,3 +282,82 @@ def test_aras_connector_keeps_ewo_no_filter_without_model_info():
     assert captured["filters"].ewo_no == "EWO-049039"
     assert captured["filters"].model_info is None
     assert snapshot.match_state == "matched"
+
+
+def test_aras_connector_uses_rsp_department_keyword_filter():
+    """EWO 同步默认范围改为部门关键词 LIKE 并集（rsp_department），不再传五科室 rsp_smt。"""
+    # 局部导入：实现落地前常量不存在，只让本测试失败（ImportError），
+    # 不阻断同模块其余既有测试。
+    from services.project_status_deliverable_analysis import EWO_DEPARTMENT_KEYWORDS
+
+    captured = {}
+
+    class FakeAuth:
+        base_url = "https://aras.example"
+
+        def __init__(self, **kwargs):
+            pass
+
+        def login(self, username, password):
+            return SimpleNamespace(session=object())
+
+    class FakeCrawler:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def crawl_ewo_report_all(self, filters, max_records):
+            captured["filters"] = filters
+            return SimpleNamespace(
+                rows=[{"_no": "EWO-1", "_rsp_smt": "车身科", "_rsp_department": "技术中心_车体工程"}],
+                page=1,
+                item_ids=["ID-1"],
+            )
+
+    class FakeArchive:
+        def write_csv(self, *args, **kwargs):
+            return SimpleNamespace(as_metadata=lambda: {})
+
+        def write_json(self, *args, **kwargs):
+            return SimpleNamespace(as_metadata=lambda: {})
+
+    connector = ArasProjectStatusConnector(
+        MemoryCredentialProvider({"domain": ("user", "pass")}),
+        FakeArchive(), auth_factory=FakeAuth, crawler_factory=FakeCrawler,
+    )
+    ctx = SyncBindingContext(
+        binding_id=5, deliverable_id="VPI-T2-D3", phase_id="VPI-T2", source_type="aras",
+        external_key="EWO-1", match_rule={"reportType": "ewo", "modelInfo": "F610S"},
+        mapping={}, cursor={}, expected_deliverable_updated_at="v1", run_id=11,
+        credential_ref="domain",
+    )
+    snapshot = connector.collect(ctx)
+    filters = captured["filters"]
+    assert filters.rsp_department == "|".join(f"*{kw}*" for kw in EWO_DEPARTMENT_KEYWORDS)
+    assert filters.rsp_smt is None
+    # context.match_rule 里已有 modelInfo，车型查询条件不受默认范围调整影响。
+    assert filters.model_info == "F610S"
+    assert snapshot.match_state == "matched"
+
+
+def test_ewo_filter_payload_targets_rsp_department_like() -> None:
+    payload = ArasProjectStatusFiltersProbe.build(
+        EWOReportFilters(rsp_department="*车体工程*|*外饰*|*内饰*")
+    )
+    assert (
+        "<or>"
+        '<_rsp_department condition="like">*车体工程*</_rsp_department>'
+        '<_rsp_department condition="like">*外饰*</_rsp_department>'
+        '<_rsp_department condition="like">*内饰*</_rsp_department>'
+        "</or>"
+    ) in payload
+    assert "<_rsp_smt>" not in payload
+
+
+class ArasProjectStatusFiltersProbe:
+    @staticmethod
+    def build(filters: EWOReportFilters) -> str:
+        from services.aras_crawler import ArasCrawlerClient
+
+        return ArasCrawlerClient._build_ewo_payload(
+            object.__new__(ArasCrawlerClient), filters, 1, 50, 2000, None
+        )

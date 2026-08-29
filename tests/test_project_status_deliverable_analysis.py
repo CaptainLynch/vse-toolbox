@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import date
 
+import pytest
+
 from core.db_manager import DatabaseManager
 from services.project_status_deliverable_analysis import (
     ProjectStatusDeliverableAnalysisService,
@@ -318,3 +320,253 @@ def test_service_items_serializes_pending_signers_per_role_line(tmp_db: Database
     )
     item = service.items("VPI-T2-D5")["items"][0]
     assert item["pendingSigners"] == "PE:李四\nLEADER:王五\nSQE:赵六"
+
+
+def test_normalize_rows_capture_department_model_and_extra_fields() -> None:
+    """行级新增 source_department / model_info / extra_fields 的捕获契约。
+
+    - 部门别名 `_rsp_department` 优先于 `部门`（不得被科室别名冒充）；
+    - `_modelinfo` 去空白归一为 model_info，缺失为 ""，超长截断到 120；
+    - extra_fields 按行键插入顺序捕获非标准字段：跳过敏感键名与裸 GUID 值键，
+      保留 `__keyed_name` 伴生显示键，最多 60 键（先到先得），空结果为 `{}`。
+    """
+    items = normalize_analysis_rows(
+        [
+            {
+                "id": "E-1",
+                "_rsp_department": "技术中心_车体工程",
+                "部门": "技术中心_车体工程",
+                "_modelinfo": " F610S ",
+                "created_by_id": "AAAABBBBCCCCDDDDEEEEFFFF00001111",
+                "created_by_id__keyed_name": "张三",
+                "authorization": "Bearer x",
+                "password": "x",
+            },
+        ]
+    )
+    first = items[0]
+    extra = first["extra_fields"]
+    assert first["source_department"] == "技术中心_车体工程"
+    assert first["model_info"] == "F610S"
+    # 裸 GUID 值键跳过，伴生显示键保留（起草人显示名不受排除影响）。
+    assert "created_by_id" not in extra
+    assert extra["created_by_id__keyed_name"] == "张三"
+    # 敏感键名一律不入 extra_fields。
+    assert "authorization" not in extra
+    assert "password" not in extra
+
+    # 最多捕获 60 个键（先到先得）。
+    many = normalize_analysis_rows(
+        [{"id": "E-2", **{f"f{i:02d}": "v" for i in range(65)}}]
+    )
+    assert len(many[0]["extra_fields"]) == 60
+
+    # 无额外键的行 extra_fields 为空 dict；model_info 缺失为空字符串。
+    plain = normalize_analysis_rows(
+        [{"id": "E-3", "name": "无额外字段任务", "status": "进行中"}]
+    )
+    assert plain[0]["extra_fields"] == {}
+    assert plain[0]["model_info"] == ""
+
+    # 车型超长（130 字符）截断到 120。
+    long_model = normalize_analysis_rows(
+        [{"id": "E-4", "_modelinfo": "M" * 130}]
+    )
+    assert long_model[0]["model_info"] == "M" * 120
+
+
+def test_chart_groups_standard_extra_and_model_filter(tmp_db: DatabaseManager) -> None:
+    """分组统计支持标准列与 extra_fields 键，并与明细/摘要用同一车型过滤口径。"""
+    service = ProjectStatusDeliverableAnalysisService(
+        tmp_db,
+        clock=lambda: date(2026, 8, 23),
+    )
+    service.publish(
+        "VPI-T2-D5",
+        201,
+        [
+            {
+                "id": "T-1",
+                "name": "任务一",
+                "department": "质量科",
+                "owner": "张三",
+                "_rsp_name": "张三",
+                "status": "进行中",
+                "dueDate": "2026-08-20",
+            },
+            {
+                "id": "T-2",
+                "name": "任务二",
+                "department": "质量科",
+                "owner": "张三",
+                "_rsp_name": "张三",
+                "status": "已完成",
+                "dueDate": "2026-08-21",
+            },
+            {
+                "id": "T-3",
+                "name": "任务三",
+                "department": "车身设计科",
+                "owner": "李四",
+                "_rsp_name": "李四",
+                "status": "进行中",
+                "dueDate": "2026-08-22",
+            },
+        ],
+        snapshot_at="2026-08-23T00:00:00Z",
+    )
+
+    expected = {
+        "张三": {"total": 2, "completed": 1, "incomplete": 1},
+        "李四": {"total": 1, "completed": 0, "incomplete": 1},
+    }
+    # 标准列字段与 extra_fields 伴生键（负责人 `_rsp_name`）分组一致。
+    assert service.chart_groups("VPI-T2-D5", "owner") == expected
+    assert service.chart_groups("VPI-T2-D5", "_rsp_name") == expected
+
+    with pytest.raises(ValueError):
+        service.chart_groups("VPI-T2-D5", "no_such_field")
+
+    service.publish(
+        "VPI-T2-D3",
+        202,
+        [
+            {
+                "_no": "EWO-MA",
+                "_subject": "F610S 蒙皮更改",
+                "_rsp_department": "技术中心_车体工程",
+                "_rsp_smt": "车体科",
+                "_modelinfo": "F610S-A",
+                "state": "IMPL",
+                "_required_date": "2026-09-30T00:00:00",
+            },
+            {
+                "_no": "EWO-MB",
+                "_subject": "F610S 内饰更改",
+                "_rsp_department": "技术中心_车体工程",
+                "_rsp_smt": "车体科",
+                "_modelinfo": "F610S-B",
+                "state": "IMPL",
+                "_required_date": "2026-09-30T00:00:00",
+            },
+            {
+                "_no": "EWO-GM",
+                "_subject": "G610M 顶盖更改",
+                "_rsp_department": "技术中心_车体工程",
+                "_rsp_smt": "车体科",
+                "_modelinfo": "G610M",
+                "state": "IMPL",
+                "_required_date": "2026-09-30T00:00:00",
+            },
+        ],
+        source_type="aras",
+        snapshot_at="2026-08-23T01:00:00Z",
+    )
+
+    groups = service.chart_groups("VPI-T2-D3", "model_info")
+    assert set(groups) == {"F610S-A", "F610S-B", "G610M"}
+    assert groups["F610S-A"] == {"total": 1, "completed": 0, "incomplete": 1}
+
+    # fuzzy（默认）：大小写不敏感子串包含。
+    fuzzy = service.chart_groups("VPI-T2-D3", "model_info", model="F610S")
+    assert set(fuzzy) == {"F610S-A", "F610S-B"}
+
+    # exact：去空白后全等，无命中时分组为空。
+    exact = service.chart_groups(
+        "VPI-T2-D3",
+        "model_info",
+        model="F610S",
+        model_match="exact",
+    )
+    assert exact == {}
+
+    with pytest.raises(ValueError):
+        service.items("VPI-T2-D3", model="F610S", model_match="bogus")
+
+
+def test_chart_label_validation_and_roundtrip(tmp_db: DatabaseManager) -> None:
+    """图表标签存取：整体替换、sortOrder 从 1 编号、逐项校验失败抛 ValueError。"""
+    service = ProjectStatusDeliverableAnalysisService(
+        tmp_db,
+        clock=lambda: date(2026, 8, 23),
+    )
+    service.publish(
+        "VPI-T2-D5",
+        301,
+        [
+            {
+                "id": "L-1",
+                "name": "标签轮换任务",
+                "department": "质量科",
+                "owner": "张三",
+                "status": "进行中",
+                "dueDate": "2026-08-20",
+            },
+        ],
+        snapshot_at="2026-08-23T00:00:00Z",
+    )
+
+    service.save_chart_labels(
+        "VPI-T2-D5",
+        [
+            {"label": "内容A", "sourceField": "department"},
+            {"label": "内容B", "sourceField": "owner"},
+        ],
+    )
+    expected_labels = [
+        {"label": "内容A", "sourceField": "department", "sortOrder": 1},
+        {"label": "内容B", "sourceField": "owner", "sortOrder": 2},
+    ]
+    assert service.chart_labels("VPI-T2-D5") == expected_labels
+
+    def _expect_error(labels: list[dict[str, str]]) -> None:
+        with pytest.raises(ValueError):
+            service.save_chart_labels("VPI-T2-D5", labels)
+
+    # 超过 6 个标签。
+    _expect_error(
+        [{"label": f"标签{i}", "sourceField": "department"} for i in range(7)]
+    )
+    # label 空白。
+    _expect_error([{"label": "   ", "sourceField": "department"}])
+    # label 41 字符。
+    _expect_error([{"label": "甲" * 41, "sourceField": "department"}])
+    # label 含控制字符（换行必须位于中部，strip 后仍保留）。
+    _expect_error([{"label": "内容\nA", "sourceField": "department"}])
+    # label 去空白后重复。
+    _expect_error(
+        [
+            {"label": "重复", "sourceField": "department"},
+            {"label": " 重复 ", "sourceField": "owner"},
+        ]
+    )
+    # sourceField 81 字符。
+    _expect_error([{"label": "内容C", "sourceField": "a" * 81}])
+    # sourceField 含空格（不满足字符集正则）。
+    _expect_error([{"label": "内容C", "sourceField": "bad field"}])
+    # sourceField 不在最近缓存行字段集合。
+    _expect_error([{"label": "内容C", "sourceField": "no_such_field"}])
+    # sourceField 为空。
+    _expect_error([{"label": "内容C", "sourceField": ""}])
+
+    # 校验失败不落库，原配置保持不变。
+    assert service.chart_labels("VPI-T2-D5") == expected_labels
+
+    # 整体替换：先存 3 个再存 2 个，只剩 2 个且 sortOrder 重新从 1 编号。
+    service.save_chart_labels(
+        "VPI-T2-D5",
+        [
+            {"label": "甲", "sourceField": "department"},
+            {"label": "乙", "sourceField": "owner"},
+            {"label": "丙", "sourceField": "department"},
+        ],
+    )
+    assert len(service.chart_labels("VPI-T2-D5")) == 3
+    service.save_chart_labels(
+        "VPI-T2-D5",
+        [
+            {"label": "内容A", "sourceField": "department"},
+            {"label": "内容B", "sourceField": "owner"},
+        ],
+    )
+    assert service.chart_labels("VPI-T2-D5") == expected_labels

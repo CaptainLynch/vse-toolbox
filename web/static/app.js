@@ -1376,6 +1376,10 @@ function renderDeliverableEvidence(container, item, bundle, statusInfo = null) {
   container.appendChild(runsSection);
 }
 
+// 车型查找状态：随"应用筛选"提交，作用于明细与统计摘要（同口径）。
+// 进入详情页时重置；match 取值 fuzzy（默认）| exact。
+const analysisModelFilter = { model: "", match: "fuzzy" };
+
 async function loadDeliverableAnalysis(container, item, statusChart = null) {
   clearOverviewContainer(container);
   const loadingP = overviewEl("p", "loading", "加载交付物分析与明细...");
@@ -1384,11 +1388,20 @@ async function loadDeliverableAnalysis(container, item, statusChart = null) {
   container.appendChild(loadingP);
 
   try {
-    const analysisRes = await fetch(`/api/project-status/deliverables/${encodeURIComponent(item.id)}/analysis`, {
-      method: "GET",
-      headers: { Accept: "application/json" },
-      cache: "no-store",
-    });
+    const filterParams = new URLSearchParams();
+    if (analysisModelFilter.model) {
+      filterParams.set("model", analysisModelFilter.model);
+      filterParams.set("modelMatch", analysisModelFilter.match);
+    }
+    const filterQuery = filterParams.toString();
+    const analysisRes = await fetch(
+      `/api/project-status/deliverables/${encodeURIComponent(item.id)}/analysis${filterQuery ? `?${filterQuery}` : ""}`,
+      {
+        method: "GET",
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      }
+    );
     const analysisBody = await overviewReadJson(analysisRes);
 
     if (!analysisRes.ok || !analysisBody || analysisBody.ok !== true) {
@@ -1399,7 +1412,9 @@ async function loadDeliverableAnalysis(container, item, statusChart = null) {
     if (statusChart && typeof statusChart.updateEwoSummary === "function") {
       statusChart.updateEwoSummary(analysisData);
     }
-    renderDeliverableAnalysis(container, item, analysisData);
+    renderDeliverableAnalysis(container, item, analysisData, {
+      onReload: () => loadDeliverableAnalysis(container, item, statusChart),
+    });
     return true;
   } catch (err) {
     clearOverviewContainer(container);
@@ -1414,11 +1429,11 @@ async function loadDeliverableAnalysis(container, item, statusChart = null) {
   }
 }
 
-function renderDepartmentDoneChart(summary, departments, onSelect) {
+function renderDepartmentDoneChart(summary, departments, onSelect, options = {}) {
   const section = overviewEl("div", "analysis-sub-section");
 
   const headerRow = overviewEl("div", "analysis-dept-chart-header");
-  headerRow.appendChild(overviewEl("h6", "analysis-sub-title", "按科室完成情况（已完成 / 未完成）"));
+  headerRow.appendChild(overviewEl("h6", "analysis-sub-title", options.title || "按科室完成情况（已完成 / 未完成）"));
 
   const legend = overviewEl("div", "analysis-chart-legend");
   legend.append(
@@ -1711,7 +1726,7 @@ function formatEwoStageLabel(stage) {
   return String(stage || "").trim().toUpperCase();
 }
 
-function renderAnalysisItemsSection(item, departments, onDeptChange) {
+function renderAnalysisItemsSection(item, departments, onDeptChange, options = {}) {
   const section = overviewEl("div", "analysis-sub-section");
   const titleEl = overviewEl("h6", "analysis-sub-title", "明细任务清单");
   section.appendChild(titleEl);
@@ -1789,6 +1804,41 @@ function renderAnalysisItemsSection(item, departments, onDeptChange) {
   clearBtn.type = "button";
   clearBtn.setAttribute("aria-label", "清除科室和流程阶段筛选");
 
+  // 车型查找（仅 EWO 交付物）：默认模糊，可切换精确。
+  const isEwoSource = /ewo/i.test(String(item.source || ""));
+  let modelInput = null;
+  const matchButtons = [];
+  let modelWrap = null;
+  if (isEwoSource) {
+    modelWrap = overviewEl("div", "analysis-model-filter");
+    modelInput = overviewEl("input", "analysis-model-input");
+    modelInput.type = "text";
+    modelInput.value = analysisModelFilter.model;
+    modelInput.placeholder = "车型查找，如 F610S";
+    modelInput.maxLength = 80;
+    modelInput.setAttribute("aria-label", "按车型查找");
+    const matchGroup = overviewEl("div", "analysis-model-match");
+    [["fuzzy", "模糊"], ["exact", "精确"]].forEach(([value, label]) => {
+      const btn = overviewEl("button", "analysis-model-match-btn", label);
+      btn.type = "button";
+      btn.dataset.match = value;
+      const isActive = analysisModelFilter.match === value;
+      btn.classList.toggle("is-active", isActive);
+      btn.setAttribute("aria-pressed", isActive ? "true" : "false");
+      btn.addEventListener("click", () => {
+        analysisModelFilter.match = value;
+        matchButtons.forEach((button) => {
+          const buttonActive = button.dataset.match === value;
+          button.classList.toggle("is-active", buttonActive);
+          button.setAttribute("aria-pressed", buttonActive ? "true" : "false");
+        });
+      });
+      matchButtons.push(btn);
+      matchGroup.appendChild(btn);
+    });
+    modelWrap.append(modelInput, matchGroup);
+  }
+
   const spacer = overviewEl("div", "analysis-toolbar-spacer");
 
   // Pager
@@ -1802,7 +1852,10 @@ function renderAnalysisItemsSection(item, departments, onDeptChange) {
   nextBtn.disabled = true;
   pager.append(pagerInfo, prevBtn, nextBtn);
 
-  toolbar.append(deptMulti.el, stageMulti.el, stateSelect, applyBtn, clearBtn, spacer, pager);
+  const toolbarChildren = [deptMulti.el, stageMulti.el];
+  if (modelWrap) toolbarChildren.push(modelWrap);
+  toolbarChildren.push(stateSelect, applyBtn, clearBtn, spacer, pager);
+  toolbar.append(...toolbarChildren);
   section.appendChild(toolbar);
 
   // Table
@@ -1842,6 +1895,10 @@ function renderAnalysisItemsSection(item, departments, onDeptChange) {
       params.set("state", state.state);
     }
     state.stages.forEach((stage) => params.append("stages", stage));
+    if (analysisModelFilter.model) {
+      params.set("model", analysisModelFilter.model);
+      params.set("modelMatch", analysisModelFilter.match);
+    }
 
     try {
       const res = await fetch(
@@ -2001,16 +2058,30 @@ function renderAnalysisItemsSection(item, departments, onDeptChange) {
   });
 
   applyBtn.addEventListener("click", () => {
+    const previousModel = analysisModelFilter.model;
+    const previousMatch = analysisModelFilter.match;
+    if (modelInput) {
+      analysisModelFilter.model = modelInput.value.trim();
+    }
     state.departments = deptMulti.getValues();
     state.stages = stageMulti.getValues();
     state.state = pendingState;
     state.page = 1;
     filtersDirty = false;
     applyBtn.classList.remove("is-attention");
+    // 车型筛选变化时重载整个分析面板，统计摘要/图表与明细保持同口径。
+    if (
+      typeof options.onModelChange === "function"
+      && (analysisModelFilter.model !== previousModel || analysisModelFilter.match !== previousMatch)
+    ) {
+      options.onModelChange();
+      return;
+    }
     fetchAndRender();
   });
 
   clearBtn.addEventListener("click", () => {
+    const hadModel = Boolean(analysisModelFilter.model) || analysisModelFilter.match !== "fuzzy";
     deptMulti.clear();
     stageMulti.clear();
     stateSelect.value = "all";
@@ -2021,6 +2092,18 @@ function renderAnalysisItemsSection(item, departments, onDeptChange) {
     state.page = 1;
     filtersDirty = false;
     applyBtn.classList.remove("is-attention");
+    if (modelInput) modelInput.value = "";
+    analysisModelFilter.model = "";
+    analysisModelFilter.match = "fuzzy";
+    matchButtons.forEach((button) => {
+      const isActive = button.dataset.match === "fuzzy";
+      button.classList.toggle("is-active", isActive);
+      button.setAttribute("aria-pressed", isActive ? "true" : "false");
+    });
+    if (typeof options.onModelChange === "function" && hadModel) {
+      options.onModelChange();
+      return;
+    }
     fetchAndRender();
   });
 
@@ -2053,7 +2136,101 @@ function renderAnalysisItemsSection(item, departments, onDeptChange) {
   };
 }
 
-function renderDeliverableAnalysis(container, item, analysisData) {
+// 图表内容设置编辑器：标签名 + 绑定字段下拉，PUT 整体替换后重载分析面板。
+function buildChartLabelEditor(container, itemId, labels, fieldOptions, onSaved) {
+  container.textContent = "";
+  const rowsBox = overviewEl("div", "chart-label-rows");
+  const status = overviewEl("p", "chart-labels-status");
+  status.setAttribute("role", "status");
+
+  const addRow = (label = "", field = "") => {
+    const row = overviewEl("div", "chart-label-row");
+    const nameInput = overviewEl("input", "chart-label-name");
+    nameInput.type = "text";
+    nameInput.value = safeDisplayValue(label);
+    nameInput.placeholder = "标签名称，如 内容A";
+    nameInput.maxLength = 40;
+    nameInput.setAttribute("aria-label", "图表标签名称");
+    const fieldSelect = overviewEl("select", "chart-label-field-select");
+    fieldSelect.setAttribute("aria-label", "绑定字段");
+    fieldOptions.forEach(([key, display]) => {
+      const option = document.createElement("option");
+      option.value = key;
+      option.textContent = display;
+      if (key === field) option.selected = true;
+      fieldSelect.appendChild(option);
+    });
+    const removeBtn = overviewEl("button", "chart-label-remove", "移除");
+    removeBtn.type = "button";
+    removeBtn.setAttribute("aria-label", "移除该标签");
+    removeBtn.addEventListener("click", () => row.remove());
+    row.append(nameInput, fieldSelect, removeBtn);
+    rowsBox.appendChild(row);
+  };
+
+  (Array.isArray(labels) ? labels : []).forEach((entry) => {
+    addRow(
+      entry && entry.label ? String(entry.label) : "",
+      entry && entry.sourceField ? String(entry.sourceField) : "",
+    );
+  });
+
+  const addBtn = overviewEl("button", "chart-label-add-btn", "添加标签");
+  addBtn.type = "button";
+  addBtn.addEventListener("click", () => addRow());
+  const saveBtn = overviewEl("button", "chart-labels-save-btn", "保存图表设置");
+  saveBtn.type = "button";
+  const cancelBtn = overviewEl("button", "chart-labels-cancel-btn", "取消");
+  cancelBtn.type = "button";
+  cancelBtn.addEventListener("click", () => {
+    container.hidden = true;
+  });
+  saveBtn.addEventListener("click", async () => {
+    const rows = Array.from(rowsBox.querySelectorAll(".chart-label-row"));
+    const payload = rows
+      .map((row) => ({
+        label: row.querySelector(".chart-label-name").value,
+        sourceField: row.querySelector(".chart-label-field-select").value,
+      }))
+      .filter((entry) => entry.label.trim() || entry.sourceField);
+    saveBtn.disabled = true;
+    updatePolicyStatusMessage(status, "正在保存图表设置...");
+    try {
+      const res = await fetch(`/api/project-status/deliverables/${encodeURIComponent(itemId)}/chart-labels`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ labels: payload }),
+      });
+      const body = await overviewReadJson(res);
+      if (!res.ok || !body || body.ok !== true) throw overviewRequestError(body, res.status);
+      container.hidden = true;
+      if (typeof onSaved === "function") onSaved();
+    } catch (err) {
+      updatePolicyStatusMessage(status, err instanceof Error ? err.message : String(err), true);
+      saveBtn.disabled = false;
+    }
+  });
+
+  container.append(rowsBox, addBtn, saveBtn, cancelBtn, status);
+}
+
+// 自定义标签图：按标签绑定的 EWO 字段分组，复用科室图组件；点击不做科室联动。
+function renderCustomLabelChart(chart) {
+  const groups = chart && chart.groups && typeof chart.groups === "object" ? chart.groups : {};
+  const totals = Object.values(groups).reduce(
+    (acc, counts) => ({
+      total: acc.total + (Number(counts && counts.total) || 0),
+      completed: acc.completed + (Number(counts && counts.completed) || 0),
+      incomplete: acc.incomplete + (Number(counts && counts.incomplete) || 0),
+    }),
+    { total: 0, completed: 0, incomplete: 0 },
+  );
+  return renderDepartmentDoneChart(totals, groups, null, {
+    title: `按「${safeDisplayValue(chart && chart.label)}」分组（已完成 / 未完成）`,
+  });
+}
+
+function renderDeliverableAnalysis(container, item, analysisData, options = {}) {
   clearOverviewContainer(container);
 
   const head = overviewEl("div", "analysis-panel-head");
@@ -2118,14 +2295,93 @@ function renderDeliverableAnalysis(container, item, analysisData) {
   summaryGrid.appendChild(alertsBox);
   container.appendChild(summaryGrid);
 
-  // 2. Department stacked-count chart
+  // 2. 图表区：默认科室图 + 自定义标签图（tab 切换）+ 图表内容设置。
   let onDeptSelectChange = null;
   const deptSection = renderDepartmentDoneChart(summary, departments, (selectedDept) => {
     if (onDeptSelectChange) {
       onDeptSelectChange(selectedDept);
     }
   });
-  container.appendChild(deptSection.el);
+  const customCharts = Array.isArray(analysisData.customCharts) ? analysisData.customCharts : [];
+  const chartTools = overviewEl("div", "analysis-chart-tools");
+  const settingsBtn = overviewEl("button", "analysis-chart-settings-btn", "图表内容设置");
+  settingsBtn.type = "button";
+  settingsBtn.setAttribute("aria-label", "设置图表展示内容");
+  const editorBox = overviewEl("div", "chart-labels-editor");
+  editorBox.hidden = true;
+  chartTools.append(settingsBtn, editorBox);
+  container.appendChild(chartTools);
+  settingsBtn.addEventListener("click", async () => {
+    if (!editorBox.hidden) {
+      editorBox.hidden = true;
+      return;
+    }
+    settingsBtn.disabled = true;
+    try {
+      const res = await fetch(`/api/project-status/deliverables/${encodeURIComponent(item.id)}/chart-labels`, {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      });
+      const body = await overviewReadJson(res);
+      if (!res.ok || !body || body.ok !== true) throw overviewRequestError(body, res.status);
+      const data = body.data || {};
+      const fieldOptions = (Array.isArray(data.fields) ? data.fields : []).map((field) => [
+        String(field.key),
+        field.label && field.label !== field.key ? `${field.label}（${field.key}）` : String(field.key),
+      ]);
+      buildChartLabelEditor(
+        editorBox,
+        item.id,
+        Array.isArray(data.labels) ? data.labels : [],
+        fieldOptions,
+        () => {
+          if (typeof options.onReload === "function") options.onReload();
+        },
+      );
+      editorBox.hidden = false;
+    } catch (err) {
+      editorBox.textContent = "";
+      editorBox.appendChild(overviewEl("p", "error-msg", formatApiErrorMessage(err, 500)));
+      editorBox.hidden = false;
+    } finally {
+      settingsBtn.disabled = false;
+    }
+  });
+
+  if (customCharts.length === 0) {
+    container.appendChild(deptSection.el);
+  } else {
+    const entries = [
+      { label: "科室", el: deptSection.el },
+      ...customCharts.map((chart) => ({ label: chart.label, el: renderCustomLabelChart(chart) })),
+    ];
+    const panels = entries.map((entry, index) => {
+      const panel = overviewEl("div", "analysis-chart-panel");
+      panel.hidden = index !== 0;
+      panel.appendChild(entry.el);
+      return panel;
+    });
+    const tabButtons = entries.map((entry, index) => {
+      const tab = overviewEl("button", "analysis-chart-tab", safeDisplayValue(entry.label));
+      tab.type = "button";
+      tab.setAttribute("aria-pressed", index === 0 ? "true" : "false");
+      tab.classList.toggle("is-active", index === 0);
+      tab.addEventListener("click", () => {
+        tabButtons.forEach((button, i) => {
+          const isActive = button === tab;
+          button.classList.toggle("is-active", isActive);
+          button.setAttribute("aria-pressed", isActive ? "true" : "false");
+          panels[i].hidden = !isActive;
+        });
+      });
+      return tab;
+    });
+    const tabRow = overviewEl("div", "analysis-chart-tabs");
+    tabButtons.forEach((tab) => tabRow.appendChild(tab));
+    const chartArea = overviewEl("div", "analysis-chart-area");
+    chartArea.append(tabRow, ...panels);
+    container.appendChild(chartArea);
+  }
 
   // 3. Trend View
   const trendSection = overviewEl("div", "analysis-sub-section");
@@ -2161,9 +2417,14 @@ function renderDeliverableAnalysis(container, item, analysisData) {
   container.appendChild(trendSection);
 
   // 4. Paginated detail table
-  const itemsSectionObj = renderAnalysisItemsSection(item, departments, (selectedDept) => {
-    deptSection.setSelected(selectedDept);
-  });
+  const itemsSectionObj = renderAnalysisItemsSection(
+    item,
+    departments,
+    (selectedDept) => {
+      deptSection.setSelected(selectedDept);
+    },
+    { onModelChange: typeof options.onReload === "function" ? options.onReload : null },
+  );
   onDeptSelectChange = (selectedDept) => {
     itemsSectionObj.setSelected(selectedDept);
   };
@@ -2558,6 +2819,10 @@ function renderDeliverableDetailPage(deliverableId) {
   }
 
   const page = overviewEl("article", "deliverable-detail-page");
+
+  // 切换交付物详情时重置车型筛选，避免上一个交付物的查找条件残留。
+  analysisModelFilter.model = "";
+  analysisModelFilter.match = "fuzzy";
 
   const head = overviewEl("div", "deliverable-detail-page-head");
   const headNav = overviewEl("div", "deliverable-detail-page-nav");

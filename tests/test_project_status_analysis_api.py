@@ -198,6 +198,7 @@ def test_analysis_api_serializes_pending_signer_lines_and_close_alert(client_and
         [
             {
                 "_no": "EWO-SIGN",
+                "_rsp_department": "技术中心_车体工程",
                 "_rsp_smt": "车身科",
                 "state": "IMPL",
                 "_required_date": "2026-08-20",
@@ -205,6 +206,7 @@ def test_analysis_api_serializes_pending_signer_lines_and_close_alert(client_and
             },
             {
                 "_no": "EWO-CLOSE",
+                "_rsp_department": "技术中心_车体工程",
                 "_rsp_smt": "车体科",
                 "state": "CLOSE",
                 "_required_date": "2026-08-01",
@@ -222,3 +224,217 @@ def test_analysis_api_serializes_pending_signer_lines_and_close_alert(client_and
     # CLOSE 是流程终点：无提醒（前端据此显示 未超期），阶段值保持小写
     assert by_number["EWO-CLOSE"]["alertType"] is None
     assert by_number["EWO-CLOSE"]["stage"] == "close"
+
+
+def test_analysis_items_model_filter_and_match_types(client_and_db) -> None:
+    """model 查询参数同时过滤明细与 overview 摘要；modelMatch 仅允许 fuzzy|exact。"""
+    client, db = client_and_db
+    service = ProjectStatusDeliverableAnalysisService(db, clock=lambda: date(2026, 8, 23))
+    service.publish(
+        "VPI-T2-D3",
+        92,
+        [
+            {
+                "_no": "EWO-MA",
+                "_subject": "F610S 蒙皮更改",
+                "_rsp_department": "技术中心_车体工程",
+                "_rsp_smt": "车体科",
+                "_modelinfo": "F610S-A",
+                "state": "IMPL",
+                "_required_date": "2026-09-30T00:00:00",
+            },
+            {
+                "_no": "EWO-MB",
+                "_subject": "F610S 内饰更改",
+                "_rsp_department": "技术中心_车体工程",
+                "_rsp_smt": "车体科",
+                "_modelinfo": "F610S-B",
+                "state": "IMPL",
+                "_required_date": "2026-09-30T00:00:00",
+            },
+            {
+                "_no": "EWO-GM",
+                "_subject": "G610M 顶盖更改",
+                "_rsp_department": "技术中心_车体工程",
+                "_rsp_smt": "车体科",
+                "_modelinfo": "G610M",
+                "state": "IMPL",
+                "_required_date": "2026-09-30T00:00:00",
+            },
+            {
+                "_no": "EWO-NM",
+                "_subject": "无车型信息更改",
+                "_rsp_department": "技术中心_车体工程",
+                "_rsp_smt": "车体科",
+                "state": "IMPL",
+                "_required_date": "2026-09-30T00:00:00",
+            },
+        ],
+        source_type="aras",
+        snapshot_at="2026-08-23T00:00:00Z",
+    )
+    items_url = "/api/project-status/deliverables/VPI-T2-D3/analysis/items"
+
+    # 默认 fuzzy：大小写不敏感子串包含；model_info 为空的行不命中。
+    fuzzy = client.get(f"{items_url}?model=F610S")
+    assert fuzzy.status_code == 200
+    fuzzy_data = fuzzy.get_json()["data"]
+    assert fuzzy_data["total"] == 2
+    assert {row["itemNumber"] for row in fuzzy_data["items"]} == {"EWO-MA", "EWO-MB"}
+
+    exact_one = client.get(f"{items_url}?model=F610S-A&modelMatch=exact")
+    assert exact_one.status_code == 200
+    assert exact_one.get_json()["data"]["total"] == 1
+
+    exact_zero = client.get(f"{items_url}?model=G610&modelMatch=exact")
+    assert exact_zero.status_code == 200
+    assert exact_zero.get_json()["data"]["total"] == 0
+
+    # 空 model = 不按车型过滤（不受 modelMatch 影响）。
+    empty_model = client.get(f"{items_url}?model=&modelMatch=exact")
+    assert empty_model.status_code == 200
+    assert empty_model.get_json()["data"]["total"] == 4
+
+    bad_match = client.get(f"{items_url}?model=x&modelMatch=bogus")
+    assert bad_match.status_code == 422
+
+    too_long_model = "x" * 81
+    too_long = client.get(f"{items_url}?model={too_long_model}")
+    assert too_long.status_code == 422
+
+    # 控制字符（换行）拒绝。
+    control = client.get(f"{items_url}?model=F610%0A")
+    assert control.status_code == 422
+
+    overview = client.get("/api/project-status/deliverables/VPI-T2-D3/analysis?model=F610S")
+    assert overview.status_code == 200
+    overview_data = overview.get_json()["data"]
+    assert overview_data["summary"]["total"] == 2
+    # carType 维持回显锚点语义（主计划名 F610S），不参与过滤。
+    assert overview_data["carType"] == "F610S"
+
+
+def test_chart_labels_api_contract(client_and_db) -> None:
+    """图表标签 API：候选字段、标签 CRUD 校验、customCharts 分组统计与本地写守卫。"""
+    client, db = client_and_db
+    service = ProjectStatusDeliverableAnalysisService(db, clock=lambda: date(2026, 8, 23))
+    service.publish(
+        "VPI-T2-D5",
+        93,
+        [
+            {
+                "id": "C-1",
+                "name": "冻结发布单确认",
+                "department": "质量科",
+                "owner": "张三",
+                "_rsp_name": "张三",
+                "status": "进行中",
+                "dueDate": "2026-08-18",
+            },
+            {
+                "id": "C-2",
+                "name": "A 面数据确认",
+                "department": "质量科",
+                "owner": "陈璇",
+                "_rsp_name": "陈璇",
+                "status": "已完成",
+                "dueDate": "2026-08-19",
+            },
+            {
+                "id": "C-3",
+                "name": "审批意见关闭",
+                "department": "车身设计科",
+                "owner": "周敏",
+                "_rsp_name": "周敏",
+                "status": "进行中",
+                "dueDate": "2026-08-20",
+            },
+        ],
+        snapshot_at="2026-08-23T00:00:00Z",
+    )
+
+    # 未配置标签时 customCharts 为空数组，前端回退现有科室图。
+    before = client.get("/api/project-status/deliverables/VPI-T2-D5/analysis")
+    assert before.status_code == 200
+    assert before.get_json()["data"]["customCharts"] == []
+
+    chart_labels_url = "/api/project-status/deliverables/VPI-T2-D5/chart-labels"
+    fields_response = client.get(chart_labels_url)
+    assert fields_response.status_code == 200
+    fields_data = fields_response.get_json()["data"]
+    assert fields_data["labels"] == []
+    fields = fields_data["fields"]
+    assert isinstance(fields, list)
+    by_key = {field["key"]: field for field in fields}
+    assert by_key["department"]["label"] == "科室"
+    assert by_key["department"]["count"] >= 1
+    assert by_key["_rsp_name"]["label"] == "负责人"
+    assert by_key["_rsp_name"]["count"] >= 1
+    # 候选字段按 count 降序、同数按 key 升序。
+    for left, right in zip(fields, fields[1:]):
+        assert left["count"] > right["count"] or (
+            left["count"] == right["count"] and left["key"] <= right["key"]
+        )
+
+    saved = client.put(
+        chart_labels_url,
+        json={
+            "labels": [
+                {"label": "内容A", "sourceField": "department"},
+                {"label": "内容B", "sourceField": "owner"},
+            ]
+        },
+    )
+    assert saved.status_code == 200
+    saved_labels = saved.get_json()["data"]["labels"]
+    assert saved_labels == [
+        {"label": "内容A", "sourceField": "department", "sortOrder": 1},
+        {"label": "内容B", "sourceField": "owner", "sortOrder": 2},
+    ]
+    reread = client.get(chart_labels_url)
+    assert reread.status_code == 200
+    assert reread.get_json()["data"]["labels"] == saved_labels
+
+    # 校验失败 422，且不落库。
+    too_many = client.put(
+        chart_labels_url,
+        json={"labels": [{"label": f"标签{i}", "sourceField": "department"} for i in range(7)]},
+    )
+    assert too_many.status_code == 422
+    long_label = client.put(
+        chart_labels_url,
+        json={"labels": [{"label": "甲" * 41, "sourceField": "department"}]},
+    )
+    assert long_label.status_code == 422
+    unknown_field = client.put(
+        chart_labels_url,
+        json={"labels": [{"label": "内容C", "sourceField": "no_such_field"}]},
+    )
+    assert unknown_field.status_code == 422
+    # body 非 dict → 400。
+    non_object = client.put(chart_labels_url, json=["not-a-dict"])
+    assert non_object.status_code == 400
+
+    after = client.get("/api/project-status/deliverables/VPI-T2-D5/analysis")
+    assert after.status_code == 200
+    charts = after.get_json()["data"]["customCharts"]
+    assert len(charts) == 2
+    assert charts[0] == {
+        "label": "内容A",
+        "sourceField": "department",
+        "groups": {
+            "质量科": {"total": 2, "completed": 1, "incomplete": 1},
+            "车身设计科": {"total": 1, "completed": 0, "incomplete": 1},
+        },
+    }
+    assert charts[1]["label"] == "内容B"
+    assert charts[1]["sourceField"] == "owner"
+    for counts in charts[1]["groups"].values():
+        assert set(counts) == {"total", "completed", "incomplete"}
+
+    # 未知交付物 404。
+    missing = client.put(
+        "/api/project-status/deliverables/VPI-T2-NOPE/chart-labels",
+        json={"labels": [{"label": "内容A", "sourceField": "department"}]},
+    )
+    assert missing.status_code == 404

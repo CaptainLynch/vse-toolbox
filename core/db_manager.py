@@ -26,6 +26,13 @@ from core.runtime_paths import app_root
 
 logger = logging.getLogger("vse_toolbox.db_manager")
 
+
+def _dump_extra_fields(extra: object) -> str:
+    """extra_fields 快照序列化为 JSON；空快照存空串，避免无意义占位。"""
+    if not isinstance(extra, Mapping) or not extra:
+        return ""
+    return json.dumps(dict(extra), ensure_ascii=False)
+
 # ── 默认数据库路径 ──────────────────────────────────────────────
 DEFAULT_DB_DIR = app_root() / "data"
 DEFAULT_DB_PATH = DEFAULT_DB_DIR / "vse_toolbox.db"
@@ -524,6 +531,9 @@ TABLE_DEFINITIONS: list[str] = [
         department     TEXT NOT NULL DEFAULT '未归属',
         owner          TEXT NOT NULL DEFAULT '',
         pending_signers TEXT NOT NULL DEFAULT '',
+        source_department TEXT NOT NULL DEFAULT '',
+        model_info     TEXT NOT NULL DEFAULT '',
+        extra_fields_json TEXT NOT NULL DEFAULT '',
         source_status  TEXT NOT NULL DEFAULT '',
         source_stage   TEXT,
         source_type    TEXT NOT NULL DEFAULT '',
@@ -870,6 +880,9 @@ class DatabaseManager:
             ("pending_signers", "TEXT NOT NULL DEFAULT ''"),
             ("source_stage", "TEXT"),
             ("source_type", "TEXT NOT NULL DEFAULT ''"),
+            ("source_department", "TEXT NOT NULL DEFAULT ''"),
+            ("model_info", "TEXT NOT NULL DEFAULT ''"),
+            ("extra_fields_json", "TEXT NOT NULL DEFAULT ''"),
         ]
         for column, decl in analysis_item_additions:
             if column not in analysis_item_columns:
@@ -1277,9 +1290,10 @@ class DatabaseManager:
                 """
                 INSERT INTO project_status_analysis_items (
                     deliverable_id, item_key, display_number, title, department, owner,
-                    pending_signers, source_status, source_stage, source_type,
+                    pending_signers, source_department, model_info, extra_fields_json,
+                    source_status, source_stage, source_type,
                     is_completed, planned_date, actual_date, source_run_id, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -1290,6 +1304,9 @@ class DatabaseManager:
                         str(item["department"]),
                         str(item["owner"]),
                         str(item.get("pending_signers") or ""),
+                        str(item.get("source_department") or ""),
+                        str(item.get("model_info") or ""),
+                        _dump_extra_fields(item.get("extra_fields")),
                         str(item["source_status"]),
                         item.get("source_stage"),
                         str(item.get("source_type") or ""),
@@ -1351,7 +1368,8 @@ class DatabaseManager:
         bounded_offset = max(0, int(offset))
         sql = """
             SELECT deliverable_id, item_key, title, department, owner,
-                   display_number, pending_signers, source_status, source_stage, source_type,
+                   display_number, pending_signers, source_department, model_info,
+                   extra_fields_json, source_status, source_stage, source_type,
                    is_completed, planned_date, actual_date, source_run_id, updated_at
             FROM project_status_analysis_items
             WHERE deliverable_id = ?

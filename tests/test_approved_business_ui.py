@@ -125,7 +125,8 @@ def test_deliverable_detail_analysis_wiring_and_rendering(client) -> None:
     assert "item.displayCode || item.id" in js
 
     # 2. Analysis endpoints (server-side paginated item list)
-    assert "/analysis`" in js
+    # analysis URL 可选携带车型筛选参数（model/modelMatch），不再以反引号结尾。
+    assert "/api/project-status/deliverables/${encodeURIComponent(item.id)}/analysis" in js
     assert "/analysis/items?" in js
     assert "limit: String(PAGE_SIZE)" in js
     assert "offset: String(offset)" in js

@@ -50,6 +50,59 @@ EWO_IGNORED_STAGE = "open"
 _EWO_SOURCE_TYPES = frozenset({"aras", "ewo", "aras_ewo", "aras/ewo"})
 _EWO_STAGE_FILTERS = frozenset((*EWO_STAGES, "all"))
 
+# 科室合并后 `_rsp_smt` 混杂多变，默认范围改按上级部门字段（`_rsp_department`）
+# 的包含式关键词匹配；该常量同时供 Aras 连接器生成 LIKE 查询与本地范围判定，
+# 是唯一口径来源。
+EWO_DEPARTMENT_KEYWORDS: tuple[str, ...] = (
+    "车体工程",
+    "外饰",
+    "内饰",
+)
+
+# 图表自定义标签的候选字段中文显示名；未映射的键原样展示。
+EWO_FIELD_LABELS: dict[str, str] = {
+    "department": "科室",
+    "_rsp_smt": "科室",
+    "source_department": "部门",
+    "_rsp_department": "部门",
+    "owner": "负责人",
+    "_rsp_name": "负责人",
+    "created_by_id__keyed_name": "起草人",
+    "model_info": "车型",
+    "_modelinfo": "车型",
+    "title": "标题",
+    "_subject": "标题",
+    "source_status": "源状态",
+    "state": "状态",
+    "source_stage": "阶段",
+    "planned_date": "计划完成",
+    "_required_date": "要求日期",
+}
+
+# extra_fields 快照的安全边界：敏感键名一律不入库，裸 GUID 值无分组价值。
+_EXTRA_FIELD_LIMIT = 60
+_EXTRA_VALUE_LIMIT = 200
+_SENSITIVE_KEY_NAMES = frozenset({
+    "authorization", "cookie", "token", "apikey", "sid", "sessionid",
+    "arasauth", "jsessionid", "csrf", "secret", "password",
+    "credential", "credentialref",
+})
+_BARE_GUID_RE = re.compile(r"^[0-9a-fA-F]{32}$")
+_MODEL_MATCH_MODES = frozenset({"fuzzy", "exact"})
+
+# 自定义图表标签允许绑定的标准缓存列；extra_fields 键在其之上动态并入。
+_CHART_STANDARD_FIELDS: tuple[str, ...] = (
+    "department",
+    "owner",
+    "title",
+    "source_department",
+    "model_info",
+    "source_status",
+    "source_stage",
+    "planned_date",
+    "actual_date",
+)
+
 _FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     "item_key": (
         "incident", "processNo", "formId", "processInstanceId", "_no", "id",
@@ -85,6 +138,12 @@ _FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     ),
     "status": (
         "status", "state", "workflowState", "approvalStatus", "状态", "审批状态", "流程状态",
+    ),
+    "source_department": (
+        "_rsp_department", "部门", "责任部门", "所属部门",
+    ),
+    "model_info": (
+        "_modelinfo", "modelInfo", "model_info", "车型",
     ),
     "planned_date": (
         "plannedDate", "dueDate", "deadline", "planFinishDate", "targetDate",
@@ -314,6 +373,49 @@ def _item_stage(item: Mapping[str, Any], source_type: object = None) -> str | No
     return normalize_ewo_stage(item.get("source_status"))
 
 
+def _parse_extra_fields(raw: object) -> dict[str, str]:
+    """把缓存中的 extra_fields_json 解析回字典；损坏内容按空快照处理。"""
+    if isinstance(raw, Mapping):
+        return {str(k): str(v) for k, v in raw.items() if str(v or "").strip()}
+    text = str(raw or "").strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {
+        str(key): str(value)
+        for key, value in parsed.items()
+        if isinstance(key, str) and str(value or "").strip()
+    }
+
+
+def _department_in_default_scope(value: object) -> bool:
+    """默认范围：部门字段包含任一关键词（大小写不敏感子串）即命中。"""
+    text = str(value or "").strip().casefold()
+    if not text:
+        return False
+    return any(keyword.casefold() in text for keyword in EWO_DEPARTMENT_KEYWORDS)
+
+
+def _model_matches(value: object, model: str, model_match: str) -> bool:
+    """车型查找：fuzzy 为大小写不敏感子串包含，exact 为去空白全等。"""
+    if model_match not in _MODEL_MATCH_MODES:
+        raise ValueError("unsupported model match")
+    query = str(model or "").strip()
+    if not query:
+        return True
+    stored = str(value or "").strip()
+    if not stored:
+        return False
+    if model_match == "exact":
+        return stored == query
+    return query.casefold() in stored.casefold()
+
+
 def _item_is_in_scope(
     item: Mapping[str, Any],
     *,
@@ -322,11 +424,22 @@ def _item_is_in_scope(
     departments: Sequence[str] | None = None,
     stage: str | None = None,
     stages: Sequence[str] | None = None,
+    model: str | None = None,
+    model_match: str = "fuzzy",
 ) -> bool:
     department_values = _department_filters(department, departments)
     if department_values and str(item.get("department") or "未归属") not in department_values:
         return False
     is_ewo = is_ewo_source_type(_item_source_type(item, source_type))
+    # 显式科室筛选优先于部门默认范围；未显式筛选时 EWO 按部门关键词圈定，
+    # 且对所有 stage 取值（含 all）生效。
+    if is_ewo and not department_values and not _department_in_default_scope(
+        item.get("source_department")
+    ):
+        return False
+    # 车型过滤先于阶段分支：EWO 默认阶段分支会直接 return，不能吞掉该条件。
+    if model is not None and not _model_matches(item.get("model_info"), model, model_match):
+        return False
     stage_values = _stage_filters(stage, stages)
     if stage_values and stage_values != ("all",):
         return is_ewo and _item_stage(item, source_type) in stage_values
@@ -344,20 +457,53 @@ def _safe_text(value: object, *, limit: int) -> str:
     return redact_sensitive_text(value, limit=limit, collapse_newlines=True).strip()
 
 
+def _field_value_with_key(
+    row: Mapping[str, Any],
+    logical_name: str,
+    mapping: Mapping[str, object],
+) -> tuple[object | None, str | None]:
+    """返回字段值及其真正命中的原始行键（用于 extra_fields 排除已消费键）。"""
+    requested = mapping.get(logical_name)
+    if isinstance(requested, str) and requested in row:
+        return row.get(requested), requested
+    normalized = {_normalized_key(key): key for key in row if isinstance(key, str)}
+    for alias in _FIELD_ALIASES[logical_name]:
+        actual = normalized.get(_normalized_key(alias))
+        if actual is not None:
+            return row.get(actual), actual
+    return None, None
+
+
 def _field_value(
     row: Mapping[str, Any],
     logical_name: str,
     mapping: Mapping[str, object],
 ) -> object | None:
-    requested = mapping.get(logical_name)
-    if isinstance(requested, str) and requested in row:
-        return row.get(requested)
-    normalized = {_normalized_key(key): key for key in row if isinstance(key, str)}
-    for alias in _FIELD_ALIASES[logical_name]:
-        actual = normalized.get(_normalized_key(alias))
-        if actual is not None:
-            return row.get(actual)
-    return None
+    return _field_value_with_key(row, logical_name, mapping)[0]
+
+
+def _extra_fields_snapshot(
+    row: Mapping[str, Any],
+    consumed_keys: set[str],
+) -> dict[str, str]:
+    """捕获标准字段之外的原始行参数快照（图表自定义标签的数据来源）。
+
+    安全边界：键数上限 60（按行键插入顺序先到先得）；键名命中敏感集合或
+    值为裸 GUID 的键跳过；值统一脱敏并截断；空值不入快照。
+    """
+    extra: dict[str, str] = {}
+    for key, value in row.items():
+        if len(extra) >= _EXTRA_FIELD_LIMIT:
+            break
+        if not isinstance(key, str) or key in consumed_keys:
+            continue
+        if re.sub(r"[^a-z0-9]", "", key.casefold()) in _SENSITIVE_KEY_NAMES:
+            continue
+        text = _safe_text(value, limit=_EXTRA_VALUE_LIMIT)
+        if not text or _BARE_GUID_RE.fullmatch(text):
+            continue
+        extra[key] = text
+    return extra
 
 
 def _iso_date(value: object) -> str | None:
@@ -442,25 +588,73 @@ def normalize_analysis_rows(
     for row in rows:
         if not isinstance(row, Mapping):
             continue
-        raw_key = _field_value(row, "item_key", checked_mapping)
-        display_number = _safe_text(
-            _field_value(row, "item_number", checked_mapping) or raw_key or "",
-            limit=200,
+        consumed_keys: set[str] = set()
+        raw_key, key_consumed = _field_value_with_key(row, "item_key", checked_mapping)
+        if key_consumed:
+            consumed_keys.add(key_consumed)
+        number_value, number_consumed = _field_value_with_key(
+            row, "item_number", checked_mapping
         )
-        title = _safe_text(_field_value(row, "title", checked_mapping) or raw_key or "未命名任务", limit=240)
-        department = _safe_text(_field_value(row, "department", checked_mapping) or "未归属", limit=120)
-        owner = _safe_text(_field_value(row, "owner", checked_mapping) or "", limit=120)
+        if number_consumed:
+            consumed_keys.add(number_consumed)
+        title_value, title_consumed = _field_value_with_key(row, "title", checked_mapping)
+        if title_consumed:
+            consumed_keys.add(title_consumed)
+        department_value, department_consumed = _field_value_with_key(
+            row, "department", checked_mapping
+        )
+        if department_consumed:
+            consumed_keys.add(department_consumed)
+        owner_value, owner_consumed = _field_value_with_key(row, "owner", checked_mapping)
+        if owner_consumed:
+            consumed_keys.add(owner_consumed)
+        signers_value, signers_consumed = _field_value_with_key(
+            row, "pending_signers", checked_mapping
+        )
+        if signers_consumed:
+            consumed_keys.add(signers_consumed)
+        status_value, status_consumed = _field_value_with_key(row, "status", checked_mapping)
+        if status_consumed:
+            consumed_keys.add(status_consumed)
+        planned_value, planned_consumed = _field_value_with_key(
+            row, "planned_date", checked_mapping
+        )
+        if planned_consumed:
+            consumed_keys.add(planned_consumed)
+        actual_value, actual_consumed = _field_value_with_key(
+            row, "actual_date", checked_mapping
+        )
+        if actual_consumed:
+            consumed_keys.add(actual_consumed)
+        source_department_value, source_department_consumed = _field_value_with_key(
+            row, "source_department", checked_mapping
+        )
+        if source_department_consumed:
+            consumed_keys.add(source_department_consumed)
+        model_value, model_consumed = _field_value_with_key(row, "model_info", checked_mapping)
+        if model_consumed:
+            consumed_keys.add(model_consumed)
+
+        display_number = _safe_text(number_value or raw_key or "", limit=200)
+        title = _safe_text(title_value or raw_key or "未命名任务", limit=240)
+        department = _safe_text(department_value or "未归属", limit=120)
+        owner = _safe_text(owner_value or "", limit=120)
         # 待签署人员只来自专用字段；先规范化为 ROLE:person 行再做脱敏，
         # 且不折叠换行，保证“每条一行”的输出契约在缓存中保留。
         pending_signers = redact_sensitive_text(
-            normalize_pending_signers(_field_value(row, "pending_signers", checked_mapping)),
+            normalize_pending_signers(signers_value),
             limit=500,
         ).strip()
-        status = _safe_text(_field_value(row, "status", checked_mapping) or "", limit=120)
+        status = _safe_text(status_value or "", limit=120)
         source_stage = normalize_ewo_stage(status) if ewo_source else None
         stage_attention = ewo_source and source_stage is None
-        planned_date = _iso_date(_field_value(row, "planned_date", checked_mapping))
-        actual_date = _iso_date(_field_value(row, "actual_date", checked_mapping))
+        planned_date = _iso_date(planned_value)
+        actual_date = _iso_date(actual_value)
+        # 部门与车型为 EWO 默认范围与车型查找的原始依据；extra_fields 只保留
+        # 标准字段未消费的参数，供自定义图表标签按任意上游字段分组。
+        source_department = _safe_text(source_department_value or "", limit=120)
+        model_info = _safe_text(model_value or "", limit=120)
+        extra_fields = _extra_fields_snapshot(row, consumed_keys)
         fingerprint_source = "|".join(
             (str(raw_key or ""), title, department, owner, planned_date or "")
         )
@@ -475,6 +669,9 @@ def normalize_analysis_rows(
             "department": department or "未归属",
             "owner": owner,
             "pending_signers": pending_signers,
+            "source_department": source_department,
+            "model_info": model_info,
+            "extra_fields": extra_fields,
             "source_status": status,
             "source_stage": source_stage,
             "stage_attention": stage_attention,
@@ -500,6 +697,8 @@ def summarize_analysis_items(
     departments: Sequence[str] | None = None,
     stage: str | None = None,
     stages: Sequence[str] | None = None,
+    model: str | None = None,
+    model_match: str = "fuzzy",
 ) -> dict[str, Any]:
     department_values = _department_filters(department, departments)
     stage_values = _stage_filters(stage, stages)
@@ -513,6 +712,8 @@ def summarize_analysis_items(
             source_type=source_type,
             departments=department_values,
             stages=stage_values,
+            model=model,
+            model_match=model_match,
         )
     ]
     for item in selected_items:
@@ -582,7 +783,11 @@ class ProjectStatusDeliverableAnalysisService:
         *,
         trend_limit: int = 8,
         car_type: str | None = None,
+        model: str | None = None,
+        model_match: str = "fuzzy",
     ) -> dict[str, Any]:
+        if model_match not in _MODEL_MATCH_MODES:
+            raise ValueError("unsupported model match")
         deliverable = self._deliverable(deliverable_id)
         rows = self.db.list_project_status_analysis_snapshots(deliverable_id, trend_limit)
         latest = rows[0] if rows else None
@@ -604,6 +809,8 @@ class ProjectStatusDeliverableAnalysisService:
                 cache_items,
                 snapshot_at=latest["snapshot_at"],
                 today=self._clock(),
+                model=model,
+                model_match=model_match,
             )
         if latest is not None:
             try:
@@ -633,6 +840,19 @@ class ProjectStatusDeliverableAnalysisService:
                 "dueSoon": int(recalculated["due_soon_count"]),
                 "missingDueDate": int(recalculated["missing_due_date_count"]),
             }
+        custom_charts = [
+            {
+                "label": chart_label["label"],
+                "sourceField": chart_label["sourceField"],
+                "groups": self._chart_groups_from(
+                    cache_items,
+                    chart_label["sourceField"],
+                    model=model,
+                    model_match=model_match,
+                ),
+            }
+            for chart_label in self.chart_labels(deliverable_id)
+        ]
         return {
             "deliverable": deliverable,
             "hasCache": latest is not None,
@@ -641,6 +861,7 @@ class ProjectStatusDeliverableAnalysisService:
             "departments": department_counts,
             "trend": trend,
             "carType": car_type,
+            "customCharts": custom_charts,
         }
 
     def items(
@@ -656,6 +877,8 @@ class ProjectStatusDeliverableAnalysisService:
         offset: int = 0,
         limit: int = 200,
         car_type: str | None = None,
+        model: str | None = None,
+        model_match: str = "fuzzy",
     ) -> dict[str, Any]:
         deliverable = self._deliverable(deliverable_id)
         department_values = _department_filters(department, departments)
@@ -664,6 +887,8 @@ class ProjectStatusDeliverableAnalysisService:
             raise ValueError("unsupported state filter")
         if alert not in {None, "overdue", "due_soon", "missing_due_date"}:
             raise ValueError("unsupported alert filter")
+        if model_match not in _MODEL_MATCH_MODES:
+            raise ValueError("unsupported model match")
         if alert is not None and (state is not None or int(offset) != 0):
             raise ValueError("alert filter cannot be combined with state/offset pagination")
 
@@ -674,6 +899,8 @@ class ProjectStatusDeliverableAnalysisService:
                 row,
                 departments=department_values,
                 stages=stage_values,
+                model=model,
+                model_match=model_match,
             )
         ]
         if state is not None:
@@ -721,6 +948,166 @@ class ProjectStatusDeliverableAnalysisService:
             "carType": car_type,
         }
 
+    def chart_field_candidates(self, deliverable_id: str) -> list[dict[str, Any]]:
+        """图表标签可绑定的候选字段：标准列 + extra_fields 键及其非空出现次数。"""
+        deliverable = self._deliverable(deliverable_id)
+        items = self._cached_items(deliverable_id, deliverable=deliverable)
+        counts: dict[str, int] = {}
+        for row in items:
+            for key in _CHART_STANDARD_FIELDS:
+                if str(row.get(key) or "").strip():
+                    counts[key] = counts.get(key, 0) + 1
+            extra = row.get("extra_fields")
+            if isinstance(extra, Mapping):
+                for key, value in extra.items():
+                    if str(value or "").strip():
+                        counts[key] = counts.get(key, 0) + 1
+        fields = [
+            {"key": key, "label": EWO_FIELD_LABELS.get(key, key), "count": count}
+            for key, count in counts.items()
+        ]
+        fields.sort(key=lambda field: (-field["count"], field["key"]))
+        return fields
+
+    def chart_labels(self, deliverable_id: str) -> list[dict[str, Any]]:
+        """读取自定义图表标签配置；损坏或缺失的配置按空处理。"""
+        raw = self.db.get_app_settings().get(
+            f"project_status_chart_labels:{deliverable_id}"
+        )
+        if not isinstance(raw, list):
+            return []
+        labels: list[dict[str, Any]] = []
+        for entry in raw:
+            if not isinstance(entry, Mapping):
+                continue
+            label = str(entry.get("label") or "").strip()
+            source_field = str(entry.get("sourceField") or "").strip()
+            if not label or not source_field:
+                continue
+            labels.append({
+                "label": label,
+                "sourceField": source_field,
+                "sortOrder": len(labels) + 1,
+            })
+        return labels
+
+    def save_chart_labels(
+        self,
+        deliverable_id: str,
+        labels: object,
+    ) -> list[dict[str, Any]]:
+        """整体替换自定义图表标签；校验失败抛 ValueError 且不落库。"""
+        self._deliverable(deliverable_id)
+        cleaned = self._validate_chart_labels(deliverable_id, labels)
+        self.db.update_app_settings({
+            f"project_status_chart_labels:{deliverable_id}": cleaned,
+        })
+        return self.chart_labels(deliverable_id)
+
+    def chart_groups(
+        self,
+        deliverable_id: str,
+        source_field: str,
+        *,
+        model: str | None = None,
+        model_match: str = "fuzzy",
+    ) -> dict[str, dict[str, int]]:
+        """按指定字段分组统计，范围口径与 items() 一致。"""
+        if model_match not in _MODEL_MATCH_MODES:
+            raise ValueError("unsupported model match")
+        deliverable = self._deliverable(deliverable_id)
+        items = self._cached_items(deliverable_id, deliverable=deliverable)
+        if source_field not in self._known_fields(items):
+            raise ValueError("unknown chart source field")
+        return self._chart_groups_from(
+            items,
+            source_field,
+            model=model,
+            model_match=model_match,
+        )
+
+    def _chart_groups_from(
+        self,
+        items: Sequence[Mapping[str, Any]],
+        source_field: str,
+        *,
+        model: str | None = None,
+        model_match: str = "fuzzy",
+    ) -> dict[str, dict[str, int]]:
+        groups: dict[str, dict[str, int]] = {}
+        for row in items:
+            if not _item_is_in_scope(
+                row,
+                model=model,
+                model_match=model_match,
+            ):
+                continue
+            value = self._row_field_value(row, source_field)
+            if not value:
+                continue
+            counts = groups.setdefault(
+                value,
+                {"total": 0, "completed": 0, "incomplete": 0},
+            )
+            counts["total"] += 1
+            if bool(row.get("is_completed")):
+                counts["completed"] += 1
+            else:
+                counts["incomplete"] += 1
+        return groups
+
+    def _validate_chart_labels(
+        self,
+        deliverable_id: str,
+        labels: object,
+    ) -> list[dict[str, str]]:
+        if not isinstance(labels, (list, tuple)):
+            raise ValueError("labels must be a sequence")
+        if len(labels) > 6:
+            raise ValueError("at most 6 chart labels")
+        deliverable = self._deliverable(deliverable_id)
+        known = self._known_fields(self._cached_items(deliverable_id, deliverable=deliverable))
+        seen: set[str] = set()
+        cleaned: list[dict[str, str]] = []
+        for entry in labels:
+            if not isinstance(entry, Mapping):
+                raise ValueError("chart label must be an object")
+            label = str(entry.get("label") or "").strip()
+            if not label or len(label) > 40:
+                raise ValueError("chart label length must be 1-40")
+            if any(ord(char) < 32 or ord(char) == 127 for char in label):
+                raise ValueError("chart label contains control characters")
+            if label in seen:
+                raise ValueError("chart label is duplicated")
+            seen.add(label)
+            source_field = str(entry.get("sourceField") or "").strip()
+            if not source_field or len(source_field) > 80:
+                raise ValueError("chart source field length must be 1-80")
+            if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9\u4e00-\u9fff_]*", source_field):
+                raise ValueError("chart source field has unsupported characters")
+            if source_field not in known:
+                raise ValueError("chart source field is not in the cached field set")
+            cleaned.append({"label": label, "sourceField": source_field})
+        return cleaned
+
+    @staticmethod
+    def _known_fields(items: Sequence[Mapping[str, Any]]) -> set[str]:
+        known = set(_CHART_STANDARD_FIELDS)
+        for row in items:
+            extra = row.get("extra_fields")
+            if isinstance(extra, Mapping):
+                known.update(str(key) for key in extra.keys() if isinstance(key, str))
+        return known
+
+    @staticmethod
+    def _row_field_value(row: Mapping[str, Any], source_field: str) -> str:
+        if source_field in _CHART_STANDARD_FIELDS:
+            return str(row.get(source_field) or "").strip()
+        extra = row.get("extra_fields")
+        if isinstance(extra, Mapping):
+            return str(extra.get(source_field) or "").strip()
+        return ""
+
     @staticmethod
     def _is_ewo_deliverable(deliverable_id: str, deliverable: Mapping[str, Any]) -> bool:
         if deliverable_id != "VPI-T2-D3":
@@ -746,6 +1133,9 @@ class ProjectStatusDeliverableAnalysisService:
         normalized: list[dict[str, Any]] = []
         for row in rows:
             current = dict(row)
+            current["extra_fields"] = _parse_extra_fields(
+                current.get("extra_fields_json")
+            )
             stored_source_type = str(current.get("source_type") or "").strip()
             if historical_ewo and (
                 not stored_source_type or is_ewo_source_type(stored_source_type)

@@ -18,7 +18,7 @@ from services.aras_auth import ArasECMAuthClient
 from services.aras_crawler import ArasCrawlerClient, EWOReportFilters
 from services.project_status_sync_runner import SyncBindingContext
 from services.project_status_updates import ConnectorCandidate, ConnectorSnapshot
-from services.project_status_deliverable_analysis import EWO_DEFAULT_DEPARTMENTS
+from services.project_status_deliverable_analysis import EWO_DEPARTMENT_KEYWORDS
 from services.tdc_auth import TDCPasswordAuthClient
 from services.tdc_crawler import (
     TDCCrawlerClient,
@@ -35,7 +35,11 @@ _IDENTITY_FIELDS = (
 _MAX_ROWS = 10000
 logger = logging.getLogger(__name__)
 
-_EWO_DEFAULT_DEPARTMENT_EXPRESSION = "|".join(EWO_DEFAULT_DEPARTMENTS)
+# 科室合并后 `_rsp_smt` 混杂，默认范围改按上级部门 `_rsp_department` 的
+# 包含式 LIKE 并集；`*` 触发 `_search_elements` 的 like 条件（crawler 现有约定）。
+_EWO_DEFAULT_DEPARTMENT_EXPRESSION = "|".join(
+    f"*{keyword}*" for keyword in EWO_DEPARTMENT_KEYWORDS
+)
 
 
 def _now() -> str:
@@ -201,18 +205,19 @@ class ArasProjectStatusConnector:
                 crawler = self.crawler_factory(auth.base_url, session=login.session, timeout=self.timeout, prewarm=False)
                 model_info = _clean_scalar(context.match_rule.get("modelInfo"))
                 if model_info:
-                    # 车型锚点模式按车型抓取 EWO，但科室范围必须从源头受控；
+                    # 车型锚点模式按车型抓取 EWO，但范围必须从源头受控：
+                    # 部门关键词 LIKE 并集（科室合并后 `_rsp_smt` 混杂不可靠）；
                     # 业务行仍由 external_key 在结果集内精确匹配（见 _snapshot）。
                     filters = EWOReportFilters(
                         model_info=model_info,
-                        rsp_smt=_EWO_DEFAULT_DEPARTMENT_EXPRESSION,
+                        rsp_department=_EWO_DEFAULT_DEPARTMENT_EXPRESSION,
                     )
                 else:
                     filters = EWOReportFilters(
                         ewo_no=_clean_scalar(context.match_rule.get("ewoNo")),
                         project_code=_clean_scalar(context.match_rule.get("projectCode")),
                         subject_keyword=_clean_scalar(context.match_rule.get("subjectKeyword")),
-                        rsp_smt=_EWO_DEFAULT_DEPARTMENT_EXPRESSION,
+                        rsp_department=_EWO_DEFAULT_DEPARTMENT_EXPRESSION,
                     )
                 result = crawler.crawl_ewo_report_all(filters, max_records=2000)
             finally:
