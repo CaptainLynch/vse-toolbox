@@ -198,6 +198,9 @@
 - Normalize pending signer input from strings, newline/separator-delimited `ROLE:person` entries, mappings, and arrays; preserve unknown roles and render one line per role. Never fall back to the responsible person field.
 - Render the EWO policy editor for `VPI-T2-D3` with exact labels “手动维护”“自动同步”“混合模式”, mark “推荐：自动同步”, and show mapping-disabled status unless a mapping is configured.
 - Label the manual chart value “项目手工进度” and the sync section “来自最近一次 EWO 快照”, with tests proving the sync summary does not overwrite `item.progress`.
+- Pending-signer normalization contract: read only dedicated pending-signer aliases in their existing priority order; accept newline/semicolon/Chinese-or-English-comma-delimited strings, `{role, person}` arrays, or role-to-person mappings; discard blank entries, dedupe identical pairs keeping first occurrence, retain multiple people for one role, and serialize one `ROLE:person` line per pair. The responsible-person field is never a fallback.
+- Policy readiness contract: use existing policy API `enabled` and complete `mapping` validation as the sole readiness signal. Any disabled/incomplete policy renders “未启用” and must not claim synchronization; mode labels are presentation only until readiness is true.
+- Filter contract inherits the existing repeated `departments`/`stages` keys, 20-value/120-character limits, control-character rejection, deduplication, parameterized SQL, and empty result for unknown departments.
 
 - [ ] **Step 1: Add failing tests** for opaque dropdown contract, uppercase stage labels, two-state status, signer normalization, policy modes, and progress/snapshot labels.
 - [ ] **Step 2: Run focused tests and confirm failure.**
