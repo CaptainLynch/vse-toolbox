@@ -62,5 +62,10 @@ GET /api/project-status/deliverables/<deliverable_id>/analysis/items
 - 科室与阶段筛选改为可搜索多选 token 控件，支持手动输入并回车确认。
 - 筛选工具栏提供“应用筛选”和“清除筛选”，应用时重置分页并提交多值参数；兼容旧单值参数。
 - 查询参数支持重复键：`departments=...&departments=...`、`stages=...&stages=...`。
+- 后端将重复键解析为去重后的 `Sequence[str]`；每类最多 20 个值、单值最多 120 字符，拒绝控制字符。`stages` 只能是八个规范阶段或 `all`；`departments` 使用参数化 SQL，未知科室返回空结果而不拼接 SQL/AML。
+- 为兼容旧客户端：若存在 `departments`/`stages`，优先使用它们；否则读取单值 `department`/`stage`。
 - 对历史缺失 `source_type/source_stage` 的 ARAS EWO 缓存，根据交付物来源回退识别 EWO，并重新计算当前汇总，确保 `close` 不显示逾期。
+- 回退仅适用于交付物来源精确归一化为 `ARAS EWO` 的 `VPI-T2-D3`；读取时将旧行的 `source_status` 规范化为阶段，汇总从当前明细重算并只更新响应，不静默改写历史快照。
 - EWO 详情状态图表增加最近同步状态、同步时间、立即同步和刷新同步数据入口；同步完成后重载状态、摘要和明细。
+- “立即同步”调用既有 `POST .../sync-now`；“刷新同步数据”只执行 GET 重新读取，不触发上游同步。两按钮在请求期间禁用，失败显示脱敏错误，完成后重新渲染当前详情。
+- 当前状态图表保留手工交付物进度，同时增加独立的 EWO 同步摘要区（总数、已完成、未完成、逾期、最近快照）；摘要由分析 GET 返回的数据填充，不把外部统计覆盖手工进度字段。

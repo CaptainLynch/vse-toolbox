@@ -16,6 +16,7 @@
 - EWO 阶段仅允许：`open`、`draft1`、`draft2`、`edit1`、`edit2`、`proc`、`impl`、`close`。
 - `open` 默认不计入统计；`close` 为完成且不逾期；`draft1` 至 `impl` 按截止日期判定。
 - 未知阶段不得猜测映射，返回 `stage: null`、`stageAttention: true`，且不计入 `total/incomplete/overdue`。
+- 多值筛选使用 `Sequence[str]`；每类最多 20 个值、单值最多 120 字符、拒绝控制字符并去重；`departments` 优先于旧单值 `department`，`stages` 优先于旧单值 `stage`。
 - 不改变 TDC 逻辑，不新增依赖，不写入凭据或敏感响应。
 - `services`/`core` 不得导入 Flask 或 Rich；前端只通过现有 `{ok,data}` API 契约通信。
 
@@ -162,3 +163,11 @@
 - [ ] **Step 3: Implement the smallest root-cause fixes.**
 - [ ] **Step 4: Run focused tests, JS syntax check, and relevant API tests.**
 - [ ] **Step 5: Commit with message `fix: address EWO browser feedback`.**
+
+**Task 8 acceptance details:**
+
+- Unknown manually entered departments produce an empty result, never SQL/AML string interpolation or a generic 422.
+- Stage tokens are limited to canonical stages plus `all`; invalid tokens return the existing sanitized validation error.
+- Historical fallback is limited to `ARAS EWO`/`VPI-T2-D3`; current summary is recalculated from current cached items without mutating historical snapshot rows.
+- “立即同步” is POST and “刷新同步数据” is GET-only; both disable while busy and refresh the open detail view after completion.
+- 当前状态图表新增独立 EWO 同步摘要区，展示分析 API 的 `total/completed/incomplete/overdue/snapshotAt`，不覆盖手工 `progress/status`。
