@@ -623,6 +623,32 @@ def test_overview_ewo_department_scope_model_and_chart_labels_contract() -> None
         assert marker in css_text
 
 
+def test_overview_chart_label_group_mapping_editor_contract() -> None:
+    """分组定义编辑器契约：组规则行、成员分隔解析、未匹配三选、payload 携带新键。"""
+    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+    css_text = Path("web/static/style.css").read_text(encoding="utf-8-sig")
+
+    # 1. 标签块与分组定义编辑区。
+    assert "chart-label-groups-toggle" in js_text
+    assert "配置分组" in js_text
+    assert "chart-group-rule" in js_text
+    assert "chart-group-name" in js_text
+    assert "chart-group-members" in js_text
+    assert "chart-group-add-btn" in js_text
+    assert "chart-label-unmatched" in js_text
+    for option_label in ("保留原样", "并入未分组", "从图表隐藏"):
+        assert option_label in js_text
+    # 成员文本框分隔解析（英文/中文逗号、顿号、分号）。
+    assert "split(/[,，、;；]/)" in js_text
+    # 保存 payload 携带 groups/unmatched。
+    assert "groups: groupRules" in js_text
+    assert "unmatched: unmatchedMode" in js_text
+
+    # 2. 分组定义区样式。
+    for marker in (".chart-label-block", ".chart-label-groups", ".chart-group-rule"):
+        assert marker in css_text
+
+
 def test_overview_custom_label_chart_returns_dom_element() -> None:
     """回归：自定义标签图必须返回 DOM 元素。
 

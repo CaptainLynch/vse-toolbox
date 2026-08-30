@@ -90,6 +90,12 @@ _SENSITIVE_KEY_NAMES = frozenset({
 _BARE_GUID_RE = re.compile(r"^[0-9a-fA-F]{32}$")
 _MODEL_MATCH_MODES = frozenset({"fuzzy", "exact"})
 
+# 图表标签分组定义（值映射）边界：多对一归并、未命中三态、数量上限。
+_CHART_GROUP_RULES_LIMIT = 20
+_CHART_GROUP_MEMBERS_LIMIT = 200
+_CHART_UNMATCHED_MODES = frozenset({"keep", "other", "hide"})
+_CHART_UNGROUPED_BUCKET = "未分组"
+
 # 自定义图表标签允许绑定的标准缓存列；extra_fields 键在其之上动态并入。
 _CHART_STANDARD_FIELDS: tuple[str, ...] = (
     "department",
@@ -849,6 +855,8 @@ class ProjectStatusDeliverableAnalysisService:
                     chart_label["sourceField"],
                     model=model,
                     model_match=model_match,
+                    groups=chart_label.get("groups"),
+                    unmatched=chart_label.get("unmatched") or "keep",
                 ),
             }
             for chart_label in self.chart_labels(deliverable_id)
@@ -980,16 +988,46 @@ class ProjectStatusDeliverableAnalysisService:
         for entry in raw:
             if not isinstance(entry, Mapping):
                 continue
-            label = str(entry.get("label") or "").strip()
-            source_field = str(entry.get("sourceField") or "").strip()
-            if not label or not source_field:
-                continue
-            labels.append({
-                "label": label,
-                "sourceField": source_field,
-                "sortOrder": len(labels) + 1,
-            })
+            normalized = self._normalize_stored_chart_label(entry, len(labels) + 1)
+            if normalized is not None:
+                labels.append(normalized)
         return labels
+
+    @staticmethod
+    def _normalize_stored_chart_label(
+        entry: Mapping[str, Any],
+        sort_order: int,
+    ) -> dict[str, Any] | None:
+        label = str(entry.get("label") or "").strip()
+        source_field = str(entry.get("sourceField") or "").strip()
+        if not label or not source_field:
+            return None
+        groups: list[dict[str, Any]] = []
+        groups_raw = entry.get("groups")
+        if isinstance(groups_raw, (list, tuple)):
+            for rule in groups_raw:
+                if not isinstance(rule, Mapping):
+                    continue
+                name = str(rule.get("name") or "").strip()
+                if not name:
+                    continue
+                members_raw = rule.get("members")
+                members = [
+                    str(member).strip()
+                    for member in (members_raw if isinstance(members_raw, (list, tuple)) else ())
+                    if str(member or "").strip()
+                ]
+                groups.append({"name": name, "members": members})
+        unmatched = str(entry.get("unmatched") or "keep").strip().casefold()
+        if unmatched not in _CHART_UNMATCHED_MODES:
+            unmatched = "keep"
+        return {
+            "label": label,
+            "sourceField": source_field,
+            "sortOrder": sort_order,
+            "groups": groups,
+            "unmatched": unmatched,
+        }
 
     def save_chart_labels(
         self,
@@ -1011,10 +1049,14 @@ class ProjectStatusDeliverableAnalysisService:
         *,
         model: str | None = None,
         model_match: str = "fuzzy",
+        groups: object = None,
+        unmatched: str = "keep",
     ) -> dict[str, dict[str, int]]:
-        """按指定字段分组统计，范围口径与 items() 一致。"""
+        """按指定字段分组统计，范围口径与 items() 一致；groups 为值映射规则。"""
         if model_match not in _MODEL_MATCH_MODES:
             raise ValueError("unsupported model match")
+        if unmatched not in _CHART_UNMATCHED_MODES:
+            raise ValueError("unsupported unmatched mode")
         deliverable = self._deliverable(deliverable_id)
         items = self._cached_items(deliverable_id, deliverable=deliverable)
         if source_field not in self._known_fields(items):
@@ -1024,6 +1066,8 @@ class ProjectStatusDeliverableAnalysisService:
             source_field,
             model=model,
             model_match=model_match,
+            groups=groups,
+            unmatched=unmatched,
         )
 
     def _chart_groups_from(
@@ -1033,8 +1077,27 @@ class ProjectStatusDeliverableAnalysisService:
         *,
         model: str | None = None,
         model_match: str = "fuzzy",
+        groups: object = None,
+        unmatched: str = "keep",
     ) -> dict[str, dict[str, int]]:
-        groups: dict[str, dict[str, int]] = {}
+        if unmatched not in _CHART_UNMATCHED_MODES:
+            raise ValueError("unsupported unmatched mode")
+        # 成员查找表：组名隐式自归属（原始值等于组名即归入该组）。
+        lookup: dict[str, str] = {}
+        for rule in groups or ():
+            if not isinstance(rule, Mapping):
+                continue
+            name = str(rule.get("name") or "").strip()
+            if not name:
+                continue
+            lookup.setdefault(name.casefold(), name)
+            members = rule.get("members")
+            if isinstance(members, (list, tuple)):
+                for member in members:
+                    text = str(member or "").strip()
+                    if text:
+                        lookup.setdefault(text.casefold(), name)
+        results: dict[str, dict[str, int]] = {}
         for row in items:
             if not _item_is_in_scope(
                 row,
@@ -1045,8 +1108,13 @@ class ProjectStatusDeliverableAnalysisService:
             value = self._row_field_value(row, source_field)
             if not value:
                 continue
-            counts = groups.setdefault(
-                value,
+            key = lookup.get(value.casefold()) if lookup else None
+            if key is None:
+                if unmatched == "hide":
+                    continue
+                key = _CHART_UNGROUPED_BUCKET if unmatched == "other" else value
+            counts = results.setdefault(
+                key,
                 {"total": 0, "completed": 0, "incomplete": 0},
             )
             counts["total"] += 1
@@ -1054,7 +1122,7 @@ class ProjectStatusDeliverableAnalysisService:
                 counts["completed"] += 1
             else:
                 counts["incomplete"] += 1
-        return groups
+        return results
 
     def _validate_chart_labels(
         self,
@@ -1087,7 +1155,75 @@ class ProjectStatusDeliverableAnalysisService:
                 raise ValueError("chart source field has unsupported characters")
             if source_field not in known:
                 raise ValueError("chart source field is not in the cached field set")
-            cleaned.append({"label": label, "sourceField": source_field})
+            groups = self._validate_chart_groups(entry.get("groups"))
+            unmatched = str(entry.get("unmatched") or "keep").strip().casefold() or "keep"
+            if unmatched not in _CHART_UNMATCHED_MODES:
+                raise ValueError("chart unmatched mode must be keep, other or hide")
+            cleaned.append({
+                "label": label,
+                "sourceField": source_field,
+                "groups": groups,
+                "unmatched": unmatched,
+            })
+        return cleaned
+
+    @staticmethod
+    def _validate_chart_groups(groups: object) -> list[dict[str, Any]]:
+        """校验分组定义：数量/组名/成员边界与跨组一致性，失败抛 ValueError。"""
+        if groups in (None, ""):
+            return []
+        if not isinstance(groups, (list, tuple)):
+            raise ValueError("chart groups must be a sequence")
+        if len(groups) > _CHART_GROUP_RULES_LIMIT:
+            raise ValueError("at most 20 chart group rules per label")
+        names: set[str] = set()
+        member_owner: dict[str, str] = {}
+        total_members = 0
+        cleaned: list[dict[str, Any]] = []
+        for rule in groups:
+            if not isinstance(rule, Mapping):
+                raise ValueError("chart group rule must be an object")
+            name = str(rule.get("name") or "").strip()
+            if not name or len(name) > 40:
+                raise ValueError("chart group name length must be 1-40")
+            if any(ord(char) < 32 or ord(char) == 127 for char in name):
+                raise ValueError("chart group name contains control characters")
+            if name.casefold() in names:
+                raise ValueError("chart group name is duplicated")
+            names.add(name.casefold())
+            members_raw = rule.get("members")
+            if members_raw is None:
+                members_raw = []
+            if not isinstance(members_raw, (list, tuple)):
+                raise ValueError("chart group members must be a sequence")
+            members: list[str] = []
+            member_keys: set[str] = set()
+            for member in members_raw:
+                text = str(member or "").strip()
+                if not text:
+                    continue
+                if len(text) > 80:
+                    raise ValueError("chart group member length must be 1-80")
+                if any(ord(char) < 32 or ord(char) == 127 for char in text):
+                    raise ValueError("chart group member contains control characters")
+                if text.casefold() in member_keys:
+                    continue
+                member_keys.add(text.casefold())
+                members.append(text)
+            total_members += len(members)
+            if total_members > _CHART_GROUP_MEMBERS_LIMIT:
+                raise ValueError("at most 200 chart group members per label")
+            for member in members:
+                owner = member_owner.get(member.casefold())
+                if owner is not None and owner != name:
+                    raise ValueError("chart group members must not overlap between groups")
+                member_owner[member.casefold()] = name
+            cleaned.append({"name": name, "members": members})
+        for group in cleaned:
+            self_key = group["name"].casefold()
+            for member in group["members"]:
+                if member.casefold() != self_key and member.casefold() in names:
+                    raise ValueError("chart group name must not be a member of another group")
         return cleaned
 
     @staticmethod

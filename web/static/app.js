@@ -2136,21 +2136,33 @@ function renderAnalysisItemsSection(item, departments, onDeptChange, options = {
   };
 }
 
-// 图表内容设置编辑器：标签名 + 绑定字段下拉，PUT 整体替换后重载分析面板。
+// 分组成员文本框解析：英文/中文逗号、顿号、分号均可分隔，去空白去空项。
+function splitChartGroupMembers(text) {
+  return String(text || "")
+    .split(/[,，、;；]/)
+    .map((member) => member.trim())
+    .filter(Boolean);
+}
+
+// 图表内容设置编辑器：标签名 + 绑定字段 + 分组定义（值映射）+ 未匹配三选，
+// PUT 整体替换后重载分析面板。
 function buildChartLabelEditor(container, itemId, labels, fieldOptions, onSaved) {
   container.textContent = "";
   const rowsBox = overviewEl("div", "chart-label-rows");
   const status = overviewEl("p", "chart-labels-status");
   status.setAttribute("role", "status");
 
-  const addRow = (label = "", field = "") => {
-    const row = overviewEl("div", "chart-label-row");
+  const addLabelBlock = (label = "", field = "", groups = [], unmatched = "keep") => {
+    const block = overviewEl("div", "chart-label-block");
+    const mainRow = overviewEl("div", "chart-label-row");
+
     const nameInput = overviewEl("input", "chart-label-name");
     nameInput.type = "text";
     nameInput.value = safeDisplayValue(label);
     nameInput.placeholder = "标签名称，如 内容A";
     nameInput.maxLength = 40;
     nameInput.setAttribute("aria-label", "图表标签名称");
+
     const fieldSelect = overviewEl("select", "chart-label-field-select");
     fieldSelect.setAttribute("aria-label", "绑定字段");
     fieldOptions.forEach(([key, display]) => {
@@ -2160,24 +2172,86 @@ function buildChartLabelEditor(container, itemId, labels, fieldOptions, onSaved)
       if (key === field) option.selected = true;
       fieldSelect.appendChild(option);
     });
+
+    const groupsBox = overviewEl("div", "chart-label-groups");
+    groupsBox.hidden = true;
+    const addRuleBtn = overviewEl("button", "chart-group-add-btn", "添加分组");
+    addRuleBtn.type = "button";
+    const unmatchedSelect = overviewEl("select", "chart-label-unmatched");
+    unmatchedSelect.setAttribute("aria-label", "未匹配值处理");
+    [
+      ["keep", "未匹配保留原样"],
+      ["other", "未匹配并入未分组"],
+      ["hide", "未匹配从图表隐藏"],
+    ].forEach(([value, text]) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = text;
+      if (value === unmatched) option.selected = true;
+      unmatchedSelect.appendChild(option);
+    });
+    groupsBox.append(addRuleBtn, unmatchedSelect);
+
+    const addGroupRule = (name = "", membersText = "") => {
+      const rule = overviewEl("div", "chart-group-rule");
+      const groupName = overviewEl("input", "chart-group-name");
+      groupName.type = "text";
+      groupName.value = safeDisplayValue(name);
+      groupName.placeholder = "组名，如 内饰科";
+      groupName.maxLength = 40;
+      groupName.setAttribute("aria-label", "分组名称");
+      const membersInput = overviewEl("input", "chart-group-members");
+      membersInput.type = "text";
+      membersInput.value = safeDisplayValue(membersText);
+      membersInput.placeholder = "成员用逗号分隔，如 内饰科,内饰工程科";
+      membersInput.setAttribute("aria-label", "分组成员");
+      const removeRule = overviewEl("button", "chart-group-rule-remove", "移除");
+      removeRule.type = "button";
+      removeRule.setAttribute("aria-label", "移除该分组");
+      removeRule.addEventListener("click", () => rule.remove());
+      rule.append(groupName, membersInput, removeRule);
+      // 新规则始终插在"添加分组"按钮之前，避免按钮被夹在规则中间。
+      groupsBox.insertBefore(rule, addRuleBtn);
+    };
+    (Array.isArray(groups) ? groups : []).forEach((rule) => {
+      addGroupRule(
+        rule && rule.name ? String(rule.name) : "",
+        Array.isArray(rule && rule.members) ? rule.members.join("、") : "",
+      );
+    });
+    addRuleBtn.addEventListener("click", () => addGroupRule());
+
+    const groupsToggle = overviewEl("button", "chart-label-groups-toggle", "配置分组");
+    groupsToggle.type = "button";
+    groupsToggle.setAttribute("aria-expanded", "false");
+    groupsToggle.addEventListener("click", () => {
+      groupsBox.hidden = !groupsBox.hidden;
+      groupsToggle.textContent = groupsBox.hidden ? "配置分组" : "收起分组";
+      groupsToggle.setAttribute("aria-expanded", groupsBox.hidden ? "false" : "true");
+    });
+
     const removeBtn = overviewEl("button", "chart-label-remove", "移除");
     removeBtn.type = "button";
     removeBtn.setAttribute("aria-label", "移除该标签");
-    removeBtn.addEventListener("click", () => row.remove());
-    row.append(nameInput, fieldSelect, removeBtn);
-    rowsBox.appendChild(row);
+    removeBtn.addEventListener("click", () => block.remove());
+
+    mainRow.append(nameInput, fieldSelect, groupsToggle, removeBtn);
+    block.append(mainRow, groupsBox);
+    rowsBox.appendChild(block);
   };
 
   (Array.isArray(labels) ? labels : []).forEach((entry) => {
-    addRow(
+    addLabelBlock(
       entry && entry.label ? String(entry.label) : "",
       entry && entry.sourceField ? String(entry.sourceField) : "",
+      entry && Array.isArray(entry.groups) ? entry.groups : [],
+      entry && entry.unmatched ? String(entry.unmatched) : "keep",
     );
   });
 
   const addBtn = overviewEl("button", "chart-label-add-btn", "添加标签");
   addBtn.type = "button";
-  addBtn.addEventListener("click", () => addRow());
+  addBtn.addEventListener("click", () => addLabelBlock());
   const saveBtn = overviewEl("button", "chart-labels-save-btn", "保存图表设置");
   saveBtn.type = "button";
   const cancelBtn = overviewEl("button", "chart-labels-cancel-btn", "取消");
@@ -2186,12 +2260,23 @@ function buildChartLabelEditor(container, itemId, labels, fieldOptions, onSaved)
     container.hidden = true;
   });
   saveBtn.addEventListener("click", async () => {
-    const rows = Array.from(rowsBox.querySelectorAll(".chart-label-row"));
-    const payload = rows
-      .map((row) => ({
-        label: row.querySelector(".chart-label-name").value,
-        sourceField: row.querySelector(".chart-label-field-select").value,
-      }))
+    const blocks = Array.from(rowsBox.querySelectorAll(".chart-label-block"));
+    const payload = blocks
+      .map((block) => {
+        const groupRules = Array.from(block.querySelectorAll(".chart-group-rule"))
+          .map((rule) => ({
+            name: rule.querySelector(".chart-group-name").value.trim(),
+            members: splitChartGroupMembers(rule.querySelector(".chart-group-members").value),
+          }))
+          .filter((rule) => rule.name || rule.members.length > 0);
+        const unmatchedMode = block.querySelector(".chart-label-unmatched").value;
+        return {
+          label: block.querySelector(".chart-label-name").value,
+          sourceField: block.querySelector(".chart-label-field-select").value,
+          groups: groupRules,
+          unmatched: unmatchedMode,
+        };
+      })
       .filter((entry) => entry.label.trim() || entry.sourceField);
     saveBtn.disabled = true;
     updatePolicyStatusMessage(status, "正在保存图表设置...");

@@ -514,8 +514,20 @@ def test_chart_label_validation_and_roundtrip(tmp_db: DatabaseManager) -> None:
         ],
     )
     expected_labels = [
-        {"label": "内容A", "sourceField": "department", "sortOrder": 1},
-        {"label": "内容B", "sourceField": "owner", "sortOrder": 2},
+        {
+            "label": "内容A",
+            "sourceField": "department",
+            "sortOrder": 1,
+            "groups": [],
+            "unmatched": "keep",
+        },
+        {
+            "label": "内容B",
+            "sourceField": "owner",
+            "sortOrder": 2,
+            "groups": [],
+            "unmatched": "keep",
+        },
     ]
     assert service.chart_labels("VPI-T2-D5") == expected_labels
 
@@ -570,3 +582,230 @@ def test_chart_label_validation_and_roundtrip(tmp_db: DatabaseManager) -> None:
         ],
     )
     assert service.chart_labels("VPI-T2-D5") == expected_labels
+
+
+def test_chart_label_group_rules_validation(tmp_db: DatabaseManager) -> None:
+    """分组定义校验：上限/组名/成员/跨组重叠/unmatched，失败不落库。"""
+    service = ProjectStatusDeliverableAnalysisService(
+        tmp_db,
+        clock=lambda: date(2026, 8, 23),
+    )
+    service.publish(
+        "VPI-T2-D5",
+        401,
+        [
+            {
+                "id": "L-1",
+                "name": "分组校验任务",
+                "department": "质量科",
+                "owner": "张三",
+                "status": "进行中",
+                "dueDate": "2026-08-20",
+            },
+        ],
+        snapshot_at="2026-08-23T00:00:00Z",
+    )
+
+    def _rules(
+        groups: list[dict[str, object]],
+        unmatched: str = "keep",
+    ) -> list[dict[str, object]]:
+        return [
+            {
+                "label": "科室",
+                "sourceField": "department",
+                "groups": groups,
+                "unmatched": unmatched,
+            }
+        ]
+
+    def _expect_error(labels: object) -> None:
+        with pytest.raises(ValueError):
+            service.save_chart_labels("VPI-T2-D5", labels)
+
+    valid = _rules(
+        [
+            {"name": "内饰科", "members": ["内饰科", "内饰工程科", "内饰设计科"]},
+            {"name": "外饰科", "members": ["外饰科", "外饰工程科"]},
+        ]
+    )
+    service.save_chart_labels("VPI-T2-D5", valid)
+    assert service.chart_labels("VPI-T2-D5") == [
+        {
+            "label": "科室",
+            "sourceField": "department",
+            "sortOrder": 1,
+            "groups": [
+                {"name": "内饰科", "members": ["内饰科", "内饰工程科", "内饰设计科"]},
+                {"name": "外饰科", "members": ["外饰科", "外饰工程科"]},
+            ],
+            "unmatched": "keep",
+        },
+    ]
+
+    # 组数量超过 20。
+    _expect_error(_rules([{"name": f"组{i}", "members": ["质量科"]} for i in range(21)]))
+    # 组名空白。
+    _expect_error(_rules([{"name": "", "members": ["质量科"]}]))
+    # 组名 41 字符。
+    _expect_error(_rules([{"name": "甲" * 41, "members": ["质量科"]}]))
+    # 组名含控制字符。
+    _expect_error(_rules([{"name": "组\n名", "members": ["质量科"]}]))
+    # 组名去空白后重复。
+    _expect_error(
+        _rules([{"name": "内饰科", "members": []}, {"name": " 内饰科 ", "members": []}])
+    )
+    # 组名出现在其他组的成员里。
+    _expect_error(_rules([{"name": "A", "members": ["B"]}, {"name": "B", "members": []}]))
+    # 同一成员跨组重叠。
+    _expect_error(_rules([{"name": "A", "members": ["x"]}, {"name": "B", "members": ["x"]}]))
+    # 成员 81 字符。
+    _expect_error(_rules([{"name": "A", "members": ["m" * 81]}]))
+    # 单标签成员总数超过 200。
+    _expect_error(_rules([{"name": "A", "members": [f"m{i:03d}" for i in range(201)]}]))
+    # unmatched 非法。
+    _expect_error(_rules([{"name": "A", "members": ["质量科"]}], unmatched="bogus"))
+
+    # 空成员静默丢弃 + 组内成员去重。
+    service.save_chart_labels(
+        "VPI-T2-D5",
+        _rules([{"name": "内饰科", "members": ["", "  ", "内饰工程科", "内饰工程科"]}]),
+    )
+    assert service.chart_labels("VPI-T2-D5")[0]["groups"] == [
+        {"name": "内饰科", "members": ["内饰工程科"]}
+    ]
+
+    # 校验失败不落库，原分组配置保持不变。
+    with pytest.raises(ValueError):
+        service.save_chart_labels(
+            "VPI-T2-D5",
+            _rules([{"name": "A", "members": ["x"]}, {"name": "B", "members": ["x"]}]),
+        )
+    assert service.chart_labels("VPI-T2-D5")[0]["groups"] == [
+        {"name": "内饰科", "members": ["内饰工程科"]}
+    ]
+
+
+def test_chart_groups_apply_member_mapping(tmp_db: DatabaseManager) -> None:
+    """分组映射：多对一归并、组名隐式自归属、unmatched 三态、空规则向后兼容。"""
+    service = ProjectStatusDeliverableAnalysisService(
+        tmp_db,
+        clock=lambda: date(2026, 8, 23),
+    )
+    service.publish(
+        "VPI-T2-D5",
+        402,
+        [
+            {
+                "id": "M-1",
+                "name": "任务一",
+                "department": "内饰科",
+                "owner": "甲",
+                "status": "进行中",
+                "dueDate": "2026-08-20",
+            },
+            {
+                "id": "M-2",
+                "name": "任务二",
+                "department": "内饰科",
+                "owner": "乙",
+                "status": "已完成",
+                "dueDate": "2026-08-20",
+            },
+            {
+                "id": "M-3",
+                "name": "任务三",
+                "department": "内饰工程科",
+                "owner": "丙",
+                "status": "进行中",
+                "dueDate": "2026-09-30",
+            },
+            {
+                "id": "M-4",
+                "name": "任务四",
+                "department": "内饰工程科",
+                "owner": "丁",
+                "status": "已完成",
+                "dueDate": "2026-08-19",
+            },
+            {
+                "id": "M-5",
+                "name": "任务五",
+                "department": "内饰设计科",
+                "owner": "戊",
+                "status": "进行中",
+                "dueDate": "2026-09-01",
+            },
+            {
+                "id": "M-6",
+                "name": "任务六",
+                "department": "结构工程科",
+                "owner": "己",
+                "status": "进行中",
+                "dueDate": "2026-09-15",
+            },
+            {
+                "id": "M-7",
+                "name": "任务七",
+                "department": "结构工程科",
+                "owner": "庚",
+                "status": "已完成",
+                "dueDate": "2026-08-21",
+            },
+            {
+                "id": "M-8",
+                "name": "任务八",
+                "department": "外饰科",
+                "owner": "辛",
+                "status": "进行中",
+                "dueDate": "2026-09-15",
+            },
+        ],
+        snapshot_at="2026-08-23T00:00:00Z",
+    )
+
+    # 组名"内饰科"不在 members 里，依赖组名隐式自归属。
+    rules = [{"name": "内饰科", "members": ["内饰工程科", "内饰设计科"]}]
+
+    # keep：归并组 + 未映射值独立成键，总数守恒（8 = 5+2+1）。
+    keep = service.chart_groups("VPI-T2-D5", "department", groups=rules, unmatched="keep")
+    assert keep == {
+        "内饰科": {"total": 5, "completed": 2, "incomplete": 3},
+        "结构工程科": {"total": 2, "completed": 1, "incomplete": 1},
+        "外饰科": {"total": 1, "completed": 0, "incomplete": 1},
+    }
+
+    # other：未命中并入"未分组"。
+    other = service.chart_groups("VPI-T2-D5", "department", groups=rules, unmatched="other")
+    assert other == {
+        "内饰科": {"total": 5, "completed": 2, "incomplete": 3},
+        "未分组": {"total": 3, "completed": 1, "incomplete": 2},
+    }
+
+    # hide：未命中从图表排除。
+    hide = service.chart_groups("VPI-T2-D5", "department", groups=rules, unmatched="hide")
+    assert hide == {"内饰科": {"total": 5, "completed": 2, "incomplete": 3}}
+
+    # 成员 strip 后匹配：规则只含 内饰工程科，归并组 = 组名自归属(2) + 成员(2)；
+    # 内饰设计科 未映射，keep 模式独立成键。
+    spaced = service.chart_groups(
+        "VPI-T2-D5",
+        "department",
+        groups=[{"name": "内饰科", "members": ["  内饰工程科  "]}],
+        unmatched="keep",
+    )
+    assert spaced["内饰科"]["total"] == 4
+    assert spaced["内饰设计科"]["total"] == 1
+
+    # 空/缺省 groups：行为与现状完全一致（原始值直接作为键）。
+    raw = service.chart_groups("VPI-T2-D5", "department")
+    assert raw == {
+        "内饰科": {"total": 2, "completed": 1, "incomplete": 1},
+        "内饰工程科": {"total": 2, "completed": 1, "incomplete": 1},
+        "内饰设计科": {"total": 1, "completed": 0, "incomplete": 1},
+        "结构工程科": {"total": 2, "completed": 1, "incomplete": 1},
+        "外饰科": {"total": 1, "completed": 0, "incomplete": 1},
+    }
+
+    with pytest.raises(ValueError):
+        service.chart_groups("VPI-T2-D5", "department", groups=rules, unmatched="bogus")

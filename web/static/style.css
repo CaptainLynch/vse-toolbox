@@ -4190,6 +4190,30 @@ body.aras-running .result-panel {
   flex-wrap: wrap;
 }
 
+.chart-label-block {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--surface-soft);
+}
+
+.chart-label-groups {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px dashed var(--hairline-strong);
+  border-radius: 6px;
+}
+
+.chart-group-rule {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
 .chart-label-name {
   flex: 1 1 140px;
   min-width: 120px;

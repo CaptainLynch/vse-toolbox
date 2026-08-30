@@ -388,8 +388,20 @@ def test_chart_labels_api_contract(client_and_db) -> None:
     assert saved.status_code == 200
     saved_labels = saved.get_json()["data"]["labels"]
     assert saved_labels == [
-        {"label": "内容A", "sourceField": "department", "sortOrder": 1},
-        {"label": "内容B", "sourceField": "owner", "sortOrder": 2},
+        {
+            "label": "内容A",
+            "sourceField": "department",
+            "sortOrder": 1,
+            "groups": [],
+            "unmatched": "keep",
+        },
+        {
+            "label": "内容B",
+            "sourceField": "owner",
+            "sortOrder": 2,
+            "groups": [],
+            "unmatched": "keep",
+        },
     ]
     reread = client.get(chart_labels_url)
     assert reread.status_code == 200
@@ -438,3 +450,116 @@ def test_chart_labels_api_contract(client_and_db) -> None:
         json={"labels": [{"label": "内容A", "sourceField": "department"}]},
     )
     assert missing.status_code == 404
+
+
+def test_chart_labels_group_mapping_api(client_and_db) -> None:
+    """PUT 携带分组规则往返；非法规则 422；customCharts 分组键为映射后名称。"""
+    client, db = client_and_db
+    service = ProjectStatusDeliverableAnalysisService(db, clock=lambda: date(2026, 8, 23))
+    service.publish(
+        "VPI-T2-D5",
+        94,
+        [
+            {
+                "id": "G-1",
+                "name": "任务一",
+                "department": "内饰科",
+                "owner": "甲",
+                "status": "进行中",
+                "dueDate": "2026-08-20",
+            },
+            {
+                "id": "G-2",
+                "name": "任务二",
+                "department": "内饰工程科",
+                "owner": "乙",
+                "status": "已完成",
+                "dueDate": "2026-08-19",
+            },
+            {
+                "id": "G-3",
+                "name": "任务三",
+                "department": "结构工程科",
+                "owner": "丙",
+                "status": "进行中",
+                "dueDate": "2026-09-15",
+            },
+        ],
+        snapshot_at="2026-08-23T00:00:00Z",
+    )
+    url = "/api/project-status/deliverables/VPI-T2-D5/chart-labels"
+
+    saved = client.put(
+        url,
+        json={
+            "labels": [
+                {
+                    "label": "科室",
+                    "sourceField": "department",
+                    "groups": [{"name": "内饰科", "members": ["内饰科", "内饰工程科"]}],
+                    "unmatched": "keep",
+                },
+            ]
+        },
+    )
+    assert saved.status_code == 200
+    assert saved.get_json()["data"]["labels"] == [
+        {
+            "label": "科室",
+            "sourceField": "department",
+            "sortOrder": 1,
+            "groups": [{"name": "内饰科", "members": ["内饰科", "内饰工程科"]}],
+            "unmatched": "keep",
+        },
+    ]
+    reread = client.get(url)
+    assert reread.get_json()["data"]["labels"] == saved.get_json()["data"]["labels"]
+
+    # 跨组成员重叠 → 校验失败 422。
+    overlap = client.put(
+        url,
+        json={
+            "labels": [
+                {
+                    "label": "科室",
+                    "sourceField": "department",
+                    "groups": [{"name": "A", "members": ["x"]}, {"name": "B", "members": ["x"]}],
+                },
+            ]
+        },
+    )
+    assert overlap.status_code == 422
+
+    # customCharts 分组键为映射后的显示组名。
+    analysis = client.get("/api/project-status/deliverables/VPI-T2-D5/analysis")
+    assert analysis.status_code == 200
+    charts = analysis.get_json()["data"]["customCharts"]
+    assert charts == [
+        {
+            "label": "科室",
+            "sourceField": "department",
+            "groups": {
+                "内饰科": {"total": 2, "completed": 1, "incomplete": 1},
+                "结构工程科": {"total": 1, "completed": 0, "incomplete": 1},
+            },
+        },
+    ]
+
+    # unmatched=other：未命中值并入"未分组"桶。
+    other = client.put(
+        url,
+        json={
+            "labels": [
+                {
+                    "label": "科室",
+                    "sourceField": "department",
+                    "groups": [{"name": "内饰科", "members": ["内饰科", "内饰工程科"]}],
+                    "unmatched": "other",
+                },
+            ]
+        },
+    )
+    assert other.status_code == 200
+    analysis2 = client.get("/api/project-status/deliverables/VPI-T2-D5/analysis")
+    charts2 = analysis2.get_json()["data"]["customCharts"]
+    assert set(charts2[0]["groups"]) == {"内饰科", "未分组"}
