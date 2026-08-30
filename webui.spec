@@ -15,6 +15,9 @@
 datas = [
     ("web/templates", "web/templates"),
     ("web/static", "web/static"),
+    # 运行时数据文件：core/report_contracts.py 以 __file__ 同目录定位，
+    # 缺失会导致 Aras 查询报 FileNotFoundError。
+    ("core/report_headers.json", "core"),
 ]
 
 excludes = ["pytest", "flake8", "mypy"]
