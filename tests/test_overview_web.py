@@ -623,6 +623,23 @@ def test_overview_ewo_department_scope_model_and_chart_labels_contract() -> None
         assert marker in css_text
 
 
+def test_overview_custom_label_chart_returns_dom_element() -> None:
+    """回归：自定义标签图必须返回 DOM 元素。
+
+    renderDepartmentDoneChart 返回 {el, setSelected} 包装对象；若
+    renderCustomLabelChart 直接把它当元素 appendChild，会抛
+    "parameter 1 is not of type 'Node'"，令整个分析面板渲染中断、
+    同步/刷新入口全部失效。
+    """
+    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+    start = js_text.index("function renderCustomLabelChart")
+    end = js_text.index("function renderDeliverableAnalysis")
+    chart_js = js_text[start:end]
+
+    assert "const rendered = renderDepartmentDoneChart(totals, groups, null, {" in chart_js
+    assert "return rendered.el;" in chart_js
+
+
 def test_overview_deliverable_evidence_css_contract() -> None:
     css_text = Path("web/static/style.css").read_text(encoding="utf-8-sig")
     start = css_text.index(".overview-tabpanel[hidden]")

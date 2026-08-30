@@ -2225,9 +2225,12 @@ function renderCustomLabelChart(chart) {
     }),
     { total: 0, completed: 0, incomplete: 0 },
   );
-  return renderDepartmentDoneChart(totals, groups, null, {
+  // renderDepartmentDoneChart 返回 {el, setSelected} 包装对象，必须取 .el，
+  // 否则 appendChild 收到非 Node 导致整个分析面板渲染中断。
+  const rendered = renderDepartmentDoneChart(totals, groups, null, {
     title: `按「${safeDisplayValue(chart && chart.label)}」分组（已完成 / 未完成）`,
   });
+  return rendered.el;
 }
 
 function renderDeliverableAnalysis(container, item, analysisData, options = {}) {
