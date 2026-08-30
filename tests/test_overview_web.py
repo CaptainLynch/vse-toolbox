@@ -647,6 +647,10 @@ def test_overview_chart_label_group_mapping_editor_contract() -> None:
     # 2. 分组定义区样式。
     for marker in (".chart-label-block", ".chart-label-groups", ".chart-group-rule"):
         assert marker in css_text
+    # display:grid 会覆盖 hidden 属性的默认 display:none，必须显式补规则，
+    # 否则未展开的分组定义区也会渲染出来。
+    assert ".chart-label-groups[hidden]" in css_text
+    assert ".chart-labels-editor[hidden]" in css_text
 
 
 def test_overview_custom_label_chart_returns_dom_element() -> None:

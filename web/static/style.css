@@ -4183,6 +4183,12 @@ body.aras-running .result-panel {
   background: var(--surface-card);
 }
 
+/* display:grid 会压过 hidden 属性的 UA 样式，需显式声明才可折叠。 */
+.chart-labels-editor[hidden],
+.chart-label-groups[hidden] {
+  display: none;
+}
+
 .chart-label-row {
   display: flex;
   gap: 6px;
