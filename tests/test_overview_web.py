@@ -92,12 +92,12 @@ def test_overview_static_structure_and_unique_ids() -> None:
 def test_overview_tabs_aria_contract() -> None:
     html_text = Path("web/templates/dashboard.html").read_text(encoding="utf-8-sig")
     tabs = re.findall(r'<button[^>]*role="tab"[^>]*>', html_text)
-    assert len(tabs) == 2
+    assert len(tabs) == 3
     for tab in tabs:
         assert 'aria-selected="' in tab
         assert 'aria-controls="' in tab
     panels = re.findall(r'<div[^>]*role="tabpanel"[^>]*>', html_text)
-    assert len(panels) == 2
+    assert len(panels) == 3
     for panel in panels:
         assert 'aria-labelledby="' in panel
     assert 'id="overview-details-panel" class="overview-tabpanel" role="tabpanel" aria-labelledby="overview-tab-details" hidden' in html_text
@@ -282,7 +282,7 @@ def test_overview_milestone_maintenance_static_structure() -> None:
 
     assert "milestone-maintenance-band" in details_section
     assert 'id="milestone-maintenance"' in details_section
-    assert details_section.index('id="milestone-maintenance"') < details_section.index('id="overview-details-summary"')
+    assert details_section.index('id="overview-details-summary"') < details_section.index('id="milestone-maintenance"')
     assert "<input" not in overview_html
     assert "<select" not in overview_html
     assert "<textarea" not in overview_html
@@ -291,9 +291,7 @@ def test_overview_milestone_maintenance_static_structure() -> None:
 
 def test_overview_milestone_editor_contract() -> None:
     js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
-    start = js_text.index("const OVERVIEW_DETAIL_COLUMNS")
-    end = js_text.index("function parseHeaders")
-    overview_js = js_text[start:end]
+    overview_js = _js_slice(js_text, "const LEGACY_MILESTONE_TYPES", "function parseHeaders")
 
     for marker in (
         "function renderMilestoneMaintenance",
@@ -310,8 +308,7 @@ def test_overview_milestone_editor_contract() -> None:
         "updatedAt: overviewDraft.updatedAt",
         "sortOrder",
         'overviewDraft.kind === "milestones"',
-        'editButton.addEventListener("click", openMilestoneEditor)',
-        'document.getElementById("overview-tab-details")',
+        'editButton.addEventListener("click", () => startMilestoneEdit())',
         "已达成",
         "当前目标节点",
         "计划节点",
@@ -323,13 +320,14 @@ def test_overview_milestone_editor_contract() -> None:
         "节点日期不能早于当前日期",
         "节点名称不能重复",
         "saveButton.disabled = saving",
-        "beforeunload",
     ):
         assert marker in overview_js
 
     assert "innerHTML" not in overview_js
     assert "console.log" not in js_text
     assert "localStorage" not in overview_js
+    assert 'document.getElementById("overview-tab-plan")' in overview_js
+    assert 'window.addEventListener("beforeunload"' in js_text
 
 
 def test_overview_milestone_maintenance_css_contract() -> None:
@@ -362,21 +360,20 @@ def test_overview_milestone_maintenance_css_contract() -> None:
 
 def test_overview_deliverable_evidence_structure_and_labels() -> None:
     js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
-    start = js_text.index("const OVERVIEW_DETAIL_COLUMNS")
-    end = js_text.index("function parseHeaders")
-    overview_js = js_text[start:end]
+    source_js = _js_slice(js_text, "const DELIVERABLE_FIXED_SOURCES", "function formatArtifactSize")
+    overview_js = source_js + _js_slice(js_text, "async function requestProjectStatusSync", "const analysisModelFilter")
 
     assert "function loadDeliverableEvidence" in overview_js
-    assert "function renderDeliverableEvidence" in overview_js
+    assert "function renderDeliverableEvidence" in js_text
 
     for deliverable_id, source_label in (
         ("VPI-T2-D1", "仅手工维护"),
         ("VPI-T2-D2", "TDC SOR"),
         ("VPI-T2-D3", "ARAS EWO"),
         ("VPI-T2-D4", "TDC A 面（契约待验证）"),
-        ("VPI-T2-D5", "TDC 数模"),
+        ("VPI-T2-D5", "数模设计审核流程报表"),
     ):
-        assert f'"{deliverable_id}": "{source_label}"' in overview_js
+        assert f'"{deliverable_id}": "{source_label}"' in source_js
 
     assert "const hasConfirmedCount = confirmedCount !== null" in overview_js
     assert "Number.isFinite(Number(confirmedCount))" in overview_js
@@ -393,29 +390,31 @@ def test_overview_deliverable_evidence_structure_and_labels() -> None:
 
 def test_overview_deliverable_evidence_restrictions_and_guard() -> None:
     js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
-    start = js_text.index("const OVERVIEW_DETAIL_COLUMNS")
-    end = js_text.index("function parseHeaders")
-    overview_js = js_text[start:end]
+    evidence_js = _js_slice(
+        js_text,
+        "async function requestProjectStatusSync",
+        "const analysisModelFilter",
+    )
 
-    assert 'item.id === "VPI-T2-D1"' in overview_js
-    assert 'item.id === "VPI-T2-D4"' in overview_js
-    assert "TDC A 面契约待验证/阻断" in overview_js
+    assert 'item.id === "VPI-T2-D1"' in evidence_js
+    assert 'item.id === "VPI-T2-D4"' in evidence_js
+    assert "TDC A 面契约待验证/阻断" in evidence_js
 
-    assert "policy.enabled === true" in overview_js
-    assert "policy.credentialAvailable === true" in overview_js
-    assert "window.confirm" in overview_js
+    assert "policy.enabled === true" in evidence_js
+    assert "policy.credentialAvailable === true" in evidence_js
+    assert "window.confirm" in evidence_js
 
-    assert 'finalState === "busy" || outcome === "busy"' in overview_js
-    assert 'finalState === "success" && outcome === "completed"' in overview_js
-    assert 'finalState === "partial" || outcome === "partial"' in overview_js
-    assert 'finalState === "needs_attention" || outcome === "needs_attention"' in overview_js
+    assert 'finalState === "busy" || outcome === "busy"' in evidence_js
+    assert 'finalState === "success" && outcome === "completed"' in evidence_js
+    assert 'finalState === "partial" || outcome === "partial"' in evidence_js
+    assert 'finalState === "needs_attention" || outcome === "needs_attention"' in evidence_js
 
-    assert "exitCode" not in overview_js
-    assert 'enabled: true' not in overview_js
-    assert 'method: "POST"' in overview_js
-    assert overview_js.count('method: "POST"') == 1
-    assert 'preview.candidates' not in overview_js
-    assert 'mapping.candidates' not in overview_js
+    assert "exitCode" not in evidence_js
+    assert 'enabled: true' not in evidence_js
+    assert 'method: "POST"' in evidence_js
+    assert evidence_js.count('method: "POST"') == 1
+    assert 'preview.candidates' not in evidence_js
+    assert 'mapping.candidates' not in evidence_js
 
     for forbidden in (
         "credentialRef",
@@ -429,7 +428,7 @@ def test_overview_deliverable_evidence_restrictions_and_guard() -> None:
         "candidate_summary_json",
         "raw_response",
     ):
-        assert forbidden not in overview_js
+        assert forbidden not in evidence_js
 
 
 def test_overview_deliverable_evidence_api_and_sync_contract() -> None:
@@ -580,6 +579,108 @@ def test_overview_ewo_second_round_ui_feedback_contract() -> None:
     summary_js = _js_slice(js_text, "function renderEwoSyncSummary", "function renderDeliverableStatusChart")
     assert "来自最近一次 EWO 快照" in summary_js
     assert "最近同步时间" in summary_js
+
+
+def test_ewo_update_policy_is_editable_without_bypassing_sync_gate() -> None:
+    """EWO 模式可保存，但自动同步仍必须服从后端就绪门禁。"""
+    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+    policy_js = _js_slice(
+        js_text, "function renderEwoDeliverablePolicy", "async function loadDeliverablePolicy"
+    )
+    chart_js = _js_slice(
+        js_text, "function renderDeliverableStatusChart", "async function refreshEwoAnalysisFromStatusChart"
+    )
+
+    # The EWO mode choices must be real controls with a save path, not labels
+    # rendered as inert divs.
+    assert 'input.type = "radio"' in policy_js
+    assert "form.addEventListener(" in policy_js
+    assert 'method: "PATCH"' in policy_js
+    assert "body: JSON.stringify(payload)" in policy_js
+    assert "enabled: false" not in policy_js
+
+    # The status-chart action must be disabled until the detailed policy and
+    # mapping evidence report that automatic sync is ready.
+    assert "setSyncReadiness" in chart_js
+    assert "getSyncReadiness" in chart_js
+    assert "if (!readiness.ready)" in chart_js
+    assert "syncButton.disabled" in chart_js
+    assert "syncReady" in chart_js
+
+
+def test_ewo_policy_editor_exposes_binding_configuration_and_discovery_workflow() -> None:
+    """EWO 页面必须能保存绑定配置并产生两次稳定映射证据。"""
+    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+    policy_js = _js_slice(
+        js_text,
+        "function renderEwoDeliverablePolicy",
+        "async function loadDeliverablePolicy",
+    )
+    loader_js = _js_slice(
+        js_text,
+        "async function loadDeliverablePolicy",
+        "async function requestProjectStatusSync",
+    )
+    detail_js = _js_slice(
+        js_text,
+        "function renderDeliverableDetailPage",
+        "function toggleDeliverableDetail",
+    )
+
+    for marker in (
+        "credentialRef",
+        "externalKey",
+        "matchRule",
+        "fieldAuthority",
+        "mapping",
+        "enabled",
+        "credentialVaultConfigured",
+        "绑定同步配置",
+        "保存同步绑定",
+        "抓取映射证据",
+        "/mapping-discovery",
+        "selectedExternalKey",
+    ):
+        assert marker in policy_js
+    assert "/api/settings" in loader_js
+    assert "const refreshEvidence = () => loadDeliverableEvidence" in detail_js
+    assert "onEvidenceRefresh: refreshEvidence" in detail_js
+
+    # The old mode-only request cannot configure the binding that the backend
+    # gate evaluates; the new editor must submit the complete form payload.
+    assert "body: JSON.stringify({ mode })" not in policy_js
+    assert "body: JSON.stringify(payload)" in policy_js
+    assert "enabled: enabledInput.checked" in policy_js
+
+
+def test_ewo_model_info_filter_is_forwarded_to_aras_crawler() -> None:
+    """EWO 的车型匹配条件必须能进入映射发现请求的过滤器。"""
+    from web.app import _ewo_filters_from_payload
+
+    filters = _ewo_filters_from_payload({"filters": {"model_info": "*F610S*"}})
+
+    assert filters.model_info == "*F610S*"
+
+
+def test_overview_analysis_actions_are_visible_before_empty_state_and_gate_sync() -> None:
+    """无分析缓存时仍显示刷新/抓取入口，但抓取必须服从同步门禁。"""
+    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+    analysis_js = _js_slice(js_text, "function renderDeliverableAnalysis", "function renderTrendSvgChart")
+    loader_js = _js_slice(js_text, "async function loadDeliverableAnalysis", "function renderDepartmentDoneChart")
+    evidence_js = _js_slice(js_text, "function renderDeliverableEvidence", "// 4.")
+
+    # 操作栏必须在 hasCache 空态判断之前创建，D5 首次打开也能看到入口。
+    assert "analysis-action-bar" in analysis_js
+    assert "刷新分析" in analysis_js
+    assert "抓取并同步" in analysis_js
+    assert analysis_js.index("analysisActionBar") < analysis_js.index("if (!analysisData.hasCache)")
+
+    # 分析区与证据区共享就绪状态，按钮不能绕过后端同步门禁直接 POST。
+    assert "analysisSyncReadiness" in loader_js
+    assert "analysisOptions" in loader_js
+    assert "onSync" in analysis_js
+    assert "setDeliverableAnalysisSyncReadiness" in evidence_js
+    assert "syncButton.disabled" in analysis_js
 
 
 def test_overview_ewo_department_scope_model_and_chart_labels_contract() -> None:

@@ -975,6 +975,49 @@ def test_runner_needs_attention_when_binding_not_ready_zero_runs(
     assert _count_runs(db) == 0
 
 
+def test_scheduled_run_can_reach_connector_without_runtime_readiness(
+    runner: ProjectStatusSyncRunner,
+    db: DatabaseManager,
+    service: ProjectStatusUpdateService,
+    registry: ConnectorRegistry,
+) -> None:
+    """定时运行不把凭据缺失变成租约前的零运行阻断。"""
+    _record_two_observations_for_runner(
+        db,
+        deliverable_id="VPI-T2-D5",
+        source_type="tdc",
+        external_key="FM-1",
+        fields=["currentApprover", "approvalComment", "incident", "reportType"],
+    )
+    service.update_update_policy(
+        "VPI-T2-D5",
+        {
+            "mode": "hybrid",
+            "enabled": True,
+            "externalKey": "FM-1",
+            "matchRule": {"reportType": "data_model", "incident": "FM-1"},
+            "mapping": {"owner": "currentApprover", "note": "approvalComment"},
+            "fieldAuthority": {"owner": "automatic", "note": "automatic"},
+            "credentialRef": "temp-alias",
+        },
+    )
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE project_status_update_bindings SET credential_ref = NULL "
+            "WHERE deliverable_id = 'VPI-T2-D5'"
+        )
+        conn.commit()
+
+    connector = FakeConnector(snapshot=_matched_snapshot(db, owner="scheduled-owner"))
+    registry.register("tdc", connector)
+
+    result = runner.run_once(validate_runtime_prerequisites=False)
+
+    assert len(connector.collect_calls) == 1
+    assert len(result.results) == 1
+    assert result.results[0].run_id is not None
+
+
 def test_dry_run_binding_not_ready_returns_attention(
     runner: ProjectStatusSyncRunner,
     db: DatabaseManager,

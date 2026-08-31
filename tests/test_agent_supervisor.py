@@ -894,7 +894,7 @@ def test_agy_heavy_out_of_scope_untracked_change_rejects_and_requires_takeover(m
     assert (run_dir / "git-diff-round-1.patch").exists()
 
 
-def test_checked_in_config_resolves_all_delegable_categories_and_default_to_flash_high():
+def test_checked_in_config_resolves_routine_categories_to_flash_low():
     repo_root = Path(__file__).resolve().parents[1]
     cfg = supervisor.config(repo_root)
 
@@ -902,51 +902,60 @@ def test_checked_in_config_resolves_all_delegable_categories_and_default_to_flas
     empty_task = {"objective": "Some mechanical update"}
     assert supervisor.resolve_model(empty_task, cfg) == "gemini-3.7-flash-high"
 
-    # 2. All delegable categories resolve to gemini-3.7-flash-high
-    delegable_categories = ["mechanical", "test-only", "ui", "ordinary-implementation"]
-    for cat in delegable_categories:
+    # 2. Routine categories use Flash Low while ordinary implementation stays High
+    expected_models = {
+        "mechanical": "gemini-3.7-flash-low",
+        "test-only": "gemini-3.7-flash-low",
+        "ui": "gemini-3.7-flash-high",
+        "ordinary-implementation": "gemini-3.7-flash-high",
+    }
+    for cat, expected in expected_models.items():
         # via category field
-        assert supervisor.resolve_model({"objective": "Update", "category": cat}, cfg) == "gemini-3.7-flash-high"
+        assert supervisor.resolve_model({"objective": "Update", "category": cat}, cfg) == expected
         # via risk_class field
-        assert supervisor.resolve_model({"objective": "Update", "risk_class": cat}, cfg) == "gemini-3.7-flash-high"
+        assert supervisor.resolve_model({"objective": "Update", "risk_class": cat}, cfg) == expected
 
-    # 3. Underscore aliases normalize and resolve to gemini-3.7-flash-high
-    underscore_aliases = ["test_only", "ordinary_implementation", "implementation"]
-    for alias in underscore_aliases:
-        assert supervisor.resolve_model({"objective": "Update", "category": alias}, cfg) == "gemini-3.7-flash-high"
-        assert supervisor.resolve_model({"objective": "Update", "risk_class": alias}, cfg) == "gemini-3.7-flash-high"
+    # 3. Underscore aliases normalize and preserve their configured model
+    underscore_aliases = {
+        "test_only": "gemini-3.7-flash-low",
+        "ordinary_implementation": "gemini-3.7-flash-high",
+        "implementation": "gemini-3.7-flash-high",
+    }
+    for alias, expected in underscore_aliases.items():
+        assert supervisor.resolve_model({"objective": "Update", "category": alias}, cfg) == expected
+        assert supervisor.resolve_model({"objective": "Update", "risk_class": alias}, cfg) == expected
 
     # 4. Unknown low-risk category resolves to configured policy default
     unknown_task = {"objective": "Update unknown", "category": "custom-category"}
     assert supervisor.resolve_model(unknown_task, cfg) == "gemini-3.7-flash-high"
 
 
-def test_single_configured_category_changed_to_low_resolves_only_that_category_to_low():
+def test_single_configured_category_changed_to_high_overrides_only_that_category():
     repo_root = Path(__file__).resolve().parents[1]
     base_cfg = supervisor.config(repo_root)
 
-    # Change only "test-only" to gemini-3.7-flash-low
-    cfg_test_low = json.loads(json.dumps(base_cfg))
-    cfg_test_low["agy"]["model_policy"]["categories"]["test-only"] = "gemini-3.7-flash-low"
+    # Change only "test-only" to gemini-3.7-flash-high
+    cfg_test_high = json.loads(json.dumps(base_cfg))
+    cfg_test_high["agy"]["model_policy"]["categories"]["test-only"] = "gemini-3.7-flash-high"
 
-    # test-only (and alias test_only) resolves to gemini-3.7-flash-low
-    assert supervisor.resolve_model({"objective": "Test", "category": "test-only"}, cfg_test_low) == "gemini-3.7-flash-low"
-    assert supervisor.resolve_model({"objective": "Test", "category": "test_only"}, cfg_test_low) == "gemini-3.7-flash-low"
-    assert supervisor.resolve_model({"objective": "Test", "risk_class": "test-only"}, cfg_test_low) == "gemini-3.7-flash-low"
+    # test-only (and alias test_only) resolves to gemini-3.7-flash-high
+    assert supervisor.resolve_model({"objective": "Test", "category": "test-only"}, cfg_test_high) == "gemini-3.7-flash-high"
+    assert supervisor.resolve_model({"objective": "Test", "category": "test_only"}, cfg_test_high) == "gemini-3.7-flash-high"
+    assert supervisor.resolve_model({"objective": "Test", "risk_class": "test-only"}, cfg_test_high) == "gemini-3.7-flash-high"
 
-    # All other categories and default remain gemini-3.7-flash-high
-    assert supervisor.resolve_model({"objective": "UI", "category": "ui"}, cfg_test_low) == "gemini-3.7-flash-high"
-    assert supervisor.resolve_model({"objective": "Mechanical", "category": "mechanical"}, cfg_test_low) == "gemini-3.7-flash-high"
-    assert supervisor.resolve_model({"objective": "Impl", "category": "ordinary-implementation"}, cfg_test_low) == "gemini-3.7-flash-high"
-    assert supervisor.resolve_model({"objective": "Default"}, cfg_test_low) == "gemini-3.7-flash-high"
-    assert supervisor.resolve_model({"objective": "Unknown", "category": "unknown"}, cfg_test_low) == "gemini-3.7-flash-high"
+    # Other configured categories and the default remain unchanged
+    assert supervisor.resolve_model({"objective": "UI", "category": "ui"}, cfg_test_high) == "gemini-3.7-flash-high"
+    assert supervisor.resolve_model({"objective": "Mechanical", "category": "mechanical"}, cfg_test_high) == "gemini-3.7-flash-low"
+    assert supervisor.resolve_model({"objective": "Impl", "category": "ordinary-implementation"}, cfg_test_high) == "gemini-3.7-flash-high"
+    assert supervisor.resolve_model({"objective": "Default"}, cfg_test_high) == "gemini-3.7-flash-high"
+    assert supervisor.resolve_model({"objective": "Unknown", "category": "unknown"}, cfg_test_high) == "gemini-3.7-flash-high"
 
-    # Change only "ui" to gemini-3.7-flash-low
-    cfg_ui_low = json.loads(json.dumps(base_cfg))
-    cfg_ui_low["agy"]["model_policy"]["categories"]["ui"] = "gemini-3.7-flash-low"
-    assert supervisor.resolve_model({"objective": "UI", "category": "ui"}, cfg_ui_low) == "gemini-3.7-flash-low"
-    assert supervisor.resolve_model({"objective": "Test", "category": "test-only"}, cfg_ui_low) == "gemini-3.7-flash-high"
-    assert supervisor.resolve_model({"objective": "Mechanical", "category": "mechanical"}, cfg_ui_low) == "gemini-3.7-flash-high"
+    # Change only "ui" to gemini-3.7-flash-high
+    cfg_ui_high = json.loads(json.dumps(base_cfg))
+    cfg_ui_high["agy"]["model_policy"]["categories"]["ui"] = "gemini-3.7-flash-high"
+    assert supervisor.resolve_model({"objective": "UI", "category": "ui"}, cfg_ui_high) == "gemini-3.7-flash-high"
+    assert supervisor.resolve_model({"objective": "Test", "category": "test-only"}, cfg_ui_high) == "gemini-3.7-flash-low"
+    assert supervisor.resolve_model({"objective": "Mechanical", "category": "mechanical"}, cfg_ui_high) == "gemini-3.7-flash-low"
 
 
 def test_missing_or_invalid_model_policy_falls_back_safely():

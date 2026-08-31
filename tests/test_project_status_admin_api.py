@@ -101,6 +101,28 @@ def _current_updated_at(db: DatabaseManager, deliverable_id: str) -> str:
     return str(row["updated_at"])
 
 
+def test_debug_bundle_json_export_is_redacted_and_offline(client) -> None:  # type: ignore[no-untyped-def]
+    response = client.get(
+        "/api/project-status/deliverables/VPI-T2-D5/debug-bundle?format=json",
+        headers=_loopback_headers(),
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["filtered"] is True
+    assert payload["schemaVersion"] == "1"
+    assert "credential_ref" not in str(payload).lower()
+
+
+def test_debug_bundle_zip_export_is_downloadable(client) -> None:  # type: ignore[no-untyped-def]
+    response = client.get(
+        "/api/project-status/deliverables/VPI-T2-D5/debug-bundle?format=zip",
+        headers=_loopback_headers(),
+    )
+    assert response.status_code == 200
+    assert response.mimetype == "application/zip"
+    assert response.data[:2] == b"PK"
+
+
 def _record_two_observations_for_d5(
     db: DatabaseManager,
     deliverable_id: str = "VPI-T2-D5",

@@ -14,8 +14,6 @@ from core.db_manager import (
     DatabaseManager,
     ProjectStatusConcurrentUpdateError,
     SyncBindingNotReadyError,
-    SyncLeaseBusyError,
-    SyncLeaseLostError,
 )
 from core.redaction import redact_sensitive_text
 
@@ -308,6 +306,8 @@ class ProjectStatusUpdateService:
         deliverable_id: str,
         trigger_type: str,
         lease_seconds: int | None = None,
+        *,
+        validate_runtime_prerequisites: bool = True,
     ) -> dict[str, Any]:
         """
         为交付物获取同步租约并创建 leased run。
@@ -315,17 +315,35 @@ class ProjectStatusUpdateService:
         返回内部 Lease 对象（含 binding_id/run_id/lease_token）。
         lease_token 不得记录到日志、审计或 Web 响应。
         """
-        self.assert_sync_ready(deliverable_id)
+        # 调度运行只需要先拿到绑定租约；凭据、稳定键、匹配规则和映射
+        # 属于连接器运行时输入，不能在调度器入口把它们变成“零运行”门槛。
+        # 默认保持旧行为，避免改变已有调用者的契约。
+        self.assert_sync_ready(
+            deliverable_id,
+            validate_runtime_prerequisites=validate_runtime_prerequisites,
+        )
         binding = self._db.get_sync_binding_by_deliverable(deliverable_id)
         if binding is None:
             raise KeyError(deliverable_id)
         kwargs: dict[str, Any] = {"trigger_type": trigger_type}
         if lease_seconds is not None:
             kwargs["lease_seconds"] = lease_seconds
+        kwargs["validate_runtime_prerequisites"] = validate_runtime_prerequisites
         return self._db.acquire_sync_lease(int(binding["id"]), **kwargs)
 
-    def assert_sync_ready(self, deliverable_id: str) -> dict[str, Any]:
-        """Validate the persisted approval gate before any external sync call."""
+    def assert_sync_ready(
+        self,
+        deliverable_id: str,
+        *,
+        validate_runtime_prerequisites: bool = True,
+    ) -> dict[str, Any]:
+        """Validate binding policy, optionally including runtime prerequisites.
+
+        ``validate_runtime_prerequisites=False`` is reserved for unattended
+        scheduled runs.  It still protects the scheduler from disabled or
+        incorrectly sourced bindings, while allowing the connector to produce
+        an actionable credential/matching/mapping result for the actual run.
+        """
         raw = self._db.get_project_status_update_policy(deliverable_id)
         if raw is None:
             raise KeyError(deliverable_id)
@@ -337,6 +355,9 @@ class ProjectStatusUpdateService:
             raise SyncBindingNotReadyError("binding is not enabled for automatic sync")
         if binding["source_type"] != contract["sourceType"]:
             raise SyncBindingNotReadyError("binding source does not match the fixed contract")
+        if not validate_runtime_prerequisites:
+            return binding
+
         external_key = str(binding["external_key"] or "").strip() or None
         match_rule = _json_loads(binding["match_rule_json"])
         mapping = _json_loads(binding["mapping_json"])

@@ -1395,6 +1395,9 @@ def _run_sync_once(
         result = runner.run_once(
             deliverable_id=deliverable_id,
             dry_run=dry_run,
+            # 真实定时运行不做凭据/稳定键/映射前置阻断；连接器负责
+            # 产生可审计的运行时失败。dry-run 仍保留就绪诊断。
+            validate_runtime_prerequisites=dry_run,
         )
     except KeyboardInterrupt:
         return EXIT_INTERRUPTED

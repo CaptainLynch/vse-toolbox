@@ -145,6 +145,28 @@ def test_checked_in_config_codex_relay_definition():
     }
 
 
+def test_checked_in_config_routes_ui_work_to_flash_high():
+    """Keep UI work on the quality-oriented AGY reasoning tier."""
+    cfg = json.loads(CONFIG_JSON.read_text(encoding="utf-8"))
+    policy = cfg["agy"]["model_policy"]
+
+    assert policy["categories"] == {
+        "mechanical": "gemini-3.7-flash-low",
+        "test-only": "gemini-3.7-flash-low",
+        "ui": "gemini-3.7-flash-high",
+        "ordinary-implementation": "gemini-3.7-flash-high",
+    }
+
+
+def test_supervisor_scripts_default_to_low_codex_consumption_route():
+    """Default wrappers should use AGY-heavy and official Codex only when explicit."""
+    run_content = RUN_SCRIPT.read_text(encoding="utf-8")
+    start_content = START_SCRIPT.read_text(encoding="utf-8")
+
+    assert '[string]$SupervisorProfile = "agy-heavy"' in run_content
+    assert '[string]$CodexProfile = "official"' in start_content
+
+
 def test_no_embedded_secrets_in_scripts_and_config():
     """Verify no hardcoded secret keys or tokens exist in scripts or config."""
     secret_patterns = [

@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [ValidateSet("official", "relay")]
-    [string]$CodexProfile = "relay",
+    [string]$CodexProfile = "official",
 
     [ValidateSet("agy-heavy", "codex-controlled")]
     [string]$SupervisorProfile = "agy-heavy",

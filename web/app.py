@@ -20,7 +20,7 @@ import sys
 import tempfile
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence, cast
 from urllib.parse import urlsplit
 
 from flask import Flask, current_app, has_app_context, jsonify, render_template, request, send_file
@@ -61,6 +61,13 @@ from core.db_manager import (
     SyncBindingNotReadyError,
 )
 from core.diagnostics import DiagnosticOptions, MarkdownDiagnosticReport
+from core.debug_bundle import build_debug_bundle, export_debug_bundle
+from core.unified_status import (
+    AuthState,
+    QueryState,
+    SyncState,
+    UnifiedObjectStatus,
+)
 from core.excel_tasks import (
     ApprovedExcelRoots,
     ExcelIdempotencyConflictError,
@@ -937,6 +944,7 @@ def _ewo_filters_from_payload(payload: dict[str, Any]) -> EWOReportFilters:
         rsp_department=_none_if_blank(filters.get("rsp_department")),
         submit_start=_none_if_blank(filters.get("submit_start")),
         submit_end=_none_if_blank(filters.get("submit_end")),
+        model_info=_none_if_blank(filters.get("model_info")),
     )
 
 
@@ -3424,6 +3432,188 @@ def create_app(
             return response
         except Exception as exc:
             logger.exception("project status artifacts failed")
+            return _json_error(500, "ServerError", _sanitize_error_message(exc))
+
+    @app.get("/api/project-status/deliverables/<deliverable_id>/unified-status")
+    def api_project_status_unified_status(deliverable_id: str):
+        """Expose one public status contract for EWO, PAA, and NCR."""
+        try:
+            current = current_project_status("VPI-T2")
+            deliverable = next(
+                (item for item in (current or {}).get("deliverables", [])
+                 if item.get("id") == deliverable_id),
+                None,
+            )
+            if deliverable is None:
+                return _json_error(404, "NotFound", "未找到交付物")
+            policy = update_service.get_update_policy(deliverable_id) or {}
+            analytics = analytics_service.overview()
+            analytic_item = next(
+                (item for item in analytics.get("deliverables", [])
+                 if item.get("deliverableId") == deliverable_id),
+                {},
+            )
+            mapping = discovery_service.history(deliverable_id)
+            mapping_latest = (mapping.get("observations") or [{}])[0]
+            policy_sync = str(policy.get("syncState") or "").casefold()
+            sync_state = (
+                policy_sync if policy_sync in {state.value for state in SyncState}
+                else SyncState.MANUAL.value
+            )
+            credential_available = bool(policy.get("credentialAvailable"))
+            auth_error = str(policy.get("lastErrorType") or "").casefold()
+            auth_state = (
+                AuthState.CREDENTIAL_INVALID.value
+                if auth_error in {"auth", "authentication", "credential", "credential_invalid", "credential_unavailable"}
+                else AuthState.AUTHENTICATED.value
+                if credential_available
+                else AuthState.CREDENTIAL_MISSING.value
+            )
+            mapping_state = str(mapping_latest.get("state") or "").casefold()
+            query_error = str(policy.get("lastErrorType") or "").casefold()
+            query_state = (
+                QueryState.SERVICE_UNAVAILABLE.value
+                if query_error in {"connection", "connection_error", "service_unavailable", "network", "timeout"}
+                else QueryState.FAILED.value
+                if query_error in {"failed", "query_failed", "invalid_response"}
+                else QueryState.MATCHED.value if mapping_state in {"matched", "selected"}
+                else QueryState.NO_MATCH.value if mapping_state in {"no_match", "not_found", "ambiguous", "key_changed", "missing_fields"}
+                else QueryState.IDLE.value
+            )
+            ewo = UnifiedObjectStatus(
+                kind="ewo",
+                id=deliverable_id,
+                source="aras" if deliverable_id == "VPI-T2-D3" else "project_status",
+                external_key=str(policy.get("externalKey") or ""),
+                auth_state=auth_state,
+                query_state=query_state,
+                sync_state=sync_state,
+                stage=deliverable.get("status") or analytic_item.get("stage"),
+                matched_fields=tuple(
+                    (mapping_latest.get("fieldReport") or {}).get("fields") or ()
+                ),
+                errors=tuple(filter(None, [redact_sensitive_text(policy.get("lastErrorMessage") or "")])),
+                last_updated=policy.get("updatedAt") or deliverable.get("updatedAt"),
+                content={
+                    "report_type": "EWO",
+                    "sync_state": sync_state,
+                    "last_success_at": policy.get("lastSuccessAt"),
+                    "error": redact_sensitive_text(policy.get("lastErrorMessage") or "") or None,
+                },
+            )
+            objects = [ewo]
+            for job in archive_admin_service.list_jobs():
+                template = str(job.get("templateKey") or job.get("jobKey") or "")
+                if template not in {"aras_paa", "aras_ncr_progress", "aras_ncr_detail"}:
+                    continue
+                kind = "paa" if template == "aras_paa" else "ncr"
+                job_sync = str(job.get("syncState") or "").casefold()
+                if job_sync not in {state.value for state in SyncState}:
+                    job_sync = SyncState.MANUAL.value
+                job_auth = (
+                    AuthState.CREDENTIAL_INVALID.value
+                    if str(job.get("lastErrorType") or "").casefold()
+                    in {"auth", "authentication", "credential", "credential_invalid", "credential_unavailable"}
+                    else AuthState.AUTHENTICATED.value
+                    if job.get("credentialAvailable")
+                    else AuthState.CREDENTIAL_MISSING.value
+                )
+                job_query = (
+                    QueryState.SERVICE_UNAVAILABLE.value
+                    if str(job.get("lastErrorType") or "").casefold() in {
+                        "connection", "connection_error", "service_unavailable",
+                        "timeout", "credential_unavailable",
+                    }
+                    else QueryState.FAILED.value
+                    if job.get("lastErrorType")
+                    else QueryState.MATCHED.value if job.get("lastSuccessAt")
+                    else QueryState.IDLE.value
+                )
+                objects.append(UnifiedObjectStatus(
+                    kind=kind,
+                    id=str(job.get("jobKey") or job.get("id")),
+                    source="aras",
+                    external_key="",
+                    auth_state=job_auth,
+                    query_state=job_query,
+                    sync_state=job_sync,
+                    stage=str(job.get("reportType") or ""),
+                    matched_fields=(),
+                    errors=tuple(filter(None, [redact_sensitive_text(job.get("lastErrorMessage") or "")])),
+                    last_updated=job.get("updatedAt"),
+                    content={
+                        "report_type": str(job.get("reportType") or template),
+                        "sync_state": job_sync,
+                        "last_success_at": job.get("lastSuccessAt"),
+                        "error": redact_sensitive_text(job.get("lastErrorMessage") or "") or None,
+                    },
+                ))
+            response = jsonify({"ok": True, "data": {"objects": [item.to_dict() for item in objects]}})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except KeyError:
+            return _json_error(404, "NotFound", "未找到交付物")
+        except Exception as exc:
+            logger.exception("project status unified status failed")
+            return _json_error(500, "ServerError", _sanitize_error_message(exc))
+
+    @app.get("/api/project-status/deliverables/<deliverable_id>/debug-bundle")
+    def api_project_status_debug_bundle(deliverable_id: str):
+        """Return an offline, allowlisted and redacted diagnostic bundle."""
+        requested_format = request.args.get("format", "json").strip().casefold()
+        if requested_format not in {"json", "zip"}:
+            return _json_error(422, "ValidationError", "format 必须是 json 或 zip")
+        try:
+            policy = update_service.get_update_policy(deliverable_id)
+            if policy is None:
+                return _json_error(404, "NotFound", "未找到交付物")
+            analytics = cast(dict[str, Any], next(
+                (
+                    item
+                    for item in analytics_service.overview().get("deliverables", [])
+                    if item.get("deliverableId") == deliverable_id
+                ),
+                {},
+            ))
+            mapping = discovery_service.history(deliverable_id)
+            runs = analytics_service.runs(deliverable_id, 20)
+            context = {
+                "page": "project-status-deliverable-detail",
+                "deliverableId": deliverable_id,
+                "policy": policy,
+                "analytics": analytics,
+                "mapping": mapping,
+                "version": app.config.get("APP_VERSION", "unknown"),
+                "timestamp": datetime.now().astimezone().isoformat(),
+            }
+            events = runs.get("runs", []) if isinstance(runs, dict) else []
+            bundle = build_debug_bundle(context, events)
+            if requested_format == "json":
+                response = jsonify(bundle)
+                response.headers["Cache-Control"] = "no-store"
+                return response
+            buffer = io.BytesIO()
+            temp_file = tempfile.NamedTemporaryFile(
+                prefix="vse_debug_", suffix=".zip", delete=False
+            )
+            temp_path = Path(temp_file.name)
+            temp_file.close()
+            try:
+                export_debug_bundle(bundle, temp_path, fmt="zip")
+                buffer.write(temp_path.read_bytes())
+            finally:
+                temp_path.unlink(missing_ok=True)
+            buffer.seek(0)
+            response = send_file(
+                buffer,
+                mimetype="application/zip",
+                as_attachment=True,
+                download_name=f"{deliverable_id}_debug.zip",
+            )
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except Exception as exc:
+            logger.exception("project status debug bundle failed")
             return _json_error(500, "ServerError", _sanitize_error_message(exc))
 
     @app.post("/api/project-status/deliverables/<deliverable_id>/sync-now")

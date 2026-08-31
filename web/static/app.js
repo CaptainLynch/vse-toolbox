@@ -243,6 +243,7 @@ const MILESTONE_TYPE_BY_STATUS = {
 };
 
 let overviewSavedState = null;
+let overviewArchiveJobs = [];
 let overviewLoading = false;
 let overviewLoadError = null;
 let overviewDraft = null;
@@ -454,6 +455,9 @@ function deliverableTone(item) {
   if (item.status === "已完成") return "success";
   if (item.status === "已逾期") return "error";
   if (item.status === "待审批") return "warning";
+  if (item.status === "success") return "success";
+  if (item.status === "needs_attention") return "warning";
+  if (item.status === "failed") return "error";
   return "primary";
 }
 
@@ -712,6 +716,18 @@ const EWO_POLICY_MODE_LABELS = {
   hybrid: "混合模式",
 };
 const EWO_POLICY_RECOMMENDED_MODE = "automatic";
+const EWO_POLICY_DEFAULT_ARAS_BASE_URL = "http://ecm.sgmw.com.cn/innovatorserver";
+const EWO_POLICY_MATCH_FIELDS = [
+  ["ewoNo", "EWO 编号", "ewo_no"],
+  ["projectCode", "项目代码", "project_code"],
+  ["subjectKeyword", "主题关键词", "subject_keyword"],
+  ["modelInfo", "车型信息", "model_info"],
+];
+const EWO_POLICY_AUTOMATIC_FIELDS = [
+  ["owner", "负责人"],
+  ["plannedDate", "计划完成日期"],
+  ["note", "风险与备注"],
+];
 
 // 就绪信号只有两个：既有 policy API 的 enabled === true，且 mapping 完整
 // （非空对象且每个值都是非空字段名）。两者缺一显示 未启用，不得声称已同步。
@@ -727,8 +743,77 @@ function deliverablePolicyMappingReady(policy) {
   });
 }
 
-function renderEwoDeliverablePolicy(container, item, policy) {
+function renderExternalSyncSummary(container, jobs = []) {
+  clearOverviewContainer(container);
+  const selected = (Array.isArray(jobs) ? jobs : []).filter((job) => ["aras_paa", "aras_ncr_progress", "aras_ncr_detail"].includes(job.jobKey));
+  container.appendChild(overviewEl("p", "eyebrow", "外部同步"));
+  container.appendChild(overviewEl("h4", null, "PAA / NCR 同步概况"));
+  const grid = overviewEl("div", "external-sync-summary-grid");
+  const labels = { aras_paa: "PAA", aras_ncr_progress: "NCR 审批进度", aras_ncr_detail: "NCR 审批明细" };
+  selected.forEach((job) => {
+    const card = overviewEl("article", "external-sync-summary-card");
+    card.append(
+      overviewEl("strong", null, labels[job.jobKey] || job.jobKey),
+      overviewEl("span", "external-sync-state", archiveSyncStateLabel(job.syncState)),
+      overviewEl("small", null, `最近成功：${job.lastSuccessAt || "暂无"}`),
+      overviewEl("small", null, job.lastErrorMessage ? `错误：${redactSensitiveText(job.lastErrorMessage)}` : "错误：无"),
+    );
+    grid.appendChild(card);
+  });
+  if (!selected.length) grid.appendChild(overviewEl("p", "is-empty", "暂无 PAA/NCR 同步任务"));
+  container.appendChild(grid);
+}
+
+function ewoPolicyString(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function ewoPolicyDiscoveryFields(discovery) {
+  const observations = discovery && Array.isArray(discovery.observations)
+    ? discovery.observations
+    : [];
+  const latest = observations[0] || {};
+  const report = latest.fieldReport && typeof latest.fieldReport === "object"
+    ? latest.fieldReport
+    : {};
+  return Array.isArray(report.fields)
+    ? report.fields.map((value) => ewoPolicyString(value)).filter(Boolean)
+    : [];
+}
+
+function ewoPolicyDiscoveryStateLabel(value) {
+  const labels = {
+    matched: "已匹配",
+    not_found: "未找到",
+    ambiguous: "候选不唯一",
+    key_changed: "稳定键发生变化",
+  };
+  return labels[value] || "待确认";
+}
+
+function ewoPolicyErrorMessage(error) {
+  if (error && error.fields && typeof error.fields === "object") {
+    const fields = Object.entries(error.fields)
+      .map(([field, message]) => `${field}：${message}`)
+      .join("；");
+    if (fields) return fields;
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
+function renderEwoDeliverablePolicy(container, item, policy, options = {}) {
   container.textContent = "";
+  const currentPolicy = policy && typeof policy === "object" ? policy : {};
+  const supportedModes = Object.keys(EWO_POLICY_MODE_LABELS);
+  const currentMode = supportedModes.includes(currentPolicy.mode) ? currentPolicy.mode : "manual";
+  let discoveryData = options.discovery && typeof options.discovery === "object"
+    ? options.discovery
+    : {};
+  const settingsData = options.settings && typeof options.settings === "object"
+    ? options.settings
+    : null;
+  const vaultConfigured = settingsData !== null && settingsData.credentialVaultConfigured === true;
+  const itemToken = String(item.id || "ewo").replace(/[^A-Za-z0-9_-]/g, "-");
   const head = overviewEl("div", "policy-editor-head");
   head.append(
     overviewEl("strong", "policy-editor-title", "更新方式"),
@@ -737,56 +822,404 @@ function renderEwoDeliverablePolicy(container, item, policy) {
 
   const modeGroup = overviewEl("fieldset", "policy-mode-group");
   modeGroup.appendChild(overviewEl("legend", null, "更新模式"));
-  const modeList = overviewEl("div", "policy-ewo-modes");
-  const currentMode = policy && typeof policy.mode === "string" ? policy.mode : "";
+  const modeControl = overviewEl("div", "policy-segmented");
   Object.entries(EWO_POLICY_MODE_LABELS).forEach(([value, label]) => {
-    const option = overviewEl(
-      "div",
-      `policy-ewo-mode${value === currentMode ? " is-current" : ""}${value === EWO_POLICY_RECOMMENDED_MODE ? " is-recommended" : ""}`,
-    );
-    option.appendChild(overviewEl("span", "policy-ewo-mode-label", label));
+    const input = document.createElement("input");
+    input.type = "radio";
+    input.name = `policy-mode-${item.id}`;
+    input.id = `policy-mode-${item.id}-${value}`;
+    input.value = value;
+    input.checked = value === currentMode;
+    const labelEl = overviewEl("label", null, label);
+    labelEl.htmlFor = input.id;
     if (value === EWO_POLICY_RECOMMENDED_MODE) {
-      option.appendChild(overviewEl("span", "policy-ewo-mode-badge", "推荐：自动同步"));
+      labelEl.appendChild(overviewEl("span", "policy-ewo-mode-badge", "推荐：自动同步"));
     }
-    if (value === currentMode) {
-      option.appendChild(overviewEl("span", "policy-ewo-mode-current", "当前模式"));
-    }
-    modeList.appendChild(option);
+    modeControl.append(input, labelEl);
   });
-  modeGroup.appendChild(modeList);
+  modeGroup.appendChild(modeControl);
 
-  const ready = deliverablePolicyMappingReady(policy);
-  const readiness = overviewEl(
-    "p",
-    `policy-ewo-readiness ${ready ? "is-ready" : "is-disabled"}`,
-    ready ? "已启用：字段映射已配置" : "未启用",
-  );
-  const note = overviewEl(
-    "p",
-    "policy-ewo-note",
-    "模式展示仅表示策略取向，不代表已启用同步；是否可同步以上方就绪状态为准。",
-  );
-  container.append(head, modeGroup, readiness, note);
-}
+  const bindingGroup = overviewEl("fieldset", "policy-ewo-binding");
+  bindingGroup.appendChild(overviewEl("legend", null, "绑定同步配置"));
+  const bindingGrid = overviewEl("div", "policy-ewo-binding-grid");
 
-async function loadDeliverablePolicy(container, item) {
-  if (/ewo/i.test(String(item.source || ""))) {
-    container.appendChild(overviewEl("p", "policy-loading", "正在读取更新策略..."));
+  const credentialLabel = overviewEl("label", "policy-ewo-field");
+  credentialLabel.appendChild(overviewEl("span", null, "同步凭据引用"));
+  const credentialInput = document.createElement("select");
+  credentialInput.id = `policy-credential-ref-${itemToken}`;
+  credentialInput.name = "credentialRef";
+  const keepCredential = overviewEl(
+    "option",
+    null,
+    currentPolicy.credentialAvailable === true
+      ? "保持当前已绑定凭据（不修改）"
+      : "暂不绑定（选择统一域账号）",
+  );
+  keepCredential.value = "";
+  const domainCredential = overviewEl("option", null, "统一域账号（domain）");
+  domainCredential.value = "domain";
+  credentialInput.append(keepCredential, domainCredential);
+  credentialLabel.appendChild(credentialInput);
+  const credentialNote = currentPolicy.credentialAvailable === true
+    ? "本交付物已有凭据引用；此处不显示用户名或密码。"
+    : (vaultConfigured
+      ? "全局凭据库已配置，但尚未绑定到本交付物；请选择统一域账号。"
+      : "请先到系统设置登录并勾选“保存至凭据保护库”，再在此选择统一域账号。");
+  credentialLabel.appendChild(overviewEl("small", "policy-field-note", credentialNote));
+  bindingGrid.appendChild(credentialLabel);
+
+  const externalKeyLabel = overviewEl("label", "policy-ewo-field");
+  externalKeyLabel.appendChild(overviewEl("span", null, "外部稳定键"));
+  const externalKeyInput = document.createElement("input");
+  externalKeyInput.type = "text";
+  externalKeyInput.name = "externalKey";
+  externalKeyInput.id = `policy-external-key-${itemToken}`;
+  externalKeyInput.maxLength = 200;
+  externalKeyInput.value = ewoPolicyString(currentPolicy.externalKey);
+  externalKeyInput.placeholder = "例如：EWO-2026-0001";
+  externalKeyLabel.appendChild(externalKeyInput);
+  externalKeyLabel.appendChild(overviewEl("small", "policy-field-note", "必须与映射发现记录中的唯一外部记录一致。"));
+  bindingGrid.appendChild(externalKeyLabel);
+
+  const matchGroup = overviewEl("fieldset", "policy-ewo-match");
+  matchGroup.appendChild(overviewEl("legend", null, "匹配规则（报表类型固定为 EWO）"));
+  const reportType = overviewEl("span", "policy-ewo-fixed-value", "reportType = ewo");
+  matchGroup.appendChild(reportType);
+  const matchRule = currentPolicy.matchRule && typeof currentPolicy.matchRule === "object"
+    ? currentPolicy.matchRule
+    : {};
+  const matchInputs = new Map();
+  EWO_POLICY_MATCH_FIELDS.forEach(([key, label, filterName]) => {
+    const field = overviewEl("label", "policy-ewo-field");
+    field.appendChild(overviewEl("span", null, label));
+    const input = document.createElement("input");
+    input.type = "text";
+    input.dataset.matchKey = key;
+    input.dataset.filterName = filterName;
+    input.value = ewoPolicyString(matchRule[key]);
+    input.placeholder = key === "ewoNo" ? "建议优先填写 EWO 编号" : "可选";
+    field.appendChild(input);
+    matchInputs.set(key, input);
+    matchGroup.appendChild(field);
+  });
+  matchGroup.appendChild(overviewEl("small", "policy-field-note", "至少填写一个筛选条件；保存启用时后端会再次校验来源契约。"));
+  bindingGrid.appendChild(matchGroup);
+
+  const baseUrlLabel = overviewEl("label", "policy-ewo-field");
+  baseUrlLabel.appendChild(overviewEl("span", null, "ECM 地址（仅用于抓取映射证据）"));
+  const baseUrlInput = document.createElement("input");
+  baseUrlInput.type = "url";
+  baseUrlInput.name = "arasBaseUrl";
+  baseUrlInput.value = EWO_POLICY_DEFAULT_ARAS_BASE_URL;
+  baseUrlInput.placeholder = EWO_POLICY_DEFAULT_ARAS_BASE_URL;
+  baseUrlLabel.appendChild(baseUrlInput);
+  baseUrlLabel.appendChild(overviewEl("small", "policy-field-note", "使用设置页已认证的 ECM 会话，不在此填写账号密码。"));
+  bindingGrid.appendChild(baseUrlLabel);
+  bindingGroup.appendChild(bindingGrid);
+
+  const authorityGroup = overviewEl("fieldset", "policy-ewo-authority");
+  authorityGroup.appendChild(overviewEl("legend", null, "自动字段与来源映射"));
+  const discoveredFields = new Set(ewoPolicyDiscoveryFields(discoveryData));
+  EWO_POLICY_AUTOMATIC_FIELDS.forEach(([key, label]) => {
+    const row = overviewEl("div", "policy-ewo-mapping-row");
+    const authorityLabel = overviewEl("label", "policy-field-check");
+    const authorityInput = document.createElement("input");
+    authorityInput.type = "checkbox";
+    authorityInput.name = `fieldAuthority-${key}`;
+    authorityInput.dataset.authorityField = key;
+    authorityInput.checked = currentPolicy.fieldAuthority
+      && currentPolicy.fieldAuthority[key] === "automatic";
+    authorityLabel.append(authorityInput, overviewEl("span", null, `${label}自动更新`));
+    const mappingInput = document.createElement("input");
+    mappingInput.type = "text";
+    mappingInput.name = `mapping-${key}`;
+    mappingInput.dataset.mappingField = key;
+    mappingInput.setAttribute("list", `policy-discovered-fields-${itemToken}`);
+    mappingInput.value = ewoPolicyString(currentPolicy.mapping && currentPolicy.mapping[key]);
+    mappingInput.placeholder = "来源字段名，例如：_owner";
+    mappingInput.disabled = !authorityInput.checked;
+    const mappingLabel = overviewEl("label", "policy-ewo-field policy-ewo-mapping-field");
+    mappingLabel.append(overviewEl("span", null, `${label}来源字段`), mappingInput);
+    row.append(authorityLabel, mappingLabel);
+    authorityGroup.appendChild(row);
+    authorityInput.addEventListener("change", () => {
+      mappingInput.disabled = !authorityInput.checked;
+      refreshLocalReadiness();
+    });
+    mappingInput.addEventListener("input", refreshLocalReadiness);
+  });
+  const fieldList = document.createElement("datalist");
+  fieldList.id = `policy-discovered-fields-${itemToken}`;
+  const addDiscoveredField = (fieldName) => {
+    const clean = ewoPolicyString(fieldName);
+    if (!clean || discoveredFields.has(clean)) return;
+    discoveredFields.add(clean);
+    fieldList.appendChild(overviewEl("option", null, clean));
+  };
+  discoveredFields.forEach((fieldName) => {
+    fieldList.appendChild(overviewEl("option", null, fieldName));
+  });
+  authorityGroup.appendChild(fieldList);
+  bindingGroup.appendChild(authorityGroup);
+
+  const discoveryGroup = overviewEl("div", "policy-ewo-discovery");
+  const discoveryButton = overviewEl("button", "policy-discovery-btn", "抓取映射证据");
+  discoveryButton.type = "button";
+  const discoveryStatus = overviewEl("span", "policy-discovery-status", "");
+  discoveryStatus.setAttribute("role", "status");
+  discoveryStatus.setAttribute("aria-live", "polite");
+  const initialStability = discoveryData.stability && Number.isFinite(Number(discoveryData.stability.confirmed))
+    ? `${Math.min(Math.max(Number(discoveryData.stability.confirmed), 0), 2)}/2`
+    : "0/2";
+  discoveryStatus.textContent = `连续稳定证据：${initialStability}（需点击两次并保持目标一致）`;
+  discoveryGroup.append(
+    discoveryButton,
+    discoveryStatus,
+    overviewEl("small", "policy-field-note", "每次点击只抓取并保存脱敏字段报告，不会自动修改映射或业务数据。"),
+  );
+
+  const enabledLabel = overviewEl("label", "policy-ewo-enable");
+  const enabledInput = document.createElement("input");
+  enabledInput.type = "checkbox";
+  enabledInput.name = "enabled";
+  enabledInput.id = `policy-enabled-${itemToken}`;
+  enabledInput.checked = currentPolicy.enabled === true;
+  enabledLabel.append(enabledInput, overviewEl("span", null, "启用自动同步"));
+  discoveryGroup.appendChild(enabledLabel);
+
+  const localReadiness = overviewEl("p", "policy-ewo-readiness is-disabled");
+  localReadiness.setAttribute("role", "status");
+  const buildPolicyPayload = () => {
+    const selectedMode = form.querySelector('input[type="radio"]:checked')?.value || "manual";
+    const payload = {
+      mode: selectedMode,
+      enabled: enabledInput.checked,
+      externalKey: ewoPolicyString(externalKeyInput.value) || null,
+      matchRule: { reportType: "ewo" },
+      mapping: {},
+      fieldAuthority: {},
+    };
+    matchInputs.forEach((input, key) => {
+      const value = ewoPolicyString(input.value);
+      if (value) payload.matchRule[key] = value;
+    });
+    EWO_POLICY_AUTOMATIC_FIELDS.forEach(([key]) => {
+      const authorityInput = authorityGroup.querySelector(`[data-authority-field="${key}"]`);
+      const mappingInput = authorityGroup.querySelector(`[data-mapping-field="${key}"]`);
+      const automatic = Boolean(authorityInput && authorityInput.checked);
+      payload.fieldAuthority[key] = automatic ? "automatic" : "manual";
+      if (automatic && mappingInput) {
+        const sourceField = ewoPolicyString(mappingInput.value);
+        if (sourceField) payload.mapping[key] = sourceField;
+      }
+    });
+    if (credentialInput.value === "domain") payload.credentialRef = "domain";
+    if (credentialInput.value === "__clear__") payload.credentialRef = null;
+    return payload;
+  };
+
+  function refreshLocalReadiness() {
+    const payload = buildPolicyPayload();
+    const missing = [];
+    if (!EWO_POLICY_MODE_LABELS[payload.mode] || !["automatic", "hybrid"].includes(payload.mode)) {
+      missing.push("请选择自动同步或混合模式");
+    }
+    const credentialReady = currentPolicy.credentialAvailable === true
+      || (payload.credentialRef === "domain" && vaultConfigured);
+    if (!credentialReady) missing.push(vaultConfigured ? "尚未绑定统一域账号凭据" : "凭据保护库未配置");
+    if (!payload.externalKey) missing.push("外部稳定键未确认");
+    const matchKeys = Object.keys(payload.matchRule).filter((key) => key !== "reportType");
+    if (matchKeys.length === 0) missing.push("至少填写一个 EWO 匹配条件");
+    const automaticFields = Object.keys(payload.fieldAuthority)
+      .filter((key) => payload.fieldAuthority[key] === "automatic");
+    if (automaticFields.length === 0) missing.push("至少选择一个自动字段");
+    if (automaticFields.some((key) => !payload.mapping[key])) missing.push("自动字段必须填写来源映射");
+    const mappedFields = Object.values(payload.mapping);
+    if (mappedFields.length > 0 && mappedFields.some((fieldName) => discoveredFields.size > 0 && !discoveredFields.has(fieldName))) {
+      missing.push("来源映射必须来自最近的脱敏字段报告");
+    }
+    const stability = discoveryData.stability && Number(discoveryData.stability.confirmed);
+    if (!Number.isFinite(stability) || stability < 2) missing.push(`映射稳定性未就绪（${Number.isFinite(stability) ? `${Math.max(stability, 0)}/2` : "0/2"}）`);
+    if (payload.enabled && missing.length === 0) {
+      localReadiness.textContent = "已满足启用条件：保存后同步按钮将可用，后端仍会执行最终校验。";
+      localReadiness.className = "policy-ewo-readiness is-ready";
+    } else if (!payload.enabled && missing.length === 0) {
+      localReadiness.textContent = "绑定配置已齐全：勾选“启用自动同步”并保存后才会启用同步。";
+      localReadiness.className = "policy-ewo-readiness is-disabled";
+    } else {
+      localReadiness.textContent = `尚缺：${missing.join("，")}`;
+      localReadiness.className = "policy-ewo-readiness is-disabled";
+    }
+  }
+
+  async function discoverMappingEvidence() {
+    const payload = buildPolicyPayload();
+    const filters = {};
+    matchInputs.forEach((input) => {
+      const filterName = input.dataset.filterName;
+      const value = ewoPolicyString(input.value);
+      if (filterName && value) filters[filterName] = value;
+    });
+    if (Object.keys(filters).length === 0 && payload.externalKey) filters.ewo_no = payload.externalKey;
+    if (Object.keys(filters).length === 0 && !payload.externalKey) {
+      discoveryStatus.textContent = "请先填写外部稳定键或至少一个 EWO 匹配条件。";
+      discoveryStatus.className = "policy-discovery-status is-error";
+      return;
+    }
+    discoveryButton.disabled = true;
+    discoveryStatus.className = "policy-discovery-status is-busy";
+    discoveryStatus.textContent = "正在抓取脱敏映射证据...";
     try {
-      const response = await fetch(`/api/project-status/deliverables/${encodeURIComponent(item.id)}/update-policy`, {
-        headers: { Accept: "application/json" },
-        cache: "no-store",
+      const response = await fetch(`/api/project-status/deliverables/${encodeURIComponent(item.id)}/mapping-discovery`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({
+          base_url: ewoPolicyString(baseUrlInput.value) || EWO_POLICY_DEFAULT_ARAS_BASE_URL,
+          filters,
+          selectedExternalKey: payload.externalKey || null,
+        }),
       });
       const body = await overviewReadJson(response);
       if (!response.ok || !body || body.ok !== true) throw overviewRequestError(body, response.status);
-      renderEwoDeliverablePolicy(container, item, body.data);
+      const result = body.data || {};
+      discoveryData = {
+        ...discoveryData,
+        stability: result.stability || discoveryData.stability,
+        observations: [
+          {
+            state: result.state,
+            externalKey: result.externalKey,
+            candidateCount: result.candidateCount,
+            fieldReport: result.fieldReport || {},
+          },
+          ...(Array.isArray(discoveryData.observations) ? discoveryData.observations : []),
+        ],
+      };
+      const discoveredKey = ewoPolicyString(result.externalKey);
+      if (!externalKeyInput.value.trim() && discoveredKey) externalKeyInput.value = discoveredKey;
+      const fields = result.fieldReport && Array.isArray(result.fieldReport.fields)
+        ? result.fieldReport.fields
+        : [];
+      fields.forEach(addDiscoveredField);
+      const confirmed = result.stability && Number.isFinite(Number(result.stability.confirmed))
+        ? `${Math.min(Math.max(Number(result.stability.confirmed), 0), 2)}/2`
+        : "0/2";
+      discoveryStatus.className = `policy-discovery-status ${result.state === "matched" ? "is-success" : "is-warning"}`;
+      discoveryStatus.textContent = `本次${ewoPolicyDiscoveryStateLabel(result.state)}：候选 ${Number(result.candidateCount) || 0} 条；连续稳定证据 ${confirmed}。`;
+      refreshLocalReadiness();
+      if (typeof options.onEvidenceRefresh === "function") void options.onEvidenceRefresh();
+    } catch (error) {
+      discoveryStatus.className = "policy-discovery-status is-error";
+      discoveryStatus.textContent = `抓取失败：${redactSensitiveText(ewoPolicyErrorMessage(error))}`;
+    } finally {
+      discoveryButton.disabled = false;
+    }
+  }
+  discoveryButton.addEventListener("click", () => void discoverMappingEvidence());
+  enabledInput.addEventListener("change", refreshLocalReadiness);
+  credentialInput.addEventListener("change", refreshLocalReadiness);
+  externalKeyInput.addEventListener("input", refreshLocalReadiness);
+  matchInputs.forEach((input) => input.addEventListener("input", refreshLocalReadiness));
+
+  const note = overviewEl(
+    "p",
+    "policy-ewo-note",
+    "已认证会话和全局凭据库不会自动绑定到本交付物；本表单只保存凭据别名和同步策略，不保存密码。",
+  );
+  const form = overviewEl("form", "policy-editor-form");
+  const status = overviewEl("p", "policy-request-status");
+  status.setAttribute("role", "status");
+  const actions = overviewEl("div", "policy-editor-actions");
+  const save = overviewEl("button", "policy-save-btn", "保存同步绑定");
+  save.type = "submit";
+  const history = overviewEl("button", "policy-history-btn", "更新记录");
+  history.type = "button";
+  const historyBody = overviewEl("div", "policy-history");
+  history.addEventListener("click", () => loadDeliverableUpdateHistory(item.id, historyBody));
+  actions.append(save, history);
+  form.append(modeGroup, bindingGroup, discoveryGroup, localReadiness, note, actions, status, historyBody);
+  form.addEventListener(
+    "submit",
+    async (event) => {
+      event.preventDefault();
+      const payload = buildPolicyPayload();
+      if (payload.enabled && !vaultConfigured && currentPolicy.credentialAvailable !== true) {
+        updatePolicyStatusMessage(status, "系统设置未检测到凭据保护库，请先登录并保存统一域账号。", true);
+        return;
+      }
+      save.disabled = true;
+      updatePolicyStatusMessage(status, "正在保存...");
+      try {
+        const response = await fetch(`/api/project-status/deliverables/${encodeURIComponent(item.id)}/update-policy`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const body = await overviewReadJson(response);
+        if (!response.ok || !body || body.ok !== true) throw overviewRequestError(body, response.status);
+        const saved = body.data;
+        item.updatePolicy = {
+          ...item.updatePolicy,
+          mode: saved.mode,
+          enabled: saved.enabled,
+          credentialAvailable: saved.credentialAvailable,
+          externalKey: saved.externalKey,
+          matchRule: saved.matchRule,
+          mapping: saved.mapping,
+          fieldAuthority: saved.fieldAuthority,
+          sourceType: saved.sourceType,
+          syncState: saved.syncState,
+          lastSuccessAt: saved.lastSuccessAt,
+        };
+        renderEwoDeliverablePolicy(container, item, saved, {
+          ...options,
+          settings: settingsData,
+          discovery: discoveryData,
+        });
+        const refreshedStatus = container.querySelector(".policy-request-status");
+        updatePolicyStatusMessage(refreshedStatus, "更新方式已保存");
+        if (typeof options.onEvidenceRefresh === "function") void options.onEvidenceRefresh();
+      } catch (err) {
+        updatePolicyStatusMessage(status, redactSensitiveText(ewoPolicyErrorMessage(err)), true);
+        save.disabled = false;
+      }
+    },
+  );
+  container.append(head, form);
+  refreshLocalReadiness();
+}
+
+async function loadDeliverablePolicy(container, item, options = {}) {
+  if (/ewo/i.test(String(item.source || ""))) {
+    container.appendChild(overviewEl("p", "policy-loading", "正在读取更新策略..."));
+    try {
+      const [policyResponse, settingsResponse, discoveryResponse] = await Promise.all([
+        fetch(`/api/project-status/deliverables/${encodeURIComponent(item.id)}/update-policy`, {
+          headers: { Accept: "application/json" },
+          cache: "no-store",
+        }),
+        fetch("/api/settings", { headers: { Accept: "application/json" }, cache: "no-store" }).catch(() => null),
+        fetch(`/api/project-status/deliverables/${encodeURIComponent(item.id)}/mapping-discovery`, {
+          headers: { Accept: "application/json" },
+          cache: "no-store",
+        }).catch(() => null),
+      ]);
+      const body = await overviewReadJson(policyResponse);
+      if (!policyResponse.ok || !body || body.ok !== true) throw overviewRequestError(body, policyResponse.status);
+      const settingsBody = settingsResponse ? await overviewReadJson(settingsResponse) : null;
+      const discoveryBody = discoveryResponse ? await overviewReadJson(discoveryResponse) : null;
+      renderEwoDeliverablePolicy(container, item, body.data, {
+        ...options,
+        settings: settingsBody && settingsBody.ok === true ? settingsBody.data : null,
+        discovery: discoveryBody && discoveryBody.ok === true ? discoveryBody.data : null,
+      });
     } catch (err) {
       // 无绑定或读取失败时按未启用展示，并保留脱敏后的错误信息。
-      renderEwoDeliverablePolicy(container, item, null);
+      renderEwoDeliverablePolicy(container, item, null, options);
       container.appendChild(overviewEl(
         "p",
         "policy-request-status is-error",
-        err instanceof Error ? err.message : String(err),
+        redactSensitiveText(ewoPolicyErrorMessage(err)),
       ));
     }
     return;
@@ -897,9 +1330,242 @@ async function requestProjectStatusSync(item) {
   return body.data || {};
 }
 
-async function loadDeliverableEvidence(container, item, bundle = null, statusInfo = null) {
+function createDeliverableAnalysisSyncState() {
+  let controller = null;
+  let ready = false;
+  let message = "正在读取同步前置条件";
+  let statusText = "";
+  let statusTone = "";
+  let busy = false;
+
+  return {
+    get ready() {
+      return ready;
+    },
+    get message() {
+      return message;
+    },
+    setReadiness(nextReady, nextMessage = "") {
+      ready = Boolean(nextReady);
+      message = String(nextMessage || (ready ? "" : "同步条件尚未满足"));
+      if (controller && typeof controller.setSyncReadiness === "function") {
+        controller.setSyncReadiness(ready, message);
+      }
+    },
+    setStatus(nextText, nextTone = "") {
+      statusText = String(nextText || "");
+      statusTone = nextTone;
+      if (controller && typeof controller.setSyncStatus === "function") {
+        controller.setSyncStatus(statusText, statusTone);
+      }
+    },
+    setBusy(nextBusy) {
+      busy = Boolean(nextBusy);
+      if (controller && typeof controller.setBusy === "function") {
+        controller.setBusy(busy);
+      }
+    },
+    attach(nextController) {
+      controller = nextController || null;
+      if (!controller) return;
+      if (typeof controller.setSyncReadiness === "function") {
+        controller.setSyncReadiness(ready, message);
+      }
+      if (statusText && typeof controller.setSyncStatus === "function") {
+        controller.setSyncStatus(statusText, statusTone);
+      }
+      if (typeof controller.setBusy === "function") controller.setBusy(busy);
+    },
+  };
+}
+
+function setDeliverableAnalysisSyncReadiness(item, ready, message, analysisSyncReadiness = null) {
+  if (analysisSyncReadiness && typeof analysisSyncReadiness.setReadiness === "function") {
+    analysisSyncReadiness.setReadiness(ready, message);
+  }
+}
+
+function unifiedStatusStateLabel(value, labels) {
+  const normalized = String(value || "unknown");
+  return labels[normalized] || safeDisplayValue(normalized);
+}
+
+function unifiedStatusTone(value, group) {
+  const normalized = String(value || "unknown");
+  const successStates = {
+    auth: ["authenticated"],
+    query: ["matched"],
+    sync: ["manual", "ready", "success"],
+  };
+  const warningStates = {
+    auth: ["credential_missing", "credential_invalid", "unknown"],
+    query: ["querying", "service_unavailable", "no_match"],
+    sync: ["running", "partial_success", "needs_attention"],
+  };
+  const errorStates = {
+    auth: ["unauthenticated"],
+    query: ["failed"],
+    sync: ["failed"],
+  };
+  if ((successStates[group] || []).includes(normalized)) return "success";
+  if ((errorStates[group] || []).includes(normalized)) return "error";
+  if ((warningStates[group] || []).includes(normalized)) return "warning";
+  return "warning";
+}
+
+function renderUnifiedStatusValue(value, labels, group) {
+  const text = unifiedStatusStateLabel(value, labels);
+  return overviewEl("span", `status-text is-${unifiedStatusTone(value, group)}`, text);
+}
+
+function renderDeliverableUnifiedStatus(container, objects = []) {
+  clearOverviewContainer(container);
+  const authLabels = {
+    unauthenticated: "未认证",
+    credential_missing: "缺少凭据",
+    credential_invalid: "凭据无效",
+    authenticated: "已认证",
+    unknown: "未知",
+  };
+  const queryLabels = {
+    idle: "空闲",
+    querying: "查询中",
+    service_unavailable: "服务不可用",
+    failed: "查询失败",
+    no_match: "未匹配",
+    matched: "已匹配",
+  };
+  const syncLabels = {
+    idle: "空闲",
+    manual: "手动维护",
+    ready: "已就绪",
+    running: "同步中",
+    success: "成功",
+    partial_success: "部分成功",
+    needs_attention: "需要处理",
+    failed: "失败",
+  };
+  const kindLabels = { ewo: "EWO", paa: "PAA", ncr: "NCR" };
+  const byKind = new Map();
+  (Array.isArray(objects) ? objects : [])
+    .filter((object) => object && typeof object === "object")
+    .forEach((object) => {
+      const kind = String(object.kind || "").toLowerCase();
+      const previous = byKind.get(kind);
+      if (!previous) {
+        byKind.set(kind, object);
+        return;
+      }
+      const errors = [...(Array.isArray(previous.errors) ? previous.errors : []), ...(Array.isArray(object.errors) ? object.errors : [])];
+      const severity = { failed: 5, service_unavailable: 4, partial_success: 3, needs_attention: 3, running: 2, ready: 1, success: 0, idle: 0, manual: 0 };
+      const worse = (field) => (severity[String(previous[field] || "").toLowerCase()] || 0) >= (severity[String(object[field] || "").toLowerCase()] || 0) ? previous[field] : object[field];
+      byKind.set(kind, { ...previous, ...object, auth_state: previous.auth_state === "credential_invalid" ? previous.auth_state : object.auth_state === "credential_invalid" ? object.auth_state : object.auth_state || previous.auth_state, query_state: worse("query_state"), sync_state: worse("sync_state"), errors: [...new Set(errors)].slice(0, 4) });
+    });
+
+  const title = overviewEl("h5", "evidence-sub-title", "EWO / PAA / NCR 统一状态");
+  const cards = overviewEl("div", "evidence-overview-grid unified-status-cards");
+  ["ewo", "paa", "ncr"].forEach((kind) => {
+    const object = byKind.get(kind) || {};
+    const card = overviewEl("article", "evidence-restriction-card unified-status-card");
+    card.setAttribute("aria-label", `${kindLabels[kind]} 状态`);
+    card.appendChild(overviewEl("strong", "evidence-restriction-title", kindLabels[kind]));
+
+    const identity = object.id || object.source
+      ? `${safeDisplayValue(object.id || "未知对象")} · ${safeDisplayValue(object.source || "未知来源")}`
+      : "暂无状态数据";
+    card.appendChild(overviewEl("p", "evidence-restriction-desc", identity));
+
+    const stateGrid = overviewEl("dl", "evidence-obs-grid unified-status-state-grid");
+    stateGrid.append(
+      overviewEl("dt", null, "认证状态"),
+      overviewEl("dd", null),
+      overviewEl("dt", null, "查询状态"),
+      overviewEl("dd", null),
+      overviewEl("dt", null, "同步状态"),
+      overviewEl("dd", null),
+    );
+    stateGrid.children[1].appendChild(renderUnifiedStatusValue(object.auth_state, authLabels, "auth"));
+    stateGrid.children[3].appendChild(renderUnifiedStatusValue(object.query_state, queryLabels, "query"));
+    stateGrid.children[5].appendChild(renderUnifiedStatusValue(object.sync_state, syncLabels, "sync"));
+    card.appendChild(stateGrid);
+
+    const errors = Array.isArray(object.errors)
+      ? object.errors.filter((error) => error !== null && error !== undefined && String(error).trim())
+      : [];
+    const errorSummary = errors.length > 0
+      ? errors.slice(0, 2).map((error) => redactSensitiveText(String(error))).join("；")
+      : "无";
+    const content = object.content && typeof object.content === "object" ? object.content : {};
+    card.append(
+      overviewEl("span", "evidence-field-label", "错误摘要"),
+      overviewEl("p", "evidence-risk-desc unified-status-error-summary", safeDisplayValue(errorSummary)),
+      overviewEl("span", "evidence-field-label", "最近更新"),
+      overviewEl("p", "evidence-restriction-desc", safeDisplayValue(object.last_updated || "未知")),
+      overviewEl("span", "evidence-field-label", "内容来源"),
+      overviewEl("p", "evidence-restriction-desc", safeDisplayValue(content.report_type || "暂无内容")),
+      overviewEl("span", "evidence-field-label", "最近成功"),
+      overviewEl("p", "evidence-restriction-desc", safeDisplayValue(content.last_success_at || "暂无记录")),
+    );
+    cards.appendChild(card);
+  });
+
+  container.append(title, cards);
+}
+
+async function loadDeliverableUnifiedStatus(container, item) {
+  clearOverviewContainer(container);
+  const loading = overviewEl("p", "loading", "正在读取 EWO / PAA / NCR 统一状态...");
+  loading.setAttribute("role", "status");
+  loading.setAttribute("aria-live", "polite");
+  container.appendChild(loading);
+  try {
+    const response = await fetch(
+      `/api/project-status/deliverables/${encodeURIComponent(item.id)}/unified-status`,
+      {
+        method: "GET",
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      },
+    );
+    const body = await overviewReadJson(response);
+    if (!response.ok || !body || body.ok !== true) {
+      throw overviewRequestError(body, response.status);
+    }
+    const objects = body.data && Array.isArray(body.data.objects) ? body.data.objects : [];
+    renderDeliverableUnifiedStatus(container, objects);
+    return true;
+  } catch (err) {
+    clearOverviewContainer(container);
+    const errorBox = overviewEl("div", "unified-status-load-error");
+    errorBox.setAttribute("role", "alert");
+    errorBox.setAttribute("aria-live", "assertive");
+    errorBox.appendChild(overviewEl(
+      "p",
+      "error-msg",
+      `读取统一状态失败：${redactSensitiveText(err instanceof Error ? err.message : String(err))}`,
+    ));
+    const retryButton = overviewEl("button", "evidence-retry-btn unified-status-retry-btn", "重试统一状态");
+    retryButton.type = "button";
+    retryButton.addEventListener("click", () => loadDeliverableUnifiedStatus(container, item));
+    errorBox.appendChild(retryButton);
+    container.appendChild(errorBox);
+    return false;
+  }
+}
+
+async function loadDeliverableEvidence(
+  container,
+  item,
+  bundle = null,
+  statusInfo = null,
+  statusChart = null,
+  analysisSyncReadiness = null,
+) {
   if (bundle) {
-    renderDeliverableEvidence(container, item, bundle, statusInfo);
+    renderDeliverableEvidence(container, item, bundle, statusInfo, statusChart, analysisSyncReadiness);
+    const unifiedStatusSection = overviewEl("section", "evidence-unified-status");
+    container.prepend(unifiedStatusSection);
+    loadDeliverableUnifiedStatus(unifiedStatusSection, item);
     return;
   }
   container.textContent = "";
@@ -912,7 +1578,12 @@ async function loadDeliverableEvidence(container, item, bundle = null, statusInf
   );
   container.appendChild(head);
 
+  const unifiedStatusSection = overviewEl("section", "evidence-unified-status");
+  container.appendChild(unifiedStatusSection);
+  loadDeliverableUnifiedStatus(unifiedStatusSection, item);
+
   if (item.id === "VPI-T2-D1") {
+    setDeliverableAnalysisSyncReadiness(item, false, "该交付物仅支持手动维护", analysisSyncReadiness);
     const notice = overviewEl("div", "evidence-restriction-card is-manual");
     notice.append(
       overviewEl("strong", "evidence-restriction-title", "仅手工维护"),
@@ -923,6 +1594,7 @@ async function loadDeliverableEvidence(container, item, bundle = null, statusInf
   }
 
   if (item.id === "VPI-T2-D4") {
+    setDeliverableAnalysisSyncReadiness(item, false, "该交付物外部数据契约待验证，当前已阻断外部同步", analysisSyncReadiness);
     const notice = overviewEl("div", "evidence-restriction-card is-blocked");
     notice.append(
       overviewEl("strong", "evidence-restriction-title", "TDC A 面契约待验证/阻断"),
@@ -983,22 +1655,48 @@ async function loadDeliverableEvidence(container, item, bundle = null, statusInf
     const runs = runsBody.data && Array.isArray(runsBody.data.runs) ? runsBody.data.runs : [];
 
     loadingP.remove();
-    renderDeliverableEvidence(container, item, { policy, analytics, mapping, preview, runs }, statusInfo);
+    renderDeliverableEvidence(
+      container,
+      item,
+      { policy, analytics, mapping, preview, runs },
+      statusInfo,
+      statusChart,
+      analysisSyncReadiness,
+    );
   } catch (err) {
     loadingP.remove();
+    setDeliverableAnalysisSyncReadiness(
+      item,
+      false,
+      "同步前置条件读取失败，请展开下方证据区域重试",
+      analysisSyncReadiness,
+    );
+    if (statusChart && typeof statusChart.setSyncReadiness === "function" && /ewo/i.test(String(item.source || ""))) {
+      statusChart.setSyncReadiness(false, "同步前置条件读取失败，请展开下方证据区域重试");
+    }
     const errBox = overviewEl("div", "evidence-load-error");
     errBox.setAttribute("role", "alert");
     errBox.setAttribute("aria-live", "assertive");
     errBox.appendChild(overviewEl("p", "error-msg", `读取证据失败：${redactSensitiveText(err instanceof Error ? err.message : String(err))}`));
     const retryBtn = overviewEl("button", "evidence-retry-btn", "重试");
     retryBtn.type = "button";
-    retryBtn.addEventListener("click", () => loadDeliverableEvidence(container, item));
+    retryBtn.addEventListener(
+      "click",
+      () => loadDeliverableEvidence(container, item, null, statusInfo, statusChart, analysisSyncReadiness),
+    );
     errBox.appendChild(retryBtn);
     container.appendChild(errBox);
   }
 }
 
-function renderDeliverableEvidence(container, item, bundle, statusInfo = null) {
+function renderDeliverableEvidence(
+  container,
+  item,
+  bundle,
+  statusInfo = null,
+  statusChart = null,
+  analysisSyncReadiness = null,
+) {
   const { policy, analytics, mapping, preview, runs } = bundle;
   const fixedSource = DELIVERABLE_FIXED_SOURCES[item.id] || item.source || "未知";
 
@@ -1044,7 +1742,61 @@ function renderDeliverableEvidence(container, item, bundle, statusInfo = null) {
   });
   container.appendChild(grid);
 
-  // 2. Risk / Needs Attention Alert (if any)
+  // 2. Offline Debug Tools (all diagnostic output is redacted before display/copy).
+  const debugSection = overviewEl("section", "evidence-debug-tools");
+  debugSection.appendChild(overviewEl("h5", "evidence-sub-title", "Debug 工具"));
+  debugSection.appendChild(overviewEl("p", "evidence-debug-notice", "敏感字段已过滤"));
+  const debugActions = overviewEl("div", "evidence-debug-actions");
+  const debugStatus = overviewEl("span", "evidence-debug-status");
+  debugStatus.setAttribute("role", "status");
+  debugStatus.setAttribute("aria-live", "polite");
+  const debugJsonEndpoint = `/api/project-status/deliverables/${encodeURIComponent(item.id)}/debug-bundle?format=json`;
+  const debugZipEndpoint = `/api/project-status/deliverables/${encodeURIComponent(item.id)}/debug-bundle?format=zip`;
+
+  const copyDebugButton = overviewEl("button", "evidence-debug-btn", "复制诊断摘要");
+  copyDebugButton.type = "button";
+  copyDebugButton.addEventListener("click", async () => {
+    try {
+      const summary = buildDeliverableDebugSummary({ policy, analytics, mapping, runs });
+      if (!navigator.clipboard || typeof navigator.clipboard.writeText !== "function") {
+        throw new Error("当前浏览器不支持复制");
+      }
+      await navigator.clipboard.writeText(summary);
+      debugStatus.textContent = "诊断摘要已复制";
+      debugStatus.className = "evidence-debug-status is-success";
+    } catch (err) {
+      debugStatus.textContent = `复制失败：${redactSensitiveText(err instanceof Error ? err.message : String(err))}`;
+      debugStatus.className = "evidence-debug-status is-error";
+    }
+  });
+
+  const downloadJsonButton = overviewEl("button", "evidence-debug-btn", "下载 JSON");
+  downloadJsonButton.type = "button";
+  downloadJsonButton.addEventListener("click", async () => {
+    await downloadDeliverableDebugBundle(
+      debugJsonEndpoint,
+      `${sanitizeDownloadName(String(item.id)) || "deliverable"}_debug.json`,
+      downloadJsonButton,
+      debugStatus,
+    );
+  });
+
+  const downloadZipButton = overviewEl("button", "evidence-debug-btn", "下载 ZIP");
+  downloadZipButton.type = "button";
+  downloadZipButton.addEventListener("click", async () => {
+    await downloadDeliverableDebugBundle(
+      debugZipEndpoint,
+      `${sanitizeDownloadName(String(item.id)) || "deliverable"}_debug.zip`,
+      downloadZipButton,
+      debugStatus,
+    );
+  });
+
+  debugActions.append(copyDebugButton, downloadJsonButton, downloadZipButton, debugStatus);
+  debugSection.appendChild(debugActions);
+  container.appendChild(debugSection);
+
+  // 3. Risk / Needs Attention Alert (if any)
   if (analytics.needsAttention || analytics.riskSummary) {
     const riskBox = overviewEl("div", "evidence-risk-box");
     riskBox.append(
@@ -1059,26 +1811,59 @@ function renderDeliverableEvidence(container, item, bundle, statusInfo = null) {
     (analytics.mappingStability && analytics.mappingStability.ready === true) ||
     (mapping.stability && Number(mapping.stability.confirmed) >= 2)
   );
+  const syncMissing = [];
   const syncSupported = !["VPI-T2-D1", "VPI-T2-D4"].includes(item.id);
+  const syncModeReady = ["automatic", "hybrid"].includes(policy.mode);
+  const syncExternalKeyReady = typeof policy.externalKey === "string" && Boolean(policy.externalKey.trim());
+  const syncMatchRule = policy.matchRule && typeof policy.matchRule === "object" ? policy.matchRule : {};
+  const syncMatchRuleReady = Boolean(syncMatchRule.reportType) && Object.keys(syncMatchRule).length >= 2;
+  const syncMapping = policy.mapping && typeof policy.mapping === "object" ? policy.mapping : {};
+  const syncAuthorities = policy.fieldAuthority && typeof policy.fieldAuthority === "object"
+    ? Object.entries(policy.fieldAuthority)
+      .filter(([, authority]) => authority === "automatic")
+      .map(([field]) => field)
+    : [];
+  const syncFieldMappingReady = syncAuthorities.length > 0
+    && Object.keys(syncMapping).length === syncAuthorities.length
+    && Object.keys(syncMapping).every((field) => syncAuthorities.includes(field));
   const syncReady = Boolean(
-    policy.enabled === true
+    syncSupported
+    && policy.enabled === true
+    && syncModeReady
     && policy.credentialAvailable === true
+    && syncExternalKeyReady
+    && syncMatchRuleReady
+    && syncFieldMappingReady
     && stabilityReady
+  );
+  if (!syncReady) {
+    const missing = [];
+    if (policy.enabled !== true || !syncModeReady) missing.push("更新策略未启用或未选择自动/混合模式");
+    if (policy.credentialAvailable !== true) missing.push("凭据未配置或状态未知");
+    if (!syncExternalKeyReady) missing.push("外部稳定键未确认");
+    if (!syncMatchRuleReady) missing.push("匹配规则未确认");
+    if (!syncFieldMappingReady) missing.push("自动字段映射未确认");
+    if (!stabilityReady) missing.push(`映射稳定性未就绪 (${mappingProgressText})`);
+    syncMissing.push(...missing);
+  }
+  setDeliverableAnalysisSyncReadiness(
+    item,
+    syncSupported && syncReady,
+    syncMissing.join("，") || "同步条件尚未满足",
+    analysisSyncReadiness,
   );
 
   const syncActionBar = overviewEl("div", "evidence-sync-bar");
   const syncBtn = overviewEl("button", "evidence-sync-btn", "立即同步");
   syncBtn.type = "button";
   syncBtn.disabled = !syncSupported || !syncReady;
+  if (!syncReady) syncBtn.title = `不可同步：${syncMissing.join("，") || "同步条件尚未满足"}`;
 
-  const syncMissing = [];
-  if (!syncReady) {
-    const missing = [];
-    if (policy.enabled !== true) missing.push("更新策略未启用或状态未知");
-    if (policy.credentialAvailable !== true) missing.push("凭据未配置或状态未知");
-    if (!stabilityReady) missing.push(`映射稳定性未就绪 (${mappingProgressText})`);
-    syncMissing.push(...missing);
-    syncBtn.title = `不可同步：${missing.join("，")}`;
+  if (statusChart && typeof statusChart.setSyncReadiness === "function" && /ewo/i.test(String(item.source || ""))) {
+    statusChart.setSyncReadiness(
+      syncSupported && syncReady,
+      syncMissing.join("，") || "同步条件尚未满足",
+    );
   }
 
   const syncStatus = overviewEl("span", "evidence-sync-status");
@@ -1380,7 +2165,93 @@ function renderDeliverableEvidence(container, item, bundle, statusInfo = null) {
 // 进入详情页时重置；match 取值 fuzzy（默认）| exact。
 const analysisModelFilter = { model: "", match: "fuzzy" };
 
-async function loadDeliverableAnalysis(container, item, statusChart = null) {
+function debugBundleSensitiveKey(key) {
+  const normalized = String(key).toLowerCase().replace(/[\s-]+/g, "_");
+  return SENSITIVE_COLUMNS.has(normalized)
+    || /(authorization|password|token|cookie|secret|session|csrf|credential|api_?key|private_?key)/i.test(normalized);
+}
+
+function redactDeliverableDebugValue(value) {
+  if (Array.isArray(value)) return value.map((entry) => redactDeliverableDebugValue(entry));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [
+        key,
+        debugBundleSensitiveKey(key) ? "[FILTERED]" : redactDeliverableDebugValue(entry),
+      ]),
+    );
+  }
+  return typeof value === "string" ? redactSensitiveText(value) : value;
+}
+
+function buildDeliverableDebugSummary(bundle) {
+  const sections = ["policy", "analytics", "mapping", "runs"];
+  const lines = ["VSE 交付物诊断摘要", "敏感字段已过滤"];
+  sections.forEach((name) => {
+    let payload = redactDeliverableDebugValue(bundle && bundle[name]);
+    if (payload === undefined) payload = null;
+    let serialized = "";
+    try {
+      serialized = JSON.stringify(payload, null, 2);
+    } catch {
+      serialized = "null";
+    }
+    lines.push(`\n[${name}]\n${serialized || "null"}`);
+  });
+  return lines.join("\n");
+}
+
+async function downloadDeliverableDebugBundle(endpoint, defaultFileName, button, statusNode) {
+  if (button) button.disabled = true;
+  if (statusNode) {
+    statusNode.textContent = "正在准备诊断包...";
+    statusNode.className = "evidence-debug-status is-busy";
+  }
+  let objectUrl = "";
+  let link = null;
+  try {
+    const response = await fetch(endpoint, {
+      method: "GET",
+      headers: { Accept: "application/json, application/zip" },
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      let message = `HTTP ${response.status}`;
+      try {
+        const body = await response.json();
+        const error = body && body.error;
+        if (error && error.message) message = formatApiErrorMessage(error, response.status);
+      } catch {
+        // 非 JSON 错误体不回显
+      }
+      throw new Error(redactSensitiveText(message));
+    }
+    const blob = await response.blob();
+    const fileName = parseContentDispositionFilename(response.headers.get("Content-Disposition")) || defaultFileName;
+    objectUrl = URL.createObjectURL(blob);
+    link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    if (statusNode) {
+      statusNode.textContent = "诊断包已下载（敏感字段已过滤）";
+      statusNode.className = "evidence-debug-status is-success";
+    }
+  } catch (err) {
+    if (statusNode) {
+      statusNode.textContent = `下载失败：${redactSensitiveText(err instanceof Error ? err.message : String(err))}`;
+      statusNode.className = "evidence-debug-status is-error";
+    }
+  } finally {
+    if (link) link.remove();
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+    if (button) button.disabled = false;
+  }
+}
+
+async function loadDeliverableAnalysis(container, item, statusChart = null, analysisOptions = {}) {
   clearOverviewContainer(container);
   const loadingP = overviewEl("p", "loading", "加载交付物分析与明细...");
   loadingP.setAttribute("role", "status");
@@ -1412,8 +2283,11 @@ async function loadDeliverableAnalysis(container, item, statusChart = null) {
     if (statusChart && typeof statusChart.updateEwoSummary === "function") {
       statusChart.updateEwoSummary(analysisData);
     }
+    const analysisSyncReadiness = analysisOptions.analysisSyncReadiness || null;
     renderDeliverableAnalysis(container, item, analysisData, {
-      onReload: () => loadDeliverableAnalysis(container, item, statusChart),
+      ...analysisOptions,
+      analysisSyncReadiness,
+      onReload: () => loadDeliverableAnalysis(container, item, statusChart, analysisOptions),
     });
     return true;
   } catch (err) {
@@ -2318,6 +3192,95 @@ function renderCustomLabelChart(chart) {
   return rendered.el;
 }
 
+function renderDeliverableAnalysisActionBar(item, options = {}) {
+  if (options.showAnalysisActions !== true) return null;
+
+  const syncSupported = !["VPI-T2-D1", "VPI-T2-D4"].includes(item.id);
+  const syncState = options.analysisSyncReadiness || null;
+  let syncReady = Boolean(syncState && syncState.ready === true);
+  let syncReadinessMessage = syncState && syncState.message
+    ? String(syncState.message)
+    : "正在读取同步前置条件";
+  let syncBusy = false;
+  let feedbackText = "";
+  let feedbackTone = "";
+
+  const analysisActionBar = overviewEl("div", "evidence-sync-bar analysis-action-bar");
+  analysisActionBar.setAttribute("aria-label", `${safeDisplayValue(item.name)} 分析操作`);
+  analysisActionBar.appendChild(overviewEl("strong", "analysis-action-label", "分析操作"));
+
+  const refreshButton = overviewEl("button", "evidence-retry-btn analysis-refresh-btn", "刷新分析");
+  refreshButton.type = "button";
+  refreshButton.addEventListener("click", () => {
+    if (typeof options.onRefresh === "function") options.onRefresh();
+  });
+
+  const syncButton = overviewEl("button", "evidence-sync-btn analysis-sync-btn", "抓取并同步");
+  syncButton.type = "button";
+  syncButton.dataset.deliverableId = item.id;
+
+  const syncStatus = overviewEl("span", "evidence-sync-status analysis-sync-status");
+  syncStatus.setAttribute("role", "status");
+  syncStatus.setAttribute("aria-live", "polite");
+
+  function setSyncStatus(text, tone = "") {
+    feedbackText = String(text || "");
+    feedbackTone = tone;
+    syncStatus.textContent = feedbackText;
+    syncStatus.className = `evidence-sync-status analysis-sync-status${feedbackTone ? ` is-${feedbackTone}` : ""}`;
+  }
+
+  function setSyncReadiness(ready, message = "") {
+    syncReady = Boolean(ready);
+    syncReadinessMessage = String(message || (syncReady ? "" : "同步条件尚未满足"));
+    syncButton.disabled = syncBusy || !syncSupported || !syncReady;
+    syncButton.title = syncReady && syncSupported
+      ? ""
+      : `不可同步：${syncSupported ? syncReadinessMessage : "该交付物不支持外部同步"}`;
+    if (syncReady && feedbackText.startsWith("暂不能同步：")) {
+      setSyncStatus("", "");
+    } else if (!syncReady && (!feedbackText || feedbackText.startsWith("暂不能同步："))) {
+      setSyncStatus(
+        syncSupported
+          ? `暂不能同步：${syncReadinessMessage || "同步条件尚未满足"}`
+          : "该交付物不支持外部同步",
+        "warning",
+      );
+    }
+  }
+
+  function setBusy(busy) {
+    syncBusy = Boolean(busy);
+    syncButton.disabled = syncBusy || !syncSupported || !syncReady;
+    refreshButton.disabled = syncBusy;
+  }
+
+  syncButton.addEventListener("click", () => {
+    if (!syncReady || !syncSupported) {
+      setSyncStatus(
+        syncSupported
+          ? `暂不能同步：${syncReadinessMessage || "同步条件尚未满足"}`
+          : "该交付物不支持外部同步",
+        "warning",
+      );
+      return;
+    }
+    if (typeof options.onSync === "function") options.onSync();
+  });
+
+  const controller = {
+    el: analysisActionBar,
+    setSyncStatus,
+    setSyncReadiness,
+    setBusy,
+  };
+  setSyncReadiness(syncReady, syncReadinessMessage);
+  if (!syncSupported) setSyncStatus("该交付物不支持外部同步", "warning");
+  if (syncState && typeof syncState.attach === "function") syncState.attach(controller);
+  analysisActionBar.append(refreshButton, syncButton, syncStatus);
+  return controller;
+}
+
 function renderDeliverableAnalysis(container, item, analysisData, options = {}) {
   clearOverviewContainer(container);
 
@@ -2334,6 +3297,9 @@ function renderDeliverableAnalysis(container, item, analysisData, options = {}) 
     : "暂无分析快照";
   head.appendChild(overviewEl("span", "analysis-snapshot-time", snapshotTime));
   container.appendChild(head);
+
+  const analysisActionBar = renderDeliverableAnalysisActionBar(item, options);
+  if (analysisActionBar) container.appendChild(analysisActionBar.el);
 
   if (!analysisData.hasCache) {
     container.appendChild(overviewEl("p", "analysis-empty-note is-empty", "暂无分析缓存数据（等待定时同步或首次抓取分析）"));
@@ -2695,7 +3661,8 @@ function renderEwoSyncSummary(host, item, analysisData, feedbackText = "", feedb
     needs_attention: "需处理",
   };
   const syncState = policy.syncState || "idle";
-  const statusText = feedbackText || statusLabels[syncState] || "未知";
+  const statusText = feedbackText
+    || (policy.enabled === false ? "未启用" : (statusLabels[syncState] || "未知"));
   const snapshotText = analysisData && analysisData.snapshotAt
     ? archiveFormatDate(analysisData.snapshotAt)
     : "暂无快照";
@@ -2788,6 +3755,9 @@ function renderDeliverableStatusChart(item, actions = {}) {
   let feedbackTone = "";
   let syncButton = null;
   let refreshButton = null;
+  let syncBusy = false;
+  let syncReady = !isEwo;
+  let syncReadinessMessage = isEwo ? "正在读取同步前置条件" : "";
   if (isEwo) {
     ewoHost = overviewEl("section", "ewo-sync-summary");
     ewoHost.setAttribute("aria-live", "polite");
@@ -2795,6 +3765,8 @@ function renderDeliverableStatusChart(item, actions = {}) {
     const actionsRow = overviewEl("div", "ewo-sync-summary-actions");
     syncButton = overviewEl("button", "btn is-primary ewo-sync-now-btn", "立即同步");
     syncButton.type = "button";
+    syncButton.disabled = true;
+    syncButton.title = `不可同步：${syncReadinessMessage}`;
     refreshButton = overviewEl("button", "btn is-secondary ewo-sync-refresh-btn", "刷新同步数据");
     refreshButton.type = "button";
     syncButton.addEventListener("click", () => {
@@ -2824,8 +3796,34 @@ function renderDeliverableStatusChart(item, actions = {}) {
     if (syncButton) syncButton.setAttribute("aria-label", feedbackText ? `立即同步（${feedbackText}）` : "立即同步");
   }
 
+  function setSyncReadiness(ready, message = "") {
+    syncReady = Boolean(ready);
+    syncReadinessMessage = String(message || "");
+    if (syncButton) {
+      syncButton.disabled = syncBusy || !syncReady;
+      syncButton.title = syncReady ? "" : `不可同步：${syncReadinessMessage || "同步条件尚未满足"}`;
+    }
+    if (syncReady && feedbackText.startsWith("暂不能同步：")) {
+      feedbackText = "";
+      feedbackTone = "";
+      if (ewoHost) updateEwoSummary(ewoData);
+      if (syncButton) syncButton.setAttribute("aria-label", "立即同步");
+    }
+    if (!syncReady && !feedbackText) {
+      setSyncStatus(`暂不能同步：${syncReadinessMessage || "同步条件尚未满足"}`, "warning");
+    }
+  }
+
+  function getSyncReadiness() {
+    return {
+      ready: !isEwo || syncReady,
+      message: syncReadinessMessage || "同步条件尚未满足",
+    };
+  }
+
   function setBusy(busy) {
-    if (syncButton) syncButton.disabled = Boolean(busy);
+    syncBusy = Boolean(busy);
+    if (syncButton) syncButton.disabled = syncBusy || !syncReady;
     if (refreshButton) refreshButton.disabled = Boolean(busy);
     chart.classList.toggle("is-sync-busy", Boolean(busy));
   }
@@ -2834,19 +3832,83 @@ function renderDeliverableStatusChart(item, actions = {}) {
     el: chart,
     updateEwoSummary,
     setSyncStatus,
+    setSyncReadiness,
+    getSyncReadiness,
     setBusy,
   };
 }
 
-async function runEwoSyncFromStatusChart(item, statusChart, analysisPanel) {
+async function runDeliverableSyncFromAnalysis(
+  item,
+  analysisSyncReadiness,
+  analysisPanel,
+  statusChart,
+  analysisOptions = {},
+) {
+  if (!analysisSyncReadiness || !analysisSyncReadiness.ready) {
+    if (analysisSyncReadiness) {
+      analysisSyncReadiness.setStatus(
+        `暂不能同步：${analysisSyncReadiness.message || "同步条件尚未满足"}`,
+        "warning",
+      );
+    }
+    return;
+  }
+  if (!window.confirm(`确定要抓取并同步 ${item.name} 吗？`)) return;
+  analysisSyncReadiness.setBusy(true);
+  analysisSyncReadiness.setStatus("正在抓取并同步...", "busy");
+  try {
+    const data = await requestProjectStatusSync(item);
+    const feedback = projectStatusSyncFeedback(data);
+    const loaded = await loadDeliverableAnalysis(analysisPanel, item, statusChart, analysisOptions);
+    if (loaded) analysisSyncReadiness.setStatus(feedback.text, feedback.tone);
+  } catch (err) {
+    analysisSyncReadiness.setStatus(
+      `同步失败：${redactSensitiveText(err instanceof Error ? err.message : String(err))}`,
+      "error",
+    );
+  } finally {
+    analysisSyncReadiness.setBusy(false);
+  }
+}
+
+async function refreshDeliverableAnalysisFromAnalysis(
+  item,
+  analysisSyncReadiness,
+  analysisPanel,
+  statusChart,
+  analysisOptions = {},
+) {
+  if (!analysisSyncReadiness) return;
+  analysisSyncReadiness.setBusy(true);
+  analysisSyncReadiness.setStatus("正在刷新分析...", "busy");
+  try {
+    const loaded = await loadDeliverableAnalysis(analysisPanel, item, statusChart, analysisOptions);
+    analysisSyncReadiness.setStatus(
+      loaded ? "刷新完成" : "刷新失败：分析数据读取失败",
+      loaded ? "success" : "error",
+    );
+  } finally {
+    analysisSyncReadiness.setBusy(false);
+  }
+}
+
+async function runEwoSyncFromStatusChart(item, statusChart, analysisPanel, analysisOptions = {}) {
   if (!statusChart) return;
+  const readiness = typeof statusChart.getSyncReadiness === "function"
+    ? statusChart.getSyncReadiness()
+    : { ready: true, message: "" };
+  if (!readiness.ready) {
+    statusChart.setSyncStatus(`暂不能同步：${readiness.message}`, "warning");
+    return;
+  }
   if (!window.confirm(`确定要立即同步 ${item.name} 吗？`)) return;
   statusChart.setBusy(true);
   statusChart.setSyncStatus("正在执行同步...", "busy");
   try {
     const data = await requestProjectStatusSync(item);
     const feedback = projectStatusSyncFeedback(data);
-    const loaded = await loadDeliverableAnalysis(analysisPanel, item, statusChart);
+    const loaded = await loadDeliverableAnalysis(analysisPanel, item, statusChart, analysisOptions);
     if (loaded) statusChart.setSyncStatus(feedback.text, feedback.tone);
   } catch (err) {
     statusChart.setSyncStatus(
@@ -2858,12 +3920,12 @@ async function runEwoSyncFromStatusChart(item, statusChart, analysisPanel) {
   }
 }
 
-async function refreshEwoAnalysisFromStatusChart(item, statusChart, analysisPanel) {
+async function refreshEwoAnalysisFromStatusChart(item, statusChart, analysisPanel, analysisOptions = {}) {
   if (!statusChart) return;
   statusChart.setBusy(true);
   statusChart.setSyncStatus("正在刷新同步数据...", "busy");
   try {
-    const loaded = await loadDeliverableAnalysis(analysisPanel, item, statusChart);
+    const loaded = await loadDeliverableAnalysis(analysisPanel, item, statusChart, analysisOptions);
     if (loaded) statusChart.setSyncStatus("刷新完成", "success");
   } catch (err) {
     statusChart.setSyncStatus(
@@ -2963,9 +4025,28 @@ function renderDeliverableDetailPage(deliverableId) {
   const metaSection = overviewEl("section", "deliverable-page-meta-section overview-band");
   metaSection.appendChild(overviewEl("h5", "section-sub-title", "交付物配置"));
   let statusChart = null;
+  const analysisSyncReadiness = createDeliverableAnalysisSyncState();
+  const analysisOptions = {
+    showAnalysisActions: true,
+    analysisSyncReadiness,
+    onSync: () => runDeliverableSyncFromAnalysis(
+      item,
+      analysisSyncReadiness,
+      analysisPanel,
+      statusChart,
+      analysisOptions,
+    ),
+    onRefresh: () => refreshDeliverableAnalysisFromAnalysis(
+      item,
+      analysisSyncReadiness,
+      analysisPanel,
+      statusChart,
+      analysisOptions,
+    ),
+  };
   statusChart = renderDeliverableStatusChart(item, {
-    onSync: () => runEwoSyncFromStatusChart(item, statusChart, analysisPanel),
-    onRefresh: () => refreshEwoAnalysisFromStatusChart(item, statusChart, analysisPanel),
+    onSync: () => runEwoSyncFromStatusChart(item, statusChart, analysisPanel, analysisOptions),
+    onRefresh: () => refreshEwoAnalysisFromStatusChart(item, statusChart, analysisPanel, analysisOptions),
   });
   metaSection.appendChild(statusChart.el);
   metaSection.appendChild(overviewEl("h6", "section-sub-title", "详细明细"));
@@ -3001,12 +4082,10 @@ function renderDeliverableDetailPage(deliverableId) {
   metaSection.appendChild(association);
   page.appendChild(metaSection);
   page.appendChild(analysisPanel);
-  loadDeliverableAnalysis(analysisPanel, item, statusChart);
+  loadDeliverableAnalysis(analysisPanel, item, statusChart, analysisOptions);
 
   const policyPanel = overviewEl("section", "deliverable-policy-panel");
   policyPanel.setAttribute("aria-label", `${item.name} 更新方式`);
-  loadDeliverablePolicy(policyPanel, item);
-  page.appendChild(policyPanel);
 
   const evidenceDisclosure = document.createElement("details");
   evidenceDisclosure.className = "deliverable-evidence-disclosure";
@@ -3015,10 +4094,209 @@ function renderDeliverableDetailPage(deliverableId) {
   evidenceDisclosure.appendChild(evidenceSummary);
   const evidencePanel = overviewEl("section", "deliverable-evidence-panel");
   evidencePanel.setAttribute("aria-label", `${item.name} 外部同步与证据`);
-  loadDeliverableEvidence(evidencePanel, item, null, null);
   evidenceDisclosure.appendChild(evidencePanel);
+  page.appendChild(policyPanel);
   page.appendChild(evidenceDisclosure);
 
+  const refreshEvidence = () => loadDeliverableEvidence(
+    evidencePanel,
+    item,
+    null,
+    null,
+    statusChart,
+    analysisSyncReadiness,
+  );
+  loadDeliverablePolicy(policyPanel, item, { onEvidenceRefresh: refreshEvidence });
+  refreshEvidence();
+
+  container.appendChild(page);
+}
+
+function renderArchiveDeliverableDetailPage(jobKey) {
+  const container = document.getElementById("overview-deliverable-detail-view");
+  const listView = document.getElementById("overview-deliverables-list-view");
+  if (!container) return;
+  if (listView) listView.hidden = true;
+  container.hidden = false;
+  clearOverviewContainer(container);
+
+  const job = (Array.isArray(overviewArchiveJobs) ? overviewArchiveJobs : [])
+    .find((candidate) => candidate && candidate.jobKey === jobKey);
+  if (!job) {
+    const box = overviewEl("div", "deliverable-detail-not-found");
+    box.appendChild(overviewEl("p", "error-msg", "未找到该外部同步任务，请返回列表刷新后重试"));
+    const backBtn = overviewEl("button", "segment back-to-list-btn", "← 返回交付物列表");
+    backBtn.type = "button";
+    backBtn.addEventListener("click", () => { location.hash = "#overview"; });
+    box.appendChild(backBtn);
+    container.appendChild(box);
+    return;
+  }
+
+  selectedArchiveJobKey = job.jobKey;
+  const labels = {
+    aras_paa: ["PAA 变更记录", "ARAS PAA"],
+    aras_ncr_progress: ["NCR 审批进度", "ARAS NCR"],
+    aras_ncr_detail: ["NCR 审批明细", "ARAS NCR"],
+  };
+  const [name, source] = labels[job.jobKey] || [job.jobKey, "外部同步"];
+  const page = overviewEl("article", "deliverable-detail-page");
+  page.dataset.externalJobKey = job.jobKey;
+  const head = overviewEl("div", "deliverable-detail-page-head");
+  const nav = overviewEl("div", "deliverable-detail-page-nav");
+  const backBtn = overviewEl("button", "segment back-to-list-btn", "← 返回交付物列表");
+  backBtn.type = "button";
+  backBtn.addEventListener("click", () => { location.hash = "#overview"; });
+  nav.appendChild(backBtn);
+  head.appendChild(nav);
+  const titleRow = overviewEl("div", "deliverable-detail-title-row");
+  const titleGroup = overviewEl("div");
+  titleGroup.append(
+    overviewEl("p", "eyebrow", "交付物明细"),
+    overviewEl("h3", "deliverable-page-title", name),
+    overviewEl("span", "deliverable-page-id", `任务 ID: ${safeDisplayValue(job.jobKey)}`),
+  );
+  titleRow.appendChild(titleGroup);
+  titleRow.appendChild(overviewEl("span", `status-text is-${job.syncState === "success" ? "success" : job.syncState === "failed" ? "error" : "warning"}`, archiveSyncStateLabel(job.syncState)));
+  head.appendChild(titleRow);
+  page.appendChild(head);
+
+  const statusSection = overviewEl("section", "deliverable-page-meta-section overview-band external-progress-chart");
+  const statusHead = overviewEl("div", "external-detail-section-head");
+  statusHead.appendChild(overviewEl("h5", "section-sub-title", "当前状态图表"));
+  const statusActions = overviewEl("div", "external-detail-actions");
+  const refreshButton = overviewEl("button", "btn", "刷新同步数据");
+  refreshButton.type = "button";
+  const syncButton = overviewEl("button", "btn is-primary", "立即同步");
+  syncButton.type = "button";
+  syncButton.disabled = !job.enabled || !(job.credentialAvailable ?? job.credentialConfigured);
+  statusActions.append(refreshButton, syncButton);
+  statusHead.appendChild(statusActions);
+  statusSection.appendChild(statusHead);
+  const statusMessage = overviewEl("p", "external-detail-sync-message", `最近同步状态：${archiveSyncStateLabel(job.syncState)}`);
+  statusSection.appendChild(statusMessage);
+  const metrics = overviewEl("div", "external-detail-metrics");
+  const metricValues = [
+    ["同步状态", archiveSyncStateLabel(job.syncState)],
+    ["最近成功", job.lastSuccessAt || "暂无"],
+    ["最近尝试", job.lastAttemptAt || "暂无"],
+    ["数据新鲜度", job.freshness || "未知"],
+  ];
+  metricValues.forEach(([label, value]) => {
+    const metric = overviewEl("div", "external-detail-metric");
+    metric.append(overviewEl("span", null, label), overviewEl("strong", null, safeDisplayValue(value)));
+    metrics.appendChild(metric);
+  });
+  statusSection.appendChild(metrics);
+  const historyPanel = overviewEl("section", "external-detail-history");
+  historyPanel.appendChild(overviewEl("h5", "section-sub-title", "同步历史与数据量"));
+  const historyBody = overviewEl("div", "external-detail-history-body");
+  historyBody.appendChild(overviewEl("p", "loading", "正在加载同步历史..."));
+  historyPanel.appendChild(historyBody);
+  statusSection.appendChild(historyPanel);
+  page.appendChild(statusSection);
+
+  const renderHistory = async () => {
+    clearOverviewContainer(historyBody);
+    try {
+      const response = await fetch(`/api/scheduled-archive/runs?jobKey=${encodeURIComponent(job.jobKey)}&limit=12`, {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      });
+      const body = await response.json();
+      if (!response.ok || !body.ok) throw new Error((body.error && body.error.message) || "同步历史加载失败");
+      const runs = Array.isArray(body.data) ? body.data : [];
+      if (!runs.length) {
+        historyBody.appendChild(overviewEl("p", "is-empty", "暂无同步历史，执行首次同步后将显示趋势"));
+        return;
+      }
+      const maxRecords = Math.max(...runs.map((run) => Number(run.recordCount) || 0), 1);
+      const chart = overviewEl("div", "external-run-chart");
+      runs.slice().reverse().forEach((run) => {
+        const column = overviewEl("div", "external-run-column");
+        const bar = overviewEl("div", `external-run-bar is-${run.runState === "success" ? "success" : "error"}`);
+        bar.style.height = `${Math.max(8, Math.round(((Number(run.recordCount) || 0) / maxRecords) * 100))}%`;
+        bar.title = `${safeDisplayValue(run.finishedAt || run.startedAt)} · ${Number(run.recordCount) || 0} 条`;
+        column.append(bar, overviewEl("small", null, run.runState === "success" ? "成功" : "失败"));
+        chart.appendChild(column);
+      });
+      historyBody.appendChild(chart);
+      const table = document.createElement("table");
+      table.className = "external-run-table";
+      const thead = document.createElement("thead");
+      const headerRow = document.createElement("tr");
+      ["完成时间", "状态", "记录数", "结果摘要"].forEach((label) => {
+        headerRow.appendChild(overviewEl("th", null, label));
+      });
+      thead.appendChild(headerRow);
+      table.appendChild(thead);
+      const tbody = document.createElement("tbody");
+      runs.slice(0, 6).forEach((run) => {
+        const row = document.createElement("tr");
+        [
+          run.finishedAt || run.startedAt || "暂无",
+          run.runState === "success" ? "成功" : "失败",
+          String(Number(run.recordCount) || 0),
+          run.errorMessage ? redactSensitiveText(run.errorMessage) : (run.resultSummary || "无"),
+        ].forEach((value) => row.appendChild(overviewEl("td", null, safeDisplayValue(value))));
+        tbody.appendChild(row);
+      });
+      table.appendChild(tbody);
+      historyBody.appendChild(table);
+    } catch (error) {
+      historyBody.appendChild(overviewEl("p", "error-msg", `同步历史加载失败：${redactSensitiveText(error instanceof Error ? error.message : String(error))}`));
+    }
+  };
+  refreshButton.addEventListener("click", renderHistory);
+  syncButton.addEventListener("click", async () => {
+    syncButton.disabled = true;
+    syncButton.textContent = "正在同步...";
+    statusMessage.textContent = "正在同步当前交付物...";
+    try {
+      const response = await fetch(`/api/scheduled-archive/jobs/${encodeURIComponent(job.jobKey)}/sync-now`, {
+        method: "POST",
+        headers: { Accept: "application/json" },
+      });
+      const body = await response.json();
+      if (!response.ok || !body.ok) throw new Error((body.error && body.error.message) || "同步失败");
+      statusMessage.textContent = "同步成功，正在刷新图表与明细...";
+      await loadArchiveJobs(true);
+      await renderHistory();
+    } catch (error) {
+      statusMessage.textContent = `同步失败：${redactSensitiveText(error instanceof Error ? error.message : String(error))}`;
+    } finally {
+      syncButton.disabled = !job.enabled || !(job.credentialAvailable ?? job.credentialConfigured);
+      syncButton.textContent = "立即同步";
+    }
+  });
+  renderHistory();
+
+  const meta = document.createElement("details");
+  meta.className = "deliverable-page-meta-section overview-band external-detail-info";
+  const metaSummary = document.createElement("summary");
+  metaSummary.textContent = "详细信息（点击展开）";
+  meta.appendChild(metaSummary);
+  const grid = overviewEl("div", "detail-inline-grid");
+  const credentialState = job.credentialAvailable === false ? "缺少凭据" : job.credentialAvailable === true ? "已配置" : "状态未知";
+  const pairs = [
+    ["同步状态", archiveSyncStateLabel(job.syncState)],
+    ["数据来源", source],
+    ["认证状态", credentialState],
+    ["最近成功", job.lastSuccessAt || "暂无"],
+    ["最近尝试", job.lastAttemptAt || "暂无"],
+    ["错误详情", job.lastErrorMessage ? redactSensitiveText(job.lastErrorMessage) : "无"],
+  ];
+  pairs.forEach(([label, value]) => {
+    const field = overviewEl("div", "detail-property");
+    field.append(overviewEl("span", "detail-property-label", label), overviewEl("span", "detail-property-value", safeDisplayValue(value)));
+    grid.appendChild(field);
+  });
+  meta.appendChild(grid);
+  const action = overviewEl("button", "primary-action", "进入任务配置/重试");
+  action.type = "button";
+  action.addEventListener("click", () => { selectedArchiveJobKey = job.jobKey; location.hash = "#scheduled-archive"; });
+  meta.appendChild(action);
+  page.appendChild(meta);
   container.appendChild(page);
 }
 
@@ -3028,14 +4306,45 @@ function toggleDeliverableDetail(row, data, index, statusInfo = null) {
   location.hash = `#deliverable/${encodeURIComponent(item.id)}`;
 }
 
+function overviewDeliverableRows(data) {
+  const rows = Array.isArray(data && data.deliverables) ? data.deliverables.slice() : [];
+  const jobs = Array.isArray(overviewArchiveJobs) ? overviewArchiveJobs : [];
+  const labels = {
+    aras_paa: ["PAA 变更记录", "ARAS PAA"],
+    aras_ncr_progress: ["NCR 审批进度", "ARAS NCR"],
+    aras_ncr_detail: ["NCR 审批明细", "ARAS NCR"],
+  };
+  jobs.forEach((job) => {
+    const label = labels[job.jobKey];
+    if (!label) return;
+    rows.push({
+      id: `archive:${job.jobKey}`,
+      name: label[0],
+      status: archiveSyncStateLabel(job.syncState),
+      tone: job.syncState === "success" ? "success" : job.syncState === "failed" ? "error" : job.syncState === "needs_attention" ? "warning" : "primary",
+      owner: "系统同步",
+      plannedDate: "—",
+      progress: null,
+      actualDate: job.lastSuccessAt || "暂无",
+      progressOrDate: job.lastSuccessAt ? `最近成功 ${job.lastSuccessAt}` : "暂无成功记录",
+      note: job.lastErrorMessage ? redactSensitiveText(job.lastErrorMessage) : "无",
+      source: label[1],
+      externalJobKey: job.jobKey,
+      isExternalArchive: true,
+    });
+  });
+  return rows;
+}
+
 function renderDeliverableDetails(tbody, data) {
   if (!tbody) return;
   tbody.textContent = "";
-  if (!data.deliverables || data.deliverables.length === 0) {
+  const rows = overviewDeliverableRows(data);
+  if (rows.length === 0) {
     renderTableState(tbody, "empty");
     return;
   }
-  data.deliverables.forEach((item, index) => {
+  rows.forEach((item, index) => {
     const row = document.createElement("tr");
     row.className = "deliverable-detail-row";
     const values = [
@@ -3068,10 +4377,20 @@ function renderDeliverableDetails(tbody, data) {
     row.appendChild(controlCell);
     row.addEventListener("click", (event) => {
       if (event.target.closest("button")) return;
+      if (item.isExternalArchive) {
+        selectedArchiveJobKey = item.externalJobKey;
+        location.hash = `#archive-deliverable/${encodeURIComponent(item.externalJobKey)}`;
+        return;
+      }
       location.hash = `#deliverable/${encodeURIComponent(item.id)}`;
     });
     button.addEventListener("click", (event) => {
       event.stopPropagation();
+      if (item.isExternalArchive) {
+        selectedArchiveJobKey = item.externalJobKey;
+        location.hash = `#archive-deliverable/${encodeURIComponent(item.externalJobKey)}`;
+        return;
+      }
       location.hash = `#deliverable/${encodeURIComponent(item.id)}`;
     });
     tbody.appendChild(row);
@@ -3083,10 +4402,11 @@ function renderProjectOverview() {
   const phaseBody = document.getElementById("overview-phase-summary");
   const progressGrid = document.getElementById("overview-progress-grid");
   const riskBody = document.getElementById("overview-risk-summary");
+  const externalSummary = document.getElementById("overview-external-sync-summary");
   const detailsSummary = document.getElementById("overview-details-summary");
   const detailsBody = document.getElementById("overview-details-body");
   const maintenanceBody = document.getElementById("milestone-maintenance");
-  const containers = [timelineBody, phaseBody, progressGrid, riskBody, detailsSummary].filter(Boolean);
+  const containers = [timelineBody, phaseBody, progressGrid, riskBody, detailsSummary, externalSummary].filter(Boolean);
 
   if (overviewLoading) {
     containers.forEach((container) => renderOverviewLoading(container));
@@ -3111,6 +4431,7 @@ function renderProjectOverview() {
     renderPhaseSummary(phaseBody, overviewSavedState.phase, overviewSavedState.currentStage);
     renderDeliverableProgress(progressGrid, overviewSavedState.deliverables);
     renderRiskSummary(riskBody, overviewSavedState.summary);
+    renderExternalSyncSummary(externalSummary, overviewArchiveJobs);
     renderMilestoneMaintenance(maintenanceBody, overviewSavedState);
     renderDetailsSummary(detailsSummary, overviewSavedState);
     renderDeliverableDetails(detailsBody, overviewSavedState);
@@ -3165,14 +4486,21 @@ async function loadProjectOverview() {
   overviewLoadError = null;
   renderProjectOverview();
   try {
-    const response = await fetch("/api/project-status?phase=VPI-T2", {
-      headers: { Accept: "application/json" },
-    });
+    const response = await fetch("/api/project-status?phase=VPI-T2", { headers: { Accept: "application/json" } });
     const body = await overviewReadJson(response);
     if (!response.ok || !body || body.ok !== true) {
       throw overviewRequestError(body, response.status);
     }
     overviewSavedState = body.data || null;
+    try {
+      const archiveResponse = await fetch("/api/scheduled-archive/jobs", { headers: { Accept: "application/json" }, cache: "no-store" });
+      const archiveBody = await overviewReadJson(archiveResponse);
+      overviewArchiveJobs = archiveResponse.ok && archiveBody && archiveBody.ok === true && Array.isArray(archiveBody.data)
+        ? archiveBody.data
+        : [];
+    } catch {
+      overviewArchiveJobs = [];
+    }
   } catch (err) {
     overviewSavedState = null;
     overviewLoadError = err instanceof Error ? err.message : String(err);
@@ -5369,8 +6697,45 @@ function setupDeliverables() {
 
 function handleHashChange() {
   const hash = window.location.hash || "";
+  const archiveDeliverableMatch = hash.match(/^#archive-deliverable\/([^/?#]+)/);
   const deliverableMatch = hash.match(/^#(?:overview\/)?deliverables?\/([^/?#]+)/)
     || hash.match(/^#deliverable-detail\/([^/?#]+)/);
+
+  if (archiveDeliverableMatch) {
+    const jobKey = decodeURIComponent(archiveDeliverableMatch[1]);
+    selectedArchiveJobKey = jobKey;
+    document.querySelectorAll("[data-panel-link]").forEach((item) => {
+      item.classList.toggle("active", item.dataset.panelLink === "overview");
+    });
+    document.querySelectorAll(".panel-section").forEach((panel) => {
+      panel.hidden = panel.id !== "overview";
+    });
+    document.body.dataset.sessionView = "overview";
+    document.getElementById("session-title").textContent = "项目状态";
+    document.getElementById("command-label").textContent = "明细";
+    const detailsTab = document.getElementById("overview-tab-details");
+    const statusTab = document.getElementById("overview-tab-status");
+    const planTab = document.getElementById("overview-tab-plan");
+    const detailsPanel = document.getElementById("overview-details-panel");
+    const statusPanel = document.getElementById("overview-status-panel");
+    const planPanel = document.getElementById("overview-plan-panel");
+    if (detailsTab && detailsPanel && statusTab && statusPanel && planTab && planPanel) {
+      detailsTab.classList.add("active");
+      detailsTab.setAttribute("aria-selected", "true");
+      detailsTab.tabIndex = 0;
+      statusTab.classList.remove("active");
+      statusTab.setAttribute("aria-selected", "false");
+      statusTab.tabIndex = -1;
+      planTab.classList.remove("active");
+      planTab.setAttribute("aria-selected", "false");
+      planTab.tabIndex = -1;
+      detailsPanel.hidden = false;
+      statusPanel.hidden = true;
+      planPanel.hidden = true;
+    }
+    renderArchiveDeliverableDetailPage(jobKey);
+    return;
+  }
 
   if (deliverableMatch) {
     const deliverableId = decodeURIComponent(deliverableMatch[1]);
@@ -6500,6 +7865,11 @@ function archiveSyncStateChip(syncState) {
   return chip;
 }
 
+function archiveSyncStateLabel(syncState) {
+  const labels = { needs_attention: "需关注", success: "正常", idle: "空闲", running: "同步中", failed: "失败" };
+  return labels[syncState] || "待确认/未知";
+}
+
 function archiveRunStateChip(state) {
   const chip = archiveEl("span", "archive-chip");
   if (state === "success") {
@@ -6552,6 +7922,8 @@ async function loadArchiveJobs(keepSelection = true) {
       return;
     }
     archiveJobs = Array.isArray(body.data) ? body.data : [];
+    overviewArchiveJobs = archiveJobs.slice();
+    if (overviewSavedState) renderProjectOverview();
     renderArchiveJobsList(keepSelection);
   } catch (exc) {
     showArchiveGlobalError("网络异常或服务器未响应");

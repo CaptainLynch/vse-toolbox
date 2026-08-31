@@ -1898,8 +1898,8 @@ def test_static_aras_export_download_markers_and_department_fields() -> None:
     assert 'id="aras-xml-actions"' in html_text
     assert 'id="aras-download-request-xml"' in html_text
     assert 'id="aras-download-response-xml"' in html_text
-    assert 'style.css?v=domain-unify-20260828-r3' in html_text
-    assert 'app.js?v=domain-unify-20260828-r3' in html_text
+    assert 'style.css?v=ewo-binding-20260830-r1' in html_text
+    assert 'app.js?v=ewo-binding-20260830-r1' in html_text
 
     # 导出 / 下载端点在前端配置中
     assert "/api/aras/ewo/export" in js_text

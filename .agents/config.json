@@ -34,8 +34,8 @@
     "model_policy": {
       "default": "gemini-3.7-flash-high",
       "categories": {
-        "mechanical": "gemini-3.7-flash-high",
-        "test-only": "gemini-3.7-flash-high",
+        "mechanical": "gemini-3.7-flash-low",
+        "test-only": "gemini-3.7-flash-low",
         "ui": "gemini-3.7-flash-high",
         "ordinary-implementation": "gemini-3.7-flash-high"
       }

@@ -289,6 +289,7 @@ class ProjectStatusSyncRunner:
         deliverable_id: str | None = None,
         dry_run: bool = False,
         trigger_type: str = "scheduled",
+        validate_runtime_prerequisites: bool = True,
     ) -> RunOnceResult:
         """
         执行一次同步。
@@ -296,6 +297,8 @@ class ProjectStatusSyncRunner:
         Args:
             deliverable_id: 若提供则只运行该交付物的绑定。
             dry_run: 若为 True 则完全只读，不获取租约、不创建 run、不调用 connector。
+            validate_runtime_prerequisites: 是否在获取租约前校验凭据、稳定键、
+                匹配规则和字段映射。定时任务传 False，让真实连接器记录运行时结果。
 
         Returns:
             RunOnceResult 汇总。
@@ -313,7 +316,11 @@ class ProjectStatusSyncRunner:
         results: list[BindingRunResult] = []
         for binding in bindings:
             try:
-                result = self._run_single_binding(binding, trigger_type)
+                result = self._run_single_binding(
+                    binding,
+                    trigger_type,
+                    validate_runtime_prerequisites=validate_runtime_prerequisites,
+                )
             except KeyboardInterrupt:
                 raise
             except BaseException as exc:
@@ -366,6 +373,8 @@ class ProjectStatusSyncRunner:
         self,
         binding: dict[str, Any],
         trigger_type: str,
+        *,
+        validate_runtime_prerequisites: bool = True,
     ) -> BindingRunResult:
         """运行单个 binding：获取租约 → start → collect → apply → 归纳结果。"""
         binding_id = int(binding["id"])
@@ -375,7 +384,11 @@ class ProjectStatusSyncRunner:
         connector = self._registry.get(source_type)
         if connector is None:
             return self._handle_connector_unavailable(
-                binding_id, deliverable_id, source_type, trigger_type
+                binding_id,
+                deliverable_id,
+                source_type,
+                trigger_type,
+                validate_runtime_prerequisites=validate_runtime_prerequisites,
             )
 
         # 获取租约。
@@ -383,6 +396,7 @@ class ProjectStatusSyncRunner:
             lease = self._service.acquire_sync_lease(
                 deliverable_id,
                 trigger_type,
+                validate_runtime_prerequisites=validate_runtime_prerequisites,
             )
         except SyncLeaseBusyError:
             return BindingRunResult(
@@ -523,6 +537,8 @@ class ProjectStatusSyncRunner:
         deliverable_id: str,
         source_type: str,
         trigger_type: str,
+        *,
+        validate_runtime_prerequisites: bool = True,
     ) -> BindingRunResult:
         """
         source_type 未注册 connector 时的确定结果。
@@ -532,7 +548,9 @@ class ProjectStatusSyncRunner:
         """
         try:
             lease = self._service.acquire_sync_lease(
-                deliverable_id, trigger_type
+                deliverable_id,
+                trigger_type,
+                validate_runtime_prerequisites=validate_runtime_prerequisites,
             )
         except SyncLeaseBusyError:
             return BindingRunResult(

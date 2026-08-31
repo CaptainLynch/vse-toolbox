@@ -1881,12 +1881,15 @@ class DatabaseManager:
         binding_id: int,
         trigger_type: str,
         lease_seconds: int = SYNC_LEASE_DEFAULT_SECONDS,
+        *,
+        validate_runtime_prerequisites: bool = True,
     ) -> dict[str, Any]:
         """
         原子获取同步租约并创建一条 leased run。
 
         前置校验：binding 存在、enabled=1、mode 为 automatic/hybrid、
-        source_type 非 none，且具有已确认 external_key 和非空 mapping/match rule。
+        source_type 非 none。默认还校验 external_key、mapping/match rule 和凭据；
+        定时运行可关闭这组运行时前置校验，让连接器在真实执行中给出结果。
 
         若存在未过期租约，获取失败且不产生新 run（SyncLeaseBusyError）。
         若租约已过期，将旧的活动 run 标记为 expired，再抢占写入新租约。
@@ -1922,18 +1925,19 @@ class DatabaseManager:
                 )
             if binding["source_type"] == "none":
                 raise SyncBindingNotReadyError("binding source_type is 'none'")
-            if not binding["external_key"]:
-                raise SyncBindingNotReadyError("binding external_key is not confirmed")
-            match_rule = _json_loads_or_none(binding["match_rule_json"])
-            mapping = _json_loads_or_none(binding["mapping_json"])
-            if not isinstance(match_rule, dict) or not match_rule:
-                raise SyncBindingNotReadyError("binding match rule is empty")
-            if not isinstance(mapping, dict) or not mapping:
-                raise SyncBindingNotReadyError("binding mapping is empty")
-            if not str(binding["credential_ref"] or "").strip():
-                raise SyncBindingNotReadyError(
-                    "credential reference is not configured"
-                )
+            if validate_runtime_prerequisites:
+                if not binding["external_key"]:
+                    raise SyncBindingNotReadyError("binding external_key is not confirmed")
+                match_rule = _json_loads_or_none(binding["match_rule_json"])
+                mapping = _json_loads_or_none(binding["mapping_json"])
+                if not isinstance(match_rule, dict) or not match_rule:
+                    raise SyncBindingNotReadyError("binding match rule is empty")
+                if not isinstance(mapping, dict) or not mapping:
+                    raise SyncBindingNotReadyError("binding mapping is empty")
+                if not str(binding["credential_ref"] or "").strip():
+                    raise SyncBindingNotReadyError(
+                        "credential reference is not configured"
+                    )
 
             now = self._utc_now(conn)
             lease_token = secrets.token_urlsafe(32)

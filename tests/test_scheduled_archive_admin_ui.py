@@ -103,8 +103,8 @@ def test_index_renders_archive_nav_and_preserves_panels(client) -> None:
 def test_dashboard_html_cache_buster_updated() -> None:
     """Verify that cache buster query string in dashboard.html is updated."""
     html_text = Path("web/templates/dashboard.html").read_text(encoding="utf-8-sig")
-    assert '<link rel="stylesheet" href="/static/style.css?v=domain-unify-20260828-r3" />' in html_text
-    assert '<script src="/static/app.js?v=domain-unify-20260828-r3"></script>' in html_text
+    assert '<link rel="stylesheet" href="/static/style.css?v=ewo-binding-20260830-r1" />' in html_text
+    assert '<script src="/static/app.js?v=ewo-binding-20260830-r1"></script>' in html_text
 
 
 def test_archive_static_dom_hooks_and_unique_ids() -> None:

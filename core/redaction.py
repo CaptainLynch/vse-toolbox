@@ -6,7 +6,7 @@ from __future__ import annotations
 import re
 
 _SENSITIVE_NAMES = (
-    r"authorization|set-cookie|cookie|token|api_key|sid|sessionid|arasauth|jsessionid|csrf|secret|password"
+    r"authorization|set-cookie|cookie|token|api_key|apikey|credential_ref|credentialref|private_key|privatekey|sid|sessionid|arasauth|jsessionid|csrf|secret|password"
 )
 
 _JSON_RE = re.compile(
@@ -26,6 +26,12 @@ _HEADER_RE = re.compile(
     r"(\s*[:=]\s*)(?:Bearer\s+)?([^,\s;'\"}\]\[]+)"
 )
 _BEARER_RE = re.compile(r"(?i)\bBearer\s+([^,\s;'\"}\]\[]+)")
+_PEM_RE = re.compile(
+    r"(?is)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----"
+)
+_SENSITIVE_LABEL_RE = re.compile(
+    r"(?i)\b(?:credential[ _-]?ref|private[ _-]?key)\b\s*[:=]\s*([^,\s;]+)"
+)
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
@@ -37,6 +43,8 @@ def redact_sensitive_text(
 ) -> str:
     """Return text with credentials and auth-like fragments removed."""
     text = str(value)
+    text = _PEM_RE.sub("[private key redacted]", text)
+    text = _SENSITIVE_LABEL_RE.sub(lambda match: match.group(0).split(match.group(1), 1)[0] + "[redacted]", text)
     text = _JSON_RE.sub(r"\1\2\1\3\4[redacted]\4", text)
     text = _AUTH_HEADER_RE.sub(r"\1\2[redacted]", text)
     text = _COOKIE_HEADER_RE.sub(r"\1\2[redacted]", text)

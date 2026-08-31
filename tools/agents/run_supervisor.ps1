@@ -7,7 +7,7 @@ param(
     [string]$CodexProfile = "official",
 
     [ValidateSet("agy-heavy", "codex-controlled")]
-    [string]$SupervisorProfile = "codex-controlled",
+    [string]$SupervisorProfile = "agy-heavy",
 
     [switch]$DryRun
 )

@@ -190,6 +190,33 @@ def test_enable_requires_external_key_and_allowed_match_rule(service) -> None:
     assert policy["matchRule"] == {"reportType": "data_model", "incident": "FM-1"}
 
 
+def test_ewo_model_info_match_rule_is_accepted_when_mapping_evidence_is_ready(service) -> None:
+    """EWO 合同允许车型匹配键，且就绪证据完整时可以启用自动同步。"""
+    _record_two_observations_for_d5(
+        service._db,
+        deliverable_id="VPI-T2-D3",
+        source_type="aras",
+        external_key="EWO-1",
+        fields=["_rsp_name", "_required_date", "_subject", "_modelinfo"],
+    )
+
+    policy = service.update_update_policy(
+        "VPI-T2-D3",
+        {
+            "mode": "automatic",
+            "enabled": True,
+            "externalKey": "EWO-1",
+            "credentialRef": "domain",
+            "matchRule": {"reportType": "ewo", "modelInfo": "F610S"},
+            "mapping": {"owner": "_rsp_name"},
+            "fieldAuthority": {"owner": "automatic"},
+        },
+    )
+
+    assert policy["enabled"] is True
+    assert policy["matchRule"] == {"reportType": "ewo", "modelInfo": "F610S"}
+
+
 @pytest.mark.parametrize(
     ("payload", "field"),
     [
