@@ -470,6 +470,36 @@ def test_ewo_detail_interactive_refresh_has_separate_background_sync_contract() 
     assert "syncReady" in evidence_js
 
 
+def test_interactive_refresh_buttons_and_errors_stay_separate_from_background_readiness() -> None:
+    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+    ewo_interactive = _js_slice(
+        js_text,
+        "async function runEwoInteractiveRefreshFromStatusChart",
+        "async function refreshEwoAnalysisFromStatusChart",
+    )
+    paa_interactive = _js_slice(
+        js_text,
+        "async function runPaaInteractiveRefresh",
+        "function renderDeliverableDetailPage",
+    )
+    paa_detail = _js_slice(
+        js_text,
+        "function renderArchiveDeliverableDetailPage",
+        "function toggleDeliverableDetail",
+    )
+
+    assert "formatInteractiveQueryError" in ewo_interactive
+    assert "formatInteractiveQueryError" in paa_interactive
+    assert "同步条件尚未满足" not in ewo_interactive
+    assert "同步条件尚未满足" not in paa_interactive
+    assert "interactiveButton.disabled = syncBusy" in js_text
+    assert "syncButton.disabled = !job.enabled" in paa_detail
+    assert "requestInteractiveArasQuery(\"ewo\"" in ewo_interactive
+    assert "requestInteractiveArasQuery(\"paa\"" in paa_interactive
+    assert "后台同步" in js_text
+    assert "后台归档同步" in paa_detail
+
+
 def test_overview_deliverable_evidence_restrictions_and_guard() -> None:
     js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
     evidence_js = _js_slice(
