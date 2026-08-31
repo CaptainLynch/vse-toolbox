@@ -2011,7 +2011,7 @@ function renderDeliverableEvidence(
   );
 
   const syncActionBar = overviewEl("div", "evidence-sync-bar");
-  const syncBtn = overviewEl("button", "evidence-sync-btn", "后台同步");
+  const syncBtn = overviewEl("button", "evidence-sync-btn", "运行后台同步");
   syncBtn.type = "button";
   syncBtn.disabled = !syncSupported || !syncReady;
   if (!syncReady) syncBtn.title = `不可同步：${syncMissing.join("，") || "同步条件尚未满足"}`;
@@ -2044,9 +2044,9 @@ function renderDeliverableEvidence(
       syncStatus.className = "evidence-sync-status is-warning";
       return;
     }
-    if (!window.confirm(`确定要执行后台同步 ${item.name} 吗？`)) return;
+    if (!window.confirm(`确定要运行后台同步 ${item.name} 吗？`)) return;
     syncBtn.disabled = true;
-    syncStatus.textContent = "正在执行后台同步...";
+    syncStatus.textContent = "正在运行后台同步...";
     syncStatus.className = "evidence-sync-status is-busy";
 
     try {
@@ -3372,7 +3372,7 @@ function renderDeliverableAnalysisActionBar(item, options = {}) {
     if (typeof options.onRefresh === "function") options.onRefresh();
   });
 
-  const syncButton = overviewEl("button", "evidence-sync-btn analysis-sync-btn", "后台同步");
+  const syncButton = overviewEl("button", "evidence-sync-btn analysis-sync-btn", "运行后台同步");
   syncButton.type = "button";
   syncButton.dataset.deliverableId = item.id;
 
@@ -4006,9 +4006,9 @@ async function runDeliverableSyncFromAnalysis(
     }
     return;
   }
-  if (!window.confirm(`确定要执行后台同步 ${item.name} 吗？`)) return;
+  if (!window.confirm(`确定要运行后台同步 ${item.name} 吗？`)) return;
   analysisSyncReadiness.setBusy(true);
-  analysisSyncReadiness.setStatus("正在执行后台同步...", "busy");
+  analysisSyncReadiness.setStatus("正在运行后台同步...", "busy");
   try {
     const data = await requestProjectStatusSync(item);
     const feedback = projectStatusSyncFeedback(data);
@@ -4079,6 +4079,7 @@ async function runEwoInteractiveRefreshFromStatusChart(
 ) {
   if (!statusChart || !resultHost) return;
   if (!window.confirm(`确定要立即刷新 ${item.name} 吗？`)) return;
+  resultHost.hidden = false;
   const policy = typeof policyProvider === "function" ? policyProvider() : {};
   const spec = buildEwoInteractiveQuerySpec(policy, item);
   statusChart.setBusy(true);
@@ -4271,7 +4272,6 @@ function renderDeliverableDetailPage(deliverableId) {
   };
   statusChart = renderDeliverableStatusChart(item, {
     onInteractiveRefresh: () => {
-      interactiveQueryHost.hidden = false;
       return runEwoInteractiveRefreshFromStatusChart(
         item,
         statusChart,
@@ -4513,27 +4513,11 @@ function renderArchiveDeliverableDetailPage(jobKey) {
       void runPaaInteractiveRefresh(job, interactiveButton, interactiveQueryHost, statusMessage);
     });
   }
-  if (syncButton) syncButton.addEventListener("click", async () => {
-    syncButton.disabled = true;
-    syncButton.textContent = "后台归档同步中...";
-    statusMessage.textContent = "正在执行后台归档同步...";
-    try {
-      const response = await fetch(`/api/scheduled-archive/jobs/${encodeURIComponent(job.jobKey)}/sync-now`, {
-        method: "POST",
-        headers: { Accept: "application/json" },
-      });
-      const body = await response.json();
-      if (!response.ok || !body.ok) throw new Error((body.error && body.error.message) || "同步失败");
-      statusMessage.textContent = "同步成功，正在刷新图表与明细...";
-      await loadArchiveJobs(true);
-      await renderHistory();
-    } catch (error) {
-      statusMessage.textContent = `同步失败：${redactSensitiveText(error instanceof Error ? error.message : String(error))}`;
-    } finally {
-      syncButton.disabled = !job.enabled || !(job.credentialAvailable ?? job.credentialConfigured);
-      syncButton.textContent = "后台归档同步";
-    }
-  });
+  if (syncButton) {
+    syncButton.addEventListener("click", () => {
+      void runArchiveDetailBackgroundSync(job, syncButton, statusMessage, renderHistory);
+    });
+  }
   renderHistory();
 
   const meta = document.createElement("details");
@@ -4569,6 +4553,28 @@ function toggleDeliverableDetail(row, data, index, statusInfo = null) {
   const item = data && data.deliverables && data.deliverables[index];
   if (!item) return;
   location.hash = `#deliverable/${encodeURIComponent(item.id)}`;
+}
+
+async function runArchiveDetailBackgroundSync(job, syncButton, statusMessage, renderHistory) {
+  syncButton.disabled = true;
+  syncButton.textContent = "后台归档同步中...";
+  statusMessage.textContent = "正在执行后台归档同步...";
+  try {
+    const response = await fetch(`/api/scheduled-archive/jobs/${encodeURIComponent(job.jobKey)}/sync-now`, {
+      method: "POST",
+      headers: { Accept: "application/json" },
+    });
+    const body = await response.json();
+    if (!response.ok || !body.ok) throw new Error((body.error && body.error.message) || "同步失败");
+    statusMessage.textContent = "同步成功，正在刷新图表与明细...";
+    await loadArchiveJobs(true);
+    await renderHistory();
+  } catch (error) {
+    statusMessage.textContent = `同步失败：${redactSensitiveText(error instanceof Error ? error.message : String(error))}`;
+  } finally {
+    syncButton.disabled = !job.enabled || !(job.credentialAvailable ?? job.credentialConfigured);
+    syncButton.textContent = "后台归档同步";
+  }
 }
 
 function overviewDeliverableRows(data) {
