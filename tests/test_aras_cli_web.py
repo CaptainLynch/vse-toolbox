@@ -614,6 +614,18 @@ def test_paa_query_marks_rows_as_matched(client) -> None:
     assert response.get_json()["data"]["queryState"] == "matched"
 
 
+def test_paa_query_marks_zero_rows_as_empty(client) -> None:
+    FakeArasClient.rows = []
+
+    response = client.post(
+        "/api/aras/paa/query",
+        json={"base_url": "http://aras.example", "filters": {}},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["data"]["queryState"] == "empty"
+
+
 @pytest.mark.parametrize(
     ("failure", "status", "code"),
     [
@@ -637,6 +649,46 @@ def test_ewo_query_exposes_stable_interactive_error_code(
     body = response.get_json()
     assert body["error"]["code"] == code
     assert "fictional-token" not in response.get_data(as_text=True)
+
+
+@pytest.mark.parametrize(
+    ("failure", "status", "code"),
+    [
+        (ArasAuthenticationError("login page token=fictional-token"), 401, "unauthenticated"),
+        (WinHTTPError("transport failed token=fictional-token"), 503, "service_unavailable"),
+        (ArasCrawlerError("XML response is not valid token=fictional-token"), 502, "query_failed"),
+    ],
+)
+def test_paa_query_exposes_stable_interactive_error_code(
+    client, failure: Exception, status: int, code: str
+) -> None:
+    FakeArasClient.fail = failure
+
+    response = client.post(
+        "/api/aras/paa/query",
+        json={"base_url": "http://aras.example", "filters": {}},
+    )
+
+    assert response.status_code == status
+    body = response.get_json()
+    assert body["error"]["code"] == code
+    assert "fictional-token" not in response.get_data(as_text=True)
+
+
+def test_aras_browser_query_without_server_session_is_unauthenticated(
+    monkeypatch, tmp_path
+) -> None:
+    client = _make_test_client(monkeypatch, tmp_path, allowed_hosts=["aras.example"])
+    registry = client.application.extensions["domain_sessions"]
+    registry.clear("aras")
+
+    response = client.post(
+        "/api/aras/ewo/query",
+        json={"base_url": "http://aras.example", "auth_mode": "browser", "filters": {}},
+    )
+
+    assert response.status_code == 401
+    assert response.get_json()["error"]["code"] == "unauthenticated"
 
 
 def test_aras_browser_query_reuses_authenticated_server_session(monkeypatch, tmp_path) -> None:
