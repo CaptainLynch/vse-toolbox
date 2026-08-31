@@ -308,6 +308,9 @@ function overviewRequestError(body, status) {
   err.diagnosticPath = error && typeof error.diagnosticPath === "string"
     ? error.diagnosticPath
     : "";
+  err.errorCode = err.code;
+  err.errorType = err.type;
+  err.errorMessage = error && typeof error.message === "string" ? error.message : "";
   return err;
 }
 
@@ -330,7 +333,9 @@ const INTERACTIVE_QUERY_ERROR_LABELS = {
 };
 
 function interactiveQueryErrorCode(error, fallbackStatus) {
-  const explicit = error && typeof error.code === "string" ? error.code : "";
+  const explicit = error && typeof (error.code || error.errorCode) === "string"
+    ? (error.code || error.errorCode)
+    : "";
   if (INTERACTIVE_QUERY_ERROR_LABELS[explicit]) return explicit;
   const status = Number(error && error.status !== undefined ? error.status : fallbackStatus);
   if (status === 401 || status === 403) return "unauthenticated";
@@ -338,10 +343,14 @@ function interactiveQueryErrorCode(error, fallbackStatus) {
   return "query_failed";
 }
 
-function formatInteractiveQueryError(error, fallbackStatus = 0) {
+function formatInteractiveArasError(error, fallbackStatus = 0) {
   const code = interactiveQueryErrorCode(error, fallbackStatus);
   const descriptor = INTERACTIVE_QUERY_ERROR_LABELS[code] || INTERACTIVE_QUERY_ERROR_LABELS.query_failed;
   return `${descriptor.label}：${descriptor.detail}`;
+}
+
+function formatInteractiveQueryError(error, fallbackStatus = 0) {
+  return formatInteractiveArasError(error, fallbackStatus);
 }
 
 function interactiveFilterValue(value) {
@@ -405,21 +414,27 @@ function interactiveQueryResultState(mode, data, targetKey = "") {
   return found ? "matched" : "no_match";
 }
 
+function formatInteractiveArasResult(data, expectedExternalKey = "") {
+  const state = interactiveQueryResultState("", data, expectedExternalKey);
+  const descriptors = {
+    matched: { text: "已匹配", tone: "success" },
+    empty: { text: "数据为空", tone: "warning" },
+    no_match: { text: "未匹配", tone: "warning" },
+  };
+  return { state, ...(descriptors[state] || descriptors.empty) };
+}
+
 function renderInteractiveArasResult(container, mode, data, targetKey = "") {
   if (!container) return null;
   clearOverviewContainer(container);
   const config = ARAS_MODES[mode] || {};
-  const state = interactiveQueryResultState(mode, data, targetKey);
-  const stateLabels = {
-    matched: "已匹配",
-    empty: "数据为空",
-    no_match: "未匹配",
-  };
+  const resultState = formatInteractiveArasResult(data, targetKey);
+  const state = resultState.state;
   const panel = overviewEl("section", "interactive-query-result");
   panel.dataset.queryMode = mode;
   panel.append(
     overviewEl("strong", "interactive-query-title", `交互式查询 · ${COMMAND_LABELS[mode] || mode}`),
-    overviewEl("span", `interactive-query-state is-${state === "matched" ? "success" : "warning"}`, stateLabels[state]),
+    overviewEl("span", `interactive-query-state is-${resultState.tone}`, resultState.text),
   );
   const rows = data && Array.isArray(data.rows) ? data.rows : [];
   const count = data && data.count !== undefined ? Number(data.count) || rows.length : rows.length;
@@ -437,7 +452,7 @@ function renderInteractiveArasResult(container, mode, data, targetKey = "") {
     panel.appendChild(overviewEl(
       "p",
       "interactive-query-state-detail",
-      stateLabels[state],
+      resultState.text,
     ));
   }
   if (config.resultKind === "rows") {
@@ -4071,11 +4086,10 @@ async function runEwoInteractiveRefreshFromStatusChart(
   try {
     const data = await requestInteractiveArasQuery("ewo", spec.filters);
     renderInteractiveArasResult(resultHost, "ewo", data, spec.targetKey);
-    const state = interactiveQueryResultState("ewo", data, spec.targetKey);
-    const stateLabel = { matched: "已匹配", empty: "数据为空", no_match: "未匹配" }[state] || "查询完成";
-    statusChart.setSyncStatus(`交互式查询完成：${stateLabel}`, state === "matched" ? "success" : "warning");
+    const resultState = formatInteractiveArasResult(data, spec.targetKey);
+    statusChart.setSyncStatus(`交互式查询完成：${resultState.text}`, resultState.tone);
   } catch (err) {
-    const message = formatInteractiveQueryError(err, err && err.status);
+    const message = formatInteractiveArasError(err, err && err.status);
     statusChart.setSyncStatus(message, err && err.code === "unauthenticated" ? "warning" : "error");
   } finally {
     statusChart.setBusy(false);
@@ -4134,11 +4148,10 @@ async function runPaaInteractiveRefresh(job, button, resultHost, statusMessage) 
     const targetKey = interactiveFilterValue(job.filters && job.filters.paaNo);
     const data = await requestInteractiveArasQuery("paa", filters);
     renderInteractiveArasResult(resultHost, "paa", data, targetKey);
-    const state = interactiveQueryResultState("paa", data, targetKey);
-    const stateLabel = { matched: "已匹配", empty: "数据为空", no_match: "未匹配" }[state] || "查询完成";
-    statusMessage.textContent = `交互式查询完成：${stateLabel}`;
+    const resultState = formatInteractiveArasResult(data, targetKey);
+    statusMessage.textContent = `交互式查询完成：${resultState.text}`;
   } catch (error) {
-    statusMessage.textContent = formatInteractiveQueryError(error, error && error.status);
+    statusMessage.textContent = formatInteractiveArasError(error, error && error.status);
   } finally {
     button.disabled = false;
     button.textContent = "立即刷新（交互式查询）";
@@ -4399,12 +4412,16 @@ function renderArchiveDeliverableDetailPage(jobKey) {
     interactiveButton.type = "button";
     interactiveButton.dataset.queryMode = "interactive";
   }
-  const syncButton = overviewEl("button", "btn is-secondary", "后台归档同步");
-  syncButton.type = "button";
-  syncButton.disabled = !job.enabled || !(job.credentialAvailable ?? job.credentialConfigured);
+  const syncButton = isPaa
+    ? null
+    : overviewEl("button", "btn is-secondary", "后台归档同步");
+  if (syncButton) {
+    syncButton.type = "button";
+    syncButton.disabled = !job.enabled || !(job.credentialAvailable ?? job.credentialConfigured);
+  }
   statusActions.append(refreshButton);
   if (interactiveButton) statusActions.appendChild(interactiveButton);
-  statusActions.appendChild(syncButton);
+  if (syncButton) statusActions.appendChild(syncButton);
   statusHead.appendChild(statusActions);
   statusSection.appendChild(statusHead);
   const statusMessage = overviewEl("p", "external-detail-sync-message", `最近同步状态：${archiveSyncStateLabel(job.syncState)}`);
@@ -4496,7 +4513,7 @@ function renderArchiveDeliverableDetailPage(jobKey) {
       void runPaaInteractiveRefresh(job, interactiveButton, interactiveQueryHost, statusMessage);
     });
   }
-  syncButton.addEventListener("click", async () => {
+  if (syncButton) syncButton.addEventListener("click", async () => {
     syncButton.disabled = true;
     syncButton.textContent = "后台归档同步中...";
     statusMessage.textContent = "正在执行后台归档同步...";

@@ -38,7 +38,7 @@ def test_external_detail_matches_ewo_layout_with_collapsed_bottom_info() -> None
     assert "external-detail-info" in source
     assert "详细信息（点击展开）" in source
     assert "立即刷新（交互式查询）" in source
-    assert "后台归档同步" in source
+    assert "进入任务配置/重试" in source
 
 
 def test_paa_detail_interactive_refresh_is_separate_from_archive_sync() -> None:
@@ -51,7 +51,7 @@ def test_paa_detail_interactive_refresh_is_separate_from_archive_sync() -> None:
     assert 'requestInteractiveArasQuery("paa"' in interactive
     assert "renderInteractiveArasResult" in interactive
     assert "立即刷新（交互式查询）" in detail
-    assert "后台归档同步" in detail
-    assert "/api/scheduled-archive/jobs/${encodeURIComponent(job.jobKey)}/sync-now" in detail
+    assert "进入任务配置/重试" in detail
+    assert "const syncButton = isPaa" in detail
     assert "/api/scheduled-archive/jobs/${encodeURIComponent(job.jobKey)}/sync-now" not in interactive
     assert "interactiveButton.disabled = !job.enabled" not in detail

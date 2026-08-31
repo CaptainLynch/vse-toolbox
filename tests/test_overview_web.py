@@ -401,6 +401,8 @@ def test_overview_interactive_aras_query_helper_contract() -> None:
         "function buildInteractiveArasPayload",
         "function requestInteractiveArasQuery",
         "function interactiveQueryResultState",
+        "function formatInteractiveArasResult",
+        "function formatInteractiveArasError",
         "function renderInteractiveArasResult",
         'auth_mode: "browser"',
         "const config = ARAS_MODES[mode]",
@@ -461,7 +463,7 @@ def test_ewo_detail_interactive_refresh_has_separate_background_sync_contract() 
     assert "onInteractiveRefresh" in detail_js
     assert 'requestInteractiveArasQuery("ewo"' in interactive_js
     assert "renderInteractiveArasResult" in interactive_js
-    assert "formatInteractiveQueryError" in interactive_js
+    assert "formatInteractiveArasError" in interactive_js
     assert "requestProjectStatusSync(item)" not in interactive_js
     assert "立即刷新（交互式查询）" in chart_js
     assert "交互式查询" in chart_js
@@ -488,8 +490,8 @@ def test_interactive_refresh_buttons_and_errors_stay_separate_from_background_re
         "function toggleDeliverableDetail",
     )
 
-    assert "formatInteractiveQueryError" in ewo_interactive
-    assert "formatInteractiveQueryError" in paa_interactive
+    assert "formatInteractiveArasError" in ewo_interactive
+    assert "formatInteractiveArasError" in paa_interactive
     assert "同步条件尚未满足" not in ewo_interactive
     assert "同步条件尚未满足" not in paa_interactive
     assert "interactiveButton.disabled = syncBusy" in js_text
