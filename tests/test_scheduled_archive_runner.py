@@ -15,8 +15,14 @@ from unittest.mock import patch
 import pytest
 
 from core.archive_store import ArchiveArtifact
-from core.credential_provider import MemoryCredentialProvider, ResolvedCredential
+from core.credential_provider import (
+    CredentialProviderError,
+    MemoryCredentialProvider,
+    ResolvedCredential,
+)
 from core.db_manager import ARCHIVE_JOB_CONTRACTS, DatabaseManager
+from services.aras_auth import ArasAuthError
+from services.aras_crawler import ArasAuthenticationError, ArasCrawlerError
 from services.scheduled_archive_runner import (
     EXIT_ATTENTION,
     EXIT_FAILED,
@@ -28,6 +34,8 @@ from services.scheduled_archive_runner import (
     ArchiveRunOnceResult,
     ArchiveSyncRunner,
 )
+from services.tdc_auth import TDCAuthError
+from services.windows_http import WinHTTPError, WinHTTPTimeoutError
 
 
 class FakeConnector:
@@ -300,6 +308,95 @@ def test_run_job_needs_attention_scenarios(
 
     job_row = _get_job_row(db, job_id)
     assert job_row["sync_state"] == "needs_attention" and job_row["lease_token"] is None
+
+
+def test_scheduled_paa_missing_credential_creates_auditable_run(
+    db: DatabaseManager,
+    registry: ArchiveConnectorRegistry,
+) -> None:
+    job_id = _enable_job(db, "aras_paa", credential_ref="")
+    connector = FakeConnector()
+    runner, _ = _setup_runner(
+        db,
+        registry,
+        connectors={"aras_paa": connector},
+    )
+
+    result = runner.run_once(trigger_type="scheduled", job_key="aras_paa")
+
+    assert result.results[0].run_id is not None
+    assert result.results[0].outcome == "needs_attention"
+    assert result.results[0].error_type == "credential_unavailable"
+    assert connector.call_count == 0
+    run = _get_run_row(db, result.results[0].run_id)
+    assert run["run_state"] == "needs_attention"
+    assert run["error_type"] == "credential_unavailable"
+    assert _get_job_row(db, job_id)["lease_token"] is None
+
+
+def test_manual_archive_missing_credential_keeps_prelease_not_ready(
+    db: DatabaseManager,
+    registry: ArchiveConnectorRegistry,
+) -> None:
+    job_id = _enable_job(db, "aras_paa", credential_ref="")
+    runner, _ = _setup_runner(db, registry, connectors={"aras_paa": FakeConnector()})
+
+    result = runner.run_job(job_id, trigger_type="sync_now")
+
+    assert result.outcome == "not_ready"
+    assert result.error_type == "job_not_ready"
+    with db.get_connection() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM scheduled_archive_runs WHERE job_id=?",
+            (job_id,),
+        ).fetchone()[0] == 0
+
+
+@pytest.mark.parametrize(
+    ("failure", "error_type", "outcome"),
+    [
+        (
+            CredentialProviderError("missing credential password=secret"),
+            "credential_unavailable",
+            "needs_attention",
+        ),
+        (ArasAuthError("rejected password=secret"), "credential_invalid", "needs_attention"),
+        (TDCAuthError("rejected password=secret"), "credential_invalid", "needs_attention"),
+        (
+            ArasAuthenticationError("login page token=secret"),
+            "authentication_error",
+            "needs_attention",
+        ),
+        (WinHTTPError("transport Cookie=secret"), "service_unavailable", "failed"),
+        (WinHTTPTimeoutError("timeout token=secret"), "timeout", "failed"),
+        (ArasCrawlerError("invalid XML Authorization=secret"), "query_failed", "failed"),
+    ],
+)
+def test_archive_connector_failure_is_audited_without_secret(
+    db: DatabaseManager,
+    registry: ArchiveConnectorRegistry,
+    failure: BaseException,
+    error_type: str,
+    outcome: str,
+) -> None:
+    job_id = _enable_job(db, "aras_paa", credential_ref="alias_paa")
+    runner, _ = _setup_runner(
+        db,
+        registry,
+        credentials={"alias_paa": ("user", "pass")},
+        connectors={"aras_paa": FakeConnector(exception=failure)},
+    )
+
+    result = runner.run_job(job_id)
+
+    assert result.outcome == outcome
+    assert result.error_type == error_type
+    assert result.run_id is not None
+    assert "secret" not in str(result)
+    run = _get_run_row(db, result.run_id)
+    assert run["run_state"] == outcome
+    assert run["error_type"] == error_type
+    assert "secret" not in str(dict(run))
 
 
 # ── 4. Retry behavior (transient vs non-transient) ──────────────────────────

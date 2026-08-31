@@ -3125,8 +3125,18 @@ class DatabaseManager:
         )
         return archived
 
-    def get_archive_job_credential_ref(self, job_id: int) -> str:
-        """Return one opaque alias for internal execution only."""
+    def get_archive_job_credential_ref(
+        self,
+        job_id: int,
+        *,
+        require_configured: bool = True,
+    ) -> str:
+        """Return one opaque alias for internal execution only.
+
+        Scheduled execution may explicitly request an empty alias so the
+        credential provider can produce an auditable runtime failure after a
+        lease/run exists.  Existing callers retain the strict default.
+        """
         with self.get_connection() as conn:
             row = conn.execute(
                 "SELECT credential_ref FROM scheduled_archive_jobs WHERE id = ?",
@@ -3135,7 +3145,7 @@ class DatabaseManager:
         if row is None:
             raise KeyError(job_id)
         value = str(row["credential_ref"] or "").strip()
-        if not value:
+        if not value and require_configured:
             raise ArchiveJobNotReadyError(
                 "archive job credential reference is not configured"
             )
@@ -3146,8 +3156,16 @@ class DatabaseManager:
         job_id: int,
         trigger_type: str,
         lease_seconds: int = SYNC_LEASE_DEFAULT_SECONDS,
+        *,
+        validate_runtime_prerequisites: bool = True,
     ) -> dict[str, Any]:
-        """Atomically lease one fixed archive job and create a leased run."""
+        """Atomically lease one fixed archive job and create a leased run.
+
+        ``validate_runtime_prerequisites=False`` is reserved for scheduled
+        runs.  Fixed job contract, enabled state, filters, and retry policy
+        validation remain lease gates; only credential-reference presence is
+        deferred to the real provider execution.
+        """
         self._validate_trigger_type(trigger_type)
         self._validate_lease_duration(lease_seconds)
         with self.get_connection() as conn:
@@ -3176,7 +3194,7 @@ class DatabaseManager:
                 )
             if not job["enabled"]:
                 raise ArchiveJobNotReadyError("archive job is not enabled")
-            if not str(job["credential_ref"] or "").strip():
+            if validate_runtime_prerequisites and not str(job["credential_ref"] or "").strip():
                 raise ArchiveJobNotReadyError(
                     "archive job credential reference is not configured"
                 )

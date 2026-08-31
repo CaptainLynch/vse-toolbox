@@ -28,13 +28,18 @@ from core.db_manager import (
     DatabaseManager,
 )
 from core.redaction import redact_sensitive_text
+from services.aras_auth import ArasAuthError
+from services.aras_crawler import ArasAuthenticationError, ArasCrawlerError
+from services.tdc_auth import TDCAuthError
+from services.tdc_crawler import TDCCrawlerError
+from services.windows_http import WinHTTPError, WinHTTPTimeoutError
 
 EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_ATTENTION = 2
 EXIT_INTERRUPTED = 130
 _TEXT_LIMIT = 1000
-_TRANSIENT_ERRORS = (ConnectionError, TimeoutError, OSError)
+_TRANSIENT_ERRORS = (ConnectionError, TimeoutError, OSError, WinHTTPError)
 
 
 def _safe_text(value: object, *, limit: int = _TEXT_LIMIT) -> str:
@@ -54,12 +59,22 @@ def _error_type(exc: BaseException) -> str:
         return "job_not_ready"
     if isinstance(exc, CredentialProviderError):
         return "credential_unavailable"
+    if isinstance(exc, (ArasAuthError, TDCAuthError)):
+        return "credential_invalid"
+    if isinstance(exc, ArasAuthenticationError):
+        return "authentication_error"
+    if isinstance(exc, WinHTTPTimeoutError):
+        return "timeout"
     if isinstance(exc, TimeoutError):
         return "timeout"
+    if isinstance(exc, WinHTTPError):
+        return "service_unavailable"
     if isinstance(exc, ConnectionError):
         return "connection_error"
     if isinstance(exc, OSError):
         return "io_error"
+    if isinstance(exc, (ArasCrawlerError, TDCCrawlerError)):
+        return "query_failed"
     if isinstance(exc, ValueError):
         return "invalid_data"
     if isinstance(exc, KeyError):
@@ -74,9 +89,13 @@ def _safe_exception_message(exc: BaseException) -> str:
         "lease_lost": "archive job lease was lost",
         "job_not_ready": "archive job configuration is not ready",
         "credential_unavailable": "credential reference is unavailable",
+        "credential_invalid": "archive credential was rejected",
+        "authentication_error": "external archive authentication failed",
         "timeout": "external archive request timed out",
+        "service_unavailable": "external archive service is unavailable",
         "connection_error": "external archive connection failed",
         "io_error": "archive input/output operation failed",
+        "query_failed": "external archive query failed",
         "invalid_data": "archive connector returned invalid data",
         "missing_job": "archive job was not found",
         "connector_error": "archive connector failed",
@@ -228,6 +247,7 @@ class ArchiveSyncRunner:
         job_id: int,
         *,
         trigger_type: str = "scheduled",
+        validate_runtime_prerequisites: bool = True,
     ) -> ArchiveJobRunResult:
         lease: dict[str, object] | None = None
         try:
@@ -235,6 +255,7 @@ class ArchiveSyncRunner:
                 job_id,
                 trigger_type,
                 lease_seconds=self._lease_seconds,
+                validate_runtime_prerequisites=validate_runtime_prerequisites,
             )
             run_id = _required_int(lease, "run_id")
             lease_token = str(lease["lease_token"])
@@ -262,7 +283,10 @@ class ArchiveSyncRunner:
                 run_id=run_id,
                 output_directory=str(lease.get("output_directory") or ""),
             )
-            credential_ref = self._db.get_archive_job_credential_ref(job_id)
+            credential_ref = self._db.get_archive_job_credential_ref(
+                job_id,
+                require_configured=validate_runtime_prerequisites,
+            )
             retry_policy = _required_mapping(lease, "retry_policy")
             retry_attempts = _required_int(retry_policy, "max_attempts")
             retry_backoff = retry_policy.get("backoff_seconds", self._backoff_seconds)
@@ -373,7 +397,11 @@ class ArchiveSyncRunner:
                 )
                 continue
             results.append(
-                self.run_job(job_id, trigger_type=trigger_type)
+                self.run_job(
+                    job_id,
+                    trigger_type=trigger_type,
+                    validate_runtime_prerequisites=trigger_type != "scheduled",
+                )
             )
         return ArchiveRunOnceResult(tuple(results), dry_run)
 
@@ -489,10 +517,13 @@ class ArchiveSyncRunner:
         message = _safe_exception_message(exc)
         final_state = (
             "needs_attention"
-            if isinstance(
-                exc,
-                (CredentialProviderError, ArchiveJobNotReadyError),
-            )
+            if isinstance(exc, (
+                CredentialProviderError,
+                ArchiveJobNotReadyError,
+                ArasAuthError,
+                TDCAuthError,
+                ArasAuthenticationError,
+            ))
             else "failed"
         )
         try:
