@@ -37,4 +37,21 @@ def test_external_detail_matches_ewo_layout_with_collapsed_bottom_info() -> None
     assert "external-progress-chart" in source
     assert "external-detail-info" in source
     assert "详细信息（点击展开）" in source
-    assert "立即同步" in source
+    assert "立即刷新（交互式查询）" in source
+    assert "后台归档同步" in source
+
+
+def test_paa_detail_interactive_refresh_is_separate_from_archive_sync() -> None:
+    source = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+    detail = source[source.index("function renderArchiveDeliverableDetailPage"):source.index("function toggleDeliverableDetail")]
+    interactive = source[source.index("async function runPaaInteractiveRefresh"):source.index("function renderDeliverableDetailPage")]
+
+    assert "const isPaa = job.jobKey === \"aras_paa\"" in detail
+    assert "buildPaaInteractiveFilters" in interactive
+    assert 'requestInteractiveArasQuery("paa"' in interactive
+    assert "renderInteractiveArasResult" in interactive
+    assert "立即刷新（交互式查询）" in detail
+    assert "后台归档同步" in detail
+    assert "/api/scheduled-archive/jobs/${encodeURIComponent(job.jobKey)}/sync-now" in detail
+    assert "/api/scheduled-archive/jobs/${encodeURIComponent(job.jobKey)}/sync-now" not in interactive
+    assert "interactiveButton.disabled = !job.enabled" not in detail

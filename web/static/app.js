@@ -303,7 +303,148 @@ function overviewRequestError(body, status) {
   const err = new Error(overviewErrorMessage(body, status));
   err.status = status;
   err.fields = error && error.fields && typeof error.fields === "object" ? error.fields : null;
+  err.code = error && typeof error.code === "string" ? error.code : "";
+  err.type = error && typeof error.type === "string" ? error.type : "";
+  err.diagnosticPath = error && typeof error.diagnosticPath === "string"
+    ? error.diagnosticPath
+    : "";
   return err;
+}
+
+const INTERACTIVE_QUERY_ERROR_LABELS = {
+  unauthenticated: {
+    label: "未认证",
+    detail: "请先在设置中完成统一域账号登录。",
+    tone: "warning",
+  },
+  service_unavailable: {
+    label: "服务不可用",
+    detail: "ARAS 当前不可用，请检查网络或 VPN 后重试。",
+    tone: "error",
+  },
+  query_failed: {
+    label: "查询失败",
+    detail: "ARAS 查询未完成，请稍后重试。",
+    tone: "error",
+  },
+};
+
+function interactiveQueryErrorCode(error, fallbackStatus) {
+  const explicit = error && typeof error.code === "string" ? error.code : "";
+  if (INTERACTIVE_QUERY_ERROR_LABELS[explicit]) return explicit;
+  const status = Number(error && error.status !== undefined ? error.status : fallbackStatus);
+  if (status === 401 || status === 403) return "unauthenticated";
+  if (status === 0 || !Number.isFinite(status) || status >= 500) return "service_unavailable";
+  return "query_failed";
+}
+
+function formatInteractiveQueryError(error, fallbackStatus = 0) {
+  const code = interactiveQueryErrorCode(error, fallbackStatus);
+  const descriptor = INTERACTIVE_QUERY_ERROR_LABELS[code] || INTERACTIVE_QUERY_ERROR_LABELS.query_failed;
+  return `${descriptor.label}：${descriptor.detail}`;
+}
+
+function interactiveFilterValue(value) {
+  if (typeof value !== "string" && typeof value !== "number") return "";
+  const text = String(value).trim();
+  return text ? text.slice(0, 1000) : "";
+}
+
+function buildInteractiveArasPayload(mode, filters = {}) {
+  const config = ARAS_MODES[mode];
+  if (!config || !["ewo", "paa"].includes(mode)) {
+    throw new Error("unsupported interactive ARAS mode");
+  }
+  const allowed = new Set(Array.isArray(config.filterNames) ? config.filterNames : []);
+  const safeFilters = {};
+  if (filters && typeof filters === "object" && !Array.isArray(filters)) {
+    Object.entries(filters).forEach(([name, value]) => {
+      if (!allowed.has(name)) return;
+      const clean = interactiveFilterValue(value);
+      if (clean) safeFilters[name] = clean;
+    });
+  }
+  return {
+    base_url: EWO_POLICY_DEFAULT_ARAS_BASE_URL,
+    auth_mode: "browser",
+    filters: safeFilters,
+    page: 1,
+    page_size: 50,
+    max_records: 2000,
+  };
+}
+
+async function requestInteractiveArasQuery(mode, filters = {}) {
+  const config = ARAS_MODES[mode];
+  if (!config || !["ewo", "paa"].includes(mode)) {
+    throw new Error("unsupported interactive ARAS mode");
+  }
+  const response = await fetch(config.endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(buildInteractiveArasPayload(mode, filters)),
+  });
+  const body = await overviewReadJson(response);
+  if (!response.ok || !body || body.ok !== true) {
+    throw overviewRequestError(body, response.status);
+  }
+  return body.data || {};
+}
+
+function interactiveQueryResultState(mode, data, targetKey = "") {
+  const rows = data && Array.isArray(data.rows) ? data.rows : [];
+  if (!rows.length || (data && data.queryState === "empty")) return "empty";
+  const target = interactiveFilterValue(targetKey);
+  if (!target) return "matched";
+  const identityFields = mode === "ewo"
+    ? ["_no", "ewoNo", "ewo_no", "id", "formId"]
+    : ["_no", "paaNo", "paa_no", "ewoNo", "ewo_no", "id", "formId"];
+  const found = rows.some((row) => row && identityFields.some(
+    (field) => interactiveFilterValue(row[field]) === target,
+  ));
+  return found ? "matched" : "no_match";
+}
+
+function renderInteractiveArasResult(container, mode, data, targetKey = "") {
+  if (!container) return null;
+  clearOverviewContainer(container);
+  const config = ARAS_MODES[mode] || {};
+  const state = interactiveQueryResultState(mode, data, targetKey);
+  const stateLabels = {
+    matched: "已匹配",
+    empty: "数据为空",
+    no_match: "未匹配",
+  };
+  const panel = overviewEl("section", "interactive-query-result");
+  panel.dataset.queryMode = mode;
+  panel.append(
+    overviewEl("strong", "interactive-query-title", `交互式查询 · ${COMMAND_LABELS[mode] || mode}`),
+    overviewEl("span", `interactive-query-state is-${state === "matched" ? "success" : "warning"}`, stateLabels[state]),
+  );
+  const rows = data && Array.isArray(data.rows) ? data.rows : [];
+  const count = data && data.count !== undefined ? Number(data.count) || rows.length : rows.length;
+  panel.appendChild(overviewEl(
+    "p",
+    "interactive-query-meta",
+    `返回 ${count} 条 · 第 ${Number(data && data.page) || 1} 页`,
+  ));
+  panel.appendChild(overviewEl(
+    "p",
+    "interactive-query-notice",
+    "本次结果未写入后台同步状态",
+  ));
+  if (state === "empty" || state === "no_match") {
+    panel.appendChild(overviewEl(
+      "p",
+      "interactive-query-state-detail",
+      stateLabels[state],
+    ));
+  }
+  if (config.resultKind === "rows") {
+    panel.appendChild(renderRows(data || {}, config.preferredColumns || [], mode));
+  }
+  container.appendChild(panel);
+  return panel;
 }
 
 function formatApiErrorMessage(err, fallbackStatus) {
@@ -1208,6 +1349,7 @@ async function loadDeliverablePolicy(container, item, options = {}) {
       if (!policyResponse.ok || !body || body.ok !== true) throw overviewRequestError(body, policyResponse.status);
       const settingsBody = settingsResponse ? await overviewReadJson(settingsResponse) : null;
       const discoveryBody = discoveryResponse ? await overviewReadJson(discoveryResponse) : null;
+      if (typeof options.onPolicyLoaded === "function") options.onPolicyLoaded(body.data || {});
       renderEwoDeliverablePolicy(container, item, body.data, {
         ...options,
         settings: settingsBody && settingsBody.ok === true ? settingsBody.data : null,
@@ -1854,7 +1996,7 @@ function renderDeliverableEvidence(
   );
 
   const syncActionBar = overviewEl("div", "evidence-sync-bar");
-  const syncBtn = overviewEl("button", "evidence-sync-btn", "立即同步");
+  const syncBtn = overviewEl("button", "evidence-sync-btn", "后台同步");
   syncBtn.type = "button";
   syncBtn.disabled = !syncSupported || !syncReady;
   if (!syncReady) syncBtn.title = `不可同步：${syncMissing.join("，") || "同步条件尚未满足"}`;
@@ -1887,9 +2029,9 @@ function renderDeliverableEvidence(
       syncStatus.className = "evidence-sync-status is-warning";
       return;
     }
-    if (!window.confirm(`确定要立即同步 ${item.name} 吗？`)) return;
+    if (!window.confirm(`确定要执行后台同步 ${item.name} 吗？`)) return;
     syncBtn.disabled = true;
-    syncStatus.textContent = "正在执行同步...";
+    syncStatus.textContent = "正在执行后台同步...";
     syncStatus.className = "evidence-sync-status is-busy";
 
     try {
@@ -3215,7 +3357,7 @@ function renderDeliverableAnalysisActionBar(item, options = {}) {
     if (typeof options.onRefresh === "function") options.onRefresh();
   });
 
-  const syncButton = overviewEl("button", "evidence-sync-btn analysis-sync-btn", "抓取并同步");
+  const syncButton = overviewEl("button", "evidence-sync-btn analysis-sync-btn", "后台同步");
   syncButton.type = "button";
   syncButton.dataset.deliverableId = item.id;
 
@@ -3753,7 +3895,7 @@ function renderDeliverableStatusChart(item, actions = {}) {
   let ewoData = null;
   let feedbackText = "";
   let feedbackTone = "";
-  let syncButton = null;
+  let interactiveButton = null;
   let refreshButton = null;
   let syncBusy = false;
   let syncReady = !isEwo;
@@ -3763,19 +3905,22 @@ function renderDeliverableStatusChart(item, actions = {}) {
     ewoHost.setAttribute("aria-live", "polite");
     renderEwoSyncSummary(ewoHost, item, null);
     const actionsRow = overviewEl("div", "ewo-sync-summary-actions");
-    syncButton = overviewEl("button", "btn is-primary ewo-sync-now-btn", "立即同步");
-    syncButton.type = "button";
-    syncButton.disabled = true;
-    syncButton.title = `不可同步：${syncReadinessMessage}`;
-    refreshButton = overviewEl("button", "btn is-secondary ewo-sync-refresh-btn", "刷新同步数据");
+    interactiveButton = overviewEl(
+      "button",
+      "btn is-primary ewo-interactive-refresh-btn",
+      "立即刷新（交互式查询）",
+    );
+    interactiveButton.type = "button";
+    interactiveButton.dataset.queryMode = "interactive";
+    refreshButton = overviewEl("button", "btn is-secondary ewo-sync-refresh-btn", "刷新后台分析");
     refreshButton.type = "button";
-    syncButton.addEventListener("click", () => {
-      if (actions.onSync) actions.onSync();
+    interactiveButton.addEventListener("click", () => {
+      if (actions.onInteractiveRefresh) actions.onInteractiveRefresh();
     });
     refreshButton.addEventListener("click", () => {
       if (actions.onRefresh) actions.onRefresh();
     });
-    actionsRow.append(syncButton, refreshButton);
+    actionsRow.append(interactiveButton, refreshButton);
     ewoHost.appendChild(actionsRow);
     chart.appendChild(ewoHost);
   }
@@ -3785,7 +3930,7 @@ function renderDeliverableStatusChart(item, actions = {}) {
     ewoData = data || null;
     renderEwoSyncSummary(ewoHost, item, ewoData, feedbackText, feedbackTone);
     const actionsRow = overviewEl("div", "ewo-sync-summary-actions");
-    actionsRow.append(syncButton, refreshButton);
+    actionsRow.append(interactiveButton, refreshButton);
     ewoHost.appendChild(actionsRow);
   }
 
@@ -3793,25 +3938,17 @@ function renderDeliverableStatusChart(item, actions = {}) {
     feedbackText = String(text || "");
     feedbackTone = tone;
     if (ewoHost) updateEwoSummary(ewoData);
-    if (syncButton) syncButton.setAttribute("aria-label", feedbackText ? `立即同步（${feedbackText}）` : "立即同步");
+    if (interactiveButton) {
+      interactiveButton.setAttribute(
+        "aria-label",
+        feedbackText ? `立即刷新（交互式查询，${feedbackText}）` : "立即刷新（交互式查询）",
+      );
+    }
   }
 
   function setSyncReadiness(ready, message = "") {
     syncReady = Boolean(ready);
     syncReadinessMessage = String(message || "");
-    if (syncButton) {
-      syncButton.disabled = syncBusy || !syncReady;
-      syncButton.title = syncReady ? "" : `不可同步：${syncReadinessMessage || "同步条件尚未满足"}`;
-    }
-    if (syncReady && feedbackText.startsWith("暂不能同步：")) {
-      feedbackText = "";
-      feedbackTone = "";
-      if (ewoHost) updateEwoSummary(ewoData);
-      if (syncButton) syncButton.setAttribute("aria-label", "立即同步");
-    }
-    if (!syncReady && !feedbackText) {
-      setSyncStatus(`暂不能同步：${syncReadinessMessage || "同步条件尚未满足"}`, "warning");
-    }
   }
 
   function getSyncReadiness() {
@@ -3823,7 +3960,7 @@ function renderDeliverableStatusChart(item, actions = {}) {
 
   function setBusy(busy) {
     syncBusy = Boolean(busy);
-    if (syncButton) syncButton.disabled = syncBusy || !syncReady;
+    if (interactiveButton) interactiveButton.disabled = syncBusy;
     if (refreshButton) refreshButton.disabled = Boolean(busy);
     chart.classList.toggle("is-sync-busy", Boolean(busy));
   }
@@ -3854,9 +3991,9 @@ async function runDeliverableSyncFromAnalysis(
     }
     return;
   }
-  if (!window.confirm(`确定要抓取并同步 ${item.name} 吗？`)) return;
+  if (!window.confirm(`确定要执行后台同步 ${item.name} 吗？`)) return;
   analysisSyncReadiness.setBusy(true);
-  analysisSyncReadiness.setStatus("正在抓取并同步...", "busy");
+  analysisSyncReadiness.setStatus("正在执行后台同步...", "busy");
   try {
     const data = await requestProjectStatusSync(item);
     const feedback = projectStatusSyncFeedback(data);
@@ -3893,28 +4030,53 @@ async function refreshDeliverableAnalysisFromAnalysis(
   }
 }
 
-async function runEwoSyncFromStatusChart(item, statusChart, analysisPanel, analysisOptions = {}) {
-  if (!statusChart) return;
-  const readiness = typeof statusChart.getSyncReadiness === "function"
-    ? statusChart.getSyncReadiness()
-    : { ready: true, message: "" };
-  if (!readiness.ready) {
-    statusChart.setSyncStatus(`暂不能同步：${readiness.message}`, "warning");
-    return;
+function buildEwoInteractiveQuerySpec(policy = {}, item = {}) {
+  const matchRule = policy && policy.matchRule && typeof policy.matchRule === "object"
+    ? policy.matchRule
+    : {};
+  const fieldMap = {
+    ewoNo: "ewo_no",
+    projectCode: "project_code",
+    subjectKeyword: "subject_keyword",
+    modelInfo: "model_info",
+  };
+  const filters = {};
+  Object.entries(fieldMap).forEach(([policyKey, filterKey]) => {
+    const value = interactiveFilterValue(matchRule[policyKey]);
+    if (value) filters[filterKey] = value;
+  });
+  if (!Object.keys(filters).length) {
+    const externalKey = interactiveFilterValue(policy && policy.externalKey);
+    if (/^EWO[-_]/i.test(externalKey)) filters.ewo_no = externalKey;
   }
-  if (!window.confirm(`确定要立即同步 ${item.name} 吗？`)) return;
+  return {
+    filters,
+    targetKey: filters.ewo_no || "",
+    fallbackLabel: safeDisplayValue(item && item.name),
+  };
+}
+
+async function runEwoInteractiveRefreshFromStatusChart(
+  item,
+  statusChart,
+  resultHost,
+  policyProvider = null,
+) {
+  if (!statusChart || !resultHost) return;
+  if (!window.confirm(`确定要立即刷新 ${item.name} 吗？`)) return;
+  const policy = typeof policyProvider === "function" ? policyProvider() : {};
+  const spec = buildEwoInteractiveQuerySpec(policy, item);
   statusChart.setBusy(true);
-  statusChart.setSyncStatus("正在执行同步...", "busy");
+  statusChart.setSyncStatus("正在执行交互式查询...", "busy");
   try {
-    const data = await requestProjectStatusSync(item);
-    const feedback = projectStatusSyncFeedback(data);
-    const loaded = await loadDeliverableAnalysis(analysisPanel, item, statusChart, analysisOptions);
-    if (loaded) statusChart.setSyncStatus(feedback.text, feedback.tone);
+    const data = await requestInteractiveArasQuery("ewo", spec.filters);
+    renderInteractiveArasResult(resultHost, "ewo", data, spec.targetKey);
+    const state = interactiveQueryResultState("ewo", data, spec.targetKey);
+    const stateLabel = { matched: "已匹配", empty: "数据为空", no_match: "未匹配" }[state] || "查询完成";
+    statusChart.setSyncStatus(`交互式查询完成：${stateLabel}`, state === "matched" ? "success" : "warning");
   } catch (err) {
-    statusChart.setSyncStatus(
-      `同步失败：${redactSensitiveText(err instanceof Error ? err.message : String(err))}`,
-      "error",
-    );
+    const message = formatInteractiveQueryError(err, err && err.status);
+    statusChart.setSyncStatus(message, err && err.code === "unauthenticated" ? "warning" : "error");
   } finally {
     statusChart.setBusy(false);
   }
@@ -3923,7 +4085,7 @@ async function runEwoSyncFromStatusChart(item, statusChart, analysisPanel, analy
 async function refreshEwoAnalysisFromStatusChart(item, statusChart, analysisPanel, analysisOptions = {}) {
   if (!statusChart) return;
   statusChart.setBusy(true);
-  statusChart.setSyncStatus("正在刷新同步数据...", "busy");
+  statusChart.setSyncStatus("正在刷新后台分析...", "busy");
   try {
     const loaded = await loadDeliverableAnalysis(analysisPanel, item, statusChart, analysisOptions);
     if (loaded) statusChart.setSyncStatus("刷新完成", "success");
@@ -3934,6 +4096,52 @@ async function refreshEwoAnalysisFromStatusChart(item, statusChart, analysisPane
     );
   } finally {
     statusChart.setBusy(false);
+  }
+}
+
+function buildPaaInteractiveFilters(filters = {}) {
+  const source = filters && typeof filters === "object" && !Array.isArray(filters)
+    ? filters
+    : {};
+  const fieldMap = {
+    paaNo: "paa_no",
+    ewoNo: "ewo_no",
+    state: "state",
+    area: "area",
+    base: "base",
+    department: "department",
+    vehicleKeyword: "vehicle_keyword",
+    submitStart: "submit_start",
+    submitEnd: "submit_end",
+    materialRequestStart: "mtl_rq_start",
+    materialRequestEnd: "mtl_rq_end",
+  };
+  const result = {};
+  Object.entries(fieldMap).forEach(([sourceKey, filterKey]) => {
+    const value = interactiveFilterValue(source[sourceKey] ?? source[filterKey]);
+    if (value) result[filterKey] = value;
+  });
+  return result;
+}
+
+async function runPaaInteractiveRefresh(job, button, resultHost, statusMessage) {
+  if (!job || !button || !resultHost) return;
+  button.disabled = true;
+  button.textContent = "交互式查询中...";
+  statusMessage.textContent = "正在执行交互式查询...";
+  try {
+    const filters = buildPaaInteractiveFilters(job.filters || {});
+    const targetKey = interactiveFilterValue(job.filters && job.filters.paaNo);
+    const data = await requestInteractiveArasQuery("paa", filters);
+    renderInteractiveArasResult(resultHost, "paa", data, targetKey);
+    const state = interactiveQueryResultState("paa", data, targetKey);
+    const stateLabel = { matched: "已匹配", empty: "数据为空", no_match: "未匹配" }[state] || "查询完成";
+    statusMessage.textContent = `交互式查询完成：${stateLabel}`;
+  } catch (error) {
+    statusMessage.textContent = formatInteractiveQueryError(error, error && error.status);
+  } finally {
+    button.disabled = false;
+    button.textContent = "立即刷新（交互式查询）";
   }
 }
 
@@ -4025,6 +4233,10 @@ function renderDeliverableDetailPage(deliverableId) {
   const metaSection = overviewEl("section", "deliverable-page-meta-section overview-band");
   metaSection.appendChild(overviewEl("h5", "section-sub-title", "交付物配置"));
   let statusChart = null;
+  let ewoInteractivePolicy = item.updatePolicy || {};
+  const interactiveQueryHost = overviewEl("section", "deliverable-interactive-query-panel");
+  interactiveQueryHost.hidden = true;
+  interactiveQueryHost.setAttribute("aria-live", "polite");
   const analysisSyncReadiness = createDeliverableAnalysisSyncState();
   const analysisOptions = {
     showAnalysisActions: true,
@@ -4045,10 +4257,19 @@ function renderDeliverableDetailPage(deliverableId) {
     ),
   };
   statusChart = renderDeliverableStatusChart(item, {
-    onSync: () => runEwoSyncFromStatusChart(item, statusChart, analysisPanel, analysisOptions),
+    onInteractiveRefresh: () => {
+      interactiveQueryHost.hidden = false;
+      return runEwoInteractiveRefreshFromStatusChart(
+        item,
+        statusChart,
+        interactiveQueryHost,
+        () => ewoInteractivePolicy,
+      );
+    },
     onRefresh: () => refreshEwoAnalysisFromStatusChart(item, statusChart, analysisPanel, analysisOptions),
   });
   metaSection.appendChild(statusChart.el);
+  metaSection.appendChild(interactiveQueryHost);
   metaSection.appendChild(overviewEl("h6", "section-sub-title", "详细明细"));
   const grid = overviewEl("div", "detail-inline-grid");
   const pairs = [
@@ -4106,7 +4327,10 @@ function renderDeliverableDetailPage(deliverableId) {
     statusChart,
     analysisSyncReadiness,
   );
-  loadDeliverablePolicy(policyPanel, item, { onEvidenceRefresh: refreshEvidence });
+  loadDeliverablePolicy(policyPanel, item, {
+    onEvidenceRefresh: refreshEvidence,
+    onPolicyLoaded: (policy) => { ewoInteractivePolicy = policy || {}; },
+  });
   refreshEvidence();
 
   container.appendChild(page);
@@ -4165,16 +4389,34 @@ function renderArchiveDeliverableDetailPage(jobKey) {
   const statusHead = overviewEl("div", "external-detail-section-head");
   statusHead.appendChild(overviewEl("h5", "section-sub-title", "当前状态图表"));
   const statusActions = overviewEl("div", "external-detail-actions");
-  const refreshButton = overviewEl("button", "btn", "刷新同步数据");
+  const isPaa = job.jobKey === "aras_paa";
+  const refreshButton = overviewEl("button", "btn", isPaa ? "刷新后台历史" : "刷新同步数据");
   refreshButton.type = "button";
-  const syncButton = overviewEl("button", "btn is-primary", "立即同步");
+  const interactiveButton = isPaa
+    ? overviewEl("button", "btn is-primary paa-interactive-refresh-btn", "立即刷新（交互式查询）")
+    : null;
+  if (interactiveButton) {
+    interactiveButton.type = "button";
+    interactiveButton.dataset.queryMode = "interactive";
+  }
+  const syncButton = overviewEl("button", "btn is-secondary", "后台归档同步");
   syncButton.type = "button";
   syncButton.disabled = !job.enabled || !(job.credentialAvailable ?? job.credentialConfigured);
-  statusActions.append(refreshButton, syncButton);
+  statusActions.append(refreshButton);
+  if (interactiveButton) statusActions.appendChild(interactiveButton);
+  statusActions.appendChild(syncButton);
   statusHead.appendChild(statusActions);
   statusSection.appendChild(statusHead);
   const statusMessage = overviewEl("p", "external-detail-sync-message", `最近同步状态：${archiveSyncStateLabel(job.syncState)}`);
   statusSection.appendChild(statusMessage);
+  const interactiveQueryHost = isPaa
+    ? overviewEl("section", "external-interactive-query-panel")
+    : null;
+  if (interactiveQueryHost) {
+    interactiveQueryHost.hidden = true;
+    interactiveQueryHost.setAttribute("aria-live", "polite");
+    statusSection.appendChild(interactiveQueryHost);
+  }
   const metrics = overviewEl("div", "external-detail-metrics");
   const metricValues = [
     ["同步状态", archiveSyncStateLabel(job.syncState)],
@@ -4248,10 +4490,16 @@ function renderArchiveDeliverableDetailPage(jobKey) {
     }
   };
   refreshButton.addEventListener("click", renderHistory);
+  if (interactiveButton && interactiveQueryHost) {
+    interactiveButton.addEventListener("click", () => {
+      interactiveQueryHost.hidden = false;
+      void runPaaInteractiveRefresh(job, interactiveButton, interactiveQueryHost, statusMessage);
+    });
+  }
   syncButton.addEventListener("click", async () => {
     syncButton.disabled = true;
-    syncButton.textContent = "正在同步...";
-    statusMessage.textContent = "正在同步当前交付物...";
+    syncButton.textContent = "后台归档同步中...";
+    statusMessage.textContent = "正在执行后台归档同步...";
     try {
       const response = await fetch(`/api/scheduled-archive/jobs/${encodeURIComponent(job.jobKey)}/sync-now`, {
         method: "POST",
@@ -4266,7 +4514,7 @@ function renderArchiveDeliverableDetailPage(jobKey) {
       statusMessage.textContent = `同步失败：${redactSensitiveText(error instanceof Error ? error.message : String(error))}`;
     } finally {
       syncButton.disabled = !job.enabled || !(job.credentialAvailable ?? job.credentialConfigured);
-      syncButton.textContent = "立即同步";
+      syncButton.textContent = "后台归档同步";
     }
   });
   renderHistory();

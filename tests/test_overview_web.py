@@ -388,6 +388,88 @@ def test_overview_deliverable_evidence_structure_and_labels() -> None:
     assert "建议状态映射：待用户确认（不自动应用）" in overview_js
 
 
+def test_overview_interactive_aras_query_helper_contract() -> None:
+    """EWO/PAA detail refresh shares a non-secret browser-mode query adapter."""
+    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+    helper_js = _js_slice(
+        js_text,
+        "const INTERACTIVE_QUERY_ERROR_LABELS",
+        "function renderTableState",
+    )
+
+    for marker in (
+        "function buildInteractiveArasPayload",
+        "function requestInteractiveArasQuery",
+        "function interactiveQueryResultState",
+        "function renderInteractiveArasResult",
+        'auth_mode: "browser"',
+        "const config = ARAS_MODES[mode]",
+        "queryState",
+        "交互式查询",
+        "本次结果未写入后台同步状态",
+        "未认证",
+        "服务不可用",
+        "查询失败",
+        "数据为空",
+        "未匹配",
+    ):
+        assert marker in helper_js
+
+    assert 'error.code' in js_text
+    assert 'err.code = error && typeof error.code === "string"' in js_text
+    assert "/api/aras/ewo/query" in js_text
+    assert "/api/aras/paa/query" in js_text
+    for forbidden in (
+        "credentialRef",
+        "credential_ref",
+        "username",
+        "password",
+        "cookie",
+        "cookies",
+        "mapping",
+        "leaseToken",
+        "lease_token",
+        "Authorization",
+    ):
+        assert forbidden not in helper_js
+
+
+def test_ewo_detail_interactive_refresh_has_separate_background_sync_contract() -> None:
+    """EWO detail refresh queries ARAS and never reuses the background sync route."""
+    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+    detail_js = _js_slice(
+        js_text,
+        "function renderDeliverableDetailPage",
+        "function toggleDeliverableDetail",
+    )
+    chart_js = _js_slice(
+        js_text,
+        "function renderDeliverableStatusChart",
+        "async function runEwoInteractiveRefreshFromStatusChart",
+    )
+    interactive_js = _js_slice(
+        js_text,
+        "async function runEwoInteractiveRefreshFromStatusChart",
+        "async function refreshEwoAnalysisFromStatusChart",
+    )
+    evidence_js = _js_slice(
+        js_text,
+        "function renderDeliverableEvidence",
+        "// 4.",
+    )
+
+    assert "onInteractiveRefresh" in detail_js
+    assert 'requestInteractiveArasQuery("ewo"' in interactive_js
+    assert "renderInteractiveArasResult" in interactive_js
+    assert "formatInteractiveQueryError" in interactive_js
+    assert "requestProjectStatusSync(item)" not in interactive_js
+    assert "立即刷新（交互式查询）" in chart_js
+    assert "交互式查询" in chart_js
+    assert "interactiveButton.disabled = syncBusy" in chart_js
+    assert "后台同步" in evidence_js
+    assert "syncReady" in evidence_js
+
+
 def test_overview_deliverable_evidence_restrictions_and_guard() -> None:
     js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
     evidence_js = _js_slice(
@@ -519,8 +601,8 @@ def test_overview_ewo_analysis_feedback_controls_are_searchable_multiselects() -
     assert "应用筛选" in js_text
     assert "清除筛选" in js_text
     assert "ewo-sync-summary" in js_text
-    assert "刷新同步数据" in js_text
-    assert "立即同步" in js_text
+    assert "刷新后台分析" in js_text
+    assert "立即刷新（交互式查询）" in js_text
     assert ".analysis-multi-select" in css_text
 
 
@@ -581,8 +663,8 @@ def test_overview_ewo_second_round_ui_feedback_contract() -> None:
     assert "最近同步时间" in summary_js
 
 
-def test_ewo_update_policy_is_editable_without_bypassing_sync_gate() -> None:
-    """EWO 模式可保存，但自动同步仍必须服从后端就绪门禁。"""
+def test_ewo_update_policy_is_editable_with_separate_interactive_refresh() -> None:
+    """交互式刷新不受后台同步就绪门禁影响，后台同步仍保留门禁。"""
     js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
     policy_js = _js_slice(
         js_text, "function renderEwoDeliverablePolicy", "async function loadDeliverablePolicy"
@@ -599,12 +681,13 @@ def test_ewo_update_policy_is_editable_without_bypassing_sync_gate() -> None:
     assert "body: JSON.stringify(payload)" in policy_js
     assert "enabled: false" not in policy_js
 
-    # The status-chart action must be disabled until the detailed policy and
-    # mapping evidence report that automatic sync is ready.
+    # The status-chart action is an interactive query and is disabled only
+    # while busy; the background action remains readiness-gated elsewhere.
     assert "setSyncReadiness" in chart_js
     assert "getSyncReadiness" in chart_js
-    assert "if (!readiness.ready)" in chart_js
-    assert "syncButton.disabled" in chart_js
+    assert "onInteractiveRefresh" in chart_js
+    assert "interactiveButton.disabled = syncBusy" in chart_js
+    assert "requestInteractiveArasQuery(\"ewo\"" in chart_js
     assert "syncReady" in chart_js
 
 
@@ -672,15 +755,16 @@ def test_overview_analysis_actions_are_visible_before_empty_state_and_gate_sync(
     # 操作栏必须在 hasCache 空态判断之前创建，D5 首次打开也能看到入口。
     assert "analysis-action-bar" in analysis_js
     assert "刷新分析" in analysis_js
-    assert "抓取并同步" in analysis_js
+    assert "后台同步" in analysis_js
     assert analysis_js.index("analysisActionBar") < analysis_js.index("if (!analysisData.hasCache)")
 
-    # 分析区与证据区共享就绪状态，按钮不能绕过后端同步门禁直接 POST。
+    # 分析区仍提供清晰的后台同步入口并服从后端同步门禁。
     assert "analysisSyncReadiness" in loader_js
     assert "analysisOptions" in loader_js
     assert "onSync" in analysis_js
     assert "setDeliverableAnalysisSyncReadiness" in evidence_js
     assert "syncButton.disabled" in analysis_js
+    assert "后台同步" in analysis_js
 
 
 def test_overview_ewo_department_scope_model_and_chart_labels_contract() -> None:
