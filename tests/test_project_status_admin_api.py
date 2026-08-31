@@ -581,8 +581,7 @@ def test_connector_exception_with_sensitive_info_is_redacted(
     assert "eyJhbGciOi" not in raw_response_text
     assert "tok_abc987" not in raw_response_text
     assert "sid_secret" not in raw_response_text
-    assert "[redacted]" in raw_response_text
-    assert "Bearer [redacted]" in raw_response_text
+    assert res["errorMessage"] == "connector failure"
 
     # Verify run evidence in SQLite is also redacted
     with test_db.get_connection() as conn:
@@ -596,7 +595,8 @@ def test_connector_exception_with_sensitive_info_is_redacted(
         assert "eyJhbGciOi" not in db_text
         assert "tok_abc987" not in db_text
         assert "sid_secret" not in db_text
-        assert "[redacted]" in db_text
+        assert run_row["error_message"] == "connector failure"
+        assert run_row["result_summary"] == "connector failure"
 
 
 # ── 6. Local-Only Security Guard: REMOTE_ADDR, Sec-Fetch-Site, and Origin ───────
