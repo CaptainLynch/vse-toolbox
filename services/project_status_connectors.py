@@ -25,6 +25,7 @@ from services.tdc_crawler import (
     TDCDataModelFilters,
     TDCSORFilters,
 )
+from services.windows_http import WinHTTPError
 
 _IDENTITY_FIELDS = (
     # 与 project_status_discovery 保持一致：业务单号（EWO/PAA 的 `_no`）
@@ -114,7 +115,7 @@ class RetryingConnector:
         for attempt in range(1, self.max_attempts + 1):
             try:
                 return self.connector.collect(context)
-            except (ConnectionError, TimeoutError, OSError):
+            except (ConnectionError, TimeoutError, OSError, WinHTTPError):
                 if attempt >= self.max_attempts:
                     raise
                 self.sleeper(self.backoff_seconds * (2 ** (attempt - 1)))

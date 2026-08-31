@@ -7,7 +7,10 @@ import json
 
 import pytest
 
+from core.credential_provider import CredentialProviderError
 from core.db_manager import DatabaseManager
+from services.aras_auth import ArasAuthError
+from services.aras_crawler import ArasAuthenticationError, ArasCrawlerError
 from services.project_status_updates import (
     ConnectorCandidate,
     ConnectorSnapshot,
@@ -22,6 +25,8 @@ from services.project_status_sync_runner import (
     SyncBindingContext,
     create_production_registry,
 )
+from services.tdc_auth import TDCAuthError
+from services.windows_http import WinHTTPError, WinHTTPTimeoutError
 
 
 # ── 公共 fixture ────────────────────────────────────────────────
@@ -318,6 +323,60 @@ def test_single_failure_does_not_block_others(
     assert outcomes["VPI-T2-D3"] == "failed"
     assert outcomes["VPI-T2-D5"] == "completed"
     assert result.exit_code == EXIT_FAILED
+
+
+@pytest.mark.parametrize(
+    ("failure", "error_type"),
+    [
+        (
+            CredentialProviderError("credential missing password=secret"),
+            "credential_unavailable",
+        ),
+        (ArasAuthError("credentials rejected password=secret"), "credential_invalid"),
+        (TDCAuthError("TDC credentials rejected password=secret"), "credential_invalid"),
+        (
+            ArasAuthenticationError("login page token=secret"),
+            "authentication_error",
+        ),
+        (WinHTTPError("transport failed Cookie=secret"), "service_unavailable"),
+        (WinHTTPTimeoutError("timed out token=secret"), "timeout"),
+        (ArasCrawlerError("invalid XML Authorization=secret"), "query_failed"),
+    ],
+)
+def test_scheduled_connector_failure_is_audited_without_secret(
+    runner: ProjectStatusSyncRunner,
+    db: DatabaseManager,
+    service: ProjectStatusUpdateService,
+    registry: ConnectorRegistry,
+    failure: BaseException,
+    error_type: str,
+) -> None:
+    _enable_pilot(service)
+    registry.register("tdc", FakeConnector(exc=failure))
+
+    result = runner.run_once(validate_runtime_prerequisites=False)
+    item = result.results[0]
+
+    assert item.error_type == error_type
+    assert item.final_state == "failed"
+    assert item.run_id is not None
+    serialized = json.dumps(item.__dict__, ensure_ascii=False)
+    assert "secret" not in serialized
+    assert "Cookie" not in serialized
+    assert "Authorization" not in serialized
+
+    with db.get_connection() as conn:
+        run = conn.execute(
+            "SELECT run_state, error_type, error_message, result_summary "
+            "FROM project_status_sync_runs WHERE id=?",
+            (item.run_id,),
+        ).fetchone()
+    assert run["run_state"] == "failed"
+    assert run["error_type"] == error_type
+    db_serialized = json.dumps(dict(run), ensure_ascii=False)
+    assert "secret" not in db_serialized
+    assert "Cookie" not in db_serialized
+    assert "Authorization" not in db_serialized
 
 
 # ── 4. fake connector 成功完成 acquire → start → collect → apply → release

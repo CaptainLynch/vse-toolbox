@@ -14,6 +14,7 @@ from services.project_status_connectors import (
     TDCProjectStatusConnector,
 )
 from services.project_status_sync_runner import SyncBindingContext
+from services.windows_http import WinHTTPError
 
 
 def context(source: str = "tdc") -> SyncBindingContext:
@@ -144,6 +145,20 @@ def test_retry_is_bounded_to_two_attempts():
     assert len(calls) == 2
 
 
+def test_native_winhttp_failure_is_retried_twice():
+    calls = []
+
+    class Failing:
+        def collect(self, value):
+            calls.append(value)
+            raise WinHTTPError("native transport failure")
+
+    connector = RetryingConnector(Failing(), sleeper=lambda delay: None)
+    with pytest.raises(WinHTTPError):
+        connector.collect(context())
+    assert len(calls) == 2
+
+
 def test_aras_rejects_unapproved_report_before_auth(tmp_path: Path):
     connector = ArasProjectStatusConnector(
         MemoryCredentialProvider({"ref": ("user", "pass")}),
@@ -180,6 +195,66 @@ def test_aras_session_closes_when_crawl_fails(tmp_path: Path):
     value = SyncBindingContext(**{**value.__dict__, "match_rule": {"reportType": "ewo"}})
     with pytest.raises(RuntimeError, match="offline failure"):
         connector.collect(value)
+    assert session.closed is True
+
+
+def test_aras_connector_resolves_opaque_credential_and_queries_ewo(tmp_path: Path):
+    calls = {}
+    session = TrackingSession()
+
+    class RecordingAuth(FakeAuth):
+        def login(self, username, password):
+            calls["credentials"] = (username, password)
+            return SimpleNamespace(session=session)
+
+    class RecordingCrawler:
+        def __init__(self, base_url, session=None, timeout=None, prewarm=False):
+            calls["client"] = {
+                "base_url": base_url,
+                "session": session,
+                "timeout": timeout,
+                "prewarm": prewarm,
+            }
+
+        def crawl_ewo_report_all(self, filters, max_records):
+            calls["filters"] = filters
+            calls["max_records"] = max_records
+            return SimpleNamespace(rows=[{"_no": "EWO-1", "_rsp_name": "负责人"}])
+
+    connector = ArasProjectStatusConnector(
+        MemoryCredentialProvider({"aras-ref": ("operator", "pw-secret")}),
+        ArchiveStore({"default": tmp_path}, reserve_bytes=0),
+        auth_factory=RecordingAuth,
+        crawler_factory=RecordingCrawler,
+    )
+    ctx = SyncBindingContext(
+        binding_id=12,
+        deliverable_id="VPI-T2-D3",
+        phase_id="VPI-T2",
+        source_type="aras",
+        external_key="EWO-1",
+        match_rule={"reportType": "ewo", "ewoNo": "EWO-1"},
+        mapping={"owner": "_rsp_name"},
+        cursor={},
+        expected_deliverable_updated_at="v1",
+        run_id=12,
+        credential_ref="aras-ref",
+    )
+
+    snapshot = connector.collect(ctx)
+
+    assert calls["credentials"] == ("operator", "pw-secret")
+    assert calls["client"]["session"] is session
+    assert calls["filters"].ewo_no == "EWO-1"
+    assert calls["max_records"] == 2000
+    assert snapshot.match_state == "matched"
+    assert snapshot.candidates[0].field_values == {"owner": "负责人"}
+    assert all(
+        "pw-secret" not in (tmp_path / item["relative_path"]).read_text(
+            encoding="utf-8", errors="ignore"
+        )
+        for item in snapshot.artifacts
+    )
     assert session.closed is True
 
 

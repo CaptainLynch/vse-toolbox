@@ -26,7 +26,10 @@ from core.db_manager import (
     SyncLeaseBusyError,
     SyncLeaseLostError,
 )
+from core.credential_provider import CredentialProviderError
 from core.redaction import redact_sensitive_text
+from services.aras_auth import ArasAuthError
+from services.aras_crawler import ArasAuthenticationError, ArasCrawlerError
 from services.project_status_deliverable_analysis import (
     ProjectStatusDeliverableAnalysisService,
 )
@@ -35,6 +38,9 @@ from services.project_status_updates import (
     ProjectStatusUpdateService,
     SyncResult,
 )
+from services.tdc_auth import TDCAuthError
+from services.tdc_crawler import TDCCrawlerError
+from services.windows_http import WinHTTPError, WinHTTPTimeoutError
 
 logger = logging.getLogger("vse_toolbox.sync_runner")
 
@@ -61,15 +67,43 @@ def _classify_exception(exc: BaseException) -> str:
         return "lease_lost"
     if isinstance(exc, SyncBindingNotReadyError):
         return "binding_not_ready"
-    if isinstance(exc, ConnectionError):
-        return "connection_error"
+    if isinstance(exc, CredentialProviderError):
+        return "credential_unavailable"
+    if isinstance(exc, (ArasAuthError, TDCAuthError)):
+        return "credential_invalid"
+    if isinstance(exc, ArasAuthenticationError):
+        return "authentication_error"
+    if isinstance(exc, WinHTTPTimeoutError):
+        return "timeout"
     if isinstance(exc, TimeoutError):
         return "timeout"
+    if isinstance(exc, (WinHTTPError, ConnectionError, OSError)):
+        return "service_unavailable"
+    if isinstance(exc, (ArasCrawlerError, TDCCrawlerError)):
+        return "query_failed"
     if isinstance(exc, ValueError):
         return "invalid_data"
     if isinstance(exc, KeyError):
         return "missing_entity"
     return "connector_error"
+
+
+_STABLE_ERROR_MESSAGES = {
+    "credential_unavailable": "credential unavailable; manual credential repair is required",
+    "credential_invalid": "credential rejected; update the credential reference",
+    "authentication_error": "external service authentication failed",
+    "service_unavailable": "external service unavailable; retry later",
+    "timeout": "external service timed out; retry later",
+    "query_failed": "external query failed; inspect the run details",
+    "invalid_data": "external data is invalid",
+    "missing_entity": "external entity is missing",
+    "connector_error": "connector failure",
+}
+
+
+def _stable_error_message(error_type: str) -> str:
+    """Return a bounded, non-sensitive message for connector failures."""
+    return _sanitize(_STABLE_ERROR_MESSAGES.get(error_type, "connector failure"))
 
 
 # ── 只读执行上下文 ──────────────────────────────────────────────
@@ -269,7 +303,7 @@ class ProjectStatusSyncRunner:
                     raise
                 # 单个 binding 的未预期异常不阻断批次。
                 error_type = _classify_exception(exc)
-                sanitized = _sanitize(str(exc))
+                sanitized = _stable_error_message(error_type)
                 result = BindingRunResult(
                     binding_id=int(binding["id"]),
                     deliverable_id=str(binding["deliverable_id"]),
@@ -442,7 +476,7 @@ class ProjectStatusSyncRunner:
             if isinstance(exc, (SystemExit, GeneratorExit)):
                 raise
             error_type = _classify_exception(exc)
-            sanitized = _sanitize(str(exc))
+            sanitized = _stable_error_message(error_type)
             try:
                 self._db.finalize_sync_failure(
                     binding_id,
