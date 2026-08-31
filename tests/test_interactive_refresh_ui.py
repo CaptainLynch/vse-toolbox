@@ -57,6 +57,17 @@ def test_interactive_error_and_result_states_are_stable_and_short() -> None:
     assert "err.errorMessage" in source
 
 
+def test_interactive_target_matching_supports_contract_table_rows() -> None:
+    source = _source()
+    helper = _slice(source, "function interactiveRowIdentityValues", "function formatApiErrorMessage")
+
+    assert "Array.isArray(row)" in helper
+    assert "sourceFields" in helper
+    assert "formatInteractiveArasResult(data, targetKey, mode)" in helper
+    assert 'formatInteractiveArasResult(data, spec.targetKey, "ewo")' in source
+    assert 'formatInteractiveArasResult(data, targetKey, "paa")' in source
+
+
 def test_ewo_detail_immediate_refresh_is_not_project_status_sync() -> None:
     source = _source()
     detail = _slice(source, "function renderDeliverableDetailPage", "function renderArchiveDeliverableDetailPage")

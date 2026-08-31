@@ -400,22 +400,43 @@ async function requestInteractiveArasQuery(mode, filters = {}) {
   return body.data || {};
 }
 
+function interactiveRowIdentityValues(mode, data, row) {
+  const identityFields = mode === "ewo"
+    ? ["_no", "ewoNo", "ewo_no", "id", "formId"]
+    : ["_no", "paaNo", "paa_no", "ewoNo", "ewo_no", "id", "formId"];
+  if (Array.isArray(row)) {
+    const columns = data && Array.isArray(data.columns) ? data.columns : [];
+    const values = [];
+    columns.forEach((column, fallbackIndex) => {
+      const sourceFields = column && Array.isArray(column.sourceFields) ? column.sourceFields : [];
+      if (!sourceFields.some((field) => identityFields.includes(field))) return;
+      const index = Number.isInteger(column.index) ? column.index : fallbackIndex;
+      values.push(row[index]);
+    });
+    // The approved EWO/PAA table contract places the business number first;
+    // retain a safe fallback for older responses that omit column metadata.
+    if (!values.length && row.length) values.push(row[0]);
+    return values;
+  }
+  if (row && typeof row === "object") {
+    return identityFields.map((field) => row[field]);
+  }
+  return [];
+}
+
 function interactiveQueryResultState(mode, data, targetKey = "") {
   const rows = data && Array.isArray(data.rows) ? data.rows : [];
   if (!rows.length || (data && data.queryState === "empty")) return "empty";
   const target = interactiveFilterValue(targetKey);
   if (!target) return "matched";
-  const identityFields = mode === "ewo"
-    ? ["_no", "ewoNo", "ewo_no", "id", "formId"]
-    : ["_no", "paaNo", "paa_no", "ewoNo", "ewo_no", "id", "formId"];
-  const found = rows.some((row) => row && identityFields.some(
-    (field) => interactiveFilterValue(row[field]) === target,
+  const found = rows.some((row) => interactiveRowIdentityValues(mode, data, row).some(
+    (value) => interactiveFilterValue(value) === target,
   ));
   return found ? "matched" : "no_match";
 }
 
-function formatInteractiveArasResult(data, expectedExternalKey = "") {
-  const state = interactiveQueryResultState("", data, expectedExternalKey);
+function formatInteractiveArasResult(data, expectedExternalKey = "", mode = "") {
+  const state = interactiveQueryResultState(mode, data, expectedExternalKey);
   const descriptors = {
     matched: { text: "已匹配", tone: "success" },
     empty: { text: "数据为空", tone: "warning" },
@@ -428,7 +449,7 @@ function renderInteractiveArasResult(container, mode, data, targetKey = "") {
   if (!container) return null;
   clearOverviewContainer(container);
   const config = ARAS_MODES[mode] || {};
-  const resultState = formatInteractiveArasResult(data, targetKey);
+  const resultState = formatInteractiveArasResult(data, targetKey, mode);
   const state = resultState.state;
   const panel = overviewEl("section", "interactive-query-result");
   panel.dataset.queryMode = mode;
@@ -4087,7 +4108,7 @@ async function runEwoInteractiveRefreshFromStatusChart(
   try {
     const data = await requestInteractiveArasQuery("ewo", spec.filters);
     renderInteractiveArasResult(resultHost, "ewo", data, spec.targetKey);
-    const resultState = formatInteractiveArasResult(data, spec.targetKey);
+    const resultState = formatInteractiveArasResult(data, spec.targetKey, "ewo");
     statusChart.setSyncStatus(`交互式查询完成：${resultState.text}`, resultState.tone);
   } catch (err) {
     const message = formatInteractiveArasError(err, err && err.status);
@@ -4149,7 +4170,7 @@ async function runPaaInteractiveRefresh(job, button, resultHost, statusMessage) 
     const targetKey = interactiveFilterValue(job.filters && job.filters.paaNo);
     const data = await requestInteractiveArasQuery("paa", filters);
     renderInteractiveArasResult(resultHost, "paa", data, targetKey);
-    const resultState = formatInteractiveArasResult(data, targetKey);
+    const resultState = formatInteractiveArasResult(data, targetKey, "paa");
     statusMessage.textContent = `交互式查询完成：${resultState.text}`;
   } catch (error) {
     statusMessage.textContent = formatInteractiveArasError(error, error && error.status);
