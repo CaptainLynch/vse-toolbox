@@ -8,6 +8,7 @@ import pytest
 from core.archive_store import ArchiveStore
 from core.credential_provider import MemoryCredentialProvider
 from services.aras_crawler import EWOReportFilters
+from services.tdc_crawler import TDCCrawlerError
 from services.project_status_connectors import (
     ArasProjectStatusConnector,
     RetryingConnector,
@@ -155,6 +156,23 @@ def test_native_winhttp_failure_is_retried_twice():
 
     connector = RetryingConnector(Failing(), sleeper=lambda delay: None)
     with pytest.raises(WinHTTPError):
+        connector.collect(context())
+    assert len(calls) == 2
+
+
+def test_wrapped_native_winhttp_failure_is_retried_twice():
+    calls = []
+
+    class Failing:
+        def collect(self, value):
+            calls.append(value)
+            try:
+                raise WinHTTPError("native transport failure")
+            except WinHTTPError as cause:
+                raise TDCCrawlerError("TDC request failed") from cause
+
+    connector = RetryingConnector(Failing(), sleeper=lambda delay: None)
+    with pytest.raises(TDCCrawlerError):
         connector.collect(context())
     assert len(calls) == 2
 

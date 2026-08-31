@@ -73,11 +73,13 @@ def _classify_exception(exc: BaseException) -> str:
         return "credential_invalid"
     if isinstance(exc, ArasAuthenticationError):
         return "authentication_error"
-    if isinstance(exc, WinHTTPTimeoutError):
+    if isinstance(exc, WinHTTPTimeoutError) or _has_cause(exc, WinHTTPTimeoutError):
         return "timeout"
-    if isinstance(exc, TimeoutError):
+    if isinstance(exc, TimeoutError) or _has_cause(exc, TimeoutError):
         return "timeout"
-    if isinstance(exc, (WinHTTPError, ConnectionError, OSError)):
+    if isinstance(exc, (WinHTTPError, ConnectionError, OSError)) or _has_cause(
+        exc, (WinHTTPError, ConnectionError, OSError)
+    ):
         return "service_unavailable"
     if isinstance(exc, (ArasCrawlerError, TDCCrawlerError)):
         return "query_failed"
@@ -86,6 +88,21 @@ def _classify_exception(exc: BaseException) -> str:
     if isinstance(exc, KeyError):
         return "missing_entity"
     return "connector_error"
+
+
+def _has_cause(
+    exc: BaseException,
+    expected: type[BaseException] | tuple[type[BaseException], ...],
+) -> bool:
+    """Check wrapped transport causes without exposing their messages."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if current is not exc and isinstance(current, expected):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 _STABLE_ERROR_MESSAGES = {
@@ -97,6 +114,7 @@ _STABLE_ERROR_MESSAGES = {
     "query_failed": "external query failed; inspect the run details",
     "invalid_data": "external data is invalid",
     "missing_entity": "external entity is missing",
+    "binding_not_ready": "binding is not ready for applying external data",
     "connector_error": "connector failure",
 }
 

@@ -26,6 +26,7 @@ from services.project_status_sync_runner import (
     create_production_registry,
 )
 from services.tdc_auth import TDCAuthError
+from services.tdc_crawler import TDCCrawlerError
 from services.windows_http import WinHTTPError, WinHTTPTimeoutError
 
 
@@ -377,6 +378,25 @@ def test_scheduled_connector_failure_is_audited_without_secret(
     assert "secret" not in db_serialized
     assert "Cookie" not in db_serialized
     assert "Authorization" not in db_serialized
+
+
+def test_wrapped_tdc_transport_failure_is_classified_as_service_unavailable(
+    runner: ProjectStatusSyncRunner,
+    db: DatabaseManager,
+    service: ProjectStatusUpdateService,
+    registry: ConnectorRegistry,
+) -> None:
+    _enable_pilot(service)
+    failure = TDCCrawlerError("request failed")
+    failure.__cause__ = WinHTTPError("Cookie=secret")
+    registry.register("tdc", FakeConnector(exc=failure))
+
+    result = runner.run_once(validate_runtime_prerequisites=False)
+
+    item = result.results[0]
+    assert item.error_type == "service_unavailable"
+    assert item.error_message == "external service unavailable; retry later"
+    assert "secret" not in str(item)
 
 
 # ── 4. fake connector 成功完成 acquire → start → collect → apply → release

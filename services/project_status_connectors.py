@@ -35,6 +35,7 @@ _IDENTITY_FIELDS = (
 )
 _MAX_ROWS = 10000
 logger = logging.getLogger(__name__)
+_TRANSIENT_ERRORS = (ConnectionError, TimeoutError, OSError, WinHTTPError)
 
 # 科室合并后 `_rsp_smt` 混杂，默认范围改按上级部门 `_rsp_department` 的
 # 包含式 LIKE 并集；`*` 触发 `_search_elements` 的 like 条件（crawler 现有约定）。
@@ -115,11 +116,25 @@ class RetryingConnector:
         for attempt in range(1, self.max_attempts + 1):
             try:
                 return self.connector.collect(context)
-            except (ConnectionError, TimeoutError, OSError, WinHTTPError):
+            except Exception as exc:
+                if not _has_transient_cause(exc):
+                    raise
                 if attempt >= self.max_attempts:
                     raise
                 self.sleeper(self.backoff_seconds * (2 ** (attempt - 1)))
         raise AssertionError("unreachable")
+
+
+def _has_transient_cause(exc: BaseException) -> bool:
+    """Recognize transport exceptions wrapped by a crawler error."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, _TRANSIENT_ERRORS):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 class TDCProjectStatusConnector:
