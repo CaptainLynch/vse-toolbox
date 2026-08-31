@@ -14,8 +14,14 @@ import main
 import web.app as web_app
 from core.diagnostics import DiagnosticOptions, MarkdownDiagnosticReport
 from services.aras_auth import ArasAuthError
-from services.aras_crawler import ArasCrawlerError, EWOReportPage, PAAReportPage
+from services.aras_crawler import (
+    ArasAuthenticationError,
+    ArasCrawlerError,
+    EWOReportPage,
+    PAAReportPage,
+)
 from services.aras_export import CSVExportResult, EWOExportResult
+from services.windows_http import WinHTTPError, WinHTTPTimeoutError
 
 
 @dataclass
@@ -33,6 +39,7 @@ class FakeDetail:
 class FakeArasClient:
     calls: list[dict[str, object]] = []
     fail: Exception | None = None
+    rows: list[dict[str, object]] | None = None
     detail_file_name: str = "detail.xlsx"
 
     def __init__(self, base_url, headers=None, cookies=None, session=None, timeout=30.0, diagnostic_hook=None):  # type: ignore[no-untyped-def]
@@ -59,8 +66,9 @@ class FakeArasClient:
         self.__class__.calls.append(
             {"method": "ewo", "filters": filters, "page": page, "page_size": page_size, "max_records": max_records}
         )
-        return EWOReportPage(
-            rows=[
+        rows = self.__class__.rows
+        if rows is None:
+            rows = [
                 {
                     "_no": "EWO-1",
                     "_sort_sub_type": "PWO-EWO定点",
@@ -70,7 +78,9 @@ class FakeArasClient:
                     "cookie": "sid=secret-cookie",
                     "raw_xml": "<secret-xml/>",
                 }
-            ],
+            ]
+        return EWOReportPage(
+            rows=rows,
             page=page,
             item_ids=["ID-1"],
             raw_xml="<xml/>",
@@ -101,8 +111,9 @@ class FakeArasClient:
         self.__class__.calls.append(
             {"method": "paa", "filters": filters, "page": page, "page_size": page_size, "max_records": max_records}
         )
-        return PAAReportPage(
-            rows=[
+        rows = self.__class__.rows
+        if rows is None:
+            rows = [
                 {
                     "_no": "PAA-1",
                     "_auth_type": "Open",
@@ -112,7 +123,9 @@ class FakeArasClient:
                     "cookie": "sid=secret-cookie",
                     "raw_xml": "<secret-xml/>",
                 }
-            ],
+            ]
+        return PAAReportPage(
+            rows=rows,
             page=page,
             item_ids=["PAA-ID-1"],
             raw_xml="<xml/>",
@@ -206,6 +219,7 @@ def disable_cli_aras_diagnostics(monkeypatch) -> None:  # type: ignore[no-untype
 def _make_test_client(monkeypatch, tmp_path, allowed_hosts=None):  # type: ignore[no-untyped-def]
     FakeArasClient.calls = []
     FakeArasClient.fail = None
+    FakeArasClient.rows = None
     FakeArasClient.detail_file_name = "detail.xlsx"
     monkeypatch.setattr(web_app, "ArasCrawlerClient", FakeArasClient)
     db_cls = web_app.DatabaseManager
@@ -576,6 +590,68 @@ def test_paa_routes_contract_and_no_auth_echo(client) -> None:
     assert "secret3" not in crawl.get_data(as_text=True)
     assert "xyz789" not in crawl.get_data(as_text=True)
     assert "raw_xml" not in crawl.get_data(as_text=True)
+
+
+def test_ewo_query_marks_zero_rows_as_empty(client) -> None:
+    FakeArasClient.rows = []
+
+    response = client.post(
+        "/api/aras/ewo/query",
+        json={"base_url": "http://aras.example", "filters": {}},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["data"]["queryState"] == "empty"
+
+
+def test_paa_query_marks_rows_as_matched(client) -> None:
+    response = client.post(
+        "/api/aras/paa/query",
+        json={"base_url": "http://aras.example", "filters": {}},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["data"]["queryState"] == "matched"
+
+
+@pytest.mark.parametrize(
+    ("failure", "status", "code"),
+    [
+        (ArasAuthenticationError("login page token=fictional-token"), 401, "unauthenticated"),
+        (WinHTTPError("transport failed token=fictional-token"), 503, "service_unavailable"),
+        (WinHTTPTimeoutError("transport timeout token=fictional-token"), 503, "service_unavailable"),
+        (ArasCrawlerError("XML response is not valid token=fictional-token"), 502, "query_failed"),
+    ],
+)
+def test_ewo_query_exposes_stable_interactive_error_code(
+    client, failure: Exception, status: int, code: str
+) -> None:
+    FakeArasClient.fail = failure
+
+    response = client.post(
+        "/api/aras/ewo/query",
+        json={"base_url": "http://aras.example", "filters": {}},
+    )
+
+    assert response.status_code == status
+    body = response.get_json()
+    assert body["error"]["code"] == code
+    assert "fictional-token" not in response.get_data(as_text=True)
+
+
+def test_aras_browser_query_reuses_authenticated_server_session(monkeypatch, tmp_path) -> None:
+    client = _make_test_client(monkeypatch, tmp_path, allowed_hosts=["aras.example"])
+    registry = client.application.extensions["domain_sessions"]
+    shared_session = object()
+    registry.mark_authenticated("aras", shared_session)
+
+    response = client.post(
+        "/api/aras/ewo/query",
+        json={"base_url": "http://aras.example", "auth_mode": "browser", "filters": {}},
+    )
+
+    assert response.status_code == 200
+    assert FakeArasClient.calls[0]["session"] is shared_session
 
 
 def test_host_allowlist_default_rejects_unknown_host_without_echoing_credentials(

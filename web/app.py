@@ -96,6 +96,7 @@ from services.excel_worker_controller import ExcelWorkerController
 from services.excel_worker_process_controller import ExcelWorkerProcessController
 from core.redaction import redact_sensitive_text
 from services.aras_crawler import (
+    ArasAuthenticationError,
     ArasCrawlerClient,
     ArasCrawlerError,
     EWOReportFilters,
@@ -115,6 +116,7 @@ from services.tdc_crawler import (
     TDCSORFilters,
 )
 from services.tdc_export_cache import TDCExportCache
+from services.windows_http import WinHTTPError, WinHTTPTimeoutError
 
 logger = logging.getLogger("vse_toolbox.web")
 
@@ -486,8 +488,17 @@ def _sanitize_error_message(exc: Exception) -> str:
     return redact_sensitive_text(exc, limit=240, collapse_newlines=True)
 
 
-def _json_error(status: int, error_type: str, message: str, diagnostic_path: Path | None = None):
+def _json_error(
+    status: int,
+    error_type: str,
+    message: str,
+    diagnostic_path: Path | None = None,
+    *,
+    code: str | None = None,
+):
     error: dict[str, Any] = {"type": error_type, "message": message}
+    if code is not None:
+        error["code"] = code
     if diagnostic_path is not None:
         error["diagnosticPath"] = str(diagnostic_path)
     response = jsonify({"ok": False, "error": error})
@@ -2102,19 +2113,43 @@ def _aras_error_response(
     operation: str,
 ):
     if isinstance(exc, _ArasRequestError):
+        code = "unauthenticated" if exc.status_code == 401 else None
         return _json_error(
             exc.status_code,
             exc.error_type,
             _sanitize_error_message(exc),
             exc.diagnostic_path,
+            code=code,
         )
     diagnostic_path = _save_aras_client_diagnostic(client, exc)
-    if isinstance(exc, ArasCrawlerError):
+    if isinstance(exc, ArasAuthenticationError):
         return _json_error(
-            502,
-            "ArasCrawlerError",
-            _sanitize_error_message(exc),
+            401,
+            "AuthenticationError",
+            "ARAS 会话未认证或已过期，请在设置中重新登录",
             diagnostic_path,
+            code="unauthenticated",
+        )
+    if isinstance(exc, (WinHTTPTimeoutError, WinHTTPError, ConnectionError, TimeoutError, OSError)):
+        return _json_error(
+            503,
+            "ServiceUnavailable",
+            "ARAS 服务当前不可用，请检查网络或 VPN 后重试",
+            diagnostic_path,
+            code="service_unavailable",
+        )
+    if isinstance(exc, ArasCrawlerError):
+        service_unavailable = bool(re.search(r"\bAras HTTP 5\d{2}\b", str(exc)))
+        return _json_error(
+            503 if service_unavailable else 502,
+            "ArasCrawlerError",
+            (
+                "ARAS 服务当前不可用，请检查网络或 VPN 后重试"
+                if service_unavailable
+                else _sanitize_error_message(exc)
+            ),
+            diagnostic_path,
+            code="service_unavailable" if service_unavailable else "query_failed",
         )
     if isinstance(exc, XLSXPreviewError):
         return _json_error(502, "ArasCrawlerError", _sanitize_error_message(exc), diagnostic_path)
@@ -3514,6 +3549,7 @@ def create_app(
                         "page": result.page,
                         "item_ids": result.item_ids,
                         "count": len(result.rows),
+                        "queryState": "matched" if result.rows else "empty",
                         **(
                             {"xml": _aras_xml_payload(result, payload)}
                             if _aras_xml_requested(payload)
@@ -3549,6 +3585,7 @@ def create_app(
                         "page": result.page,
                         "item_ids": result.item_ids,
                         "count": len(result.rows),
+                        "queryState": "matched" if result.rows else "empty",
                         **(
                             {"xml": _aras_xml_payload(result, payload)}
                             if _aras_xml_requested(payload)
