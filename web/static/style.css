@@ -6035,7 +6035,7 @@ body.aras-running .result-panel {
   margin-top: 16px;
   padding: 16px;
   border: 1px solid var(--hairline);
-  border-radius: 10px;
+  border-radius: 8px;
   background: var(--surface-soft);
 }
 
