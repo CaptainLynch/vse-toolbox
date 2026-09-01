@@ -29,7 +29,9 @@
       "command(python -m pytest *)",
       "command(python -m flake8 *)",
       "command(python -m py_compile *)",
-      "command(node --check *)"
+      "command(node --check *)",
+      "read_file(*)",
+      "write_file(*)"
     ],
     "ask": [
       "Bash(git push *)",
