@@ -759,13 +759,236 @@ def build_form_snapshot(
     )
 
 
+_VIEW_FILTER_KEYS = frozenset(
+    {
+        "keyword",
+        "status",
+        "department",
+        "section",
+        "model",
+        "stage",
+        "dateStart",
+        "dateEnd",
+        "overdueState",
+        "isCompleted",
+    }
+)
+_VIEW_FILTER_TEXT_LIMIT = 200
+
+
+def normalize_form_filters(
+    filters: Mapping[str, object] | None,
+) -> dict[str, object]:
+    """Validate and normalize the public form-view filter contract."""
+    values = dict(filters or {})
+    unknown = set(values) - _VIEW_FILTER_KEYS
+    if unknown:
+        raise ValueError("unsupported form view filter")
+    normalized: dict[str, object] = {}
+    for key, value in values.items():
+        if value in (None, ""):
+            continue
+        if key == "isCompleted" and isinstance(value, bool):
+            normalized[key] = value
+            continue
+        if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+            raise ValueError(f"invalid form view filter: {key}")
+        text = str(value).strip()
+        if any(ord(char) < 32 or ord(char) == 127 for char in text):
+            raise ValueError(f"form view filter contains control characters: {key}")
+        if len(text) > _VIEW_FILTER_TEXT_LIMIT:
+            raise ValueError(f"form view filter is too long: {key}")
+        if key in {"dateStart", "dateEnd"}:
+            parsed = _parse_date(text)
+            if parsed is None or parsed.isoformat() != text:
+                raise ValueError(f"invalid form view date filter: {key}")
+            text = parsed.isoformat()
+        if key == "isCompleted":
+            folded = text.casefold()
+            if folded not in {"0", "1", "true", "false", "yes", "no", "completed", "incomplete"}:
+                raise ValueError("invalid form view completion filter")
+            normalized[key] = folded in {"1", "true", "yes", "completed"}
+        else:
+            normalized[key] = text
+    if (
+        normalized.get("dateStart")
+        and normalized.get("dateEnd")
+        and str(normalized["dateStart"]) > str(normalized["dateEnd"])
+    ):
+        raise ValueError("dateStart must not be later than dateEnd")
+    return normalized
+
+
+def _chart_payload(
+    form_key: str,
+    summary: Mapping[str, Any],
+    trend: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    report = _report_type(form_key)
+    charts: dict[str, Any] = {
+        "departmentStatus": summary.get("departmentStatus", {"stages": []}),
+        "sectionStatus": summary.get("sectionStatus", []),
+        "quantityTrend": [dict(item) for item in trend],
+    }
+    if report == "ncr_detail":
+        charts["departmentCost"] = list(summary.get("departmentCost", []))
+        charts["sectionCost"] = list(summary.get("sectionCost", []))
+    return charts
+
+
+def _filter_options(rows: Sequence[Mapping[str, Any]]) -> dict[str, list[str]]:
+    options: dict[str, set[str]] = {
+        "status": set(),
+        "department": set(),
+        "section": set(),
+        "model": set(),
+        "stage": set(),
+        "overdueState": set(),
+    }
+    for row in rows:
+        dimensions = row.get("dimensions")
+        if isinstance(dimensions, Mapping):
+            for key in ("status", "department", "section", "model", "stage"):
+                value = str(dimensions.get(key) or "").strip()
+                if value:
+                    options[key].add(value)
+        overdue = str(row.get("overdueState") or "").strip()
+        if overdue:
+            options["overdueState"].add(overdue)
+    return {key: sorted(values)[:500] for key, values in options.items()}
+
+
+class DeliverableFormAnalysisService:
+    """Read and publish the unified form snapshot contract for the Web UI.
+
+    The service only reads already-collected snapshots.  It never resolves
+    credentials, reuses a browser session, acquires a sync lease, or calls an
+    external connector.
+    """
+
+    def __init__(self, db: Any) -> None:
+        self.db = db
+
+    @staticmethod
+    def _validate_key(form_key: str) -> str:
+        if form_key not in FORM_KEYS:
+            raise KeyError(form_key)
+        return form_key
+
+    def rows(
+        self,
+        form_key: str,
+        filters: Mapping[str, object] | None = None,
+        *,
+        offset: int = 0,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        key = self._validate_key(form_key)
+        normalized = normalize_form_filters(filters)
+        return self.db.list_deliverable_form_rows(
+            key,
+            normalized,
+            offset=offset,
+            limit=limit,
+        )
+
+    def view(
+        self,
+        form_key: str,
+        *,
+        filters: Mapping[str, object] | None = None,
+        trend_limit: int = 30,
+    ) -> dict[str, Any]:
+        key = self._validate_key(form_key)
+        normalized_filters = normalize_form_filters(filters)
+        if isinstance(trend_limit, bool) or not 1 <= int(trend_limit) <= 365:
+            raise ValueError("trendLimit must be between 1 and 365")
+        trend_count = int(trend_limit)
+        definition = form_definition(key)
+        latest = self.db.get_latest_deliverable_form_snapshot(key)
+        snapshots = self.db.list_deliverable_form_snapshots(key, limit=30)
+        latest_rows: list[dict[str, Any]] = []
+        if latest is not None:
+            latest_rows = self.db.list_deliverable_form_snapshot_rows(
+                int(latest["id"]),
+                normalized_filters,
+            )
+            snapshot_at = str(latest.get("snapshot_at") or "")
+            summary = summarize_form_rows(
+                key,
+                latest_rows,
+                snapshot_at=snapshot_at,
+            )
+            schema = latest.get("schema") or definition
+            artifacts = latest.get("artifacts") or []
+            snapshot = {
+                "id": int(latest["id"]),
+                "snapshotKey": str(latest.get("snapshot_key") or ""),
+                "snapshotAt": snapshot_at,
+                "rowCount": int(latest.get("row_count") or 0),
+                "sourceRunId": latest.get("source_run_id"),
+            }
+        else:
+            snapshot_at = ""
+            latest_rows = []
+            summary = summarize_form_rows(key, [], snapshot_at=snapshot_at)
+            schema = definition
+            artifacts = []
+            snapshot = None
+
+        if normalized_filters:
+            trend_inputs: list[dict[str, Any]] = []
+            for item in snapshots:
+                item_rows = self.db.list_deliverable_form_snapshot_rows(
+                    int(item["id"]),
+                    normalized_filters,
+                )
+                item_summary = summarize_form_rows(
+                    key,
+                    item_rows,
+                    snapshot_at=str(item.get("snapshot_at") or ""),
+                )
+                trend_inputs.append(
+                    {
+                        "snapshotAt": item.get("snapshot_at"),
+                        "summary": item_summary,
+                    }
+                )
+        else:
+            trend_inputs = snapshots
+        trend = aggregate_daily_trend(trend_inputs, limit=trend_count)
+        return {
+            "formKey": key,
+            "reportType": _report_type(key),
+            "snapshot": snapshot,
+            "snapshotAt": snapshot_at or None,
+            "rowCount": int(latest.get("row_count") or 0) if latest else 0,
+            "matchedRowCount": int(summary.get("total") or 0),
+            "schema": schema,
+            "summary": summary,
+            "charts": _chart_payload(key, summary, trend),
+            "trend": trend,
+            "artifacts": artifacts,
+            "filters": {
+                "fields": list(definition["filterFields"]) + [
+                    "overdueState",
+                    "isCompleted",
+                ],
+                "applied": normalized_filters,
+                "options": _filter_options(latest_rows),
+            },
+        }
+
+
 __all__ = [
     "FORM_KEYS",
+    "DeliverableFormAnalysisService",
     "FormSnapshotInput",
     "aggregate_daily_trend",
     "build_form_snapshot",
     "classify_overdue",
     "form_definition",
+    "normalize_form_filters",
     "normalize_form_rows",
     "summarize_form_rows",
 ]

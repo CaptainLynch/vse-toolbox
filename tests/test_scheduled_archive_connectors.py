@@ -27,6 +27,7 @@ from services.aras_crawler import (
 from services.scheduled_archive_connectors import (
     ArasArchiveConnector,
     TDCArchiveConnector,
+    _official_form_rows,
     _official_workbook_rows,
     _sanitize_archive_rows,
     create_production_archive_registry,
@@ -236,6 +237,90 @@ def _write_official_data_model_xlsx(path: Path) -> None:
         archive.writestr("xl/workbook.xml", workbook)
         archive.writestr("xl/_rels/workbook.xml.rels", relationships)
         archive.writestr("xl/worksheets/sheet1.xml", sheet)
+
+
+def _write_official_ncr_form_xlsx(path: Path) -> None:
+    contract = report_contracts()["ncr_detail"]
+    vehicle_headers = contract["headerRows"][0]
+    engine_headers = list(vehicle_headers[:17]) + list(vehicle_headers[34:])
+    values_by_label = {
+        "状态": "审批中",
+        "编号": "NCR-SYNTH-1",
+        "提交日期": "2026-09-01",
+        "项目": "F610S",
+        "区域": "科室A",
+        "NCR编号": "NCR-SYNTH-1",
+        "当前节点": "PE提交",
+        "测算工程工装费用(万元)": "10",
+        "批准工程工装费用（万元）": "9",
+        "实际工程工装费用(万元)": "8",
+        "测算单件成本变化（元）": "3",
+        "批准单件成本变化（元）": "2",
+        "实际单件成本变化（元）": "-1",
+    }
+
+    def row_xml(row_number: int, values: Sequence[object]) -> str:
+        cells = []
+        for index, value in enumerate(values, 1):
+            if value in (None, ""):
+                continue
+            cells.append(
+                f'<c r="{_cell_ref(index, row_number)}" t="inlineStr">'
+                f"<is><t>{escape(str(value))}</t></is></c>"
+            )
+        return f'<row r="{row_number}">{"".join(cells)}</row>'
+
+    def values_for(headers: Sequence[object]) -> list[object]:
+        return [values_by_label.get(str(header or ""), "") for header in headers]
+
+    vehicle_rows = [list(vehicle_headers)]
+    vehicle_rows.extend([[""] * len(vehicle_headers) for _ in range(4)])
+    vehicle_rows.append(values_for(vehicle_headers))
+    engine_rows = [engine_headers, values_for(engine_headers)]
+
+    def sheet_xml(rows: Sequence[Sequence[object]]) -> str:
+        return (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+            f'<sheetData>{"".join(row_xml(i, row) for i, row in enumerate(rows, 1))}</sheetData>'
+            '</worksheet>'
+        )
+
+    workbook = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<sheets><sheet name="整车" sheetId="1" r:id="rId1"/>'
+        '<sheet name="发动机" sheetId="2" r:id="rId2"/></sheets></workbook>'
+    )
+    relationships = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+        'Target="worksheets/sheet1.xml"/>'
+        '<Relationship Id="rId2" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+        'Target="worksheets/sheet2.xml"/></Relationships>'
+    )
+    with ZipFile(path, "w") as archive:
+        archive.writestr("xl/workbook.xml", workbook)
+        archive.writestr("xl/_rels/workbook.xml.rels", relationships)
+        archive.writestr("xl/worksheets/sheet1.xml", sheet_xml(vehicle_rows))
+        archive.writestr("xl/worksheets/sheet2.xml", sheet_xml(engine_rows))
+
+
+def test_official_ncr_form_rows_align_vehicle_and_engine_columns(tmp_path: Path) -> None:
+    path = tmp_path / "official-ncr-detail.xlsx"
+    _write_official_ncr_form_xlsx(path)
+
+    rows = _official_form_rows(path, "ncr_detail")
+
+    assert rows is not None
+    assert len(rows) == 2
+    assert [item["sheetName"] for item in rows] == ["整车", "发动机"]
+    assert len(rows[1]["values"]) == 65
+    assert rows[1]["values"][36] == "10"
 
 
 def test_official_data_model_workbook_rows_are_used_for_normalization(tmp_path: Path) -> None:
@@ -518,6 +603,7 @@ def test_aras_ewo_paa_collect_success(
         assert getattr(crawler.last_filters, field_name) == expected_val
 
     assert collection.record_count == len(crawler.rows)
+    assert collection.form_rows == tuple(dict(row) for row in crawler.rows)
     assert len(collection.artifacts) == 2
     assert [a.artifact_type for a in collection.artifacts] == ["normalized_csv", "normalized_json"]
     for art in collection.artifacts:

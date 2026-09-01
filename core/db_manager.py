@@ -40,7 +40,7 @@ DEFAULT_DB_PATH = DEFAULT_DB_DIR / "vse_toolbox.db"
 #: 当前支持的 schema 版本。迁移完成后写入 PRAGMA user_version。
 #: 旧库 (< CURRENT_SCHEMA_VERSION) 增量升级；高于此版本的库拒绝降级，
 #: 避免新代码误读未知的较新 schema。
-CURRENT_SCHEMA_VERSION = 10
+CURRENT_SCHEMA_VERSION = 11
 
 #: 租约时长安全范围（秒）。默认 900s，由调用方在范围内参数化。
 SYNC_LEASE_MIN_SECONDS = 60
@@ -152,6 +152,188 @@ def _sanitize_json(value: Any) -> str:
     else:
         sanitized = value
     return _json_dumps_local(sanitized)
+
+
+_FORM_SNAPSHOT_KEYS = frozenset(
+    {"VPI-T2-D3", "aras_paa", "aras_ncr_progress", "aras_ncr_detail"}
+)
+_FORM_SNAPSHOT_REPORTS = {
+    "VPI-T2-D3": "ewo",
+    "aras_paa": "paa",
+    "aras_ncr_progress": "ncr_progress",
+    "aras_ncr_detail": "ncr_detail",
+}
+_FORM_SNAPSHOT_FORBIDDEN_KEY_PARTS = (
+    "password",
+    "token",
+    "cookie",
+    "authorization",
+    "private_key",
+    "credential",
+    "lease",
+    "session",
+    "csrf",
+)
+
+
+def _is_forbidden_form_key(value: object) -> bool:
+    normalized = str(value).strip().casefold().replace("-", "_")
+    return any(part in normalized for part in _FORM_SNAPSHOT_FORBIDDEN_KEY_PARTS)
+
+
+def _sanitize_form_value(value: object, *, key: object | None = None) -> object:
+    if key is not None and _is_forbidden_form_key(key):
+        return "[redacted]"
+    if isinstance(value, Mapping):
+        return {
+            str(item_key): _sanitize_form_value(item, key=item_key)
+            for item_key, item in value.items()
+            if not _is_forbidden_form_key(item_key)
+        }
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_form_value(item) for item in value]
+    if isinstance(value, str):
+        return redact_sensitive_text(value, limit=2000)
+    return value
+
+
+def _form_snapshot_payload(snapshot: object) -> dict[str, Any]:
+    to_dict = getattr(snapshot, "to_dict", None)
+    payload = to_dict() if callable(to_dict) else snapshot
+    if not isinstance(payload, Mapping):
+        raise ValueError("form snapshot must be an object")
+    clean = _sanitize_form_value(payload)
+    if not isinstance(clean, Mapping):
+        raise ValueError("form snapshot must be an object")
+    form_key = str(clean.get("formKey") or clean.get("form_key") or "").strip()
+    if form_key not in _FORM_SNAPSHOT_KEYS:
+        raise ValueError("unsupported deliverable form key")
+    report_type = str(clean.get("reportType") or clean.get("report_type") or "").strip()
+    if not report_type:
+        raise ValueError("form snapshot report type is required")
+    if report_type != _FORM_SNAPSHOT_REPORTS[form_key]:
+        raise ValueError("form key and report type do not match")
+    snapshot_at = str(clean.get("snapshotAt") or clean.get("snapshot_at") or "").strip()
+    if not snapshot_at:
+        raise ValueError("form snapshot time is required")
+    rows = clean.get("rows")
+    if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+        raise ValueError("form snapshot rows must be a sequence")
+    if len(rows) > 20000:
+        raise ValueError("form snapshot rows exceed the limit")
+    if any(not isinstance(item, Mapping) for item in rows):
+        raise ValueError("form snapshot rows must contain objects")
+    schema = clean.get("schema")
+    summary = clean.get("summary")
+    charts = clean.get("charts")
+    if not isinstance(schema, Mapping) or not isinstance(summary, Mapping) or not isinstance(charts, Mapping):
+        raise ValueError("form snapshot schema, summary, and charts are required")
+    source_run_id = clean.get("sourceRunId", clean.get("source_run_id"))
+    if source_run_id is not None and (
+        isinstance(source_run_id, bool)
+        or not isinstance(source_run_id, int)
+        or source_run_id < 1
+    ):
+        raise ValueError("form snapshot source run id is invalid")
+    artifacts = clean.get("artifacts") or []
+    if not isinstance(artifacts, Sequence) or isinstance(artifacts, (str, bytes)):
+        raise ValueError("form snapshot artifacts must be a sequence")
+    snapshot_key = f"{form_key}:{source_run_id or 'none'}:{snapshot_at}"
+    return {
+        "snapshot_key": snapshot_key[:512],
+        "form_key": form_key,
+        "report_type": report_type[:120],
+        "source_run_id": source_run_id,
+        "source": str(clean.get("source") or "")[:200],
+        "snapshot_at": snapshot_at[:120],
+        "rows": list(rows),
+        "schema": dict(schema),
+        "summary": dict(summary),
+        "charts": dict(charts),
+        "artifacts": list(artifacts),
+    }
+
+
+def _form_json(value: object, *, limit: int = 4 * 1024 * 1024) -> str:
+    serialized = _json_dumps_local(_sanitize_form_value(value))
+    if len(serialized.encode("utf-8")) > limit:
+        raise ValueError("form snapshot JSON exceeds the limit")
+    return serialized
+
+
+_FORM_ROW_FILTER_KEYS = frozenset(
+    {
+        "keyword",
+        "status",
+        "department",
+        "section",
+        "model",
+        "stage",
+        "dateStart",
+        "dateEnd",
+        "overdueState",
+        "isCompleted",
+    }
+)
+
+
+def _form_row_filter_sql(
+    filters: Mapping[str, object] | None,
+    *,
+    alias: str = "r",
+) -> tuple[list[str], list[object]]:
+    """Build the allowlisted SQL predicates used by form-row readers."""
+    rule = dict(filters or {})
+    unknown = set(rule) - _FORM_ROW_FILTER_KEYS
+    if unknown:
+        raise ValueError("unsupported form row filter")
+    where: list[str] = []
+    params: list[object] = []
+    column_filters = {
+        "department": f"{alias}.department_key",
+        "section": f"{alias}.section_key",
+        "model": f"{alias}.model_key",
+        "stage": f"{alias}.stage_key",
+        "overdueState": f"{alias}.overdue_state",
+    }
+    for key, column in column_filters.items():
+        value = str(rule.get(key) or "").strip()
+        if value:
+            where.append(f"{column} = ?")
+            params.append(value[:200])
+    status = str(rule.get("status") or "").strip()
+    if status:
+        # A source can expose CLOSE as CLOZ while the normalized stage is
+        # CLOSE; accepting either keeps filters stable without rewriting the
+        # source-facing status value stored in the row.
+        where.append(
+            f"({alias}.status_key = ? OR {alias}.stage_key = ?)"
+        )
+        params.extend((status[:200], status[:200]))
+    if "isCompleted" in rule and rule["isCompleted"] not in (None, ""):
+        value = rule["isCompleted"]
+        if isinstance(value, str):
+            value = value.strip().casefold() in {
+                "1",
+                "true",
+                "yes",
+                "completed",
+            }
+        where.append(f"{alias}.is_completed = ?")
+        params.append(1 if bool(value) else 0)
+    keyword = str(rule.get("keyword") or "").strip()
+    if keyword:
+        where.append(f"instr(lower({alias}.search_text), lower(?)) > 0")
+        params.append(keyword[:200])
+    date_start = str(rule.get("dateStart") or "").strip()
+    if date_start:
+        where.append(f"{alias}.submitted_date >= ?")
+        params.append(date_start[:32])
+    date_end = str(rule.get("dateEnd") or "").strip()
+    if date_end:
+        where.append(f"{alias}.submitted_date <= ?")
+        params.append(date_end[:32])
+    return where, params
 
 
 # ── 建表 DDL ───────────────────────────────────────────────────
@@ -549,6 +731,67 @@ TABLE_DEFINITIONS: list[str] = [
     """
     CREATE INDEX IF NOT EXISTS idx_ps_analysis_items_filters
         ON project_status_analysis_items(deliverable_id, department, is_completed, planned_date);
+    """,
+    # 统一外部交付物表单快照。表单行与项目状态分析缓存分离，允许 PAA/NCR
+    # 使用归档运行作为来源，同时保留 EWO 的旧分析 API。
+    """
+    CREATE TABLE IF NOT EXISTS deliverable_form_snapshots (
+        id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+        snapshot_key       TEXT NOT NULL UNIQUE,
+        form_key           TEXT NOT NULL CHECK (form_key IN (
+            'VPI-T2-D3', 'aras_paa', 'aras_ncr_progress', 'aras_ncr_detail'
+        )),
+        report_type        TEXT NOT NULL,
+        source_run_id      INTEGER,
+        source             TEXT NOT NULL DEFAULT '',
+        snapshot_at        TEXT NOT NULL,
+        row_count          INTEGER NOT NULL CHECK (row_count >= 0),
+        schema_json        TEXT NOT NULL,
+        summary_json       TEXT NOT NULL,
+        charts_json        TEXT NOT NULL,
+        artifacts_json     TEXT NOT NULL DEFAULT '[]',
+        created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_deliverable_form_snapshots_latest
+        ON deliverable_form_snapshots(form_key, snapshot_at DESC, id DESC);
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS deliverable_form_rows (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        snapshot_id     INTEGER NOT NULL,
+        row_key         TEXT NOT NULL,
+        row_number      INTEGER NOT NULL CHECK (row_number >= 1),
+        sheet_name      TEXT NOT NULL DEFAULT '',
+        values_json     TEXT NOT NULL,
+        dimensions_json TEXT NOT NULL DEFAULT '{}',
+        search_text     TEXT NOT NULL DEFAULT '',
+        status_key      TEXT NOT NULL DEFAULT '',
+        department_key  TEXT NOT NULL DEFAULT '',
+        section_key     TEXT NOT NULL DEFAULT '',
+        model_key       TEXT NOT NULL DEFAULT '',
+        stage_key       TEXT NOT NULL DEFAULT '',
+        submitted_date  TEXT,
+        planned_date    TEXT,
+        overdue_state   TEXT NOT NULL DEFAULT 'unknown'
+                        CHECK (overdue_state IN ('on_time', 'overdue', 'unknown', 'not_applicable')),
+        is_completed    INTEGER NOT NULL DEFAULT 0 CHECK (is_completed IN (0, 1)),
+        cost_json       TEXT NOT NULL DEFAULT '{}',
+        UNIQUE (snapshot_id, row_key),
+        FOREIGN KEY (snapshot_id) REFERENCES deliverable_form_snapshots(id) ON DELETE CASCADE
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_deliverable_form_rows_filter
+        ON deliverable_form_rows(
+            snapshot_id, department_key, section_key, model_key,
+            status_key, stage_key, overdue_state, submitted_date
+        );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_deliverable_form_rows_search
+        ON deliverable_form_rows(snapshot_id, search_text);
     """,
     # Excel 离线任务主表 (Schema v4; artifact 表在 Schema v5 增加)
     """
@@ -1477,6 +1720,303 @@ class DatabaseManager:
                 (deliverable_id,),
             ).fetchall()
             return tuple(str(row["source_type"]) for row in rows)
+
+    def publish_deliverable_form_snapshot(self, snapshot: object) -> int:
+        """Atomically replace one source snapshot and its bounded form rows."""
+        payload = _form_snapshot_payload(snapshot)
+        rows = payload["rows"]
+        with self.get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute(
+                "SELECT id FROM deliverable_form_snapshots WHERE snapshot_key = ?",
+                (payload["snapshot_key"],),
+            ).fetchone()
+            metadata = (
+                payload["form_key"],
+                payload["report_type"],
+                payload["source_run_id"],
+                payload["source"],
+                payload["snapshot_at"],
+                len(rows),
+                _form_json(payload["schema"]),
+                _form_json(payload["summary"]),
+                _form_json(payload["charts"]),
+                _form_json(payload["artifacts"]),
+            )
+            if existing is None:
+                snapshot_id = int(
+                    conn.execute(
+                        """
+                        INSERT INTO deliverable_form_snapshots (
+                            snapshot_key, form_key, report_type, source_run_id,
+                            source, snapshot_at, row_count, schema_json,
+                            summary_json, charts_json, artifacts_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (payload["snapshot_key"], *metadata),
+                    ).lastrowid
+                )
+            else:
+                snapshot_id = int(existing["id"])
+                conn.execute(
+                    """
+                    UPDATE deliverable_form_snapshots
+                    SET form_key = ?, report_type = ?, source_run_id = ?,
+                        source = ?, snapshot_at = ?, row_count = ?,
+                        schema_json = ?, summary_json = ?, charts_json = ?,
+                        artifacts_json = ?
+                    WHERE id = ?
+                    """,
+                    (*metadata, snapshot_id),
+                )
+                conn.execute(
+                    "DELETE FROM deliverable_form_rows WHERE snapshot_id = ?",
+                    (snapshot_id,),
+                )
+
+            form_rows: list[tuple[object, ...]] = []
+            for index, item in enumerate(rows, 1):
+                if not isinstance(item, Mapping):
+                    continue
+                dimensions = item.get("dimensions")
+                if not isinstance(dimensions, Mapping):
+                    dimensions = {}
+                values = item.get("values")
+                if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
+                    values = []
+                row_key = str(item.get("rowKey") or item.get("row_key") or f"row-{index}")
+                row_number = item.get("rowNumber", item.get("row_number", index))
+                if isinstance(row_number, bool) or not isinstance(row_number, int) or row_number < 1:
+                    row_number = index
+                overdue_state = str(item.get("overdueState") or "unknown")
+                if overdue_state not in {"on_time", "overdue", "unknown", "not_applicable"}:
+                    overdue_state = "unknown"
+                form_rows.append(
+                    (
+                        snapshot_id,
+                        row_key[:256],
+                        row_number,
+                        str(item.get("sheetName") or item.get("sheet_name") or "")[:200],
+                        _form_json(values, limit=2 * 1024 * 1024),
+                        _form_json(dimensions, limit=256 * 1024),
+                        str(item.get("searchText") or "")[:4000],
+                        str(dimensions.get("status") or "")[:200],
+                        str(dimensions.get("department") or "")[:200],
+                        str(dimensions.get("section") or "")[:200],
+                        str(dimensions.get("model") or "")[:200],
+                        str(dimensions.get("stage") or "")[:200],
+                        item.get("submittedDate"),
+                        item.get("plannedDate"),
+                        overdue_state,
+                        1 if bool(item.get("isCompleted")) else 0,
+                        _form_json(item.get("cost") or {}, limit=256 * 1024),
+                    )
+                )
+            if form_rows:
+                conn.executemany(
+                    """
+                    INSERT INTO deliverable_form_rows (
+                        snapshot_id, row_key, row_number, sheet_name,
+                        values_json, dimensions_json, search_text, status_key,
+                        department_key, section_key, model_key, stage_key,
+                        submitted_date, planned_date, overdue_state,
+                        is_completed, cost_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    form_rows,
+                )
+            retention = 30
+            conn.execute(
+                """
+                DELETE FROM deliverable_form_snapshots
+                WHERE form_key = ? AND id NOT IN (
+                    SELECT id FROM deliverable_form_snapshots
+                    WHERE form_key = ?
+                    ORDER BY snapshot_at DESC, id DESC LIMIT ?
+                )
+                """,
+                (payload["form_key"], payload["form_key"], retention),
+            )
+            return snapshot_id
+
+    @staticmethod
+    def _decode_form_snapshot_row(row: sqlite3.Row) -> dict[str, Any]:
+        result = dict(row)
+        for target, source in (
+            ("values", "values_json"),
+            ("dimensions", "dimensions_json"),
+            ("cost", "cost_json"),
+        ):
+            parsed = _json_loads_or_none(result.pop(source, ""))
+            result[target] = parsed if parsed is not None else (
+                [] if target == "values" else {}
+            )
+        result["isCompleted"] = bool(result.pop("is_completed", 0))
+        result["rowKey"] = result.pop("row_key", "")
+        result["rowNumber"] = result.pop("row_number", 0)
+        result["sheetName"] = result.pop("sheet_name", "")
+        result["submittedDate"] = result.pop("submitted_date", None)
+        result["plannedDate"] = result.pop("planned_date", None)
+        result["overdueState"] = result.pop("overdue_state", "unknown")
+        result.pop("id", None)
+        result.pop("snapshot_id", None)
+        result.pop("search_text", None)
+        result.pop("status_key", None)
+        result.pop("department_key", None)
+        result.pop("section_key", None)
+        result.pop("model_key", None)
+        result.pop("stage_key", None)
+        return result
+
+    def get_latest_deliverable_form_snapshot(
+        self,
+        form_key: str,
+    ) -> dict[str, Any] | None:
+        if form_key not in _FORM_SNAPSHOT_KEYS:
+            raise KeyError(form_key)
+        with self.get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT id, snapshot_key, form_key, report_type, source_run_id,
+                       source, snapshot_at, row_count, schema_json,
+                       summary_json, charts_json, artifacts_json, created_at
+                FROM deliverable_form_snapshots
+                WHERE form_key = ?
+                ORDER BY snapshot_at DESC, id DESC LIMIT 1
+                """,
+                (form_key,),
+            ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        for target, source in (
+            ("schema", "schema_json"),
+            ("summary", "summary_json"),
+            ("charts", "charts_json"),
+            ("artifacts", "artifacts_json"),
+        ):
+            parsed = _json_loads_or_none(result.pop(source, ""))
+            result[target] = parsed if parsed is not None else (
+                [] if target == "artifacts" else {}
+            )
+        return result
+
+    def list_deliverable_form_snapshots(
+        self,
+        form_key: str,
+        limit: int = 30,
+    ) -> list[dict[str, Any]]:
+        if form_key not in _FORM_SNAPSHOT_KEYS:
+            raise KeyError(form_key)
+        bounded = max(1, min(int(limit), 365))
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, snapshot_key, form_key, report_type, source_run_id,
+                       source, snapshot_at, row_count, schema_json,
+                       summary_json, charts_json, artifacts_json, created_at
+                FROM deliverable_form_snapshots
+                WHERE form_key = ?
+                ORDER BY snapshot_at DESC, id DESC LIMIT ?
+                """,
+                (form_key, bounded),
+            ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            for target, source in (
+                ("schema", "schema_json"),
+                ("summary", "summary_json"),
+                ("charts", "charts_json"),
+                ("artifacts", "artifacts_json"),
+            ):
+                parsed = _json_loads_or_none(item.pop(source, ""))
+                item[target] = parsed if parsed is not None else (
+                    [] if target == "artifacts" else {}
+                )
+            result.append(item)
+        return result
+
+    def list_deliverable_form_rows(
+        self,
+        form_key: str,
+        filters: Mapping[str, object] | None = None,
+        *,
+        offset: int = 0,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        if form_key not in _FORM_SNAPSHOT_KEYS:
+            raise KeyError(form_key)
+        bounded_offset = max(0, min(int(offset), 100000))
+        bounded_limit = max(1, min(int(limit), 500))
+        where, params = _form_row_filter_sql(filters)
+        clause = " AND ".join(where) if where else "1 = 1"
+        with self.get_connection() as conn:
+            total_row = conn.execute(
+                f"""
+                SELECT COUNT(*) AS total
+                FROM deliverable_form_rows r
+                WHERE r.snapshot_id = (
+                    SELECT id FROM deliverable_form_snapshots
+                    WHERE form_key = ? ORDER BY snapshot_at DESC, id DESC LIMIT 1
+                ) AND {clause}
+                """,
+                tuple([form_key, *params]),
+            ).fetchone()
+            rows = conn.execute(
+                f"""
+                SELECT r.id, r.snapshot_id, r.row_key, r.row_number,
+                       r.sheet_name, r.values_json, r.dimensions_json,
+                       r.search_text, r.status_key, r.department_key,
+                       r.section_key, r.model_key, r.stage_key,
+                       r.submitted_date, r.planned_date, r.overdue_state,
+                       r.is_completed, r.cost_json
+                FROM deliverable_form_rows r
+                WHERE r.snapshot_id = (
+                    SELECT id FROM deliverable_form_snapshots
+                    WHERE form_key = ? ORDER BY snapshot_at DESC, id DESC LIMIT 1
+                ) AND {clause}
+                ORDER BY r.is_completed ASC, r.row_number ASC, r.id ASC
+                LIMIT ? OFFSET ?
+                """,
+                tuple([form_key, *params, bounded_limit, bounded_offset]),
+            ).fetchall()
+        return {
+            "items": [self._decode_form_snapshot_row(row) for row in rows],
+            "total": int(total_row["total"]) if total_row is not None else 0,
+            "offset": bounded_offset,
+            "limit": bounded_limit,
+        }
+
+    def list_deliverable_form_snapshot_rows(
+        self,
+        snapshot_id: int,
+        filters: Mapping[str, object] | None = None,
+        *,
+        limit: int = 20000,
+    ) -> list[dict[str, Any]]:
+        """Read bounded rows for one stored snapshot for server-side charts."""
+        if isinstance(snapshot_id, bool) or not isinstance(snapshot_id, int) or snapshot_id < 1:
+            raise ValueError("snapshot_id must be a positive integer")
+        bounded_limit = max(1, min(int(limit), 20000))
+        where, params = _form_row_filter_sql(filters)
+        clause = " AND ".join(where) if where else "1 = 1"
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT id, snapshot_id, row_key, row_number, sheet_name,
+                       values_json, dimensions_json, search_text, status_key,
+                       department_key, section_key, model_key, stage_key,
+                       submitted_date, planned_date, overdue_state,
+                       is_completed, cost_json
+                FROM deliverable_form_rows r
+                WHERE r.snapshot_id = ? AND {clause}
+                ORDER BY r.is_completed ASC, r.row_number ASC, r.id ASC
+                LIMIT ?
+                """,
+                tuple([snapshot_id, *params, bounded_limit]),
+            ).fetchall()
+        return [self._decode_form_snapshot_row(row) for row in rows]
 
     def update_project_status_deliverable(
         self,

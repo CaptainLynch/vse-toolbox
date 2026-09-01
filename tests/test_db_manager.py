@@ -86,6 +86,8 @@ def test_table_exists(tmp_db: DatabaseManager) -> None:
         "excel_artifact_download_audit",
         "project_status_analysis_snapshots",
         "project_status_analysis_items",
+        "deliverable_form_snapshots",
+        "deliverable_form_rows",
     ):
         assert tmp_db.table_exists(table), f"表 {table} 不存在"
 
@@ -96,16 +98,16 @@ def test_get_table_row_count(tmp_db: DatabaseManager) -> None:
     assert count >= 2, f"projects 行数应 ≥ 2，实际 {count}"
 
 
-def test_schema_version_is_v10(tmp_db: DatabaseManager) -> None:
-    """验证当前支持的 schema 版本为 10。"""
-    assert CURRENT_SCHEMA_VERSION == 10
+def test_schema_version_is_v11(tmp_db: DatabaseManager) -> None:
+    """验证当前支持的 schema 版本为 11。"""
+    assert CURRENT_SCHEMA_VERSION == 11
     with tmp_db.get_connection() as conn:
         ver = conn.execute("PRAGMA user_version").fetchone()[0]
-    assert ver == 10
+    assert ver == 11
 
 
-def test_v3_to_v10_migration(tmp_path: Path) -> None:
-    """验证从已存在的 v3 数据库平滑升级到 v10。"""
+def test_v3_to_v11_migration(tmp_path: Path) -> None:
+    """验证从已存在的 v3 数据库平滑升级到 v11。"""
     v3_db_path = tmp_path / "v3_legacy.db"
     conn = sqlite3.connect(str(v3_db_path))
     conn.execute("PRAGMA user_version = 3")
@@ -128,7 +130,7 @@ def test_v3_to_v10_migration(tmp_path: Path) -> None:
 
     with db.get_connection() as c:
         ver = c.execute("PRAGMA user_version").fetchone()[0]
-        assert ver == 10
+        assert ver == 11
         assert db.table_exists("excel_tasks")
         assert db.table_exists("excel_task_files")
         assert db.table_exists("excel_task_runs")
@@ -178,8 +180,8 @@ def test_seed_renames_legacy_ewo_and_phase_anchor(tmp_path: Path) -> None:
     assert custom == "我的自定义流程"
 
 
-def test_v5_to_v10_migration(tmp_path: Path) -> None:
-    """验证从已存在的 v5 数据库平滑升级到 v10。"""
+def test_v5_to_v11_migration(tmp_path: Path) -> None:
+    """验证从已存在的 v5 数据库平滑升级到 v11。"""
     v5_db_path = tmp_path / "v5_legacy.db"
     conn = sqlite3.connect(str(v5_db_path))
     conn.execute("PRAGMA user_version = 5")
@@ -202,12 +204,12 @@ def test_v5_to_v10_migration(tmp_path: Path) -> None:
 
     with db.get_connection() as c:
         ver = c.execute("PRAGMA user_version").fetchone()[0]
-        assert ver == 10
+        assert ver == 11
         assert db.table_exists("excel_artifact_download_audit")
         assert db.table_exists("project_status_analysis_snapshots")
 
 
-def test_v9_to_v10_migration_adds_analysis_detail_columns(tmp_path: Path) -> None:
+def test_v9_to_v11_migration_adds_analysis_detail_columns(tmp_path: Path) -> None:
     """A v9 database gains the number and pending-signer columns in place."""
     db_path = tmp_path / "v9_analysis_legacy.db"
     conn = sqlite3.connect(str(db_path))
@@ -242,7 +244,7 @@ def test_v9_to_v10_migration_adds_analysis_detail_columns(tmp_path: Path) -> Non
             for row in c.execute("PRAGMA table_info(project_status_analysis_items)")
         }
         assert {"display_number", "pending_signers"}.issubset(columns)
-        assert c.execute("PRAGMA user_version").fetchone()[0] == 10
+        assert c.execute("PRAGMA user_version").fetchone()[0] == 11
 
 
 def test_analysis_items_department_model_extra_columns_migration(tmp_path: Path) -> None:
@@ -313,17 +315,17 @@ def test_analysis_items_department_model_extra_columns_migration(tmp_path: Path)
 
 
 def test_rejects_newer_schema_version(tmp_path: Path) -> None:
-    """验证高于 CURRENT_SCHEMA_VERSION (如 v11) 的库在执行 DDL 前被拒绝。"""
-    v11_db_path = tmp_path / "v11_future.db"
+    """验证高于 CURRENT_SCHEMA_VERSION (如 v12) 的库在执行 DDL 前被拒绝。"""
+    v11_db_path = tmp_path / "v12_future.db"
     conn = sqlite3.connect(str(v11_db_path))
-    conn.execute("PRAGMA user_version = 11")
+    conn.execute("PRAGMA user_version = 12")
     conn.commit()
     conn.close()
 
     db = DatabaseManager(db_path=v11_db_path)
     with pytest.raises(sqlite3.DatabaseError) as exc_info:
         db.init_database()
-    assert "unsupported schema version 11" in str(exc_info.value)
+    assert "unsupported schema version 12" in str(exc_info.value)
 
 
 def test_excel_task_artifact_schema_contract(tmp_db: DatabaseManager) -> None:

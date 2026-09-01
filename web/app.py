@@ -84,6 +84,7 @@ from services.project_status_analytics import ProjectStatusAnalyticsService
 from services.project_status_deliverable_analysis import (
     ProjectStatusDeliverableAnalysisService,
 )
+from services.deliverable_form_analysis import DeliverableFormAnalysisService
 from services.project_status_sync_runner import (
     ProjectStatusSyncRunner,
     create_production_registry,
@@ -2378,6 +2379,7 @@ def create_app(
         db,
         clock=project_status_clock,
     )
+    deliverable_form_service = DeliverableFormAnalysisService(db)
 
     def current_project_status(phase_id: str) -> dict[str, Any] | None:
         return _project_status_payload(
@@ -2401,6 +2403,7 @@ def create_app(
     app.extensions["domain_sessions"] = domain_sessions
     app.extensions["domain_credential_vault"] = credential_vault
     app.extensions["tdc_export_cache"] = tdc_export_cache
+    app.extensions["deliverable_form_analysis"] = deliverable_form_service
     if excel_roots is not None and excel_repository is not None:
         raise ValueError("provide excel_roots or excel_repository, not both")
     if excel_repository is None and excel_roots is not None:
@@ -3217,6 +3220,98 @@ def create_app(
             return _json_error(422, "ValidationError", _sanitize_error_message(exc))
         except Exception as exc:
             logger.exception("project status chart labels update failed")
+            return _json_error(500, "ServerError", _sanitize_error_message(exc))
+
+    def _deliverable_form_query() -> tuple[dict[str, object], int]:
+        """Parse the shared read-only form-view query contract."""
+        filter_keys = {
+            "keyword",
+            "status",
+            "department",
+            "section",
+            "model",
+            "stage",
+            "dateStart",
+            "dateEnd",
+            "overdueState",
+            "isCompleted",
+        }
+        control_keys = filter_keys | {"trendLimit", "offset", "limit"}
+        unknown = set(request.args) - control_keys
+        if unknown:
+            raise ValueError("unsupported deliverable form query parameter")
+        filters: dict[str, object] = {}
+        for key in filter_keys:
+            values = request.args.getlist(key)
+            if len(values) > 1:
+                raise ValueError(f"{key} accepts one value")
+            if values and values[0] != "":
+                filters[key] = values[0]
+
+        def strict_int(name: str, default: int, lower: int, upper: int) -> int:
+            raw = request.args.get(name)
+            if raw is None or raw == "":
+                return default
+            try:
+                value = int(raw)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{name} must be an integer") from exc
+            if not lower <= value <= upper:
+                raise ValueError(f"{name} must be between {lower} and {upper}")
+            return value
+
+        return filters, strict_int("trendLimit", 30, 1, 365)
+
+    @app.get("/api/deliverable-forms/<form_key>/view")
+    def api_deliverable_form_view(form_key: str):
+        try:
+            filters, trend_limit = _deliverable_form_query()
+            data = deliverable_form_service.view(
+                form_key,
+                filters=filters,
+                trend_limit=trend_limit,
+            )
+            response = jsonify({"ok": True, "data": data})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except KeyError:
+            return _json_error(404, "NotFound", "未找到交付物表单")
+        except (TypeError, ValueError) as exc:
+            return _json_error(422, "ValidationError", _sanitize_error_message(exc))
+        except Exception as exc:
+            logger.exception("deliverable form view failed")
+            return _json_error(500, "ServerError", _sanitize_error_message(exc))
+
+    @app.get("/api/deliverable-forms/<form_key>/rows")
+    def api_deliverable_form_rows(form_key: str):
+        try:
+            filters, _ = _deliverable_form_query()
+            offset = request.args.get("offset", "0")
+            limit = request.args.get("limit", "200")
+            try:
+                parsed_offset = int(offset)
+                parsed_limit = int(limit)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("offset and limit must be integers") from exc
+            if not 0 <= parsed_offset <= 100000:
+                raise ValueError("offset must be between 0 and 100000")
+            if not 1 <= parsed_limit <= 500:
+                raise ValueError("limit must be between 1 and 500")
+            data = deliverable_form_service.rows(
+                form_key,
+                filters,
+                offset=parsed_offset,
+                limit=parsed_limit,
+            )
+            response = jsonify({"ok": True, "data": data})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except KeyError:
+            return _json_error(404, "NotFound", "未找到交付物表单")
+        except (TypeError, ValueError) as exc:
+            return _json_error(422, "ValidationError", _sanitize_error_message(exc))
+        except Exception as exc:
+            logger.exception("deliverable form rows failed")
             return _json_error(500, "ServerError", _sanitize_error_message(exc))
 
     @app.patch("/api/project-status/deliverables/<deliverable_id>")

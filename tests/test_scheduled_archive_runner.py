@@ -80,6 +80,27 @@ class FakeConnector:
         return ArchiveCollection(record_count=self.record_count, artifacts=self.artifacts)
 
 
+class SnapshotConnector(FakeConnector):
+    """Fake scheduled connector returning one safe form row for publication."""
+
+    def collect(self, context: ArchiveJobContext, credential: ResolvedCredential) -> ArchiveCollection:
+        base = super().collect(context, credential)
+        return ArchiveCollection(
+            record_count=base.record_count,
+            artifacts=base.artifacts,
+            form_rows=(
+                {
+                    "_no": "PAA-SNAPSHOT-1",
+                    "_department": "部门A",
+                    "_pe_tdc_smt": "科室A",
+                    "_vehicles": "F610S",
+                    "state": "PROC",
+                    "_submit_date": "2026-09-01",
+                },
+            ),
+        )
+
+
 class CountingCredentialProvider(MemoryCredentialProvider):
     """Credential provider tracking the number of resolve invocations."""
 
@@ -239,6 +260,32 @@ def test_successful_run_job_lifecycle_and_cleared_credential(
     assert job_row["sync_state"] == "success"
     assert job_row["last_success_at"] is not None and job_row["last_attempt_at"] is not None
     assert job_row["lease_token"] is None
+
+
+def test_successful_form_collection_publishes_snapshot_without_persisting_credential(
+    db: DatabaseManager,
+    registry: ArchiveConnectorRegistry,
+) -> None:
+    job_id = _enable_job(db, "aras_paa", credential_ref="alias_snapshot")
+    connector = SnapshotConnector()
+    runner, _ = _setup_runner(
+        db,
+        registry,
+        credentials={"alias_snapshot": ("snapshot-user", "snapshot-password")},
+        connectors={"aras_paa": connector},
+    )
+
+    result = runner.run_job(job_id)
+
+    assert result.outcome == "completed"
+    snapshot = db.get_latest_deliverable_form_snapshot("aras_paa")
+    assert snapshot is not None
+    assert snapshot["source_run_id"] == result.run_id
+    rows = db.list_deliverable_form_rows("aras_paa")
+    assert rows["total"] == 1
+    serialized = str(snapshot) + str(rows)
+    assert "snapshot-password" not in serialized
+    assert "snapshot-user" not in serialized
 
 
 def test_runner_passes_task_output_directory_to_connector(

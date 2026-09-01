@@ -28,6 +28,7 @@ from core.db_manager import (
     DatabaseManager,
 )
 from core.redaction import redact_sensitive_text
+from services.deliverable_form_analysis import build_form_snapshot
 from services.aras_auth import ArasAuthError
 from services.aras_crawler import ArasAuthenticationError, ArasCrawlerError
 from services.tdc_auth import TDCAuthError
@@ -140,6 +141,7 @@ class ArchiveCollection:
 
     record_count: int
     artifacts: tuple[ArchiveArtifact, ...]
+    form_rows: tuple[Mapping[str, object], ...] | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -152,6 +154,11 @@ class ArchiveCollection:
             not isinstance(item, ArchiveArtifact) for item in self.artifacts
         ):
             raise ValueError("archive collection requires artifacts")
+        if self.form_rows is not None:
+            if not isinstance(self.form_rows, tuple):
+                raise ValueError("form_rows must be a tuple or None")
+            if any(not isinstance(item, Mapping) for item in self.form_rows):
+                raise ValueError("form_rows must contain mappings")
 
 
 class ArchiveConnector(Protocol):
@@ -298,6 +305,7 @@ class ArchiveSyncRunner:
                     max_attempts=retry_attempts,
                     backoff_seconds=retry_backoff,
                 )
+            self._publish_form_snapshot(context, collection)
             self._db.finalize_archive_run(
                 job_id,
                 run_id,
@@ -349,6 +357,38 @@ class ArchiveSyncRunner:
                     error_message=_safe_exception_message(exc),
                 )
             return self._finalize_exception(lease, exc)
+
+    def _publish_form_snapshot(
+        self,
+        context: ArchiveJobContext,
+        collection: ArchiveCollection,
+    ) -> None:
+        """Publish connector rows without crossing the credential boundary."""
+        if collection.form_rows is None:
+            return
+        form_key = {
+            "aras_ewo": "VPI-T2-D3",
+            "aras_paa": "aras_paa",
+            "aras_ncr_progress": "aras_ncr_progress",
+            "aras_ncr_detail": "aras_ncr_detail",
+        }.get(context.job_key)
+        if form_key is None:
+            return
+        snapshot_time = self._clock()
+        if snapshot_time.tzinfo is None:
+            snapshot_time = snapshot_time.replace(tzinfo=timezone.utc)
+        snapshot_at = snapshot_time.astimezone(timezone.utc).isoformat().replace(
+            "+00:00", "Z"
+        )
+        snapshot = build_form_snapshot(
+            form_key,
+            collection.form_rows,
+            snapshot_at=snapshot_at,
+            source_run_id=context.run_id,
+            source="scheduled_archive",
+            artifacts=tuple(item.as_metadata() for item in collection.artifacts),
+        )
+        self._db.publish_deliverable_form_snapshot(snapshot)
 
     def run_once(
         self,
