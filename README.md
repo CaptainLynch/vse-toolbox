@@ -43,14 +43,9 @@ vse-toolbox/
 │   ├── templates/                    # PPT / Excel 模板
 │   └── output/                       # 生成的文件输出
 ├── docs/
-│   └── agents/                       # 多智能体 Prompt & 流程文档
-│       ├── project_state.md          # 项目状态快照
-│       ├── implementation_plan.md    # 架构实施计划
-│       ├── task.md                   # 任务拆解与进度
-│       ├── review_feedback.md        # 审查反馈记录
-│       ├── research_notes.md         # Explorer 探索笔记
-│       ├── SOP_worker_coding.md      # Worker 标准作业程序
-│       └── role_*.md                 # 角色定义文件
+│   ├── agents/                       # 爬虫研究参考（research_notes / crawler_contract /
+│   │                                 #   crawl_source_index / paa_har_snapshot）
+│   └── superpowers/                  # 按日期的 feature 设计 spec 与执行计划
 ├── setup.cfg                         # flake8 / mypy 配置
 ├── requirements.txt
 └── README.md
@@ -75,12 +70,7 @@ Aras/EWO 使用浏览器中已登录会话的 Cookie/Authorization，不在本�
 
 ## 多智能体协作
 
-项目内置四角色 Agent 体系，详见 `docs/agents/` 目录：
-
-| 角色 | 模型 | 职责 | 权限 |
-|---|---|---|---|
-| Explorer | 低深度推理 | 代码探索、上下文检索 | 只读 |
-| Architect | 高深度推理 | 架构设计、任务拆解 | 可写文档 |
-| Worker | 结构化推理 | 代码实现、单元测试 | 可写代码 |
-| Reviewer | 高深度推理 | 静态检查、代码审查 | 只读 |
-ACCEPTANCE_TEST
+多 Agent 协作规则、运行时选择与持久记忆协议见 `AGENTS.md`；本地双 Agent
+harness（Codex 主导 + AGY CLI worker）见 `tools/agents/README.md` 与
+`.agents/config.json`。2026-06 的四角色体系（`.codex.yaml` +
+`docs/agents/role_*.md` 等）已于 2026-09-02 退役删除，如需查阅请走 Git 历史。
