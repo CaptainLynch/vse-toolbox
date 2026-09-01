@@ -160,3 +160,38 @@ Main should not hand-write every test scenario; the target is for Flash to produ
 
 Mechanical follow-up: Main changes a signature or return type -> general-purpose
 (Flash) sweeps all call sites -> Main verifies compilation and runs focused tests.
+
+## Persistent Project Memory Protocol
+
+`memory/` is the shared, git-tracked long-term memory for Codex and ZCode.
+It is agent-neutral Markdown: no session state, no runtime-private context,
+no secrets. `memory/CONTEXT_MANIFEST.md` is its map — read order, update
+rules, document freshness, and fact priority. Repository is truth; memory is
+navigation, not proof.
+
+Before a non-trivial task, restore state in this order: `AGENTS.md`, then
+`memory/CURRENT_STATE.md` (execution frontier and exact next action), plus
+`memory/RECOVERY_NOTES.md` when debugging or touching the agent harness,
+crawlers, credentials, Excel COM, or packaging, then verify against
+`git status`, `git diff`, and the relevant code/tests before working. When
+information conflicts, trust the fact-priority order in
+`memory/CONTEXT_MANIFEST.md` — never memory over code, tests, or git.
+
+Milestone checkpoints: update `memory/CURRENT_STATE.md` (replace wholesale)
+and, when the milestone produced new knowledge, `memory/RECOVERY_NOTES.md`
+(pitfalls, failed attempts, verified root causes) or `memory/DECISIONS.md`
+(durable decisions). Checkpoint at: feature complete, bug fixed and
+verified, important decision made, long investigation finished, root cause
+found, hypothesis confirmed or rejected, execution frontier change — and
+always before session end, before `/compact` or Codex compaction, before a
+model switch, and before a Codex <-> ZCode handoff. Compact only after the
+persistent state is safe on disk.
+
+The SDD ledgers (`.superpowers/sdd/`) and `.agents/runs/` are local-only
+(gitignored). Anything from them that must survive a new clone, a machine
+change, or a session loss must be promoted into `memory/` at the checkpoint
+that produces it.
+
+Subagents do not read `memory/` wholesale. The lead agent passes the relevant
+excerpts, constraints, and known failed routes in the task brief, then
+decides what enters long-term memory from the results.
