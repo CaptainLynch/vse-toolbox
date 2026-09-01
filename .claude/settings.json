@@ -21,7 +21,15 @@
       "Bash(pip *)",
       "Bash(python -m pip *)",
       "Bash(python -m venv *)",
-      "Bash(jq *)"
+      "Bash(jq *)",
+      "command(git *)",
+      "command(rg *)",
+      "command(ls *)",
+      "command(pwd)",
+      "command(python -m pytest *)",
+      "command(python -m flake8 *)",
+      "command(python -m py_compile *)",
+      "command(node --check *)"
     ],
     "ask": [
       "Bash(git push *)",
