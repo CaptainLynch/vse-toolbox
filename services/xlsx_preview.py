@@ -147,6 +147,20 @@ def read_xlsx_preview(
     max_columns: int = 200,
 ) -> XLSXPreview:
     """Read the first worksheet with strict size limits and no third-party dependency."""
+    return read_xlsx_workbook_preview(
+        path,
+        max_rows=max_rows,
+        max_columns=max_columns,
+    )[0]
+
+
+def read_xlsx_workbook_preview(
+    path: Path,
+    *,
+    max_rows: int = 500,
+    max_columns: int = 200,
+) -> tuple[XLSXPreview, ...]:
+    """Read every worksheet with strict size limits and no third-party dependency."""
     if max_rows <= 0 or max_columns <= 0:
         raise ValueError("preview limits must be positive")
     target = Path(path)
@@ -156,22 +170,31 @@ def read_xlsx_preview(
         with ZipFile(target) as archive:
             sheet_pairs = _read_sheet_names_and_paths(archive)
             shared_strings = _read_shared_strings(archive)
-            sheet_name, sheet_path = sheet_pairs[0]
-            rows, truncated = _read_sheet_rows(
-                archive,
-                sheet_path,
-                shared_strings,
-                max_rows=max_rows,
-                max_columns=max_columns,
-            )
+            previews: list[XLSXPreview] = []
+            for sheet_name, sheet_path in sheet_pairs:
+                rows, truncated = _read_sheet_rows(
+                    archive,
+                    sheet_path,
+                    shared_strings,
+                    max_rows=max_rows,
+                    max_columns=max_columns,
+                )
+                previews.append(
+                    XLSXPreview(
+                        sheet_name=sheet_name,
+                        sheet_names=tuple(name for name, _ in sheet_pairs),
+                        rows=rows,
+                        truncated=truncated,
+                    )
+                )
     except (BadZipFile, ET.ParseError, KeyError, OSError) as exc:
         raise XLSXPreviewError(f"unable to read workbook preview: {type(exc).__name__}") from exc
-    return XLSXPreview(
-        sheet_name=sheet_name,
-        sheet_names=tuple(name for name, _ in sheet_pairs),
-        rows=rows,
-        truncated=truncated,
-    )
+    return tuple(previews)
 
 
-__all__ = ["XLSXPreview", "XLSXPreviewError", "read_xlsx_preview"]
+__all__ = [
+    "XLSXPreview",
+    "XLSXPreviewError",
+    "read_xlsx_preview",
+    "read_xlsx_workbook_preview",
+]
