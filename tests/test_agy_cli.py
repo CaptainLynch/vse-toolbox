@@ -87,6 +87,39 @@ def test_permission_denial_is_blocked():
     assert result["status"] == "blocked"
 
 
+def test_headless_permission_denial_with_zero_exit_is_blocked(monkeypatch, tmp_path):
+    monkeypatch.setattr(agy_cli, "executable", lambda _: "agy")
+    stderr = (
+        'jetski: no output produced — a tool required the "command" permission '
+        "that headless mode cannot prompt for, so it was auto-denied."
+    )
+
+    monkeypatch.setattr(
+        agy_cli.subprocess,
+        "run",
+        lambda *args, **kwargs: type(
+            "Completed",
+            (),
+            {
+                "stdout": json.dumps({"status": "CANCELED", "response": ""}),
+                "stderr": stderr,
+                "returncode": 0,
+            },
+        )(),
+    )
+
+    result = agy_cli.invoke(
+        {"task_id": "TASK-HEADLESS", "objective": "test"},
+        tmp_path,
+        tmp_path / "run",
+        config={},
+    )
+
+    assert result["status"] == "blocked"
+    assert result["summary"] == "AGY sandbox denied a requested command."
+    assert result["unresolved"] == [stderr]
+
+
 def test_build_prompt_workspace_edit_and_escalation_rules():
     task = {
         "task_id": "TASK-123",

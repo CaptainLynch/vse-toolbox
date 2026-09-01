@@ -28,6 +28,7 @@ SOAP_ROUTE = "Server/InnovatorServer.aspx"
 CLIENT_ROUTE = "Client/default.aspx"
 TOKEN_ROUTE = "Server/AuthenticationBroker.asmx/GetFileDownloadToken"
 NCR_DETAIL_RECEIVE_TIMEOUT = 240.0
+NCR_PROGRESS_RECEIVE_TIMEOUT = 240.0
 _MAX_SEARCH_EXPRESSION_LENGTH = 500
 _MAX_SEARCH_ALTERNATIVES = 10
 DEFAULT_BROWSER_USER_AGENT = (
@@ -461,7 +462,8 @@ class ArasCrawlerClient:
 
     def query_ncr_approval_progress(self, filters: NCRApprovalFilters) -> NCRExportResult:
         payload = self._build_ncr_payload(filters, "sgmw_downloadFileProgressC")
-        response = self._post_soap("ApplyMethod", payload)
+        timeout = (self.timeout, max(self.timeout, NCR_PROGRESS_RECEIVE_TIMEOUT))
+        response = self._post_soap("ApplyMethod", payload, timeout=timeout)
         return self.parse_ncr_progress_response(response.text)
 
     def extract_ncr_approval_detail(self, filters: NCRApprovalFilters) -> NCRDetailExportResult:
@@ -542,11 +544,12 @@ class ArasCrawlerClient:
             raise ValueError("file_id is required")
 
         payload = self._build_ncr_vault_metadata_payload(file_id)
-        metadata_response = self._post_soap("ApplyItem", payload)
+        timeout = (self.timeout, max(self.timeout, NCR_PROGRESS_RECEIVE_TIMEOUT))
+        metadata_response = self._post_soap("ApplyItem", payload, timeout=timeout)
         location = self.parse_ncr_vault_metadata_response(metadata_response.text, file_id)
         name = _validate_download_file_name(location.file_name or export_result.file_name)
         vault_url = self._validated_vault_url(location.vault_url)
-        token = self.get_file_download_token(file_id)
+        token = self.get_file_download_token(file_id, timeout=timeout)
         query = ""
         download_url = ""
         headers = self._browser_headers("*/*")
@@ -564,7 +567,7 @@ class ArasCrawlerClient:
                 }
             )
             download_url = f"{vault_url}?{query}"
-            response = self.session.get(download_url, headers=headers, timeout=self.timeout)
+            response = self.session.get(download_url, headers=headers, timeout=timeout)
         except Exception as exc:
             self._emit_diagnostic(
                 ArasHttpDiagnosticEvent(
@@ -573,7 +576,7 @@ class ArasCrawlerClient:
                     url=vault_url,
                     request_headers=headers,
                     elapsed_ms=_elapsed_ms(started),
-                    timeout=self.timeout,
+                    timeout=timeout,
                     exception=_redact_diagnostic(repr(exc)),
                 )
             )
@@ -592,7 +595,7 @@ class ArasCrawlerClient:
                 status_code=getattr(response, "status_code", None),
                 reason=getattr(response, "reason", None),
                 elapsed_ms=_elapsed_ms(started),
-                timeout=self.timeout,
+                timeout=timeout,
             )
         )
         status = int(getattr(response, "status_code", 200) or 200)
@@ -607,9 +610,15 @@ class ArasCrawlerClient:
         _reject_html_download(response, content)
         return _atomic_write_download(_resolve_download_target(destination, name), content)
 
-    def get_file_download_token(self, file_id: str) -> str:
+    def get_file_download_token(
+        self,
+        file_id: str,
+        *,
+        timeout: float | tuple[float, float] | None = None,
+    ) -> str:
         if not file_id:
             raise ValueError("file_id is required")
+        request_timeout = self.timeout if timeout is None else timeout
         url = self._url(f"{TOKEN_ROUTE}?rnd={random.random()}")
         headers = self._headers("GetFileDownloadToken", "application/json; charset=UTF-8")
         body = json.dumps({"param": {"fileId": file_id}}, separators=(",", ":"))
@@ -619,7 +628,7 @@ class ArasCrawlerClient:
                 url,
                 data=body,
                 headers=headers,
-                timeout=self.timeout,
+                timeout=request_timeout,
             )
         except Exception as exc:
             self._emit_diagnostic(
@@ -645,7 +654,7 @@ class ArasCrawlerClient:
                 reason=getattr(response, "reason", None),
                 response_headers=dict(getattr(response, "headers", {}) or {}),
                 elapsed_ms=_elapsed_ms(started),
-                timeout=self.timeout,
+                timeout=request_timeout,
             )
         )
         if getattr(response, "status_code", 200) >= 400:

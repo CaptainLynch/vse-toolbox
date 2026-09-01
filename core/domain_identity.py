@@ -77,24 +77,27 @@ class WindowsDPAPICredentialVault:
         clear = b""
         password = ""
         try:
-            protected = self._path.read_bytes()
-            clear = _dpapi_blob(
-                self._api().CryptUnprotectData(protected, None, None, None, 0)
-            )
-            payload = json.loads(clear.decode("utf-8"))
-            username = str(payload.get("username") or "").strip()
-            password = str(payload.get("password") or "")
-            if not username or not password:
-                raise CredentialVaultError("domain credential vault is incomplete")
-            value = ResolvedCredential(username=username, password=password)
+            try:
+                protected = self._path.read_bytes()
+                clear = _dpapi_blob(
+                    self._api().CryptUnprotectData(protected, None, None, None, 0)
+                )
+                payload = json.loads(clear.decode("utf-8"))
+                username = str(payload.get("username") or "").strip()
+                password = str(payload.get("password") or "")
+                if not username or not password:
+                    raise CredentialVaultError("domain credential vault is incomplete")
+                value = ResolvedCredential(username=username, password=password)
+            except CredentialVaultError:
+                raise
+            except Exception as exc:
+                raise CredentialVaultError("could not unprotect domain credentials") from exc
             try:
                 yield value
             finally:
                 value.clear()
         except CredentialVaultError:
             raise
-        except Exception as exc:
-            raise CredentialVaultError("could not unprotect domain credentials") from exc
         finally:
             clear = b""
             password = ""

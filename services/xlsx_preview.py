@@ -27,7 +27,8 @@ _DOC_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 _PACKAGE_REL = "http://schemas.openxmlformats.org/package/2006/relationships"
 _CELL_REF_RE = re.compile(r"^([A-Za-z]+)")
 _MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
-_MAX_MEMBER_BYTES = 32 * 1024 * 1024
+_MAX_MEMBER_BYTES = 64 * 1024 * 1024
+_MAX_TOTAL_MEMBER_BYTES = 96 * 1024 * 1024
 
 
 def _tag(name: str) -> str:
@@ -168,6 +169,9 @@ def read_xlsx_workbook_preview(
         if target.stat().st_size > _MAX_ARCHIVE_BYTES:
             raise XLSXPreviewError("workbook is too large for a WebUI preview")
         with ZipFile(target) as archive:
+            total_member_bytes = sum(info.file_size for info in archive.infolist())
+            if total_member_bytes > _MAX_TOTAL_MEMBER_BYTES:
+                raise XLSXPreviewError("XLSX members are too large for a WebUI preview")
             sheet_pairs = _read_sheet_names_and_paths(archive)
             shared_strings = _read_shared_strings(archive)
             previews: list[XLSXPreview] = []

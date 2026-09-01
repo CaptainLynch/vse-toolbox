@@ -413,6 +413,7 @@ def test_ncr_progress_maps_cdata_payload_and_parses_export_record() -> None:
     call = session.calls[0]
     assert call["url"] == "http://aras.example/root/innovatorserver/Server/InnovatorServer.aspx"
     assert call["headers"]["SOAPAction"] == "ApplyMethod"
+    assert call["timeout"] == (30.0, 240.0)
     payload = call["data"]
     assert 'action="sgmw_downloadFileProgressC"' in payload
     assert "<buystart><![CDATA[2026-01-01]]></buystart>" in payload
@@ -738,9 +739,12 @@ def test_download_ncr_progress_file_resolves_vault_and_keeps_token_out_of_diagno
     assert [call["method"] for call in session.calls] == ["POST", "POST", "GET"]
     metadata_call, token_call, download_call = session.calls
     assert metadata_call["headers"]["SOAPAction"] == "ApplyItem"
+    assert metadata_call["timeout"] == (30.0, 240.0)
     assert "<id>FILE123</id>" in metadata_call["data"]
     assert token_call["headers"]["SOAPAction"] == "GetFileDownloadToken"
+    assert token_call["timeout"] == (30.0, 240.0)
     assert "token=fictional-download-token" in download_call["url"]
+    assert download_call["timeout"] == (30.0, 240.0)
     assert "fileName=NCR+progress.xlsx" in download_call["url"]
     assert "vaultId=VAULT1" in download_call["url"]
     assert all("fictional-download-token" not in repr(event) for event in events)

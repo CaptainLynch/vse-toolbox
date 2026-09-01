@@ -12,7 +12,7 @@ import services.xlsx_preview as xlsx_preview
 from services.xlsx_preview import XLSXPreviewError, read_xlsx_preview
 
 
-def _write_minimal_xlsx(path: Path) -> None:
+def _write_minimal_xlsx(path: Path, *, large_sheet: bool = False) -> None:
     workbook = (
         '<?xml version="1.0" encoding="UTF-8"?>'
         '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
@@ -37,6 +37,8 @@ def _write_minimal_xlsx(path: Path) -> None:
         '<row r="2"><c r="A2" t="s"><v>1</v></c><c r="B2"><v>42</v></c></row>'
         '</sheetData></worksheet>'
     )
+    if large_sheet:
+        sheet = sheet.replace("<sheetData>", "<!--" + ("x" * (33 * 1024 * 1024)) + "--><sheetData>")
     with ZipFile(path, "w") as archive:
         archive.writestr("xl/workbook.xml", workbook)
         archive.writestr("xl/_rels/workbook.xml.rels", relationships)
@@ -81,3 +83,12 @@ def test_read_xlsx_preview_rejects_oversized_xml_member(tmp_path: Path, monkeypa
 
     with pytest.raises(XLSXPreviewError, match="member is too large"):
         read_xlsx_preview(workbook)
+
+
+def test_read_xlsx_preview_accepts_large_official_sheet_member(tmp_path: Path) -> None:
+    workbook = tmp_path / "large-official-preview.xlsx"
+    _write_minimal_xlsx(workbook, large_sheet=True)
+
+    result = read_xlsx_preview(workbook, max_rows=2, max_columns=2)
+
+    assert result.rows == [["Header", "Inline"], ["Value", "42"]]

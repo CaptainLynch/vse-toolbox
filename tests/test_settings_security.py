@@ -372,6 +372,17 @@ def test_dpapi_vault_resolve_and_provider_lifecycle(tmp_path: Path) -> None:
     assert not provider.is_available(approved_ref)
 
 
+def test_dpapi_vault_preserves_consumer_exception_after_resolve(tmp_path: Path) -> None:
+    """Connector failures raised inside the resolved-credential context stay distinguishable."""
+    vault_file = tmp_path / "credentials" / "vault.dat"
+    vault = WindowsDPAPICredentialVault(path=vault_file, backend=FakeDPAPIBackend)
+    vault.store(_runtime_opaque(), _runtime_opaque())
+
+    with pytest.raises(RuntimeError, match="connector failure"):
+        with vault.resolve():
+            raise RuntimeError("connector failure")
+
+
 # ── 4. DomainSessionRegistry and Web API Secret Absence ────────────────────────
 
 

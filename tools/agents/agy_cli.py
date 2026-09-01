@@ -131,9 +131,14 @@ def invoke(
     duration = round(time.monotonic() - started, 3)
     (run_dir / "agy.stdout.log").write_text(stdout, encoding="utf-8")
     (run_dir / "agy.stderr.log").write_text(stderr, encoding="utf-8")
-    result = _parse_result(stdout, task["task_id"])
-    if exit_code != 0:
+    diagnostic_output = "\n".join(value for value in (stderr, stdout) if value)
+    if _is_permission_denial(diagnostic_output):
+        permission_output = stderr if _is_permission_denial(stderr) else diagnostic_output
+        result = _process_failure(task["task_id"], permission_output, exit_code)
+    elif exit_code != 0:
         result = _process_failure(task["task_id"], stderr or stdout, exit_code)
+    else:
+        result = _parse_result(stdout, task["task_id"])
     result["process"] = {
         "command": command[:-1],
         "exit_code": exit_code,
@@ -143,11 +148,25 @@ def invoke(
     return result
 
 
+def _is_permission_denial(output: str) -> bool:
+    lowered = output.lower()
+    if "permission check failed" in lowered or "denied permission" in lowered:
+        return True
+    if "soft-denying tool confirmation" in lowered:
+        return True
+    if "headless mode" not in lowered or "permission" not in lowered:
+        return False
+    return any(
+        marker in lowered
+        for marker in ("auto-denied", "auto denied", "cannot prompt")
+    )
+
+
 def _process_failure(task_id: str, output: str, exit_code: int | None) -> dict[str, Any]:
     lowered = output.lower()
     if "authentication required" in lowered or "authentication failed" in lowered:
         return _failure(task_id, "blocked", "AGY CLI authentication is required.", ["Complete AGY login and retry."])
-    if "permission check failed" in lowered or "denied permission" in lowered:
+    if _is_permission_denial(output):
         return _failure(task_id, "blocked", "AGY sandbox denied a requested command.", [output[-2000:]])
     if "model" in lowered and any(word in lowered for word in ("unsupported", "not found", "unavailable")):
         return _failure(task_id, "blocked", "The configured AGY model is unavailable.", [output[-2000:]])
