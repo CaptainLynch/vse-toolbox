@@ -1,15 +1,21 @@
 # Current State
 
-Last checkpoint: 2026-09-02 (Codex). This file records the durable
-continuation point for the deliverable UI redesign. Re-verify the repository
-with `git status`, `git diff`, and `git log` before any implementation.
+Last checkpoint: 2026-09-02 (Codex). Re-verify the repository with
+`git status`, `git diff`, and `git log --oneline -5` before any new work.
 
 ## Current objective
 
-Continue the EWO/PAA/NCR deliverable detail UI redesign in ZCode. The user has
-confirmed the architecture and the NCR aggregation grain. The work is paused
-before preview regeneration; production code must not be changed until the
-new preview is reviewed and approved.
+The EWO/PAA/NCR unified deliverable form analysis and UI work is complete at
+`5194820`. The migration cleanup, persistent memory layer, and post-release
+hardening are committed on branch
+`feature/scheduled-deliverables-overview-excel`:
+
+- `82827f5 chore: retire legacy agent subsystem`
+- `86238b9 chore: add persistent project memory`
+- `785c650 fix: harden delivery and agent workflows`
+
+Production-network acceptance remains intentionally unclaimed because no
+production credentials were used in verification.
 
 ## Confirmed product decisions
 
@@ -83,13 +89,25 @@ Relevant implementation locations include:
 - `web/static/app.js`
 - `web/static/style.css`
 
+## Verification status
+
+- Full pytest on the committed tree: `1629 passed, 2 skipped` using the
+  repository `.venv` (Python 3.11.9).
+- Scoped flake8 over the eight hardening Python files passes.
+- Repository-wide `python -m flake8` returns 1 because `setup.cfg` does not
+  exclude `.venv` or `.agents/worktrees`, and the scan also reports existing
+  project lint errors. This baseline is accepted for this migration.
+- UTF-8 mypy under both system Python 3.14 and repository Python 3.11 reports
+  the same 69 existing errors in 13 files; no new error was found at a changed
+  hardening line. This baseline is accepted for this migration.
+- `git diff --check HEAD` passes. Windows LF-to-CRLF warnings are benign.
+
 ## Current workspace constraints
 
-Preserve all existing uncommitted changes. Current known changes include the
-DPAPI, Aras timeout, XLSX size-limit, AGY CLI hardening, and memory/AGENTS
-changes. Do not reset, clean, checkout, or overwrite them. The source WebUI is
-running at `http://127.0.0.1:5000/#scheduled-archive` when available; do not
-restart or stop it unless necessary and safe.
+The migration changes are committed and the worktree should remain clean.
+Do not reset, clean, checkout, or overwrite unrelated future changes. The
+source WebUI is running at `http://127.0.0.1:5000/#scheduled-archive` when
+available; do not restart or stop it unless necessary and safe.
 
 No credentials, cookies, tokens, raw production workbook rows, or complete
 business data may enter source control, preview HTML, logs, tests, memory, or
@@ -97,28 +115,20 @@ ZCode handoffs.
 
 ## Exact next action
 
-1. In ZCode, read this file and the other memory files, then verify the current
-   worktree.
-2. Recreate `.runtime/deliverable-forms-preview.html` using real Chinese
-   headers plus synthetic/redacted example rows. The prior preview generation
-   was interrupted after the old ignored preview file was removed.
-3. Start or reuse a local preview server, inspect the page, and save screenshots
-   under `.runtime/`.
-4. Stop and wait for the user to approve the preview. Do not edit production
-   code before that approval.
-5. After preview approval, implement the additive API/data contract, relation
-   filters, aggregation grain, UI layout, and tests, followed by code review
-   and full verification.
+Verify `git status --short --branch` and `git log --oneline -5` after this
+checkpoint commit. The branch is ready for the user's preferred integration
+action; no code changes are pending in this migration.
+
+If future work targets repository-wide quality gates, handle the flake8 scan
+scope and the existing mypy errors as a separate, explicitly scoped task.
 
 ## Completion criteria
 
-- Preview is approved before production-code edits.
-- EWO/PAA/NCR progress have correct three-tab charts and filters.
-- NCR detail has correct two-tab cost charts and row-grain cost sums.
-- EWO/NCR relation filtering and reverse navigation are correct.
-- Existing authentication, credential redaction, lease behavior, public APIs,
-  EWO legacy charts/tags, and scheduled sync behavior remain compatible.
-- Focused tests, full tests, compile, Node syntax, lint/type baseline review,
-  browser screenshots, and final code review are complete.
-- Final review is explicitly `PASS` only after evidence is saved under
-  `.runtime/`.
+- Unified deliverable analysis/UI, migration cleanup, memory layer, and
+  hardening changes are committed on the current branch.
+- Full pytest and scoped hardening flake8 checks pass.
+- The accepted repository-wide flake8/mypy baseline is documented in this
+  file and `RECOVERY_NOTES.md`.
+- Working tree is clean after the checkpoint commit.
+- Production-network acceptance remains unclaimed without production
+  credentials.

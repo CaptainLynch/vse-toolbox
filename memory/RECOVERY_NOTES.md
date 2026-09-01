@@ -22,11 +22,18 @@ repo are the authoritative record.
   permission flow is resolved, the lead/Main session implements UI and
   command-heavy work directly and reserves AGY for tasks whose required
   commands are pre-authorized in the sandbox. Fix in progress: `agy_cli.py`
-  now classifies zero-exit denials as `blocked` (uncommitted 2026-09-02).
+  now classifies zero-exit denials as `blocked` (committed in `785c650`).
 - `.agents/runs/`, `.runtime/`, `.superpowers/sdd/` are gitignored and
   local-only. Never treat their contents as recoverable state.
 - Git CRLF warnings on this working tree are benign (autocrlf conversion
   notices), not corruption.
+- The repository-wide `python -m flake8` command recursively scans
+  `.agents/worktrees` and `.venv` because they are not in `setup.cfg`'s
+  exclusions; it therefore returns baseline diagnostics unrelated to the
+  migration. Scoped flake8 over the eight hardening Python files passes.
+- UTF-8 mypy under both the system Python 3.14 and repository `.venv` Python
+  3.11 reports the same 69 existing errors in 13 files. Do not attribute
+  those errors to the hardening batch without a new, line-specific diff.
 - Full validation of Aras/TDC endpoints requires domain authentication or
   local mock fixtures; production-network acceptance is only claimed when
   production credentials are actually used (so far: never — offline synthetic
@@ -36,17 +43,17 @@ repo are the authoritative record.
 
 - XLSX WebUI preview rejected official workbooks whose single sheet XML
   exceeded the old 32 MB member cap → caps rebalanced to 64 MB per member /
-  96 MB total (uncommitted 2026-09-02; `tests/test_xlsx_preview.py`).
+  96 MB total (committed in `785c650`; `tests/test_xlsx_preview.py`).
 - NCR progress/vault-download timed out under the default receive timeout →
-  240 s receive timeout on those paths (uncommitted 2026-09-02;
+  240 s receive timeout on those paths (committed in `785c650`;
   `tests/test_aras_crawler.py`).
 - DPAPI vault `resolve()` context swallowed consumer exceptions (e.g.
   connector failures raised inside the context) as `CredentialVaultError` →
-  consumer exceptions now propagate untouched (uncommitted 2026-09-02;
+  consumer exceptions now propagate untouched (committed in `785c650`;
   `tests/test_settings_security.py`).
 - AGY `blocked` classification missed headless denials that exit 0 →
   stderr/stdout denial markers now checked before exit-code logic
-  (uncommitted 2026-09-02; `tests/test_agy_cli.py`).
+  (committed in `785c650`; `tests/test_agy_cli.py`).
 
 ## Stale-doc warnings
 

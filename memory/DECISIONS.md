@@ -5,6 +5,14 @@ delete. Per-plan rulings stay in their SDD ledger (`.superpowers/sdd/…`, local
 and get promoted here once they prove durable. Newest first. Keep entries
 short: decision, why, cost if violated, source pointer.
 
+## 2026-09-02 — Accept existing lint/type baseline for this migration
+
+Treat the full pytest result (`1629 passed, 2 skipped`) and scoped flake8 over
+the hardening files as the migration gates. Accept the repository-wide flake8
+scan-boundary diagnostics and 69 existing mypy errors as out of scope; fixing
+them requires a separate quality task. Source: verification after commits
+`82827f5`, `86238b9`, and `785c650`.
+
 ## 2026-09-02 — Retired the 2026-06 four-role agent subsystem
 
 Deleted `.codex.yaml` (explorer/architect/worker/reviewer role prompts; no
