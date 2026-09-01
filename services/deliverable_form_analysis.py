@@ -892,6 +892,35 @@ class DeliverableFormAnalysisService:
             limit=limit,
         )
 
+    def _sync_status(self, form_key: str) -> dict[str, Any]:
+        job_key = "aras_ewo" if form_key == "VPI-T2-D3" else form_key
+        jobs = self.db.list_archive_jobs()
+        job = next(
+            (item for item in jobs if str(item.get("job_key") or "") == job_key),
+            None,
+        )
+        if job is None:
+            return {
+                "jobKey": job_key,
+                "state": "idle",
+                "enabled": False,
+                "credentialConfigured": False,
+                "lastAttemptAt": None,
+                "lastSuccessAt": None,
+                "lastErrorType": None,
+                "lastErrorMessage": None,
+            }
+        return {
+            "jobKey": job_key,
+            "state": str(job.get("sync_state") or "idle"),
+            "enabled": bool(job.get("enabled")),
+            "credentialConfigured": bool(job.get("credential_configured")),
+            "lastAttemptAt": job.get("last_attempt_at"),
+            "lastSuccessAt": job.get("last_success_at"),
+            "lastErrorType": job.get("last_error_type"),
+            "lastErrorMessage": job.get("last_error_message"),
+        }
+
     def view(
         self,
         form_key: str,
@@ -969,6 +998,7 @@ class DeliverableFormAnalysisService:
             "charts": _chart_payload(key, summary, trend),
             "trend": trend,
             "artifacts": artifacts,
+            "sync": self._sync_status(key),
             "filters": {
                 "fields": list(definition["filterFields"]) + [
                     "overdueState",

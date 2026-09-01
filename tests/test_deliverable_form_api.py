@@ -128,6 +128,8 @@ def test_form_view_endpoint_returns_schema_summary_charts_and_artifacts(
     assert len(data["schema"]["columns"]) == 113
     assert data["summary"]["total"] == 2
     assert "departmentStatus" in data["charts"]
+    assert data["sync"]["jobKey"] == "aras_paa"
+    assert "credentialRef" not in json.dumps(data, ensure_ascii=False)
     assert data["artifacts"][0]["display_name"] == "paa.json"
     assert "form-api.db" not in json.dumps(data, ensure_ascii=False)
 
