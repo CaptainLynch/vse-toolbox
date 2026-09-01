@@ -190,6 +190,25 @@ def test_form_view_filters_charts_and_daily_trend_from_same_snapshot_rows(client
     }
 
 
+def test_form_view_keeps_thirty_calendar_days_when_runs_are_more_frequent(client) -> None:
+    http, db = client
+    for day in range(1, 32):
+        db.publish_deliverable_form_snapshot(
+            _paa_snapshot(
+                snapshot_at=f"2026-08-{day:02d}T18:00:00Z",
+                source_run_id=day,
+            )
+        )
+
+    response = http.get("/api/deliverable-forms/aras_paa/view")
+
+    assert response.status_code == 200
+    trend = response.get_json()["data"]["charts"]["quantityTrend"]
+    assert len(trend) == 30
+    assert trend[0]["day"] == "2026-08-02"
+    assert trend[-1]["day"] == "2026-08-31"
+
+
 @pytest.mark.parametrize(
     "form_key",
     ["VPI-T2-D3", "aras_paa", "aras_ncr_progress", "aras_ncr_detail"],

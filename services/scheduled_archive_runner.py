@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import time
 import threading
+import logging
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -41,6 +42,7 @@ EXIT_ATTENTION = 2
 EXIT_INTERRUPTED = 130
 _TEXT_LIMIT = 1000
 _TRANSIENT_ERRORS = (ConnectionError, TimeoutError, OSError, WinHTTPError)
+logger = logging.getLogger(__name__)
 
 
 def _safe_text(value: object, *, limit: int = _TEXT_LIMIT) -> str:
@@ -296,7 +298,16 @@ class ArchiveSyncRunner:
             )
             retry_policy = _required_mapping(lease, "retry_policy")
             retry_attempts = _required_int(retry_policy, "max_attempts")
-            retry_backoff = retry_policy.get("backoff_seconds", self._backoff_seconds)
+            retry_backoff_value = retry_policy.get(
+                "backoff_seconds", self._backoff_seconds
+            )
+            if (
+                isinstance(retry_backoff_value, bool)
+                or not isinstance(retry_backoff_value, (int, float))
+                or retry_backoff_value < 0
+            ):
+                raise ValueError("backoff_seconds must be non-negative")
+            retry_backoff = float(retry_backoff_value)
             with self._lease_heartbeat(job_id, run_id, lease_token):
                 collection = self._collect_with_retry(
                     connector,
@@ -305,7 +316,6 @@ class ArchiveSyncRunner:
                     max_attempts=retry_attempts,
                     backoff_seconds=retry_backoff,
                 )
-            self._publish_form_snapshot(context, collection)
             self._db.finalize_archive_run(
                 job_id,
                 run_id,
@@ -320,6 +330,18 @@ class ArchiveSyncRunner:
                     f"{len(collection.artifacts)} artifacts"
                 ),
             )
+            try:
+                self._publish_form_snapshot(context, collection)
+            except Exception as exc:
+                # Archive finalization is already the auditable source run;
+                # a malformed form projection must not turn that successful
+                # run into a second lease-finalization attempt or erase the
+                # last good form snapshot.
+                logger.warning(
+                    "form snapshot projection failed for %s: %s",
+                    context.job_key,
+                    _safe_text(exc),
+                )
             return ArchiveJobRunResult(
                 job_id,
                 job_key,

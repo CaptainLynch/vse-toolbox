@@ -4135,6 +4135,714 @@ async function refreshEwoAnalysisFromStatusChart(item, statusChart, analysisPane
   }
 }
 
+async function refreshEwoFormFromStatusChart(item, statusChart, formPanel, formState) {
+  if (!statusChart) return;
+  statusChart.setBusy(true);
+  statusChart.setSyncStatus("正在刷新表单快照...", "busy");
+  try {
+    const loaded = await loadDeliverableFormView(
+      formPanel,
+      item,
+      { state: formState, statusChart },
+    );
+    statusChart.setSyncStatus(
+      loaded ? "刷新完成" : "刷新失败：表单快照读取失败",
+      loaded ? "success" : "error",
+    );
+  } finally {
+    statusChart.setBusy(false);
+  }
+}
+
+const DELIVERABLE_FORM_KEY_BY_ITEM = {
+  "VPI-T2-D3": "VPI-T2-D3",
+  aras_paa: "aras_paa",
+  aras_ncr_progress: "aras_ncr_progress",
+  aras_ncr_detail: "aras_ncr_detail",
+};
+
+const DELIVERABLE_FORM_TABS = {
+  "VPI-T2-D3": [
+    ["departmentStatus", "部门状态"],
+    ["sectionStatus", "科室状态"],
+    ["quantityTrend", "数量趋势"],
+  ],
+  aras_paa: [
+    ["departmentStatus", "部门状态"],
+    ["sectionStatus", "科室状态"],
+    ["quantityTrend", "数量趋势"],
+  ],
+  aras_ncr_progress: [
+    ["departmentStatus", "部门状态"],
+    ["sectionStatus", "区域状态"],
+    ["quantityTrend", "数量趋势"],
+  ],
+  aras_ncr_detail: [
+    ["departmentCost", "部门成本"],
+    ["sectionCost", "科室成本"],
+  ],
+};
+
+const FORM_FILTER_LABELS = {
+  keyword: "关键词",
+  status: "状态",
+  department: "部门",
+  section: "科室 / 区域",
+  model: "车型 / 项目",
+  stage: "阶段 / 节点",
+  dateStart: "开始日期",
+  dateEnd: "结束日期",
+};
+
+const FORM_FILTER_QUERY_KEYS = [
+  "keyword",
+  "status",
+  "department",
+  "section",
+  "model",
+  "stage",
+  "dateStart",
+  "dateEnd",
+];
+
+function deliverableFormKey(item) {
+  if (!item || typeof item !== "object") return "";
+  return DELIVERABLE_FORM_KEY_BY_ITEM[item.id] || DELIVERABLE_FORM_KEY_BY_ITEM[item.externalJobKey] || "";
+}
+
+function createDeliverableFormState(formKey) {
+  const tabs = DELIVERABLE_FORM_TABS[formKey] || [];
+  return {
+    activeTab: tabs.length ? tabs[0][0] : "",
+    filterStateByTab: {},
+    pageByTab: {},
+    requestSeq: 0,
+  };
+}
+
+function currentFormFilterState(state) {
+  if (!state || !state.activeTab) return {};
+  if (!state.filterStateByTab[state.activeTab]) state.filterStateByTab[state.activeTab] = {};
+  return state.filterStateByTab[state.activeTab];
+}
+
+function clearCurrentFilters(state) {
+  if (!state || !state.activeTab) return;
+  state.filterStateByTab[state.activeTab] = {};
+  state.pageByTab[state.activeTab] = 0;
+}
+
+function appendFormFilter(state, key, value) {
+  const clean = String(value === null || value === undefined ? "" : value).trim();
+  if (!state || !state.activeTab || !key || !clean) return;
+  const filters = currentFormFilterState(state);
+  filters[key] = clean;
+  if (key !== "dateStart" && key !== "dateEnd") {
+    state.pageByTab[state.activeTab] = 0;
+  }
+}
+
+function buildDeliverableFormQuery(filters, includePaging = false, state = null) {
+  const params = new URLSearchParams();
+  const source = filters && typeof filters === "object" ? filters : {};
+  FORM_FILTER_QUERY_KEYS.forEach((key) => {
+    const value = String(source[key] || "").trim();
+    if (value) params.set(key, value);
+  });
+  params.set("trendLimit", "30");
+  if (includePaging && state && state.activeTab) {
+    const offset = Number(state.pageByTab[state.activeTab]) || 0;
+    params.set("offset", String(Math.max(0, offset)));
+    params.set("limit", "50");
+  }
+  return params;
+}
+
+function formViewErrorMessage(error) {
+  const status = Number(error && error.status);
+  if (status === 401 || status === 403) return "表单数据未认证，请先完成统一域账号登录。";
+  if (status >= 500 || status === 0) return "表单数据服务暂不可用，请稍后重试。";
+  return "表单数据读取失败，请稍后重试。";
+}
+
+async function loadDeliverableFormView(container, item, options = {}) {
+  const formKey = deliverableFormKey(item);
+  if (!container || !formKey) return false;
+  const state = options.state || createDeliverableFormState(formKey);
+  const filters = currentFormFilterState(state);
+  const sequence = ++state.requestSeq;
+  clearOverviewContainer(container);
+  const loading = overviewEl("p", "loading", "正在读取表单快照与明细...");
+  loading.setAttribute("role", "status");
+  loading.setAttribute("aria-live", "polite");
+  container.appendChild(loading);
+  try {
+    const query = buildDeliverableFormQuery(filters);
+    const rowQuery = buildDeliverableFormQuery(filters, true, state);
+    const [viewResponse, rowsResponse] = await Promise.all([
+      fetch(`/api/deliverable-forms/${encodeURIComponent(formKey)}/view?${query.toString()}`, {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      }),
+      fetch(`/api/deliverable-forms/${encodeURIComponent(formKey)}/rows?${rowQuery.toString()}`, {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      }),
+    ]);
+    const [viewBody, rowsBody] = await Promise.all([
+      overviewReadJson(viewResponse),
+      overviewReadJson(rowsResponse),
+    ]);
+    if (!viewResponse.ok || !viewBody || viewBody.ok !== true) {
+      throw overviewRequestError(viewBody, viewResponse.status);
+    }
+    if (!rowsResponse.ok || !rowsBody || rowsBody.ok !== true) {
+      throw overviewRequestError(rowsBody, rowsResponse.status);
+    }
+    if (sequence !== state.requestSeq) return false;
+    loading.remove();
+    const data = viewBody.data || {};
+    const rowsData = rowsBody.data || { items: [], total: 0, offset: 0, limit: 50 };
+    if (options.statusChart && typeof options.statusChart.updateEwoSummary === "function") {
+      options.statusChart.updateEwoSummary(data);
+    }
+    renderDeliverableFormAnalysis(container, item, data, rowsData, {
+      ...options,
+      state,
+      onReload: () => loadDeliverableFormView(container, item, options),
+    });
+    return true;
+  } catch (error) {
+    if (sequence !== state.requestSeq) return false;
+    clearOverviewContainer(container);
+    const box = overviewEl("div", "form-view-load-error");
+    box.setAttribute("role", "alert");
+    box.setAttribute("aria-live", "assertive");
+    box.append(
+      overviewEl("p", "error-msg", formViewErrorMessage(error)),
+      overviewEl("p", "form-view-error-detail", "可点击“刷新表单数据”重试；交互式查询与后台快照相互独立。"),
+    );
+    const retry = overviewEl("button", "btn is-secondary", "刷新表单数据");
+    retry.type = "button";
+    retry.addEventListener("click", () => loadDeliverableFormView(container, item, options));
+    box.appendChild(retry);
+    container.appendChild(box);
+    return false;
+  }
+}
+
+function formOptionValues(data, key) {
+  const options = data && data.filters && data.filters.options;
+  const values = options && Array.isArray(options[key]) ? options[key] : [];
+  return values.map((value) => String(value || "").trim()).filter(Boolean);
+}
+
+function renderFormFilterBar(data, state, onReload) {
+  const filters = currentFormFilterState(state);
+  const root = overviewEl("section", "form-filter-bar");
+  root.setAttribute("aria-label", "当前图表筛选");
+  const titleRow = overviewEl("div", "form-filter-head");
+  titleRow.append(
+    overviewEl("strong", "form-filter-title", "筛选条件"),
+    overviewEl("span", "form-filter-scope", "仅作用于当前图表页签与表单明细"),
+  );
+  root.appendChild(titleRow);
+
+  const controls = overviewEl("div", "form-filter-controls");
+  const keyword = overviewEl("input", "form-filter-keyword");
+  keyword.type = "search";
+  keyword.placeholder = "编号、项目、零件、负责人";
+  keyword.value = String(filters.keyword || "");
+  keyword.setAttribute("aria-label", "关键词");
+  keyword.maxLength = 200;
+  controls.appendChild(keyword);
+
+  const addSelect = (key, values) => {
+    const label = overviewEl("label", "form-filter-field");
+    label.appendChild(overviewEl("span", "form-filter-label", FORM_FILTER_LABELS[key] || key));
+    const select = document.createElement("select");
+    select.className = "form-filter-select";
+    select.setAttribute("aria-label", FORM_FILTER_LABELS[key] || key);
+    const all = document.createElement("option");
+    all.value = "";
+    all.textContent = "全部";
+    select.appendChild(all);
+    [...new Set(values)].forEach((value) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = safeDisplayValue(value);
+      select.appendChild(option);
+    });
+    select.value = String(filters[key] || "");
+    label.appendChild(select);
+    controls.appendChild(label);
+    return select;
+  };
+
+  const status = addSelect("status", formOptionValues(data, "status"));
+  const department = addSelect("department", formOptionValues(data, "department"));
+  const section = addSelect("section", formOptionValues(data, "section"));
+  const model = addSelect("model", formOptionValues(data, "model"));
+  const stage = addSelect("stage", formOptionValues(data, "stage"));
+  const dateStart = overviewEl("input", "form-filter-date");
+  dateStart.type = "date";
+  dateStart.value = String(filters.dateStart || "");
+  dateStart.setAttribute("aria-label", FORM_FILTER_LABELS.dateStart);
+  const dateEnd = overviewEl("input", "form-filter-date");
+  dateEnd.type = "date";
+  dateEnd.value = String(filters.dateEnd || "");
+  dateEnd.setAttribute("aria-label", FORM_FILTER_LABELS.dateEnd);
+  const dateStartLabel = overviewEl("label", "form-filter-field");
+  dateStartLabel.append(overviewEl("span", "form-filter-label", FORM_FILTER_LABELS.dateStart), dateStart);
+  const dateEndLabel = overviewEl("label", "form-filter-field");
+  dateEndLabel.append(overviewEl("span", "form-filter-label", FORM_FILTER_LABELS.dateEnd), dateEnd);
+  controls.append(dateStartLabel, dateEndLabel);
+
+  const actions = overviewEl("div", "form-filter-actions");
+  const apply = overviewEl("button", "btn is-primary", "应用筛选");
+  apply.type = "button";
+  const clear = overviewEl("button", "btn is-secondary", "清除当前筛选");
+  clear.type = "button";
+  apply.addEventListener("click", () => {
+    const next = {};
+    [["keyword", keyword.value], ["status", status.value], ["department", department.value], ["section", section.value], ["model", model.value], ["stage", stage.value], ["dateStart", dateStart.value], ["dateEnd", dateEnd.value]].forEach(([key, value]) => {
+      const clean = String(value || "").trim();
+      if (clean) next[key] = clean;
+    });
+    state.filterStateByTab[state.activeTab] = next;
+    state.pageByTab[state.activeTab] = 0;
+    if (typeof onReload === "function") onReload();
+  });
+  clear.addEventListener("click", () => {
+    clearCurrentFilters(state);
+    if (typeof onReload === "function") onReload();
+  });
+  actions.append(apply, clear);
+  controls.appendChild(actions);
+  root.appendChild(controls);
+
+  const chips = overviewEl("div", "form-filter-chips chart-filter-state");
+  const entries = Object.entries(filters);
+  if (!entries.length) chips.appendChild(overviewEl("span", "form-filter-empty", "0 个筛选条件"));
+  entries.forEach(([key, value]) => {
+    const chip = overviewEl("span", "form-filter-chip", `${FORM_FILTER_LABELS[key] || key}：${safeDisplayValue(value)}`);
+    chips.appendChild(chip);
+  });
+  root.appendChild(chips);
+  return root;
+}
+
+function formStatusColorClass(type) {
+  if (type === "overdue") return "form-status-overdue";
+  if (type === "incomplete") return "form-status-incomplete";
+  if (type === "total") return "form-status-total";
+  return "form-status-on-time";
+}
+
+function renderFormStatusBars(entries, filterKey, state, onReload, title, description) {
+  const section = overviewEl("section", "form-chart-panel-content");
+  section.append(
+    overviewEl("h5", "form-chart-title", title),
+    overviewEl("p", "form-chart-description", description),
+  );
+  const legend = overviewEl("div", "form-chart-legend");
+  legend.append(
+    overviewEl("span", "form-chart-legend-item form-status-on-time", "按期推进 / 正常"),
+    overviewEl("span", "form-chart-legend-item form-status-overdue", "逾期风险"),
+    overviewEl("span", "form-chart-legend-item form-status-incomplete", "未判定 / 当前节点"),
+  );
+  section.appendChild(legend);
+  const box = overviewEl("div", "form-status-bars");
+  const safeEntries = Array.isArray(entries) ? entries : [];
+  const max = Math.max(1, ...safeEntries.map((entry) => Number(entry.onTime || 0) + Number(entry.overdue || 0) + Number(entry.unknown || 0)));
+  safeEntries.forEach((entry) => {
+    const label = String(entry && entry.label || "未命名");
+    const onTime = Math.max(0, Number(entry && entry.onTime) || 0);
+    const overdue = Math.max(0, Number(entry && entry.overdue) || 0);
+    const unknown = Math.max(0, Number(entry && entry.unknown) || 0);
+    const total = onTime + overdue + unknown;
+    const row = overviewEl("div", "form-status-bar-row");
+    row.setAttribute("role", "button");
+    row.setAttribute("tabindex", "0");
+    row.setAttribute("aria-label", `${label}：按期 ${onTime}，逾期 ${overdue}，未知 ${unknown}`);
+    const name = overviewEl("span", "form-status-bar-label", safeDisplayValue(label));
+    const track = overviewEl("span", "form-status-bar-track");
+    const onTimeBar = overviewEl("span", `form-status-bar-fill ${formStatusColorClass("onTime")}`);
+    onTimeBar.style.width = `${(onTime / max) * 100}%`;
+    const overdueBar = overviewEl("span", `form-status-bar-fill ${formStatusColorClass("overdue")}`);
+    overdueBar.style.width = `${(overdue / max) * 100}%`;
+    const unknownBar = overviewEl("span", "form-status-bar-fill form-status-unknown");
+    unknownBar.style.width = `${(unknown / max) * 100}%`;
+    track.append(onTimeBar, overdueBar, unknownBar);
+    const numbers = overviewEl("span", "form-status-bar-numbers", `按期 ${onTime} · 逾期 ${overdue} · 未判定 ${unknown} · 共 ${total}`);
+    row.append(name, track, numbers);
+    const activate = () => {
+      appendFormFilter(state, filterKey, label);
+      if (typeof onReload === "function") onReload();
+    };
+    row.addEventListener("click", activate);
+    row.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        activate();
+      }
+    });
+    box.appendChild(row);
+  });
+  if (!safeEntries.length) box.appendChild(overviewEl("p", "form-chart-empty", "暂无可分析的表单数据"));
+  section.appendChild(box);
+  return section;
+}
+
+function renderFormTrendSvgChart(points, state, onReload) {
+  const wrap = overviewEl("div", "form-trend-chart");
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "form-trend-svg");
+  svg.setAttribute("viewBox", "0 0 760 300");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", "总数、未完成数、逾期数数量趋势");
+  const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+  title.textContent = "总数、未完成数、逾期数数量趋势";
+  svg.appendChild(title);
+  const safePoints = Array.isArray(points) ? points : [];
+  const padding = { top: 30, right: 35, bottom: 48, left: 46 };
+  const width = 760 - padding.left - padding.right;
+  const height = 300 - padding.top - padding.bottom;
+  const maxValue = Math.max(1, ...safePoints.flatMap((point) => [Number(point.total) || 0, Number(point.incomplete) || 0, Number(point.overdue) || 0]));
+  for (let index = 0; index <= 4; index += 1) {
+    const y = padding.top + height - (index / 4) * height;
+    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    line.setAttribute("x1", String(padding.left));
+    line.setAttribute("x2", String(padding.left + width));
+    line.setAttribute("y1", String(y));
+    line.setAttribute("y2", String(y));
+    line.setAttribute("class", "form-trend-gridline");
+    svg.appendChild(line);
+    const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    label.setAttribute("x", String(padding.left - 8));
+    label.setAttribute("y", String(y + 4));
+    label.setAttribute("text-anchor", "end");
+    label.setAttribute("class", "form-trend-axis-label");
+    label.textContent = String(Math.round((maxValue / 4) * index));
+    svg.appendChild(label);
+  }
+  const series = [
+    ["total", "总数", "form-trend-total"],
+    ["incomplete", "未完成数", "form-trend-incomplete"],
+    ["overdue", "逾期数", "form-trend-overdue"],
+  ];
+  const coordinate = (index, value) => ({
+    x: padding.left + (safePoints.length <= 1 ? width / 2 : (index / (safePoints.length - 1)) * width),
+    y: padding.top + height - ((Number(value) || 0) / maxValue) * height,
+  });
+  series.forEach(([key, labelText, className]) => {
+    const coords = safePoints.map((point, index) => ({ ...coordinate(index, point[key]), day: point.day, value: Number(point[key]) || 0 }));
+    const polyline = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+    polyline.setAttribute("points", coords.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" "));
+    polyline.setAttribute("class", `form-trend-line ${className}`);
+    svg.appendChild(polyline);
+    coords.forEach((point) => {
+      const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      circle.setAttribute("cx", String(point.x.toFixed(1)));
+      circle.setAttribute("cy", String(point.y.toFixed(1)));
+      circle.setAttribute("r", "5");
+      circle.setAttribute("class", `form-trend-point ${className}`);
+      circle.setAttribute("tabindex", "0");
+      circle.setAttribute("role", "button");
+      circle.setAttribute("aria-label", `${point.day} ${labelText} ${point.value}`);
+      const activate = () => {
+        appendFormFilter(state, "dateStart", point.day);
+        appendFormFilter(state, "dateEnd", point.day);
+        if (typeof onReload === "function") onReload();
+      };
+      circle.addEventListener("click", activate);
+      circle.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          activate();
+        }
+      });
+      svg.appendChild(circle);
+    });
+  });
+  safePoints.forEach((point, index) => {
+    const position = coordinate(index, 0);
+    const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    label.setAttribute("x", String(position.x));
+    label.setAttribute("y", String(padding.top + height + 24));
+    label.setAttribute("text-anchor", "middle");
+    label.setAttribute("class", "form-trend-axis-label");
+    label.textContent = String(point.day || point.snapshotAt || "").slice(5, 10);
+    svg.appendChild(label);
+  });
+  wrap.appendChild(svg);
+  const legend = overviewEl("div", "form-chart-legend");
+  [["form-trend-total", "总数"], ["form-trend-incomplete", "未完成数"], ["form-trend-overdue", "逾期数"]].forEach(([className, label]) => {
+    legend.appendChild(overviewEl("span", `form-chart-legend-item ${className}`, label));
+  });
+  wrap.appendChild(legend);
+  if (!safePoints.length) wrap.appendChild(overviewEl("p", "form-chart-empty", "暂无按天快照趋势"));
+  return wrap;
+}
+
+function formCostText(value, unit) {
+  if (value === null || value === undefined || value === "" || !Number.isFinite(Number(value))) return "—";
+  return `${Number(value).toLocaleString("zh-CN", { maximumFractionDigits: 2 })} ${unit}`;
+}
+
+function formCostValueClass(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric === 0) return "";
+  return numeric > 0 ? "form-cost-change-increase" : "form-cost-change-decrease";
+}
+
+function renderFormCostChart(entries, filterKey, state, onReload) {
+  const section = overviewEl("section", "form-chart-panel-content");
+  section.append(
+    overviewEl("h5", "form-chart-title", filterKey === "department" ? "部门成本变化" : "科室 / 区域成本变化"),
+    overviewEl("p", "form-chart-description", "按总和展示测算、批准、实际三组一次性投资成本与整车成本变化；正数红色，负数绿色。"),
+  );
+  const legend = overviewEl("div", "form-cost-legend", "一次性投资成本：万元 · 整车成本变化：元");
+  section.appendChild(legend);
+  const box = overviewEl("div", "form-cost-chart");
+  const safeEntries = Array.isArray(entries) ? entries : [];
+  safeEntries.forEach((entry) => {
+    const row = overviewEl("div", "form-cost-row");
+    row.setAttribute("role", "button");
+    row.setAttribute("tabindex", "0");
+    const label = String(entry && entry.label || "部门总计");
+    row.appendChild(overviewEl("strong", "form-cost-label", safeDisplayValue(label)));
+    const groups = overviewEl("div", "form-cost-groups");
+    const investment = entry && entry.investment && typeof entry.investment === "object" ? entry.investment : {};
+    const vehicleChange = entry && entry.vehicleChange && typeof entry.vehicleChange === "object" ? entry.vehicleChange : {};
+    [["一次性投资成本", investment, "万元"], ["整车成本变化", vehicleChange, "元"]].forEach(([groupLabel, values, unit]) => {
+      const group = overviewEl("div", "form-cost-group");
+      group.appendChild(overviewEl("span", "form-cost-group-label", groupLabel));
+      ["estimate", "approved", "actual"].forEach((name) => {
+        const value = values[name];
+        const valueNode = overviewEl("span", `form-cost-value ${groupLabel === "整车成本变化" ? formCostValueClass(value) : ""}`, `${name === "estimate" ? "测算" : name === "approved" ? "批准" : "实际"}：${formCostText(value, unit)}`);
+        group.appendChild(valueNode);
+      });
+      groups.appendChild(group);
+    });
+    row.appendChild(groups);
+    const activate = () => {
+      appendFormFilter(state, filterKey, label === "部门总计" ? "" : label);
+      if (typeof onReload === "function" && label !== "部门总计") onReload();
+    };
+    row.addEventListener("click", activate);
+    row.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        activate();
+      }
+    });
+    box.appendChild(row);
+  });
+  if (!safeEntries.length) box.appendChild(overviewEl("p", "form-chart-empty", "暂无成本快照数据"));
+  section.appendChild(box);
+  return section;
+}
+
+function renderFormChartTabs(data, state, onReload) {
+  const formKey = String(data && data.formKey || "");
+  const tabs = DELIVERABLE_FORM_TABS[formKey] || [];
+  if (!tabs.some(([key]) => key === state.activeTab)) state.activeTab = tabs[0] ? tabs[0][0] : "";
+  const root = overviewEl("section", "form-chart-tabs");
+  root.setAttribute("aria-label", "表单分析图表页签");
+  const tabList = overviewEl("div", "form-chart-tab-list");
+  tabList.setAttribute("role", "tablist");
+  tabs.forEach(([key, label]) => {
+    const button = overviewEl("button", "form-chart-tab", label);
+    button.type = "button";
+    button.setAttribute("role", "tab");
+    button.setAttribute("aria-selected", key === state.activeTab ? "true" : "false");
+    button.classList.toggle("is-active", key === state.activeTab);
+    button.addEventListener("click", () => {
+      if (state.activeTab === key) return;
+      state.activeTab = key;
+      if (typeof onReload === "function") onReload();
+    });
+    tabList.appendChild(button);
+  });
+  root.appendChild(tabList);
+  const chartPanel = overviewEl("section", "form-chart-panel");
+  chartPanel.setAttribute("role", "tabpanel");
+  chartPanel.setAttribute("aria-label", tabs.find(([key]) => key === state.activeTab)?.[1] || "表单图表");
+  const filter = renderFormFilterBar(data, state, onReload);
+  chartPanel.appendChild(filter);
+  const charts = data && data.charts && typeof data.charts === "object" ? data.charts : {};
+  if (state.activeTab === "departmentStatus") {
+    const department = charts.departmentStatus && Array.isArray(charts.departmentStatus.stages)
+      ? charts.departmentStatus.stages
+      : [];
+    chartPanel.appendChild(renderFormStatusBars(department, "stage", state, onReload, "部门总状态", "各阶段 / 审批节点按期推进数与逾期风险数"));
+  } else if (state.activeTab === "sectionStatus") {
+    chartPanel.appendChild(renderFormStatusBars(charts.sectionStatus, "section", state, onReload, formKey === "aras_ncr_progress" ? "区域状态" : "科室状态", "点击一个科室或区域可追加筛选"));
+  } else if (state.activeTab === "quantityTrend") {
+    const content = overviewEl("section", "form-chart-panel-content");
+    content.append(
+      overviewEl("h5", "form-chart-title", "数量趋势"),
+      overviewEl("p", "form-chart-description", "按自然日展示最近 30 天；同一天以当天最后一次后台快照为准。点击折线节点可筛选该日数据。"),
+      renderFormTrendSvgChart(charts.quantityTrend || data.trend || [], state, onReload),
+    );
+    chartPanel.appendChild(content);
+  } else if (state.activeTab === "departmentCost") {
+    chartPanel.appendChild(renderFormCostChart(charts.departmentCost, "department", state, onReload));
+  } else if (state.activeTab === "sectionCost") {
+    chartPanel.appendChild(renderFormCostChart(charts.sectionCost, "section", state, onReload));
+  }
+  root.appendChild(chartPanel);
+  return root;
+}
+
+function renderFormRowsTable(data, rowsData, state, onReload) {
+  const section = overviewEl("section", "form-row-table-section");
+  const head = overviewEl("div", "form-row-table-head");
+  const total = Number(rowsData && rowsData.total) || 0;
+  head.append(
+    overviewEl("h5", "form-chart-title", "表单明细"),
+    overviewEl("span", "form-row-count", `${total} 条匹配记录`),
+  );
+  section.appendChild(head);
+  const wrap = overviewEl("div", "form-row-table-wrap");
+  const table = document.createElement("table");
+  table.className = "form-row-table";
+  const columns = data && data.schema && Array.isArray(data.schema.columns) ? data.schema.columns : [];
+  const defaultVisibleCount = data && data.schema ? Number(data.schema.defaultVisibleCount) || 12 : 12;
+  const visibleCount = Math.min(columns.length, Math.max(8, defaultVisibleCount));
+  const visibleColumns = columns.slice(0, visibleCount);
+  const thead = document.createElement("thead");
+  const header = document.createElement("tr");
+  ["工作表", "行号", ...visibleColumns.map((column, index) => column && column.label ? String(column.label) : `列 ${index + 1}`)].forEach((label) => header.appendChild(overviewEl("th", null, label)));
+  thead.appendChild(header);
+  table.appendChild(thead);
+  const tbody = document.createElement("tbody");
+  const items = rowsData && Array.isArray(rowsData.items) ? rowsData.items : [];
+  items.forEach((item) => {
+    const row = document.createElement("tr");
+    const values = Array.isArray(item && item.values) ? item.values : [];
+    [item && item.sheetName, item && item.rowNumber, ...visibleColumns.map((column) => values[Number(column && column.index) || 0])].forEach((value) => row.appendChild(overviewEl("td", null, safeDisplayValue(value))));
+    const detailCell = document.createElement("td");
+    detailCell.colSpan = 2 + visibleColumns.length;
+    const detail = document.createElement("details");
+    detail.className = "form-row-full-detail";
+    const summary = document.createElement("summary");
+    summary.textContent = "查看全部字段";
+    detail.appendChild(summary);
+    const grid = document.createElement("dl");
+    grid.className = "form-row-field-grid";
+    columns.forEach((column, index) => {
+      const dt = overviewEl("dt", null, column && column.label ? String(column.label) : `列 ${index + 1}`);
+      const dd = overviewEl("dd", null, safeDisplayValue(values[Number(column && column.index) || index]));
+      grid.append(dt, dd);
+    });
+    detail.appendChild(grid);
+    detailCell.appendChild(detail);
+    const detailRow = document.createElement("tr");
+    detailRow.className = "form-row-detail-row";
+    detailRow.appendChild(detailCell);
+    tbody.append(row, detailRow);
+  });
+  if (!items.length) {
+    const row = document.createElement("tr");
+    const cell = overviewEl("td", "form-chart-empty", total ? "当前筛选没有可见记录" : "暂无表单快照数据");
+    cell.colSpan = 2 + visibleColumns.length;
+    row.appendChild(cell);
+    tbody.appendChild(row);
+  }
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+  section.appendChild(wrap);
+
+  const pager = overviewEl("div", "form-row-pager");
+  const offset = Number(rowsData && rowsData.offset) || 0;
+  const limit = Math.max(1, Number(rowsData && rowsData.limit) || 50);
+  const pageLabel = `第 ${Math.floor(offset / limit) + 1} / ${Math.max(1, Math.ceil(total / limit))} 页`;
+  const previous = overviewEl("button", "btn is-secondary", "上一页");
+  previous.type = "button";
+  previous.disabled = offset <= 0;
+  const next = overviewEl("button", "btn is-secondary", "下一页");
+  next.type = "button";
+  next.disabled = offset + limit >= total;
+  previous.addEventListener("click", () => {
+    state.pageByTab[state.activeTab] = Math.max(0, offset - limit);
+    if (typeof onReload === "function") onReload();
+  });
+  next.addEventListener("click", () => {
+    state.pageByTab[state.activeTab] = offset + limit;
+    if (typeof onReload === "function") onReload();
+  });
+  pager.append(previous, overviewEl("span", "form-row-page-label", pageLabel), next);
+  section.appendChild(pager);
+  return section;
+}
+
+function renderFormSnapshotActions(item, data, options = {}) {
+  const actions = overviewEl("div", "form-snapshot-actions");
+  const refresh = overviewEl("button", "btn is-secondary", "刷新表单数据");
+  refresh.type = "button";
+  refresh.addEventListener("click", () => {
+    if (typeof options.onReload === "function") options.onReload();
+  });
+  actions.appendChild(refresh);
+  const sync = data && data.sync && typeof data.sync === "object" ? data.sync : {};
+  const stateText = String(sync.state || "idle");
+  actions.appendChild(overviewEl("span", `form-snapshot-sync-state is-${stateText}`, `后台任务：${archiveSyncStateLabel(stateText)}`));
+  if (item && item.isExternalArchive && item.externalJobKey) {
+    const background = overviewEl("button", "btn is-primary", "运行后台归档同步");
+    background.type = "button";
+    background.disabled = sync.enabled !== true;
+    background.title = sync.enabled === true ? "启动一次后台归档同步" : "该后台任务未启用，请到任务配置中启用";
+    background.addEventListener("click", () => {
+      if (typeof options.onBackgroundSync === "function") options.onBackgroundSync(background);
+    });
+    actions.appendChild(background);
+  }
+  return actions;
+}
+
+function renderDeliverableFormAnalysis(container, item, data, rowsData, options = {}) {
+  clearOverviewContainer(container);
+  const formKey = deliverableFormKey(item);
+  const state = options.state || createDeliverableFormState(formKey);
+  const snapshot = data && data.snapshot && typeof data.snapshot === "object" ? data.snapshot : null;
+  const title = overviewEl("div", "form-analysis-head");
+  const titleGroup = overviewEl("div");
+  titleGroup.appendChild(overviewEl("p", "eyebrow", "统一表单分析"));
+  title.append(
+    titleGroup,
+    overviewEl("h5", "form-analysis-title", `${safeDisplayValue(item && item.name)} 表单明细与分析`),
+    overviewEl("span", "form-analysis-snapshot", snapshot ? `后台快照：${archiveFormatDate(snapshot.snapshotAt)}` : "暂无后台快照"),
+  );
+  container.appendChild(title);
+  container.appendChild(renderFormSnapshotActions(item, data, options));
+
+  const summary = data && data.summary && typeof data.summary === "object" ? data.summary : {};
+  const metrics = overviewEl("div", "form-summary-grid");
+  [["总数", summary.total], ["已完成", summary.completed], ["未完成", summary.incomplete], ["逾期", summary.overdue]].forEach(([label, value]) => {
+    const card = overviewEl("div", "form-summary-card");
+    const valueClass = label === "总数"
+      ? "form-summary-value form-status-total"
+      : label === "未完成"
+        ? "form-summary-value form-status-incomplete"
+        : label === "逾期"
+          ? "form-summary-value form-status-overdue"
+          : "form-summary-value form-status-on-time";
+    card.append(overviewEl("span", "form-summary-label", label), overviewEl("strong", valueClass, String(Number(value) || 0)));
+    metrics.appendChild(card);
+  });
+  container.appendChild(metrics);
+
+  if (formKey === "aras_ncr_detail") {
+    container.appendChild(overviewEl("p", "form-analysis-note", "NCR 明细不计算逾期；整车 / 发动机工作表来源保留在明细行中。"));
+  } else {
+    container.appendChild(overviewEl("p", "form-analysis-note", "按期推进 / 正常为绿色，逾期风险为橙黄色；交互式查询不会覆盖后台快照。"));
+  }
+  container.appendChild(renderFormChartTabs(data, state, options.onReload));
+  container.appendChild(renderFormRowsTable(data, rowsData, state, options.onReload));
+}
+
 function buildPaaInteractiveFilters(filters = {}) {
   const source = filters && typeof filters === "object" && !Array.isArray(filters)
     ? filters
@@ -4262,7 +4970,13 @@ function renderDeliverableDetailPage(deliverableId) {
 
   // Lead with the current-status visualization and configuration details;
   // external cross-department analysis follows when a snapshot is available.
-  const analysisPanel = overviewEl("section", "deliverable-analysis-panel");
+  const formState = item.id === "VPI-T2-D3"
+    ? createDeliverableFormState("VPI-T2-D3")
+    : null;
+  const analysisPanel = overviewEl(
+    "section",
+    formState ? "deliverable-form-analysis" : "deliverable-analysis-panel",
+  );
   analysisPanel.setAttribute("aria-label", `${item.name} 各科室完成情况与明细`);
 
   const metaSection = overviewEl("section", "deliverable-page-meta-section overview-band");
@@ -4283,13 +4997,15 @@ function renderDeliverableDetailPage(deliverableId) {
       statusChart,
       analysisOptions,
     ),
-    onRefresh: () => refreshDeliverableAnalysisFromAnalysis(
-      item,
-      analysisSyncReadiness,
-      analysisPanel,
-      statusChart,
-      analysisOptions,
-    ),
+    onRefresh: () => formState
+      ? loadDeliverableFormView(analysisPanel, item, { state: formState, statusChart })
+      : refreshDeliverableAnalysisFromAnalysis(
+        item,
+        analysisSyncReadiness,
+        analysisPanel,
+        statusChart,
+        analysisOptions,
+      ),
   };
   statusChart = renderDeliverableStatusChart(item, {
     onInteractiveRefresh: () => {
@@ -4300,7 +5016,9 @@ function renderDeliverableDetailPage(deliverableId) {
         () => ewoInteractivePolicy,
       );
     },
-    onRefresh: () => refreshEwoAnalysisFromStatusChart(item, statusChart, analysisPanel, analysisOptions),
+    onRefresh: () => formState
+      ? refreshEwoFormFromStatusChart(item, statusChart, analysisPanel, formState)
+      : refreshEwoAnalysisFromStatusChart(item, statusChart, analysisPanel, analysisOptions),
   });
   metaSection.appendChild(statusChart.el);
   metaSection.appendChild(interactiveQueryHost);
@@ -4337,7 +5055,11 @@ function renderDeliverableDetailPage(deliverableId) {
   metaSection.appendChild(association);
   page.appendChild(metaSection);
   page.appendChild(analysisPanel);
-  loadDeliverableAnalysis(analysisPanel, item, statusChart, analysisOptions);
+  if (formState) {
+    loadDeliverableFormView(analysisPanel, item, { state: formState, statusChart });
+  } else {
+    loadDeliverableAnalysis(analysisPanel, item, statusChart, analysisOptions);
+  }
 
   const policyPanel = overviewEl("section", "deliverable-policy-panel");
   policyPanel.setAttribute("aria-label", `${item.name} 更新方式`);
@@ -4400,6 +5122,16 @@ function renderArchiveDeliverableDetailPage(jobKey) {
   const [name, source] = labels[job.jobKey] || [job.jobKey, "外部同步"];
   const page = overviewEl("article", "deliverable-detail-page");
   page.dataset.externalJobKey = job.jobKey;
+  const formState = createDeliverableFormState(
+    DELIVERABLE_FORM_KEY_BY_ITEM[job.jobKey] || "",
+  );
+  const formPanel = overviewEl("section", "deliverable-form-analysis");
+  formPanel.setAttribute("aria-label", `${name} 表单明细与分析`);
+  const formItem = {
+    name,
+    externalJobKey: job.jobKey,
+    isExternalArchive: true,
+  };
   const head = overviewEl("div", "deliverable-detail-page-head");
   const nav = overviewEl("div", "deliverable-detail-page-nav");
   const backBtn = overviewEl("button", "segment back-to-list-btn", "← 返回交付物列表");
@@ -4438,7 +5170,7 @@ function renderArchiveDeliverableDetailPage(jobKey) {
     : overviewEl("button", "btn is-secondary", "后台归档同步");
   if (syncButton) {
     syncButton.type = "button";
-    syncButton.disabled = !job.enabled || !(job.credentialAvailable ?? job.credentialConfigured);
+    syncButton.disabled = !job.enabled;
   }
   statusActions.append(refreshButton);
   if (interactiveButton) statusActions.appendChild(interactiveButton);
@@ -4469,12 +5201,13 @@ function renderArchiveDeliverableDetailPage(jobKey) {
   });
   statusSection.appendChild(metrics);
   const historyPanel = overviewEl("section", "external-detail-history");
-  historyPanel.appendChild(overviewEl("h5", "section-sub-title", "同步历史与数据量"));
+  historyPanel.appendChild(overviewEl("h5", "section-sub-title", "同步运行记录"));
   const historyBody = overviewEl("div", "external-detail-history-body");
   historyBody.appendChild(overviewEl("p", "loading", "正在加载同步历史..."));
   historyPanel.appendChild(historyBody);
   statusSection.appendChild(historyPanel);
   page.appendChild(statusSection);
+  page.appendChild(formPanel);
 
   const renderHistory = async () => {
     clearOverviewContainer(historyBody);
@@ -4490,17 +5223,6 @@ function renderArchiveDeliverableDetailPage(jobKey) {
         historyBody.appendChild(overviewEl("p", "is-empty", "暂无同步历史，执行首次同步后将显示趋势"));
         return;
       }
-      const maxRecords = Math.max(...runs.map((run) => Number(run.recordCount) || 0), 1);
-      const chart = overviewEl("div", "external-run-chart");
-      runs.slice().reverse().forEach((run) => {
-        const column = overviewEl("div", "external-run-column");
-        const bar = overviewEl("div", `external-run-bar is-${run.runState === "success" ? "success" : "error"}`);
-        bar.style.height = `${Math.max(8, Math.round(((Number(run.recordCount) || 0) / maxRecords) * 100))}%`;
-        bar.title = `${safeDisplayValue(run.finishedAt || run.startedAt)} · ${Number(run.recordCount) || 0} 条`;
-        column.append(bar, overviewEl("small", null, run.runState === "success" ? "成功" : "失败"));
-        chart.appendChild(column);
-      });
-      historyBody.appendChild(chart);
       const table = document.createElement("table");
       table.className = "external-run-table";
       const thead = document.createElement("thead");
@@ -4568,6 +5290,15 @@ function renderArchiveDeliverableDetailPage(jobKey) {
   meta.appendChild(action);
   page.appendChild(meta);
   container.appendChild(page);
+  loadDeliverableFormView(formPanel, formItem, {
+    state: formState,
+    onBackgroundSync: (button) => runDeliverableFormArchiveSync(
+      job,
+      button,
+      statusMessage,
+      () => loadDeliverableFormView(formPanel, formItem, { state: formState }),
+    ),
+  });
 }
 
 function toggleDeliverableDetail(row, data, index, statusInfo = null) {
@@ -4593,8 +5324,34 @@ async function runArchiveDetailBackgroundSync(job, syncButton, statusMessage, re
   } catch (error) {
     statusMessage.textContent = `同步失败：${redactSensitiveText(error instanceof Error ? error.message : String(error))}`;
   } finally {
-    syncButton.disabled = !job.enabled || !(job.credentialAvailable ?? job.credentialConfigured);
+    syncButton.disabled = !job.enabled;
     syncButton.textContent = "后台归档同步";
+  }
+}
+
+async function runDeliverableFormArchiveSync(job, button, statusMessage, reload) {
+  if (!job || !button) return;
+  button.disabled = true;
+  button.textContent = "后台同步中...";
+  statusMessage.textContent = "正在执行后台归档同步...";
+  try {
+    const response = await fetch(`/api/scheduled-archive/jobs/${encodeURIComponent(job.jobKey)}/sync-now`, {
+      method: "POST",
+      headers: { Accept: "application/json" },
+    });
+    const body = await response.json();
+    if (!response.ok || !body || body.ok !== true) {
+      const message = body && body.error && body.error.message ? body.error.message : "后台同步未完成";
+      throw new Error(redactSensitiveText(message));
+    }
+    statusMessage.textContent = "后台同步完成，正在刷新表单快照...";
+    await loadArchiveJobs(true);
+    if (typeof reload === "function") await reload();
+  } catch (error) {
+    statusMessage.textContent = `同步失败：${redactSensitiveText(error instanceof Error ? error.message : String(error))}`;
+  } finally {
+    button.disabled = job.enabled !== true;
+    button.textContent = "运行后台归档同步";
   }
 }
 

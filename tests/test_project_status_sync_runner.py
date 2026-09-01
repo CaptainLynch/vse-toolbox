@@ -476,6 +476,48 @@ def test_successful_sync_publishes_analysis_cache(
     assert {item["department"] for item in items} == {"质量科", "项目管理科"}
 
 
+def test_successful_ewo_sync_also_publishes_unified_form_snapshot(
+    db: DatabaseManager,
+    service: ProjectStatusUpdateService,
+    registry: ConnectorRegistry,
+) -> None:
+    _enable_second_deliverable(db)
+    base = _snapshot_for(db, "VPI-T2-D3", "FM-3", "ewo-v-001", owner="负责人")
+    snapshot = ConnectorSnapshot(
+        match_state=base.match_state,
+        candidates=base.candidates,
+        external_version=base.external_version,
+        fetched_at=base.fetched_at,
+        expected_deliverable_updated_at=base.expected_deliverable_updated_at,
+        artifacts=({
+            "artifact_type": "normalized_json",
+            "relative_path": "aras/ewo/ewo.json",
+            "display_name": "ewo.json",
+        },),
+        analysis_rows=(
+            {
+                "_no": "FM-3",
+                "_rsp_department": "车身开发部",
+                "_rsp_smt": "车体工程",
+                "_modelinfo": "F610S",
+                "state": "PROC",
+                "_submit_time": "2026-08-20",
+            },
+        ),
+    )
+    registry.register("aras", FakeConnector(snapshot=snapshot))
+
+    result = ProjectStatusSyncRunner(db, service, registry).run_once(
+        deliverable_id="VPI-T2-D3",
+    )
+
+    assert result.exit_code == EXIT_OK
+    form_snapshot = db.get_latest_deliverable_form_snapshot("VPI-T2-D3")
+    assert form_snapshot is not None
+    assert form_snapshot["source_run_id"] == result.results[0].run_id
+    assert db.list_deliverable_form_rows("VPI-T2-D3")["total"] == 1
+
+
 # ── 5. fake connector 返回 not_found/ambiguous ──────────────────
 
 
@@ -1016,6 +1058,41 @@ def test_scheduled_run_can_reach_connector_without_runtime_readiness(
     assert len(connector.collect_calls) == 1
     assert len(result.results) == 1
     assert result.results[0].run_id is not None
+
+
+def test_scheduled_run_defers_all_runtime_prerequisites_until_after_lease(
+    runner: ProjectStatusSyncRunner,
+    db: DatabaseManager,
+    service: ProjectStatusUpdateService,
+    registry: ConnectorRegistry,
+) -> None:
+    """缺少凭据、稳定键、匹配规则和映射时仍先创建 run 并调用 connector。"""
+    _enable_pilot(service)
+    with db.get_connection() as conn:
+        conn.execute(
+            """
+            UPDATE project_status_update_bindings
+            SET credential_ref = NULL, external_key = NULL,
+                match_rule_json = '{}', mapping_json = '{}'
+            WHERE deliverable_id = 'VPI-T2-D5'
+            """
+        )
+        conn.commit()
+
+    connector = FakeConnector(snapshot=_matched_snapshot(db, owner="runtime-check"))
+    registry.register("tdc", connector)
+
+    result = runner.run_once(
+        deliverable_id="VPI-T2-D5",
+        validate_runtime_prerequisites=False,
+    )
+
+    assert len(connector.collect_calls) == 1
+    assert result.results[0].run_id is not None
+    assert result.results[0].error_type == "binding_not_ready"
+    run = db.get_sync_run(result.results[0].run_id)
+    assert run is not None
+    assert run["run_state"] == "failed"
 
 
 def test_dry_run_binding_not_ready_returns_attention(

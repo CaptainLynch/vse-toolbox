@@ -40,7 +40,7 @@ _SHEET_NAMES_BY_FORM_KEY = {
 }
 _STAGES_BY_REPORT = {
     "ewo": ("DRAFT1", "DRAFT2", "EDIT1", "EDIT2", "PROC", "IMPL", "CLOSE"),
-    "paa": ("DRAFT1", "DRAFT2", "EDIT", "APPRL1", "APPRL2", "IMPL", "CLOSE"),
+    "paa": ("DRAFT1", "DRAFT2", "EDIT", "PROC", "IMPL", "CLOSE"),
     "ncr_progress": (
         "PE提交",
         "NCR管理员",
@@ -65,6 +65,14 @@ _NCR_COST_LABELS = {
         "approved": "批准单件成本变化（元）",
         "actual": "实际单件成本变化（元）",
     },
+}
+_NCR_PROGRESS_STAGE_DATE_LABELS = {
+    "PE提交": ("PE填写", "PE提交"),
+    "NCR管理员": ("NCR管理员",),
+    "PE科室经理": ("PE科室经理",),
+    "价值工程师": ("价值工程师",),
+    "财务工程师": ("财务工程师",),
+    "部门总监": ("财务部总监", "PE部门总监", "部门总监"),
 }
 
 
@@ -206,11 +214,17 @@ def _normalize_stage(value: object) -> str:
     aliases = {
         "CLOZ": "CLOSE",
         "CLOSE": "CLOSE",
+        "关闭": "CLOSE",
+        "已关闭": "CLOSE",
+        "已完成": "CLOSE",
+        "审批完成": "CLOSE",
         "DRAFT1": "DRAFT1",
         "DRAFT2": "DRAFT2",
         "EDIT": "EDIT",
         "EDIT1": "EDIT1",
         "EDIT2": "EDIT2",
+        "APPRL1": "PROC",
+        "APPRL2": "PROC",
         "PROC": "PROC",
         "IMPL": "IMPL",
         "PE提交": "PE提交",
@@ -221,7 +235,12 @@ def _normalize_stage(value: object) -> str:
         "部门总监": "部门总监",
         "财务部总监": "部门总监",
     }
-    return aliases.get(text, str(value or "").strip())
+    if text in aliases:
+        return aliases[text]
+    for alias, normalized in sorted(aliases.items(), key=lambda item: len(item[0]), reverse=True):
+        if alias and text.startswith(alias):
+            return normalized
+    return str(value or "").strip()
 
 
 def _add_months(value: date, months: int) -> date:
@@ -296,7 +315,10 @@ def form_definition(form_key: str) -> dict[str, Any]:
     report = _report_type(form_key)
     contract = report_contracts()[report]
     table = table_payload(report, [])
-    columns = [dict(column) for column in table["columns"]]
+    raw_columns = table["columns"]
+    if not isinstance(raw_columns, Sequence) or isinstance(raw_columns, (str, bytes)):
+        raise ValueError("form table columns are invalid")
+    columns = [dict(column) for column in raw_columns if isinstance(column, Mapping)]
     if report == "ncr_detail":
         # NCR 明细第 5 行是车型矩阵表头；基础字段和成本字段位于第 1 行。
         # 多级表头仍完整返回，列的稳定识别名使用第 1 行字段名。
@@ -441,6 +463,10 @@ def _dimensions_from_ncr(
         40,
     )
     is_completed = _normalize_stage(status) == "CLOSE" or completed == "是"
+    if is_completed:
+        # NCR 的财务部总监审批完成是流程完成标志；完成字段优先于
+        # 当前节点文本，避免“已完成”记录落在未注册的自定义节点上。
+        stage = "CLOSE"
     return (
         {
             "department": "",
@@ -452,10 +478,70 @@ def _dimensions_from_ncr(
         {
             "submittedDate": _date_text(submitted),
             "plannedDate": _date_text(planned),
-            "stageStart": None,
+            "stageStart": _date_text(
+                _positional_value(values, definition, "PE填写")
+            ) if report == "ncr_progress" else None,
             "isCompleted": is_completed,
         },
     )
+
+
+def _workflow_dates_from_values(
+    report: str,
+    stage: str,
+    values: Sequence[object],
+    definition: Mapping[str, Any],
+) -> dict[str, str | None]:
+    """Resolve the current stage arrival and next-stage end dates."""
+    if report == "ncr_detail" or not stage:
+        return {"stageStart": None, "stageEnd": None}
+    if report == "ncr_progress":
+        stage_index = (
+            _STAGES_BY_REPORT[report].index(stage)
+            if stage in _STAGES_BY_REPORT[report]
+            else -1
+        )
+
+        def ncr_arrival(stage_name: str) -> str | None:
+            labels = _NCR_PROGRESS_STAGE_DATE_LABELS.get(stage_name, ())
+            return _date_text(_positional_value_any(values, definition, labels))
+
+        stage_start = ncr_arrival(stage)
+        next_stage = (
+            _STAGES_BY_REPORT[report][stage_index + 1]
+            if 0 <= stage_index < len(_STAGES_BY_REPORT[report]) - 1
+            else ""
+        )
+        return {
+            "stageStart": stage_start,
+            "stageEnd": ncr_arrival(next_stage) if next_stage else None,
+        }
+    stages = _STAGES_BY_REPORT[report]
+    source_stage_names = [stage]
+    if report == "paa" and stage == "PROC":
+        source_stage_names = ["PROC", "APPRL1", "APPRL2"]
+
+    def arrival(names: Sequence[str]) -> str | None:
+        labels = [f"到达{name}的日期" for name in names]
+        if report == "ewo" and names == ["CLOSE"]:
+            labels.append("CLOZ的日期")
+        if report == "paa" and names == ["CLOSE"]:
+            labels.append("CLOZ的日期")
+        return _date_text(_positional_value_any(values, definition, labels))
+
+    try:
+        stage_index = stages.index(stage)
+    except ValueError:
+        stage_index = -1
+    next_names = (
+        [stages[stage_index + 1]]
+        if 0 <= stage_index < len(stages) - 1
+        else []
+    )
+    return {
+        "stageStart": arrival(source_stage_names),
+        "stageEnd": arrival(next_names) if next_names else None,
+    }
 
 
 def _cost_from_values(
@@ -516,7 +602,12 @@ def normalize_form_rows(
         else:
             source = {str(key): value for key, value in raw.items()}
             table = table_payload(report, [source])
-            raw_values = table["rows"][0]
+            raw_rows = table["rows"]
+            if not isinstance(raw_rows, Sequence) or isinstance(raw_rows, (str, bytes)):
+                raise ValueError("form table rows are invalid")
+            raw_values = raw_rows[0] if raw_rows else []
+            if not isinstance(raw_values, Sequence) or isinstance(raw_values, (str, bytes)):
+                raise ValueError("form table row values are invalid")
             values = _safe_values(report, raw_values)
             dimensions, dates = _dimensions_from_mapping(report, source)
             cost = {}
@@ -526,6 +617,15 @@ def normalize_form_rows(
             )
         stage = dimensions["stage"]
         status = dimensions["status"]
+        workflow_dates = _workflow_dates_from_values(
+            report,
+            stage,
+            values,
+            definition,
+        )
+        if workflow_dates["stageStart"] is None:
+            workflow_dates["stageStart"] = _date_text(dates.get("stageStart"))
+        dates.update(workflow_dates)
         is_completed = bool(
             dates.get("isCompleted")
             or stage == "CLOSE"
@@ -596,6 +696,7 @@ def _stage_status_summary(
                 "label": stage,
                 "onTime": sum(_status_bucket(row) == "on_time" for row in selected),
                 "overdue": sum(_status_bucket(row) == "overdue" for row in selected),
+                "unknown": sum(_status_bucket(row) == "unknown" for row in selected),
             }
         )
     return result
@@ -885,12 +986,13 @@ class DeliverableFormAnalysisService:
     ) -> dict[str, Any]:
         key = self._validate_key(form_key)
         normalized = normalize_form_filters(filters)
-        return self.db.list_deliverable_form_rows(
+        result = self.db.list_deliverable_form_rows(
             key,
             normalized,
             offset=offset,
             limit=limit,
         )
+        return dict(result)
 
     def _sync_status(self, form_key: str) -> dict[str, Any]:
         job_key = "aras_ewo" if form_key == "VPI-T2-D3" else form_key
@@ -935,7 +1037,10 @@ class DeliverableFormAnalysisService:
         trend_count = int(trend_limit)
         definition = form_definition(key)
         latest = self.db.get_latest_deliverable_form_snapshot(key)
-        snapshots = self.db.list_deliverable_form_snapshots(key, limit=30)
+        # A job may run more than once per day. Read the full bounded history
+        # so the 30-natural-day aggregation can select the last snapshot per
+        # day instead of the last 30 runs.
+        snapshots = self.db.list_deliverable_form_snapshots(key, limit=365)
         latest_rows: list[dict[str, Any]] = []
         if latest is not None:
             latest_rows = self.db.list_deliverable_form_snapshot_rows(

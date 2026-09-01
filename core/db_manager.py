@@ -174,6 +174,7 @@ _FORM_SNAPSHOT_FORBIDDEN_KEY_PARTS = (
     "session",
     "csrf",
 )
+_FORM_SNAPSHOT_RETENTION = 365
 
 
 def _is_forbidden_form_key(value: object) -> bool:
@@ -311,16 +312,16 @@ def _form_row_filter_sql(
         )
         params.extend((status[:200], status[:200]))
     if "isCompleted" in rule and rule["isCompleted"] not in (None, ""):
-        value = rule["isCompleted"]
-        if isinstance(value, str):
-            value = value.strip().casefold() in {
+        completed_value: object = rule["isCompleted"]
+        if isinstance(completed_value, str):
+            completed_value = completed_value.strip().casefold() in {
                 "1",
                 "true",
                 "yes",
                 "completed",
             }
         where.append(f"{alias}.is_completed = ?")
-        params.append(1 if bool(value) else 0)
+        params.append(1 if bool(completed_value) else 0)
     keyword = str(rule.get("keyword") or "").strip()
     if keyword:
         where.append(f"instr(lower({alias}.search_text), lower(?)) > 0")
@@ -1744,18 +1745,19 @@ class DatabaseManager:
                 _form_json(payload["artifacts"]),
             )
             if existing is None:
-                snapshot_id = int(
-                    conn.execute(
-                        """
-                        INSERT INTO deliverable_form_snapshots (
-                            snapshot_key, form_key, report_type, source_run_id,
-                            source, snapshot_at, row_count, schema_json,
-                            summary_json, charts_json, artifacts_json
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (payload["snapshot_key"], *metadata),
-                    ).lastrowid
+                insert_cursor = conn.execute(
+                    """
+                    INSERT INTO deliverable_form_snapshots (
+                        snapshot_key, form_key, report_type, source_run_id,
+                        source, snapshot_at, row_count, schema_json,
+                        summary_json, charts_json, artifacts_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (payload["snapshot_key"], *metadata),
                 )
+                if insert_cursor.lastrowid is None:
+                    raise RuntimeError("form snapshot insert did not return an id")
+                snapshot_id = int(insert_cursor.lastrowid)
             else:
                 snapshot_id = int(existing["id"])
                 conn.execute(
@@ -1825,7 +1827,6 @@ class DatabaseManager:
                     """,
                     form_rows,
                 )
-            retention = 30
             conn.execute(
                 """
                 DELETE FROM deliverable_form_snapshots
@@ -1835,7 +1836,11 @@ class DatabaseManager:
                     ORDER BY snapshot_at DESC, id DESC LIMIT ?
                 )
                 """,
-                (payload["form_key"], payload["form_key"], retention),
+                (
+                    payload["form_key"],
+                    payload["form_key"],
+                    _FORM_SNAPSHOT_RETENTION,
+                ),
             )
             return snapshot_id
 

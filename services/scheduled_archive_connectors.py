@@ -348,6 +348,7 @@ def _official_form_rows(
         for raw_row in rows[data_start:]:
             if not raw_row or not any(value not in (None, "") for value in raw_row):
                 continue
+            values: list[object | None]
             if report_type == "ncr_detail" and actual != expected:
                 values = [None] * len(expected)
                 for source_index, label in enumerate(actual):
@@ -577,6 +578,10 @@ class ArasArchiveConnector:
                     export.file_name,
                     Path(temp_dir),
                 )
+            # Validate and normalize while the download is still alive.  This
+            # also prevents an invalid workbook from leaving an unreferenced
+            # official artifact in the archive root.
+            form_rows = _official_form_rows(downloaded, context.report_type)
             with downloaded.open("rb") as stream:
                 official = archive.write_stream(
                     stream,
@@ -588,7 +593,6 @@ class ArasArchiveConnector:
                     artifact_type="official_xlsx",
                     expected_size=downloaded.stat().st_size,
                 )
-        form_rows = _official_form_rows(downloaded, context.report_type)
         form_record_count = len(form_rows) if form_rows is not None else None
         manifest = archive.write_json(
             {

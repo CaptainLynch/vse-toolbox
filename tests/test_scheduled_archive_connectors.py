@@ -674,6 +674,38 @@ def test_aras_ncr_progress_detail_success(
     }
 
 
+def test_aras_ncr_form_projection_runs_before_download_directory_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connector, _, _ = make_harness(tmp_path, ArasArchiveConnector)
+    seen_paths: list[bool] = []
+
+    def parse_live_workbook(path: Path, report_type: str) -> tuple[dict[str, object], ...]:
+        seen_paths.append(path.is_file())
+        assert report_type == "ncr_progress"
+        return ({"values": ["NCR-SYNTH-1"], "sheetName": "Sheet1"},)
+
+    monkeypatch.setattr(
+        "services.scheduled_archive_connectors._official_form_rows",
+        parse_live_workbook,
+    )
+    collection = connector.collect(
+        make_context(
+            "aras_ncr_progress",
+            source_type="aras",
+            report_type="ncr_progress",
+            output_subdir="ncr_projection",
+            run_id=78,
+        ),
+        random_credential()[0],
+    )
+
+    assert seen_paths == [True]
+    assert collection.record_count == 1
+    assert collection.form_rows == ({"values": ["NCR-SYNTH-1"], "sheetName": "Sheet1"},)
+
+
 @pytest.mark.parametrize(
     "connector_cls,job_key,invalid_filters",
     [

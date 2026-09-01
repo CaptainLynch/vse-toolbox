@@ -198,6 +198,55 @@ def test_ncr_progress_uses_current_node_header_for_stage_status() -> None:
     assert rows[0]["dimensions"]["stage"] == "NCR管理员"
 
 
+def test_ncr_progress_uses_each_approval_node_arrival_date_for_due_rule() -> None:
+    values = _ncr_values(
+        "aras_ncr_progress",
+        {
+            "状态": "审批中",
+            "项目": "F610S",
+            "区域": "标准架构集成科",
+            "当前节点及通知时间": "PE科室经理",
+            "PE填写": "2026-08-20",
+            "NCR管理员": "2026-08-21",
+            "PE科室经理": "2026-08-30",
+        },
+    )
+
+    rows = normalize_form_rows(
+        "aras_ncr_progress",
+        [{"values": values, "sheet_name": "Sheet1"}],
+        snapshot_at="2026-09-01T10:00:00Z",
+    )
+
+    assert rows[0]["stageStart"] == "2026-08-30"
+    assert rows[0]["stageEnd"] is None
+    assert rows[0]["overdueState"] == "on_time"
+
+
+def test_paa_chart_uses_proc_stage_and_ncr_node_prefix_is_normalized() -> None:
+    paa_stages = form_definition("aras_paa")["chartFields"]
+    assert paa_stages == ["DRAFT1", "DRAFT2", "EDIT", "PROC", "IMPL", "CLOSE"]
+
+    values = _ncr_values(
+        "aras_ncr_progress",
+        {
+            "状态": "审批中",
+            "项目": "F610S",
+            "区域": "标准架构集成科",
+            "当前节点及通知时间": "NCR管理员（2026-09-01）",
+            "PE填写": "2026-08-20",
+            "是否审批完成": "否",
+        },
+    )
+    rows = normalize_form_rows(
+        "aras_ncr_progress",
+        [{"values": values, "sheet_name": "Sheet1"}],
+        snapshot_at="2026-09-01T10:00:00Z",
+    )
+    assert rows[0]["dimensions"]["stage"] == "NCR管理员"
+    assert rows[0]["stageStart"] == "2026-08-20"
+
+
 @pytest.mark.parametrize(
     ("form_key", "row", "snapshot_at", "expected"),
     [
@@ -268,9 +317,48 @@ def test_summary_aggregates_department_and_section_status() -> None:
         "label": "PROC",
         "onTime": 1,
         "overdue": 1,
+        "unknown": 0,
     }
     assert summary["sectionStatus"][0]["label"] == "科室A"
     assert summary["sectionStatus"][0]["total"] == 2
+
+
+def test_stage_status_keeps_unknown_dates_visible_and_completed_ncr_is_close() -> None:
+    stage_summary = summarize_form_rows(
+        "VPI-T2-D3",
+        [
+            {
+                "dimensions": {"department": "部门A", "section": "科室A", "stage": "DRAFT1"},
+                "overdueState": "unknown",
+                "isCompleted": False,
+            },
+        ],
+        snapshot_at="2026-09-01T10:00:00Z",
+    )
+    assert stage_summary["departmentStatus"]["stages"][0] == {
+        "label": "DRAFT1",
+        "onTime": 0,
+        "overdue": 0,
+        "unknown": 1,
+    }
+
+    values = _ncr_values(
+        "aras_ncr_progress",
+        {
+            "状态": "已完成",
+            "项目": "F610S",
+            "区域": "标准架构集成科",
+            "当前节点及通知时间": "财务部总监",
+            "是否审批完成": "是",
+        },
+    )
+    rows = normalize_form_rows(
+        "aras_ncr_progress",
+        [{"values": values, "sheet_name": "Sheet1"}],
+        snapshot_at="2026-09-01T10:00:00Z",
+    )
+    assert rows[0]["dimensions"]["stage"] == "CLOSE"
+    assert rows[0]["isCompleted"] is True
 
 
 def test_daily_trend_keeps_last_snapshot_of_each_day() -> None:

@@ -28,6 +28,7 @@ from core.db_manager import (
 )
 from core.credential_provider import CredentialProviderError
 from core.redaction import redact_sensitive_text
+from services.deliverable_form_analysis import build_form_snapshot
 from services.aras_auth import ArasAuthError
 from services.aras_crawler import ArasAuthenticationError, ArasCrawlerError
 from services.project_status_deliverable_analysis import (
@@ -483,6 +484,23 @@ class ProjectStatusSyncRunner:
                         deliverable_id,
                         _sanitize(str(exc)),
                     )
+                if deliverable_id == "VPI-T2-D3":
+                    try:
+                        form_snapshot = build_form_snapshot(
+                            "VPI-T2-D3",
+                            snapshot.analysis_rows,
+                            snapshot_at=snapshot.fetched_at,
+                            source_run_id=run_id,
+                            source="project_status_sync",
+                            artifacts=snapshot.artifacts,
+                        )
+                        self._db.publish_deliverable_form_snapshot(form_snapshot)
+                    except Exception as exc:
+                        logger.warning(
+                            "EWO form snapshot publish failed for %s: %s",
+                            deliverable_id,
+                            _sanitize(str(exc)),
+                        )
             return self._result_from_sync(
                 binding_id, deliverable_id, source_type, sync_result
             )
