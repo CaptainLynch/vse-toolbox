@@ -5,6 +5,35 @@ delete. Per-plan rulings stay in their SDD ledger (`.superpowers/sdd/…`, local
 and get promoted here once they prove durable. Newest first. Keep entries
 short: decision, why, cost if violated, source pointer.
 
+## 2026-09-02 — 数模设计审核流程 (tdc_data_model) unified detail view contract
+
+`tdc_data_model` (数模设计审核流程, TDC UWF `procuwfpe3ddigitalmodeldesignreview`,
+47-column export) is now the 5th unified deliverable form. Approved口径:
+chart tabs = 项目状态 (stage ← 项目/车型, observed values not fixed list) /
+部门状态 (section ← 部门) / 数量趋势; 发布属性 only a filter (model dimension);
+department dimension unused (empty select is hidden in UI). Overdue = 审批中
+dwell > 7 days from 申请日期 (`_OVERDUE_RULES["tdc_data_model"]`); 已完成 and
+已废弃 are not_applicable. Summary incomplete excludes 已废弃 (but in charts
+已废弃 falls into the blue "unknown" bucket by design). Detail table hides
+columns 12/13 (重量（单件）, 零件合计) everywhere in the view via
+`_TDC_HIDDEN_COLUMN_INDEXES`, default visible 15 ending at EWO/SOR号; raw
+values stay in stored rows. form_key is `tdc_data_model` (job-key aligned,
+auto-links archive cards); project-status deliverable VPI-T2-D5 maps to it in
+`DELIVERABLE_FORM_KEY_BY_ITEM`. Why: matches production test product (808 rows,
+headers identical to the contract) and user-confirmed preview. Cost if
+violated: the detail view diverges from the approved preview and EWO/PAA/NCR
+structure. Source: this session's preview confirmation + implementation.
+
+## 2026-09-02 — SQLite form_key CHECK 白名单扩展必须走表重建迁移
+
+SQLite cannot alter a CHECK constraint; `_migrate_schema` rebuilds
+`deliverable_form_snapshots` when its stored DDL lacks a newly allowed
+form_key (foreign_keys=OFF outside any transaction → rebuild → commit →
+foreign_keys=ON; leftover rebuild tables are dropped on next init). Adding a
+future form key requires: DDL template + detection-based rebuild + the four
+analysis-service maps + runner job→form map + connector form_rows + app.js
+maps. Source: tdc_data_model registration, schema v11→v12.
+
 ## 2026-09-02 — Accept existing lint/type baseline for this migration
 
 Treat the full pytest result (`1629 passed, 2 skipped`) and scoped flake8 over
@@ -100,3 +129,67 @@ access. Source: `docs/EXCEL_TASK_WORKER.md`.
   department as the all-region total, and use `区域` as the section
   dimension. Source: user confirmation on 2026-09-02 and the supplied
   workbook cardinality audit.
+
+## 2026-09-02 — Scheduled EWO/PAA default department uses connector-specific keys
+
+The built-in EWO archive filter stores and sends
+`responsibleDepartment=技术中心_车体工程`; PAA stores and sends
+`department=技术中心_车体工程`. The runner keeps a runtime fallback and the
+schema seed repairs the exact early EWO typo without overwriting other user
+filters. Why: the two ARAS connector contracts use different field names;
+using `department` for EWO causes connector validation failure.
+
+## 2026-09-02 — NCR form status metrics are entity-grain, costs are row-grain
+
+`ncr_progress` and `ncr_detail` summary/status/overdue metrics collapse rows by
+the sanitized `NCR编号`, using a stable representative for each NCR. NCR
+detail cost charts and detail-table pagination continue to use every physical
+detail row. Why: one NCR can have many detail rows; mixing grains inflates
+status counts or loses cost values.
+
+## 2026-09-02 — TDC official exports normalize by approved Chinese headers
+
+TDC official XLSX rows are returned by the connector as header-keyed mappings,
+but the form analysis layer recognizes approved Chinese headers and restores
+the positional 47-column contract before extracting dimensions and dates. Why:
+the API dictionary keys and official workbook labels are different contracts;
+mapping the latter as API keys silently produces empty snapshot rows.
+
+## 2026-09-02 — Legacy form snapshots use read-side compatibility
+
+Existing installations are not rewritten just to add current schema metadata or
+change NCR metric grain. The view service serves the current allowlisted schema
+and re-summarizes legacy NCR history from preserved positional rows when the
+stored schema lacks the entity-grain marker; status completion is normalized in
+the read-side metric projection. Why: this preserves historical rows and keeps
+the migration additive while removing mixed-grain dashboard results.
+
+## 2026-09-02 — Form projection completeness is part of archive run acceptance
+
+An archive run with an unreadable/invalid/truncated official form or a failed
+form snapshot projection cannot finalize as `success`. The connector returns a
+stable projection error code; the runner stores collected artifacts and marks
+the same run `needs_attention`, preserving the last good snapshot. Why: a
+successful source archive without a trustworthy form projection is not an
+auditable successful sync.
+
+## 2026-09-02 — NCR progress export records are identified by Result/_file
+
+The NCR progress parser must not require one server-side `Item type` spelling.
+It accepts only a non-empty `_file` child under an `Item` within the top-level
+`Result` subtree, retaining the outer record ID and `_file` keyed name. It does
+not use `Message` nodes as a fallback. Why: live ARAS returned a valid export
+record with a different type value; the scoped relation is the stable contract
+while arbitrary XML fallback would risk accepting error metadata.
+
+## 2026-09-02 — Production WebUI package uses an explicit slim build profile
+
+The WebUI PyInstaller spec excludes CLI-only integrations and development
+helpers that are not reachable from the WebUI runtime (Selenium, IMAP, Rich,
+xlwings, PythonWin browsers, and Flask test/debug modules). It retains the
+explicit WinHTTP/pywin32 hidden imports required by the packaging contract.
+The size-compliant delivery build uses Python 3.11, PyInstaller 6.22.2, and
+UPX 5.2.1, then creates a standard Deflate ZIP containing only
+`VSE-WebUI.exe`. Why: the default Python 3.14 build remains above the strict
+15,000,000-byte mail limit; dropping Tk or the required COM hidden imports
+would trade away WebUI functionality or violate the existing contract.

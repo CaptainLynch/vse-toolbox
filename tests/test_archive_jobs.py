@@ -4,7 +4,7 @@ tests/test_archive_jobs.py — 归档任务种子与离线关系约束测试
 
 覆盖验收标准:
 1. 断言 schema 版本为 5，且存在四张 scheduled_archive 表结构及对应索引
-2. 断言 6 个固定 job_key，默认 disabled (enabled=0)，interval_minutes=60，max_attempts=2
+2. 断言 6 个固定 job_key，默认 disabled (enabled=0)，interval_minutes=60，max_attempts=2，且 EWO/PAA 默认筛选字段正确
 3. 断言 D2/D3/D5 仅关联 SOR/EWO/data-model，PAA/NCR 关联为空，且不存在 A 面任务
 4. 断言重复调用 init_database() 保留已修改的 enabled / interval 等配置
 5. 断言离线 run / artifact 外键约束（RESTRICT / CASCADE）与 duplicate relative_path 唯一约束校验
@@ -61,6 +61,15 @@ EXPECTED_SEEDS: dict[str, dict[str, str | None]] = {
     },
 }
 
+EXPECTED_DEFAULT_FILTERS: dict[str, dict[str, str]] = {
+    "aras_ewo": {"responsibleDepartment": "技术中心_车体工程"},
+    "aras_paa": {"department": "技术中心_车体工程"},
+    "aras_ncr_progress": {},
+    "aras_ncr_detail": {},
+    "tdc_data_model": {},
+    "tdc_sor": {},
+}
+
 
 @pytest.fixture()
 def db(tmp_path: Path) -> DatabaseManager:
@@ -90,12 +99,12 @@ def _enable_archive_job(
 
 
 def test_archive_schema_version_and_tables(db: DatabaseManager) -> None:
-    """断言归档任务 schema 为 11 且四张 scheduled_archive 表与索引已建立。"""
-    assert CURRENT_SCHEMA_VERSION == 11
+    """断言归档任务 schema 为 12 且四张 scheduled_archive 表与索引已建立。"""
+    assert CURRENT_SCHEMA_VERSION == 12
 
     with db.get_connection() as conn:
         user_version = conn.execute("PRAGMA user_version").fetchone()[0]
-        assert user_version == 11, f"PRAGMA user_version 应为 11，实际为 {user_version}"
+        assert user_version == 12, f"PRAGMA user_version 应为 12，实际为 {user_version}"
 
     expected_tables = {
         "scheduled_archive_jobs",
@@ -209,7 +218,9 @@ def test_fixed_six_archive_jobs_seeded(db: DatabaseManager) -> None:
         assert row["interval_minutes"] == 60, f"种子 {key} interval_minutes 默认值应为 60"
         assert row["sync_state"] == "idle", f"种子 {key} sync_state 初始值应为 idle"
         assert row["output_subdir"] == "", f"种子 {key} output_subdir 默认值应为空字符串"
-        assert row["filters_json"] == "{}", f"种子 {key} filters_json 默认值应为 {{}}"
+        assert json.loads(row["filters_json"]) == EXPECTED_DEFAULT_FILTERS[key], (
+            f"种子 {key} filters_json 默认筛选字段不符合连接器契约"
+        )
 
         policy = json.loads(row["retry_policy_json"])
         assert policy.get("max_attempts") == 2, f"种子 {key} retry_policy max_attempts 应为 2"

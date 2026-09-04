@@ -78,12 +78,12 @@ def _get_raw_audits(db: DatabaseManager, job_key: str | None = None) -> list[dic
 
 
 def test_archive_admin_schema_and_audit_table_exists(db: DatabaseManager) -> None:
-    """断言 schema 版本为 8 且 scheduled_archive_config_audit 表与索引存在。"""
-    assert CURRENT_SCHEMA_VERSION == 11
+    """断言 schema 版本与 scheduled_archive_config_audit 表和索引存在。"""
+    assert CURRENT_SCHEMA_VERSION == 12
 
     with db.get_connection() as conn:
         user_version = conn.execute("PRAGMA user_version").fetchone()[0]
-        assert user_version == 11
+        assert user_version == 12
 
     assert db.table_exists("scheduled_archive_config_audit")
 

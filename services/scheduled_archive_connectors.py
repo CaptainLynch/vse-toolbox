@@ -43,6 +43,12 @@ _MAX_TEXT = 512
 _TDC_MAX_RECORDS = 10000
 _ARAS_EWO_MAX_RECORDS = 2000
 _ARAS_PAA_MAX_RECORDS = 12000
+
+
+class _WorkbookPreviewTruncatedError(ValueError):
+    """Raised when a bounded preview cannot represent the whole workbook."""
+
+
 _ARCHIVE_SENSITIVE_KEY_PARTS = (
     "authorization",
     "cookie",
@@ -269,6 +275,10 @@ def _official_workbook_rows(path: Path, report_type: str) -> tuple[dict[str, obj
         preview = read_xlsx_preview(path, max_rows=_TDC_MAX_RECORDS + 1)
     except XLSXPreviewError:
         return None
+    if preview.truncated:
+        raise _WorkbookPreviewTruncatedError(
+            "official workbook preview truncated"
+        )
     if not preview.rows:
         return ()
     raw_header = preview.rows[0]
@@ -319,11 +329,15 @@ def _official_form_rows(
     result: list[dict[str, object]] = []
     for sheet_index, preview in enumerate(previews):
         rows = preview.rows
+        if report_type == "ncr_progress" and sheet_index > 0:
+            continue
+        if preview.truncated:
+            raise _WorkbookPreviewTruncatedError(
+                "official workbook preview truncated"
+            )
         if len(rows) <= header_index:
             continue
         # NCR 进度的 second sheet is a filter summary, not the report table.
-        if report_type == "ncr_progress" and sheet_index > 0:
-            continue
         actual = [str(value or "").strip() for value in rows[header_index]]
         actual = actual[: len(expected)] + [""] * max(0, len(expected) - len(actual))
         if report_type == "ncr_progress" and actual != expected:
@@ -410,26 +424,59 @@ class TDCArchiveConnector:
                 timeout=self._timeout,
                 output_dir=Path(temp_dir),
             )
+            projection_error: str | None = None
             if context.job_key == "tdc_data_model":
                 data_model_filters = self._data_model_filters(context.filters)
                 official = crawler.export_data_model(data_model_filters)
-                rows = _official_workbook_rows(official.path, "data_model")
+                try:
+                    rows = _official_workbook_rows(official.path, "data_model")
+                except _WorkbookPreviewTruncatedError:
+                    rows = ()
+                    projection_error = "official_workbook_truncated"
+                except ValueError:
+                    rows = ()
+                    projection_error = "official_workbook_contract_invalid"
                 if rows is None:
                     result = crawler.crawl_data_model_all(
                         data_model_filters,
                         max_records=_TDC_MAX_RECORDS,
                     )
                     rows = tuple(dict(row) for row in result.rows)
+                    if (
+                        getattr(result, "stop_reason", "") == "max_records"
+                        or (
+                            isinstance(getattr(result, "total", None), int)
+                            and not isinstance(getattr(result, "total", None), bool)
+                            and int(getattr(result, "total")) > len(rows)
+                        )
+                    ):
+                        projection_error = "api_result_truncated"
             else:
                 sor_filters = self._sor_filters(context.filters)
                 official = crawler.export_sor(sor_filters)
-                rows = _official_workbook_rows(official.path, "sor")
+                try:
+                    rows = _official_workbook_rows(official.path, "sor")
+                except _WorkbookPreviewTruncatedError:
+                    rows = ()
+                    projection_error = "official_workbook_truncated"
+                except ValueError:
+                    rows = ()
+                    projection_error = "official_workbook_contract_invalid"
                 if rows is None:
                     result = crawler.crawl_sor_all(
                         sor_filters,
                         max_records=_TDC_MAX_RECORDS,
                     )
                     rows = tuple(dict(row) for row in result.rows)
+                    if (
+                        getattr(result, "stop_reason", "") == "max_records"
+                        or (
+                            isinstance(getattr(result, "total", None), int)
+                            and not isinstance(getattr(result, "total", None), bool)
+                            and int(getattr(result, "total")) > len(rows)
+                        )
+                    ):
+                        projection_error = "api_result_truncated"
             with official.path.open("rb") as stream:
                 xlsx = archive.write_stream(
                     stream,
@@ -442,7 +489,14 @@ class TDCArchiveConnector:
                     expected_size=official.byte_count,
                 )
         normalized = _normalized_artifacts(archive, context, rows)
-        return ArchiveCollection(len(rows), (xlsx, *normalized))
+        # 数模设计审核流程复用统一交付物表单明细视图，归档行同时作为
+        # 表单快照来源（官方表为位置行，JSON 兜底为字典行）。
+        return ArchiveCollection(
+            len(rows),
+            (xlsx, *normalized),
+            form_rows=None if projection_error else tuple(rows),
+            form_projection_error=projection_error,
+        )
 
     @staticmethod
     def _data_model_filters(value: Mapping[str, object]) -> TDCDataModelFilters:
@@ -581,7 +635,17 @@ class ArasArchiveConnector:
             # Validate and normalize while the download is still alive.  This
             # also prevents an invalid workbook from leaving an unreferenced
             # official artifact in the archive root.
-            form_rows = _official_form_rows(downloaded, context.report_type)
+            form_projection_error: str | None = None
+            try:
+                form_rows = _official_form_rows(downloaded, context.report_type)
+            except _WorkbookPreviewTruncatedError:
+                form_rows = None
+                form_projection_error = "official_workbook_truncated"
+            except ValueError:
+                form_rows = None
+                form_projection_error = "official_workbook_contract_invalid"
+            if form_rows is None and form_projection_error is None:
+                form_projection_error = "official_workbook_unreadable"
             with downloaded.open("rb") as stream:
                 official = archive.write_stream(
                     stream,
@@ -615,6 +679,7 @@ class ArasArchiveConnector:
             form_record_count or 0,
             (official, manifest),
             form_rows=form_rows,
+            form_projection_error=form_projection_error,
         )
 
     @staticmethod

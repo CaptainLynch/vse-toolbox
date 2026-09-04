@@ -1,134 +1,122 @@
 # Current State
 
-Last checkpoint: 2026-09-02 (Codex). Re-verify the repository with
-`git status`, `git diff`, and `git log --oneline -5` before any new work.
+Last checkpoint: 2026-09-02 (Codex production WebUI packaging after NCR
+progress response adaptation and real WebUI verification).
 
 ## Current objective
 
-The EWO/PAA/NCR unified deliverable form analysis and UI work is complete at
-`5194820`. The migration cleanup, persistent memory layer, and post-release
-hardening are committed on branch
-`feature/scheduled-deliverables-overview-excel`:
+Complete and safely hand off the unified deliverable-form analysis work on
+branch `feature/scheduled-deliverables-overview-excel`, preserving the existing
+CLI/WebUI, ARAS/TDC connector boundaries, scheduled archive safety, and additive
+public APIs. A production WebUI ZIP is prepared locally for distribution;
+email delivery remains pending because no usable mail sending connector is
+available on this host.
 
-- `82827f5 chore: retire legacy agent subsystem`
-- `86238b9 chore: add persistent project memory`
-- `785c650 fix: harden delivery and agent workflows`
+The working tree contains related feature, repair, and agent-harness changes.
+The form tracks share `services/deliverable_form_analysis.py`; review them
+together rather than reverting individual files.
 
-Production-network acceptance remains intentionally unclaimed because no
-production credentials were used in verification.
+## Completed repair frontier
 
-## Confirmed product decisions
+- NCR blank identifiers remain separate metric entities; legacy positional
+  snapshots recover NCR identity and legacy completion state read-side.
+- Current form schemas are served over old snapshots; NCR historical trends use
+  the current entity grain when the stored schema predates it.
+- NCR `完成` and TDC status code `4` normalize to completion. Contacts are
+  masked before stored table values and search text. Filter options remain
+  discoverable under active filters.
+- Official workbook truncation, fallback API record caps, unreadable/invalid
+  NCR workbooks, and form projection failures become `needs_attention` while
+  retaining artifacts and the last good form snapshot.
 
-- EWO, PAA, and NCR approval progress each use three chart tabs:
-  department status, section/region status, and daily quantity trend.
-- NCR approval detail uses department cost and section cost tabs.
-- One NCR maps to exactly one EWO; one EWO may map to multiple NCRs.
-- NCR progress status/trend counts distinct `NCR编号`.
-- NCR detail status/trend also counts distinct `NCR编号`.
-- NCR detail costs sum detail rows; department is the all-region total and
-  section is `区域`.
-- Positive cost change is red; negative cost change is green.
-- EWO dimensions: `部门` and `责任工程师专业科室`.
-- PAA dimensions: `部门` and `专业科室`.
-- NCR section dimension: `区域`; department is the fixed business aggregate.
-- The default Aras business department is the exact source value
-  `技术中心_车体工程`.
-- Each chart tab owns its filters; same-field selections are OR and different
-  fields are AND. Filters include status, department, section/region,
-  model/project, stage/node, overdue state, dates, keyword, and relation.
-- Trend nodes represent the latest snapshot of a natural day. Submission date
-  and snapshot date must remain separate concepts.
+## NCR progress response adaptation
 
-## Real workbook evidence
+The live ARAS progress response was HTTP 200 and contained a `Result` subtree
+with an `Item` carrying a non-empty `_file` relation, but its server-side Item
+type spelling did not match the hard-coded `sgmw_outputFileRecord` value. The
+parser now restricts discovery to `Result` descendants and identifies the
+export by the `_file` relation, retaining the file name and outer record ID.
+`Message` nodes and arbitrary XML nodes are not accepted as fallbacks.
 
-Read-only audits of the supplied workbooks found:
+## Production WebUI package
 
-- EWO: 399 rows, 111 columns; department is `技术中心_车体工程`; 13
-  professional sections; stage-arrival columns are present.
-- PAA: 54 rows, 113 columns; department is `技术中心_车体工程`; 7
-  professional sections; vehicle values include composite strings.
-- NCR progress: 387 rows, 64 columns; 387 unique NCRs; 385 EWO values; two
-  EWO values each relate to two NCRs; full approval-node/date fields exist.
-- NCR detail: 3768 rows, 387 unique NCRs; 366 NCRs have multiple detail rows;
-  the maximum is 168 detail rows per NCR. Six tooling/per-vehicle cost fields
-  are present; the engine worksheet is empty in the supplied workbook.
+- `VSE-WebUI.spec` now excludes only CLI-only integrations and their optional
+  dependency trees (Selenium, IMAP, Rich, xlwings, PythonWin helpers, and
+  test/debug-only modules), while retaining the explicit WinHTTP/pywin32
+  hidden imports required by the existing packaging contract.
+- The final local build used the isolated `.runtime/py311-webui-venv-20260902`
+  environment (Python 3.11, PyInstaller 6.22.2) and UPX 5.2.1. The EXE is
+  `15220786` bytes; the ZIP contains only `VSE-WebUI.exe` and is
+  `14942697` bytes, below the strict 15,000,000-byte limit.
+- Final local artifact: `.runtime/VSE-WebUI-production-20260902-r2.zip`.
+  ZIP test passed; ZIP SHA256 is
+  `057deaf252d6457ffa1e5ca2a9789102cc3ceaabf964156d89b6ee3341e89384`.
+  EXE SHA256 is
+  `88249037b78a2c16773faba6d39f45e56533907bac6037d8467ac1ee3452101c`.
+- Final EXE smoke on isolated port 55128 returned HTTP 200 for `/`,
+  `/static/app.js`, and `/api/overview`; the test process was stopped.
+- Email delivery was not performed: the user reports Gmail connected, and the
+  workspace app list discovers Gmail, but this task still exposes no Gmail
+  `send_email`/attachment action. Classic Outlook COM activation also failed;
+  no credential or mail secret was stored.
 
-Local field-only evidence (no raw business rows or credentials):
+## Validation
 
-- `.runtime/real-form-counts-20260902.json`
-- `.runtime/ncr-ewo-cardinality-20260902.json`
-- `.runtime/real-form-schema-20260902.json`
+- ARAS parser/Web route tests: `126 passed` — `.runtime/ncr-adaptation-web-tests.log`.
+- Full pytest after adaptation: `1673 passed, 2 skipped` —
+  `.runtime/ncr-adaptation-full-final.log`.
+- flake8, compileall, Node check, and git diff check passed —
+  `.runtime/ncr-adaptation-static.log`.
+- Fresh dual PyInstaller build passed; WebUI SHA256 is recorded in
+  `.runtime/ncr-adaptation-build-output-final2/SHA256SUMS.txt`.
+- Fresh build WebUI real smoke on isolated port 55125: login succeeded; NCR
+  progress returned 500 rows, the query button re-enabled, and browser console
+  error count was zero. Password field was empty after submit and saving the
+  credential option remained disabled.
+- No raw ARAS XML, credential, cookie, token, or business row was written to
+  memory or diagnostics.
+- Final packaging regression: `1672 passed, 2 skipped` after the spec
+  exclusions were reconciled with `tests/test_webui_winhttp_packaging.py`.
+  `compileall`, Node syntax check, and `git diff --check` also passed.
 
-## Root causes already identified
+## ZCode / AGY cross-audit
 
-1. The table chooses the first 12/17 columns, hiding workflow dates, approval
-   nodes, and NCR cost columns.
-2. Static stage lists omit EWO/PAA `OPEN`/`CANCEL` and several official NCR
-   approval nodes.
-3. EWO/PAA scheduled list queries do not yet prove that stage-arrival dates are
-   included, so missing dates correctly become `unknown` rather than a safe
-   on-time result.
-4. Frontend selects and backend SQL currently support scalar filters only;
-   chart clicks overwrite instead of append, and `overdueState` is not fully
-   exposed in the UI.
-5. The fixed one-row filter grid plus `overflow-x:hidden` clips right-side
-   content. Project detail information is always expanded.
-6. Built-in scheduled jobs have empty filters; business department appears as
-   a placeholder rather than an effective default.
-7. Mapping editor values expose internal source keys such as `_rsp_name` and
-   `_required_date` instead of Chinese field labels.
-8. NCR normalized department is empty and has no dedicated `EWO号` relation
-   filter. The current NCR detail row count must not be treated as NCR count.
+- ZCode session `sess_8471cad2-b3f8-49d9-a956-7f9f22546a1c` used the configured
+  custom provider with model `gemini-3.7-flash-high`. It completed the
+  read-only cross-audit and then executed the two required verification
+  commands: `151 passed in 6.43s` and
+  `python -m compileall -q services core web` exit 0. Findings were compliant;
+  custom NCR node aliases remain intentionally unresolved pending domain
+  confirmation.
+- AGY model-only calls work, but headless command calls remain blocked on
+  Windows. AGY 1.1.23 and 1.1.24 soft-denied `Bash`/`RunCommand` and attempted
+  `escalate_admin`; a precise command allow rule had no effect. Do not use
+  global `command(*)`, `always-proceed`, or `--dangerously-skip-permissions`.
+- AGY TUI launches but requires first-run terms/login interaction; no terms
+  were accepted automatically. A custom-agent experiment was removed because
+  it did not prove Bash execution and its real agent path hit a location
+  precondition error.
 
-Relevant implementation locations include:
+## Git state and remaining acceptance
 
-- `services/deliverable_form_analysis.py`
-- `services/scheduled_archive_connectors.py`
-- `core/db_manager.py`
-- `web/app.py`
-- `web/static/app.js`
-- `web/static/style.css`
+- HEAD remains `f700cbb`; no files are staged and no commit was made by Codex.
+- `VSE-WebUI.spec` is an intentional uncommitted packaging change; the other
+  pre-existing feature/repair and agent-harness working-tree changes remain
+  untouched.
+- The existing feature/repair and agent-harness working-tree changes remain
+  intentionally available for review; no unrelated changes were reverted.
+- Production credentialed acceptance was performed only as the requested
+  read-only ARAS smoke. No archive sync, export download, or write operation
+  was executed.
+- The UI's unified login endpoint also attempted TDC authentication as part of
+  the approved flow, but this run did not separately validate a TDC operation;
+  the ARAS result above is the verified contract.
 
-## Verification status
+## Next action
 
-- Full pytest on the committed tree: `1629 passed, 2 skipped` using the
-  repository `.venv` (Python 3.11.9).
-- Scoped flake8 over the eight hardening Python files passes.
-- Repository-wide `python -m flake8` returns 1 because `setup.cfg` does not
-  exclude `.venv` or `.agents/worktrees`, and the scan also reports existing
-  project lint errors. This baseline is accepted for this migration.
-- UTF-8 mypy under both system Python 3.14 and repository Python 3.11 reports
-  the same 69 existing errors in 13 files; no new error was found at a changed
-  hardening line. This baseline is accepted for this migration.
-- `git diff --check HEAD` passes. Windows LF-to-CRLF warnings are benign.
-
-## Current workspace constraints
-
-The migration changes are committed and the worktree should remain clean.
-Do not reset, clean, checkout, or overwrite unrelated future changes. The
-source WebUI is running at `http://127.0.0.1:5000/#scheduled-archive` when
-available; do not restart or stop it unless necessary and safe.
-
-No credentials, cookies, tokens, raw production workbook rows, or complete
-business data may enter source control, preview HTML, logs, tests, memory, or
-ZCode handoffs.
-
-## Exact next action
-
-Verify `git status --short --branch` and `git log --oneline -5` after this
-checkpoint commit. The branch is ready for the user's preferred integration
-action; no code changes are pending in this migration.
-
-If future work targets repository-wide quality gates, handle the flake8 scan
-scope and the existing mypy errors as a separate, explicitly scoped task.
-
-## Completion criteria
-
-- Unified deliverable analysis/UI, migration cleanup, memory layer, and
-  hardening changes are committed on the current branch.
-- Full pytest and scoped hardening flake8 checks pass.
-- The accepted repository-wide flake8/mypy baseline is documented in this
-  file and `RECOVERY_NOTES.md`.
-- Working tree is clean after the checkpoint commit.
-- Production-network acceptance remains unclaimed without production
-  credentials.
+If the Gmail send action becomes exposed or the user sends the prepared ZIP
+manually, use the recorded local artifact and verify the attachment remains
+under 15,000,000 bytes. If future ARAS changes produce another response
+variant, add a sanitized parser fixture first; do not log or persist the raw
+response. Do not rebuild the strict-size package with the default Python 3.14
+environment without rechecking the attachment size.

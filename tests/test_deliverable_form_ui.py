@@ -88,3 +88,58 @@ def test_archive_detail_keeps_audit_table_without_duplicate_snapshot_chart() -> 
 
     assert "external-run-table" in history
     assert "external-run-chart" not in history
+
+
+def test_tdc_data_model_wiring_tabs_and_label_overrides() -> None:
+    """数模表单在 UI 侧注册条目、页签、筛选与图表标题覆盖及空维度跳过逻辑。"""
+    js = _read("web/static/app.js")
+
+    assert '"VPI-T2-D5": "tdc_data_model"' in js
+    assert "tdc_data_model: \"tdc_data_model\"" in js
+    assert '["departmentStatus", "项目状态"]' in js
+    assert '["sectionStatus", "部门状态"]' in js
+    assert '["quantityTrend", "数量趋势"]' in js
+
+    # 按表单覆盖的筛选标签。
+    assert "const DELIVERABLE_FORM_FILTER_LABELS" in js
+    assert 'section: "部门"' in js
+    assert 'model: "发布属性"' in js
+    assert 'stage: "项目 / 车型"' in js
+    assert 'dateStart: "申请日期（起）"' in js
+    assert 'dateEnd: "申请日期（止）"' in js
+    assert "function deliverableFormFilterLabel" in js
+
+    # 按表单覆盖的图表标题与说明。
+    assert "const DELIVERABLE_FORM_CHART_TITLES" in js
+    assert "各项目 / 车型按期推进数与逾期风险数" in js
+    assert "点击一个部门可追加筛选" in js
+
+    # department 无可选值时不渲染空下拉。
+    assert "departmentValues.length" in js
+
+
+def test_stage_b_filters_reach_both_form_queries_and_keep_multi_select_state() -> None:
+    """Stage B filter controls must be serialized and persisted before reload."""
+    js = _read("web/static/app.js")
+    query_start = js.index("const FORM_FILTER_QUERY_KEYS")
+    query_end = js.index("function deliverableFormKey", query_start)
+    query_source = js[query_start:query_end]
+    assert '"overdueState"' in query_source
+    assert '"relationEwo"' in query_source
+
+    filter_start = js.index("function renderFormFilterBar")
+    filter_end = js.index("function formStatusColorClass", filter_start)
+    filter_source = js[filter_start:filter_end]
+    assert "current[key] = values" in filter_source
+    assert "delete current[key]" in filter_source
+
+
+def test_tdc_project_and_archive_details_use_the_unified_form_shell() -> None:
+    """VPI-T2-D5 and its archive job must expose the same named form view."""
+    js = _read("web/static/app.js")
+    project_detail = js[js.index("function renderDeliverableDetailPage"):js.index("function renderArchiveDeliverableDetailPage")]
+    archive_detail = js[js.index("function renderArchiveDeliverableDetailPage"):js.index("function toggleDeliverableDetail")]
+
+    assert "const formKey = deliverableFormKey(item);" in project_detail
+    assert "createDeliverableFormState(formKey)" in project_detail
+    assert 'tdc_data_model: ["数模设计审核流程报表", "TDC"]' in archive_detail

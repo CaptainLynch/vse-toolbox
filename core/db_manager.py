@@ -40,7 +40,7 @@ DEFAULT_DB_PATH = DEFAULT_DB_DIR / "vse_toolbox.db"
 #: 当前支持的 schema 版本。迁移完成后写入 PRAGMA user_version。
 #: 旧库 (< CURRENT_SCHEMA_VERSION) 增量升级；高于此版本的库拒绝降级，
 #: 避免新代码误读未知的较新 schema。
-CURRENT_SCHEMA_VERSION = 11
+CURRENT_SCHEMA_VERSION = 12
 
 #: 租约时长安全范围（秒）。默认 900s，由调用方在范围内参数化。
 SYNC_LEASE_MIN_SECONDS = 60
@@ -155,13 +155,14 @@ def _sanitize_json(value: Any) -> str:
 
 
 _FORM_SNAPSHOT_KEYS = frozenset(
-    {"VPI-T2-D3", "aras_paa", "aras_ncr_progress", "aras_ncr_detail"}
+    {"VPI-T2-D3", "aras_paa", "aras_ncr_progress", "aras_ncr_detail", "tdc_data_model"}
 )
 _FORM_SNAPSHOT_REPORTS = {
     "VPI-T2-D3": "ewo",
     "aras_paa": "paa",
     "aras_ncr_progress": "ncr_progress",
     "aras_ncr_detail": "ncr_detail",
+    "tdc_data_model": "tdc_data_model",
 }
 _FORM_SNAPSHOT_FORBIDDEN_KEY_PARTS = (
     "password",
@@ -274,6 +275,7 @@ _FORM_ROW_FILTER_KEYS = frozenset(
         "dateEnd",
         "overdueState",
         "isCompleted",
+        "relationEwo",
     }
 )
 
@@ -290,6 +292,19 @@ def _form_row_filter_sql(
         raise ValueError("unsupported form row filter")
     where: list[str] = []
     params: list[object] = []
+
+    def filter_values(key: str) -> list[str]:
+        value = rule.get(key)
+        if value in (None, ""):
+            return []
+        items = value if isinstance(value, (list, tuple)) else [value]
+        cleaned: list[str] = []
+        for item in items[:20]:
+            text = str(item or "").strip()
+            if text and text not in cleaned:
+                cleaned.append(text[:200])
+        return cleaned
+
     column_filters = {
         "department": f"{alias}.department_key",
         "section": f"{alias}.section_key",
@@ -298,19 +313,28 @@ def _form_row_filter_sql(
         "overdueState": f"{alias}.overdue_state",
     }
     for key, column in column_filters.items():
-        value = str(rule.get(key) or "").strip()
-        if value:
-            where.append(f"{column} = ?")
-            params.append(value[:200])
-    status = str(rule.get("status") or "").strip()
-    if status:
+        values = filter_values(key)
+        if values:
+            placeholders = ", ".join("?" for _ in values)
+            where.append(f"{column} IN ({placeholders})")
+            params.extend(values)
+    status_values = filter_values("status")
+    if status_values:
         # A source can expose CLOSE as CLOZ while the normalized stage is
         # CLOSE; accepting either keeps filters stable without rewriting the
-        # source-facing status value stored in the row.
-        where.append(
+        # source-facing status value stored in the row. 同一字段内多选为 OR。
+        status_clause = " OR ".join(
             f"({alias}.status_key = ? OR {alias}.stage_key = ?)"
+            for _ in status_values
         )
-        params.extend((status[:200], status[:200]))
+        where.append(f"({status_clause})")
+        for value in status_values:
+            params.extend((value, value))
+    relation_ewo = str(rule.get("relationEwo") or "").strip()
+    if relation_ewo:
+        # 关联EWO：EWO 号位于行 values 的搜索文本内（PAA/NCR 表单）。
+        where.append(f"instr({alias}.search_text, ?) > 0")
+        params.append(relation_ewo[:200])
     if "isCompleted" in rule and rule["isCompleted"] not in (None, ""):
         completed_value: object = rule["isCompleted"]
         if isinstance(completed_value, str):
@@ -339,6 +363,31 @@ def _form_row_filter_sql(
 
 # ── 建表 DDL ───────────────────────────────────────────────────
 # 每张表均包含 created_at / updated_at 以便追踪
+
+# 统一外部交付物表单快照表 DDL 模板。SQLite 无法修改 CHECK 约束，
+# form_key 白名单扩展时由 _migrate_schema 用该模板重建表，
+# 因此 DDL 只保留一份，避免建表与迁移两份定义漂移。
+_DELIVERABLE_FORM_SNAPSHOTS_DDL = """
+    CREATE TABLE IF NOT EXISTS {table} (
+        id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+        snapshot_key       TEXT NOT NULL UNIQUE,
+        form_key           TEXT NOT NULL CHECK (form_key IN (
+            'VPI-T2-D3', 'aras_paa', 'aras_ncr_progress', 'aras_ncr_detail',
+            'tdc_data_model'
+        )),
+        report_type        TEXT NOT NULL,
+        source_run_id      INTEGER,
+        source             TEXT NOT NULL DEFAULT '',
+        snapshot_at        TEXT NOT NULL,
+        row_count          INTEGER NOT NULL CHECK (row_count >= 0),
+        schema_json        TEXT NOT NULL,
+        summary_json       TEXT NOT NULL,
+        charts_json        TEXT NOT NULL,
+        artifacts_json     TEXT NOT NULL DEFAULT '[]',
+        created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+    """
+
 TABLE_DEFINITIONS: list[str] = [
     # 项目主表
     """
@@ -735,25 +784,7 @@ TABLE_DEFINITIONS: list[str] = [
     """,
     # 统一外部交付物表单快照。表单行与项目状态分析缓存分离，允许 PAA/NCR
     # 使用归档运行作为来源，同时保留 EWO 的旧分析 API。
-    """
-    CREATE TABLE IF NOT EXISTS deliverable_form_snapshots (
-        id                 INTEGER PRIMARY KEY AUTOINCREMENT,
-        snapshot_key       TEXT NOT NULL UNIQUE,
-        form_key           TEXT NOT NULL CHECK (form_key IN (
-            'VPI-T2-D3', 'aras_paa', 'aras_ncr_progress', 'aras_ncr_detail'
-        )),
-        report_type        TEXT NOT NULL,
-        source_run_id      INTEGER,
-        source             TEXT NOT NULL DEFAULT '',
-        snapshot_at        TEXT NOT NULL,
-        row_count          INTEGER NOT NULL CHECK (row_count >= 0),
-        schema_json        TEXT NOT NULL,
-        summary_json       TEXT NOT NULL,
-        charts_json        TEXT NOT NULL,
-        artifacts_json     TEXT NOT NULL DEFAULT '[]',
-        created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-    );
-    """,
+    _DELIVERABLE_FORM_SNAPSHOTS_DDL.format(table="deliverable_form_snapshots"),
     """
     CREATE INDEX IF NOT EXISTS idx_deliverable_form_snapshots_latest
         ON deliverable_form_snapshots(form_key, snapshot_at DESC, id DESC);
@@ -1035,6 +1066,48 @@ class DatabaseManager:
         - 对旧库通过 PRAGMA table_info 检测缺失列，逐列 ALTER TABLE ADD COLUMN。
         - 迁移失败由外层 get_connection 回滚，不会留下半迁移状态。
         """
+        # deliverable_form_snapshots 的 form_key CHECK 白名单扩展无法通过
+        # ALTER 完成，需要整表重建。必须在任何 DML 隐式开启事务之前于事务外
+        # 关闭外键，重建并提交后再恢复，随后继续的迁移/种子写入仍受外键约束。
+        # 中途失败时原表保持完整；残留的重建表会在下次初始化时清除。
+        conn.execute("PRAGMA foreign_keys=OFF")
+        try:
+            row = conn.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'deliverable_form_snapshots'"
+            ).fetchone()
+            if row is not None and "tdc_data_model" not in str(row["sql"] or ""):
+                conn.execute(
+                    "DROP TABLE IF EXISTS deliverable_form_snapshots_rebuild"
+                )
+                conn.execute(
+                    _DELIVERABLE_FORM_SNAPSHOTS_DDL.format(
+                        table="deliverable_form_snapshots_rebuild"
+                    )
+                )
+                conn.execute(
+                    "INSERT INTO deliverable_form_snapshots_rebuild ("
+                    "id, snapshot_key, form_key, report_type, source_run_id, "
+                    "source, snapshot_at, row_count, schema_json, summary_json, "
+                    "charts_json, artifacts_json, created_at) "
+                    "SELECT id, snapshot_key, form_key, report_type, "
+                    "source_run_id, source, snapshot_at, row_count, "
+                    "schema_json, summary_json, charts_json, artifacts_json, "
+                    "created_at FROM deliverable_form_snapshots"
+                )
+                conn.execute("DROP TABLE deliverable_form_snapshots")
+                conn.execute(
+                    "ALTER TABLE deliverable_form_snapshots_rebuild "
+                    "RENAME TO deliverable_form_snapshots"
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_deliverable_form_snapshots_latest "
+                    "ON deliverable_form_snapshots(form_key, snapshot_at DESC, id DESC)"
+                )
+                conn.commit()
+        finally:
+            conn.execute("PRAGMA foreign_keys=ON")
+
         # project_status_update_bindings 调度相关增量列。
         existing = {
             str(row["name"])
@@ -1326,6 +1399,34 @@ class DatabaseManager:
                     ?, 1)
             """,
             [(*job, job[0], job[0], job[0]) for job in jobs],
+        )
+        # 内置 EWO/PAA 任务的默认业务部门必须作为实际生效筛选条件存在
+        # （用户 2026-09-02 确认口径），不能只是输入框占位提示。EWO 的
+        # 连接器字段名是 responsibleDepartment，PAA 的字段名才是 department。
+        # 仅填充仍为种子空值 '{}' 的任务；用户显式设置的其他筛选不受影响。
+        # 兼容阶段 B 早期版本曾误写的 EWO 默认值，避免已有本地库继续把
+        # 不被 EWO 连接器接受的 department 键传入运行时。
+        conn.execute(
+            """
+            UPDATE scheduled_archive_jobs
+            SET filters_json = CASE job_key
+                WHEN 'aras_ewo' THEN '{"responsibleDepartment": "技术中心_车体工程"}'
+                WHEN 'aras_paa' THEN '{"department": "技术中心_车体工程"}'
+            END
+            WHERE job_key IN ('aras_ewo', 'aras_paa')
+              AND builtin = 1
+              AND (
+                    filters_json IS NULL
+                    OR filters_json IN ('', '{}')
+                    OR (
+                        job_key = 'aras_ewo'
+                        AND filters_json IN (
+                            '{"department": "技术中心_车体工程"}',
+                            '{"department":"技术中心_车体工程"}'
+                        )
+                    )
+              )
+            """
         )
 
     def get_project_status(self, phase_id: str) -> tuple[sqlite3.Row | None, list[sqlite3.Row], list[sqlite3.Row]]:

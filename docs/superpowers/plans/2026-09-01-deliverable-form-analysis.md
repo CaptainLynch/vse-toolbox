@@ -361,3 +361,18 @@ AGY is not allowed to decide authentication/session reuse, form field authority,
 - [ ] Step 9: Perform Main final review.
 
   Review authentication/session boundaries, redaction, public API compatibility, data retention, daily trend selection, overdue formulas, cost aggregation, EWO legacy behavior, and AGY diffs. Final status is PASS only when every acceptance criterion and evidence path is satisfied.
+
+## Phase B Execution Addendum (2026-09-02, preview v2.1 approved; ZCode Main session)
+
+Scope confirmed by preview acceptance and user delegation for unattended completion. The parallel `tdc_data_model` work in the same worktree is preserved untouched; Phase B edits are additive on top of it.
+
+1. Backend (`services/deliverable_form_analysis.py`):
+   - Full NCR approval-node stage list (PE提交 … 财务部总监, CLOSE) with aliases and date-column labels; per-node stage dates resolve through the same workflow-date path.
+   - `_stage_status_summary` aggregates non-official stages (EWO/PAA OPEN/CANCEL; NCR 起草/挂起/custom nodes) into a trailing `其他状态` entry; department cost remains the all-region total and section cost uses `区域`.
+   - Overdue thresholds become parameters: `classify_overdue` accepts optional `stage_days`/`late_days` with approved defaults (EWO 7 / calendar-month; PAA 3 / 7; NCR first-two-nodes 3 / others 7). `view()`/`rows()` accept clamped `overdueDaysStage`/`overdueDaysLate`; when supplied, overdue states re-derive from row values at read time (stored snapshots/trend keep the stored口径), and the view payload exposes `overdueRules`.
+   - Multi-value filters: `status`/`department`/`section`/`model`/`stage`/`overdueState` accept lists (same-field OR, cross-field AND; scalars stay back-compat); new `relationEwo` filter for PAA/NCR forms matching the EWO number in row search text; `filterFields` metadata updated.
+   - `form_definition` emits `keyColumns` (label-resolved indexes) so the detail table defaults to the chart-relevant Chinese fields, with NCR detail always showing the six cost fields plus `EWO号`.
+2. Persistence (`core/db_manager.py`): `_form_row_filter_sql` supports list values via `IN` and the `relationEwo` search predicate; no schema change.
+3. API (`web/app.py`): repeated query params parse into lists for the multi fields; `relationEwo`, `overdueDaysStage`, `overdueDaysLate` added to the allowlist (0-999 clamp, 422 on violation); endpoints forward thresholds to the service.
+4. Frontend (`web/static/app.js`, `web/static/style.css`): checkbox multi-select dropdowns replace scalar selects; chips render per value with remove buttons; chart/segment/point clicks toggle-append filters; per-form overdue-days control on status tabs; key-column table defaults; filter grid wraps with horizontal-scroll tables (no right-side clipping); trend note keeps 提交日期 vs 快照日期 separate.
+5. Verification: the mandated battery (focused 1/2, full pytest, py_compile, node --check, git diff --check, flake8, mypy) plus an isolated local UI instance with browser screenshots under `.runtime/`. No commit is made by the unattended session; changes are left in the working tree for user review alongside the parallel `tdc_data_model` work.

@@ -680,15 +680,29 @@ class ArasCrawlerClient:
     @staticmethod
     def parse_ncr_progress_response(xml_text: str) -> NCRExportResult:
         root = _parse_xml(xml_text)
-        item = next(
-            (node for node in root.iter() if _local_name(node.tag) == "Item" and node.get("type") == "sgmw_outputFileRecord"),
+        result = next(
+            (node for node in root.iter() if _local_name(node.tag) == "Result"),
             None,
         )
-        if item is None:
-            raise ArasCrawlerError("NCR progress response does not contain sgmw_outputFileRecord")
-        file_node = next((child for child in list(item) if _local_name(child.tag) == "_file"), None)
-        if file_node is None or not (file_node.text or "").strip():
-            raise ArasCrawlerError("NCR progress response does not contain _file id")
+        if result is None:
+            raise ArasCrawlerError("NCR progress response does not contain Result")
+        item = None
+        file_node = None
+        for candidate in result.iter():
+            if _local_name(candidate.tag) != "Item":
+                continue
+            candidate_file = next(
+                (child for child in list(candidate) if _local_name(child.tag) == "_file"),
+                None,
+            )
+            if candidate_file is not None and (candidate_file.text or "").strip():
+                item = candidate
+                file_node = candidate_file
+                break
+        if item is None or file_node is None:
+            raise ArasCrawlerError(
+                "NCR progress response does not contain a Result Item with _file id"
+            )
         return NCRExportResult(
             file_id=(file_node.text or "").strip(),
             file_name=file_node.get("keyed_name", ""),

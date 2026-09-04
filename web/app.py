@@ -3222,8 +3222,12 @@ def create_app(
             logger.exception("project status chart labels update failed")
             return _json_error(500, "ServerError", _sanitize_error_message(exc))
 
-    def _deliverable_form_query() -> tuple[dict[str, object], int]:
-        """Parse the shared read-only form-view query contract."""
+    def _deliverable_form_query() -> tuple[dict[str, object], int, dict[str, int] | None]:
+        """Parse the shared read-only form-view query contract.
+
+        同一字段内多选以重复查询参数表达（OR）；逾期判定天数以
+        overdueDaysStage / overdueDaysLate 覆盖批准的默认口径。
+        """
         filter_keys = {
             "keyword",
             "status",
@@ -3235,17 +3239,31 @@ def create_app(
             "dateEnd",
             "overdueState",
             "isCompleted",
+            "relationEwo",
         }
-        control_keys = filter_keys | {"trendLimit", "offset", "limit"}
+        multi_keys = {"status", "department", "section", "model", "stage", "overdueState"}
+        control_keys = filter_keys | {
+            "trendLimit",
+            "offset",
+            "limit",
+            "overdueDaysStage",
+            "overdueDaysLate",
+        }
         unknown = set(request.args) - control_keys
         if unknown:
             raise ValueError("unsupported deliverable form query parameter")
         filters: dict[str, object] = {}
         for key in filter_keys:
-            values = request.args.getlist(key)
-            if len(values) > 1:
-                raise ValueError(f"{key} accepts one value")
-            if values and values[0] != "":
+            values = [value for value in request.args.getlist(key) if value != ""]
+            if not values:
+                continue
+            if key in multi_keys:
+                if len(values) > 20:
+                    raise ValueError(f"{key} accepts at most 20 values")
+                filters[key] = values
+            else:
+                if len(values) > 1:
+                    raise ValueError(f"{key} accepts one value")
                 filters[key] = values[0]
 
         def strict_int(name: str, default: int, lower: int, upper: int) -> int:
@@ -3260,16 +3278,22 @@ def create_app(
                 raise ValueError(f"{name} must be between {lower} and {upper}")
             return value
 
-        return filters, strict_int("trendLimit", 30, 1, 365)
+        thresholds: dict[str, int] = {}
+        for name in ("overdueDaysStage", "overdueDaysLate"):
+            parsed = strict_int(name, -1, 0, 999)
+            if parsed >= 0:
+                thresholds[name] = parsed
+        return filters, strict_int("trendLimit", 30, 1, 365), thresholds or None
 
     @app.get("/api/deliverable-forms/<form_key>/view")
     def api_deliverable_form_view(form_key: str):
         try:
-            filters, trend_limit = _deliverable_form_query()
+            filters, trend_limit, overdue_thresholds = _deliverable_form_query()
             data = deliverable_form_service.view(
                 form_key,
                 filters=filters,
                 trend_limit=trend_limit,
+                overdue_thresholds=overdue_thresholds,
             )
             response = jsonify({"ok": True, "data": data})
             response.headers["Cache-Control"] = "no-store"
@@ -3285,7 +3309,7 @@ def create_app(
     @app.get("/api/deliverable-forms/<form_key>/rows")
     def api_deliverable_form_rows(form_key: str):
         try:
-            filters, _ = _deliverable_form_query()
+            filters, _, overdue_thresholds = _deliverable_form_query()
             offset = request.args.get("offset", "0")
             limit = request.args.get("limit", "200")
             try:
@@ -3302,6 +3326,7 @@ def create_app(
                 filters,
                 offset=parsed_offset,
                 limit=parsed_limit,
+                overdue_thresholds=overdue_thresholds,
             )
             response = jsonify({"ok": True, "data": data})
             response.headers["Cache-Control"] = "no-store"

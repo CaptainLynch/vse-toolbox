@@ -23,7 +23,9 @@ from core.credential_provider import (
 from core.db_manager import ARCHIVE_JOB_CONTRACTS, DatabaseManager
 from services.aras_auth import ArasAuthError
 from services.aras_crawler import ArasAuthenticationError, ArasCrawlerError
+from services.deliverable_form_analysis import form_definition
 from services.scheduled_archive_runner import (
+    DEFAULT_BUSINESS_DEPARTMENT,
     EXIT_ATTENTION,
     EXIT_FAILED,
     EXIT_OK,
@@ -99,6 +101,45 @@ class SnapshotConnector(FakeConnector):
                 },
             ),
         )
+
+
+class TdcSnapshotConnector(FakeConnector):
+    """Fake TDC connector returning synthetic positional data-model rows."""
+
+    def collect(self, context: ArchiveJobContext, credential: ResolvedCredential) -> ArchiveCollection:
+        base = super().collect(context, credential)
+        return ArchiveCollection(
+            record_count=base.record_count,
+            artifacts=base.artifacts,
+            form_rows=(
+                {
+                    "values": _tdc_form_values("审批中", "2026-08-30 09:30:00"),
+                    "sheetName": "Sheet1",
+                },
+                {
+                    "values": _tdc_form_values("已完成", "2026-08-20 10:00:00"),
+                    "sheetName": "Sheet1",
+                },
+            ),
+        )
+
+
+def _tdc_form_values(status: str, request_date: str) -> list[object | None]:
+    """One synthetic 47-column TDC data-model row (all values fabricated)."""
+    headers = form_definition("tdc_data_model")["headerRows"][0]
+    values: list[object | None] = [None] * len(headers)
+    for label, value in {
+        "实例号": "90000101",
+        "流水单号": "F999X-3D-0001",
+        "发布属性": "T2发布",
+        "部门": "内饰科",
+        "申请日期": request_date,
+        "项目/车型": "F999X",
+        "零件号": "27000001",
+        "状态": status,
+    }.items():
+        values[headers.index(label)] = value
+    return values
 
 
 class CountingCredentialProvider(MemoryCredentialProvider):
@@ -262,6 +303,44 @@ def test_successful_run_job_lifecycle_and_cleared_credential(
     assert job_row["lease_token"] is None
 
 
+@pytest.mark.parametrize(
+    ("job_key", "department_filter_key"),
+    [
+        ("aras_ewo", "responsibleDepartment"),
+        ("aras_paa", "department"),
+    ],
+)
+def test_builtin_department_uses_each_connector_filter_contract(
+    db: DatabaseManager,
+    registry: ArchiveConnectorRegistry,
+    job_key: str,
+    department_filter_key: str,
+) -> None:
+    """The built-in department scope must use the connector's exact filter key."""
+    job_id = _enable_job(db, job_key, credential_ref=f"alias_{job_key}")
+    # Exercise the runner fallback independently of the persisted seed value.
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE scheduled_archive_jobs SET filters_json = '{}' WHERE id = ?",
+            (job_id,),
+        )
+    connector = FakeConnector()
+    runner, _ = _setup_runner(
+        db,
+        registry,
+        credentials={f"alias_{job_key}": ("user", "password")},
+        connectors={job_key: connector},
+    )
+
+    result = runner.run_job(job_id)
+
+    assert result.outcome == "completed"
+    assert connector.last_context is not None
+    assert connector.last_context.filters == {
+        department_filter_key: DEFAULT_BUSINESS_DEPARTMENT,
+    }
+
+
 def test_successful_form_collection_publishes_snapshot_without_persisting_credential(
     db: DatabaseManager,
     registry: ArchiveConnectorRegistry,
@@ -286,6 +365,67 @@ def test_successful_form_collection_publishes_snapshot_without_persisting_creden
     serialized = str(snapshot) + str(rows)
     assert "snapshot-password" not in serialized
     assert "snapshot-user" not in serialized
+
+
+def test_form_projection_failure_marks_archive_run_needs_attention_and_keeps_artifacts(
+    db: DatabaseManager,
+    registry: ArchiveConnectorRegistry,
+) -> None:
+    job_id = _enable_job(db, "aras_paa", credential_ref="alias_projection_failure")
+    connector = SnapshotConnector()
+    runner, _ = _setup_runner(
+        db,
+        registry,
+        credentials={"alias_projection_failure": ("projection-user", "projection-password")},
+        connectors={"aras_paa": connector},
+    )
+
+    with patch.object(
+        runner,
+        "_publish_form_snapshot",
+        side_effect=ValueError("malformed projection payload"),
+    ):
+        result = runner.run_job(job_id)
+
+    assert result.outcome == "needs_attention"
+    assert result.final_state == "needs_attention"
+    assert result.error_type == "form_projection_failed"
+    run_row = _get_run_row(db, result.run_id)
+    assert run_row["run_state"] == "needs_attention"
+    assert run_row["record_count"] == 10
+    assert _get_artifact_rows(db, result.run_id)
+    assert _get_job_row(db, job_id)["sync_state"] == "needs_attention"
+    assert db.get_latest_deliverable_form_snapshot("aras_paa") is None
+
+
+def test_successful_tdc_collection_publishes_data_model_snapshot(
+    db: DatabaseManager,
+    registry: ArchiveConnectorRegistry,
+) -> None:
+    """tdc_data_model 任务的归档行必须发布为同名表单快照。"""
+    job_id = _enable_job(db, "tdc_data_model", credential_ref="alias_tdc_model")
+    connector = TdcSnapshotConnector(record_count=2)
+    runner, _ = _setup_runner(
+        db,
+        registry,
+        credentials={"alias_tdc_model": ("tdc-user", "tdc-password")},
+        connectors={"tdc_data_model": connector},
+    )
+
+    result = runner.run_job(job_id)
+
+    assert result.outcome == "completed"
+    snapshot = db.get_latest_deliverable_form_snapshot("tdc_data_model")
+    assert snapshot is not None
+    assert snapshot["form_key"] == "tdc_data_model"
+    assert snapshot["report_type"] == "tdc_data_model"
+    assert snapshot["row_count"] == 2
+    assert snapshot["source_run_id"] == result.run_id
+    rows = db.list_deliverable_form_rows("tdc_data_model")
+    assert rows["total"] == 2
+    serialized = str(snapshot) + str(rows)
+    assert "tdc-password" not in serialized
+    assert "tdc-user" not in serialized
 
 
 def test_runner_passes_task_output_directory_to_connector(

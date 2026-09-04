@@ -4156,9 +4156,11 @@ async function refreshEwoFormFromStatusChart(item, statusChart, formPanel, formS
 
 const DELIVERABLE_FORM_KEY_BY_ITEM = {
   "VPI-T2-D3": "VPI-T2-D3",
+  "VPI-T2-D5": "tdc_data_model",
   aras_paa: "aras_paa",
   aras_ncr_progress: "aras_ncr_progress",
   aras_ncr_detail: "aras_ncr_detail",
+  tdc_data_model: "tdc_data_model",
 };
 
 const DELIVERABLE_FORM_TABS = {
@@ -4181,6 +4183,11 @@ const DELIVERABLE_FORM_TABS = {
     ["departmentCost", "部门成本"],
     ["sectionCost", "科室成本"],
   ],
+  tdc_data_model: [
+    ["departmentStatus", "项目状态"],
+    ["sectionStatus", "部门状态"],
+    ["quantityTrend", "数量趋势"],
+  ],
 };
 
 const FORM_FILTER_LABELS = {
@@ -4192,7 +4199,32 @@ const FORM_FILTER_LABELS = {
   stage: "阶段 / 节点",
   dateStart: "开始日期",
   dateEnd: "结束日期",
+  relationEwo: "关联EWO",
 };
+
+// 按表单覆盖筛选标签：数模的 section=部门、model=发布属性、stage=项目/车型。
+const DELIVERABLE_FORM_FILTER_LABELS = {
+  tdc_data_model: {
+    section: "部门",
+    model: "发布属性",
+    stage: "项目 / 车型",
+    dateStart: "申请日期（起）",
+    dateEnd: "申请日期（止）",
+  },
+};
+
+// 按表单覆盖图表标题与说明（页签文字见 DELIVERABLE_FORM_TABS）。
+const DELIVERABLE_FORM_CHART_TITLES = {
+  tdc_data_model: {
+    departmentStatus: ["项目状态", "各项目 / 车型按期推进数与逾期风险数"],
+    sectionStatus: ["部门状态", "点击一个部门可追加筛选"],
+  },
+};
+
+function deliverableFormFilterLabel(formKey, key) {
+  const override = DELIVERABLE_FORM_FILTER_LABELS[formKey];
+  return (override && override[key]) || FORM_FILTER_LABELS[key] || key;
+}
 
 const FORM_FILTER_QUERY_KEYS = [
   "keyword",
@@ -4203,6 +4235,8 @@ const FORM_FILTER_QUERY_KEYS = [
   "stage",
   "dateStart",
   "dateEnd",
+  "overdueState",
+  "relationEwo",
 ];
 
 function deliverableFormKey(item) {
@@ -4217,6 +4251,7 @@ function createDeliverableFormState(formKey) {
     filterStateByTab: {},
     pageByTab: {},
     requestSeq: 0,
+    overdueThresholds: null,
   };
 }
 
@@ -4232,11 +4267,24 @@ function clearCurrentFilters(state) {
   state.pageByTab[state.activeTab] = 0;
 }
 
+const FORM_MULTI_FILTER_KEYS = new Set(["status", "department", "section", "model", "stage", "overdueState"]);
+
 function appendFormFilter(state, key, value) {
   const clean = String(value === null || value === undefined ? "" : value).trim();
   if (!state || !state.activeTab || !key || !clean) return;
   const filters = currentFormFilterState(state);
-  filters[key] = clean;
+  if (FORM_MULTI_FILTER_KEYS.has(key)) {
+    const current = Array.isArray(filters[key]) ? filters[key].map(String) : (filters[key] ? [String(filters[key])] : []);
+    const index = current.indexOf(clean);
+    if (index >= 0) current.splice(index, 1);
+    else current.push(clean);
+    if (current.length) filters[key] = current;
+    else delete filters[key];
+  } else if (Object.prototype.hasOwnProperty.call(filters, key) && filters[key] === clean && key !== "dateStart" && key !== "dateEnd") {
+    delete filters[key];
+  } else {
+    filters[key] = clean;
+  }
   if (key !== "dateStart" && key !== "dateEnd") {
     state.pageByTab[state.activeTab] = 0;
   }
@@ -4246,9 +4294,23 @@ function buildDeliverableFormQuery(filters, includePaging = false, state = null)
   const params = new URLSearchParams();
   const source = filters && typeof filters === "object" ? filters : {};
   FORM_FILTER_QUERY_KEYS.forEach((key) => {
-    const value = String(source[key] || "").trim();
-    if (value) params.set(key, value);
+    const value = source[key];
+    if (Array.isArray(value)) {
+      value.forEach((item) => {
+        const clean = String(item || "").trim();
+        if (clean) params.append(key, clean);
+      });
+      return;
+    }
+    const clean = String(value === null || value === undefined ? "" : value).trim();
+    if (clean) params.set(key, clean);
   });
+  if (state && state.overdueThresholds && typeof state.overdueThresholds === "object") {
+    Object.entries(state.overdueThresholds).forEach(([key, value]) => {
+      const numeric = Math.floor(Number(value));
+      if (Number.isFinite(numeric) && numeric >= 0) params.set(key, String(numeric));
+    });
+  }
   params.set("trendLimit", "30");
   if (includePaging && state && state.activeTab) {
     const offset = Number(state.pageByTab[state.activeTab]) || 0;
@@ -4338,13 +4400,14 @@ function formOptionValues(data, key) {
 }
 
 function renderFormFilterBar(data, state, onReload) {
+  const formKey = String(data && data.formKey || "");
   const filters = currentFormFilterState(state);
   const root = overviewEl("section", "form-filter-bar");
   root.setAttribute("aria-label", "当前图表筛选");
   const titleRow = overviewEl("div", "form-filter-head");
   titleRow.append(
     overviewEl("strong", "form-filter-title", "筛选条件"),
-    overviewEl("span", "form-filter-scope", "仅作用于当前图表页签与表单明细"),
+    overviewEl("span", "form-filter-scope", "仅作用于当前图表页签与表单明细；同一字段内多选为或，字段之间为且"),
   );
   root.appendChild(titleRow);
 
@@ -4357,58 +4420,92 @@ function renderFormFilterBar(data, state, onReload) {
   keyword.maxLength = 200;
   controls.appendChild(keyword);
 
-  const addSelect = (key, values) => {
-    const label = overviewEl("label", "form-filter-field");
-    label.appendChild(overviewEl("span", "form-filter-label", FORM_FILTER_LABELS[key] || key));
-    const select = document.createElement("select");
-    select.className = "form-filter-select";
-    select.setAttribute("aria-label", FORM_FILTER_LABELS[key] || key);
-    const all = document.createElement("option");
-    all.value = "";
-    all.textContent = "全部";
-    select.appendChild(all);
-    [...new Set(values)].forEach((value) => {
-      const option = document.createElement("option");
-      option.value = value;
-      option.textContent = safeDisplayValue(value);
-      select.appendChild(option);
+  const overdueStateLabels = {
+    overdue: "逾期风险",
+    on_time: "按期推进",
+    unknown: "未判定",
+    not_applicable: "已完成 / 不适用",
+  };
+  const multiSelects = {};
+  const addMultiSelect = (key, values, labels) => {
+    const labelText = deliverableFormFilterLabel(formKey, key);
+    const label = overviewEl("label", "form-filter-field form-filter-field-wide");
+    label.appendChild(overviewEl("span", "form-filter-label", labelText));
+    const control = createSearchMultiSelect({
+      ariaLabel: labelText,
+      placeholder: "多选，点击图表也可追加",
+      options: values,
+      labelFor: labels || ((value) => value),
     });
-    select.value = String(filters[key] || "");
-    label.appendChild(select);
+    const initial = Array.isArray(filters[key]) ? filters[key] : (filters[key] ? [String(filters[key])] : []);
+    control.setValues(initial);
+    control.setOnChange((values) => {
+      const current = currentFormFilterState(state);
+      if (values.length) current[key] = values;
+      else delete current[key];
+      state.pageByTab[state.activeTab] = 0;
+      if (typeof onReload === "function") onReload();
+    });
+    label.appendChild(control.el);
     controls.appendChild(label);
-    return select;
+    multiSelects[key] = control;
   };
 
-  const status = addSelect("status", formOptionValues(data, "status"));
-  const department = addSelect("department", formOptionValues(data, "department"));
-  const section = addSelect("section", formOptionValues(data, "section"));
-  const model = addSelect("model", formOptionValues(data, "model"));
-  const stage = addSelect("stage", formOptionValues(data, "stage"));
+  addMultiSelect("status", formOptionValues(data, "status"));
+  const departmentValues = formOptionValues(data, "department");
+  if (departmentValues.length) addMultiSelect("department", departmentValues);
+  addMultiSelect("section", formOptionValues(data, "section"));
+  addMultiSelect("model", formOptionValues(data, "model"));
+  addMultiSelect("stage", formOptionValues(data, "stage"));
+  addMultiSelect("overdueState", formOptionValues(data, "overdueState"), (value) => overdueStateLabels[value] || value);
+
+  const availableFields = data && data.filters && Array.isArray(data.filters.fields) ? data.filters.fields : [];
+  let relationInput = null;
+  if (availableFields.includes("relationEwo")) {
+    relationInput = overviewEl("input", "form-filter-keyword");
+    relationInput.type = "text";
+    relationInput.placeholder = "按 EWO 号定位关联记录";
+    relationInput.value = String(filters.relationEwo || "");
+    relationInput.maxLength = 200;
+    relationInput.setAttribute("aria-label", "关联EWO");
+    const relationLabel = overviewEl("label", "form-filter-field");
+    relationLabel.append(overviewEl("span", "form-filter-label", deliverableFormFilterLabel(formKey, "relationEwo") || "关联EWO"), relationInput);
+    controls.appendChild(relationLabel);
+  }
+
   const dateStart = overviewEl("input", "form-filter-date");
   dateStart.type = "date";
   dateStart.value = String(filters.dateStart || "");
-  dateStart.setAttribute("aria-label", FORM_FILTER_LABELS.dateStart);
+  dateStart.setAttribute("aria-label", deliverableFormFilterLabel(formKey, "dateStart"));
   const dateEnd = overviewEl("input", "form-filter-date");
   dateEnd.type = "date";
   dateEnd.value = String(filters.dateEnd || "");
-  dateEnd.setAttribute("aria-label", FORM_FILTER_LABELS.dateEnd);
+  dateEnd.setAttribute("aria-label", deliverableFormFilterLabel(formKey, "dateEnd"));
   const dateStartLabel = overviewEl("label", "form-filter-field");
-  dateStartLabel.append(overviewEl("span", "form-filter-label", FORM_FILTER_LABELS.dateStart), dateStart);
+  dateStartLabel.append(overviewEl("span", "form-filter-label", deliverableFormFilterLabel(formKey, "dateStart")), dateStart);
   const dateEndLabel = overviewEl("label", "form-filter-field");
-  dateEndLabel.append(overviewEl("span", "form-filter-label", FORM_FILTER_LABELS.dateEnd), dateEnd);
+  dateEndLabel.append(overviewEl("span", "form-filter-label", deliverableFormFilterLabel(formKey, "dateEnd")), dateEnd);
   controls.append(dateStartLabel, dateEndLabel);
 
   const actions = overviewEl("div", "form-filter-actions");
-  const apply = overviewEl("button", "btn is-primary", "应用筛选");
+  const apply = overviewEl("button", "btn is-secondary", "应用筛选");
   apply.type = "button";
-  const clear = overviewEl("button", "btn is-secondary", "清除当前筛选");
+  const clear = overviewEl("button", "btn is-secondary", "清除筛选");
   clear.type = "button";
   apply.addEventListener("click", () => {
     const next = {};
-    [["keyword", keyword.value], ["status", status.value], ["department", department.value], ["section", section.value], ["model", model.value], ["stage", stage.value], ["dateStart", dateStart.value], ["dateEnd", dateEnd.value]].forEach(([key, value]) => {
+    Object.entries(multiSelects).forEach(([key, control]) => {
+      const values = control.getValues();
+      if (values.length) next[key] = values;
+    });
+    [["keyword", keyword.value], ["dateStart", dateStart.value], ["dateEnd", dateEnd.value]].forEach(([key, value]) => {
       const clean = String(value || "").trim();
       if (clean) next[key] = clean;
     });
+    if (relationInput) {
+      const clean = String(relationInput.value || "").trim();
+      if (clean) next.relationEwo = clean;
+    }
     state.filterStateByTab[state.activeTab] = next;
     state.pageByTab[state.activeTab] = 0;
     if (typeof onReload === "function") onReload();
@@ -4425,8 +4522,29 @@ function renderFormFilterBar(data, state, onReload) {
   const entries = Object.entries(filters);
   if (!entries.length) chips.appendChild(overviewEl("span", "form-filter-empty", "0 个筛选条件"));
   entries.forEach(([key, value]) => {
-    const chip = overviewEl("span", "form-filter-chip", `${FORM_FILTER_LABELS[key] || key}：${safeDisplayValue(value)}`);
-    chips.appendChild(chip);
+    const values = Array.isArray(value) ? value : [value];
+    values.forEach((item) => {
+      const display = key === "overdueState" ? (overdueStateLabels[item] || item) : item;
+      const chip = overviewEl("span", "form-filter-chip");
+      chip.appendChild(overviewEl("span", "form-filter-chip-label", `${deliverableFormFilterLabel(formKey, key)}：${safeDisplayValue(display)}`));
+      const remove = overviewEl("button", "form-filter-chip-remove", "×");
+      remove.type = "button";
+      remove.setAttribute("aria-label", `删除筛选 ${deliverableFormFilterLabel(formKey, key)} ${safeDisplayValue(display)}`);
+      remove.addEventListener("click", () => {
+        const current = currentFormFilterState(state);
+        if (Array.isArray(current[key])) {
+          const rest = current[key].filter((candidate) => String(candidate) !== String(item));
+          if (rest.length) current[key] = rest;
+          else delete current[key];
+        } else {
+          delete current[key];
+        }
+        state.pageByTab[state.activeTab] = 0;
+        if (typeof onReload === "function") onReload();
+      });
+      chip.appendChild(remove);
+      chips.appendChild(chip);
+    });
   });
   root.appendChild(chips);
   return root;
@@ -4476,17 +4594,23 @@ function renderFormStatusBars(entries, filterKey, state, onReload, title, descri
     track.append(onTimeBar, overdueBar, unknownBar);
     const numbers = overviewEl("span", "form-status-bar-numbers", `按期 ${onTime} · 逾期 ${overdue} · 未判定 ${unknown} · 共 ${total}`);
     row.append(name, track, numbers);
-    const activate = () => {
-      appendFormFilter(state, filterKey, label);
-      if (typeof onReload === "function") onReload();
-    };
-    row.addEventListener("click", activate);
-    row.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        activate();
-      }
-    });
+    if (label === "其他状态") {
+      row.removeAttribute("role");
+      row.removeAttribute("tabindex");
+      row.title = "其他状态（OPEN / CANCEL / 起草 / 挂起等）单独展示，不并入阶段筛选";
+    } else {
+      const activate = () => {
+        appendFormFilter(state, filterKey, label);
+        if (typeof onReload === "function") onReload();
+      };
+      row.addEventListener("click", activate);
+      row.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          activate();
+        }
+      });
+    }
     box.appendChild(row);
   });
   if (!safeEntries.length) box.appendChild(overviewEl("p", "form-chart-empty", "暂无可分析的表单数据"));
@@ -4581,6 +4705,7 @@ function renderFormTrendSvgChart(points, state, onReload) {
     legend.appendChild(overviewEl("span", `form-chart-legend-item ${className}`, label));
   });
   wrap.appendChild(legend);
+  wrap.appendChild(overviewEl("p", "form-trend-note", "趋势横轴为后台快照自然日（同一天取最后一次快照）；点击节点追加的是该自然日的提交日期条件——提交日期与快照日期是不同概念。"));
   if (!safePoints.length) wrap.appendChild(overviewEl("p", "form-chart-empty", "暂无按天快照趋势"));
   return wrap;
 }
@@ -4644,6 +4769,49 @@ function renderFormCostChart(entries, filterKey, state, onReload) {
   return section;
 }
 
+function buildFormOverdueControl(data, state, onReload) {
+  const rules = data && data.schema && data.schema.overdueRules;
+  if (!rules) return overviewEl("div");
+  const wrap = overviewEl("div", "form-overdue-control");
+  wrap.appendChild(overviewEl("span", "form-overdue-title", "逾期判定天数"));
+  const applied = state.overdueThresholds || {};
+  const inputs = {};
+  [
+    [rules.stageLabel, "overdueDaysStage", rules.stageDays],
+    [rules.lateLabel, "overdueDaysLate", rules.lateDays],
+  ].forEach(([labelText, key, defaultValue]) => {
+    const field = overviewEl("label", "form-overdue-field");
+    const input = document.createElement("input");
+    input.type = "number";
+    input.min = "0";
+    input.max = "999";
+    input.value = String(applied[key] !== undefined ? applied[key] : defaultValue);
+    input.setAttribute("aria-label", `${labelText} 逾期判定天数`);
+    inputs[key] = input;
+    field.append(
+      overviewEl("span", "form-overdue-label", labelText),
+      input,
+      overviewEl("span", "form-overdue-unit", "天"),
+    );
+    wrap.appendChild(field);
+  });
+  const apply = overviewEl("button", "btn is-secondary form-overdue-apply", "应用");
+  apply.type = "button";
+  apply.setAttribute("aria-label", "应用逾期判定天数");
+  apply.addEventListener("click", () => {
+    const next = {};
+    Object.entries(inputs).forEach(([key, input]) => {
+      const value = Math.floor(Number(input.value));
+      if (Number.isFinite(value)) next[key] = Math.max(0, Math.min(999, value));
+    });
+    state.overdueThresholds = Object.keys(next).length ? next : null;
+    if (typeof onReload === "function") onReload();
+  });
+  wrap.appendChild(apply);
+  wrap.appendChild(overviewEl("span", "form-overdue-note", `${rules.note}；趋势图与历史快照保持存储口径——提交日期与快照日期是不同概念。`));
+  return wrap;
+}
+
 function renderFormChartTabs(data, state, onReload) {
   const formKey = String(data && data.formKey || "");
   const tabs = DELIVERABLE_FORM_TABS[formKey] || [];
@@ -4671,14 +4839,25 @@ function renderFormChartTabs(data, state, onReload) {
   chartPanel.setAttribute("aria-label", tabs.find(([key]) => key === state.activeTab)?.[1] || "表单图表");
   const filter = renderFormFilterBar(data, state, onReload);
   chartPanel.appendChild(filter);
+  if (state.activeTab === "departmentStatus" || state.activeTab === "sectionStatus") {
+    const reportType = String(data && data.reportType || "");
+    if (["ewo", "paa", "ncr_progress"].includes(reportType)) {
+      chartPanel.appendChild(buildFormOverdueControl(data, state, onReload));
+    }
+  }
   const charts = data && data.charts && typeof data.charts === "object" ? data.charts : {};
+  const chartTitles = DELIVERABLE_FORM_CHART_TITLES[formKey] || {};
   if (state.activeTab === "departmentStatus") {
     const department = charts.departmentStatus && Array.isArray(charts.departmentStatus.stages)
       ? charts.departmentStatus.stages
       : [];
-    chartPanel.appendChild(renderFormStatusBars(department, "stage", state, onReload, "部门总状态", "各阶段 / 审批节点按期推进数与逾期风险数"));
+    const [title, description] = chartTitles.departmentStatus
+      || ["部门总状态", "各阶段 / 审批节点按期推进数与逾期风险数"];
+    chartPanel.appendChild(renderFormStatusBars(department, "stage", state, onReload, title, description));
   } else if (state.activeTab === "sectionStatus") {
-    chartPanel.appendChild(renderFormStatusBars(charts.sectionStatus, "section", state, onReload, formKey === "aras_ncr_progress" ? "区域状态" : "科室状态", "点击一个科室或区域可追加筛选"));
+    const [title, description] = chartTitles.sectionStatus
+      || [formKey === "aras_ncr_progress" ? "区域状态" : "科室状态", "点击一个科室或区域可追加筛选"];
+    chartPanel.appendChild(renderFormStatusBars(charts.sectionStatus, "section", state, onReload, title, description));
   } else if (state.activeTab === "quantityTrend") {
     const content = overviewEl("section", "form-chart-panel-content");
     content.append(
@@ -4710,8 +4889,12 @@ function renderFormRowsTable(data, rowsData, state, onReload) {
   table.className = "form-row-table";
   const columns = data && data.schema && Array.isArray(data.schema.columns) ? data.schema.columns : [];
   const defaultVisibleCount = data && data.schema ? Number(data.schema.defaultVisibleCount) || 12 : 12;
-  const visibleCount = Math.min(columns.length, Math.max(8, defaultVisibleCount));
-  const visibleColumns = columns.slice(0, visibleCount);
+  const keyIndexes = data && data.schema && Array.isArray(data.schema.keyColumns)
+    ? data.schema.keyColumns.map((index) => Number(index)).filter((index) => Number.isFinite(index) && index >= 0)
+    : [];
+  const visibleColumns = keyIndexes.length
+    ? columns.filter((column) => keyIndexes.includes(Number(column && column.index)))
+    : columns.slice(0, Math.min(columns.length, Math.max(8, defaultVisibleCount)));
   const thead = document.createElement("thead");
   const header = document.createElement("tr");
   ["工作表", "行号", ...visibleColumns.map((column, index) => column && column.label ? String(column.label) : `列 ${index + 1}`)].forEach((label) => header.appendChild(overviewEl("th", null, label)));
@@ -4970,9 +5153,8 @@ function renderDeliverableDetailPage(deliverableId) {
 
   // Lead with the current-status visualization and configuration details;
   // external cross-department analysis follows when a snapshot is available.
-  const formState = item.id === "VPI-T2-D3"
-    ? createDeliverableFormState("VPI-T2-D3")
-    : null;
+  const formKey = deliverableFormKey(item);
+  const formState = formKey ? createDeliverableFormState(formKey) : null;
   const analysisPanel = overviewEl(
     "section",
     formState ? "deliverable-form-analysis" : "deliverable-analysis-panel",
@@ -5118,6 +5300,7 @@ function renderArchiveDeliverableDetailPage(jobKey) {
     aras_paa: ["PAA 变更记录", "ARAS PAA"],
     aras_ncr_progress: ["NCR 审批进度", "ARAS NCR"],
     aras_ncr_detail: ["NCR 审批明细", "ARAS NCR"],
+    tdc_data_model: ["数模设计审核流程报表", "TDC"],
   };
   const [name, source] = labels[job.jobKey] || [job.jobKey, "外部同步"];
   const page = overviewEl("article", "deliverable-detail-page");

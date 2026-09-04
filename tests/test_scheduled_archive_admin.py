@@ -86,7 +86,11 @@ def test_list_jobs_returns_exactly_six_fixed_jobs(service: ScheduledArchiveAdmin
         assert "credentialRef" not in job
         assert "lease_token" not in job
         assert "leaseToken" not in job
-        assert job["filters"] == {}
+        expected_filters = {
+            "aras_ewo": {"responsibleDepartment": "技术中心_车体工程"},
+            "aras_paa": {"department": "技术中心_车体工程"},
+        }.get(key, {})
+        assert job["filters"] == expected_filters
         assert job["retryPolicy"] == {"max_attempts": 2, "backoff_seconds": 1}
         assert job["allowedFilterNames"] == list(archive_filter_names(key))
         assert job["freshness"] in {"unknown", "fresh", "stale"}

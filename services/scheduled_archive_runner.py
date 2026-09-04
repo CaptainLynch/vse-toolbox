@@ -46,10 +46,12 @@ logger = logging.getLogger(__name__)
 
 
 def _safe_text(value: object, *, limit: int = _TEXT_LIMIT) -> str:
-    return redact_sensitive_text(
-        value,
-        limit=limit,
-        collapse_newlines=True,
+    return str(
+        redact_sensitive_text(
+            value,
+            limit=limit,
+            collapse_newlines=True,
+        )
     )
 
 
@@ -144,6 +146,7 @@ class ArchiveCollection:
     record_count: int
     artifacts: tuple[ArchiveArtifact, ...]
     form_rows: tuple[Mapping[str, object], ...] | None = None
+    form_projection_error: str | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -161,6 +164,11 @@ class ArchiveCollection:
                 raise ValueError("form_rows must be a tuple or None")
             if any(not isinstance(item, Mapping) for item in self.form_rows):
                 raise ValueError("form_rows must contain mappings")
+        if self.form_projection_error is not None and (
+            not isinstance(self.form_projection_error, str)
+            or not self.form_projection_error.strip()
+        ):
+            raise ValueError("form_projection_error must be a non-empty string or None")
 
 
 class ArchiveConnector(Protocol):
@@ -221,6 +229,42 @@ class ArchiveRunOnceResult:
         ):
             return EXIT_ATTENTION
         return EXIT_OK
+
+
+# 内置 EWO/PAA 任务的默认业务部门（真实业务值）。用户在任务筛选中显式
+# 设置的其他部门值优先；缺失时由运行时兜底注入，保证默认筛选真实生效。
+DEFAULT_BUSINESS_DEPARTMENT = "技术中心_车体工程"
+_DEFAULT_DEPARTMENT_FILTER_KEYS = {
+    "aras_ewo": "responsibleDepartment",
+    "aras_paa": "department",
+}
+_FORM_PROJECTION_ERROR_MESSAGES = {
+    "official_workbook_unreadable": "official workbook could not be verified for form projection",
+    "official_workbook_truncated": "official workbook preview was truncated before form projection",
+    "official_workbook_contract_invalid": "official workbook did not match the form contract",
+    "api_result_truncated": "fallback API result reached its record limit before form projection",
+    "form_projection_failed": "form snapshot projection failed",
+}
+
+
+def _effective_builtin_filters(
+    job_key: str,
+    filters: Mapping[str, object],
+) -> dict[str, object]:
+    merged = dict(filters)
+    filter_key = _DEFAULT_DEPARTMENT_FILTER_KEYS.get(job_key)
+    if filter_key is None:
+        return merged
+    # 清理阶段 B 早期版本为 EWO 写入的错误默认键；该值不是用户可配置
+    # 的合法 EWO 字段，只在精确匹配内置默认值时移除。
+    if (
+        job_key == "aras_ewo"
+        and merged.get("department") == DEFAULT_BUSINESS_DEPARTMENT
+    ):
+        merged.pop("department", None)
+    if not str(merged.get(filter_key) or "").strip():
+        merged[filter_key] = DEFAULT_BUSINESS_DEPARTMENT
+    return merged
 
 
 class ArchiveSyncRunner:
@@ -287,7 +331,10 @@ class ArchiveSyncRunner:
                 job_key=job_key,
                 source_type=str(lease["source_type"]),
                 report_type=str(lease["report_type"]),
-                filters=dict(_required_mapping(lease, "filters")),
+                filters=_effective_builtin_filters(
+                    str(lease["job_key"]),
+                    _required_mapping(lease, "filters"),
+                ),
                 output_subdir=str(lease["output_subdir"]),
                 run_id=run_id,
                 output_directory=str(lease.get("output_directory") or ""),
@@ -316,6 +363,27 @@ class ArchiveSyncRunner:
                     max_attempts=retry_attempts,
                     backoff_seconds=retry_backoff,
                 )
+            if collection.form_projection_error:
+                return self._finalize_collection_attention(
+                    context,
+                    collection,
+                    collection.form_projection_error,
+                    lease_token,
+                )
+            if collection.form_rows is not None:
+                try:
+                    self._publish_form_snapshot(context, collection)
+                except Exception:
+                    logger.warning(
+                        "form snapshot projection failed for %s",
+                        context.job_key,
+                    )
+                    return self._finalize_collection_attention(
+                        context,
+                        collection,
+                        "form_projection_failed",
+                        lease_token,
+                    )
             self._db.finalize_archive_run(
                 job_id,
                 run_id,
@@ -330,18 +398,6 @@ class ArchiveSyncRunner:
                     f"{len(collection.artifacts)} artifacts"
                 ),
             )
-            try:
-                self._publish_form_snapshot(context, collection)
-            except Exception as exc:
-                # Archive finalization is already the auditable source run;
-                # a malformed form projection must not turn that successful
-                # run into a second lease-finalization attempt or erase the
-                # last good form snapshot.
-                logger.warning(
-                    "form snapshot projection failed for %s: %s",
-                    context.job_key,
-                    _safe_text(exc),
-                )
             return ArchiveJobRunResult(
                 job_id,
                 job_key,
@@ -393,6 +449,7 @@ class ArchiveSyncRunner:
             "aras_paa": "aras_paa",
             "aras_ncr_progress": "aras_ncr_progress",
             "aras_ncr_detail": "aras_ncr_detail",
+            "tdc_data_model": "tdc_data_model",
         }.get(context.job_key)
         if form_key is None:
             return
@@ -411,6 +468,47 @@ class ArchiveSyncRunner:
             artifacts=tuple(item.as_metadata() for item in collection.artifacts),
         )
         self._db.publish_deliverable_form_snapshot(snapshot)
+
+    def _finalize_collection_attention(
+        self,
+        context: ArchiveJobContext,
+        collection: ArchiveCollection,
+        error_type: str,
+        lease_token: str,
+    ) -> ArchiveJobRunResult:
+        """Persist collected artifacts while making projection failure visible."""
+        safe_error_type = (
+            error_type
+            if error_type in _FORM_PROJECTION_ERROR_MESSAGES
+            else "form_projection_failed"
+        )
+        message = _FORM_PROJECTION_ERROR_MESSAGES[safe_error_type]
+        artifact_metadata = tuple(
+            item.as_metadata() for item in collection.artifacts
+        )
+        self._db.finalize_archive_run(
+            context.job_id,
+            context.run_id,
+            lease_token,
+            "needs_attention",
+            record_count=collection.record_count,
+            artifacts=artifact_metadata,
+            result_summary=(
+                f"archived {collection.record_count} records in "
+                f"{len(collection.artifacts)} artifacts; {message}"
+            ),
+            error_type=safe_error_type,
+            error_message=message,
+        )
+        return ArchiveJobRunResult(
+            context.job_id,
+            context.job_key,
+            "needs_attention",
+            context.run_id,
+            "needs_attention",
+            safe_error_type,
+            message,
+        )
 
     def run_once(
         self,

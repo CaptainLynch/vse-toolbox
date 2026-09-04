@@ -121,6 +121,18 @@ class FakeTDCCrawler:
         return SimpleNamespace(path=p, file_name="tdc_sor.xlsx", byte_count=18)
 
 
+class TruncatedFallbackTDCCrawler(FakeTDCCrawler):
+    """TDC fallback double exposing an explicit pagination cap."""
+
+    def crawl_data_model_all(self, filters: Any, max_records: int = 10000) -> Any:
+        result = super().crawl_data_model_all(filters, max_records)
+        return SimpleNamespace(
+            rows=result.rows,
+            total=max_records + 1,
+            stop_reason="max_records",
+        )
+
+
 class FakeArasCrawler:
     def __init__(
         self,
@@ -321,6 +333,55 @@ def test_official_ncr_form_rows_align_vehicle_and_engine_columns(tmp_path: Path)
     assert [item["sheetName"] for item in rows] == ["整车", "发动机"]
     assert len(rows[1]["values"]) == 65
     assert rows[1]["values"][36] == "10"
+
+
+def test_official_ncr_truncated_preview_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    preview = SimpleNamespace(
+        sheet_name="Sheet1",
+        rows=[[]],
+        truncated=True,
+    )
+    monkeypatch.setattr(
+        "services.scheduled_archive_connectors.read_xlsx_workbook_preview",
+        lambda *args, **kwargs: (preview,),
+    )
+
+    with pytest.raises(ValueError, match="truncated"):
+        _official_form_rows(tmp_path / "ncr.xlsx", "ncr_progress")
+
+
+def test_tdc_truncated_preview_is_exposed_on_collection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    preview = SimpleNamespace(
+        rows=[],
+        truncated=True,
+    )
+    monkeypatch.setattr(
+        "services.scheduled_archive_connectors.read_xlsx_preview",
+        lambda *args, **kwargs: preview,
+    )
+    connector, _ = make_tdc_harness(tmp_path, FakeTDCCrawler)
+
+    collection = connector.collect(
+        make_context(
+            "tdc_data_model",
+            source_type="tdc",
+            report_type="data_model",
+            output_subdir="tdc_truncated",
+            run_id=63,
+        ),
+        random_credential()[0],
+    )
+
+    assert collection.form_projection_error == "official_workbook_truncated"
+    assert collection.form_rows is None
+    assert collection.record_count == 0
+    assert collection.artifacts
 
 
 def test_official_data_model_workbook_rows_are_used_for_normalization(tmp_path: Path) -> None:
@@ -672,6 +733,7 @@ def test_aras_ncr_progress_detail_success(
         "recordCount": None,
         "normalization": "pending_verified_workbook_contract",
     }
+    assert collection.form_projection_error == "official_workbook_unreadable"
 
 
 def test_aras_ncr_form_projection_runs_before_download_directory_cleanup(
@@ -875,3 +937,206 @@ def test_credentials_and_raw_ncr_xml_never_enter_artifacts_or_content(tmp_path: 
             for secret in secrets_to_check:
                 assert secret.encode("utf-8") not in content
                 assert secret not in file_path.name
+
+
+# ── TDC 数模设计审核流程的表单快照行（form_rows） ────────────────────────────
+
+
+def _tdc_export_values() -> list[str]:
+    """构造一行合成的 47 列官方导出数据（全部为虚构值，按合同表头展开）。"""
+    labeled = {
+        "实例号": "90000101",
+        "流程名": "T2发布-组件A",
+        "流水单号": "F999X-3D-0001",
+        "发布属性": "T2发布",
+        "申请人": "测试员甲",
+        "部门": "内饰科",
+        "申请日期": "2026-08-20 10:00:00",
+        "项目/车型": "F999X",
+        "零件号": "27000001",
+        "数模号": "27000001",
+        "零件名称": "组件A",
+        "数量": "1",
+        "重量（单件）": "0.8",
+        "零件合计": "0.8",
+        "版本号": "001.0001",
+        "对应IA号": "IA000001",
+        "EWO/SOR号": "EWO-000001",
+        "应签人数": "13",
+        "已签人数": "13",
+        "未签人数": "0",
+        "签署率": "100.00%",
+        "状态": "审批中",
+    }
+    headers = report_contracts()["tdc_data_model"]["headerRows"][0]
+    return [str(labeled.get(str(header), "")) for header in headers]
+
+
+def _write_official_data_model_values_xlsx(
+    path: Path,
+    rows: Sequence[Sequence[object]],
+) -> None:
+    """按 tdc_data_model 合同表头写一本可读的官方导出工作簿。"""
+    headers = report_contracts()["tdc_data_model"]["headerRows"][0]
+
+    def row_xml(row_number: int, values: Sequence[object]) -> str:
+        cells = "".join(
+            f'<c r="{_cell_ref(index, row_number)}" t="inlineStr">'
+            f"<is><t>{escape(str(value))}</t></is></c>"
+            for index, value in enumerate(values, 1)
+        )
+        return f'<row r="{row_number}">{cells}</row>'
+
+    workbook = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>'
+    )
+    relationships = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+        'Target="worksheets/sheet1.xml"/></Relationships>'
+    )
+    sheet = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'
+        + row_xml(1, headers)
+        + "".join(row_xml(number, values) for number, values in enumerate(rows, 2))
+        + "</sheetData></worksheet>"
+    )
+    with ZipFile(path, "w") as archive:
+        archive.writestr("xl/workbook.xml", workbook)
+        archive.writestr("xl/_rels/workbook.xml.rels", relationships)
+        archive.writestr("xl/worksheets/sheet1.xml", sheet)
+
+
+class OfficialExportTDCCrawler(FakeTDCCrawler):
+    """TDC 测试替身：官方导出产出可读的合同工作簿。"""
+
+    def __init__(self, *, export_values: Sequence[str], **kw: Any) -> None:
+        super().__init__(**kw)
+        self.export_values = list(export_values)
+
+    def export_data_model(self, filters: Any) -> Any:
+        self.last_export_filters = filters
+        assert self.output_dir is not None
+        path = self.output_dir / "tdc_data_model.xlsx"
+        _write_official_data_model_values_xlsx(path, [self.export_values])
+        return SimpleNamespace(
+            path=path,
+            file_name="tdc_data_model.xlsx",
+            byte_count=path.stat().st_size,
+        )
+
+
+def make_tdc_harness(
+    tmp_path: Path,
+    crawler_cls: type,
+    **crawler_kwargs: Any,
+) -> tuple[TDCArchiveConnector, list[Any]]:
+    """Build a TDC connector whose crawler instances accept injected rows."""
+    crawlers: list[Any] = []
+
+    def crawler_factory(**kw: Any) -> Any:
+        inst = crawler_cls(**kw, **crawler_kwargs)
+        crawlers.append(inst)
+        return inst
+
+    connector = TDCArchiveConnector(
+        make_store(tmp_path),
+        auth_factory=FakeAuthClient,
+        crawler_factory=crawler_factory,
+    )
+    return connector, crawlers
+
+
+def test_tdc_official_export_collection_exposes_contract_form_rows(
+    tmp_path: Path,
+) -> None:
+    """官方导出可读时 form_rows 必须等于按合同表头展开的行字典。"""
+    export_values = _tdc_export_values()
+    connector, crawlers = make_tdc_harness(
+        tmp_path,
+        OfficialExportTDCCrawler,
+        export_values=export_values,
+    )
+    context = make_context(
+        "tdc_data_model",
+        source_type="tdc",
+        report_type="data_model",
+        output_subdir="tdc_official",
+        run_id=61,
+    )
+
+    collection = connector.collect(context, random_credential()[0])
+
+    headers = report_contracts()["tdc_data_model"]["headerRows"][0]
+    assert collection.record_count == 1
+    assert collection.form_rows == (
+        {str(header): value for header, value in zip(headers, export_values)},
+    )
+    assert len(collection.artifacts) == 3
+    # 官方工作簿可用时不得再退回爬取列表。
+    assert crawlers[0].last_crawl_filters is None
+    assert crawlers[0].last_export_filters is not None
+
+
+def test_tdc_crawl_fallback_collection_exposes_crawl_form_rows(
+    tmp_path: Path,
+) -> None:
+    """官方工作簿不可读时回退爬取列表，form_rows 等于爬取字典行。"""
+    crawl_rows = (
+        {
+            "incident": "90000201",
+            "documentNo": "F888Y-3D-0002",
+            "requestDate": "2026-08-30 09:30:00",
+            "projectModel": "F888Y",
+            "department": "车身科",
+            "publishProperty": "T2发布",
+            "status": "审批中",
+        },
+    )
+    connector, crawlers = make_tdc_harness(
+        tmp_path,
+        FakeTDCCrawler,
+        rows=crawl_rows,
+    )
+    context = make_context(
+        "tdc_data_model",
+        source_type="tdc",
+        report_type="data_model",
+        output_subdir="tdc_fallback",
+        run_id=62,
+    )
+
+    collection = connector.collect(context, random_credential()[0])
+
+    assert collection.record_count == len(crawl_rows)
+    assert collection.form_rows == crawl_rows
+    assert len(collection.artifacts) == 3
+    # 官方工作簿不可读时必须已执行爬取回退。
+    assert crawlers[0].last_crawl_filters is not None
+
+
+def test_tdc_truncated_crawl_fallback_is_exposed_on_collection(tmp_path: Path) -> None:
+    connector, _ = make_tdc_harness(
+        tmp_path,
+        TruncatedFallbackTDCCrawler,
+    )
+
+    collection = connector.collect(
+        make_context(
+            "tdc_data_model",
+            source_type="tdc",
+            report_type="data_model",
+            output_subdir="tdc_fallback_truncated",
+            run_id=64,
+        ),
+        random_credential()[0],
+    )
+
+    assert collection.form_projection_error == "api_result_truncated"
+    assert collection.form_rows is None

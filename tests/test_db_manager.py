@@ -98,16 +98,16 @@ def test_get_table_row_count(tmp_db: DatabaseManager) -> None:
     assert count >= 2, f"projects 行数应 ≥ 2，实际 {count}"
 
 
-def test_schema_version_is_v11(tmp_db: DatabaseManager) -> None:
-    """验证当前支持的 schema 版本为 11。"""
-    assert CURRENT_SCHEMA_VERSION == 11
+def test_schema_version_is_v12(tmp_db: DatabaseManager) -> None:
+    """验证当前支持的 schema 版本为 12。"""
+    assert CURRENT_SCHEMA_VERSION == 12
     with tmp_db.get_connection() as conn:
         ver = conn.execute("PRAGMA user_version").fetchone()[0]
-    assert ver == 11
+    assert ver == 12
 
 
-def test_v3_to_v11_migration(tmp_path: Path) -> None:
-    """验证从已存在的 v3 数据库平滑升级到 v11。"""
+def test_v3_to_v12_migration(tmp_path: Path) -> None:
+    """验证从已存在的 v3 数据库平滑升级到 v12。"""
     v3_db_path = tmp_path / "v3_legacy.db"
     conn = sqlite3.connect(str(v3_db_path))
     conn.execute("PRAGMA user_version = 3")
@@ -130,7 +130,7 @@ def test_v3_to_v11_migration(tmp_path: Path) -> None:
 
     with db.get_connection() as c:
         ver = c.execute("PRAGMA user_version").fetchone()[0]
-        assert ver == 11
+        assert ver == 12
         assert db.table_exists("excel_tasks")
         assert db.table_exists("excel_task_files")
         assert db.table_exists("excel_task_runs")
@@ -180,8 +180,8 @@ def test_seed_renames_legacy_ewo_and_phase_anchor(tmp_path: Path) -> None:
     assert custom == "我的自定义流程"
 
 
-def test_v5_to_v11_migration(tmp_path: Path) -> None:
-    """验证从已存在的 v5 数据库平滑升级到 v11。"""
+def test_v5_to_v12_migration(tmp_path: Path) -> None:
+    """验证从已存在的 v5 数据库平滑升级到 v12。"""
     v5_db_path = tmp_path / "v5_legacy.db"
     conn = sqlite3.connect(str(v5_db_path))
     conn.execute("PRAGMA user_version = 5")
@@ -204,12 +204,12 @@ def test_v5_to_v11_migration(tmp_path: Path) -> None:
 
     with db.get_connection() as c:
         ver = c.execute("PRAGMA user_version").fetchone()[0]
-        assert ver == 11
+        assert ver == 12
         assert db.table_exists("excel_artifact_download_audit")
         assert db.table_exists("project_status_analysis_snapshots")
 
 
-def test_v9_to_v11_migration_adds_analysis_detail_columns(tmp_path: Path) -> None:
+def test_v9_to_v12_migration_adds_analysis_detail_columns(tmp_path: Path) -> None:
     """A v9 database gains the number and pending-signer columns in place."""
     db_path = tmp_path / "v9_analysis_legacy.db"
     conn = sqlite3.connect(str(db_path))
@@ -244,7 +244,7 @@ def test_v9_to_v11_migration_adds_analysis_detail_columns(tmp_path: Path) -> Non
             for row in c.execute("PRAGMA table_info(project_status_analysis_items)")
         }
         assert {"display_number", "pending_signers"}.issubset(columns)
-        assert c.execute("PRAGMA user_version").fetchone()[0] == 11
+        assert c.execute("PRAGMA user_version").fetchone()[0] == 12
 
 
 def test_analysis_items_department_model_extra_columns_migration(tmp_path: Path) -> None:
@@ -315,17 +315,142 @@ def test_analysis_items_department_model_extra_columns_migration(tmp_path: Path)
 
 
 def test_rejects_newer_schema_version(tmp_path: Path) -> None:
-    """验证高于 CURRENT_SCHEMA_VERSION (如 v12) 的库在执行 DDL 前被拒绝。"""
-    v11_db_path = tmp_path / "v12_future.db"
-    conn = sqlite3.connect(str(v11_db_path))
-    conn.execute("PRAGMA user_version = 12")
+    """验证高于 CURRENT_SCHEMA_VERSION (如 v13) 的库在执行 DDL 前被拒绝。"""
+    future_db_path = tmp_path / "v13_future.db"
+    conn = sqlite3.connect(str(future_db_path))
+    conn.execute("PRAGMA user_version = 13")
     conn.commit()
     conn.close()
 
-    db = DatabaseManager(db_path=v11_db_path)
+    db = DatabaseManager(db_path=future_db_path)
     with pytest.raises(sqlite3.DatabaseError) as exc_info:
         db.init_database()
-    assert "unsupported schema version 12" in str(exc_info.value)
+    assert "unsupported schema version 13" in str(exc_info.value)
+
+
+def test_form_snapshot_check_constraint_rebuild_allows_tdc_data_model(
+    tmp_path: Path,
+) -> None:
+    """旧库的 form_key CHECK 白名单被重建，既有快照与行数据必须保留。"""
+    legacy_db_path = tmp_path / "legacy-form-check.db"
+    conn = sqlite3.connect(str(legacy_db_path))
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA user_version = 11")
+    conn.execute(
+        """
+        CREATE TABLE deliverable_form_snapshots (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_key       TEXT NOT NULL UNIQUE,
+            form_key           TEXT NOT NULL CHECK (form_key IN (
+                'VPI-T2-D3', 'aras_paa', 'aras_ncr_progress', 'aras_ncr_detail'
+            )),
+            report_type        TEXT NOT NULL,
+            source_run_id      INTEGER,
+            source             TEXT NOT NULL DEFAULT '',
+            snapshot_at        TEXT NOT NULL,
+            row_count          INTEGER NOT NULL CHECK (row_count >= 0),
+            schema_json        TEXT NOT NULL,
+            summary_json       TEXT NOT NULL,
+            charts_json        TEXT NOT NULL,
+            artifacts_json     TEXT NOT NULL DEFAULT '[]',
+            created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE deliverable_form_rows (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_id     INTEGER NOT NULL,
+            row_key         TEXT NOT NULL,
+            row_number      INTEGER NOT NULL CHECK (row_number >= 1),
+            sheet_name      TEXT NOT NULL DEFAULT '',
+            values_json     TEXT NOT NULL,
+            dimensions_json TEXT NOT NULL DEFAULT '{}',
+            search_text     TEXT NOT NULL DEFAULT '',
+            status_key      TEXT NOT NULL DEFAULT '',
+            department_key  TEXT NOT NULL DEFAULT '',
+            section_key     TEXT NOT NULL DEFAULT '',
+            model_key       TEXT NOT NULL DEFAULT '',
+            stage_key       TEXT NOT NULL DEFAULT '',
+            submitted_date  TEXT,
+            planned_date    TEXT,
+            overdue_state   TEXT NOT NULL DEFAULT 'unknown'
+                            CHECK (overdue_state IN ('on_time', 'overdue', 'unknown', 'not_applicable')),
+            is_completed    INTEGER NOT NULL DEFAULT 0 CHECK (is_completed IN (0, 1)),
+            cost_json       TEXT NOT NULL DEFAULT '{}',
+            UNIQUE (snapshot_id, row_key),
+            FOREIGN KEY (snapshot_id) REFERENCES deliverable_form_snapshots(id) ON DELETE CASCADE
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO deliverable_form_snapshots "
+        "(snapshot_key, form_key, report_type, snapshot_at, row_count, "
+        "schema_json, summary_json, charts_json) "
+        "VALUES ('legacy-ewo', 'VPI-T2-D3', 'ewo', '2026-09-01T00:00:00Z', 1, '{}', '{}', '{}')"
+    )
+    conn.execute(
+        "INSERT INTO deliverable_form_rows "
+        "(snapshot_id, row_key, row_number, values_json) "
+        "VALUES (1, 'row-1', 1, '[]')"
+    )
+    conn.commit()
+    conn.close()
+
+    db = DatabaseManager(db_path=legacy_db_path)
+    db.init_database()
+
+    with db.get_connection() as c:
+        ddl = c.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'deliverable_form_snapshots'"
+        ).fetchone()["sql"] or ""
+        assert "tdc_data_model" in ddl
+        assert "deliverable_form_snapshots_rebuild" not in ddl
+        assert not db.table_exists("deliverable_form_snapshots_rebuild")
+        assert c.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert c.execute("PRAGMA user_version").fetchone()[0] == 12
+        ewo = c.execute(
+            "SELECT form_key FROM deliverable_form_snapshots WHERE snapshot_key = 'legacy-ewo'"
+        ).fetchone()
+        assert ewo is not None
+        rows = c.execute(
+            "SELECT COUNT(*) FROM deliverable_form_rows WHERE row_key = 'row-1'"
+        ).fetchone()[0]
+        assert rows == 1
+        index_row = c.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index' "
+            "AND name = 'idx_deliverable_form_snapshots_latest'"
+        ).fetchone()
+        assert index_row is not None
+
+    # 新白名单立即生效：tdc_data_model 可写入并提交。
+    with db.get_connection() as c:
+        c.execute(
+            "INSERT INTO deliverable_form_snapshots "
+            "(snapshot_key, form_key, report_type, snapshot_at, row_count, "
+            "schema_json, summary_json, charts_json) "
+            "VALUES ('legacy-tdc', 'tdc_data_model', 'tdc_data_model', "
+            "'2026-09-02T00:00:00Z', 0, '{}', '{}', '{}')"
+        )
+    with db.get_connection() as c:
+        stored = c.execute(
+            "SELECT COUNT(*) FROM deliverable_form_snapshots "
+            "WHERE form_key = 'tdc_data_model'"
+        ).fetchone()[0]
+        assert stored == 1
+
+    # 未知键仍被 CHECK 约束拒绝。
+    with db.get_connection() as c:
+        with pytest.raises(sqlite3.IntegrityError):
+            c.execute(
+                "INSERT INTO deliverable_form_snapshots "
+                "(snapshot_key, form_key, report_type, snapshot_at, row_count, "
+                "schema_json, summary_json, charts_json) "
+                "VALUES ('bad-key', 'unknown_form', 'ewo', "
+                "'2026-09-02T00:00:00Z', 0, '{}', '{}', '{}')"
+            )
 
 
 def test_excel_task_artifact_schema_contract(tmp_db: DatabaseManager) -> None:

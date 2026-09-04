@@ -428,6 +428,30 @@ def test_ncr_progress_maps_cdata_payload_and_parses_export_record() -> None:
     assert result.record_id == "C4382C4265084C28AC107455C4C47690"
 
 
+def test_ncr_progress_accepts_result_file_item_without_fixed_type_name() -> None:
+    """The live Result item is identified by its _file relation, not one type spelling."""
+    xml = """
+    <SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/">
+      <SOAP-ENV:Body>
+        <Result>
+          <Item id="record-id" type="sgmw_outputFile" typeId="item-type-id">
+            <_file keyed_name="ncr-progress.xlsx" type="File">file-id</_file>
+          </Item>
+        </Result>
+        <Message>
+          <Item id="file-id" type="File"><filename>ncr-progress.xlsx</filename></Item>
+        </Message>
+      </SOAP-ENV:Body>
+    </SOAP-ENV:Envelope>
+    """
+
+    result = ArasCrawlerClient.parse_ncr_progress_response(xml)
+
+    assert result.file_id == "file-id"
+    assert result.file_name == "ncr-progress.xlsx"
+    assert result.record_id == "record-id"
+
+
 def test_ncr_detail_uses_detail_method_and_parses_file_name() -> None:
     session = FakeSession([FakeResponse(fixture_text("ncr_detail_response.xml"))])
     client = ArasCrawlerClient("http://aras.example", session=session)  # type: ignore[arg-type]
