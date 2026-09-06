@@ -1,7 +1,26 @@
 # Current State
 
-Last checkpoint: 2026-09-06（goal 收尾：环图节点自动显示规则落地 +
-code-reviewer 审计修复 + 已提交 c6286d5/5e100b3，全量 1690 passed）。
+Last checkpoint: 2026-09-06（五项 UI 需求交付：详细明细折叠/筛选栏溢出
+修复/负责人移除+备注内联编辑/车型项目统一命名+动态占位/主计划名称内联
+改名，已提交 0bbcac0，全量 1694 passed）。
+
+## 五项 UI 需求（2026-09-06 用户提出，方案经预览确认后实施）
+
+1. 交付物详情"详细明细"折叠为 details 面板（默认收起）。
+2. 筛选栏多选框溢出修复：`.form-filter-row-dims .analysis-multi-select`
+   解除 min-width:220px，auto-fit 降 150px（根因：基础样式最小宽度大于
+   网格列宽）。
+3. 负责人从详情网格与总览明细表两处移除（编辑表单 owner 字段保留）；
+   风险与备注在详情网格增加 ✎ 内联编辑（走既有 deliverable PATCH，
+   失败保留输入可重试）。
+4. 归档筛选车型项目字段统一命名（EWO projectCode/PAA vehicleKeyword/
+   数模 projectModel/SOR carTypeProject + EWO 同步策略匹配字段标签），
+   占位符动态显示当前主计划名称（archivePlanNameCache，两条改名路径均
+   调 invalidateArchivePlanNameCache）。
+5. 主计划名称支持只读卡片单击内联改名（startPhaseNameInlineEdit，走
+   既有 phase PATCH；编辑阶段信息表单原本即可改名，属可发现性增强）。
+验证：tools/verify_ui_requests.py 五项断言全过（含键盘与 JS 双路径、
+改名 F610L→还原 F610S、1130 视口 0 溢出）。
 
 ## Current objective
 
