@@ -1667,6 +1667,41 @@ _PROJECT_STATUS_TONES = {
     "已逾期": "error",
 }
 
+#: 交付物 ↔ 统一表单分析 form_key 的后端单一映射（交付物代码与
+#: core.db_manager.ARCHIVE_JOB_CONTRACTS 的合同代码对齐）。payload 通过
+#: formLink 下发给前端，前端不再各自维护该映射。
+DELIVERABLE_FORM_LINKS = {
+    "VPI-T2-D3": "VPI-T2-D3",
+    "VPI-T2-D2": "tdc_sor",
+    "VPI-T2-D5": "tdc_data_model",
+}
+
+
+def _deliverable_form_link(
+    db: DatabaseManager, deliverable_id: str
+) -> dict[str, Any] | None:
+    """读取交付物最新表单快照的联动摘要；无映射返回 None。"""
+    form_key = DELIVERABLE_FORM_LINKS.get(deliverable_id)
+    if not form_key:
+        return None
+    snapshot_at = None
+    summary: dict[str, int] | None = None
+    try:
+        snapshot = db.get_latest_deliverable_form_snapshot(form_key)
+    except KeyError:
+        snapshot = None
+    if snapshot is not None:
+        snapshot_at = snapshot.get("snapshot_at")
+        raw_summary = snapshot.get("summary")
+        if isinstance(raw_summary, Mapping):
+            summary = {
+                "total": int(raw_summary.get("total") or 0),
+                "completed": int(raw_summary.get("completed") or 0),
+                "incomplete": int(raw_summary.get("incomplete") or 0),
+                "overdue": int(raw_summary.get("overdue") or 0),
+            }
+    return {"formKey": form_key, "snapshotAt": snapshot_at, "summary": summary}
+
 
 def _project_status_payload(
     db: DatabaseManager,
@@ -1728,6 +1763,7 @@ def _project_status_payload(
                 "scheduleState": schedule_state,
                 "scheduleDays": schedule_days,
                 "updatedAt": row["updated_at"],
+                "formLink": _deliverable_form_link(db, str(row["id"])),
                 "updatePolicy": {
                     "mode": summary["mode"],
                     "enabled": bool(summary["enabled"]),
@@ -2014,14 +2050,17 @@ def _validate_project_status_milestones(
 
         date_text = raw.get("date")
         parsed_date = None
-        if not isinstance(date_text, str) or not date_text:
-            errors[f"{prefix}.date"] = "节点日期不能为空"
-            date_text = ""
-        else:
+        if isinstance(date_text, str) and date_text.strip():
+            date_text = date_text.strip()
             try:
                 parsed_date = date.fromisoformat(date_text)
             except ValueError:
                 errors[f"{prefix}.date"] = "节点日期格式无效"
+        else:
+            # 空日期=待排期：仅允许"未开始"节点；排期后按阶段区间校验。
+            date_text = ""
+            if requested_status != "未开始":
+                errors[f"{prefix}.date"] = "空日期节点状态必须为未开始"
         if parsed_date and not start_date <= parsed_date <= end_date:
             errors[f"{prefix}.date"] = "节点日期必须位于阶段周期内"
 
@@ -2029,7 +2068,7 @@ def _validate_project_status_milestones(
             {
                 "id": milestone_id,
                 "name": clean_name,
-                "date": date_text,
+                "date": date_text or None,
                 "status": requested_status,
                 "type": node_type,
                 "sort_order": index + 1,

@@ -17,7 +17,14 @@ from core.redaction import redact_sensitive_text
 from core.report_contracts import report_contracts, table_payload
 
 FORM_KEYS = frozenset(
-    {"VPI-T2-D3", "aras_paa", "aras_ncr_progress", "aras_ncr_detail", "tdc_data_model"}
+    {
+        "VPI-T2-D3",
+        "aras_paa",
+        "aras_ncr_progress",
+        "aras_ncr_detail",
+        "tdc_data_model",
+        "tdc_sor",
+    }
 )
 
 _REPORT_BY_FORM_KEY = {
@@ -26,6 +33,7 @@ _REPORT_BY_FORM_KEY = {
     "aras_ncr_progress": "ncr_progress",
     "aras_ncr_detail": "ncr_detail",
     "tdc_data_model": "tdc_data_model",
+    "tdc_sor": "tdc_sor",
 }
 _SOURCE_BY_FORM_KEY = {
     "VPI-T2-D3": "aras",
@@ -33,6 +41,7 @@ _SOURCE_BY_FORM_KEY = {
     "aras_ncr_progress": "aras",
     "aras_ncr_detail": "aras",
     "tdc_data_model": "tdc",
+    "tdc_sor": "tdc",
 }
 _SHEET_NAMES_BY_FORM_KEY = {
     "VPI-T2-D3": ["Innovator"],
@@ -40,6 +49,7 @@ _SHEET_NAMES_BY_FORM_KEY = {
     "aras_ncr_progress": ["Sheet1", "Sheet2"],
     "aras_ncr_detail": ["整车", "发动机"],
     "tdc_data_model": ["Sheet1"],
+    "tdc_sor": ["Sheet1"],
 }
 _STAGES_BY_REPORT = {
     "ewo": ("DRAFT1", "DRAFT2", "EDIT1", "EDIT2", "PROC", "IMPL", "CLOSE"),
@@ -65,9 +75,11 @@ _STAGES_BY_REPORT = {
     # 数模设计审核流程没有固定审批阶段列表；阶段图按观察到的
     # 项目/车型值聚合（见 _stage_status_summary）。
     "tdc_data_model": (),
+    # SOR 定点流程同理：阶段图按观察到的车型项目值聚合。
+    "tdc_sor": (),
 }
 _TEXT_LIMIT = 600
-_CONTACT_INDEXES = {"ewo": (13,), "paa": (5, 15)}
+_CONTACT_INDEXES = {"ewo": (13,), "paa": (5, 15), "tdc_sor": (14,)}
 _NCR_COST_LABELS = {
     "investment": {
         "estimate": "测算工程工装费用(万元)",
@@ -100,6 +112,7 @@ _NCR_PROGRESS_STAGE_DATE_LABELS = {
 # - PAA：起草/编辑类 3 天；PROC 7 天；IMPL 只比较估计完成日期。
 # - NCR 审批进度：前两个节点（NCR管理员、PE科室经理）3 天，其余节点 7 天。
 # - 数模设计审核流程：审批中且申请日期滞留超过 7 天记为逾期。
+# - SOR 定点流程：同口径，审批中且申请日期滞留超过 7 天记为逾期。
 _TDC_OVERDUE_DWELL_DAYS = 7
 _OVERDUE_RULES = {
     "ewo": {"stageDays": 7, "lateDays": 30},
@@ -107,7 +120,10 @@ _OVERDUE_RULES = {
     "ncr_progress": {"stageDays": 3, "lateDays": 7},
     # 数模设计审核流程：审批中且申请日期滞留超过 7 天记为逾期。
     "tdc_data_model": {"stageDays": _TDC_OVERDUE_DWELL_DAYS, "lateDays": _TDC_OVERDUE_DWELL_DAYS},
+    "tdc_sor": {"stageDays": _TDC_OVERDUE_DWELL_DAYS, "lateDays": _TDC_OVERDUE_DWELL_DAYS},
 }
+# 走"审批中滞留"逾期口径的 TDC 表单（不依赖阶段词表，见 classify_overdue）。
+_TDC_DWELL_REPORTS = frozenset({"tdc_data_model", "tdc_sor"})
 _NCR_STAGE_FIRST_TWO = frozenset({"NCR管理员", "PE科室经理"})
 _OVERDUE_THRESHOLD_MIN = 0
 _OVERDUE_THRESHOLD_MAX = 999
@@ -133,6 +149,10 @@ _KEY_COLUMN_LABELS = {
         "批准单件成本变化（元）", "实际单件成本变化（元）", "EWO号",
     ),
     "tdc_data_model": (),
+    "tdc_sor": (
+        "流水单号", "审批状态", "车型项目", "类型", "科室", "部门",
+        "零件号", "零件名称", "申请日期", "最新完成节点", "SOR号",
+    ),
 }
 # 数模设计审核流程（TDC 47 列导出）的展示口径：
 # - “重量（单件）”“零件合计”不在明细视图体现（列索引 12/13）；
@@ -142,6 +162,19 @@ _KEY_COLUMN_LABELS = {
 _TDC_HIDDEN_COLUMN_INDEXES = {"tdc_data_model": frozenset({12, 13})}
 _TDC_DEFAULT_VISIBLE_COUNT = 15
 _TDC_DEPRECATED_STATUS = "已废弃"
+# SOR 定点流程的审批状态口径：API 返回中英文混合（Completed/审批中），
+# 统一归一化为中文；已完成/Completed 计为完成；已终止/已作废为终态，
+# 不计入未完成，也不参与逾期判定。
+_SOR_COMPLETED_STATUSES = frozenset({"已完成", "Completed"})
+_SOR_TERMINAL_STATUSES = frozenset({"已终止", "已作废", "Terminated", "Cancelled"})
+
+
+def _normalize_sor_status(value: object) -> str:
+    """Normalize SOR approval status (mixed EN/CN source values) to Chinese."""
+    text = _safe_text(value, 120)
+    return {"Completed": "已完成", "Terminated": "已终止", "Cancelled": "已作废"}.get(
+        text, text
+    )
 
 
 @dataclass(frozen=True)
@@ -377,14 +410,21 @@ def classify_overdue(
     )
     if report == "ncr_detail":
         return "not_applicable"
-    if report == "tdc_data_model":
-        # 数模的阶段维度是项目/车型，可能为空或与审批阶段词表冲突；
-        # 逾期只取决于状态与申请日期滞留天数，不依赖项目/车型取值，
-        # 因此必须在通用 stage 守卫之前判定。
-        status = _normalize_tdc_status(row.get("status"))
+    if report in _TDC_DWELL_REPORTS:
+        # TDC 表单的阶段维度不与审批阶段词表对应（数模=项目/车型，
+        # SOR=车型项目），可能为空或与词表冲突；逾期只取决于状态与
+        # 申请日期滞留天数，因此必须在通用 stage 守卫之前判定。
+        status = (
+            _normalize_sor_status(row.get("status"))
+            if report == "tdc_sor"
+            else _normalize_tdc_status(row.get("status"))
+        )
+        terminal = (
+            _SOR_TERMINAL_STATUSES if report == "tdc_sor" else {_TDC_DEPRECATED_STATUS}
+        )
         if (
             row.get("isCompleted")
-            or status == _TDC_DEPRECATED_STATUS
+            or status in terminal
             or _normalize_stage(status) == "CLOSE"
         ):
             return "not_applicable"
@@ -535,29 +575,42 @@ def form_definition(form_key: str) -> dict[str, Any]:
         "chartFields": list(_STAGES_BY_REPORT[report]),
     }
     if rules:
-        definition["overdueRules"] = {
-            "stageDays": int(rules["stageDays"]),
-            "lateDays": int(rules["lateDays"]),
-            "stageLabel": (
-                "起草/编辑阶段"
-                if report in {"ewo", "paa"}
-                else "前两个节点（NCR管理员 / PE科室经理）"
-            ),
-            "lateLabel": (
-                "PROC 阶段"
-                if report in {"ewo", "paa"}
-                else "后续审批节点"
-            ),
-            "note": (
-                "IMPL 只比较要求完成时间；CLOSE=完成；日期缺失=未判定"
-                if report == "ewo"
-                else (
-                    "IMPL 只比较估计完成日期；CLOSE=完成；日期缺失=未判定"
-                    if report == "paa"
-                    else "财务总监批准=审批完成；节点日期缺失=未判定"
-                )
-            ),
-        }
+        if report in _TDC_DWELL_REPORTS:
+            definition["overdueRules"] = {
+                "stageDays": int(rules["stageDays"]),
+                "lateDays": int(rules["lateDays"]),
+                "stageLabel": "审批中（申请日期起）",
+                "lateLabel": "审批中滞留",
+                "note": (
+                    "已完成/已终止=完成；申请日期缺失=未判定"
+                    if report == "tdc_sor"
+                    else "已完成/已废弃=完成；申请日期缺失=未判定"
+                ),
+            }
+        else:
+            definition["overdueRules"] = {
+                "stageDays": int(rules["stageDays"]),
+                "lateDays": int(rules["lateDays"]),
+                "stageLabel": (
+                    "起草/编辑阶段"
+                    if report in {"ewo", "paa"}
+                    else "前两个节点（NCR管理员 / PE科室经理）"
+                ),
+                "lateLabel": (
+                    "PROC 阶段"
+                    if report in {"ewo", "paa"}
+                    else "后续审批节点"
+                ),
+                "note": (
+                    "IMPL 只比较要求完成时间；CLOSE=完成；日期缺失=未判定"
+                    if report == "ewo"
+                    else (
+                        "IMPL 只比较估计完成日期；CLOSE=完成；日期缺失=未判定"
+                        if report == "paa"
+                        else "财务总监批准=审批完成；节点日期缺失=未判定"
+                    )
+                ),
+            }
     return definition
 
 
@@ -627,6 +680,19 @@ def _dimensions_from_mapping(
         planned = None
         contact = None
         stage_start = _date_text(submitted)
+    elif report == "tdc_sor":
+        # SOR 列表 JSON（键名见 core.report_contracts 源字段映射）。
+        department = _source_value(row, "deptName", "department")
+        section = _source_value(row, "sectionName", "section")
+        model = _source_value(row, "processType", "bizName", "type")
+        status = _normalize_sor_status(
+            _source_value(row, "processInstanceStatus", "approvalStatus")
+        )
+        stage = _normalize_stage(_source_value(row, "carTypeProject"))
+        submitted = _source_value(row, "startTime", "applicationStart")
+        planned = None
+        contact = None
+        stage_start = _date_text(submitted)
     elif report == "ewo":
         department = _source_value(row, "_department", "_rsp_department")
         section = _source_value(row, "_rsp_smt", "_section")
@@ -666,15 +732,15 @@ def _dimensions_from_mapping(
         normalized_ncr_number = _safe_text(ncr_number, 200)
         if normalized_ncr_number:
             dimensions["ncrNumber"] = normalized_ncr_number
-    return (
-        dimensions,
-        {
-            "submittedDate": _date_text(submitted),
-            "plannedDate": _date_text(planned),
-            "contact": _mask_contact(contact),
-            "stageStart": stage_start,
-        },
-    )
+    dates = {
+        "submittedDate": _date_text(submitted),
+        "plannedDate": _date_text(planned),
+        "contact": _mask_contact(contact),
+        "stageStart": stage_start,
+    }
+    if report == "tdc_sor":
+        dates["isCompleted"] = status in _SOR_COMPLETED_STATUSES
+    return dimensions, dates
 
 
 def _dimensions_from_ncr(
@@ -766,6 +832,41 @@ def _dimensions_from_tdc(
     )
 
 
+def _dimensions_from_sor(
+    values: Sequence[object],
+    definition: Mapping[str, Any],
+) -> tuple[dict[str, str], dict[str, object]]:
+    """SOR 定点流程 15 列位置行的维度提取。
+
+    维度口径：车型项目页签 ← 车型项目（stage），科室状态页签 ← 科室
+    （section），部门入库不上图，类型仅作筛选（model）；申请日期同时作为
+    提交日期与逾期判定起点；审批状态“已完成/Completed”计为完成。
+    """
+    submitted = _positional_value(values, definition, "申请日期")
+    status = _normalize_sor_status(_positional_value(values, definition, "审批状态"))
+    return (
+        {
+            "department": _safe_text(
+                _positional_value(values, definition, "部门"), 160
+            ),
+            "section": _safe_text(
+                _positional_value(values, definition, "科室"), 160
+            ),
+            "model": _safe_text(_positional_value(values, definition, "类型"), 160),
+            "status": status,
+            "stage": _normalize_stage(
+                _positional_value(values, definition, "车型项目")
+            ),
+        },
+        {
+            "submittedDate": _date_text(submitted),
+            "plannedDate": None,
+            "stageStart": _date_text(submitted),
+            "isCompleted": status in _SOR_COMPLETED_STATUSES,
+        },
+    )
+
+
 def _workflow_dates_from_values(
     report: str,
     stage: str,
@@ -775,8 +876,8 @@ def _workflow_dates_from_values(
     """Resolve the current stage arrival and next-stage end dates."""
     if report == "ncr_detail" or not stage:
         return {"stageStart": None, "stageEnd": None}
-    if report == "tdc_data_model":
-        # 数模的阶段起点（申请日期）由维度提取给出；无后续阶段到达日。
+    if report in _TDC_DWELL_REPORTS:
+        # TDC 表单的阶段起点（申请日期）由维度提取给出；无后续阶段到达日。
         return {"stageStart": None, "stageEnd": None}
     if report == "ncr_progress":
         stage_index = (
@@ -897,26 +998,32 @@ def normalize_form_rows(
         source = {str(key): value for key, value in raw.items()}
         header_mapping_values = (
             _tdc_header_mapping_values(source, definition)
-            if report == "tdc_data_model"
+            if report in {"tdc_data_model", "tdc_sor"}
             else None
         )
         if isinstance(positional, Sequence) and not isinstance(positional, (str, bytes)):
             values = _safe_values(report, list(positional))
             if report == "tdc_data_model":
                 dimensions, dates = _dimensions_from_tdc(values, definition)
+            elif report == "tdc_sor":
+                dimensions, dates = _dimensions_from_sor(values, definition)
             else:
                 dimensions, dates = _dimensions_from_ncr(report, values, definition)
             cost = _cost_from_values(values, definition) if report == "ncr_detail" else {}
             identity = "|".join(str(value or "") for value in values[:10])
         elif header_mapping_values is not None:
             values = _safe_values(report, header_mapping_values)
-            dimensions, dates = _dimensions_from_tdc(values, definition)
+            dimensions, dates = (
+                _dimensions_from_sor(values, definition)
+                if report == "tdc_sor"
+                else _dimensions_from_tdc(values, definition)
+            )
             cost = {}
             identity = str(
                 _source_value(
                     source,
-                    "实例号",
-                    "流水单号",
+                    "流水单号" if report == "tdc_sor" else "实例号",
+                    "processNo",
                     "incident",
                     "formId",
                     "documentNo",
@@ -937,7 +1044,11 @@ def normalize_form_rows(
             identity_keys = (
                 ("incident", "formId", "documentNo")
                 if report == "tdc_data_model"
-                else ("_no", "id", "keyed_name", "ncr_no")
+                else (
+                    ("processNo", "sorNo")
+                    if report == "tdc_sor"
+                    else ("_no", "id", "keyed_name", "ncr_no")
+                )
             )
             identity = str(
                 _source_value(source, *identity_keys)
@@ -1023,24 +1134,35 @@ def _metric_rows(
             dict(raw_dimensions) if isinstance(raw_dimensions, Mapping) else {}
         )
         status = (
-            _normalize_tdc_status(dimensions.get("status"))
-            if report == "tdc_data_model"
-            else dimensions.get("status")
+            _normalize_sor_status(dimensions.get("status"))
+            if report == "tdc_sor"
+            else (
+                _normalize_tdc_status(dimensions.get("status"))
+                if report == "tdc_data_model"
+                else dimensions.get("status")
+            )
+        )
+        terminal_statuses = (
+            _SOR_TERMINAL_STATUSES
+            if report == "tdc_sor"
+            else (
+                {_TDC_DEPRECATED_STATUS}
+                if report == "tdc_data_model"
+                else frozenset()
+            )
         )
         completed = bool(row.get("isCompleted"))
-        if report == "tdc_data_model" and status == _TDC_DEPRECATED_STATUS:
+        if status in terminal_statuses:
             completed = False
         elif completed or _normalize_stage(status) == "CLOSE":
             completed = True
         if report == "ncr_progress" and completed:
             dimensions["stage"] = "CLOSE"
-        if report == "tdc_data_model":
+        if report in {"tdc_data_model", "tdc_sor"}:
             dimensions["status"] = str(status or "")
         updated["dimensions"] = dimensions
         updated["isCompleted"] = completed
-        if completed or (
-            report == "tdc_data_model" and status == _TDC_DEPRECATED_STATUS
-        ):
+        if completed or status in terminal_statuses:
             updated["overdueState"] = "not_applicable"
         result.append(updated)
     return result
@@ -1092,7 +1214,7 @@ def _stage_status_summary(
 ) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     stages = _STAGES_BY_REPORT[report]
-    if report == "tdc_data_model":
+    if report in {"tdc_data_model", "tdc_sor"}:
         observed: set[str] = set()
         for row in rows:
             dimensions = row.get("dimensions")
@@ -1201,7 +1323,12 @@ def summarize_form_rows(
     )
     total = len(metric_rows)
     completed = sum(bool(row.get("isCompleted")) for row in metric_rows)
-    if report == "tdc_data_model":
+    if report in {"tdc_data_model", "tdc_sor"}:
+        terminal_statuses = (
+            _SOR_TERMINAL_STATUSES
+            if report == "tdc_sor"
+            else {_TDC_DEPRECATED_STATUS}
+        )
         incomplete = 0
         for row in metric_rows:
             if bool(row.get("isCompleted")):
@@ -1212,7 +1339,7 @@ def summarize_form_rows(
                 if isinstance(dimensions, Mapping)
                 else ""
             )
-            if status != _TDC_DEPRECATED_STATUS:
+            if status not in terminal_statuses:
                 incomplete += 1
     else:
         incomplete = total - completed

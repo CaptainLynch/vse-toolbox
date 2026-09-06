@@ -100,6 +100,32 @@ def test_current_stage_label_empty() -> None:
     assert current_stage_label([], date(2026, 6, 1)) == "项目开始 → 项目结束"
 
 
+def test_current_stage_label_skips_undated_nodes() -> None:
+    """空日期（待排期）节点不参与阶段推算，也不得导致异常。"""
+    milestones = [
+        {"name": "VPI", "date": None},
+        {"name": "节点A-立项", "date": "2026-05-01"},
+        {"name": "内饰模型评审", "date": None},
+        {"name": "节点B-设计冻结", "date": "2026-06-01"},
+        {"name": "用户体验阀", "date": ""},
+    ]
+    assert current_stage_label(milestones, date(2026, 5, 20)) == "节点A-立项 → 节点B-设计冻结"
+    assert current_stage_label(milestones, date(2026, 6, 15)) == "节点B-设计冻结 → 项目结束"
+
+
+def test_current_stage_label_all_undated() -> None:
+    """全部节点无日期时回退默认文案。"""
+    milestones = [{"name": f"节点{i}", "date": None} for i in range(3)]
+    assert current_stage_label(milestones, date(2026, 6, 1)) == "项目开始 → 项目结束"
+
+
+def test_milestone_display_status_undated_is_not_overdue() -> None:
+    """空日期节点不做逾期判定，按状态显示。"""
+    today = date(2026, 9, 6)
+    assert milestone_display_status("未开始", None, today) == "未开始"
+    assert milestone_display_status("未开始", "", today) == "未开始"
+
+
 def test_current_stage_label_before_first_node(sample_milestones: list[dict[str, object]]) -> None:
     """When today is before the earliest milestone, left side is '项目开始'."""
     today = date(2026, 4, 15)  # before 2026-05-01

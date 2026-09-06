@@ -33,6 +33,7 @@ def _dump_extra_fields(extra: object) -> str:
         return ""
     return json.dumps(dict(extra), ensure_ascii=False)
 
+
 # ── 默认数据库路径 ──────────────────────────────────────────────
 DEFAULT_DB_DIR = app_root() / "data"
 DEFAULT_DB_PATH = DEFAULT_DB_DIR / "vse_toolbox.db"
@@ -40,7 +41,7 @@ DEFAULT_DB_PATH = DEFAULT_DB_DIR / "vse_toolbox.db"
 #: 当前支持的 schema 版本。迁移完成后写入 PRAGMA user_version。
 #: 旧库 (< CURRENT_SCHEMA_VERSION) 增量升级；高于此版本的库拒绝降级，
 #: 避免新代码误读未知的较新 schema。
-CURRENT_SCHEMA_VERSION = 12
+CURRENT_SCHEMA_VERSION = 13
 
 #: 租约时长安全范围（秒）。默认 900s，由调用方在范围内参数化。
 SYNC_LEASE_MIN_SECONDS = 60
@@ -155,7 +156,14 @@ def _sanitize_json(value: Any) -> str:
 
 
 _FORM_SNAPSHOT_KEYS = frozenset(
-    {"VPI-T2-D3", "aras_paa", "aras_ncr_progress", "aras_ncr_detail", "tdc_data_model"}
+    {
+        "VPI-T2-D3",
+        "aras_paa",
+        "aras_ncr_progress",
+        "aras_ncr_detail",
+        "tdc_data_model",
+        "tdc_sor",
+    }
 )
 _FORM_SNAPSHOT_REPORTS = {
     "VPI-T2-D3": "ewo",
@@ -163,6 +171,7 @@ _FORM_SNAPSHOT_REPORTS = {
     "aras_ncr_progress": "ncr_progress",
     "aras_ncr_detail": "ncr_detail",
     "tdc_data_model": "tdc_data_model",
+    "tdc_sor": "tdc_sor",
 }
 _FORM_SNAPSHOT_FORBIDDEN_KEY_PARTS = (
     "password",
@@ -373,7 +382,7 @@ _DELIVERABLE_FORM_SNAPSHOTS_DDL = """
         snapshot_key       TEXT NOT NULL UNIQUE,
         form_key           TEXT NOT NULL CHECK (form_key IN (
             'VPI-T2-D3', 'aras_paa', 'aras_ncr_progress', 'aras_ncr_detail',
-            'tdc_data_model'
+            'tdc_data_model', 'tdc_sor'
         )),
         report_type        TEXT NOT NULL,
         source_run_id      INTEGER,
@@ -385,6 +394,23 @@ _DELIVERABLE_FORM_SNAPSHOTS_DDL = """
         charts_json        TEXT NOT NULL,
         artifacts_json     TEXT NOT NULL DEFAULT '[]',
         created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+    """
+
+# 主计划里程碑表 DDL 模板。schema v13 起 milestone_date 允许为空
+# （NULL 表示"待排期"，由用户在编辑主计划时排期）；旧库的 NOT NULL
+# 列由 _migrate_schema 用该模板检测并整表重建。
+_PROJECT_STATUS_MILESTONES_DDL = """
+    CREATE TABLE IF NOT EXISTS {table} (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        phase_id       TEXT NOT NULL,
+        name           TEXT NOT NULL,
+        milestone_date TEXT,
+        status         TEXT NOT NULL,
+        type           TEXT NOT NULL CHECK (type IN ('done', 'current', 'planned')),
+        sort_order     INTEGER NOT NULL,
+        UNIQUE (phase_id, name),
+        FOREIGN KEY (phase_id) REFERENCES project_status_phases(id) ON DELETE CASCADE
     );
     """
 
@@ -459,19 +485,7 @@ TABLE_DEFINITIONS: list[str] = [
         updated_at       TEXT NOT NULL
     );
     """,
-    """
-    CREATE TABLE IF NOT EXISTS project_status_milestones (
-        id             INTEGER PRIMARY KEY AUTOINCREMENT,
-        phase_id       TEXT NOT NULL,
-        name           TEXT NOT NULL,
-        milestone_date TEXT NOT NULL,
-        status         TEXT NOT NULL,
-        type           TEXT NOT NULL CHECK (type IN ('done', 'current', 'planned')),
-        sort_order     INTEGER NOT NULL,
-        UNIQUE (phase_id, name),
-        FOREIGN KEY (phase_id) REFERENCES project_status_phases(id) ON DELETE CASCADE
-    );
-    """,
+    _PROJECT_STATUS_MILESTONES_DDL.format(table="project_status_milestones"),
     """
     CREATE TABLE IF NOT EXISTS project_status_deliverables (
         id           TEXT PRIMARY KEY,
@@ -1072,11 +1086,41 @@ class DatabaseManager:
         # 中途失败时原表保持完整；残留的重建表会在下次初始化时清除。
         conn.execute("PRAGMA foreign_keys=OFF")
         try:
+            # schema v13：project_status_milestones.milestone_date 由 NOT NULL
+            # 放宽为可空（空日期=待排期）。SQLite 无法修改列约束，检测到旧库
+            # 仍为 NOT NULL 时按模板整表重建并保留数据。
+            milestone_columns = {
+                str(column["name"]): int(column["notnull"])
+                for column in conn.execute("PRAGMA table_info(project_status_milestones)")
+            }
+            if milestone_columns and milestone_columns.get("milestone_date") == 1:
+                conn.execute("DROP TABLE IF EXISTS project_status_milestones_rebuild")
+                conn.execute(
+                    _PROJECT_STATUS_MILESTONES_DDL.format(
+                        table="project_status_milestones_rebuild"
+                    )
+                )
+                conn.execute(
+                    "INSERT INTO project_status_milestones_rebuild "
+                    "(id, phase_id, name, milestone_date, status, type, sort_order) "
+                    "SELECT id, phase_id, name, milestone_date, status, type, sort_order "
+                    "FROM project_status_milestones"
+                )
+                conn.execute("DROP TABLE project_status_milestones")
+                conn.execute(
+                    "ALTER TABLE project_status_milestones_rebuild "
+                    "RENAME TO project_status_milestones"
+                )
+                conn.commit()
+
             row = conn.execute(
                 "SELECT sql FROM sqlite_master "
                 "WHERE type = 'table' AND name = 'deliverable_form_snapshots'"
             ).fetchone()
-            if row is not None and "tdc_data_model" not in str(row["sql"] or ""):
+            if row is not None and (
+                "tdc_data_model" not in str(row["sql"] or "")
+                or "tdc_sor" not in str(row["sql"] or "")
+            ):
                 conn.execute(
                     "DROP TABLE IF EXISTS deliverable_form_snapshots_rebuild"
                 )
@@ -1280,22 +1324,73 @@ class DatabaseManager:
             ),
         )
 
-        milestones = (
-            ("项目启动", "2026-04-08", "已完成", "done"),
-            ("策略冻结", "2026-05-12", "已完成", "done"),
-            ("定点流程发布", "2026-06-18", "已完成", "done"),
-            ("设计冻结", "2026-07-15", "已完成", "done"),
-            ("VDR 决策", "2026-08-15", "进行中", "current"),
-            ("VPI-T2 Gate", "2026-08-30", "未开始", "planned"),
+        # 主计划默认里程碑模板：空日期=待排期，由用户在「编辑主计划」中
+        # 排期后生效；每个项目阶段都预置同一模板。
+        milestone_template = tuple(
+            (name, None, "未开始", "planned", index)
+            for index, name in enumerate(
+                (
+                    "VPI",
+                    "内饰模型评审",
+                    "外饰模型评审",
+                    "LLP VDR",
+                    "100% VDR",
+                    "LLP T2",
+                    "100% T2",
+                    "OTS",
+                    "验证阀",
+                    "内部体验阀",
+                    "用户体验阀",
+                ),
+                start=1,
+            )
         )
-        conn.executemany(
-            """
-            INSERT OR IGNORE INTO project_status_milestones
-                (phase_id, name, milestone_date, status, type, sort_order)
-            VALUES ('VPI-T2', ?, ?, ?, ?, ?)
-            """,
-            [(*item, index) for index, item in enumerate(milestones, start=1)],
+        # 2026-09 之前的旧版 6 节点种子；仅当项目里程碑与它逐字段完全一致
+        # （即用户从未编辑）时才替换为默认模板，任何差异都视为用户数据保留。
+        legacy_seed_milestones = (
+            ("项目启动", "2026-04-08", "已完成", "done", 1),
+            ("策略冻结", "2026-05-12", "已完成", "done", 2),
+            ("定点流程发布", "2026-06-18", "已完成", "done", 3),
+            ("设计冻结", "2026-07-15", "已完成", "done", 4),
+            ("VDR 决策", "2026-08-15", "进行中", "current", 5),
+            ("VPI-T2 Gate", "2026-08-30", "未开始", "planned", 6),
         )
+        phase_rows = conn.execute("SELECT id FROM project_status_phases").fetchall()
+        for phase_row in phase_rows:
+            phase_id = str(phase_row["id"])
+            existing = conn.execute(
+                """
+                SELECT name, milestone_date, status, type, sort_order
+                FROM project_status_milestones
+                WHERE phase_id = ?
+                ORDER BY sort_order, id
+                """,
+                (phase_id,),
+            ).fetchall()
+            if existing:
+                current = tuple(
+                    (
+                        str(row["name"]),
+                        None if row["milestone_date"] is None else str(row["milestone_date"]),
+                        str(row["status"]),
+                        str(row["type"]),
+                        int(row["sort_order"]),
+                    )
+                    for row in existing
+                )
+                if current != legacy_seed_milestones:
+                    continue
+                conn.execute(
+                    "DELETE FROM project_status_milestones WHERE phase_id = ?", (phase_id,)
+                )
+            conn.executemany(
+                """
+                INSERT OR IGNORE INTO project_status_milestones
+                    (phase_id, name, milestone_date, status, type, sort_order)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                [(phase_id, *item) for item in milestone_template],
+            )
         deliverables = (
             ("VPI-T2-D1", "子系统开发策略", "已完成", "王晨", "2026-05-12", "2026-05-10", 100, "无", "内网"),
             ("VPI-T2-D2", "SOR 定点流程", "已完成", "周敏", "2026-06-18", "2026-06-17", 100, "无", "TDC SOR"),

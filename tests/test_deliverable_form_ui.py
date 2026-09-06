@@ -143,3 +143,15 @@ def test_tdc_project_and_archive_details_use_the_unified_form_shell() -> None:
     assert "const formKey = deliverableFormKey(item);" in project_detail
     assert "createDeliverableFormState(formKey)" in project_detail
     assert 'tdc_data_model: ["数模设计审核流程报表", "TDC"]' in archive_detail
+
+
+def test_tdc_sor_wiring_tabs_and_labels() -> None:
+    """SOR 定点流程的前端接线：表单键、页签、筛选标签与图表标题。"""
+    js = _read("web/static/app.js")
+
+    assert '"VPI-T2-D2": "tdc_sor"' in js
+    assert '["departmentStatus", "车型项目状态"]' in js
+    assert '["sectionStatus", "科室状态"]' in js
+    assert 'section: "科室"' in js
+    assert 'stage: "车型项目"' in js
+    assert 'departmentStatus: ["车型项目状态", "各车型项目按期推进数与逾期风险数"]' in js

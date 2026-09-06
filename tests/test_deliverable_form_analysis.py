@@ -969,3 +969,119 @@ def test_tdc_build_form_snapshot_returns_publishable_contract() -> None:
     assert set(snapshot.charts) == {"departmentStatus", "sectionStatus"}
     assert snapshot.rows[0]["overdueState"] == "on_time"
     assert snapshot.rows[1]["isCompleted"] is True
+
+
+# ── SOR 定点流程（tdc_sor，TDC 15 列导出） ────────────────────────────────────
+
+
+def _sor_row_values(**labeled: object) -> list[object | None]:
+    """构造一条合成的 15 列 SOR 位置行（全部为虚构数据）。"""
+    headers = form_definition("tdc_sor")["headerRows"][0]
+    values: list[object | None] = [None] * len(headers)
+    for label, value in labeled.items():
+        values[headers.index(label)] = value
+    return values
+
+
+def test_tdc_sor_is_registered_with_15_column_contract() -> None:
+    """SOR 按官方 15 列合同注册，无隐藏列，默认全部可见。"""
+    assert "tdc_sor" in FORM_KEYS
+
+    definition = form_definition("tdc_sor")
+
+    assert definition["reportType"] == "tdc_sor"
+    assert definition["sheetNames"] == ["Sheet1"]
+    assert len(definition["headerRows"][0]) == 15
+    assert len(definition["columns"]) == 15
+    assert definition["defaultVisibleCount"] == 15
+    assert definition["chartFields"] == []
+    assert definition["overdueRules"]["stageDays"] == 7
+
+
+def test_tdc_sor_header_rows_keep_dimensions_and_mask_contacts() -> None:
+    """官方中文表头行恢复位置行：维度正确、联系人列脱敏。"""
+    rows = normalize_form_rows(
+        "tdc_sor",
+        [
+            {
+                "流水单号": "F999X-SOR-001",
+                "车型项目": "F999X",
+                "类型": "定点",
+                "部门": "车身开发部",
+                "科室": "车身科",
+                "零件号": "27000001",
+                "零件名称": "组件A",
+                "申请日期": "2026-08-20",
+                "审批状态": "已完成",
+                "当前待办人": "13800138000",
+            }
+        ],
+        snapshot_at="2026-09-01T10:00:00Z",
+    )
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["dimensions"]["section"] == "车身科"
+    assert row["dimensions"]["department"] == "车身开发部"
+    assert row["dimensions"]["model"] == "定点"
+    assert row["dimensions"]["stage"] == "F999X"
+    assert row["dimensions"]["status"] == "已完成"
+    assert row["isCompleted"] is True
+    assert "13800138000" not in json.dumps(row, ensure_ascii=False)
+    assert "****" in json.dumps(row, ensure_ascii=False)
+
+
+def test_tdc_sor_api_rows_normalize_status_and_overdue() -> None:
+    """API 字典行同样可归一：英文状态转中文，审批中滞留记为逾期。"""
+    rows = normalize_form_rows(
+        "tdc_sor",
+        [
+            {
+                "processNo": "F999X-SOR-002",
+                "carTypeProject": "F999X",
+                "processType": "变更",
+                "deptName": "内饰开发部",
+                "sectionName": "内饰科",
+                "startTime": "2026-08-01",
+                "processInstanceStatus": "审批中",
+            },
+            {
+                "processNo": "E50-SOR-003",
+                "carTypeProject": "E50",
+                "sectionName": "底盘科",
+                "startTime": "2026-08-28",
+                "processInstanceStatus": "Completed",
+            },
+            {
+                "processNo": "E50-SOR-004",
+                "carTypeProject": "E50",
+                "sectionName": "底盘科",
+                "startTime": "2026-08-01",
+                "processInstanceStatus": "Terminated",
+            },
+        ],
+        snapshot_at="2026-09-06T10:00:00Z",
+    )
+
+    assert [row["dimensions"]["status"] for row in rows] == [
+        "审批中", "已完成", "已终止",
+    ]
+    assert rows[0]["overdueState"] == "overdue"
+    assert rows[0]["isCompleted"] is False
+    assert rows[1]["isCompleted"] is True
+    assert rows[1]["overdueState"] == "not_applicable"
+    # 已终止为终态：不计完成、不判逾期、不计入未完成。
+    assert rows[2]["isCompleted"] is False
+    assert rows[2]["overdueState"] == "not_applicable"
+
+    snapshot = build_form_snapshot(
+        "tdc_sor",
+        rows,
+        snapshot_at="2026-09-06T10:00:00Z",
+        source_run_id=1,
+        source="test",
+    )
+    assert snapshot.summary["total"] == 3
+    assert snapshot.summary["completed"] == 1
+    assert snapshot.summary["incomplete"] == 1
+    assert snapshot.summary["overdue"] == 1

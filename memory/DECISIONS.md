@@ -5,6 +5,48 @@ delete. Per-plan rulings stay in their SDD ledger (`.superpowers/sdd/…`, local
 and get promoted here once they prove durable. Newest first. Keep entries
 short: decision, why, cost if violated, source pointer.
 
+## 2026-09-06 — SOR 定点流程 (tdc_sor) 注册为第 6 个统一表单
+
+`tdc_sor`（TDC SOR 定点流程，官方 15 列导出，headers 见
+report_contracts()['tdc_sor']）按 tdc_data_model 同款机制注册：DDL CHECK
+白名单 + 检测式重建迁移（迁移检测条件为存储 DDL 缺任一新 form_key）；
+维度口径 stage←车型项目 / section←科室 / department←部门（入库不上图）/
+model←类型（仅筛选）；审批状态 API 中英文混合，`_normalize_sor_status`
+归一（Completed→已完成）；已完成/Completed 计为完成；已终止/已作废/
+Terminated/Cancelled 为终态（不计完成、不计未完成、不判逾期）；逾期沿用
+审批中滞留 7 天口径（申请日期起）；“当前待办人”列（索引 14）加入
+_CONTACT_INDEXES 脱敏；deliverable VPI-T2-D2 经
+DELIVERABLE_FORM_LINKS/DELIVERABLE_FORM_KEY_BY_ITEM 双侧映射到 tdc_sor。
+后续新增 TDC 表单照此配方：DDL 白名单+重建检测 → 分析服务四映射+维度/
+逾期/状态归一 → runner job→form map → DELIVERABLE_FORM_LINKS → app.js
+（键/tabs/筛选标签/图表标题）→ 四层测试。Cost if violated: 位置行错位、
+联系人泄漏或状态口径不一致。Source: ZCode 会话 2026-09-06，SOR 官方 15 列
+合同与 report_contracts 源字段映射为既定事实。
+
+## 2026-09-06 — 主计划默认里程碑模板与空日期语义
+
+默认里程碑模板为 11 个空日期节点（VPI → 内饰模型评审 → 外饰模型评审 →
+LLP VDR → 100% VDR → LLP T2 → 100% T2 → OTS → 验证阀 → 内部体验阀 → 用户
+体验阀），milestone_date=NULL 表示"待排期"（schema v13 里程碑列可空）。空
+日期仅允许"未开始"节点；种子修复采用**全字段元组比对**：与旧 6 节点种子
+完全一致才替换为模板，任何差异（哪怕只调换顺序或改一天日期）都视为用户
+数据保留。current_stage_label 必须跳过空日期节点，否则 /api/project-status
+500。未来新增"创建项目"接口时必须挂同一模板。Cost if violated: 用户手工
+排期数据被静默覆盖，或空日期导致总览接口崩溃。Source: ZCode 会话
+2026-09-06（用户确认方案 A + 架构审核修正版）。
+
+## 2026-09-06 — 交付物状态图表读侧联动表单快照，不写库
+
+除 VPI-T2-D1（子系统开发策略，纯手动）外，交付物"当前状态图表"与总览环图
+在渲染时从 DELIVERABLE_FORM_LINKS（web/app.py 后端单源）指向的最新表单快照
+换算：progress=round(completed/total*100)，状态三态（全部完成→已完成/
+overdue>0→已逾期/否则→进行中）；无快照回退手工值；手工进度保留为详细明细
+参考值。不向 project_status_deliverables 写回任何字段，字段权威规则不受影
+响。快照→交付物映射只允许在后端维护（formLink payload 下发），前端
+DELIVERABLE_FORM_KEY_BY_ITEM 仅作归档详情页回退。D2(SOR) 需业务口径确认后
+注册表单；D4(造型VDR) 等 A 面契约解锁。Cost if violated: 双源映射漂移、或
+自动写库与手工锁定字段冲突。Source: ZCode 会话 2026-09-06 用户确认。
+
 ## 2026-09-02 — 数模设计审核流程 (tdc_data_model) unified detail view contract
 
 `tdc_data_model` (数模设计审核流程, TDC UWF `procuwfpe3ddigitalmodeldesignreview`,

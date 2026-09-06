@@ -476,3 +476,83 @@ def test_tdc_form_view_accepts_empty_snapshot_and_rejects_unknown_key(client) ->
 
     unknown = http.get("/api/deliverable-forms/unknown-form/view")
     assert unknown.status_code == 404
+
+
+# ── SOR 定点流程（tdc_sor） ──────────────────────────────────────────────────
+
+
+def _sor_snapshot(*, snapshot_at: str, source_run_id: int) -> object:
+    definition = form_definition("tdc_sor")
+    headers = definition["headerRows"][0]
+
+    def _row(**labeled: object) -> dict[str, object]:
+        values: list[object | None] = [None] * len(headers)
+        for label, value in labeled.items():
+            values[headers.index(label)] = value
+        return {"values": values, "sheetName": "Sheet1"}
+
+    return build_form_snapshot(
+        "tdc_sor",
+        [
+            _row(
+                流水单号="F999X-SOR-001",
+                车型项目="F999X",
+                类型="定点",
+                科室="车身科",
+                部门="车身开发部",
+                申请日期="2026-08-20",
+                审批状态="已完成",
+            ),
+            _row(
+                流水单号="F888Y-SOR-002",
+                车型项目="F888Y",
+                类型="变更",
+                科室="内饰科",
+                申请日期="2026-08-01",
+                审批状态="审批中",
+                当前待办人="13900139000",
+            ),
+        ],
+        snapshot_at=snapshot_at,
+        source_run_id=source_run_id,
+        source="test archive",
+    )
+
+
+def test_tdc_sor_form_view_endpoint_returns_schema_charts_and_filters(client) -> None:
+    http, db = client
+    db.publish_deliverable_form_snapshot(
+        _sor_snapshot(snapshot_at="2026-09-01T18:00:00Z", source_run_id=5)
+    )
+
+    response = http.get("/api/deliverable-forms/tdc_sor/view")
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["ok"] is True
+    data = body["data"]
+    assert data["formKey"] == "tdc_sor"
+    assert data["reportType"] == "tdc_sor"
+    assert len(data["schema"]["columns"]) == 15
+    assert data["summary"]["total"] == 2
+    assert data["summary"]["completed"] == 1
+    assert "departmentStatus" in data["charts"]
+    assert data["sync"]["jobKey"] == "tdc_sor"
+    serialized = json.dumps(data, ensure_ascii=False)
+    assert "13900139000" not in serialized
+    assert "credentialRef" not in serialized
+
+
+def test_tdc_sor_rows_endpoint_supports_section_filter(client) -> None:
+    http, db = client
+    db.publish_deliverable_form_snapshot(
+        _sor_snapshot(snapshot_at="2026-09-01T18:00:00Z", source_run_id=6)
+    )
+
+    response = http.get("/api/deliverable-forms/tdc_sor/rows?section=%E8%BD%A6%E8%BA%AB%E7%A7%91")
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["ok"] is True
+    assert body["data"]["total"] == 1
+    assert body["data"]["items"][0]["dimensions"]["section"] == "车身科"

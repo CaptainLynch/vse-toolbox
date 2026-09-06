@@ -100,10 +100,10 @@ def test_get_table_row_count(tmp_db: DatabaseManager) -> None:
 
 def test_schema_version_is_v12(tmp_db: DatabaseManager) -> None:
     """验证当前支持的 schema 版本为 12。"""
-    assert CURRENT_SCHEMA_VERSION == 12
+    assert CURRENT_SCHEMA_VERSION == 13
     with tmp_db.get_connection() as conn:
         ver = conn.execute("PRAGMA user_version").fetchone()[0]
-    assert ver == 12
+    assert ver == 13
 
 
 def test_v3_to_v12_migration(tmp_path: Path) -> None:
@@ -130,7 +130,7 @@ def test_v3_to_v12_migration(tmp_path: Path) -> None:
 
     with db.get_connection() as c:
         ver = c.execute("PRAGMA user_version").fetchone()[0]
-        assert ver == 12
+        assert ver == 13
         assert db.table_exists("excel_tasks")
         assert db.table_exists("excel_task_files")
         assert db.table_exists("excel_task_runs")
@@ -204,7 +204,7 @@ def test_v5_to_v12_migration(tmp_path: Path) -> None:
 
     with db.get_connection() as c:
         ver = c.execute("PRAGMA user_version").fetchone()[0]
-        assert ver == 12
+        assert ver == 13
         assert db.table_exists("excel_artifact_download_audit")
         assert db.table_exists("project_status_analysis_snapshots")
 
@@ -244,7 +244,7 @@ def test_v9_to_v12_migration_adds_analysis_detail_columns(tmp_path: Path) -> Non
             for row in c.execute("PRAGMA table_info(project_status_analysis_items)")
         }
         assert {"display_number", "pending_signers"}.issubset(columns)
-        assert c.execute("PRAGMA user_version").fetchone()[0] == 12
+        assert c.execute("PRAGMA user_version").fetchone()[0] == 13
 
 
 def test_analysis_items_department_model_extra_columns_migration(tmp_path: Path) -> None:
@@ -315,17 +315,18 @@ def test_analysis_items_department_model_extra_columns_migration(tmp_path: Path)
 
 
 def test_rejects_newer_schema_version(tmp_path: Path) -> None:
-    """验证高于 CURRENT_SCHEMA_VERSION (如 v13) 的库在执行 DDL 前被拒绝。"""
-    future_db_path = tmp_path / "v13_future.db"
+    """验证高于 CURRENT_SCHEMA_VERSION 的库在执行 DDL 前被拒绝。"""
+    future_version = CURRENT_SCHEMA_VERSION + 1
+    future_db_path = tmp_path / "future_schema.db"
     conn = sqlite3.connect(str(future_db_path))
-    conn.execute("PRAGMA user_version = 13")
+    conn.execute(f"PRAGMA user_version = {future_version}")
     conn.commit()
     conn.close()
 
     db = DatabaseManager(db_path=future_db_path)
     with pytest.raises(sqlite3.DatabaseError) as exc_info:
         db.init_database()
-    assert "unsupported schema version 13" in str(exc_info.value)
+    assert f"unsupported schema version {future_version}" in str(exc_info.value)
 
 
 def test_form_snapshot_check_constraint_rebuild_allows_tdc_data_model(
@@ -407,10 +408,11 @@ def test_form_snapshot_check_constraint_rebuild_allows_tdc_data_model(
             "WHERE type = 'table' AND name = 'deliverable_form_snapshots'"
         ).fetchone()["sql"] or ""
         assert "tdc_data_model" in ddl
+        assert "tdc_sor" in ddl
         assert "deliverable_form_snapshots_rebuild" not in ddl
         assert not db.table_exists("deliverable_form_snapshots_rebuild")
         assert c.execute("PRAGMA foreign_key_check").fetchall() == []
-        assert c.execute("PRAGMA user_version").fetchone()[0] == 12
+        assert c.execute("PRAGMA user_version").fetchone()[0] == 13
         ewo = c.execute(
             "SELECT form_key FROM deliverable_form_snapshots WHERE snapshot_key = 'legacy-ewo'"
         ).fetchone()
@@ -654,3 +656,49 @@ def test_excel_tasks_schema_check_constraints(tmp_db: DatabaseManager) -> None:
                 """,
                 (task_id,),
             )
+
+
+def test_form_snapshot_check_constraint_rebuild_allows_tdc_sor(
+    tmp_path: Path,
+) -> None:
+    """只有 tdc_data_model 的中间版本旧库同样被重建以放行 tdc_sor。"""
+    legacy_db_path = tmp_path / "legacy-sor-check.db"
+    conn = sqlite3.connect(str(legacy_db_path))
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA user_version = 12")
+    conn.execute(
+        """
+        CREATE TABLE deliverable_form_snapshots (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_key       TEXT NOT NULL UNIQUE,
+            form_key           TEXT NOT NULL CHECK (form_key IN (
+                'VPI-T2-D3', 'aras_paa', 'aras_ncr_progress', 'aras_ncr_detail',
+                'tdc_data_model'
+            )),
+            report_type        TEXT NOT NULL,
+            source_run_id      INTEGER,
+            source             TEXT NOT NULL DEFAULT '',
+            snapshot_at        TEXT NOT NULL,
+            row_count          INTEGER NOT NULL CHECK (row_count >= 0),
+            schema_json        TEXT NOT NULL,
+            summary_json       TEXT NOT NULL,
+            charts_json        TEXT NOT NULL,
+            artifacts_json     TEXT NOT NULL DEFAULT '[]',
+            created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    db = DatabaseManager(db_path=legacy_db_path)
+    db.init_database()
+
+    with db.get_connection() as c:
+        ddl = c.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'deliverable_form_snapshots'"
+        ).fetchone()["sql"] or ""
+        assert "tdc_sor" in ddl
+        assert "deliverable_form_snapshots_rebuild" not in ddl
+        assert c.execute("PRAGMA foreign_key_check").fetchall() == []

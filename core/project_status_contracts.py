@@ -31,11 +31,21 @@ def current_stage_label(
     milestones: Sequence[Mapping[str, object]],
     today: date,
 ) -> str:
-    ordered = sorted(milestones, key=lambda item: (str(item["date"]), str(item["name"])))
-    if not ordered:
+    valid_milestones = []
+    for item in milestones:
+        raw_date = item.get("date")
+        if raw_date in (None, ""):
+            continue
+        try:
+            parsed = date.fromisoformat(str(raw_date))
+            valid_milestones.append((parsed, str(item.get("name", ""))))
+        except ValueError:
+            continue
+    if not valid_milestones:
         return "项目开始 → 项目结束"
-    previous = [item for item in ordered if date.fromisoformat(str(item["date"])) <= today]
-    following = [item for item in ordered if date.fromisoformat(str(item["date"])) > today]
-    left = str(previous[-1]["name"]) if previous else "项目开始"
-    right = str(following[0]["name"]) if following else "项目结束"
+    ordered = sorted(valid_milestones, key=lambda item: (item[0].isoformat(), item[1]))
+    previous = [item for item in ordered if item[0] <= today]
+    following = [item for item in ordered if item[0] > today]
+    left = previous[-1][1] if previous else "项目开始"
+    right = following[0][1] if following else "项目结束"
     return f"{left} → {right}"

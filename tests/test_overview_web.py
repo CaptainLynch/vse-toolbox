@@ -923,3 +923,76 @@ def test_overview_deliverable_evidence_css_contract() -> None:
     mobile_break = css_text[css_text.index("@media (max-width: 560px)"):]
     assert ".evidence-overview-grid" in mobile_break
     assert ".evidence-obs-grid" in mobile_break
+
+
+def test_overview_milestone_undated_nodes_and_deliverable_form_link_contract() -> None:
+    """主计划空日期节点、快照联动换算与环图显示筛选的前端契约。"""
+    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+    css_text = Path("web/static/style.css").read_text(encoding="utf-8-sig")
+
+    for marker in (
+        "calculateMilestoneTimelineX",
+        "待排期",
+        "deliverableFormDisplay",
+        "shouldShowDeliverable",
+        "快照进度",
+        "deliverable-snapshot-tag",
+        "deliverable-display-filter",
+        "按节点状态自动显示",
+        "表单快照",
+    ):
+        assert marker in js_text, marker
+
+    # “预留”占位已被正式规则取代。
+    assert "按节点状态自动显示（预留）" not in js_text
+    assert "该规则将在节点状态联动上线后开放" not in js_text
+    assert "optAuto.disabled = true" not in js_text
+
+    for marker in (
+        ".deliverable-display-filter",
+        ".deliverable-display-filter-select",
+        ".deliverable-snapshot-tag",
+        ".deliverable-auto-hidden",
+    ):
+        assert marker in css_text, marker
+
+
+def test_deliverable_auto_hide_rule_contract() -> None:
+    """按节点状态自动显示：已完成交付物在项目越过关联节点后隐藏。"""
+    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+
+    start = js_text.index("const DELIVERABLE_AUTO_HIDE_NODE_KEYWORDS")
+    end = js_text.index("let deliverableProgressFilterValue", start)
+    block = js_text[start:end]
+
+    # 节点关键字映射（用户示例：到了 VDR 阶段隐藏已完成的子系统开发策略）。
+    assert '"VPI-T2-D1": ["VDR"]' in block
+    for deliverable_id in ("VPI-T2-D2", "VPI-T2-D3", "VPI-T2-D4", "VPI-T2-D5"):
+        assert deliverable_id in block
+    # 触发条件：仅 auto 模式、完成态取快照换算口径（回退手工值）、
+    # 节点已排期且日期已过。
+    assert 'if (filterValue !== "auto") return true;' in block
+    assert "deliverableFormDisplay(item)" in block
+    assert 'if (status !== "已完成") return true;' in block
+    assert "deliverableNodeReached(keywords)" in block
+    reached = js_text.index("function deliverableNodeReached")
+    reached_block = js_text[reached:js_text.index("function shouldShowDeliverable", reached)]
+    assert "milestone.date" in reached_block or "String(milestone.date" in reached_block
+    assert "date <= today" in reached_block
+    # 分词匹配而非子串匹配，避免「VPI-T2 Gate」误命中 VPI 关键字。
+    assert "tokens.includes(keyword)" in reached_block
+    # 隐藏数量提示。
+    assert "已隐藏" in js_text
+    assert "deliverable-auto-hidden" in js_text
+
+
+def test_deliverable_form_display_fallback_contract() -> None:
+    """无 formLink/summary 为空时回退手工值，有效 summary 才换算。"""
+    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+    start = js_text.index("function deliverableFormDisplay")
+    end = js_text.index("function shouldShowDeliverable", start)
+    block = js_text[start:end]
+    assert "item.formLink" in block
+    assert "total <= 0" in block
+    assert "已完成" in block and "已逾期" in block and "进行中" in block
+    assert "Math.round" in block

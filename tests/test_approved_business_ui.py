@@ -386,3 +386,14 @@ def test_css_design_tokens_and_radii_constraints() -> None:
     assert ".settings-workbench" in css
     assert ".excel-examples-dialog" in css
     assert "@media (max-width: 390px)" in css
+
+
+def test_milestone_editor_allows_undated_planned_nodes() -> None:
+    """空日期=待排期：未开始节点允许空日期，其他状态必须排期。"""
+    js = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+
+    assert 'errors[dateKey] = "空日期节点状态必须为未开始"' in js
+    # 旧的"日期必填"硬校验必须已移除
+    assert "节点日期为必填项" not in js
+    # 日期相关守卫仅在存在日期时生效
+    assert "if (!errors[dateKey] && date && (row.type === \"done\"" in js

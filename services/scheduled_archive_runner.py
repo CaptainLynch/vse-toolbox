@@ -450,6 +450,7 @@ class ArchiveSyncRunner:
             "aras_ncr_progress": "aras_ncr_progress",
             "aras_ncr_detail": "aras_ncr_detail",
             "tdc_data_model": "tdc_data_model",
+            "tdc_sor": "tdc_sor",
         }.get(context.job_key)
         if form_key is None:
             return

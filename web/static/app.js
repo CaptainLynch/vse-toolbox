@@ -523,6 +523,68 @@ function milestoneProgressX(dateText, phase) {
   return Math.min(100, Math.max(0, ratio * 100));
 }
 
+function calculateMilestoneTimelineX(milestones, phase) {
+  const sorted = [...milestones].sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+  const count = sorted.length;
+  if (count === 0) return [];
+  const anchors = [];
+  const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+  for (let i = 0; i < count; i++) {
+    const m = sorted[i];
+    const dateStr = typeof m.date === "string" ? m.date.trim() : "";
+    if (dateStr && datePattern.test(dateStr)) {
+      anchors.push({ index: i, x: milestoneProgressX(dateStr, phase) });
+    }
+  }
+
+  const positions = new Array(count);
+  if (anchors.length === 0) {
+    for (let i = 0; i < count; i++) {
+      positions[i] = (100 * (i + 1)) / (count + 1);
+    }
+  } else {
+    for (const anchor of anchors) {
+      positions[anchor.index] = anchor.x;
+    }
+    // Head segment: before first anchor
+    const firstAnchor = anchors[0];
+    if (firstAnchor.index > 0) {
+      const runLen = firstAnchor.index;
+      const b = firstAnchor.x;
+      for (let k = 0; k < runLen; k++) {
+        positions[k] = (b * (k + 1)) / (runLen + 1);
+      }
+    }
+    // Middle segments: between adjacent anchors
+    for (let aIdx = 0; aIdx < anchors.length - 1; aIdx++) {
+      const leftAnchor = anchors[aIdx];
+      const rightAnchor = anchors[aIdx + 1];
+      const runLen = rightAnchor.index - leftAnchor.index - 1;
+      if (runLen > 0) {
+        const a = leftAnchor.x;
+        const b = rightAnchor.x;
+        for (let k = 0; k < runLen; k++) {
+          positions[leftAnchor.index + 1 + k] = a + ((b - a) * (k + 1)) / (runLen + 1);
+        }
+      }
+    }
+    // Tail segment: after last anchor
+    const lastAnchor = anchors[anchors.length - 1];
+    if (lastAnchor.index < count - 1) {
+      const runLen = count - 1 - lastAnchor.index;
+      const a = lastAnchor.x;
+      for (let k = 0; k < runLen; k++) {
+        positions[lastAnchor.index + 1 + k] = a + ((100 - a) * (k + 1)) / (runLen + 1);
+      }
+    }
+  }
+
+  return sorted.map((m, idx) => ({
+    milestone: m,
+    x: positions[idx],
+  }));
+}
+
 function renderMilestoneTimeline(container, data) {
   clearOverviewContainer(container);
   const phase = data.phase;
@@ -557,26 +619,55 @@ function renderMilestoneTimeline(container, data) {
   line.setAttribute("aria-hidden", "true");
   rail.appendChild(line);
 
-  const timelineEntries = [{ type: "today", date: phase.today }, ...data.milestones]
-    .sort((left, right) => left.date.localeCompare(right.date));
+  const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+  const positionedMilestones = calculateMilestoneTimelineX(data.milestones || [], phase);
+
+  const timelineEntries = [
+    { type: "today", date: phase.today, x: milestoneProgressX(phase.today, phase) },
+    ...positionedMilestones.map((item) => ({
+      type: "milestone",
+      milestone: item.milestone,
+      date: item.milestone.date,
+      x: item.x,
+    })),
+  ].sort((left, right) => {
+    const leftDate = typeof left.date === "string" ? left.date.trim() : "";
+    const rightDate = typeof right.date === "string" ? right.date.trim() : "";
+    const leftHasDate = leftDate && datePattern.test(leftDate);
+    const rightHasDate = rightDate && datePattern.test(rightDate);
+
+    if (leftHasDate && rightHasDate) {
+      const cmp = leftDate.localeCompare(rightDate);
+      if (cmp !== 0) return cmp;
+    }
+    return left.x - right.x;
+  });
+
   timelineEntries.forEach((entry) => {
     if (entry.type === "today") {
       const today = overviewEl("div", "today-marker");
-      today.style.setProperty("--x", String(milestoneProgressX(entry.date, phase)));
+      today.style.setProperty("--x", String(entry.x));
       today.appendChild(overviewEl("span", "today-label", `今天 ${entry.date.slice(5)}`));
       rail.appendChild(today);
       return;
     }
-    const milestone = entry;
-    const node = overviewEl("div", `milestone-node is-${milestone.type}`);
+    const milestone = entry.milestone;
+    const rawDate = typeof milestone.date === "string" ? milestone.date.trim() : "";
+    const hasDate = Boolean(rawDate && datePattern.test(rawDate));
+    const isUndated = !hasDate;
+    const nodeType = isUndated ? "planned" : (milestone.type || "planned");
+    const nodeStatus = isUndated ? "未开始" : (milestone.status || "未开始");
+    const dateText = isUndated ? "待排期" : rawDate.slice(5);
+
+    const node = overviewEl("div", `milestone-node is-${nodeType}`);
     node.setAttribute("role", "listitem");
-    node.style.setProperty("--x", String(milestoneProgressX(milestone.date, phase)));
+    node.style.setProperty("--x", String(entry.x));
     node.appendChild(overviewEl("span", "milestone-dot", null));
     const copy = overviewEl("span", "milestone-copy");
     copy.append(
       overviewEl("strong", "milestone-name", milestone.name),
-      overviewEl("time", "milestone-date", milestone.date.slice(5)),
-      overviewEl("small", "milestone-status", milestone.status),
+      overviewEl("time", "milestone-date", dateText),
+      overviewEl("small", "milestone-status", nodeStatus),
     );
     node.appendChild(copy);
     rail.appendChild(node);
@@ -627,6 +718,76 @@ function renderPhaseSummary(container, phase, currentStage = null) {
   container.append(grid, updated);
 }
 
+function deliverableFormDisplay(item) {
+  if (!item || !item.formLink || typeof item.formLink !== "object") return null;
+  const summary = item.formLink.summary;
+  if (!summary || typeof summary !== "object") return null;
+  const total = Number(summary.total);
+  if (!Number.isFinite(total) || total <= 0) return null;
+
+  const completed = Number(summary.completed) || 0;
+  const overdue = Number(summary.overdue) || 0;
+  const progress = Math.round((completed / total) * 100);
+
+  let status = "进行中";
+  if (completed >= total) {
+    status = "已完成";
+  } else if (overdue > 0) {
+    status = "已逾期";
+  }
+
+  return {
+    progress: Math.min(100, Math.max(0, progress)),
+    status,
+    snapshotAt: item.formLink.snapshotAt || null,
+  };
+}
+
+// “按节点状态自动显示”规则（用户 2026-09-06 示例：到了 VDR 阶段，
+// 子系统开发策略如已完成就不再展示）。每个交付物配置其所属主计划节点
+// 关键字；当主计划中存在名称包含该关键字且日期已过的节点（项目已推进
+// 到该节点）时，已完成（含快照换算）的交付物不再展示。节点关键字是
+// 产品口径，可在此映射中调整；节点未排期（空日期）时不触发隐藏。
+const DELIVERABLE_AUTO_HIDE_NODE_KEYWORDS = {
+  "VPI-T2-D1": ["VDR"],
+  "VPI-T2-D2": ["VPI"],
+  "VPI-T2-D3": ["T2"],
+  "VPI-T2-D4": ["VDR"],
+  "VPI-T2-D5": ["T2"],
+};
+
+function deliverableNodeReached(keywords) {
+  const state = overviewSavedState;
+  const milestones = state && Array.isArray(state.milestones) ? state.milestones : [];
+  const today = state && state.phase && state.phase.today ? String(state.phase.today) : "";
+  if (!today) return false;
+  // 分词精确匹配（连字符不分词）：`VDR` 命中「VDR 决策」「LLP VDR」，
+  // 但「VPI-T2 Gate」整体是一个词，不会被 VPI 关键字误判（子串或按
+  // 连字符分词都会误命中）。
+  const wanted = keywords.map((keyword) => String(keyword).toUpperCase());
+  return milestones.some((milestone) => {
+    const name = String(milestone.name || "").toUpperCase();
+    const date = String(milestone.date || "");
+    if (!date) return false;
+    const tokens = name.split(/[\s·/()（）%]+/).filter(Boolean);
+    return wanted.some((keyword) => tokens.includes(keyword)) && date <= today;
+  });
+}
+
+function shouldShowDeliverable(item, filterValue) {
+  if (filterValue !== "auto") return true;
+  const keywords = DELIVERABLE_AUTO_HIDE_NODE_KEYWORDS[item.id];
+  if (!keywords || !keywords.length) return true;
+  // 完成态与环图口径一致：优先取快照换算状态（含"手工进行中但快照
+  // 已全部完成"的情形），无快照时回退手工状态。
+  const formDisplay = deliverableFormDisplay(item);
+  const status = formDisplay ? formDisplay.status : item.status;
+  if (status !== "已完成") return true;
+  return !deliverableNodeReached(keywords);
+}
+
+let deliverableProgressFilterValue = "all";
+
 function deliverableTone(item) {
   if (item.tone) return item.tone;
   if (item.status === "已完成") return "success";
@@ -655,7 +816,67 @@ function ringDateLabel(item) {
 
 function renderDeliverableProgress(container, deliverables) {
   clearOverviewContainer(container);
-  deliverables.forEach((item) => {
+  const band = container.closest(".deliverable-status-band");
+  if (band) {
+    const existingHead = band.querySelector(".band-head");
+    if (existingHead && !existingHead.querySelector(".deliverable-display-filter")) {
+      const filterWrap = overviewEl("label", "deliverable-display-filter");
+      filterWrap.append(overviewEl("span", "deliverable-display-filter-label", "显示"));
+      const select = document.createElement("select");
+      select.className = "deliverable-display-filter-select";
+      select.setAttribute("aria-label", "交付物显示筛选");
+
+      const optAll = document.createElement("option");
+      optAll.value = "all";
+      optAll.textContent = "全部交付物";
+      const optAuto = document.createElement("option");
+      optAuto.value = "auto";
+      optAuto.textContent = "按节点状态自动显示";
+      optAuto.title = "已完成且项目推进越过其关联主计划节点的交付物不再展示";
+
+      select.append(optAll, optAuto);
+      select.value = deliverableProgressFilterValue;
+      select.addEventListener("change", (e) => {
+        deliverableProgressFilterValue = e.target.value;
+        renderDeliverableProgress(container, deliverables);
+      });
+      filterWrap.appendChild(select);
+      const hiddenHint = overviewEl(
+        "span",
+        "deliverable-auto-hidden",
+        "",
+      );
+      filterWrap.appendChild(hiddenHint);
+      existingHead.appendChild(filterWrap);
+    }
+    // 已存在的下拉在重新渲染时与当前筛选值保持同步。
+    const existingSelect = band.querySelector(".deliverable-display-filter-select");
+    if (existingSelect) {
+      existingSelect.value = deliverableProgressFilterValue;
+    }
+    const hint = band.querySelector(".deliverable-auto-hidden");
+    if (hint) {
+      const hiddenCount = deliverables.filter(
+        (item) => !shouldShowDeliverable(item, deliverableProgressFilterValue),
+      ).length;
+      hint.textContent = deliverableProgressFilterValue === "auto" && hiddenCount
+        ? `已隐藏 ${hiddenCount} 项已完成交付物`
+        : "";
+    }
+  }
+
+  deliverables.forEach((rawItem) => {
+    if (!shouldShowDeliverable(rawItem, deliverableProgressFilterValue)) return;
+    const formDisplay = deliverableFormDisplay(rawItem);
+    const item = formDisplay
+      ? {
+          ...rawItem,
+          progress: formDisplay.progress,
+          status: formDisplay.status,
+          tone: null,
+        }
+      : rawItem;
+
     const card = overviewEl("article", "progress-ring");
     card.setAttribute("role", "img");
     card.setAttribute("aria-label", `${item.name}，完成度 ${item.progress}%，状态 ${item.status}`);
@@ -666,7 +887,7 @@ function renderDeliverableProgress(container, deliverables) {
     const copy = overviewEl("span", "ring-copy");
     copy.append(
       overviewEl("strong", "ring-name", item.name),
-      overviewEl("span", `ring-status is-${item.tone}`, item.status),
+      overviewEl("span", `ring-status is-${deliverableTone(item)}`, item.status),
       overviewEl("span", "ring-date", ringDateLabel(item)),
     );
     card.append(visual, copy);
@@ -2632,6 +2853,9 @@ function renderDepartmentDoneChart(summary, departments, onSelect, options = {})
   };
 }
 
+// 全局同一时刻只展开一个多选下拉，避免多个候选列表同时展开叠压图表内容。
+let activeMultiSelectCloser = null;
+
 function createSearchMultiSelect({
   ariaLabel,
   placeholder,
@@ -2660,10 +2884,13 @@ function createSearchMultiSelect({
 
   const optionItems = (options || []).map((option) => {
     if (Array.isArray(option)) return { value: String(option[0]), label: String(option[1]) };
-    return { value: String(option), label: String(option) };
+    const value = String(option);
+    return { value, label: String(labelFor(value) || value) };
   });
   let selected = [];
   let changeHandler = null;
+  // 候选列表仅在用户主动聚焦时展开；程序化 setValues/clear 不改变展开状态。
+  let optionsOpen = false;
 
   function renderTokens() {
     const currentInput = input.value;
@@ -2705,7 +2932,23 @@ function createSearchMultiSelect({
       button.addEventListener("click", () => addValue(option.value));
       optionsBox.appendChild(button);
     });
-    optionsBox.hidden = matches.length === 0;
+    optionsBox.hidden = !optionsOpen || matches.length === 0;
+  }
+
+  function closeOptions() {
+    optionsOpen = false;
+    optionsBox.hidden = true;
+    if (activeMultiSelectCloser === closeOptions) activeMultiSelectCloser = null;
+  }
+
+  function openOptions() {
+    if (optionsOpen) return;
+    if (activeMultiSelectCloser && activeMultiSelectCloser !== closeOptions) {
+      activeMultiSelectCloser();
+    }
+    optionsOpen = true;
+    activeMultiSelectCloser = closeOptions;
+    renderOptions();
   }
 
   function addValue(rawValue) {
@@ -2742,12 +2985,17 @@ function createSearchMultiSelect({
     setValues([]);
   }
 
-  input.addEventListener("focus", renderOptions);
-  input.addEventListener("input", renderOptions);
+  input.addEventListener("focus", openOptions);
+  input.addEventListener("input", () => {
+    if (optionsOpen) renderOptions();
+    else openOptions();
+  });
   input.addEventListener("keydown", (event) => {
     if (event.key === "Enter" || event.key === ",") {
       event.preventDefault();
       addValue(input.value);
+    } else if (event.key === "Escape" && optionsOpen) {
+      closeOptions();
     } else if (event.key === "Backspace" && !input.value && selected.length > 0) {
       selected.pop();
       renderTokens();
@@ -2758,7 +3006,7 @@ function createSearchMultiSelect({
   control.addEventListener("click", () => input.focus());
   root.addEventListener("focusout", (event) => {
     if (!root.contains(event.relatedTarget)) {
-      optionsBox.hidden = true;
+      closeOptions();
     }
   });
 
@@ -3875,7 +4123,16 @@ function renderEwoSyncSummary(host, item, analysisData, feedbackText = "", feedb
   host.append(titleRow, meta, metrics, sourceNote);
 }
 
-function renderDeliverableStatusChart(item, actions = {}) {
+function renderDeliverableStatusChart(rawItem, actions = {}) {
+  const formDisplay = deliverableFormDisplay(rawItem);
+  const item = formDisplay
+    ? {
+        ...rawItem,
+        progress: formDisplay.progress,
+        status: formDisplay.status,
+      }
+    : rawItem;
+
   const chart = overviewEl("section", "deliverable-current-status-chart");
   chart.setAttribute("role", "region");
   chart.setAttribute("aria-label", `${safeDisplayValue(item.name)} 当前状态图表`);
@@ -3897,8 +4154,18 @@ function renderDeliverableStatusChart(item, actions = {}) {
 
   const progressBox = overviewEl("div", "deliverable-current-status-progress");
   const progressLabelRow = overviewEl("div", "deliverable-current-status-label");
+  const progressLabelText = overviewEl("span", "deliverable-progress-title");
+  if (formDisplay) {
+    const datePart = formDisplay.snapshotAt ? String(formDisplay.snapshotAt).slice(0, 10) : "";
+    progressLabelText.append(
+      overviewEl("span", "deliverable-snapshot-tag", "快照进度"),
+      overviewEl("span", "deliverable-snapshot-date", datePart ? `（${datePart}）` : ""),
+    );
+  } else {
+    progressLabelText.textContent = "项目手工进度";
+  }
   progressLabelRow.append(
-    overviewEl("span", null, "项目手工进度"),
+    progressLabelText,
     overviewEl("strong", null, progressLabel),
   );
   const track = overviewEl("div", "analysis-chart-track");
@@ -4156,11 +4423,13 @@ async function refreshEwoFormFromStatusChart(item, statusChart, formPanel, formS
 
 const DELIVERABLE_FORM_KEY_BY_ITEM = {
   "VPI-T2-D3": "VPI-T2-D3",
+  "VPI-T2-D2": "tdc_sor",
   "VPI-T2-D5": "tdc_data_model",
   aras_paa: "aras_paa",
   aras_ncr_progress: "aras_ncr_progress",
   aras_ncr_detail: "aras_ncr_detail",
   tdc_data_model: "tdc_data_model",
+  tdc_sor: "tdc_sor",
 };
 
 const DELIVERABLE_FORM_TABS = {
@@ -4188,6 +4457,11 @@ const DELIVERABLE_FORM_TABS = {
     ["sectionStatus", "部门状态"],
     ["quantityTrend", "数量趋势"],
   ],
+  tdc_sor: [
+    ["departmentStatus", "车型项目状态"],
+    ["sectionStatus", "科室状态"],
+    ["quantityTrend", "数量趋势"],
+  ],
 };
 
 const FORM_FILTER_LABELS = {
@@ -4197,6 +4471,7 @@ const FORM_FILTER_LABELS = {
   section: "科室 / 区域",
   model: "车型 / 项目",
   stage: "阶段 / 节点",
+  overdueState: "逾期状态",
   dateStart: "开始日期",
   dateEnd: "结束日期",
   relationEwo: "关联EWO",
@@ -4211,6 +4486,13 @@ const DELIVERABLE_FORM_FILTER_LABELS = {
     dateStart: "申请日期（起）",
     dateEnd: "申请日期（止）",
   },
+  tdc_sor: {
+    section: "科室",
+    model: "类型",
+    stage: "车型项目",
+    dateStart: "申请日期（起）",
+    dateEnd: "申请日期（止）",
+  },
 };
 
 // 按表单覆盖图表标题与说明（页签文字见 DELIVERABLE_FORM_TABS）。
@@ -4218,6 +4500,10 @@ const DELIVERABLE_FORM_CHART_TITLES = {
   tdc_data_model: {
     departmentStatus: ["项目状态", "各项目 / 车型按期推进数与逾期风险数"],
     sectionStatus: ["部门状态", "点击一个部门可追加筛选"],
+  },
+  tdc_sor: {
+    departmentStatus: ["车型项目状态", "各车型项目按期推进数与逾期风险数"],
+    sectionStatus: ["科室状态", "点击一个科室可追加筛选"],
   },
 };
 
@@ -4241,6 +4527,9 @@ const FORM_FILTER_QUERY_KEYS = [
 
 function deliverableFormKey(item) {
   if (!item || typeof item !== "object") return "";
+  if (item.formLink && typeof item.formLink === "object" && item.formLink.formKey) {
+    return String(item.formLink.formKey);
+  }
   return DELIVERABLE_FORM_KEY_BY_ITEM[item.id] || DELIVERABLE_FORM_KEY_BY_ITEM[item.externalJobKey] || "";
 }
 
@@ -4405,20 +4694,26 @@ function renderFormFilterBar(data, state, onReload) {
   const root = overviewEl("section", "form-filter-bar");
   root.setAttribute("aria-label", "当前图表筛选");
   const titleRow = overviewEl("div", "form-filter-head");
-  titleRow.append(
-    overviewEl("strong", "form-filter-title", "筛选条件"),
-    overviewEl("span", "form-filter-scope", "仅作用于当前图表页签与表单明细；同一字段内多选为或，字段之间为且"),
-  );
+  const scopeText = "仅作用于当前图表页签与表单明细；同一字段内多选为或，字段之间为且";
+  const filterTitle = overviewEl("strong", "form-filter-title", "筛选条件");
+  const scopeInfo = overviewEl("span", "form-filter-info", "ⓘ");
+  scopeInfo.title = scopeText;
+  scopeInfo.setAttribute("aria-label", scopeText);
+  filterTitle.appendChild(scopeInfo);
+  titleRow.appendChild(filterTitle);
   root.appendChild(titleRow);
 
   const controls = overviewEl("div", "form-filter-controls");
+  const searchRow = overviewEl("div", "form-filter-row form-filter-row-search");
+  const dimsRow = overviewEl("div", "form-filter-row form-filter-row-dims");
+  const timeRow = overviewEl("div", "form-filter-row form-filter-row-time");
   const keyword = overviewEl("input", "form-filter-keyword");
   keyword.type = "search";
   keyword.placeholder = "编号、项目、零件、负责人";
   keyword.value = String(filters.keyword || "");
   keyword.setAttribute("aria-label", "关键词");
   keyword.maxLength = 200;
-  controls.appendChild(keyword);
+  searchRow.appendChild(keyword);
 
   const overdueStateLabels = {
     overdue: "逾期风险",
@@ -4433,7 +4728,7 @@ function renderFormFilterBar(data, state, onReload) {
     label.appendChild(overviewEl("span", "form-filter-label", labelText));
     const control = createSearchMultiSelect({
       ariaLabel: labelText,
-      placeholder: "多选，点击图表也可追加",
+      placeholder: "搜索或多选",
       options: values,
       labelFor: labels || ((value) => value),
     });
@@ -4447,7 +4742,7 @@ function renderFormFilterBar(data, state, onReload) {
       if (typeof onReload === "function") onReload();
     });
     label.appendChild(control.el);
-    controls.appendChild(label);
+    dimsRow.appendChild(label);
     multiSelects[key] = control;
   };
 
@@ -4470,7 +4765,7 @@ function renderFormFilterBar(data, state, onReload) {
     relationInput.setAttribute("aria-label", "关联EWO");
     const relationLabel = overviewEl("label", "form-filter-field");
     relationLabel.append(overviewEl("span", "form-filter-label", deliverableFormFilterLabel(formKey, "relationEwo") || "关联EWO"), relationInput);
-    controls.appendChild(relationLabel);
+    searchRow.appendChild(relationLabel);
   }
 
   const dateStart = overviewEl("input", "form-filter-date");
@@ -4485,7 +4780,7 @@ function renderFormFilterBar(data, state, onReload) {
   dateStartLabel.append(overviewEl("span", "form-filter-label", deliverableFormFilterLabel(formKey, "dateStart")), dateStart);
   const dateEndLabel = overviewEl("label", "form-filter-field");
   dateEndLabel.append(overviewEl("span", "form-filter-label", deliverableFormFilterLabel(formKey, "dateEnd")), dateEnd);
-  controls.append(dateStartLabel, dateEndLabel);
+  timeRow.append(dateStartLabel, dateEndLabel);
 
   const actions = overviewEl("div", "form-filter-actions");
   const apply = overviewEl("button", "btn is-secondary", "应用筛选");
@@ -4515,7 +4810,8 @@ function renderFormFilterBar(data, state, onReload) {
     if (typeof onReload === "function") onReload();
   });
   actions.append(apply, clear);
-  controls.appendChild(actions);
+  searchRow.appendChild(actions);
+  controls.append(searchRow, dimsRow, timeRow);
   root.appendChild(controls);
 
   const chips = overviewEl("div", "form-filter-chips chart-filter-state");
@@ -5206,6 +5502,7 @@ function renderDeliverableDetailPage(deliverableId) {
   metaSection.appendChild(interactiveQueryHost);
   metaSection.appendChild(overviewEl("h6", "section-sub-title", "详细明细"));
   const grid = overviewEl("div", "detail-inline-grid");
+  const isSnapshotSource = Boolean(deliverableFormDisplay(item));
   const pairs = [
     ["当前状态", item.status],
     ["负责人", item.owner],
@@ -5214,7 +5511,7 @@ function renderDeliverableDetailPage(deliverableId) {
     ["计划完成日期", item.plannedDate],
     ["实际完成日期", item.actualDate || "未完成"],
     ["项目手工进度", `${Number(item.progress) || 0}%`],
-    ["数据来源", item.source || "未设置"],
+    ["数据来源", isSnapshotSource ? "表单快照" : (item.source || "未设置")],
     ["更新方式", item.updateMethod === "manual" ? "手动维护" : (item.updateMethod || deliverablePolicyModeLabel(item.updatePolicy && item.updatePolicy.mode))],
     ["更新时间", item.updatedAt || (overviewSavedState.phase && overviewSavedState.phase.updatedAt)],
     ["风险与备注", item.note || "无"],
@@ -5301,6 +5598,7 @@ function renderArchiveDeliverableDetailPage(jobKey) {
     aras_ncr_progress: ["NCR 审批进度", "ARAS NCR"],
     aras_ncr_detail: ["NCR 审批明细", "ARAS NCR"],
     tdc_data_model: ["数模设计审核流程报表", "TDC"],
+    tdc_sor: ["SOR 定点流程", "TDC"],
   };
   const [name, source] = labels[job.jobKey] || [job.jobKey, "外部同步"];
   const page = overviewEl("article", "deliverable-detail-page");
@@ -6681,17 +6979,20 @@ function validateMilestoneDraft() {
       errors[`${row.localId}.name`] = "节点名称不能重复";
     }
     seenNames.add(name);
+    const status = row.status || MILESTONE_LABEL_BY_TYPE[row.type] || "未开始";
     if (!date) {
-      errors[dateKey] = "节点日期为必填项";
+      if (status !== "未开始") {
+        errors[dateKey] = "空日期节点状态必须为未开始";
+      }
     } else if (!datePattern.test(date)) {
       errors[dateKey] = "日期格式应为 YYYY-MM-DD";
     } else if (start && end && (date < start || date > end)) {
       errors[dateKey] = `节点日期需在阶段周期 ${start} 至 ${end} 内`;
     }
-    if (!errors[dateKey] && (row.type === "done" || row.status === "已完成") && today && date > today) {
+    if (!errors[dateKey] && date && (row.type === "done" || row.status === "已完成") && today && date > today) {
       errors[dateKey] = `已达成节点日期不能晚于当前日期 ${today}`;
     }
-    if (!errors[dateKey] && (row.type === "planned" || row.status === "未开始") && today && date && date < today) {
+    if (!errors[dateKey] && date && (row.type === "planned" || row.status === "未开始") && today && date < today) {
       errors[dateKey] = `计划节点日期不能早于当前日期 ${today}`;
     }
     });
