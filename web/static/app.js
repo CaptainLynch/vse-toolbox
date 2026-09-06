@@ -1,4 +1,4 @@
-const THEME_KEY = "vse-toolbox-theme";
+﻿const THEME_KEY = "vse-toolbox-theme";
 
 const SENSITIVE_COLUMNS = new Set([
   "raw_xml",
@@ -496,7 +496,7 @@ function renderTableState(tbody, state, message) {
   tbody.textContent = "";
   const row = document.createElement("tr");
   const cell = overviewEl("td", null);
-  cell.colSpan = 8;
+  cell.colSpan = OVERVIEW_DETAIL_COLUMNS.length + 1;
   const className = state === "error" ? "error-msg" : state === "empty" ? "is-empty" : "loading";
   const text = state === "error"
     ? `加载失败：${redactSensitiveText(String(message))}`
@@ -9447,24 +9447,43 @@ function invalidateArchivePlanNameCache() {
   archivePlanNameCache = null;
 }
 
-async function applyArchivePlanNamePlaceholders(controls) {
+async function applyArchivePlanNameSync(controls, job) {
   try {
     if (archivePlanNameCache === null) {
-      const response = await fetch("/api/project-status?phase=VPI-T2", {
-        headers: { Accept: "application/json" },
-      });
-      const body = response.ok ? await response.json() : null;
-      archivePlanNameCache = body && body.ok
-        ? String(body.data.phase.displayName || "").trim()
-        : "";
+      // 优先复用概览页已加载的主计划名称，避免冗余请求与预填竞态。
+      const fromState = overviewSavedState
+        && overviewSavedState.phase
+        && overviewSavedState.phase.displayName;
+      if (fromState) {
+        archivePlanNameCache = String(fromState).trim();
+      } else {
+        const response = await fetch("/api/project-status?phase=VPI-T2", {
+          headers: { Accept: "application/json" },
+        });
+        const body = response.ok ? await response.json() : null;
+        archivePlanNameCache = body && body.ok
+          ? String(body.data.phase.displayName || "").trim()
+          : "";
+      }
     }
   } catch (error) {
     archivePlanNameCache = "";
   }
   if (!archivePlanNameCache) return;
   controls.querySelectorAll("[data-archive-filter-name]").forEach((input) => {
-    if (ARCHIVE_PROJECT_FILTER_KEYS.has(input.dataset.archiveFilterName)) {
-      input.placeholder = `例如 ${archivePlanNameCache}（支持 * 模糊和 | 并集）`;
+    const key = input.dataset.archiveFilterName;
+    if (!ARCHIVE_PROJECT_FILTER_KEYS.has(key)) return;
+    input.placeholder = "支持 * 模糊和 | 并集";
+    input.title = "默认与主计划名称同步；支持 * 模糊和 | 并集";
+    // 默认值与主计划名称同步：任务已显式配置（含显式清空）时以配置为准。
+    // 默认值与主计划名称同步：任务已显式配置（键存在，含显式清空为
+    // 空串）时以配置为准；仅缺键时预填当前主计划名称。
+    const filters = job.filters || {};
+    const hasExplicitValue =
+      key in filters && filters[key] !== null && filters[key] !== undefined;
+    if (!hasExplicitValue && !input.value.trim()) {
+      input.value = archivePlanNameCache;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
     }
   });
 }
@@ -9519,7 +9538,7 @@ function renderArchiveFilterControls(job, textarea) {
       textarea.value = JSON.stringify(collectArchiveFilterControls(controls), null, 2);
     });
   });
-  applyArchivePlanNamePlaceholders(controls);
+  applyArchivePlanNameSync(controls, job);
   return section;
 }
 

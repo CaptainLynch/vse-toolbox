@@ -354,6 +354,9 @@ def test_catalog_is_truthful_and_contains_no_secrets(client) -> None:
         "aras-ncr-detail",
         "tdc-data-model",
         "tdc-sor",
+    ]
+    # 2026-09-06：不可用条目（仅 CLI/已禁用/占位）已从目录全部移除。
+    for removed_id in (
         "tdc-a-face",
         "dm-change-form",
         "deliverables-register",
@@ -365,7 +368,8 @@ def test_catalog_is_truthful_and_contains_no_secrets(client) -> None:
         "vertical-ncr-form",
         "vertical-styling-review-form",
         "intranet-ncr-scraper",
-    ]
+    ):
+        assert removed_id not in ids
     text = resp.get_data(as_text=True)
     for marker in ("password", "Bearer ", "api_key", "C:\\", "\\\\server", "/Users/"):
         assert marker not in text
@@ -435,65 +439,7 @@ def test_catalog_statuses_availability_and_schema(client) -> None:
         assert by_id[aras_id]["fields"] == []
         assert by_id[aras_id]["target"]["panel"] == "aras-panel"
 
-    assert by_id["tdc-a-face"]["availability"] == "disabled"
-    assert by_id["tdc-a-face"]["implementation_status"] == "仅占位"
-    assert by_id["tdc-a-face"]["operations"] == []
-    assert by_id["tdc-a-face"]["fields"] == []
-    assert "HAR" in by_id["tdc-a-face"]["reason"]
-
-    assert by_id["dm-change-form"]["availability"] == "disabled"
-    assert by_id["dm-change-form"]["implementation_status"] == "仅占位"
-    assert by_id["dm-change-form"]["name"] == "数模更改单 / DMU 审核单（独立表单）"
-    assert by_id["dm-change-form"]["operations"] == []
-    assert by_id["dm-change-form"]["fields"] == []
-    assert "NotImplemented" in by_id["dm-change-form"]["reason"]
     assert "TDC 数模设计审核流程报表" in by_id["tdc-data-model"]["name"]
-
-    assert by_id["deliverables-register"]["availability"] == "cli_only"
-    assert by_id["deliverables-register"]["implementation_status"] == "部分实现"
-    assert by_id["deliverables-register"]["operations"] == ["cli"]
-    assert by_id["excel-toolbox"]["availability"] == "cli_only"
-    assert by_id["excel-toolbox"]["implementation_status"] == "后端已实现、前端缺失"
-    assert by_id["excel-toolbox"]["output_formats"] == ["XLSX"]
-    assert by_id["excel-toolbox"]["operations"] == ["cli"]
-    assert "Web" in by_id["excel-toolbox"]["reason"]
-
-    assert by_id["weekly-ppt"]["availability"] == "disabled"
-    assert by_id["weekly-ppt"]["implementation_status"] == "部分实现"
-    assert by_id["weekly-ppt"]["output_formats"] == ["PPTX"]
-    assert "模板" in by_id["weekly-ppt"]["reason"]
-    assert "短路" in by_id["weekly-ppt"]["reason"]
-
-    assert by_id["feishu-tasks"]["availability"] == "disabled"
-    assert by_id["feishu-tasks"]["implementation_status"] == "部分实现"
-    assert "暂停" in by_id["feishu-tasks"]["reason"]
-
-    office_excel = by_id["office-deliverables-excel"]
-    assert office_excel["availability"] == "disabled"
-    assert office_excel["implementation_status"] == "后端已实现、前端缺失"
-    assert office_excel["output_formats"] == ["XLSX"]
-    assert office_excel["operations"] == []
-    assert office_excel["fields"] == []
-    assert "服务层" in office_excel["reason"]
-    assert "CLI" in office_excel["reason"]
-    assert "Web" in office_excel["reason"]
-
-    for form_id in ("vertical-ewo-form", "vertical-ncr-form", "vertical-styling-review-form"):
-        form = by_id[form_id]
-        assert form["availability"] == "disabled"
-        assert form["implementation_status"] == "仅占位"
-        assert form["operations"] == []
-        assert form["fields"] == []
-        assert form["output_formats"] == []
-        assert "NotImplemented" in form["reason"]
-
-    scraper = by_id["intranet-ncr-scraper"]
-    assert scraper["availability"] == "disabled"
-    assert scraper["implementation_status"] == "部分实现"
-    assert scraper["output_formats"] == ["XLSX"]
-    assert scraper["operations"] == []
-    assert "Selenium" in scraper["reason"]
-    assert "CLI" in scraper["reason"] and "Web" in scraper["reason"]
 
 
 def test_tdc_sor_car_type_project_endpoint_returns_safe_options(client) -> None:

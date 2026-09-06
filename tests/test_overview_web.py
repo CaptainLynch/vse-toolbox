@@ -1048,10 +1048,13 @@ def test_archive_project_filter_unified_label_and_placeholder_contract() -> None
         '{ name: "vehicleKeyword", label: "车型项目" }',
         '["projectCode", "车型项目", "project_code"]',
         "ARCHIVE_PROJECT_FILTER_KEYS",
-        "applyArchivePlanNamePlaceholders(controls)",
-        "例如 ${archivePlanNameCache}（支持 * 模糊和 | 并集）",
+        "applyArchivePlanNameSync(controls, job)",
+        "默认与主计划名称同步；支持 * 模糊和 | 并集",
     ):
         assert marker in js_text, marker
+
+    # 占位符方案已被默认值同步取代（2026-09-07）。
+    assert "例如 ${archivePlanNameCache}（支持 * 模糊和 | 并集）" not in js_text
 
     # 旧称呼必须已移除。
     assert 'label: "项目代码"' not in js_text
@@ -1077,3 +1080,64 @@ def test_milestone_delete_all_restore_notice_contract() -> None:
     for marker in ("hadNoRows", "edit-request-info"):
         assert marker in js_text or marker in css_text, marker
     assert ".edit-request-info" in css_text
+
+
+def test_owner_header_removed_and_project_filter_value_sync_contract() -> None:
+    """需求 2026-09-06：明细表负责人表头移除；车型项目默认值同步主计划名称。"""
+    html_text = Path("web/templates/dashboard.html").read_text(encoding="utf-8-sig")
+    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+
+    # 表头与数据列一致：静态表头不再包含负责人。
+    assert '<th scope="col">负责人</th>' not in html_text
+
+    # 车型项目默认值同步：applyArchivePlanNameSync 替代占位符方案。
+    assert "applyArchivePlanNameSync(controls, job)" in js_text
+    assert "默认与主计划名称同步；支持 * 模糊和 | 并集" in js_text
+    assert "例如 ${archivePlanNameCache}" not in js_text
+
+
+def test_details_table_header_matches_column_constant() -> None:
+    """架构加固：明细表静态表头必须与 OVERVIEW_DETAIL_COLUMNS 一一对应，
+    防止表头/数据列再次错位（2026-09-07 审计发现）。"""
+    import re
+
+    html_text = Path("web/templates/dashboard.html").read_text(encoding="utf-8-sig")
+    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+
+    start = html_text.index('<table class="overview-details-table">')
+    head_end = html_text.index("</thead>", start)
+    headers = re.findall(r"<th[^>]*>(.*?)</th>", html_text[start:head_end], re.S)
+    headers = [re.sub(r"<[^>]+>", "", h).strip() for h in headers]
+    # 最后一列是视觉隐藏的展开控制列，不承载明细字段。
+    assert headers[-1] == "展开控制"
+    data_headers = headers[:-1]
+
+    columns_start = js_text.index("const OVERVIEW_DETAIL_COLUMNS")
+    columns_end = js_text.index("];", columns_start)
+    columns = [
+        part.strip().strip('"')
+        for part in js_text[columns_start:columns_end].split("[", 1)[1].split(",")
+        if part.strip()
+    ]
+    assert data_headers == columns, (data_headers, columns)
+
+
+def test_archive_plan_sync_explicit_empty_and_colspan_contract() -> None:
+    """代码审计修复：显式空串配置不被覆盖；表格状态列 colspan 与列数一致。"""
+    html_text = Path("web/templates/dashboard.html").read_text(encoding="utf-8-sig")
+    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+
+    # 显式配置以键存在为准（含空串），缺键才预填主计划名称。
+    sync_block = js_text[
+        js_text.index("async function applyArchivePlanNameSync"):
+        js_text.index("function archiveFilterDisplayValue")
+    ]
+    assert "const hasExplicitValue =" in sync_block
+    assert "key in filters && filters[key] !== null && filters[key] !== undefined" in sync_block
+    assert 'String(saved).trim() !== ""' not in sync_block
+
+    # 明细表状态行 colspan 与列数一致（7 列：6 数据列 + 展开控制列）。
+    assert 'colspan="7"' in html_text
+    assert 'colspan="8"' not in html_text
+    assert "cell.colSpan = OVERVIEW_DETAIL_COLUMNS.length + 1;" in js_text
+    assert "cell.colSpan = 8;" not in js_text
