@@ -5,6 +5,18 @@ delete. Per-plan rulings stay in their SDD ledger (`.superpowers/sdd/…`, local
 and get promoted here once they prove durable. Newest first. Keep entries
 short: decision, why, cost if violated, source pointer.
 
+## 2026-09-06 — 环图"按节点状态自动显示"规则口径
+
+auto 模式下，交付物若已完成（完成态取快照换算口径，回退手工值）且主计划中
+存在"名称分词后包含其关联节点关键字、且日期已过"的节点，则不再展示；隐藏
+数量在 band-head 提示。映射常量 DELIVERABLE_AUTO_HIDE_NODE_KEYWORDS
+（app.js）：D1→VDR、D2→VPI、D3→T2、D4→VDR、D5→T2，属产品口径可调整。
+节点匹配必须用分词精确匹配且连字符不分词——子串或按连字符分词会把
+「VPI-T2 Gate」误判为 VPI 节点。空日期（待排期）节点永不触发隐藏。
+Cost if violated: 关键交付物在总览被误隐藏或该隐藏的不隐藏。
+Source: ZCode 会话 2026-09-06 用户示例（到了 VDR 阶段隐藏已完成的子系统
+开发策略）+ code-reviewer 审计轮。
+
 ## 2026-09-06 — SOR 定点流程 (tdc_sor) 注册为第 6 个统一表单
 
 `tdc_sor`（TDC SOR 定点流程，官方 15 列导出，headers 见
