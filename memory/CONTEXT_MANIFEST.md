@@ -48,6 +48,7 @@ Tracked documentation, grouped by status:
 | Location | Status |
 | --- | --- |
 | `docs/superpowers/specs/` + `docs/superpowers/plans/` (dated) | Active convention: per-feature design spec + execution plan |
+| `docs/API_ENDPOINTS.md` | Generated Web API endpoint inventory (run `tools/generate_api_endpoints.py` to refresh; 2026-09-07) |
 | `docs/*.md` (SCHEDULED_*, EXCEL_*, PRODUCTION_*, USER_GUIDE_*, PROD_DATA_MODEL_*) | Active architecture docs and runbooks |
 | `docs/agents/research_notes.md`, `crawl_source_index.md`, `paa_har_snapshot.md`, `crawler_contract.md` | Active reference for crawler work |
 | `DELIVERABLE_UPDATE_MODES_PILOT_ARCHITECTURE.md` | Active architecture reference for the implemented dual-mode (interactive/background) deliverable sync |
