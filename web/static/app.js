@@ -6923,6 +6923,13 @@ function renderMilestoneReadonlyList(container, data) {
   toolbar.appendChild(editButton);
   container.appendChild(toolbar);
 
+  if (milestoneRestoreNotice) {
+    milestoneRestoreNotice = false;
+    container.appendChild(
+      overviewEl("p", "edit-request-info", "已删除全部节点，已自动恢复默认节点模板"),
+    );
+  }
+
   const list = overviewEl("ul", "milestone-main-list");
   milestones.forEach((item, index) => {
     const row = overviewEl("li", "milestone-main-row");
@@ -7212,13 +7219,17 @@ function renderMilestoneServerFieldErrors(fields) {
   renderMilestoneFieldErrors(errors);
 }
 
-function renderMilestoneRequestMessage(message) {
+function renderMilestoneRequestMessage(message, tone = "error") {
   const form = document.getElementById("milestone-edit-form");
   if (!form) return;
   const region = form.querySelector(".milestone-request-message");
   if (!region) return;
   region.textContent = "";
-  if (message) region.appendChild(overviewEl("p", "edit-request-error", message));
+  if (message) {
+    region.appendChild(
+      overviewEl("p", tone === "info" ? "edit-request-info" : "edit-request-error", message),
+    );
+  }
 }
 
 function setMilestoneSavingState(saving) {
@@ -7245,6 +7256,8 @@ async function saveMilestoneChanges(event) {
     renderMilestoneFieldErrors(errors);
     return;
   }
+  // 删除全部节点后保存 → 服务端自动恢复默认节点模板（不再 422）。
+  const hadNoRows = !overviewDraft.rows.length;
   const payload = {
     milestones: overviewDraft.rows.map((row, index) => {
       const status = row.status || MILESTONE_LABEL_BY_TYPE[row.type] || "未开始";
@@ -7282,6 +7295,7 @@ async function saveMilestoneChanges(event) {
     }
     overviewSavedState = saved.projectStatus;
     overviewDraft = null;
+    if (hadNoRows) milestoneRestoreNotice = true;
     renderProjectOverview();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -7292,6 +7306,8 @@ async function saveMilestoneChanges(event) {
     overviewSaving = false;
   }
 }
+
+let milestoneRestoreNotice = false;
 
 function cancelMilestoneEdit() {
   if (!overviewDraft || overviewDraft.kind !== "milestones" || overviewSaving) return;

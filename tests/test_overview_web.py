@@ -1065,3 +1065,15 @@ def test_filter_dims_multi_select_overflow_fix_contract() -> None:
     dims = css_text[css_text.index(".form-filter-row-dims"):css_text.index(".form-filter-row-time")]
     assert "minmax(150px, 1fr)" in dims
     assert ".form-filter-row-dims .analysis-multi-select { min-width: 0; max-width: none; }" in css_text
+
+
+def test_milestone_delete_all_restore_notice_contract() -> None:
+    """需求 2026-09-06：删除全部节点保存后自动恢复默认模板并提示。"""
+    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+    css_text = Path("web/static/style.css").read_text(encoding="utf-8-sig")
+
+    assert "milestoneRestoreNotice" in js_text
+    assert "已删除全部节点，已自动恢复默认节点模板" in js_text
+    for marker in ("hadNoRows", "edit-request-info"):
+        assert marker in js_text or marker in css_text, marker
+    assert ".edit-request-info" in css_text

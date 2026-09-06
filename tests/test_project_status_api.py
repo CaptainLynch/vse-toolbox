@@ -213,7 +213,6 @@ def test_milestone_update_adds_reorders_and_deletes_baseline_nodes(client) -> No
 @pytest.mark.parametrize(
     ("mutator", "field"),
     [
-        (lambda items: [], "milestones"),
         (lambda items: [{**item, "name": items[0]["name"]} if index == 1 else item for index, item in enumerate(items)], "milestones.1.name"),
         (lambda items: [{**item, "date": "2026-09-01"} if index == 0 else item for index, item in enumerate(items)], "milestones.0.date"),
         (
@@ -319,3 +318,24 @@ def test_milestone_update_detects_stale_phase_version(client) -> None:  # type: 
     stale = client.patch("/api/project-status/phases/VPI-T2/milestones", json=payload)
     assert stale.status_code == 409
     assert stale.get_json()["error"]["type"] == "Conflict"
+
+
+def test_milestone_update_empty_list_restores_default_template(client) -> None:
+    """删除全部节点后保存：自动恢复 11 节点默认模板而非 422。"""
+    before = _status(client)
+    response = client.patch(
+        "/api/project-status/phases/VPI-T2/milestones",
+        json={
+            "updatedAt": before["phase"]["updatedAt"],
+            "milestones": [],
+        },
+    )
+    assert response.status_code == 200
+    data = response.get_json()["data"]["projectStatus"]
+    assert [item["name"] for item in data["milestones"]] == list(MILESTONE_TEMPLATE_NAMES)
+    assert all(item["date"] is None for item in data["milestones"])
+    assert all(item["status"] == "未开始" for item in data["milestones"])
+    assert [item["sortOrder"] for item in data["milestones"]] == list(range(1, 12))
+
+    persisted = _status(client)
+    assert [item["name"] for item in persisted["milestones"]] == list(MILESTONE_TEMPLATE_NAMES)

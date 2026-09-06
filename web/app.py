@@ -58,6 +58,7 @@ from core.db_manager import (
     ArchiveJobNotReadyError,
     ArchiveLeaseBusyError,
     DatabaseManager,
+    PROJECT_STATUS_MILESTONE_TEMPLATE,
     SyncBindingNotReadyError,
 )
 from core.diagnostics import DiagnosticOptions, MarkdownDiagnosticReport
@@ -1996,8 +1997,27 @@ def _validate_project_status_milestones(
 ) -> tuple[list[dict[str, object]], dict[str, str]]:
     """校验主计划草稿并转换为数据库字段。"""
     raw_items = payload.get("milestones")
-    if not isinstance(raw_items, list) or not raw_items:
-        return [], {"milestones": "主计划至少需要一个节点"}
+    if not isinstance(raw_items, list):
+        return [], {"milestones": "主计划节点数据无效"}
+    if not raw_items:
+        # 删除全部节点后保存视为"恢复默认模板"：自动生成一套默认的
+        # 空日期节点（用户 2026-09-06 确认口径），不再返回 422。
+        return (
+            [
+                {
+                    "id": None,
+                    "name": name,
+                    "date": None,
+                    "status": "未开始",
+                    "type": "planned",
+                    "sort_order": index,
+                }
+                for index, (name, *_rest) in enumerate(
+                    PROJECT_STATUS_MILESTONE_TEMPLATE, start=1
+                )
+            ],
+            {},
+        )
     errors: dict[str, str] = {}
     normalized: list[dict[str, object]] = []
     names: set[str] = set()

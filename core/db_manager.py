@@ -984,6 +984,29 @@ TABLE_DEFINITIONS: list[str] = [
 
 
 #: project_status_deliverables 中允许人工编辑并参与字段归属的列。
+
+# 主计划默认里程碑模板：空日期=待排期，由用户在「编辑主计划」中排期后
+# 生效。项目初始化与"删除全部节点后保存"都按此模板恢复。
+PROJECT_STATUS_MILESTONE_TEMPLATE: tuple[tuple[str, None, str, str, int], ...] = tuple(
+    (name, None, "未开始", "planned", index)
+    for index, name in enumerate(
+        (
+            "VPI",
+            "内饰模型评审",
+            "外饰模型评审",
+            "LLP VDR",
+            "100% VDR",
+            "LLP T2",
+            "100% T2",
+            "OTS",
+            "验证阀",
+            "内部体验阀",
+            "用户体验阀",
+        ),
+        start=1,
+    )
+)
+
 PROJECT_STATUS_EDITABLE_FIELDS: tuple[str, ...] = (
     "status",
     "owner",
@@ -1324,27 +1347,8 @@ class DatabaseManager:
             ),
         )
 
-        # 主计划默认里程碑模板：空日期=待排期，由用户在「编辑主计划」中
-        # 排期后生效；每个项目阶段都预置同一模板。
-        milestone_template = tuple(
-            (name, None, "未开始", "planned", index)
-            for index, name in enumerate(
-                (
-                    "VPI",
-                    "内饰模型评审",
-                    "外饰模型评审",
-                    "LLP VDR",
-                    "100% VDR",
-                    "LLP T2",
-                    "100% T2",
-                    "OTS",
-                    "验证阀",
-                    "内部体验阀",
-                    "用户体验阀",
-                ),
-                start=1,
-            )
-        )
+        # 主计划默认里程碑模板：每个项目阶段都预置同一模板（空日期=待排期）。
+        milestone_template = PROJECT_STATUS_MILESTONE_TEMPLATE
         # 2026-09 之前的旧版 6 节点种子；仅当项目里程碑与它逐字段完全一致
         # （即用户从未编辑）时才替换为默认模板，任何差异都视为用户数据保留。
         legacy_seed_milestones = (

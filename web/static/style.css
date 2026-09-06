@@ -1320,6 +1320,13 @@ h4 {
   overflow-wrap: anywhere;
 }
 
+.edit-request-info {
+  margin: 0;
+  color: var(--success);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 .visually-hidden {
   position: absolute;
   width: 1px;
