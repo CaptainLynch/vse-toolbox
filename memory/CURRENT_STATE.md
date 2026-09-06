@@ -1,8 +1,27 @@
 # Current State
 
-Last checkpoint: 2026-09-06（追加：删除全部里程碑节点保存后自动恢复默认
-模板（不再 422），已提交 445dcfa，全量 1695 passed；用户原 6 节点已在
-验证后还原回 dev 库）。
+Last checkpoint: 2026-09-07（三项 UI 需求：明细表负责人表头删除（修表头
+错位）、工作台目录删除全部不可用条目、车型项目筛选默认值同步主计划名称；
+经架构审计→实施→code-reviewer 审计→实际运行确认四步交付，已提交
+67cd0b0，全量 1698 passed）。
+
+## 2026-09-07 三项需求要点
+
+1. 明细表静态表头（dashboard.html）与 JS 数据列曾错位一列（上轮漏删
+   th）；本轮删 th 并新增表头↔OVERVIEW_DETAIL_COLUMNS 对齐契约 +
+   colspan=7 修正（load/empty 状态行）。列定义仍是三源（表头/常量/
+   values 数组），契约测试锁死对齐。
+2. 交付物工作台目录删除全部 11 个不可用条目（含 tdc-a-face/dm-change-
+   form），_DELIVERABLE_CATEGORIES 裁剪为 Aras/TDC；AST 行号定位删除
+   （文本/括号计数脚本曾两次大面积误删，AST 元素 span 删除才可靠——
+   教训：结构化编辑必须用 ast 元素 lineno/end_lineno）。
+3. 车型项目筛选默认值同步：applyArchivePlanNameSync（原 Placeholders
+   改名）在任务缺键时把当前主计划名称填为实际 value（非占位符）并镜像
+   进高级 JSON；显式配置（键存在，含空串）优先；审计修复了显式空串被
+   String(saved).trim()!="" 误判覆盖的问题（改为 key in filters 判定）。
+4. code-reviewer 审计修复：colspan=8 残留（dashboard.html+app.js 改
+   OVERVIEW_DETAIL_COLUMNS.length+1）、冗余 fetch（优先复用
+   overviewSavedState.phase.displayName）。
 
 ## 五项 UI 需求（2026-09-06 用户提出，方案经预览确认后实施）
 
