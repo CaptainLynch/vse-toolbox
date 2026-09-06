@@ -192,7 +192,7 @@ function setupTheme() {
   });
 }
 
-const OVERVIEW_DETAIL_COLUMNS = ["交付物", "状态", "负责人", "计划完成", "实际完成或当前进度", "风险与备注", "数据来源"];
+const OVERVIEW_DETAIL_COLUMNS = ["交付物", "状态", "计划完成", "实际完成或当前进度", "风险与备注", "数据来源"];
 
 const OVERVIEW_RING_TONES = {
   success: "var(--success)",
@@ -1117,7 +1117,7 @@ const EWO_POLICY_RECOMMENDED_MODE = "automatic";
 const EWO_POLICY_DEFAULT_ARAS_BASE_URL = "http://ecm.sgmw.com.cn/innovatorserver";
 const EWO_POLICY_MATCH_FIELDS = [
   ["ewoNo", "EWO 编号", "ewo_no"],
-  ["projectCode", "项目代码", "project_code"],
+  ["projectCode", "车型项目", "project_code"],
   ["subjectKeyword", "主题关键词", "subject_keyword"],
   ["modelInfo", "车型信息", "model_info"],
 ];
@@ -5500,12 +5500,10 @@ function renderDeliverableDetailPage(deliverableId) {
   });
   metaSection.appendChild(statusChart.el);
   metaSection.appendChild(interactiveQueryHost);
-  metaSection.appendChild(overviewEl("h6", "section-sub-title", "详细明细"));
   const grid = overviewEl("div", "detail-inline-grid");
   const isSnapshotSource = Boolean(deliverableFormDisplay(item));
   const pairs = [
     ["当前状态", item.status],
-    ["负责人", item.owner],
     ["所属科室", item.department || "未设置"],
     ["所属阶段", item.stage || (overviewSavedState.phase && (overviewSavedState.phase.displayName || overviewSavedState.phase.id)) || ""],
     ["计划完成日期", item.plannedDate],
@@ -5522,9 +5520,24 @@ function renderDeliverableDetailPage(deliverableId) {
       overviewEl("span", "detail-property-label", label),
       overviewEl("span", "detail-property-value", safeDisplayValue(value)),
     );
+    if (label === "风险与备注") {
+      const noteButton = overviewEl("button", "note-inline-edit", "✎ 编辑");
+      noteButton.type = "button";
+      noteButton.setAttribute("aria-label", `编辑 ${item.name} 风险与备注`);
+      noteButton.addEventListener("click", () => startInlineNoteEdit(field, item));
+      field.querySelector(".detail-property-value").appendChild(noteButton);
+    }
     grid.appendChild(field);
   });
-  metaSection.appendChild(grid);
+  // 属性明细为低频参考信息，默认折叠收起。
+  const detailCollapse = overviewEl("details", "detail-inline-collapse");
+  const detailSummary = overviewEl("summary", "detail-inline-summary");
+  detailSummary.append(
+    overviewEl("span", null, "详细明细"),
+    overviewEl("span", "detail-inline-summary-hint", "展开查看属性明细"),
+  );
+  detailCollapse.append(detailSummary, grid);
+  metaSection.appendChild(detailCollapse);
 
   const association = overviewEl("div", "detail-association");
   association.append(
@@ -5880,7 +5893,6 @@ function renderDeliverableDetails(tbody, data) {
     const values = [
       item.name,
       item.status,
-      item.owner,
       item.plannedDate,
       deliverableProgressOrDate(item),
       item.note,
@@ -6231,6 +6243,81 @@ function renderDeliverableEditForm() {
   return form;
 }
 
+function startInlineNoteEdit(field, item) {
+  if (overviewSaving) return;
+  if (overviewDraft && overviewDraftDirty()
+    && !window.confirm("有未保存的更改，继续编辑风险与备注将使其他未保存编辑过期，是否继续？")) {
+    return;
+  }
+  const valueEl = field.querySelector(".detail-property-value");
+  const current = String(item.note || "");
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "note-inline-input";
+  input.maxLength = 500;
+  input.value = current;
+  input.setAttribute("aria-label", "编辑风险与备注");
+  valueEl.textContent = "";
+  valueEl.appendChild(input);
+  input.focus();
+  let settled = false;
+  const finish = async (save) => {
+    if (settled) return;
+    settled = true;
+    const note = input.value.trim();
+    if (!save || note === current) {
+      renderDeliverableDetailPage(String(item.id));
+      return;
+    }
+    input.disabled = true;
+    const payload = {
+      status: item.status,
+      owner: item.owner,
+      plannedDate: item.plannedDate,
+      actualDate: item.actualDate,
+      progress: item.progress,
+      note,
+      updatedAt: item.updatedAt || "",
+    };
+    try {
+      const response = await fetch(
+        `/api/project-status/deliverables/${encodeURIComponent(String(item.id))}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify(payload),
+        },
+      );
+      const body = await overviewReadJson(response);
+      if (!response.ok || !body || body.ok !== true) {
+        throw overviewRequestError(body, response.status);
+      }
+      const saved = body.data || {};
+      if (!saved.projectStatus || overviewIsEmpty(saved.projectStatus)) {
+        throw new Error("保存响应缺少完整的项目状态，请重试");
+      }
+      overviewSavedState = saved.projectStatus;
+      renderDeliverableDetailPage(String(item.id));
+    } catch (error) {
+      // 保留输入便于重试：恢复可编辑状态并提示错误。
+      input.disabled = false;
+      settled = false;
+      input.title = redactSensitiveText(error instanceof Error ? error.message : String(error));
+      input.classList.add("note-inline-input-error");
+    }
+  };
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      finish(true);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      finish(false);
+    }
+  });
+  input.addEventListener("blur", () => finish(true));
+}
+
 function startDeliverableEdit(index, detailEditPanel = null) {
   if (!overviewSavedState || overviewSaving) return;
   const item = overviewSavedState.deliverables[index];
@@ -6561,10 +6648,89 @@ function renderPhaseReadonlyCard(phase) {
   items.forEach(([lbl, val]) => {
     const cell = overviewEl("div", "phase-meta-cell");
     cell.append(overviewEl("span", "phase-meta-label", lbl), overviewEl("strong", "phase-meta-value", safeDisplayValue(val)));
+    if (lbl === "主计划名称") {
+      // 主计划名称支持单击内联编辑，无需进入阶段信息编辑表单。
+      cell.classList.add("phase-meta-name-cell");
+      const nameButton = overviewEl("button", "phase-name-inline-btn", "✎");
+      nameButton.type = "button";
+      nameButton.title = "编辑主计划名称";
+      nameButton.setAttribute("aria-label", "编辑主计划名称");
+      nameButton.addEventListener("click", () => startPhaseNameInlineEdit(phase));
+      cell.querySelector(".phase-meta-value").appendChild(nameButton);
+    }
     grid.appendChild(cell);
   });
   card.appendChild(grid);
   return card;
+}
+
+function startPhaseNameInlineEdit(phase) {
+  if (overviewSaving) return;
+  if (overviewDraft && overviewDraft.kind === "phase") return; // 编辑表单已打开
+  const current = String(phase.displayName || phase.id || "");
+  const valueEl = document.querySelector("#milestone-maintenance .phase-meta-name-cell .phase-meta-value");
+  if (!valueEl) return;
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "phase-name-inline-input";
+  input.maxLength = 120;
+  input.value = current;
+  input.setAttribute("aria-label", "编辑主计划名称");
+  valueEl.textContent = "";
+  valueEl.appendChild(input);
+  input.focus();
+  input.select();
+  let settled = false;
+  const finish = async (save) => {
+    if (settled) return;
+    settled = true;
+    const name = input.value.trim();
+    if (!save || !name || name === current) {
+      renderProjectOverview();
+      return;
+    }
+    input.disabled = true;
+    try {
+      const response = await fetch("/api/project-status/phases/VPI-T2", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({
+          displayName: name,
+          status: phase.status,
+          startDate: phase.startDate,
+          endDate: phase.endDate,
+          updatedAt: phase.updatedAt,
+        }),
+      });
+      const body = await overviewReadJson(response);
+      if (!response.ok || !body || body.ok !== true) {
+        throw overviewRequestError(body, response.status);
+      }
+      const saved = body.data || {};
+      if (!saved.projectStatus || overviewIsEmpty(saved.projectStatus)) {
+        throw new Error("保存响应缺少完整的项目状态，请重试");
+      }
+      overviewSavedState = saved.projectStatus;
+      invalidateArchivePlanNameCache();
+      renderProjectOverview();
+    } catch (error) {
+      // 保留输入便于重试：恢复可编辑状态并提示错误。
+      input.disabled = false;
+      settled = false;
+      input.title = redactSensitiveText(error instanceof Error ? error.message : String(error));
+      input.classList.add("phase-name-inline-input-error");
+    }
+  };
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      finish(true);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      finish(false);
+    }
+  });
+  input.addEventListener("blur", () => finish(true));
 }
 
 function renderPhaseEditForm() {
@@ -6706,6 +6872,7 @@ async function savePhaseMetadataChanges(event) {
       throw new Error("保存响应缺少完整的项目状态，请重试");
     }
     overviewSavedState = saved.projectStatus;
+    invalidateArchivePlanNameCache();
     overviewDraft = null;
     renderProjectOverview();
   } catch (err) {
@@ -9163,7 +9330,7 @@ const ARCHIVE_FILTER_FIELDS = {
     { name: "section", label: "科室", placeholder: "例如 车体工程" },
     { name: "applicationStart", label: "申请开始", type: "date" },
     { name: "applicationEnd", label: "申请结束", type: "date" },
-    { name: "projectModel", label: "项目/车型", placeholder: "例如 F610S" },
+    { name: "projectModel", label: "车型项目" },
     { name: "partNumber", label: "零件号", placeholder: "可填写部分编号" },
     { name: "modelNumber", label: "数模号", placeholder: "可填写部分编号" },
   ],
@@ -9186,7 +9353,7 @@ const ARCHIVE_FILTER_FIELDS = {
   ],
   aras_ewo: [
     { name: "ewoNo", label: "EWO 编号", placeholder: "支持 * 模糊和 | 并集" },
-    { name: "projectCode", label: "项目代码", placeholder: "支持 * 模糊和 | 并集" },
+    { name: "projectCode", label: "车型项目" },
     { name: "subjectKeyword", label: "主题关键词", placeholder: "支持 * 模糊和 | 并集" },
     { name: "changeType", label: "变更类型" },
     { name: "changeSubType", label: "变更子类型" },
@@ -9203,7 +9370,7 @@ const ARCHIVE_FILTER_FIELDS = {
     { name: "area", label: "区域", placeholder: "支持 * 模糊和 | 并集" },
     { name: "base", label: "基地", placeholder: "支持 * 模糊和 | 并集" },
     { name: "department", label: "业务部门", placeholder: "例如 技术中心-车体工程" },
-    { name: "vehicleKeyword", label: "车辆关键词", placeholder: "支持 * 模糊和 | 并集" },
+    { name: "vehicleKeyword", label: "车型项目" },
     { name: "submitStart", label: "提交开始", type: "date" },
     { name: "submitEnd", label: "提交结束", type: "date" },
     { name: "materialRequestStart", label: "物料需求开始", type: "date" },
@@ -9248,6 +9415,42 @@ function clearArchiveContainer(container) {
 
 function archiveFilterFieldsFor(job) {
   return ARCHIVE_FILTER_FIELDS[job.templateKey] || [];
+}
+
+// 车型项目类筛选字段的占位符与「主计划维护 → 主计划名称」保持一致
+// （需求 2026-09-06）：占位符动态显示当前主计划名称，改名后自动跟随。
+const ARCHIVE_PROJECT_FILTER_KEYS = new Set([
+  "projectModel",
+  "carTypeProject",
+  "projectCode",
+  "vehicleKeyword",
+]);
+let archivePlanNameCache = null;
+
+function invalidateArchivePlanNameCache() {
+  archivePlanNameCache = null;
+}
+
+async function applyArchivePlanNamePlaceholders(controls) {
+  try {
+    if (archivePlanNameCache === null) {
+      const response = await fetch("/api/project-status?phase=VPI-T2", {
+        headers: { Accept: "application/json" },
+      });
+      const body = response.ok ? await response.json() : null;
+      archivePlanNameCache = body && body.ok
+        ? String(body.data.phase.displayName || "").trim()
+        : "";
+    }
+  } catch (error) {
+    archivePlanNameCache = "";
+  }
+  if (!archivePlanNameCache) return;
+  controls.querySelectorAll("[data-archive-filter-name]").forEach((input) => {
+    if (ARCHIVE_PROJECT_FILTER_KEYS.has(input.dataset.archiveFilterName)) {
+      input.placeholder = `例如 ${archivePlanNameCache}（支持 * 模糊和 | 并集）`;
+    }
+  });
 }
 
 function archiveFilterDisplayValue(value) {
@@ -9300,6 +9503,7 @@ function renderArchiveFilterControls(job, textarea) {
       textarea.value = JSON.stringify(collectArchiveFilterControls(controls), null, 2);
     });
   });
+  applyArchivePlanNamePlaceholders(controls);
   return section;
 }
 

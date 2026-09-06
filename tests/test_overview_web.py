@@ -996,3 +996,72 @@ def test_deliverable_form_display_fallback_contract() -> None:
     assert "total <= 0" in block
     assert "已完成" in block and "已逾期" in block and "进行中" in block
     assert "Math.round" in block
+
+
+def test_detail_collapse_note_inline_and_owner_removed_contract() -> None:
+    """需求 2026-09-06：详细明细折叠、负责人移除、风险与备注就地编辑。"""
+    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+    css_text = Path("web/static/style.css").read_text(encoding="utf-8-sig")
+
+    columns = js_text[js_text.index("const OVERVIEW_DETAIL_COLUMNS"):js_text.index("const OVERVIEW_DETAIL_COLUMNS") + 200]
+    assert '"负责人"' not in columns.split(";")[0]
+
+    for marker in (
+        "detail-inline-collapse",
+        "detail-inline-summary",
+        "展开查看属性明细",
+        "startInlineNoteEdit",
+        "note-inline-edit",
+    ):
+        assert marker in js_text, marker
+
+    for marker in (
+        ".detail-inline-collapse",
+        ".detail-inline-summary",
+        ".note-inline-input",
+        ".phase-name-inline-input",
+    ):
+        assert marker in css_text, marker
+
+
+def test_phase_name_inline_edit_contract() -> None:
+    """需求 2026-09-06：主计划名称支持只读卡片上单击内联编辑。"""
+    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+
+    for marker in (
+        "phase-name-inline-btn",
+        "startPhaseNameInlineEdit",
+        "编辑主计划名称",
+        "invalidateArchivePlanNameCache()",
+    ):
+        assert marker in js_text, marker
+
+
+def test_archive_project_filter_unified_label_and_placeholder_contract() -> None:
+    """需求 2026-09-06：车型项目字段统一命名，占位符跟随主计划名称。"""
+    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+
+    for marker in (
+        '{ name: "projectModel", label: "车型项目" }',
+        '{ name: "carTypeProject", label: "车型项目" }',
+        '{ name: "projectCode", label: "车型项目" }',
+        '{ name: "vehicleKeyword", label: "车型项目" }',
+        '["projectCode", "车型项目", "project_code"]',
+        "ARCHIVE_PROJECT_FILTER_KEYS",
+        "applyArchivePlanNamePlaceholders(controls)",
+        "例如 ${archivePlanNameCache}（支持 * 模糊和 | 并集）",
+    ):
+        assert marker in js_text, marker
+
+    # 旧称呼必须已移除。
+    assert 'label: "项目代码"' not in js_text
+    assert 'label: "车辆关键词"' not in js_text
+    assert 'label: "项目/车型"' not in js_text
+
+
+def test_filter_dims_multi_select_overflow_fix_contract() -> None:
+    """需求 2026-09-06：筛选栏多选控件解除最小宽度，网格 150px 自适应。"""
+    css_text = Path("web/static/style.css").read_text(encoding="utf-8-sig")
+    dims = css_text[css_text.index(".form-filter-row-dims"):css_text.index(".form-filter-row-time")]
+    assert "minmax(150px, 1fr)" in dims
+    assert ".form-filter-row-dims .analysis-multi-select { min-width: 0; max-width: none; }" in css_text

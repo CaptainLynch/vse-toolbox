@@ -559,6 +559,100 @@ h4 {
   white-space: nowrap;
 }
 
+/* ── 交付物详情：详细明细折叠与就地编辑（2026-09-06 需求） ── */
+.detail-inline-collapse {
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.detail-inline-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  list-style: none;
+}
+
+.detail-inline-summary::-webkit-details-marker { display: none; }
+
+.detail-inline-summary::after {
+  content: "▸";
+  color: var(--muted);
+}
+
+.detail-inline-collapse[open] .detail-inline-summary::after { content: "▾"; }
+
+.detail-inline-summary-hint {
+  margin-left: auto;
+  margin-right: 10px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.detail-inline-collapse .detail-inline-grid {
+  margin: 0;
+  padding: 4px 14px 14px;
+}
+
+.note-inline-edit {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 4px;
+  background: var(--surface-card);
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.note-inline-edit:hover,
+.note-inline-edit:focus-visible {
+  color: var(--primary);
+  border-color: var(--primary);
+}
+
+.note-inline-input,
+.phase-name-inline-input {
+  min-width: 0;
+  width: 100%;
+  max-width: 280px;
+  padding: 3px 8px;
+  border: 1px solid var(--primary);
+  border-radius: 6px;
+  background: var(--surface-card);
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.note-inline-input-error,
+.phase-name-inline-input-error {
+  border-color: var(--error);
+}
+
+.phase-name-inline-btn {
+  margin-left: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 4px;
+  background: var(--surface-card);
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.phase-name-inline-btn:hover,
+.phase-name-inline-btn:focus-visible {
+  color: var(--primary);
+  border-color: var(--primary);
+}
+
 .deliverable-progress-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -6303,8 +6397,11 @@ body.aras-running .result-panel {
 }
 
 .form-filter-row-search { grid-template-columns: minmax(240px, 2fr) minmax(160px, 1fr) auto; }
-.form-filter-row-dims { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+.form-filter-row-dims { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
 .form-filter-row-time { grid-template-columns: repeat(auto-fit, minmax(150px, 200px)); }
+/* 多选控件基础样式带 min-width:220px，在筛选栏网格列内必须放开，
+   否则列宽小于 220px 时内容溢出边界（2026-09-06 用户反馈）。 */
+.form-filter-row-dims .analysis-multi-select { min-width: 0; max-width: none; }
 
 .form-filter-field {
   display: grid;
