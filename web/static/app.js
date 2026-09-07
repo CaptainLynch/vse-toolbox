@@ -1,4 +1,6 @@
 ﻿const THEME_KEY = "vse-toolbox-theme";
+// 当前项目阶段 ID（单阶段应用约定；多阶段化时改为按上下文注入）。
+const PROJECT_PHASE_ID = "VPI-T2";
 
 const SENSITIVE_COLUMNS = new Set([
   "raw_xml",
@@ -4710,7 +4712,21 @@ function renderFormFilterBar(data, state, onReload) {
   const keyword = overviewEl("input", "form-filter-keyword");
   keyword.type = "search";
   keyword.placeholder = "编号、项目、零件、负责人";
-  keyword.value = String(filters.keyword || "");
+  // 多选即改即生效会触发筛选栏重绘；重绘前暂存文本/日期输入中尚未点
+  // "应用筛选"的内容，避免用户键入被静默冲刷（审计 M8）。
+  const stashPendingFilterInputs = () => {
+    state.pendingFilterInputs = {
+      keyword: keyword.value,
+      relationEwo: relationInput ? relationInput.value : "",
+      dateStart: dateStart.value,
+      dateEnd: dateEnd.value,
+    };
+  };
+  const pendingInputs = state.pendingFilterInputs || {};
+  keyword.value =
+    pendingInputs.keyword !== undefined
+      ? pendingInputs.keyword
+      : String(filters.keyword || "");
   keyword.setAttribute("aria-label", "关键词");
   keyword.maxLength = 200;
   searchRow.appendChild(keyword);
@@ -4739,6 +4755,7 @@ function renderFormFilterBar(data, state, onReload) {
       if (values.length) current[key] = values;
       else delete current[key];
       state.pageByTab[state.activeTab] = 0;
+      stashPendingFilterInputs();
       if (typeof onReload === "function") onReload();
     });
     label.appendChild(control.el);
@@ -4760,7 +4777,10 @@ function renderFormFilterBar(data, state, onReload) {
     relationInput = overviewEl("input", "form-filter-keyword");
     relationInput.type = "text";
     relationInput.placeholder = "按 EWO 号定位关联记录";
-    relationInput.value = String(filters.relationEwo || "");
+    relationInput.value =
+      pendingInputs.relationEwo !== undefined
+        ? pendingInputs.relationEwo
+        : String(filters.relationEwo || "");
     relationInput.maxLength = 200;
     relationInput.setAttribute("aria-label", "关联EWO");
     const relationLabel = overviewEl("label", "form-filter-field");
@@ -4770,11 +4790,17 @@ function renderFormFilterBar(data, state, onReload) {
 
   const dateStart = overviewEl("input", "form-filter-date");
   dateStart.type = "date";
-  dateStart.value = String(filters.dateStart || "");
+  dateStart.value =
+    pendingInputs.dateStart !== undefined
+      ? pendingInputs.dateStart
+      : String(filters.dateStart || "");
   dateStart.setAttribute("aria-label", deliverableFormFilterLabel(formKey, "dateStart"));
   const dateEnd = overviewEl("input", "form-filter-date");
   dateEnd.type = "date";
-  dateEnd.value = String(filters.dateEnd || "");
+  dateEnd.value =
+    pendingInputs.dateEnd !== undefined
+      ? pendingInputs.dateEnd
+      : String(filters.dateEnd || "");
   dateEnd.setAttribute("aria-label", deliverableFormFilterLabel(formKey, "dateEnd"));
   const dateStartLabel = overviewEl("label", "form-filter-field");
   dateStartLabel.append(overviewEl("span", "form-filter-label", deliverableFormFilterLabel(formKey, "dateStart")), dateStart);
@@ -4802,11 +4828,13 @@ function renderFormFilterBar(data, state, onReload) {
       if (clean) next.relationEwo = clean;
     }
     state.filterStateByTab[state.activeTab] = next;
+    state.pendingFilterInputs = null;
     state.pageByTab[state.activeTab] = 0;
     if (typeof onReload === "function") onReload();
   });
   clear.addEventListener("click", () => {
     clearCurrentFilters(state);
+    state.pendingFilterInputs = null;
     if (typeof onReload === "function") onReload();
   });
   actions.append(apply, clear);
@@ -6028,7 +6056,7 @@ async function loadProjectOverview() {
   overviewLoadError = null;
   renderProjectOverview();
   try {
-    const response = await fetch("/api/project-status?phase=VPI-T2", { headers: { Accept: "application/json" } });
+    const response = await fetch(`/api/project-status?phase=${PROJECT_PHASE_ID}`, { headers: { Accept: "application/json" } });
     const body = await overviewReadJson(response);
     if (!response.ok || !body || body.ok !== true) {
       throw overviewRequestError(body, response.status);
@@ -6691,7 +6719,7 @@ function startPhaseNameInlineEdit(phase) {
     }
     input.disabled = true;
     try {
-      const response = await fetch("/api/project-status/phases/VPI-T2", {
+      const response = await fetch(`/api/project-status/phases/${PROJECT_PHASE_ID}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
         body: JSON.stringify({
@@ -6855,7 +6883,7 @@ async function savePhaseMetadataChanges(event) {
   }
 
   try {
-    const response = await fetch("/api/project-status/phases/VPI-T2", {
+    const response = await fetch(`/api/project-status/phases/${PROJECT_PHASE_ID}`, {
       method: "PATCH",
       headers: {
         "Content-Type": "application/json",
@@ -7277,7 +7305,7 @@ async function saveMilestoneChanges(event) {
   setMilestoneSavingState(true);
   renderMilestoneRequestMessage("");
   try {
-    const response = await fetch("/api/project-status/phases/VPI-T2/milestones", {
+    const response = await fetch(`/api/project-status/phases/${PROJECT_PHASE_ID}/milestones`, {
       method: "PATCH",
       headers: {
         "Content-Type": "application/json",

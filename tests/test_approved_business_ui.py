@@ -54,13 +54,13 @@ def test_phase_metadata_and_milestones_patch_endpoints(client) -> None:
     js = Path("web/static/app.js").read_text(encoding="utf-8-sig")
 
     # Phase metadata endpoint and payload
-    assert '"/api/project-status/phases/VPI-T2"' in js
+    assert "`/api/project-status/phases/${PROJECT_PHASE_ID}`" in js
     assert 'method: "PATCH"' in js
     assert "displayName" in js
     assert "savePhaseMetadataChanges" in js
 
     # Milestone endpoint and payload
-    assert '"/api/project-status/phases/VPI-T2/milestones"' in js
+    assert "`/api/project-status/phases/${PROJECT_PHASE_ID}/milestones`" in js
     assert "saveMilestoneChanges" in js
 
     # Smoke test backend phase PATCH

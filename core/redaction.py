@@ -21,8 +21,9 @@ _COOKIE_HEADER_RE = re.compile(
     r"(?=(?:\s|,\s*)\b(?:authorization|set-cookie|cookie)\b\s*:|[\r\n}\]\[]|$)"
 )
 _PARAM_RE = re.compile(rf"(?i)\b({_SENSITIVE_NAMES})=([^&\s,;'\"}}\]\[]+)")
+_XML_RE = re.compile(rf"(?i)<({_SENSITIVE_NAMES})>(.*?)</\1>")
 _HEADER_RE = re.compile(
-    rf"(?i)\b(token|api_key|sid|sessionid|csrf|secret|password)\b"
+    r"(?i)\b(token|api_key|sid|sessionid|csrf|secret|password)\b"
     r"(\s*[:=]\s*)(?:Bearer\s+)?([^,\s;'\"}\]\[]+)"
 )
 _BEARER_RE = re.compile(r"(?i)\bBearer\s+([^,\s;'\"}\]\[]+)")
@@ -49,6 +50,7 @@ def redact_sensitive_text(
     text = _AUTH_HEADER_RE.sub(r"\1\2[redacted]", text)
     text = _COOKIE_HEADER_RE.sub(r"\1\2[redacted]", text)
     text = _HEADER_RE.sub(r"\1\2[redacted]", text)
+    text = _XML_RE.sub(r"<\1>[redacted]</\1>", text)
     text = _PARAM_RE.sub(r"\1=[redacted]", text)
     text = _BEARER_RE.sub("Bearer [redacted]", text)
     if collapse_newlines:

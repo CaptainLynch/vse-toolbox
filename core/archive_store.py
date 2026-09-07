@@ -315,7 +315,12 @@ class ArchiveStore:
                     break
                 except FileExistsError:
                     continue
-            Path(temp_name).unlink()
+                except OSError:
+                    # 归档目录位于不支持硬链接的介质（exFAT/FAT32/SMB）时，
+                    # 降级为直接移动临时文件完成落盘（审计 N2）。
+                    os.replace(temp_name, destination)
+                    break
+            Path(temp_name).unlink(missing_ok=True)
         except BaseException:
             Path(temp_name).unlink(missing_ok=True)
             raise

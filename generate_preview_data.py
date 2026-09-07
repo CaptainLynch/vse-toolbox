@@ -15,11 +15,11 @@ def generate_tdc_rows():
         ("900101", "T2发布-前保险杠骨架", "F999X-3D-001", "T2发布", "张工程", "外饰科", "2026-08-20 09:30:00", "F999X", "27010001", "27010001", "前保险杠骨架", "已完成", "100.00%"),
         ("900102", "T2发布-仪表板下本体", "F999X-3D-002", "T2发布", "李工程", "内饰科", "2026-08-22 14:15:00", "F999X", "27020002", "27020002", "仪表板下本体", "审批中", "85.00%"),
         ("900103", "T2发布-左前门内板", "F999X-3D-003", "T2发布", "王工程", "车身科", "2026-08-25 10:00:00", "F999X", "27030003", "27030003", "左前门内板", "审批中", "70.00%"),
-        ("900104", "量产发布-副车架总成", "F888Y-3D-004", "量产发布", "赵工程", "底盘科", "2026-08-15 11:20:00", "F888Y", "27040004", "27040004", "副车架总成", "审批中", "60.00%"), # 超期 > 7天
+        ("900104", "量产发布-副车架总成", "F888Y-3D-004", "量产发布", "赵工程", "底盘科", "2026-08-15 11:20:00", "F888Y", "27040004", "27040004", "副车架总成", "审批中", "60.00%"),  # 超期 > 7天
         ("900105", "试制发布-线束支架", "F888Y-3D-005", "试制发布", "孙工程", "电子电器科", "2026-08-28 16:40:00", "F888Y", "27050005", "27050005", "线束支架", "已完成", "100.00%"),
         ("900106", "方案发布-顶盖外板", "N300-3D-006", "方案发布", "周工程", "车身科", "2026-08-29 09:00:00", "N300", "27060006", "27060006", "顶盖外板", "已废弃", "30.00%"),
         ("900107", "T2发布-中央通道总成", "F999X-3D-007", "T2发布", "吴工程", "内饰科", "2026-08-26 13:30:00", "F999X", "27070007", "27070007", "中央通道总成", "审批中", "50.00%"),
-        ("900108", "T2发布-后扭梁总成", "N300-3D-008", "T2发布", "郑工程", "底盘科", "2026-08-12 10:20:00", "N300", "27080008", "27080008", "后扭梁总成", "审批中", "40.00%"), # 超期
+        ("900108", "T2发布-后扭梁总成", "N300-3D-008", "T2发布", "郑工程", "底盘科", "2026-08-12 10:20:00", "N300", "27080008", "27080008", "后扭梁总成", "审批中", "40.00%"),  # 超期
         ("900109", "量产发布-进气歧管总成", "E50-3D-009", "量产发布", "陈工程", "动力系统科", "2026-08-18 15:10:00", "E50", "27090009", "27090009", "进气歧管总成", "已完成", "100.00%"),
         ("900110", "T2发布-电池箱托盘", "E50-3D-010", "T2发布", "刘工程", "车身科", "2026-08-27 11:00:00", "E50", "27100010", "27100010", "电池箱托盘", "审批中", "90.00%"),
     ]
@@ -61,7 +61,7 @@ def generate_tdc_rows():
 def generate_ncr_progress_rows():
     definition = form_definition("aras_ncr_progress")
     headers = definition["headerRows"][int(definition["dataHeaderRow"])]
-    
+
     ncr_samples = [
         ("NCR-2026-001", "F999X", "车身工程科", "PE科室经理", "2026-08-15", "审批中", "否"),
         ("NCR-2026-002", "F999X", "外饰工程科", "价值工程经理", "2026-08-20", "审批中", "否"),
@@ -90,54 +90,6 @@ def generate_ncr_progress_rows():
     return rows
 
 
-def main():
-    db = DatabaseManager()
-    db.init_database()
-
-    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    # 1. 注入 tdc_data_model 快照
-    tdc_snapshot = build_form_snapshot(
-        "tdc_data_model",
-        generate_tdc_rows(),
-        snapshot_at=now_iso,
-        source_run_id=101,
-        source="TDC 自动化归档任务",
-        artifacts=[
-            {
-                "display_name": "TDC数模设计审核_20260902.xlsx",
-                "relative_path": "tdc/data_model/TDC数模设计审核_20260902.xlsx",
-                "artifact_type": "official_xlsx",
-            }
-        ],
-    )
-    db.publish_deliverable_form_snapshot(tdc_snapshot)
-    print("tdc_data_model 快照发布成功！")
-
-    # 2. 注入 aras_ncr_progress 快照
-    ncr_snapshot = build_form_snapshot(
-        "aras_ncr_progress",
-        generate_ncr_progress_rows(),
-        snapshot_at=now_iso,
-        source_run_id=102,
-        source="ARAS 自动化归档任务",
-        artifacts=[
-            {
-                "display_name": "ARAS_NCR进度报表_20260902.xlsx",
-                "relative_path": "aras/ncr/ncr_progress_20260902.xlsx",
-                "artifact_type": "official_xlsx",
-            }
-        ],
-    )
-    db.publish_deliverable_form_snapshot(ncr_snapshot)
-    print("aras_ncr_progress 快照发布成功！")
-
-
-if __name__ == "__main__":
-    main()
-    publish_sor()
-
-
 def generate_sor_rows():
     definition = form_definition("tdc_sor")
     headers = definition["headerRows"][0]
@@ -157,24 +109,96 @@ def generate_sor_rows():
     return rows
 
 
-def publish_sor():
-    from datetime import datetime, timezone
-    db = DatabaseManager()
-    db.init_database()
-    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    snapshot = build_form_snapshot(
-        "tdc_sor",
-        generate_sor_rows(),
-        snapshot_at=now_iso,
-        source_run_id=103,
-        source="TDC 自动化归档任务",
-        artifacts=[
-            {
-                "display_name": "TDC_SOR定点流程_20260906.xlsx",
-                "relative_path": "tdc/sor/TDC_SOR定点流程_20260906.xlsx",
-                "artifact_type": "official_xlsx",
-            }
-        ],
+def build_all_snapshots(now_iso=None):
+    """构建全部演示快照（纯函数，不触库）；供 dry-run 与正式写入共用。"""
+    now_iso = now_iso or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return [
+        build_form_snapshot(
+            "tdc_data_model",
+            generate_tdc_rows(),
+            snapshot_at=now_iso,
+            source_run_id=101,
+            source="TDC 自动化归档任务",
+            artifacts=[
+                {
+                    "display_name": "TDC数模设计审核_20260902.xlsx",
+                    "relative_path": "tdc/data_model/TDC数模设计审核_20260902.xlsx",
+                    "artifact_type": "official_xlsx",
+                }
+            ],
+        ),
+        build_form_snapshot(
+            "aras_ncr_progress",
+            generate_ncr_progress_rows(),
+            snapshot_at=now_iso,
+            source_run_id=102,
+            source="ARAS 自动化归档任务",
+            artifacts=[
+                {
+                    "display_name": "ARAS_NCR进度报表_20260902.xlsx",
+                    "relative_path": "aras/ncr/ncr_progress_20260902.xlsx",
+                    "artifact_type": "official_xlsx",
+                }
+            ],
+        ),
+        build_form_snapshot(
+            "tdc_sor",
+            generate_sor_rows(),
+            snapshot_at=now_iso,
+            source_run_id=103,
+            source="TDC 自动化归档任务",
+            artifacts=[
+                {
+                    "display_name": "TDC_SOR定点流程_20260906.xlsx",
+                    "relative_path": "tdc/sor/TDC_SOR定点流程_20260906.xlsx",
+                    "artifact_type": "official_xlsx",
+                }
+            ],
+        ),
+    ]
+
+
+def parse_args(argv=None):
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="向开发库注入演示用统一表单快照（合成数据，非真实业务数据）。",
     )
-    db.publish_deliverable_form_snapshot(snapshot)
-    print("tdc_sor 快照发布成功！")
+    parser.add_argument(
+        "--db",
+        help="目标 SQLite 数据库路径；为保护 data/vse_toolbox.db，缺省拒绝直接写入主库",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="只构建并打印快照统计，不写任何数据库",
+    )
+    args = parser.parse_args(argv)
+    if not args.db and not args.dry_run:
+        parser.error(
+            "拒绝缺省写入主库：请显式指定 --db <路径>（如 --db data/dev-preview.db），"
+            "或使用 --dry-run 仅预览"
+        )
+    return args
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    snapshots = build_all_snapshots()
+    if args.dry_run:
+        for snapshot in snapshots:
+            summary = dict(snapshot.summary)
+            print(f"[dry-run] {snapshot.form_key}: rows={len(snapshot.rows)}, summary={summary}")
+        print(f"[dry-run] 共 {len(snapshots)} 个快照，未写任何数据库")
+        return 0
+
+    db = DatabaseManager(args.db)
+    db.init_database()
+    for snapshot in snapshots:
+        db.publish_deliverable_form_snapshot(snapshot)
+        print(f"{snapshot.form_key} 快照发布成功！ -> {args.db}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -302,7 +302,7 @@ def test_overview_milestone_editor_contract() -> None:
         "function cancelMilestoneEdit",
         "function renderMilestoneFieldErrors",
         "function renderMilestoneServerFieldErrors",
-        '"/api/project-status/phases/VPI-T2/milestones"',
+        "`/api/project-status/phases/${PROJECT_PHASE_ID}/milestones`",
         'method: "PATCH"',
         "milestones: overviewDraft.rows.map",
         "updatedAt: overviewDraft.updatedAt",

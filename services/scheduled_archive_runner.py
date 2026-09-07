@@ -40,6 +40,17 @@ EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_ATTENTION = 2
 EXIT_INTERRUPTED = 130
+#: 归档任务 job_key → 统一表单 form_key 映射（与 core.db_manager
+#: ARCHIVE_JOB_CONTRACTS、deliverable_form_analysis.FORM_KEYS 对齐，
+#: 一致性由 tests/test_form_key_consistency.py 锁定）。
+JOB_FORM_KEYS = {
+    "aras_ewo": "VPI-T2-D3",
+    "aras_paa": "aras_paa",
+    "aras_ncr_progress": "aras_ncr_progress",
+    "aras_ncr_detail": "aras_ncr_detail",
+    "tdc_data_model": "tdc_data_model",
+    "tdc_sor": "tdc_sor",
+}
 _TEXT_LIMIT = 1000
 _TRANSIENT_ERRORS = (ConnectionError, TimeoutError, OSError, WinHTTPError)
 logger = logging.getLogger(__name__)
@@ -444,14 +455,7 @@ class ArchiveSyncRunner:
         """Publish connector rows without crossing the credential boundary."""
         if collection.form_rows is None:
             return
-        form_key = {
-            "aras_ewo": "VPI-T2-D3",
-            "aras_paa": "aras_paa",
-            "aras_ncr_progress": "aras_ncr_progress",
-            "aras_ncr_detail": "aras_ncr_detail",
-            "tdc_data_model": "tdc_data_model",
-            "tdc_sor": "tdc_sor",
-        }.get(context.job_key)
+        form_key = JOB_FORM_KEYS.get(context.job_key)
         if form_key is None:
             return
         snapshot_time = self._clock()
