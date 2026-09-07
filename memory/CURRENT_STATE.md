@@ -1,8 +1,24 @@
 # Current State
 
-Last checkpoint: 2026-09-07（全项目系统性评审完成并达成一致；一致修复项
-M8/N2/N4/M4/M1/M2 全部实施并提交 3bcdd84；全量 1703 passed, 2 skipped；
-实际运行抽查 PASS。注意：存在并行会话写入冲突，见"冲突仲裁"）。
+Last checkpoint: 2026-09-07（生产测试 EXE 已构建：dist/VSE-WebUI.exe
+15,299,603 B，ZIP 15,021,945 B——比历史 15MB 邮件上限超 21,945 B，测试
+用途可用；干净冒烟 5 端点全 200。构建环境重建：py312 venv +
+PyInstaller 6.22.2 + UPX 5.0.1（.runtime 内）。打包配方未变，
+VSE-WebUI.spec 契约测试 4 passed）。
+
+## 生产测试 EXE（2026-09-07）
+
+- 工件：dist/VSE-WebUI.exe；分发包
+  .runtime/VSE-WebUI-production-20260907.zip（仅含 exe，Deflate）。
+  SHA256 见 .runtime/VSE-WebUI-production-20260907.SHA256SUMS.txt
+  （exe 2491779f…；zip 9cb3073e…）。
+- 冒烟（干净环境）：/、/static/app.js、/api/overview、
+  /api/deliverables/catalog 全 200；overview 为种子规模（确认无旧进程
+  截胡——此前一次冒烟曾被残留 dev 服务器占用 5000 端口截获，作废重测）。
+- 生产测试注意：①exe 固定绑定 127.0.0.1:5000（core.config 常量，无
+  --port 参数），测试机需确保 5000 空闲；②首次运行在 exe 同级创建
+  data/ 全新种子库，勿与真实库混放；③ZIP 超历史邮件上限 21,945 B，
+  走邮件渠道需再瘦身或改投递方式。
 
 ## 全项目评审（主审 + code-reviewer 两轮收敛，2026-09-07）
 
