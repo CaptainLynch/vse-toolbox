@@ -7,6 +7,8 @@ access SQLite and return only controlled-root artifact metadata to the runner.
 
 from __future__ import annotations
 
+from core.diagnostic_recording import observed
+
 import tempfile
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -75,6 +77,7 @@ _TDC_SOR_KEYS = {
     "processNo",
     "processType",
     "carTypeProject",
+    "carTypeProjectId",
     "applicant",
     "title",
     "department",
@@ -392,6 +395,7 @@ class TDCArchiveConnector:
         self._auth_factory = auth_factory
         self._crawler_factory = crawler_factory
 
+    @observed("archive_connector.TDCArchiveConnector.collect")
     def collect(
         self,
         context: ArchiveJobContext,
@@ -412,6 +416,7 @@ class TDCArchiveConnector:
         finally:
             _close_session(login.session)
 
+    @observed("archive_connector.TDCArchiveConnector._collect_authenticated")
     def _collect_authenticated(
         self,
         context: ArchiveJobContext,
@@ -520,6 +525,7 @@ class TDCArchiveConnector:
             serial_number=_text(rule.get("processNo")),
             process_type=_text(rule.get("processType")),
             car_type_project=_text(rule.get("carTypeProject")),
+            car_type_project_id=_text(rule.get("carTypeProjectId")),
             applicant=_text(rule.get("applicant")),
             title=_text(rule.get("title")),
             department=_text(rule.get("department")),
@@ -551,6 +557,7 @@ class ArasArchiveConnector:
         self._auth_factory = auth_factory
         self._crawler_factory = crawler_factory
 
+    @observed("archive_connector.ArasArchiveConnector.collect")
     def collect(
         self,
         context: ArchiveJobContext,
@@ -575,6 +582,7 @@ class ArasArchiveConnector:
         finally:
             _close_session(login.session)
 
+    @observed("archive_connector.ArasArchiveConnector._collect_authenticated")
     def _collect_authenticated(
         self,
         base_url: str,

@@ -16,6 +16,7 @@ from services.project_status_updates import (
     ConnectorSnapshot,
     ProjectStatusUpdateService,
 )
+from services.project_status_records import compute_config_signature
 from services.project_status_sync_runner import (
     ConnectorRegistry,
     EXIT_ATTENTION,
@@ -78,6 +79,12 @@ def _record_two_observations_for_runner(
         "suggestedAutomaticFields": [],
         "requiresConfirmation": True,
     }
+    match_rule = (
+        {"reportType": "ewo", "ewoNo": external_key}
+        if source_type == "aras"
+        else {"reportType": "data_model", "incident": external_key}
+    )
+    config_signature = compute_config_signature(source_type, match_rule)
     db.record_mapping_observation(
         deliverable_id=deliverable_id,
         source_type=source_type,
@@ -87,6 +94,7 @@ def _record_two_observations_for_runner(
         candidate_count=1,
         candidate_summary_json=json.dumps([{"externalKey": external_key, "fields": {}}]),
         field_report_json=json.dumps(report),
+        config_signature=config_signature,
     )
     db.record_mapping_observation(
         deliverable_id=deliverable_id,
@@ -97,6 +105,7 @@ def _record_two_observations_for_runner(
         candidate_count=1,
         candidate_summary_json=json.dumps([{"externalKey": external_key, "fields": {}}]),
         field_report_json=json.dumps(report),
+        config_signature=config_signature,
     )
 
 
@@ -1060,13 +1069,13 @@ def test_scheduled_run_can_reach_connector_without_runtime_readiness(
     assert result.results[0].run_id is not None
 
 
-def test_scheduled_run_defers_all_runtime_prerequisites_until_after_lease(
+def test_scheduled_run_rejects_unsigned_binding_before_lease(
     runner: ProjectStatusSyncRunner,
     db: DatabaseManager,
     service: ProjectStatusUpdateService,
     registry: ConnectorRegistry,
 ) -> None:
-    """缺少凭据、稳定键、匹配规则和映射时仍先创建 run 并调用 connector。"""
+    """旧绑定证据失效时，定时运行不得创建 run 或调用 connector。"""
     _enable_pilot(service)
     with db.get_connection() as conn:
         conn.execute(
@@ -1087,12 +1096,11 @@ def test_scheduled_run_defers_all_runtime_prerequisites_until_after_lease(
         validate_runtime_prerequisites=False,
     )
 
-    assert len(connector.collect_calls) == 1
-    assert result.results[0].run_id is not None
+    assert len(connector.collect_calls) == 0
+    assert result.results[0].run_id is None
+    assert result.results[0].final_state == "needs_attention"
     assert result.results[0].error_type == "binding_not_ready"
-    run = db.get_sync_run(result.results[0].run_id)
-    assert run is not None
-    assert run["run_state"] == "failed"
+    assert db.list_sync_runs("VPI-T2-D5") == []
 
 
 def test_dry_run_binding_not_ready_returns_attention(

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from core.diagnostic_recording import observed, record_http
+
+import hashlib
 import json
 import os
 import random
@@ -267,6 +270,10 @@ class EWOReportPage:
     item_ids: list[str]
     raw_xml: str
     request_xml: str = ""
+    fetched_pages: int = 1
+    stop_reason: str = "single_page"
+    complete: bool = False
+    truncated: bool = False
 
 
 @dataclass(frozen=True)
@@ -330,6 +337,7 @@ class ArasCrawlerClient:
             else:
                 self.session.cookies.update(cookies)
 
+    @observed("aras.ArasCrawlerClient.query_ewo_report")
     def query_ewo_report(
         self,
         filters: EWOReportFilters,
@@ -349,8 +357,10 @@ class ArasCrawlerClient:
             item_ids=result.item_ids[:limit],
             raw_xml=result.raw_xml,
             request_xml=payload,
+            truncated=len(result.rows) > limit,
         )
 
+    @observed("aras.ArasCrawlerClient.crawl_ewo_report_all")
     def crawl_ewo_report_all(
         self,
         filters: EWOReportFilters | None = None,
@@ -368,6 +378,12 @@ class ArasCrawlerClient:
         request_pages: list[str] = []
         last_page: int | None = None
         page = 1
+        fetched_pages = 0
+        stop_reason = "max_pages"
+        complete = False
+        seen_item_ids: set[str] = set()
+        seen_content: set[str] = set()
+        unidentified_content: set[str] = set()
         while page <= max_pages and len(rows) < max_records:
             current = self.query_ewo_report(
                 filters or EWOReportFilters(),
@@ -378,14 +394,59 @@ class ArasCrawlerClient:
             )
             raw_pages.append(current.raw_xml)
             request_pages.append(current.request_xml)
+            fetched_pages += 1
             if current.page is not None:
                 last_page = current.page
-            if not current.rows:
+                if current.page != page:
+                    stop_reason = "inconsistent_page"
+                    break
+            current_ids = [item_id.strip().casefold() for item_id in current.item_ids if item_id.strip()]
+            # Use Item IDs, not business numbers: different items may have
+            # the same business number and still be legitimate records.
+            if len(set(current_ids)) != len(current_ids) or seen_item_ids.intersection(current_ids):
+                stop_reason = "duplicate_records"
                 break
+            row_content = [
+                hashlib.sha256(json.dumps(
+                    row, sort_keys=True, ensure_ascii=False,
+                ).encode("utf-8")).hexdigest()
+                for row in current.rows
+            ]
+            missing_ids = len(current_ids) != len(current.rows)
+            # Without Item IDs, even a partial overlap cannot be shown to
+            # represent distinct records. Track both directions of a switch
+            # between legacy (ID-less) and identified responses. Identical
+            # content with distinct, present IDs remains valid.
+            if (
+                unidentified_content.intersection(row_content)
+                or (missing_ids and (
+                    seen_content.intersection(row_content)
+                    or len(set(row_content)) != len(row_content)
+                ))
+            ):
+                stop_reason = "duplicate_records"
+                break
+            if not current.rows:
+                stop_reason = "empty_page"
+                complete = True
+                break
+            seen_item_ids.update(current_ids)
+            seen_content.update(row_content)
+            if missing_ids:
+                unidentified_content.update(row_content)
             remaining = max_records - len(rows)
+            overflowed = len(current.rows) > remaining
             rows.extend(current.rows[:remaining])
             item_ids.extend(current.item_ids[:remaining])
-            if len(current.rows) < page_size or len(rows) >= max_records:
+            if current.truncated or overflowed:
+                stop_reason = "max_records"
+                break
+            if len(current.rows) < page_size:
+                stop_reason = "short_page"
+                complete = True
+                break
+            if len(rows) >= max_records:
+                stop_reason = "max_records"
                 break
             page += 1
         return EWOReportPage(
@@ -394,8 +455,12 @@ class ArasCrawlerClient:
             item_ids=item_ids,
             raw_xml="\n".join(raw_pages),
             request_xml="\n".join(request_pages),
+            fetched_pages=fetched_pages,
+            stop_reason=stop_reason,
+            complete=complete,
         )
 
+    @observed("aras.ArasCrawlerClient.query_paa_report")
     def query_paa_report(
         self,
         filters: PAAReportFilters | None = None,
@@ -416,6 +481,7 @@ class ArasCrawlerClient:
             request_xml=payload,
         )
 
+    @observed("aras.ArasCrawlerClient.crawl_paa_report_all")
     def crawl_paa_report_all(
         self,
         filters: PAAReportFilters | None = None,
@@ -460,12 +526,14 @@ class ArasCrawlerClient:
             request_xml="\n".join(request_pages),
         )
 
+    @observed("aras.ArasCrawlerClient.query_ncr_approval_progress")
     def query_ncr_approval_progress(self, filters: NCRApprovalFilters) -> NCRExportResult:
         payload = self._build_ncr_payload(filters, "sgmw_downloadFileProgressC")
         timeout = (self.timeout, max(self.timeout, NCR_PROGRESS_RECEIVE_TIMEOUT))
         response = self._post_soap("ApplyMethod", payload, timeout=timeout)
         return self.parse_ncr_progress_response(response.text)
 
+    @observed("aras.ArasCrawlerClient.extract_ncr_approval_detail")
     def extract_ncr_approval_detail(self, filters: NCRApprovalFilters) -> NCRDetailExportResult:
         payload = self._build_ncr_payload(filters, "sgmw_downloadFileDetail4C")
         timeout = (self.timeout, max(self.timeout, NCR_DETAIL_RECEIVE_TIMEOUT))
@@ -475,6 +543,7 @@ class ArasCrawlerClient:
             raise ArasCrawlerError("NCR 明细生成超时，请稍后重试或缩小日期范围") from exc
         return self.parse_ncr_detail_response(response.text)
 
+    @observed("aras.ArasCrawlerClient.download_ncr_detail_file")
     def download_ncr_detail_file(
         self,
         file_name: str,
@@ -533,6 +602,7 @@ class ArasCrawlerClient:
         _reject_html_download(response, content)
         return _atomic_write_download(_resolve_download_target(destination, name), content)
 
+    @observed("aras.ArasCrawlerClient.download_ncr_progress_file")
     def download_ncr_progress_file(
         self,
         export_result: NCRExportResult,
@@ -610,6 +680,7 @@ class ArasCrawlerClient:
         _reject_html_download(response, content)
         return _atomic_write_download(_resolve_download_target(destination, name), content)
 
+    @observed("aras.ArasCrawlerClient.get_file_download_token")
     def get_file_download_token(
         self,
         file_id: str,
@@ -663,12 +734,35 @@ class ArasCrawlerClient:
         return self.parse_download_token_response(response.text)
 
     @staticmethod
+    @observed("aras.ArasCrawlerClient.parse_ewo_report_response")
     def parse_ewo_report_response(xml_text: str) -> EWOReportPage:
         root = _parse_xml(xml_text)
-        rows, item_ids, page = _parse_item_rows(root, "EWO_O")
+        # Validate all explicit page attributes, including empty Result
+        # pages. The generic parser historically kept only the first value.
+        response_pages: set[int] = set()
+        for node in root.iter():
+            if (
+                _local_name(node.tag) == "Result"
+                or (_local_name(node.tag) == "Item" and node.get("type") == "EWO_O")
+            ) and "page" in node.attrib:
+                value = node.attrib["page"].strip()
+                if not re.fullmatch(r"[0-9]+", value):
+                    raise ArasCrawlerError("EWO response page is invalid")
+                try:
+                    number = int(value)
+                except ValueError as exc:
+                    raise ArasCrawlerError("EWO response page is invalid") from exc
+                if number < 1:
+                    raise ArasCrawlerError("EWO response page is invalid")
+                response_pages.add(number)
+        if len(response_pages) > 1:
+            raise ArasCrawlerError("EWO response page attributes are inconsistent")
+        rows, item_ids, _ = _parse_item_rows(root, "EWO_O")
+        page = next(iter(response_pages), None)
         return EWOReportPage(rows=rows, page=page, item_ids=item_ids, raw_xml=xml_text)
 
     @staticmethod
+    @observed("aras.ArasCrawlerClient.parse_paa_report_response")
     def parse_paa_report_response(xml_text: str) -> PAAReportPage:
         root = _parse_xml(xml_text)
         result = next((node for node in root.iter() if _local_name(node.tag) == "Result"), None)
@@ -678,6 +772,7 @@ class ArasCrawlerClient:
         return PAAReportPage(rows=rows, page=page, item_ids=item_ids, raw_xml=xml_text)
 
     @staticmethod
+    @observed("aras.ArasCrawlerClient.parse_ncr_progress_response")
     def parse_ncr_progress_response(xml_text: str) -> NCRExportResult:
         root = _parse_xml(xml_text)
         result = next(
@@ -711,6 +806,7 @@ class ArasCrawlerClient:
         )
 
     @staticmethod
+    @observed("aras.ArasCrawlerClient.parse_ncr_detail_response")
     def parse_ncr_detail_response(xml_text: str) -> NCRDetailExportResult:
         root = _parse_xml(xml_text)
         result = next((node for node in root.iter() if _local_name(node.tag) == "Result"), None)
@@ -773,6 +869,7 @@ class ArasCrawlerClient:
             raise ArasCrawlerError("download token response does not contain d")
         return token
 
+    @observed("aras.ArasCrawlerClient._post_soap")
     def _post_soap(
         self,
         soap_action: str,
@@ -833,6 +930,7 @@ class ArasCrawlerClient:
             )
         return response
 
+    @observed("aras.ArasCrawlerClient._prewarm_context")
     def _prewarm_context(self) -> None:
         if not self.prewarm or self._context_warmed:
             return
@@ -908,6 +1006,7 @@ class ArasCrawlerClient:
         return self.base_url.rstrip("/")
 
     def _emit_diagnostic(self, event: ArasHttpDiagnosticEvent) -> None:
+        record_http("aras", event)
         if self.diagnostic_hook is None:
             return
         self.diagnostic_hook(event)

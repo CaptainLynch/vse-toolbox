@@ -1,5 +1,10 @@
 ﻿# Excel Operations Production Acceptance & Deployment Guide
 
+> 状态：Active
+> 读者：Operator、Developer、Agent（Excel 生产任务）
+> 权威来源：当前 EXE/Worker 契约、构建配置和验收测试
+> 默认读取：按生产部署或 Excel 任务读取
+
 This document defines the production configuration, operational boundaries,
 dual-executable packaging, lifecycle control, integrity audit, rollback
 procedures, and manual production verification steps for VSE Toolbox Excel

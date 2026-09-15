@@ -1,5 +1,10 @@
 # Scheduled Deliverables, Overview Analytics, and Excel Web Architecture
 
+> 状态：Active
+> 读者：Developer、Agent（项目状态、交付物和 Excel Web 任务）
+> 权威来源：当前 `web/`、`services/`、`core/` 代码和测试
+> 默认读取：按相关架构任务读取
+
 ## Decision baseline
 
 - The standalone `ProjectStatusSyncRunner.run_once` remains the only scheduled

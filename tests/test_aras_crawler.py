@@ -277,6 +277,35 @@ def test_crawl_ewo_report_all_paginates_and_honors_record_limit() -> None:
     assert len(session.calls) == 2
     assert 'page="1"' in session.calls[0]["data"]
     assert 'page="2"' in session.calls[1]["data"]
+    assert result.stop_reason == "max_records"
+    assert result.complete is False
+
+
+def test_crawl_ewo_report_all_marks_a_short_final_page_complete() -> None:
+    session = FakeSession([FakeResponse(ewo_response(1, ["EWO-1"]))])
+    client = ArasCrawlerClient("http://aras.example", session=session)  # type: ignore[arg-type]
+
+    result = client.crawl_ewo_report_all(page_size=2, max_pages=5, max_records=2)
+
+    assert result.rows[0]["_no"] == "EWO-1"
+    assert result.stop_reason == "short_page"
+    assert result.complete is True
+
+
+def test_crawl_ewo_report_all_short_final_page_at_exact_limit_is_complete() -> None:
+    session = FakeSession(
+        [
+            FakeResponse(ewo_response(1, ["EWO-1", "EWO-2", "EWO-3"])),
+            FakeResponse(ewo_response(2, ["EWO-4"])),
+        ]
+    )
+    client = ArasCrawlerClient("http://aras.example", session=session)  # type: ignore[arg-type]
+
+    result = client.crawl_ewo_report_all(page_size=3, max_pages=10, max_records=4)
+
+    assert result.stop_reason == "short_page"
+    assert result.complete is True
+    assert [row["_no"] for row in result.rows] == ["EWO-1", "EWO-2", "EWO-3", "EWO-4"]
 
 
 def test_query_ewo_report_rejects_login_html_as_authentication_error() -> None:
@@ -308,11 +337,9 @@ def test_prewarm_rejects_login_html_before_posting_credentials() -> None:
     assert not any(call["method"] == "POST" for call in session.calls)
 
 
-def test_ewo_parser_tolerates_non_numeric_page_attribute() -> None:
-    result = ArasCrawlerClient.parse_ewo_report_response(ewo_response("unknown", ["EWO-1"]))
-
-    assert result.page is None
-    assert result.rows[0]["_no"] == "EWO-1"
+def test_ewo_parser_rejects_non_numeric_page_attribute() -> None:
+    with pytest.raises(ArasCrawlerError, match="page"):
+        ArasCrawlerClient.parse_ewo_report_response(ewo_response("unknown", ["EWO-1"]))
 
 
 def test_query_ewo_report_caps_untrusted_server_rows() -> None:

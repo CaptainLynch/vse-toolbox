@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from core.diagnostic_recording import observed, record_http
+
 import base64
 import json
 import logging
@@ -174,6 +176,7 @@ class TDCPasswordAuthClient:
         self.random_value_factory = random_value_factory or (lambda: uuid.uuid4().hex)
         self.tdc_session_factory = tdc_session_factory
 
+    @observed("tdc_auth.TDCPasswordAuthClient.login")
     def login(self, username: str, password: str) -> TDCLoginResult:
         """Run the captured OIDC code flow and return the authenticated session."""
         username_value = str(username).strip()
@@ -598,6 +601,7 @@ class TDCPasswordAuthClient:
         return urljoin(self.base_url, path.lstrip("/"))
 
     def _emit(self, event: TDCHttpDiagnosticEvent) -> None:
+        record_http("tdc", event)
         logger.debug(
             "stage=%s request_id=%s path=%s status=%s validation=%s type=%s",
             event.stage,

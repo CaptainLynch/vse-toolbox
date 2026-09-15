@@ -1,5 +1,10 @@
 # Scheduled Archive Runner Architecture
 
+> 状态：Active
+> 读者：Developer、Agent（定时归档任务）
+> 权威来源：`services/scheduled_archive_runner.py`、归档测试和持久决策
+> 默认读取：按定时归档任务读取
+
 ## Boundary
 
 The archive scheduler is a one-shot process invoked by Windows Task Scheduler.

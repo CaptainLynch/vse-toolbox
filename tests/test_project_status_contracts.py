@@ -13,6 +13,8 @@ from core.db_manager import CURRENT_SCHEMA_VERSION, DatabaseManager
 from core.project_status_contracts import (
     current_stage_label,
     milestone_display_status,
+    project_status_default_policy_mode,
+    project_status_source_capabilities,
 )
 
 
@@ -332,3 +334,35 @@ def test_database_migration_node_status_and_display_codes(tmp_path: Path) -> Non
             "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_ps_deliverables_display_code'"
         ).fetchone()
         assert index_exists is not None
+
+
+def test_source_capabilities_registry_contract() -> None:
+    """能力注册表单一来源：契约内交付物可自动同步，键集与连接器消费键一致。"""
+    from services.project_status_updates import PROJECT_STATUS_SYNC_CONTRACTS
+
+    sync_ids = {"VPI-T2-D2", "VPI-T2-D3", "VPI-T2-D5"}
+    assert set(PROJECT_STATUS_SYNC_CONTRACTS) == sync_ids
+    for deliverable_id in sync_ids:
+        capabilities = project_status_source_capabilities(deliverable_id)
+        assert capabilities["syncCapable"] is True
+        assert capabilities["manualOnly"] is False
+        contract = PROJECT_STATUS_SYNC_CONTRACTS[deliverable_id]
+        assert contract["sourceType"] == capabilities["sourceType"]
+        assert contract["reportType"] == capabilities["reportType"]
+        # 编辑器 matchFields 的键必须都在 matchKeys 白名单内（防 SOR 键漂移复发）。
+        field_keys = {field[0] for field in capabilities["matchFields"]}
+        assert field_keys <= set(contract["matchKeys"])
+        assert "reportType" in contract["matchKeys"]
+        assert capabilities["evidenceFields"], "证据采集必须声明来源连接输入"
+
+    for deliverable_id in ("VPI-T2-D1", "VPI-T2-D4"):
+        capabilities = project_status_source_capabilities(deliverable_id)
+        assert capabilities["syncCapable"] is False
+        assert capabilities["manualOnly"] is True
+        assert capabilities["syncNote"]
+        assert project_status_default_policy_mode(deliverable_id) == "manual"
+
+    for deliverable_id in sync_ids:
+        assert project_status_default_policy_mode(deliverable_id) == "automatic"
+    # 未注册交付物兜底为手工。
+    assert project_status_default_policy_mode("VPI-T2-D9") == "manual"

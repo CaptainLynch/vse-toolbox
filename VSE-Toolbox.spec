@@ -13,7 +13,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('web/templates', 'web/templates'), ('web/static', 'web/static')],
+    datas=[('web/templates', 'web/templates'), ('web/static', 'web/static'), ('core/report_headers.json', 'core')],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},

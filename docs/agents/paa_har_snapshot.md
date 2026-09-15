@@ -1,5 +1,10 @@
 # PAA HAR Baseline Snapshot
 
+> 状态：Reference / Evidence
+> 读者：Developer、Agent（PAA 契约复盘）
+> 权威来源：离线 HAR 摘要；当前 `services/aras_crawler.py` 和测试优先
+> 默认读取：仅 PAA 取证或分页契约任务
+
 Scope: read-only exploration of `crawl source` HAR artifacts for PAA pagination behavior.
 
 ## 1) PAA-related HAR files
@@ -190,4 +195,3 @@ Risk points:
 - Any future crawl that includes authentication may expose cookies or session-like values; redact by key name only.
 - The HAR currently includes `Favorite` fault traffic that should not be mistaken for the crawler's main list query.
 - `PAA1.har` currently lacks a response body for the big request, so a future capture should confirm whether the server actually returns all rows or the browser discarded the payload.
-

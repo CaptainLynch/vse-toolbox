@@ -98,12 +98,12 @@ def test_get_table_row_count(tmp_db: DatabaseManager) -> None:
     assert count >= 2, f"projects 行数应 ≥ 2，实际 {count}"
 
 
-def test_schema_version_is_v12(tmp_db: DatabaseManager) -> None:
-    """验证当前支持的 schema 版本为 12。"""
-    assert CURRENT_SCHEMA_VERSION == 13
+def test_schema_version_is_v14(tmp_db: DatabaseManager) -> None:
+    """Version 14 prevents older executables from rewriting EWO v2 contracts."""
+    assert CURRENT_SCHEMA_VERSION == 14
     with tmp_db.get_connection() as conn:
         ver = conn.execute("PRAGMA user_version").fetchone()[0]
-    assert ver == 13
+    assert ver == 14
 
 
 def test_v3_to_v12_migration(tmp_path: Path) -> None:
@@ -130,7 +130,7 @@ def test_v3_to_v12_migration(tmp_path: Path) -> None:
 
     with db.get_connection() as c:
         ver = c.execute("PRAGMA user_version").fetchone()[0]
-        assert ver == 13
+        assert ver == CURRENT_SCHEMA_VERSION
         assert db.table_exists("excel_tasks")
         assert db.table_exists("excel_task_files")
         assert db.table_exists("excel_task_runs")
@@ -204,7 +204,7 @@ def test_v5_to_v12_migration(tmp_path: Path) -> None:
 
     with db.get_connection() as c:
         ver = c.execute("PRAGMA user_version").fetchone()[0]
-        assert ver == 13
+        assert ver == CURRENT_SCHEMA_VERSION
         assert db.table_exists("excel_artifact_download_audit")
         assert db.table_exists("project_status_analysis_snapshots")
 
@@ -244,7 +244,7 @@ def test_v9_to_v12_migration_adds_analysis_detail_columns(tmp_path: Path) -> Non
             for row in c.execute("PRAGMA table_info(project_status_analysis_items)")
         }
         assert {"display_number", "pending_signers"}.issubset(columns)
-        assert c.execute("PRAGMA user_version").fetchone()[0] == 13
+        assert c.execute("PRAGMA user_version").fetchone()[0] == CURRENT_SCHEMA_VERSION
 
 
 def test_analysis_items_department_model_extra_columns_migration(tmp_path: Path) -> None:
@@ -412,7 +412,7 @@ def test_form_snapshot_check_constraint_rebuild_allows_tdc_data_model(
         assert "deliverable_form_snapshots_rebuild" not in ddl
         assert not db.table_exists("deliverable_form_snapshots_rebuild")
         assert c.execute("PRAGMA foreign_key_check").fetchall() == []
-        assert c.execute("PRAGMA user_version").fetchone()[0] == 13
+        assert c.execute("PRAGMA user_version").fetchone()[0] == CURRENT_SCHEMA_VERSION
         ewo = c.execute(
             "SELECT form_key FROM deliverable_form_snapshots WHERE snapshot_key = 'legacy-ewo'"
         ).fetchone()
@@ -702,3 +702,79 @@ def test_form_snapshot_check_constraint_rebuild_allows_tdc_sor(
         assert "tdc_sor" in ddl
         assert "deliverable_form_snapshots_rebuild" not in ddl
         assert c.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_reinit_preserves_configured_binding(tmp_path: Path) -> None:
+    """终审测试缺口：存量绑定保护——重新 init_database 不得翻转
+    已配置绑定的 mode/enabled（INSERT OR IGNORE 语义）。"""
+    db = DatabaseManager(tmp_path / "reinit-binding.db")
+    db.init_database()
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE project_status_update_bindings "
+            "SET mode='automatic', enabled=1, external_key='KEEP-KEY', "
+            "sync_state='success' WHERE deliverable_id='VPI-T2-D3'"
+        )
+        # 旧库手工数据：新默认不得把存量 manual 翻转为 automatic。
+        conn.execute(
+            "UPDATE project_status_update_bindings "
+            "SET mode='manual', enabled=0, external_key=NULL "
+            "WHERE deliverable_id='VPI-T2-D2'"
+        )
+    db.init_database()
+    with db.get_connection() as conn:
+        row = conn.execute(
+            "SELECT mode, enabled, external_key, sync_state "
+            "FROM project_status_update_bindings WHERE deliverable_id='VPI-T2-D3'"
+        ).fetchone()
+    assert row["mode"] == "automatic"
+    assert row["enabled"] == 1
+    assert row["external_key"] == "KEEP-KEY"
+    assert row["sync_state"] == "success"
+    with db.get_connection() as conn:
+        manual_row = conn.execute(
+            "SELECT mode, enabled FROM project_status_update_bindings "
+            "WHERE deliverable_id='VPI-T2-D2'"
+        ).fetchone()
+    assert manual_row["mode"] == "manual"
+    assert manual_row["enabled"] == 0
+
+
+def test_aggregate_binding_can_acquire_sync_lease_without_external_key(tmp_path: Path) -> None:
+    """任务 1 行为测试：聚合绑定（matchRule.aggregate=true、无 external_key）
+    必须能通过租约入口的运行时前置校验（修复前被 external_key 检查阻断）。"""
+    import json
+
+    db = DatabaseManager(tmp_path / "aggregate-lease.db")
+    db.init_database()
+    match_rule = {
+        "reportType": "data_model", "aggregate": True, "incident": "FM-1",
+    }
+    db.set_project_status_update_policy(
+        "VPI-T2-D5", mode="automatic", enabled=True, external_key=None,
+        match_rule_json=json.dumps(match_rule), mapping_json=json.dumps({"owner": "currentApprover"}),
+        field_authority={"owner": "automatic"}, credential_ref="test-alias",
+    )
+    with db.get_connection() as conn:
+        binding_id = conn.execute(
+            "SELECT id FROM project_status_update_bindings WHERE deliverable_id='VPI-T2-D5'"
+        ).fetchone()["id"]
+
+    # 修复前：SyncBindingNotReadyError（external_key is not confirmed）。
+    lease = db.acquire_sync_lease(binding_id, trigger_type="sync_now")
+    assert lease["run_id"] > 0
+
+    # 非聚合绑定缺稳定键仍拒绝。
+    db.set_project_status_update_policy(
+        "VPI-T2-D3", mode="automatic", enabled=True, external_key=None,
+        match_rule_json=json.dumps({"reportType": "ewo", "ewoNo": "EWO-1"}),
+        mapping_json=json.dumps({"owner": "_rsp_name"}),
+        field_authority={"owner": "automatic"}, credential_ref="test-alias",
+    )
+    with db.get_connection() as conn:
+        d3_binding_id = conn.execute(
+            "SELECT id FROM project_status_update_bindings WHERE deliverable_id='VPI-T2-D3'"
+        ).fetchone()["id"]
+    from core.db_manager import SyncBindingNotReadyError
+    with pytest.raises(SyncBindingNotReadyError):
+        db.acquire_sync_lease(d3_binding_id, trigger_type="sync_now")

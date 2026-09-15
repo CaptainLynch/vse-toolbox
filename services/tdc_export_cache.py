@@ -8,6 +8,8 @@ authorization headers, and DPAPI values are rejected from key material.
 
 from __future__ import annotations
 
+from core.diagnostic_recording import observed
+
 import hashlib
 import json
 import threading
@@ -93,6 +95,7 @@ class TDCExportCache:
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
 
+    @observed("cache.TDCExportCache.get_or_create")
     def get_or_create(
         self,
         key: str,
@@ -125,6 +128,7 @@ class TDCExportCache:
             self._evict_to_limits()
             return TDCExportCacheResult(content, False)
 
+    @observed("cache.TDCExportCache.clear")
     def clear(self) -> None:
         with self._lock:
             self._entries.clear()

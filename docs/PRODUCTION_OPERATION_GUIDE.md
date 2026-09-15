@@ -1,5 +1,10 @@
 # VSE Toolbox 生产环境独立可执行文件操作与测试指南
 
+> 状态：Active
+> 读者：Operator、Developer、Agent（生产部署和排障）
+> 权威来源：当前 EXE 构建配置、运行入口和生产验收证据
+> 默认读取：按生产运行或打包任务读取
+
 本文档指导在**无需安装 Python 及第三方依赖**的 Windows 生产/预发环境中，部署、运行与测试 VSE Toolbox 的独立可执行文件（`.exe`）。
 
 ---

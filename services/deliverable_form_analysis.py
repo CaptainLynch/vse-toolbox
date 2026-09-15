@@ -6,6 +6,8 @@ resolve credentials, acquire leases, or call an external service.
 
 from __future__ import annotations
 
+from core.diagnostic_recording import observed
+
 import calendar
 import hashlib
 import re
@@ -979,6 +981,7 @@ def _tdc_header_mapping_values(
     return [row.get(name) if name else None for name in header_names]
 
 
+@observed("forms.normalize_form_rows")
 def normalize_form_rows(
     form_key: str,
     rows: Sequence[Mapping[str, Any]],
@@ -1310,6 +1313,7 @@ def _cost_summary(
     return sorted(groups.values(), key=lambda item: str(item["label"]))
 
 
+@observed("forms.summarize_form_rows")
 def summarize_form_rows(
     form_key: str,
     rows: Sequence[Mapping[str, Any]],
@@ -1396,6 +1400,7 @@ def aggregate_daily_trend(
     return result
 
 
+@observed("forms.build_form_snapshot")
 def build_form_snapshot(
     form_key: str,
     rows: Sequence[Mapping[str, Any]],

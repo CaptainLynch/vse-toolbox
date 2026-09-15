@@ -1,5 +1,10 @@
 # P1 Crawl Source Baseline Index
 
+> 状态：Reference / Evidence
+> 读者：Developer、Agent（爬虫取证任务）
+> 权威来源：脱敏摘要和离线样本；生产代码和测试优先
+> 默认读取：仅爬虫取证任务；优先读本摘要，不直接扫原始目录
+
 Scope: read-only index of `E:\project\vse-toolbox\crawl source` sample pool plus `services/` crawler/HTTP/Feishu/Office related skeletons.
 
 ## 1) Sample inventory

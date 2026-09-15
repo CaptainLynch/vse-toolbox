@@ -32,6 +32,8 @@ result.
 
 from __future__ import annotations
 
+from core.diagnostic_recording import observed, record_http
+
 import json
 import logging
 import math
@@ -264,6 +266,7 @@ class ArasECMAuthClient:
                     stage="aras-session-init",
                 ) from exc
 
+    @observed("aras_auth.ArasECMAuthClient.login")
     def login(self, username: str, password: str) -> ArasLoginResult:
         """Run the OIDC code flow, gate on Aras SOAP ValidateUser, return the session."""
         # 重复调用 login() 时，先丢弃上一轮残留的 Innovator token，避免它被
@@ -774,6 +777,7 @@ class ArasECMAuthClient:
         raise ArasAuthError(message, stage=trace.stage, request_id=trace.request_id, status_code=status)
 
     def _emit(self, event: ArasAuthHttpDiagnosticEvent) -> None:
+        record_http("aras", event)
         logger.debug(
             "stage=%s request_id=%s path=%s status=%s validation=%s type=%s",
             event.stage,

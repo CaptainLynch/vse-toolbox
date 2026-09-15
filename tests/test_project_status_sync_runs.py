@@ -22,6 +22,7 @@ from services.project_status_updates import (
     ProjectStatusUpdateService,
     SyncResult,
 )
+from services.project_status_records import compute_config_signature
 
 
 # ── 公共 fixture ────────────────────────────────────────────────
@@ -45,8 +46,14 @@ def _record_two_observations_for_d5(
     source_type: str = "tdc",
     external_key: str = "FM-1",
     fields: list[str] | None = None,
+    match_rule: dict[str, Any] | None = None,
 ) -> None:
     """Record two matched tdc observations for the same external key."""
+    effective_rule = match_rule or {
+        "reportType": "data_model",
+        "incident": external_key,
+    }
+    config_signature = compute_config_signature(source_type, effective_rule)
     field_list = fields if fields is not None else [
         "currentApprover", "approvalComment", "incident", "reportType",
     ]
@@ -66,6 +73,7 @@ def _record_two_observations_for_d5(
         candidate_count=1,
         candidate_summary_json=json.dumps([{"externalKey": external_key, "fields": {}}]),
         field_report_json=json.dumps(report),
+        config_signature=config_signature,
     )
     db.record_mapping_observation(
         deliverable_id=deliverable_id,
@@ -76,6 +84,7 @@ def _record_two_observations_for_d5(
         candidate_count=1,
         candidate_summary_json=json.dumps([{"externalKey": external_key, "fields": {}}]),
         field_report_json=json.dumps(report),
+        config_signature=config_signature,
     )
 
 

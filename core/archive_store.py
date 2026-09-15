@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from core.diagnostic_recording import observed
+
 import csv
 import hashlib
 import io
@@ -284,6 +286,7 @@ class ArchiveStore:
         if free < required:
             raise ArchiveCapacityError("insufficient free disk space for archive")
 
+    @observed("archive.ArchiveStore._write_chunks")
     def _write_chunks(self, chunks: Iterable[bytes], *, source: str, report: str, run_id: str | int, file_name: str, artifact_type: str, root_id: str = "default", output_subdir: str = "", expected_size: int | None = None) -> ArchiveArtifact:
         directory = self.run_directory(
             source,
@@ -383,6 +386,7 @@ class ArchiveStore:
             items.append(RetentionItem(path.relative_to(root).as_posix(), path.stat().st_size, datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()))
         return sorted(items, key=lambda item: item.relative_path)
 
+    @observed("archive.ArchiveStore.execute_retention")
     def execute_retention(self, items: Sequence[RetentionItem], *, root_id: str = "default") -> tuple[str, ...]:
         root = self.root(root_id)
         removed: list[str] = []

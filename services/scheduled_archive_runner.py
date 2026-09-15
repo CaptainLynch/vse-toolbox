@@ -7,8 +7,11 @@ entry point; no permanent scheduler is hosted in Flask.
 
 from __future__ import annotations
 
+from core.diagnostic_recording import observed
+
 import time
 import threading
+from contextvars import copy_context
 import logging
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -100,6 +103,8 @@ def _error_type(exc: BaseException) -> str:
 
 def _safe_exception_message(exc: BaseException) -> str:
     """Return a stable diagnostic without reflecting external exception text."""
+    if isinstance(exc, TDCCrawlerError):
+        return exc.safe_diagnostic_message()
     messages = {
         "lease_busy": "archive job already has an active lease",
         "lease_lost": "archive job lease was lost",
@@ -306,6 +311,7 @@ class ArchiveSyncRunner:
         self._sleeper = sleeper
         self._clock = clock or (lambda: datetime.now(timezone.utc))
 
+    @observed("scheduler.ArchiveSyncRunner.run_job", background=True)
     def run_job(
         self,
         job_id: int,
@@ -447,6 +453,7 @@ class ArchiveSyncRunner:
                 )
             return self._finalize_exception(lease, exc)
 
+    @observed("scheduler.ArchiveSyncRunner._publish_form_snapshot")
     def _publish_form_snapshot(
         self,
         context: ArchiveJobContext,
@@ -515,6 +522,7 @@ class ArchiveSyncRunner:
             message,
         )
 
+    @observed("scheduler.ArchiveSyncRunner.run_once", background=True)
     def run_once(
         self,
         *,
@@ -570,6 +578,7 @@ class ArchiveSyncRunner:
             )
         return ArchiveRunOnceResult(tuple(results), dry_run)
 
+    @observed("scheduler.ArchiveSyncRunner._collect_with_retry")
     def _collect_with_retry(
         self,
         connector: ArchiveConnector,
@@ -627,7 +636,8 @@ class ArchiveSyncRunner:
                     continue
 
         thread = threading.Thread(
-            target=beat,
+            target=copy_context().run,
+            args=(beat,),
             name=f"archive-lease-{run_id}",
             daemon=True,
         )

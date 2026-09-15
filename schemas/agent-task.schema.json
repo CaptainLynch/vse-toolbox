@@ -20,6 +20,24 @@
     "forbidden_actions": {"type": "array", "items": {"type": "string"}},
     "context": {"type": "object"},
     "review_feedback": {"type": "array", "items": {"type": "string"}},
+    "read_scope": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "task_kind": {
+      "type": "string",
+      "enum": ["exploration", "mechanical", "test-only", "ui", "ordinary-implementation", "complex-implementation", "root-cause", "deep-review"]
+    },
+    "complexity": {"type": "string", "enum": ["low", "medium", "high"]},
+    "mutation": {"type": "string", "enum": ["read", "write", "consult"]},
+    "model_slot": {"type": "string", "enum": ["flash", "pro"]},
+    "self_repair_attempts": {"type": "integer", "minimum": 1, "maximum": 5},
+    "context_budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_input_tokens": {"type": "integer", "minimum": 1},
+        "max_output_tokens": {"type": "integer", "minimum": 1},
+        "safety_reserve_tokens": {"type": "integer", "minimum": 0}
+      }
+    },
     "profile": {"type": "string", "enum": ["agy-heavy", "codex-controlled"]},
     "category": {"type": "string"},
     "risk_class": {

@@ -76,7 +76,11 @@ class FakeTDC:
         self.output_dir = kwargs["output_dir"]
 
     def crawl_data_model_all(self, filters, max_records):
-        return SimpleNamespace(rows=[{"incident": "FLOW-1", "currentApprover": "审批人"}])
+        return SimpleNamespace(
+            rows=[{"incident": "FLOW-1", "currentApprover": "审批人"}],
+            complete=True,
+            stop_reason="reported_pages",
+        )
 
     def export_data_model(self, filters):
         path = self.output_dir / "official.xlsx"
@@ -100,7 +104,7 @@ def test_tdc_connector_archives_and_returns_normalized_candidate(tmp_path: Path)
 def test_tdc_zero_match_needs_attention_without_guess(tmp_path: Path):
     class EmptyTDC(FakeTDC):
         def crawl_data_model_all(self, filters, max_records):
-            return SimpleNamespace(rows=[])
+            return SimpleNamespace(rows=[], complete=True, stop_reason="empty_page")
 
     connector = TDCProjectStatusConnector(
         MemoryCredentialProvider({"ref": ("user", "pass")}),
@@ -237,7 +241,11 @@ def test_aras_connector_resolves_opaque_credential_and_queries_ewo(tmp_path: Pat
         def crawl_ewo_report_all(self, filters, max_records):
             calls["filters"] = filters
             calls["max_records"] = max_records
-            return SimpleNamespace(rows=[{"_no": "EWO-1", "_rsp_name": "负责人"}])
+            return SimpleNamespace(
+                rows=[{"_no": "EWO-1", "_rsp_name": "负责人"}],
+                complete=True,
+                stop_reason="short_page",
+            )
 
     connector = ArasProjectStatusConnector(
         MemoryCredentialProvider({"aras-ref": ("operator", "pw-secret")}),
@@ -264,7 +272,7 @@ def test_aras_connector_resolves_opaque_credential_and_queries_ewo(tmp_path: Pat
     assert calls["credentials"] == ("operator", "pw-secret")
     assert calls["client"]["session"] is session
     assert calls["filters"].ewo_no == "EWO-1"
-    assert calls["max_records"] == 2000
+    assert calls["max_records"] == 5000
     assert snapshot.match_state == "matched"
     assert snapshot.candidates[0].field_values == {"owner": "负责人"}
     assert all(
@@ -300,6 +308,8 @@ def test_aras_connector_model_scope_filter_from_match_rule():
                 rows=[{"_no": "EWO-049039", "_rsp_smt": "车体科", "_rsp_name": "莫仕沾"}],
                 page=1,
                 item_ids=["ID-1"],
+                complete=True,
+                stop_reason="short_page",
             )
 
     class FakeArchive:
@@ -349,7 +359,13 @@ def test_aras_connector_keeps_ewo_no_filter_without_model_info():
 
         def crawl_ewo_report_all(self, filters=None, max_records=None):
             captured["filters"] = filters
-            return SimpleNamespace(rows=[{"_no": "EWO-049039"}], page=1, item_ids=["ID-1"])
+            return SimpleNamespace(
+                rows=[{"_no": "EWO-049039"}],
+                page=1,
+                item_ids=["ID-1"],
+                complete=True,
+                stop_reason="short_page",
+            )
 
     class FakeArchive:
         def write_csv(self, *args, **kwargs):
@@ -374,6 +390,71 @@ def test_aras_connector_keeps_ewo_no_filter_without_model_info():
     snapshot = connector.collect(ctx)
     assert captured["filters"].ewo_no == "EWO-049039"
     assert captured["filters"].model_info is None
+    assert snapshot.match_state == "matched"
+
+
+def test_aras_connector_passes_all_non_model_ewo_filters(tmp_path: Path):
+    captured = {}
+
+    class FakeAuth:
+        base_url = "http://aras.example"
+
+        def __init__(self, **kwargs):
+            pass
+
+        def login(self, username, password):
+            return SimpleNamespace(session=object())
+
+    class FakeCrawler:
+        def __init__(self, base_url, session=None, timeout=None, prewarm=False):
+            pass
+
+        def crawl_ewo_report_all(self, filters, max_records):
+            captured["filters"] = filters
+            captured["max_records"] = max_records
+            return SimpleNamespace(
+                rows=[{"_no": "EWO-1"}], complete=True, stop_reason="short_page"
+            )
+
+    class FakeArchive:
+        def write_csv(self, *args, **kwargs):
+            return SimpleNamespace(as_metadata=lambda: {})
+
+        def write_json(self, *args, **kwargs):
+            return SimpleNamespace(as_metadata=lambda: {})
+
+    connector = ArasProjectStatusConnector(
+        MemoryCredentialProvider({"domain": ("user", "pass")} ),
+        FakeArchive(), auth_factory=FakeAuth, crawler_factory=FakeCrawler,
+    )
+    ctx = SyncBindingContext(
+        binding_id=6, deliverable_id="VPI-T2-D3", phase_id="VPI-T2", source_type="aras",
+        external_key="EWO-1",
+        match_rule={
+            "reportType": "ewo", "ewoNo": "EWO-1", "projectCode": "P100",
+            "subjectKeyword": "door", "changeType": "Type-A", "changeSubType": "Sub-A",
+            "area": "Body", "state": "In Work", "rspDepartment": "Dept",
+            "rspSmt": "SMT", "submitStart": "2026-01-01", "submitEnd": "2026-01-31",
+        },
+        mapping={}, cursor={}, expected_deliverable_updated_at="v1", run_id=13,
+        credential_ref="domain",
+    )
+
+    snapshot = connector.collect(ctx)
+
+    filters = captured["filters"]
+    assert filters.ewo_no == "EWO-1"
+    assert filters.project_code == "P100"
+    assert filters.subject_keyword == "door"
+    assert filters.change_type == "Type-A"
+    assert filters.change_sub_type == "Sub-A"
+    assert filters.area == "Body"
+    assert filters.state == "In Work"
+    assert filters.rsp_department == "Dept"
+    assert filters.rsp_smt == "SMT"
+    assert filters.submit_start == "2026-01-01"
+    assert filters.submit_end == "2026-01-31"
+    assert captured["max_records"] == 5000
     assert snapshot.match_state == "matched"
 
 
@@ -404,6 +485,8 @@ def test_aras_connector_uses_rsp_department_keyword_filter():
                 rows=[{"_no": "EWO-1", "_rsp_smt": "车身科", "_rsp_department": "技术中心_车体工程"}],
                 page=1,
                 item_ids=["ID-1"],
+                complete=True,
+                stop_reason="short_page",
             )
 
     class FakeArchive:
@@ -419,7 +502,9 @@ def test_aras_connector_uses_rsp_department_keyword_filter():
     )
     ctx = SyncBindingContext(
         binding_id=5, deliverable_id="VPI-T2-D3", phase_id="VPI-T2", source_type="aras",
-        external_key="EWO-1", match_rule={"reportType": "ewo", "modelInfo": "F610S"},
+        external_key="EWO-1", match_rule={
+            "reportType": "ewo", "modelInfo": "F610S", "subjectKeyword": "ONLY-THIS"
+        },
         mapping={}, cursor={}, expected_deliverable_updated_at="v1", run_id=11,
         credential_ref="domain",
     )
@@ -429,6 +514,7 @@ def test_aras_connector_uses_rsp_department_keyword_filter():
     assert filters.rsp_smt is None
     # context.match_rule 里已有 modelInfo，车型查询条件不受默认范围调整影响。
     assert filters.model_info == "F610S"
+    assert filters.subject_keyword == "ONLY-THIS"
     assert snapshot.match_state == "matched"
 
 
@@ -454,3 +540,132 @@ class ArasProjectStatusFiltersProbe:
         return ArasCrawlerClient._build_ewo_payload(
             object.__new__(ArasCrawlerClient), filters, 1, 50, 2000, None
         )
+
+
+def test_tdc_sor_filters_maps_car_type_project_id() -> None:
+    rule = {
+        "processNo": "PROC-1",
+        "carTypeProject": "P100",
+        "carTypeProjectId": "proj-id-1",
+        "applicant": "Alice",
+        "title": "Title",
+        "partNumber": "PART-1",
+        "sorNumber": "SOR-1",
+        "approvalStatus": "Approved",
+    }
+    filters = TDCProjectStatusConnector._sor_filters(rule)
+    assert filters.serial_number == "PROC-1"
+    assert filters.car_type_project == "P100"
+    assert filters.car_type_project_id == "proj-id-1"
+    assert filters.applicant == "Alice"
+    assert filters.title == "Title"
+    assert filters.part_number == "PART-1"
+    assert filters.sor_number == "SOR-1"
+    assert filters.approval_status == "Approved"
+
+
+def _aggregate_context(**match_rule_overrides):
+    from services.project_status_sync_runner import SyncBindingContext
+
+    match_rule = {"reportType": "data_model", "aggregate": True, "carTypeProjectId": "F610S"}
+    match_rule.update(match_rule_overrides)
+    return SyncBindingContext(
+        binding_id=3, deliverable_id="VPI-T2-D5", phase_id="VPI-T2",
+        source_type="tdc", external_key=None, match_rule=match_rule,
+        mapping={
+            "owner": "currentApprover",
+            "note": ["latest_completed_node", "approval_status"],
+        },
+        cursor={}, expected_deliverable_updated_at="v1", run_id=9,
+        credential_ref="domain",
+    )
+
+
+def test_aggregate_snapshot_single_record_writes_all_mapped_fields():
+    """聚合单条记录：按映射直写 owner/note 多列合并。"""
+    from services.project_status_connectors import _snapshot
+
+    rows = [
+        {"incident": "F610S-3D-0001", "currentApprover": "张三",
+         "latest_completed_node": "IMPL", "approval_status": "审批中"},
+    ]
+    snapshot = _snapshot(_aggregate_context(), rows, [])
+    assert snapshot.match_state == "matched"
+    assert snapshot.candidates[0].field_values == {
+        "owner": "张三", "note": "IMPL｜审批中",
+    }
+
+
+def test_aggregate_snapshot_multi_record_hides_single_value_fields():
+    """聚合多条记录：负责人/计划完成日期不写（多记录写单值必然出错），
+    风险备注逐条聚合（标识：卡点信息）。"""
+    from services.project_status_connectors import _snapshot
+
+    rows = [
+        {"incident": "F610S-3D-0001", "currentApprover": "张三",
+         "latest_completed_node": "IMPL", "approval_status": "审批中"},
+        {"incident": "F610S-3D-0002", "currentApprover": "李四",
+         "latest_completed_node": "PROC", "approval_status": "审批中"},
+    ]
+    snapshot = _snapshot(_aggregate_context(), rows, [])
+    assert snapshot.match_state == "matched"
+    values = snapshot.candidates[0].field_values
+    assert "owner" not in values
+    assert values["note"] == "F610S-3D-0001：IMPL｜审批中；F610S-3D-0002：PROC｜审批中"
+
+
+def test_aggregate_snapshot_content_change_changes_version():
+    """GPT 终审 P1 回归：同单号记录的内容变化必须产生新版本
+    （旧实现仅用单号构造版本，会把内容变化误判为幂等 skipped）。"""
+    from services.project_status_connectors import _snapshot
+
+    rows_v1 = [
+        {"incident": "F610S-3D-0001", "currentApprover": "张三",
+         "latest_completed_node": "IMPL", "approval_status": "审批中"},
+    ]
+    rows_v2 = [
+        {"incident": "F610S-3D-0001", "currentApprover": "张三",
+         "latest_completed_node": "IMPL", "approval_status": "已驳回"},
+    ]
+    v1 = _snapshot(_aggregate_context(), rows_v1, []).external_version
+    v2 = _snapshot(_aggregate_context(), rows_v2, []).external_version
+    assert v1 != v2
+
+
+def test_aggregate_snapshot_excludes_unnumbered_rows_consistently():
+    """GPT 终审 P1 回归：无单号行不计入聚合（与 discovery 口径一致），
+    全部无单号 → not_found（不得 matched）。"""
+    from services.project_status_connectors import _snapshot
+
+    ctx = _aggregate_context()
+    only_unnumbered = [{"currentApprover": "张三", "approval_status": "审批中"}]
+    snapshot = _snapshot(ctx, only_unnumbered, [])
+    assert snapshot.match_state == "not_found"
+
+    mixed = [
+        {"incident": "F610S-3D-0001", "currentApprover": "张三",
+         "latest_completed_node": "IMPL", "approval_status": "审批中"},
+        {"currentApprover": "李四", "approval_status": "审批中"},
+    ]
+    snapshot = _snapshot(ctx, mixed, [])
+    assert snapshot.match_state == "matched"
+    # 无单号行不进入风险备注聚合。
+    assert "李四" not in snapshot.candidates[0].field_values["note"]
+
+
+def test_aggregate_flag_requires_strict_boolean():
+    """GPT 终审 P2 回归：聚合标记必须严格布尔，字符串 "false" 不得触发聚合。"""
+    from services.project_status_connectors import _snapshot
+
+    ctx = _aggregate_context(aggregate="false")
+    rows = [
+        {"incident": "F610S-3D-0001", "currentApprover": "张三",
+         "latest_completed_node": "IMPL", "approval_status": "审批中"},
+        {"incident": "F610S-3D-0002", "currentApprover": "李四",
+         "latest_completed_node": "PROC", "approval_status": "审批中"},
+    ]
+    # 非严格布尔时会走聚合分支并隐藏单值字段；严格布尔后按单记录匹配
+    # （external_key=None → not_found），证明字符串 "false" 未触发聚合。
+    snapshot = _snapshot(ctx, rows, [])
+    assert snapshot.match_state == "not_found"
+    assert snapshot.candidates == ()

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -22,6 +23,8 @@ from services.project_status_updates import (
     ConnectorSnapshot,
     ProjectStatusUpdateService,
 )
+from services.project_status_records import MAX_AGGREGATE_RECORDS, compute_config_signature
+from services.project_status_deliverable_analysis import EWO_DEFAULT_RSP_DEPARTMENT_EXPRESSION
 
 
 class FakeConnector(ProjectStatusConnector):
@@ -129,6 +132,7 @@ def _record_two_observations_for_d5(
     source_type: str = "tdc",
     external_key: str = "FM-1",
     fields: list[str] | None = None,
+    match_rule: dict[str, object] | None = None,
 ) -> None:
     """Record two matched tdc observations for the same external key."""
     field_list = fields if fields is not None else [
@@ -141,6 +145,13 @@ def _record_two_observations_for_d5(
         "suggestedAutomaticFields": [],
         "requiresConfirmation": True,
     }
+    if match_rule is None:
+        match_rule = (
+            {"reportType": "ewo", "ewoNo": external_key}
+            if source_type == "aras"
+            else {"reportType": "data_model", "incident": external_key}
+        )
+    config_signature = compute_config_signature(source_type, match_rule)
     db.record_mapping_observation(
         deliverable_id=deliverable_id,
         source_type=source_type,
@@ -150,6 +161,7 @@ def _record_two_observations_for_d5(
         candidate_count=1,
         candidate_summary_json=json.dumps([{"externalKey": external_key, "fields": {}}]),
         field_report_json=json.dumps(report),
+        config_signature=config_signature,
     )
     db.record_mapping_observation(
         deliverable_id=deliverable_id,
@@ -160,6 +172,7 @@ def _record_two_observations_for_d5(
         candidate_count=1,
         candidate_summary_json=json.dumps([{"externalKey": external_key, "fields": {}}]),
         field_report_json=json.dumps(report),
+        config_signature=config_signature,
     )
 
 
@@ -468,7 +481,7 @@ def test_ready_d5_sync_now_applies_automatic_field_and_sanitizes_response(
         ).fetchone()
         assert row["owner"] == "新项目经理（自动同步）"
         assert row["planned_date"] == "2026-08-08"  # initial value unchanged
-        assert row["remark"] == "逾期 5 天"  # initial value unchanged
+        assert row["remark"] == "待同步"  # initial value unchanged
 
         # Verify trigger_type=sync_now persisted in run and audit
         run_row = conn.execute(
@@ -766,3 +779,323 @@ def test_mutations_reject_mismatched_origin(
         },
     }
     registry_factory.assert_not_called()
+
+
+def test_ready_d5_sync_then_disable_keeps_placeholder_hidden(
+    client,
+    test_db: DatabaseManager,
+    fake_registry: ConnectorRegistry,
+    registry_factory: MagicMock,
+) -> None:
+    """GPT 终审测试建议①：真实 runner 成功 → 关闭同步的完整链路。
+    同步只写 owner/plannedDate/note，从不写 status/progress；关闭后
+    paused 为非数值态，占位进度不得重新暴露（即使 last_success_at 存在）。"""
+    _configure_ready_d5_binding(
+        test_db,
+        external_key="FM-1",
+        credential_ref="placeholder_alias_ref",
+    )
+    fake_connector = FakeConnector(
+        snapshot=_matched_snapshot(
+            test_db,
+            deliverable_id="VPI-T2-D5",
+            external_key="FM-1",
+            external_version="v-sync-001",
+            owner="新项目经理（自动同步）",
+            plannedDate="2026-09-01",
+            note="未授权字段",
+        )
+    )
+    fake_registry.register("tdc", fake_connector)
+
+    headers = _loopback_headers()
+    environ = {"REMOTE_ADDR": "127.0.0.1"}
+    resp = client.post(
+        "/api/project-status/deliverables/VPI-T2-D5/sync-now",
+        headers=headers,
+        environ_base=environ,
+    )
+    assert resp.status_code == 200
+
+    # 同步成功：owner 已写入（可信），status/progress 仍为占位（同步不触碰）。
+    with test_db.get_connection() as conn:
+        row = conn.execute(
+            "SELECT owner, status, progress FROM project_status_deliverables "
+            "WHERE id='VPI-T2-D5'"
+        ).fetchone()
+    assert row["owner"] == "新项目经理（自动同步）"
+    assert row["status"] == "进行中"
+    assert row["progress"] == 0
+
+    # 关闭同步（保留绑定配置）。
+    resp = client.patch(
+        "/api/project-status/deliverables/VPI-T2-D5/update-policy",
+        headers=headers,
+        environ_base=environ,
+        json={"enabled": False},
+    )
+    assert resp.status_code == 200
+
+    status = client.get(
+        "/api/project-status?phase=VPI-T2", headers=headers, environ_base=environ
+    ).get_json()["data"]
+    d5 = next(i for i in status["deliverables"] if i["id"] == "VPI-T2-D5")
+    assert d5["syncDisplay"]["state"] == "paused"
+    assert d5["owner"] == "新项目经理（自动同步）"  # 同步所得 owner 保留
+    # paused 非数值态：占位进度不进入数值展示，计入待同步。
+    assert status["phase"]["pendingCount"] >= 1
+
+
+def test_mapping_discovery_post_freezes_query_identity_before_rebind_and_can_enable(
+    client,
+    test_db: DatabaseManager,
+    monkeypatch,
+) -> None:
+    """A response fetched for A must remain A-signed after a concurrent rebind to B."""
+    rule_a = {
+        "reportType": "data_model",
+        "aggregate": True,
+        "incident": "FLOW-A",
+    }
+    rule_b = {
+        "reportType": "data_model",
+        "aggregate": True,
+        "incident": "FLOW-B",
+    }
+    calls: list[tuple[str | None, int]] = []
+
+    class FakeTDC:
+        def crawl_data_model_all(self, filters, **kwargs):  # type: ignore[no-untyped-def]
+            calls.append((filters.serial_number, int(kwargs["max_records"])))
+            if len(calls) == 1:
+                test_db.set_project_status_update_policy(
+                    deliverable_id="VPI-T2-D5",
+                    mode="automatic",
+                    enabled=False,
+                    external_key=None,
+                    match_rule_json=json.dumps(rule_b),
+                    mapping_json="{}",
+                    field_authority={},
+                )
+            return SimpleNamespace(
+                rows=[{"incident": "FLOW-A", "currentApprover": "Alice"}],
+                complete=True,
+                stop_reason="reported_pages",
+            )
+
+    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda *args: FakeTDC())
+    payload = {
+        "base_url": "https://tdc.example",
+        "filters": {"serial_number": "FLOW-A"},
+        # Deliberately omit aggregate: the D5 capability default is aggregate.
+    }
+    headers = _loopback_headers()
+    environ = {"REMOTE_ADDR": "127.0.0.1"}
+
+    first = client.post(
+        "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery",
+        json=payload,
+        headers=headers,
+        environ_base=environ,
+    )
+    assert first.status_code == 200
+    assert calls == [("FLOW-A", MAX_AGGREGATE_RECORDS)]
+    observed = test_db.list_mapping_observations("VPI-T2-D5", 1)[0]
+    assert observed["config_signature"] == compute_config_signature("tdc", rule_a)
+    assert observed["candidate_fingerprint"].startswith("agg:")
+
+    second = client.post(
+        "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery",
+        json=payload,
+        headers=headers,
+        environ_base=environ,
+    )
+    assert second.status_code == 200
+    assert len(test_db.list_mapping_observations("VPI-T2-D5", 2)) == 2
+
+    enabled = client.patch(
+        "/api/project-status/deliverables/VPI-T2-D5/update-policy",
+        json={
+            "mode": "automatic",
+            "enabled": True,
+            "externalKey": None,
+            "credentialRef": "test-alias",
+            "matchRule": rule_a,
+            "mapping": {"owner": "currentApprover"},
+            "fieldAuthority": {"owner": "automatic"},
+        },
+        headers=headers,
+        environ_base=environ,
+    )
+    assert enabled.status_code == 200
+    saved = test_db.get_sync_binding_by_deliverable("VPI-T2-D5")
+    assert json.loads(saved["match_rule_json"]) == rule_a
+
+
+def test_mapping_discovery_post_canonicalizes_sor_and_ewo_filters(
+    client,
+    test_db: DatabaseManager,
+    monkeypatch,
+) -> None:
+    sor_seen: list[object] = []
+    ewo_seen: list[object] = []
+
+    class FakeSOR:
+        def crawl_sor_all(self, filters, **kwargs):  # type: ignore[no-untyped-def]
+            sor_seen.append(filters)
+            return SimpleNamespace(
+                rows=[{"processNo": "SOR-A", "applicant": "Alice"}], complete=True,
+                stop_reason="reported_pages",
+            )
+
+    class FakeEWO:
+        def crawl_ewo_report_all(self, filters, **kwargs):  # type: ignore[no-untyped-def]
+            ewo_seen.append(filters)
+            return SimpleNamespace(
+                rows=[{"_no": "EWO-A", "_subject": "door"}], complete=True,
+                stop_reason="short_page",
+            )
+
+    headers = _loopback_headers()
+    environ = {"REMOTE_ADDR": "127.0.0.1"}
+    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda *args: FakeSOR())
+    sor_response = client.post(
+        "/api/project-status/deliverables/VPI-T2-D2/mapping-discovery",
+        json={
+            "base_url": "https://tdc.example",
+            "filters": {"car_type_project": "CAR-A", "serial_number": "SOR-A"},
+        },
+        headers=headers,
+        environ_base=environ,
+    )
+    assert sor_response.status_code == 200
+    assert sor_seen[0].car_type_project == "CAR-A"
+    assert sor_seen[0].serial_number == "SOR-A"
+    sor_rule = {
+        "reportType": "sor", "aggregate": True,
+        "carTypeProject": "CAR-A", "processNo": "SOR-A",
+    }
+    assert test_db.list_mapping_observations("VPI-T2-D2", 1)[0]["config_signature"] == compute_config_signature(
+        "tdc", sor_rule
+    )
+
+    monkeypatch.setattr(web_app, "_build_aras_client_from_payload", lambda *args: FakeEWO())
+    ewo_response = client.post(
+        "/api/project-status/deliverables/VPI-T2-D3/mapping-discovery",
+        json={
+            "base_url": "http://aras.example/innovatorserver",
+            "filters": {"subject_keyword": "door"},
+        },
+        headers=headers,
+        environ_base=environ,
+    )
+    assert ewo_response.status_code == 200
+    assert ewo_seen[0].subject_keyword == "door"
+    assert ewo_seen[0].rsp_department == EWO_DEFAULT_RSP_DEPARTMENT_EXPRESSION
+    ewo_rule = {"reportType": "ewo", "aggregate": True, "subjectKeyword": "door"}
+    assert test_db.list_mapping_observations("VPI-T2-D3", 1)[0]["config_signature"] == compute_config_signature(
+        "aras", ewo_rule
+    )
+
+
+def test_mapping_discovery_selected_key_is_sent_to_tdc_query(
+    client,
+    test_db: DatabaseManager,
+    monkeypatch,
+) -> None:
+    """非聚合选择的稳定键同时约束实际请求与观测签名。"""
+    seen: list[str | None] = []
+
+    class FakeTDC:
+        def crawl_data_model_all(self, filters, **kwargs):  # type: ignore[no-untyped-def]
+            seen.append(filters.serial_number)
+            return SimpleNamespace(
+                rows=[{"incident": "FLOW-A", "currentApprover": "Alice"}],
+                complete=True,
+                stop_reason="short_page",
+            )
+
+    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda *args: FakeTDC())
+    response = client.post(
+        "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery",
+        json={
+            "base_url": "https://tdc.example",
+            "aggregate": False,
+            "filters": {},
+            "selectedExternalKey": "FLOW-A",
+        },
+        headers=_loopback_headers(),
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+
+    assert response.status_code == 200
+    assert seen == ["FLOW-A"]
+    observed = test_db.list_mapping_observations("VPI-T2-D5", 1)[0]
+    assert observed["config_signature"] == compute_config_signature(
+        "tdc",
+        {"reportType": "data_model", "aggregate": False, "incident": "FLOW-A"},
+    )
+
+
+@pytest.mark.parametrize(
+    ("deliverable_id", "builder_name", "result_rows"),
+    [
+        ("VPI-T2-D2", "_build_tdc_client_from_payload", [{"processNo": "S-1"}]),
+        ("VPI-T2-D3", "_build_aras_client_from_payload", [{"_no": "E-1"}]),
+        ("VPI-T2-D5", "_build_tdc_client_from_payload", [{"incident": "D-1"}]),
+    ],
+)
+def test_mapping_discovery_rejects_incomplete_results_before_observing(
+    client,
+    test_db: DatabaseManager,
+    monkeypatch,
+    deliverable_id: str,
+    builder_name: str,
+    result_rows: list[dict[str, str]],
+) -> None:
+    class IncompleteClient:
+        def crawl_sor_all(self, _filters=None, **kwargs):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(rows=result_rows, complete=False, stop_reason="max_records")
+
+        def crawl_data_model_all(self, _filters=None, **kwargs):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(rows=result_rows, complete=False, stop_reason="max_records")
+
+        def crawl_ewo_report_all(self, _filters=None, **kwargs):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(rows=result_rows, complete=False, stop_reason="max_records")
+
+    monkeypatch.setattr(web_app, builder_name, lambda *args: IncompleteClient())
+    endpoint = f"/api/project-status/deliverables/{deliverable_id}/mapping-discovery"
+    response = client.post(
+        endpoint,
+        json={"base_url": "https://example.test", "filters": {}},
+        headers=_loopback_headers(),
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+    assert response.status_code == 422
+    assert response.get_json()["error"]["type"] == "IncompleteDiscovery"
+    assert test_db.list_mapping_observations(deliverable_id, 1) == []
+
+
+def test_mapping_discovery_rejects_service_overlimit_as_recoverable_validation_error(
+    client,
+    test_db: DatabaseManager,
+    monkeypatch,
+) -> None:
+    class TooManyClient:
+        def crawl_data_model_all(self, _filters=None, **kwargs):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(
+                rows=[{"incident": str(index)} for index in range(MAX_AGGREGATE_RECORDS + 1)],
+                complete=True,
+                stop_reason="reported_pages",
+            )
+
+    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda *args: TooManyClient())
+    response = client.post(
+        "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery",
+        json={"base_url": "https://tdc.example", "filters": {}},
+        headers=_loopback_headers(),
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+    assert response.status_code == 422
+    assert response.get_json()["error"]["type"] == "DiscoveryLimitExceeded"
+    assert test_db.list_mapping_observations("VPI-T2-D5", 1) == []

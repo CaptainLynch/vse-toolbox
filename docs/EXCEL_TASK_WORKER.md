@@ -1,5 +1,10 @@
 # Excel Task Worker
 
+> 状态：Active
+> 读者：Developer、Agent（Excel Worker 任务）
+> 权威来源：`core/excel_tasks.py`、`core/excel_worker.py`、Worker 测试
+> 默认读取：按 Excel/Worker 任务读取
+
 The Excel task worker is a local-only process. It does not expose an HTTP
 write interface and does not upload or download files.
 

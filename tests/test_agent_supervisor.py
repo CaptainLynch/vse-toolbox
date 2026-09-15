@@ -4,6 +4,8 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "tools" / "agents" / "supervisor.py"
 SPEC = importlib.util.spec_from_file_location("supervisor_under_test", MODULE_PATH)
@@ -65,6 +67,160 @@ def test_normalize_task_validates_agy_self_repair_attempts():
                 },
                 "TASK-1",
             )
+
+
+def test_apply_worker_profile_deep_merges_explicit_zcode_route_without_mutating_base():
+    base = {
+        "worker_agent": "zcode-app-server",
+        "zcode": {
+            "model": "gemini-3.8-flash-high",
+            "allowed_models": ["gemini-3.8-flash-high", "gemini-pro-agent"],
+            "model_slots": {
+                "flash": {"model": "gemini-3.8-flash-high"},
+                "pro": {"model": "gemini-pro-agent"},
+            },
+            "timeout_seconds": 900,
+        },
+        "route_policy": {"default": "flash", "task_kinds": {"ui": "flash"}},
+        "worker_profiles": {
+            "weekend-5.3flash": {
+                "route_policy": {"task_kinds": {"complex-implementation": "flash"}},
+                "zcode": {
+                    "provider_id": "builtin:zai-start-plan",
+                    "model": "GLM-5.3-Flash",
+                    "allowed_models": ["GLM-5.3-Flash"],
+                    "model_slots": {
+                        "flash": {"model": "GLM-5.3-Flash", "thinking_level": "high"},
+                    },
+                },
+            }
+        },
+    }
+
+    selected = supervisor.apply_worker_profile(base, "weekend-5.3flash")
+
+    assert selected["zcode"]["model"] == "GLM-5.3-Flash"
+    assert selected["zcode"]["provider_id"] == "builtin:zai-start-plan"
+    assert selected["zcode"]["timeout_seconds"] == 900
+    assert selected["route_policy"]["task_kinds"]["ui"] == "flash"
+    assert selected["route_policy"]["task_kinds"]["complex-implementation"] == "flash"
+    assert "weekend-5.3flash" not in base
+    assert base["zcode"]["model"] == "gemini-3.8-flash-high"
+
+
+def test_apply_worker_profile_rejects_unknown_or_malformed_profile():
+    with pytest.raises(ValueError, match="Unknown worker profile"):
+        supervisor.apply_worker_profile({}, "missing")
+
+    with pytest.raises(ValueError, match="zcode object"):
+        supervisor.apply_worker_profile({"worker_profiles": {"bad": {}}}, "bad")
+
+
+def test_interactive_worker_profile_is_marked_without_starting_headless_worker(tmp_path):
+    base = {
+        "worker_agent": "zcode-app-server",
+        "profile": "agy-heavy",
+        "zcode": {
+            "model": "gemini-3.8-flash-high",
+            "allowed_models": ["gemini-3.8-flash-high"],
+            "model_slots": {"flash": {"model": "gemini-3.8-flash-high"}},
+        },
+        "worker_profiles": {
+            "weekend-5.3flash": {
+                "execution_mode": "interactive-only",
+                "zcode": {
+                    "model": "GLM-5.3-Flash",
+                    "allowed_models": ["GLM-5.3-Flash"],
+                    "model_slots": {"flash": {"model": "GLM-5.3-Flash"}},
+                },
+            }
+        },
+    }
+    agents = tmp_path / ".agents"
+    agents.mkdir()
+    (agents / "config.json").write_text(json.dumps(base), encoding="utf-8")
+
+    result = supervisor.run(
+        tmp_path,
+        {
+            "task_id": "TASK-INTERACTIVE-PROFILE",
+            "objective": "bounded UI test",
+            "scope": ["README.md"],
+            "constraints": [],
+            "acceptance_criteria": ["interactive route is reported"],
+            "verification_commands": [["python", "-c", "pass"]],
+            "task_kind": "ui",
+            "risk_class": "ui",
+            "model_slot": "flash",
+        },
+        False,
+        worker_profile="weekend-5.3flash",
+    )
+
+    assert result == 0
+    state = json.loads(
+        (tmp_path / ".agents/runs/TASK-INTERACTIVE-PROFILE/state.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert state["status"] == "interactive-required"
+    assert state["route"] == "interactive"
+    assert state["worker_profile"] == "weekend-5.3flash"
+    assert state["model"] == "GLM-5.3-Flash"
+
+
+def test_run_records_selected_worker_profile_before_manual_gate(tmp_path):
+    agents = tmp_path / ".agents"
+    agents.mkdir()
+    (agents / "config.json").write_text(
+        json.dumps(
+            {
+                "worker_agent": "zcode-app-server",
+                "profile": "codex-controlled",
+                "zcode": {
+                    "model": "gemini-3.8-flash-high",
+                    "allowed_models": ["gemini-3.8-flash-high"],
+                    "model_slots": {"flash": {"model": "gemini-3.8-flash-high"}},
+                },
+                "worker_profiles": {
+                    "weekend-5.3flash": {
+                        "zcode": {
+                            "model": "GLM-5.3-Flash",
+                            "allowed_models": ["GLM-5.3-Flash"],
+                            "model_slots": {"flash": {"model": "GLM-5.3-Flash"}},
+                        }
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = supervisor.run(
+        tmp_path,
+        {
+            "task_id": "TASK-PROFILE-STATE",
+            "objective": "bounded UI test",
+            "scope": ["README.md"],
+            "constraints": [],
+            "acceptance_criteria": ["passes"],
+            "verification_commands": [["python", "-c", "pass"]],
+            "task_kind": "ui",
+            "risk_class": "ui",
+            "model_slot": "flash",
+        },
+        False,
+        worker_profile="weekend-5.3flash",
+    )
+
+    assert result == 0
+    state = json.loads(
+        (tmp_path / ".agents/runs/TASK-PROFILE-STATE/state.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert state["worker_profile"] == "weekend-5.3flash"
+    assert state["model"] == "GLM-5.3-Flash"
 
 
 def test_command_checks_skips_default_checks_for_read_only_task(tmp_path):
@@ -1662,3 +1818,598 @@ def test_codex_review_relay_profile_unavailable_fails_closed_as_reject(monkeypat
 
     state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
     assert state["status"] == "codex-takeover-required"
+
+
+def test_zcode_dry_run_uses_explicit_runtime(monkeypatch, tmp_path):
+    cfg = {
+        'profile': 'agy-heavy',
+        'worker_agent': 'zcode-app-server',
+        'zcode': {
+            'model': 'gemini-3.8-flash-high',
+            'allowed_models': ['gemini-3.8-flash-high'],
+            'node_executable': 'node',
+            'cli_entry': 'zcode.cjs',
+        },
+    }
+    monkeypatch.setattr(supervisor, 'config', lambda _: cfg)
+    task = supervisor.normalize_task({
+        'task_id': 'TASK-zdry',
+        'objective': 'Update documentation',
+        'risk_class': 'mechanical',
+        'scope': ['README.md'],
+        'constraints': [],
+        'acceptance_criteria': ['correct'],
+        'verification_commands': [['python', '-V']],
+    })
+    assert supervisor.run(tmp_path, task, dry_run=True) == 0
+    state = json.loads((tmp_path / '.agents/runs/TASK-zdry/state.json').read_text())
+    assert state['worker_runtime'] == 'zcode-app-server'
+    assert state['model'] == 'gemini-3.8-flash-high'
+    assert state['expected_commands']['worker'] == ['node', 'zcode.cjs', 'app-server']
+
+
+def test_zcode_high_risk_stays_with_current_lead(monkeypatch, tmp_path):
+    cfg = {
+        'profile': 'agy-heavy',
+        'worker_agent': 'zcode-app-server',
+        'zcode': {
+            'model': 'gemini-3.8-flash-high',
+            'allowed_models': ['gemini-3.8-flash-high'],
+        },
+    }
+    monkeypatch.setattr(supervisor, 'config', lambda _: cfg)
+    monkeypatch.setattr(supervisor, 'create_plan', lambda *a, **k: (_ for _ in ()).throw(AssertionError('extra Codex call')))
+    task = supervisor.normalize_task({
+        'task_id': 'TASK-zrisk',
+        'objective': 'Design authentication',
+        'risk_class': 'security',
+        'scope': ['auth.py'],
+        'constraints': [],
+        'acceptance_criteria': ['safe'],
+    })
+    assert supervisor.run(tmp_path, task, dry_run=False) == 0
+    state = json.loads((tmp_path / '.agents/runs/TASK-zrisk/state.json').read_text())
+    assert state['status'] == 'awaiting-codex-or-manual'
+    assert state['worktree'] is None
+
+
+def test_unknown_worker_does_not_fall_back(monkeypatch, tmp_path):
+    import pytest
+    monkeypatch.setattr(supervisor, 'config', lambda _: {'worker_agent': 'typo'})
+    with pytest.raises(ValueError, match='worker'):
+        supervisor.run(tmp_path, {'objective': 'test'}, dry_run=True)
+
+
+def test_zcode_doctor_missing_executable_is_failure(monkeypatch, tmp_path):
+    monkeypatch.setattr(supervisor, 'config', lambda _: {
+        'worker_agent': 'zcode-app-server',
+        'zcode': {
+            'node_executable': str(tmp_path / 'absent'),
+            'cli_entry': str(tmp_path / 'missing'),
+        },
+    })
+    monkeypatch.setattr(supervisor.zcode_worker, 'verify_guard', lambda _: None)
+    monkeypatch.setattr(supervisor.zcode_worker, 'load_runtime', lambda _: {'model': {'modelId': 'test'}})
+    assert supervisor.doctor(tmp_path) == 1
+
+
+def test_normalize_task_preserves_dual_tier_routing_contract():
+    task = supervisor.normalize_task({
+        'task_id': 'TASK-DUAL-TIER-CONTRACT',
+        'objective': 'Validate a complex implementation route',
+        'scope': ['services/example.py'],
+        'read_scope': ['services', 'tests/test_example.py'],
+        'constraints': ['Keep the public API stable'],
+        'acceptance_criteria': ['Focused tests pass'],
+        'verification_commands': [['python', '-m', 'pytest', 'tests/test_example.py', '-q']],
+        'risk_class': 'ordinary-implementation',
+        'task_kind': 'complex-implementation',
+        'complexity': 'high',
+        'mutation': 'write',
+        'model_slot': 'pro',
+        'self_repair_attempts': 2,
+    })
+    assert task['read_scope'] == ['services', 'tests/test_example.py']
+    assert task['task_kind'] == 'complex-implementation'
+    assert task['complexity'] == 'high'
+    assert task['mutation'] == 'write'
+    assert task['model_slot'] == 'pro'
+    assert task['self_repair_attempts'] == 2
+
+
+@pytest.mark.parametrize('task_kind,expected_worker', [
+    ('exploration', 'flash'),
+    ('mechanical', 'flash'),
+    ('test-only', 'flash'),
+    ('ordinary-implementation', 'flash'),
+    ('complex-implementation', 'pro'),
+    ('root-cause', 'pro'),
+])
+def test_resolve_worker_route_selects_flash_or_pro_by_task_kind(task_kind, expected_worker):
+    task = supervisor.normalize_task({
+        'task_id': f'TASK-ROUTE-{task_kind}',
+        'objective': 'Bounded engineering task',
+        'scope': ['src/example.py'],
+        'constraints': [],
+        'acceptance_criteria': ['passes'],
+        'risk_class': 'ordinary-implementation',
+        'task_kind': task_kind,
+    })
+    route = supervisor.resolve_worker_route(task, {})
+    assert route['controller'] == 'codex'
+    assert route['worker'] == expected_worker
+
+
+def test_explicit_complex_task_kind_is_delegable_without_risk_class():
+    task = supervisor.normalize_task({
+        'task_id': 'TASK-ROUTE-COMPLEX-NO-RISK',
+        'objective': 'Solve the bounded problem',
+        'scope': ['src/example.py'],
+        'constraints': [],
+        'acceptance_criteria': ['passes'],
+        'task_kind': 'complex-implementation',
+    })
+    assert supervisor.evaluate_risk(task) == 'low'
+    assert supervisor.resolve_profile(task, {'profile': 'agy-heavy'})[0] == 'agy-heavy'
+
+
+def test_high_risk_route_keeps_codex_control_and_limits_pro_to_read_only_consultation():
+    task = supervisor.normalize_task({
+        'task_id': 'TASK-ROUTE-SECURITY',
+        'objective': 'Review authentication boundary',
+        'scope': ['core/auth.py'],
+        'constraints': [],
+        'acceptance_criteria': ['no regression'],
+        'risk_class': 'security',
+        'task_kind': 'complex-implementation',
+        'model_slot': 'flash',
+    })
+    route = supervisor.resolve_worker_route(task, {})
+    assert route == {
+        'controller': 'codex',
+        'worker': None,
+        'consultant': 'pro-readonly',
+        'reason': 'High-risk task remains under Codex control',
+    }
+
+
+def test_deep_review_routes_to_readonly_pro_worker():
+    task = supervisor.normalize_task({
+        'task_id': 'TASK-ROUTE-DEEP-REVIEW',
+        'objective': 'Review the bounded implementation',
+        'scope': ['src/example.py'],
+        'constraints': [],
+        'acceptance_criteria': ['find regressions'],
+        'task_kind': 'deep-review',
+        'mutation': 'consult',
+    })
+    assert supervisor.resolve_worker_route(task, {}) == {
+        'controller': 'codex',
+        'worker': 'pro',
+        'readonly': True,
+    }
+
+
+def test_readonly_exploration_stays_on_flash_worker():
+    task = supervisor.normalize_task({
+        'task_id': 'TASK-ROUTE-READONLY-EXPLORATION',
+        'objective': 'Explore the bounded repository scope',
+        'scope': ['src/example.py'],
+        'read_scope': ['src/example.py'],
+        'constraints': [],
+        'acceptance_criteria': ['return evidence'],
+        'task_kind': 'exploration',
+        'mutation': 'read',
+        'context': {'read_only': True},
+    })
+    assert supervisor.resolve_worker_route(task, {}) == {
+        'controller': 'codex',
+        'worker': 'flash',
+        'readonly': True,
+    }
+
+
+def test_resolve_worker_model_uses_allowlisted_model_slot():
+    cfg = {
+        'zcode': {
+            'model': 'gemini-3.8-flash-high',
+            'allowed_models': ['gemini-3.8-flash-high', 'gemini-pro-agent', 'gemini-3.1-pro-low'],
+            'model_slots': {
+                'flash': {'model': 'gemini-3.8-flash-high', 'thinking_level': 'high'},
+                'pro': {'model': 'gemini-pro-agent', 'thinking_level': 'high'},
+            },
+        },
+    }
+    task = {'task_kind': 'complex-implementation', 'model_slot': 'pro'}
+    assert supervisor.resolve_worker_model(task, cfg) == {
+        'slot': 'pro', 'model': 'gemini-pro-agent', 'thinking_level': 'high',
+    }
+
+
+def test_resolve_worker_route_reads_configured_task_kind_policy():
+    task = {
+        'task_kind': 'ordinary-implementation',
+        'risk_class': 'ordinary-implementation',
+    }
+    cfg = {
+        'route_policy': {
+            'default': 'flash',
+            'task_kinds': {'ordinary-implementation': 'pro'},
+        },
+    }
+    assert supervisor.resolve_worker_route(task, cfg)['worker'] == 'pro'
+
+
+def test_validate_codex_lead_policy_requires_luna_max_and_native_window(tmp_path):
+    config_file = tmp_path / 'config.toml'
+    config_file.write_text(
+        'model = "gpt-5.6-luna"\n'
+        'model_reasoning_effort = "max"\n'
+        'model_context_window = 1000000\n',
+        encoding='utf-8',
+    )
+    assert supervisor.validate_codex_lead_policy(config_file) == {
+        'model': 'gpt-5.6-luna',
+        'reasoning_effort': 'max',
+        'context_policy': 'native',
+    }
+
+
+def test_validate_codex_lead_policy_rejects_non_luna_or_non_max(tmp_path):
+    config_file = tmp_path / 'config.toml'
+    config_file.write_text(
+        'model = "gpt-6-astra"\nmodel_reasoning_effort = "low"\n',
+        encoding='utf-8',
+    )
+    with pytest.raises(ValueError, match='gpt-5.6-luna'):
+        supervisor.validate_codex_lead_policy(config_file)
+
+
+def test_zcode_doctor_reports_codex_luna_max_policy(monkeypatch, tmp_path, capsys):
+    cfg = {
+        'worker_agent': 'zcode-app-server',
+        'zcode': {
+            'node_executable': str(tmp_path / 'node.exe'),
+            'cli_entry': str(tmp_path / 'zcode.cjs'),
+            'model_slots': {
+                'flash': {'model': 'gemini-3.8-flash-high', 'thinking_level': 'high'},
+                'pro': {'model': 'gemini-pro-agent', 'thinking_level': 'high'},
+            },
+        },
+    }
+    (tmp_path / 'node.exe').write_text('', encoding='utf-8')
+    (tmp_path / 'zcode.cjs').write_text('', encoding='utf-8')
+    monkeypatch.setattr(supervisor, 'config', lambda _: cfg)
+    monkeypatch.setattr(supervisor.zcode_worker, 'verify_guard', lambda _: None)
+    monkeypatch.setattr(supervisor.zcode_worker, 'load_runtime', lambda _: {
+        'model': {'modelId': 'gemini-3.8-flash-high'},
+    })
+    monkeypatch.setattr(supervisor, 'validate_codex_lead_policy', lambda _=None: {
+        'model': 'gpt-5.6-luna', 'reasoning_effort': 'max', 'context_policy': 'native',
+    })
+    assert supervisor.doctor(tmp_path) == 0
+    output = capsys.readouterr().out
+    assert 'Codex lead: gpt-5.6-luna / max / native' in output
+    assert 'ZCode slot pro: gemini-pro-agent / high' in output
+
+
+def test_zcode_dry_run_records_selected_pro_model_slot(monkeypatch, tmp_path):
+    cfg = {
+        'profile': 'agy-heavy',
+        'worker_agent': 'zcode-app-server',
+        'zcode': {
+            'model': 'gemini-3.8-flash-high',
+            'allowed_models': ['gemini-3.8-flash-high', 'gemini-pro-agent', 'gemini-3.1-pro-low'],
+            'model_slots': {
+                'flash': {'model': 'gemini-3.8-flash-high', 'thinking_level': 'high'},
+                'pro': {'model': 'gemini-pro-agent', 'thinking_level': 'high'},
+            },
+            'node_executable': 'node',
+            'cli_entry': 'zcode.cjs',
+        },
+    }
+    monkeypatch.setattr(supervisor, 'config', lambda _: cfg)
+    task = supervisor.normalize_task({
+        'task_id': 'TASK-zpro-dry-run',
+        'objective': 'Validate complex model selection',
+        'scope': ['src/example.py'],
+        'constraints': [],
+        'acceptance_criteria': ['Pro is selected'],
+        'verification_commands': [['python', '-V']],
+        'risk_class': 'ordinary-implementation',
+        'task_kind': 'complex-implementation',
+    })
+    assert supervisor.run(tmp_path, task, dry_run=True) == 0
+    state = json.loads((tmp_path / '.agents/runs/TASK-zpro-dry-run/state.json').read_text())
+    assert state['model_slot'] == 'pro'
+    assert state['model'] == 'gemini-pro-agent'
+    assert state['thinking_level'] == 'high'
+
+
+def test_zcode_blocked_worker_does_not_trigger_automatic_codex_takeover(monkeypatch, tmp_path):
+    worker_tree = tmp_path / 'worker'
+    worker_tree.mkdir()
+    subprocess.run(['git', 'init'], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / '.gitignore').write_text('.agents/worktrees/\n', encoding='utf-8')
+    cfg = {
+        'profile': 'agy-heavy',
+        'worker_agent': 'zcode-app-server',
+        'worktree_root': '.agents/worktrees',
+        'zcode': {
+            'model': 'gemini-3.8-flash-high',
+            'allowed_models': ['gemini-3.8-flash-high'],
+            'node_executable': 'node',
+            'cli_entry': 'zcode.cjs',
+            'preflight': {'network_probe': True},
+        },
+    }
+    monkeypatch.setattr(supervisor, 'config', lambda _: cfg)
+    monkeypatch.setattr(
+        supervisor.zcode_worker,
+        'preflight_runtime',
+        lambda settings, **kwargs: {
+            'status': 'passed',
+            'model_id': settings['model'],
+            'context_budget': {'context_window_tokens': 1_000_000, 'max_input_tokens': 950_848},
+            'supports_tools': True,
+        },
+    )
+    monkeypatch.setattr(
+        supervisor.zcode_worker,
+        'network_preflight',
+        lambda settings, workspace: {
+            'status': 'passed',
+            'model_id': settings['model'],
+            'tool_call_count': 0,
+            'usage': {'input_tokens': 4},
+        },
+    )
+    monkeypatch.setattr(supervisor.worktrees, 'create', lambda *args: worker_tree)
+    monkeypatch.setattr(
+        supervisor.zcode_worker,
+        'invoke',
+        lambda *args, **kwargs: {
+            'task_id': 'TASK-ZCODE-BLOCKED',
+            'status': 'blocked',
+            'summary': 'preflight permission mismatch',
+            'changed_files': [],
+            'tests': [],
+            'commands_executed': [],
+            'risks': [],
+            'unresolved': ['permission'],
+            'needs_review': True,
+        },
+    )
+    task = supervisor.normalize_task({
+        'task_id': 'TASK-ZCODE-BLOCKED',
+        'objective': 'Test bounded worker block',
+        'scope': ['src/example.py'],
+        'constraints': [],
+        'acceptance_criteria': ['stops without takeover'],
+        'verification_commands': [['python', '-V']],
+        'risk_class': 'mechanical',
+        'task_kind': 'mechanical',
+    })
+    assert supervisor.run(tmp_path, task, dry_run=False) == 0
+    state = json.loads((tmp_path / '.agents/runs/TASK-ZCODE-BLOCKED/state.json').read_text())
+    assert state['status'] == 'worker-blocked-awaiting-human'
+    assert state['automatic_codex_takeover'] is False
+    assert state['network_preflight']['status'] == 'passed'
+    handoff = json.loads((tmp_path / '.agents/runs/TASK-ZCODE-BLOCKED/handoff.v1.json').read_text())
+    assert handoff['status'] == 'blocked'
+    assert handoff['runtime']['model_id'] == 'gemini-3.8-flash-high'
+
+
+def test_persist_handoff_writes_bounded_worker_delivery(tmp_path):
+    run_dir = tmp_path / 'run'
+    run_dir.mkdir()
+    task = {'task_id': 'TASK-HANDOFF-PERSIST'}
+    result = {
+        'task_id': 'TASK-HANDOFF-PERSIST',
+        'status': 'completed',
+        'summary': 'completed',
+        'changed_files': ['src/example.py'],
+        'tests': [],
+        'commands_executed': [],
+        'risks': [],
+        'unresolved': [],
+        'needs_review': True,
+    }
+    handoff = supervisor.persist_handoff(
+        run_dir,
+        task,
+        result,
+        model_id='gemini-3.8-flash-high',
+        base_commit='abc123',
+        diff_stat={'files': 1, 'insertions': 2, 'deletions': 0},
+        checks=[{'command': ['python', '-V'], 'exit_code': 0, 'duration_seconds': 0.1}],
+    )
+    assert handoff['schema_version'] == 'handoff.v1'
+    assert json.loads((run_dir / 'handoff.v1.json').read_text()) == handoff
+
+
+def test_zcode_completed_worker_persists_handoff_after_external_checks(monkeypatch, tmp_path):
+    subprocess.run(['git', 'init'], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / '.gitignore').write_text('.agents/worktrees/\n', encoding='utf-8')
+    worker_tree = tmp_path / 'worker'
+    worker_tree.mkdir()
+    subprocess.run(['git', 'init'], cwd=worker_tree, check=True, capture_output=True)
+    subprocess.run(
+        ['git', '-c', 'user.name=Test', '-c', 'user.email=test@localhost',
+         'commit', '--allow-empty', '-m', 'baseline'],
+        cwd=worker_tree,
+        check=True,
+        capture_output=True,
+    )
+    cfg = {
+        'profile': 'agy-heavy',
+        'worker_agent': 'zcode-app-server',
+        'worktree_root': '.agents/worktrees',
+        'zcode': {
+            'model': 'gemini-3.8-flash-high',
+            'allowed_models': ['gemini-3.8-flash-high'],
+            'node_executable': 'node',
+            'cli_entry': 'zcode.cjs',
+        },
+    }
+    monkeypatch.setattr(supervisor, 'config', lambda _: cfg)
+    monkeypatch.setattr(
+        supervisor.zcode_worker,
+        'preflight_runtime',
+        lambda settings, **kwargs: {
+            'status': 'passed',
+            'model_id': settings['model'],
+            'context_budget': {'context_window_tokens': 1_000_000, 'max_input_tokens': 950_848},
+            'supports_tools': True,
+        },
+    )
+    monkeypatch.setattr(supervisor.worktrees, 'create', lambda *args: worker_tree)
+
+    def invoke(task, tree, run_dir, settings, effort, max_repair_attempts=None):
+        (tree / 'src').mkdir()
+        (tree / 'src/example.py').write_text('value = 1\n', encoding='utf-8')
+        return {
+            'task_id': task['task_id'],
+            'status': 'completed',
+            'summary': 'implemented',
+            'changed_files': ['src/example.py'],
+            'tests': [],
+            'commands_executed': [],
+            'risks': [],
+            'unresolved': [],
+            'needs_review': True,
+        }
+
+    monkeypatch.setattr(supervisor.zcode_worker, 'invoke', invoke)
+    monkeypatch.setattr(
+        supervisor.checks,
+        'run_checks',
+        lambda tree, commands: [
+            {'command': command, 'exit_code': 0, 'stdout': 'ok', 'stderr': '', 'duration_seconds': 0.1}
+            for command in commands
+        ],
+    )
+    task = supervisor.normalize_task({
+        'task_id': 'TASK-ZCODE-HANDOFF-COMPLETED',
+        'objective': 'Complete a bounded worker task',
+        'scope': ['src/example.py'],
+        'constraints': [],
+        'acceptance_criteria': ['checks pass'],
+        'verification_commands': [['python', '-V']],
+        'risk_class': 'mechanical',
+        'task_kind': 'mechanical',
+    })
+    assert supervisor.run(tmp_path, task, dry_run=False) == 0
+    run_dir = tmp_path / '.agents/runs/TASK-ZCODE-HANDOFF-COMPLETED'
+    handoff = json.loads((run_dir / 'handoff.v1.json').read_text())
+    assert handoff['status'] == 'completed'
+    assert handoff['changed_files'] == ['src/example.py']
+    assert handoff['verification'][0]['exit_code'] == 0
+
+
+def test_zcode_preflight_block_stops_before_worktree_or_codex(monkeypatch, tmp_path):
+    cfg = {
+        'profile': 'agy-heavy',
+        'worker_agent': 'zcode-app-server',
+        'worktree_root': '.agents/worktrees',
+        'zcode': {
+            'model': 'gemini-3.8-flash-high',
+            'allowed_models': ['gemini-3.8-flash-high'],
+            'node_executable': 'node',
+            'cli_entry': 'zcode.cjs',
+        },
+    }
+    monkeypatch.setattr(supervisor, 'config', lambda _: cfg)
+
+    def fail_preflight(settings, **kwargs):
+        raise ValueError('model unavailable')
+
+    monkeypatch.setattr(supervisor.zcode_worker, 'preflight_runtime', fail_preflight)
+    monkeypatch.setattr(
+        supervisor.worktrees,
+        'create',
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('worktree must not be created')),
+    )
+    task = supervisor.normalize_task({
+        'task_id': 'TASK-ZCODE-PREFLIGHT-BLOCKED',
+        'objective': 'Stop before an invalid worker starts',
+        'scope': ['src/example.py'],
+        'constraints': [],
+        'acceptance_criteria': ['preflight blocks'],
+        'verification_commands': [['python', '-V']],
+        'risk_class': 'mechanical',
+        'task_kind': 'mechanical',
+    })
+    assert supervisor.run(tmp_path, task, dry_run=False) == 0
+    state = json.loads((tmp_path / '.agents/runs/TASK-ZCODE-PREFLIGHT-BLOCKED/state.json').read_text())
+    assert state['status'] == 'preflight-blocked'
+    assert state['automatic_codex_takeover'] is False
+    assert state['failure_code'] == 'model'
+
+
+def test_zcode_failed_worker_stops_without_automatic_codex_takeover(monkeypatch, tmp_path):
+    subprocess.run(['git', 'init'], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / '.gitignore').write_text('.agents/worktrees/\n', encoding='utf-8')
+    worker_tree = tmp_path / 'worker'
+    worker_tree.mkdir()
+    subprocess.run(['git', 'init'], cwd=worker_tree, check=True, capture_output=True)
+    subprocess.run(
+        ['git', '-c', 'user.name=Test', '-c', 'user.email=test@localhost',
+         'commit', '--allow-empty', '-m', 'baseline'],
+        cwd=worker_tree,
+        check=True,
+        capture_output=True,
+    )
+    cfg = {
+        'profile': 'agy-heavy',
+        'worker_agent': 'zcode-app-server',
+        'worktree_root': '.agents/worktrees',
+        'zcode': {
+            'model': 'gemini-3.8-flash-high',
+            'allowed_models': ['gemini-3.8-flash-high'],
+            'node_executable': 'node',
+            'cli_entry': 'zcode.cjs',
+        },
+    }
+    monkeypatch.setattr(supervisor, 'config', lambda _: cfg)
+    monkeypatch.setattr(
+        supervisor.zcode_worker,
+        'preflight_runtime',
+        lambda settings, **kwargs: {
+            'status': 'passed',
+            'model_id': settings['model'],
+            'context_budget': {'context_window_tokens': 1_000_000, 'max_input_tokens': 950_848},
+            'supports_tools': True,
+        },
+    )
+    monkeypatch.setattr(supervisor.worktrees, 'create', lambda *args: worker_tree)
+    monkeypatch.setattr(
+        supervisor.zcode_worker,
+        'invoke',
+        lambda *args, **kwargs: {
+            'task_id': 'TASK-ZCODE-FAILED',
+            'status': 'failed',
+            'summary': 'worker budget exhausted',
+            'changed_files': [],
+            'tests': [],
+            'commands_executed': [],
+            'risks': [],
+            'unresolved': ['budget'],
+            'needs_review': True,
+            'failure_code': 'budget',
+        },
+    )
+    task = supervisor.normalize_task({
+        'task_id': 'TASK-ZCODE-FAILED',
+        'objective': 'Test failed worker handling',
+        'scope': ['src/example.py'],
+        'constraints': [],
+        'acceptance_criteria': ['stops without takeover'],
+        'verification_commands': [['python', '-V']],
+        'risk_class': 'mechanical',
+        'task_kind': 'mechanical',
+    })
+    assert supervisor.run(tmp_path, task, dry_run=False) == 0
+    state = json.loads((tmp_path / '.agents/runs/TASK-ZCODE-FAILED/state.json').read_text())
+    assert state['status'] == 'worker-failed-awaiting-human'
+    assert state['automatic_codex_takeover'] is False

@@ -13,6 +13,7 @@ from services.project_status_updates import (
     ProjectStatusPolicyError,
     ProjectStatusUpdateService,
 )
+from services.project_status_records import compute_config_signature
 
 
 @pytest.fixture()
@@ -26,8 +27,14 @@ def _record_two_observations_for_d5(
     source_type: str = "tdc",
     external_key: str = "FM-1",
     fields: list[str] | None = None,
+    match_rule: dict[str, object] | None = None,
 ) -> None:
     """Record two matched tdc observations for the same external key."""
+    effective_rule = match_rule or {
+        "reportType": "data_model",
+        "incident": external_key,
+    }
+    config_signature = compute_config_signature(source_type, effective_rule)
     field_list = fields if fields is not None else [
         "currentApprover", "approvalComment", "incident", "reportType",
     ]
@@ -47,6 +54,7 @@ def _record_two_observations_for_d5(
         candidate_count=1,
         candidate_summary_json=json.dumps([{"externalKey": external_key, "fields": {}}]),
         field_report_json=json.dumps(report),
+        config_signature=config_signature,
     )
     db.record_mapping_observation(
         deliverable_id=deliverable_id,
@@ -57,6 +65,7 @@ def _record_two_observations_for_d5(
         candidate_count=1,
         candidate_summary_json=json.dumps([{"externalKey": external_key, "fields": {}}]),
         field_report_json=json.dumps(report),
+        config_signature=config_signature,
     )
 
 
@@ -83,7 +92,8 @@ def test_default_policy_and_field_authority(service) -> None:
     policy = service.get_update_policy("VPI-T2-D5")
     assert policy is not None
     assert policy["deliverableId"] == "VPI-T2-D5"
-    assert policy["mode"] == "manual"
+    # 契约内交付物新库默认自动同步模式（未启用，待配置）。
+    assert policy["mode"] == "automatic"
     assert policy["sourceType"] == "tdc"
     assert policy["enabled"] is False
     assert policy["externalKey"] is None
@@ -198,6 +208,7 @@ def test_ewo_model_info_match_rule_is_accepted_when_mapping_evidence_is_ready(se
         source_type="aras",
         external_key="EWO-1",
         fields=["_rsp_name", "_required_date", "_subject", "_modelinfo"],
+        match_rule={"reportType": "ewo", "modelInfo": "F610S"},
     )
 
     policy = service.update_update_policy(
@@ -277,3 +288,59 @@ def test_manual_mode_rejects_automatic_field_authority(service) -> None:
             {"mode": "manual", "fieldAuthority": {"status": "automatic"}},
         )
     assert "fieldAuthority" in exc.value.fields
+
+
+def test_aggregate_evidence_fingerprint_mismatch_rejected(tmp_db: DatabaseManager) -> None:
+    """GPT 终审 P2 回归：聚合模式下连续两次抓取的记录集合指纹不一致 →
+    启用被拒（ready 计数与启用校验共用指纹一致规则）。"""
+    import json
+    service = ProjectStatusUpdateService(tmp_db)
+    report = {
+        "fields": ["currentApprover", "incident", "reportType"],
+        "statusOrApprovalFields": [],
+        "suggestedStatusMapping": [],
+        "suggestedAutomaticFields": [],
+        "requiresConfirmation": True,
+    }
+    evidence_signature = compute_config_signature(
+        "tdc",
+        {"reportType": "data_model", "aggregate": True, "incident": "FM-1"},
+    )
+    # 两次 matched 但记录集合指纹不同（第二次多了一条记录）。
+    tmp_db.record_mapping_observation(
+        "VPI-T2-D5", "tdc", "matched", None, "agg:fp-set-1", 2,
+        json.dumps([{"externalKey": None, "fields": {}}]),
+        json.dumps(report),
+        evidence_signature,
+    )
+    tmp_db.record_mapping_observation(
+        "VPI-T2-D5", "tdc", "matched", None, "agg:fp-set-2", 3,
+        json.dumps([{"externalKey": None, "fields": {}}]),
+        json.dumps(report),
+        evidence_signature,
+    )
+    with pytest.raises(Exception) as exc_info:
+        service.update_update_policy("VPI-T2-D5", {
+            "mode": "automatic",
+            "enabled": True,
+            "credentialRef": "test-alias",
+            "matchRule": {"reportType": "data_model", "aggregate": True, "incident": "FM-1"},
+            "mapping": {"owner": "currentApprover"},
+            "fieldAuthority": {"owner": "automatic"},
+        })
+    assert any("聚合证据不稳定" in msg for msg in exc_info.value.fields.values())
+
+
+def test_aggregate_match_rule_requires_boolean_flag(tmp_db: DatabaseManager) -> None:
+    """GPT 终审 P2 回归：aggregate 标记必须严格布尔，字符串 "false" 拒绝。"""
+    service = ProjectStatusUpdateService(tmp_db)
+    with pytest.raises(Exception) as exc_info:
+        service.update_update_policy("VPI-T2-D5", {
+            "mode": "automatic",
+            "enabled": True,
+            "credentialRef": "test-alias",
+            "matchRule": {"reportType": "data_model", "aggregate": "false", "incident": "FM-1"},
+            "mapping": {"owner": "currentApprover"},
+            "fieldAuthority": {"owner": "automatic"},
+        })
+    assert any("aggregate 必须是布尔值" in msg for msg in exc_info.value.fields.values())

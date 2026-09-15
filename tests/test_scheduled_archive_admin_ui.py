@@ -215,8 +215,10 @@ def test_credential_ref_selection_and_finally_clearing() -> None:
     assert "统一域账号" in archive_js
     assert "保存至凭据保护库" in archive_js
 
-    # Cleared in finally
-    assert 'aliasInput.value = ""' in archive_js
+    # Cleared in finally: write-only 语义，恢复的是本次提交的引用选择
+    # （domain/unified-domain 等非秘密选择器），失败时按预选规则回填。
+    assert "aliasInput.value = aliasVal" in archive_js
+    assert "aliasInput.value = \"domain\"" in archive_js
     assert 'finally' in archive_js
 
 

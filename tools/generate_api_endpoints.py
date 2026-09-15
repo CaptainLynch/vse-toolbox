@@ -28,6 +28,7 @@ GROUP_NAMES = {
     "/api/tdc": "TDC 交互查询",
     "/api/agent": "Agent 中继",
     "/api/settings": "系统设置",
+    "/api/diagnostics": "安全诊断录制",
     "/api/debug": "诊断与调试",
 }
 
@@ -68,6 +69,12 @@ def group_of(path: str) -> str:
 def main() -> int:
     source = APP_SOURCE.read_text(encoding="utf-8")
     entries = route_entries(source)
+    diagnostic_source = ROOT / "web" / "diagnostics.py"
+    if diagnostic_source.is_file():
+        entries += route_entries(diagnostic_source.read_text(encoding="utf-8"))
+    enrichment_source = ROOT / "web" / "ewo_enrichment.py"
+    if enrichment_source.is_file():
+        entries += route_entries(enrichment_source.read_text(encoding="utf-8"))
     grouped: dict[str, list[tuple[str, str, str]]] = defaultdict(list)
     for path, method, func in entries:
         grouped[group_of(path)].append((path, method, func))
@@ -75,7 +82,11 @@ def main() -> int:
     lines = [
         "# VSE Toolbox Web API 端点清单",
         "",
-        "> 由 `tools/generate_api_endpoints.py` 从 `web/app.py` AST 解析自动生成，",
+        "> 状态：Generated",
+        "> 读者：Developer、Agent（API 任务）",
+        "> 权威来源：`web/app.py`、`web/diagnostics.py`、`web/ewo_enrichment.py` 路由装饰器；参数行为以代码和测试为准",
+        "> 默认读取：按 API/UI 任务读取",
+        "> 由 `tools/generate_api_endpoints.py` 从上述路由模块 AST 解析自动生成，",
         f"> 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}，共 {len(entries)} 个端点。",
         "> 手工新增路由后请重跑该脚本刷新本清单。",
         "",
@@ -83,7 +94,7 @@ def main() -> int:
         "",
         "- 写操作（POST/PATCH/PUT/DELETE）仅接受本机回环访问（loopback 校验）。",
         "- 响应统一为 `{\"ok\": true, \"data\": ...}` 或 `{\"ok\": false, \"error\": {...}}`。",
-        "- 本清单只列路由与方法，参数契约以 `web/app.py` 对应处理函数与测试为准。",
+        "- 本清单只列路由与方法，参数契约以 `web/app.py`、`web/diagnostics.py` 对应处理函数与测试为准。",
         "",
     ]
     for group in sorted(grouped):

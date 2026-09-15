@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from core.diagnostic_recording import observed
+
 import posixpath
 import re
 from dataclasses import dataclass
@@ -141,6 +143,7 @@ def _read_sheet_rows(
     return rows, truncated
 
 
+@observed("preview.read_xlsx_preview")
 def read_xlsx_preview(
     path: Path,
     *,
@@ -155,6 +158,7 @@ def read_xlsx_preview(
     )[0]
 
 
+@observed("preview.read_xlsx_workbook_preview")
 def read_xlsx_workbook_preview(
     path: Path,
     *,

@@ -518,6 +518,7 @@ def test_production_registry_approved_job_keys(tmp_path: Path) -> None:
             "tdc_sor", "tdc", "sor",
             {
                 "processNo": "PROC-1", "processType": "Type1", "carTypeProject": "CTP-1",
+                "carTypeProjectId": "PID-99",
                 "applicant": "Jane Doe", "title": "Title1", "department": "DeptC",
                 "section": "SecD", "applicationStart": "2026-02-01", "applicationEnd": "2026-02-28",
                 "partNumber": "P-99", "partName": "Name99", "version": "v1",
@@ -526,6 +527,7 @@ def test_production_registry_approved_job_keys(tmp_path: Path) -> None:
             TDCSORFilters,
             {
                 "serial_number": "PROC-1", "process_type": "Type1", "car_type_project": "CTP-1",
+                "car_type_project_id": "PID-99",
                 "applicant": "Jane Doe", "title": "Title1", "department": "DeptC",
                 "section": "SecD", "application_start": "2026-02-01", "application_end": "2026-02-28",
                 "part_number": "P-99", "part_name": "Name99", "version": "v1",
@@ -845,6 +847,15 @@ def test_filter_list_shape_and_limit_rejected(tmp_path: Path, invalid_list: Any)
     with pytest.raises(ValueError, match="archive filter list"):
         connector.collect(context, credential)
     assert len(auth_list) == 1 and auth_list[0].session.closed == 1
+
+
+def test_tdc_sor_filters_whitelist_accepts_car_type_project_id() -> None:
+    filters = TDCArchiveConnector._sor_filters({
+        "carTypeProject": "P100",
+        "carTypeProjectId": "project-id-1",
+    })
+    assert filters.car_type_project == "P100"
+    assert filters.car_type_project_id == "project-id-1"
 
 
 def test_empty_and_whitespace_filter_values_are_normalized_to_none(tmp_path: Path) -> None:

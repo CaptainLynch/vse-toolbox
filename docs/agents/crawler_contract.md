@@ -1,5 +1,10 @@
 # P1 Intranet Crawler Contract - EWO / NCR
 
+> 状态：Reference / Evidence
+> 读者：Developer、Agent（Aras 爬虫任务）
+> 权威来源：脱敏离线样本、当前 crawler 实现和测试；不授权生产访问
+> 默认读取：仅 Aras 爬虫契约或取证任务
+
 Scope: Phase 2 HAR reverse engineering based only on offline samples under `E:\project\vse-toolbox\crawl source`. This document is the implementation contract for the P1 crawler Worker. It must not be treated as permission to call the real intranet during tests.
 
 ## 1. Offline Sources Read

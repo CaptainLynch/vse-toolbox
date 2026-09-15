@@ -260,7 +260,14 @@ function overviewEl(tagName, className, text) {
 }
 
 function clearOverviewContainer(container) {
-  if (container) container.textContent = "";
+  if (container) {
+    if (typeof container.querySelectorAll === "function") {
+      container.querySelectorAll("[data-ewo-enrichment]").forEach((host) => {
+        if (typeof host.destroyEwoEnrichment === "function") host.destroyEwoEnrichment();
+      });
+    }
+    container.textContent = "";
+  }
 }
 
 function renderOverviewLoading(container) {
@@ -662,6 +669,12 @@ function renderMilestoneTimeline(container, data) {
     const dateText = isUndated ? "待排期" : rawDate.slice(5);
 
     const node = overviewEl("div", `milestone-node is-${nodeType}`);
+    const activeNode = window.VseNodeOverview && window.VseNodeOverview.buildContext(data).node;
+    const isActiveNode = activeNode && activeNode.id === milestone.id;
+    if (isActiveNode) {
+      node.classList.add("is-active-node");
+      node.setAttribute("aria-current", "step");
+    }
     node.setAttribute("role", "listitem");
     node.style.setProperty("--x", String(entry.x));
     node.appendChild(overviewEl("span", "milestone-dot", null));
@@ -672,6 +685,7 @@ function renderMilestoneTimeline(container, data) {
       overviewEl("small", "milestone-status", nodeStatus),
     );
     node.appendChild(copy);
+    if (isActiveNode) copy.appendChild(overviewEl("span", "node-current-label", "当前节点"));
     rail.appendChild(node);
   });
   wrap.appendChild(rail);
@@ -701,7 +715,9 @@ function renderPhaseSummary(container, phase, currentStage = null) {
     ["当前阶段", stageLabel],
     ["阶段状态", phase.status],
     ["总体进度", `${phase.overallProgress}%`],
-    ["已完成", `${phase.completedCount} / ${phase.totalCount}`],
+    ["已完成", `${phase.completedCount}`],
+    ["待同步", `${phase.pendingCount ?? 0}`],
+    ["总计", `${phase.totalCount}`],
     ["风险 / 逾期", String(phase.riskCount)],
   ];
   cells.forEach(([label, value], index) => {
@@ -720,10 +736,36 @@ function renderPhaseSummary(container, phase, currentStage = null) {
   container.append(grid, updated);
 }
 
+// 快照联动摘要：明细分析快照（与交付物明细页分析同源）优先，
+// 其次定时归档写入的表单快照摘要。
+// 门控：仅在交付物自身启用同步（更新方式自动/混合）时生效；
+// 人工编辑的交付物始终使用手工值，归档/分析快照不得覆盖手工状态。
+function deliverableSnapshotSummary(item) {
+  if (!item || typeof item !== "object") return null;
+  const policy = item.updatePolicy;
+  if (!policy || typeof policy !== "object" || policy.enabled !== true) return null;
+  const analysis = item.analysisLink && typeof item.analysisLink === "object"
+    ? item.analysisLink.summary
+    : null;
+  if (analysis && typeof analysis === "object") {
+    return { kind: "analysis", summary: analysis, snapshotAt: item.analysisLink.snapshotAt || null };
+  }
+  const form = item.formLink && typeof item.formLink === "object"
+    ? item.formLink.summary
+    : null;
+  if (form && typeof form === "object") {
+    // 聚合绑定（GPT 终审 E：前后端换绑隔离一致）只信任分析快照链路，
+    // 不做表单快照兜底——后端状态机已同步实施相同规则。
+    if (item.updatePolicy && item.updatePolicy.aggregate === true) return null;
+    return { kind: "form", summary: form, snapshotAt: item.formLink.snapshotAt || null };
+  }
+  return null;
+}
+
 function deliverableFormDisplay(item) {
-  if (!item || !item.formLink || typeof item.formLink !== "object") return null;
-  const summary = item.formLink.summary;
-  if (!summary || typeof summary !== "object") return null;
+  const linked = deliverableSnapshotSummary(item);
+  if (!linked) return null;
+  const summary = linked.summary;
   const total = Number(summary.total);
   if (!Number.isFinite(total) || total <= 0) return null;
 
@@ -741,8 +783,71 @@ function deliverableFormDisplay(item) {
   return {
     progress: Math.min(100, Math.max(0, progress)),
     status,
-    snapshotAt: item.formLink.snapshotAt || null,
+    snapshotAt: linked.snapshotAt,
   };
+}
+
+// 统一显示口径：状态总览环图与交付物明细表共用同一份快照换算结果，
+// 避免同一交付物在两个视图显示不同的状态或完成度。
+function deliverableDisplayItem(item) {
+  const formDisplay = deliverableFormDisplay(item);
+  if (!formDisplay) return item;
+  return {
+    ...item,
+    progress: formDisplay.progress,
+    status: formDisplay.status,
+    tone: null,
+    progressOrDate: formDisplay.status === "已完成"
+      ? (item.actualDate || `${formDisplay.progress}%`)
+      : `${formDisplay.progress}%`,
+  };
+}
+
+// 展示状态机（后端 syncDisplay 下发，七态）：数值仅在 manual/paused/snapshot
+// 三态展示；其余状态环图/明细显示状态标签，避免"默认自动但尚未同步"的
+// 交付物展示编造进度（含新库种子的待同步占位值）。
+const SYNC_DISPLAY_VALUE_STATES = new Set(["manual", "snapshot"]);
+const SYNC_DISPLAY_RING_LABELS = {
+  paused: "已暂停",
+  pending_config: "待配置",
+  pending_first_sync: "待同步",
+  sync_failed: "同步失败",
+  no_source_records: "无记录",
+};
+
+function deliverableSyncDisplay(item) {
+  const info = item && typeof item === "object" ? item.syncDisplay : null;
+  if (info && typeof info === "object" && info.state) {
+    return {
+      state: info.state,
+      label: info.label || SYNC_DISPLAY_RING_LABELS[info.state] || info.state,
+      syncState: info.syncState || null,
+      lastError: info.lastError || null,
+    };
+  }
+  return { state: "manual", label: "手工维护", syncState: null, lastError: null };
+}
+
+function deliverableHasDisplayValue(item) {
+  return SYNC_DISPLAY_VALUE_STATES.has(deliverableSyncDisplay(item).state);
+}
+
+// 待同步态的日期文案：真实计划日期已过时明确标注逾期天数
+//（仅提示，不并入业务风险计数——CODEX 审计调整项）。
+// 统一状态文案：非数值态显示状态标签，数值态显示换算状态；
+// 四区（环图/明细/详情头/状态图/属性网格）共用。
+function deliverableStatusText(item, displayItem) {
+  const syncDisplay = deliverableSyncDisplay(item);
+  if (!SYNC_DISPLAY_VALUE_STATES.has(syncDisplay.state)) return syncDisplay.label;
+  return displayItem ? displayItem.status : item.status;
+}
+
+function deliverablePendingDateLabel(item) {
+  const planned = item.plannedDate ? `计划完成 ${item.plannedDate.slice(5)}` : "计划完成 -";
+  const today = overviewSavedState && overviewSavedState.phase && overviewSavedState.phase.today;
+  if (!today || !item.plannedDate) return planned;
+  const delta = Math.floor((new Date(today) - new Date(item.plannedDate)) / 86400000);
+  return delta > 0 ? `${planned}；已逾期 ${delta} 天（待同步）` : planned;
 }
 
 // “按节点状态自动显示”规则（用户 2026-09-06 示例：到了 VDR 阶段，
@@ -780,6 +885,9 @@ function shouldShowDeliverable(item, filterValue) {
   if (filterValue !== "auto") return true;
   const keywords = DELIVERABLE_AUTO_HIDE_NODE_KEYWORDS[item.id];
   if (!keywords || !keywords.length) return true;
+  // 七态门控（终审 P2）：待同步类状态的交付物始终展示，
+  // 避免环图显示「待同步」而卡片被自动隐藏的窄窗口。
+  if (!deliverableHasDisplayValue(item)) return true;
   // 完成态与环图口径一致：优先取快照换算状态（含"手工进行中但快照
   // 已全部完成"的情形），无快照时回退手工状态。
   const formDisplay = deliverableFormDisplay(item);
@@ -811,7 +919,11 @@ function deliverableProgressOrDate(item) {
 }
 
 function ringDateLabel(item) {
-  if (item.status === "已完成") return `实际完成 ${deliverableProgressOrDate(item).slice(5)}`;
+  if (item.status === "已完成") {
+    const value = deliverableProgressOrDate(item);
+    // 无实际完成日期时回退展示完成度百分比，避免 "实际完成 " 空文案。
+    return value.endsWith("%") ? `完成度 ${value}` : `实际完成 ${value.slice(5)}`;
+  }
   const label = item.plannedDate ? `计划完成 ${item.plannedDate.slice(5)}` : "计划完成 -";
   return item.status === "已逾期" && item.note ? `${label}；${item.note}` : label;
 }
@@ -869,28 +981,41 @@ function renderDeliverableProgress(container, deliverables) {
 
   deliverables.forEach((rawItem) => {
     if (!shouldShowDeliverable(rawItem, deliverableProgressFilterValue)) return;
-    const formDisplay = deliverableFormDisplay(rawItem);
-    const item = formDisplay
-      ? {
-          ...rawItem,
-          progress: formDisplay.progress,
-          status: formDisplay.status,
-          tone: null,
-        }
-      : rawItem;
+    const item = deliverableDisplayItem(rawItem);
+    const syncDisplay = deliverableSyncDisplay(item);
+    const hasDisplayValue = SYNC_DISPLAY_VALUE_STATES.has(syncDisplay.state);
 
-    const card = overviewEl("article", "progress-ring");
-    card.setAttribute("role", "img");
-    card.setAttribute("aria-label", `${item.name}，完成度 ${item.progress}%，状态 ${item.status}`);
+    const ringStatusText = deliverableStatusText(item, item);
+    const card = overviewEl("article", "progress-ring is-clickable");
+    card.setAttribute("role", "button");
+    card.setAttribute("tabindex", "0");
+    card.setAttribute(
+      "aria-label",
+      `${item.name}，${hasDisplayValue ? `完成度 ${item.progress}%，状态 ${ringStatusText}` : `状态 ${syncDisplay.label}`}，查看明细`,
+    );
+    const openDetail = () => {
+      location.hash = `#deliverable/${encodeURIComponent(item.id)}`;
+    };
+    card.addEventListener("click", openDetail);
+    card.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openDetail();
+      }
+    });
     const visual = overviewEl("span", "ring-visual");
-    visual.style.setProperty("--progress", String(item.progress));
-    visual.style.setProperty("--ring-color", OVERVIEW_RING_TONES[deliverableTone(item)] || "var(--muted)");
-    visual.appendChild(overviewEl("span", "ring-center", `${item.progress}%`));
+    visual.style.setProperty("--progress", hasDisplayValue ? String(item.progress) : "0");
+    visual.style.setProperty("--ring-color", hasDisplayValue
+      ? (OVERVIEW_RING_TONES[deliverableTone(item)] || "var(--muted)")
+      : "var(--muted)");
+    visual.appendChild(overviewEl("span", "ring-center", hasDisplayValue
+      ? `${item.progress}%`
+      : (SYNC_DISPLAY_RING_LABELS[syncDisplay.state] || syncDisplay.label)));
     const copy = overviewEl("span", "ring-copy");
     copy.append(
       overviewEl("strong", "ring-name", item.name),
-      overviewEl("span", `ring-status is-${deliverableTone(item)}`, item.status),
-      overviewEl("span", "ring-date", ringDateLabel(item)),
+      overviewEl("span", `ring-status is-${hasDisplayValue ? deliverableTone(item) : "primary"}`, ringStatusText),
+      overviewEl("span", "ring-date", hasDisplayValue ? ringDateLabel(item) : deliverablePendingDateLabel(item)),
     );
     card.append(visual, copy);
     container.appendChild(card);
@@ -1001,115 +1126,6 @@ async function loadDeliverableUpdateHistory(deliverableId, container) {
   }
 }
 
-function renderDeliverablePolicyEditor(container, item, policy) {
-  container.textContent = "";
-  const titleRow = overviewEl("div", "policy-editor-head");
-  titleRow.append(
-    overviewEl("strong", "policy-editor-title", "更新方式"),
-    overviewEl("span", "policy-source", "权威来源 · TDC 数模审核报表"),
-  );
-
-  const form = overviewEl("form", "policy-editor-form");
-  const modeGroup = overviewEl("fieldset", "policy-mode-group");
-  modeGroup.appendChild(overviewEl("legend", null, "更新模式"));
-  const modeControl = overviewEl("div", "policy-segmented");
-  Object.entries(DELIVERABLE_POLICY_MODE_LABELS).forEach(([value, label]) => {
-    const input = document.createElement("input");
-    input.type = "radio";
-    input.name = `policy-mode-${item.id}`;
-    input.id = `policy-mode-${item.id}-${value}`;
-    input.value = value;
-    input.checked = policy.mode === value;
-    const labelEl = overviewEl("label", null, label);
-    labelEl.htmlFor = input.id;
-    modeControl.append(input, labelEl);
-  });
-  modeGroup.appendChild(modeControl);
-
-  const authorityGroup = overviewEl("fieldset", "policy-authority-group");
-  authorityGroup.appendChild(overviewEl("legend", null, "允许 TDC 自动更新的字段"));
-  const checks = overviewEl("div", "policy-field-checks");
-  DELIVERABLE_POLICY_FIELDS.forEach(([name, label]) => {
-    const wrap = overviewEl("label", "policy-field-check");
-    const input = document.createElement("input");
-    input.type = "checkbox";
-    input.name = name;
-    input.checked = policy.fieldAuthority && policy.fieldAuthority[name] === "automatic";
-    wrap.append(input, overviewEl("span", null, label));
-    checks.appendChild(wrap);
-  });
-  authorityGroup.appendChild(checks);
-
-  const bindingReady = Boolean(policy.externalKey && policy.matchRule && Object.keys(policy.matchRule).length);
-  const notice = overviewEl(
-    "p",
-    `policy-binding-state ${bindingReady ? "is-ready" : "is-pending"}`,
-    bindingReady
-      ? "TDC 稳定编号已配置。自动执行器接入前仍保持关闭。"
-      : "TDC 稳定编号尚未确认，自动同步保持关闭；手动更新不受影响。",
-  );
-  const status = overviewEl("p", "policy-request-status");
-  status.setAttribute("role", "status");
-  const actions = overviewEl("div", "policy-editor-actions");
-  const save = overviewEl("button", "policy-save-btn", "保存更新方式");
-  save.type = "submit";
-  const history = overviewEl("button", "policy-history-btn", "更新记录");
-  history.type = "button";
-  const historyBody = overviewEl("div", "policy-history");
-  history.addEventListener("click", () => loadDeliverableUpdateHistory(item.id, historyBody));
-  actions.append(save, history);
-  form.append(modeGroup, authorityGroup, notice, actions, status, historyBody);
-  form.addEventListener(
-    "submit",
-    async (event) => {
-    event.preventDefault();
-    const selected = form.querySelector('input[type="radio"]:checked');
-    const mode = selected ? selected.value : "manual";
-    const fieldAuthority = {
-      status: "manual",
-      owner: "manual",
-      plannedDate: "manual",
-      actualDate: "manual",
-      progress: "manual",
-      note: "manual",
-    };
-    if (mode !== "manual") {
-      DELIVERABLE_POLICY_FIELDS.forEach(([name]) => {
-        const checkbox = form.querySelector(`input[type="checkbox"][name="${name}"]`);
-        if (checkbox && checkbox.checked) fieldAuthority[name] = "automatic";
-      });
-    }
-    save.disabled = true;
-    updatePolicyStatusMessage(status, "正在保存...");
-    try {
-      const response = await fetch(`/api/project-status/deliverables/${encodeURIComponent(item.id)}/update-policy`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ mode, enabled: false, fieldAuthority }),
-      });
-      const body = await overviewReadJson(response);
-      if (!response.ok || !body || body.ok !== true) throw overviewRequestError(body, response.status);
-      const saved = body.data;
-      item.updatePolicy = {
-        ...item.updatePolicy,
-        mode: saved.mode,
-        enabled: saved.enabled,
-        sourceType: saved.sourceType,
-        syncState: saved.syncState,
-        lastSuccessAt: saved.lastSuccessAt,
-      };
-      renderDeliverablePolicyEditor(container, item, saved);
-      const refreshedStatus = container.querySelector(".policy-request-status");
-      updatePolicyStatusMessage(refreshedStatus, "更新方式已保存");
-    } catch (err) {
-      updatePolicyStatusMessage(status, err instanceof Error ? err.message : String(err), true);
-      save.disabled = false;
-    }
-    },
-  );
-  container.append(titleRow, form);
-}
-
 const EWO_POLICY_MODE_LABELS = {
   manual: "手动维护",
   automatic: "自动同步",
@@ -1201,9 +1217,25 @@ function ewoPolicyErrorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
-function renderEwoDeliverablePolicy(container, item, policy, options = {}) {
+// 保存成功后的状态提示：详情页重绘由 loadProjectOverview 的
+// handleHashChange 异步触发，新编辑器的 .policy-request-status 需等策略
+// 加载完成才存在——立即查询必然为 null（GPT 终审 P2），故经此槽传递。
+let pendingPolicyStatusMessage = null;
+
+function renderSyncBindingEditor(container, item, policy, options = {}) {
   container.textContent = "";
   const currentPolicy = policy && typeof policy === "object" ? policy : {};
+  // 能力配置由后端 sourceInfo 下发（core 能力注册表单一来源）；
+  // 缺省时按 ARAS EWO 兜底，保证契约内交付物始终可用。
+  const capabilities = item.sourceInfo && typeof item.sourceInfo === "object"
+    ? item.sourceInfo
+    : { sourceType: "aras", reportType: "ewo", displayName: "ARAS EWO" };
+  const matchFields = Array.isArray(capabilities.matchFields)
+    ? capabilities.matchFields
+    : EWO_POLICY_MATCH_FIELDS;
+  const evidenceFields = Array.isArray(capabilities.evidenceFields)
+    ? capabilities.evidenceFields
+    : [{ name: "base_url", label: "ECM 地址（仅用于抓取映射证据）", type: "url" }];
   const supportedModes = Object.keys(EWO_POLICY_MODE_LABELS);
   const currentMode = supportedModes.includes(currentPolicy.mode) ? currentPolicy.mode : "manual";
   let discoveryData = options.discovery && typeof options.discovery === "object"
@@ -1217,7 +1249,7 @@ function renderEwoDeliverablePolicy(container, item, policy, options = {}) {
   const head = overviewEl("div", "policy-editor-head");
   head.append(
     overviewEl("strong", "policy-editor-title", "更新方式"),
-    overviewEl("span", "policy-source", "数据来源 · ARAS EWO"),
+    overviewEl("span", "policy-source", `数据来源 · ${capabilities.displayName || item.source || "外部来源"}`),
   );
 
   const modeGroup = overviewEl("fieldset", "policy-mode-group");
@@ -1280,24 +1312,43 @@ function renderEwoDeliverablePolicy(container, item, policy, options = {}) {
   externalKeyLabel.appendChild(externalKeyInput);
   externalKeyLabel.appendChild(overviewEl("small", "policy-field-note", "必须与映射发现记录中的唯一外部记录一致。"));
   bindingGrid.appendChild(externalKeyLabel);
+  const ewoBindingMode = capabilities.reportType === "ewo" ? document.createElement("select") : null;
+  if (ewoBindingMode) ewoBindingMode.name = "ewoBindingMode";
+  const storedEwoRule = currentPolicy.matchRule || {};
+  if (ewoBindingMode) {
+    const modeLabel = overviewEl("label", "policy-ewo-field");
+    modeLabel.appendChild(overviewEl("span", null, "EWO绑定合同"));
+    [["legacy", "保留旧版规则"], ["record_set", "新版：记录集合"], ["single_record", "新版：固定单条记录"]].forEach(([value, label]) => {
+      if (value === "legacy" && storedEwoRule.contractVersion === "2") return;
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      ewoBindingMode.appendChild(option);
+    });
+    ewoBindingMode.value = storedEwoRule.contractVersion === "2" ? storedEwoRule.bindingMode : "legacy";
+    modeLabel.appendChild(ewoBindingMode);
+    modeLabel.appendChild(overviewEl("small", "policy-field-note", "旧版保持原有单条/多条写入规则。迁移到新版须先停用保存，再重新取证；集合负责人和计划日期始终手工。"));
+    bindingGrid.appendChild(modeLabel);
+  }
 
   const matchGroup = overviewEl("fieldset", "policy-ewo-match");
-  matchGroup.appendChild(overviewEl("legend", null, "匹配规则（报表类型固定为 EWO）"));
-  const reportType = overviewEl("span", "policy-ewo-fixed-value", "reportType = ewo");
+  matchGroup.appendChild(overviewEl("legend", null, `匹配规则（报表类型固定为 ${capabilities.reportType || "ewo"}）`));
+  const reportType = overviewEl("span", "policy-ewo-fixed-value", `reportType = ${capabilities.reportType || "ewo"}`);
   matchGroup.appendChild(reportType);
   const matchRule = currentPolicy.matchRule && typeof currentPolicy.matchRule === "object"
     ? currentPolicy.matchRule
     : {};
   const matchInputs = new Map();
-  EWO_POLICY_MATCH_FIELDS.forEach(([key, label, filterName]) => {
+  matchFields.forEach((fieldDef) => {
+    const [key, label, filterName, placeholder] = Array.isArray(fieldDef) ? fieldDef : [fieldDef, fieldDef, fieldDef, "可选"];
     const field = overviewEl("label", "policy-ewo-field");
     field.appendChild(overviewEl("span", null, label));
     const input = document.createElement("input");
     input.type = "text";
     input.dataset.matchKey = key;
-    input.dataset.filterName = filterName;
+    input.dataset.filterName = filterName || key;
     input.value = ewoPolicyString(matchRule[key]);
-    input.placeholder = key === "ewoNo" ? "建议优先填写 EWO 编号" : "可选";
+    input.placeholder = placeholder || "可选";
     field.appendChild(input);
     matchInputs.set(key, input);
     matchGroup.appendChild(field);
@@ -1305,21 +1356,47 @@ function renderEwoDeliverablePolicy(container, item, policy, options = {}) {
   matchGroup.appendChild(overviewEl("small", "policy-field-note", "至少填写一个筛选条件；保存启用时后端会再次校验来源契约。"));
   bindingGrid.appendChild(matchGroup);
 
-  const baseUrlLabel = overviewEl("label", "policy-ewo-field");
-  baseUrlLabel.appendChild(overviewEl("span", null, "ECM 地址（仅用于抓取映射证据）"));
-  const baseUrlInput = document.createElement("input");
-  baseUrlInput.type = "url";
-  baseUrlInput.name = "arasBaseUrl";
-  baseUrlInput.value = EWO_POLICY_DEFAULT_ARAS_BASE_URL;
-  baseUrlInput.placeholder = EWO_POLICY_DEFAULT_ARAS_BASE_URL;
-  baseUrlLabel.appendChild(baseUrlInput);
-  baseUrlLabel.appendChild(overviewEl("small", "policy-field-note", "使用设置页已认证的 ECM 会话，不在此填写账号密码。"));
-  bindingGrid.appendChild(baseUrlLabel);
+  // 映射证据来源连接：按能力配置渲染（aras 需 ECM 地址；tdc 需地址+认证头）。
+  const evidenceGroup = overviewEl("fieldset", "policy-ewo-evidence-source");
+  evidenceGroup.appendChild(overviewEl("legend", null, "映射证据来源连接"));
+  const evidenceInputs = new Map();
+  evidenceFields.forEach((fieldDef) => {
+    const field = overviewEl("label", "policy-ewo-field");
+    field.appendChild(overviewEl("span", null, fieldDef.label || fieldDef.name));
+    let input;
+    if (fieldDef.type === "select") {
+      input = document.createElement("select");
+      (fieldDef.options || []).forEach((option) => {
+        const opt = overviewEl("option", null, option);
+        opt.value = option;
+        input.appendChild(opt);
+      });
+      input.value = fieldDef.options && fieldDef.options.length ? fieldDef.options[0] : "";
+    } else if (fieldDef.type === "textarea") {
+      input = document.createElement("textarea");
+      input.rows = 2;
+      if (fieldDef.placeholder) input.placeholder = fieldDef.placeholder;
+    } else {
+      input = document.createElement("input");
+      input.type = fieldDef.type || "text";
+      if (fieldDef.placeholder) input.placeholder = fieldDef.placeholder;
+    }
+    input.dataset.evidenceField = fieldDef.name;
+    if (fieldDef.type !== "textarea" && fieldDef.type !== "select"
+      && fieldDef.name === "base_url" && capabilities.sourceType === "aras"
+      && !input.value) {
+      input.value = EWO_POLICY_DEFAULT_ARAS_BASE_URL;
+    }
+    field.appendChild(input);
+    evidenceInputs.set(fieldDef.name, input);
+    evidenceGroup.appendChild(field);
+  });
+  bindingGrid.appendChild(evidenceGroup);
   bindingGroup.appendChild(bindingGrid);
 
   const authorityGroup = overviewEl("fieldset", "policy-ewo-authority");
   authorityGroup.appendChild(overviewEl("legend", null, "自动字段与来源映射"));
-  const discoveredFields = new Set(ewoPolicyDiscoveryFields(discoveryData));
+  let discoveredFields = new Set(ewoPolicyDiscoveryFields(discoveryData));
   EWO_POLICY_AUTOMATIC_FIELDS.forEach(([key, label]) => {
     const row = overviewEl("div", "policy-ewo-mapping-row");
     const authorityLabel = overviewEl("label", "policy-field-check");
@@ -1350,15 +1427,23 @@ function renderEwoDeliverablePolicy(container, item, policy, options = {}) {
   });
   const fieldList = document.createElement("datalist");
   fieldList.id = `policy-discovered-fields-${itemToken}`;
-  const addDiscoveredField = (fieldName) => {
-    const clean = ewoPolicyString(fieldName);
-    if (!clean || discoveredFields.has(clean)) return;
-    discoveredFields.add(clean);
-    fieldList.appendChild(overviewEl("option", null, clean));
+  // 假就绪修复（CODEX 审计）：字段候选只保留**最近一次**脱敏报告的集合
+  // （原先跨报告累加，旧报告字段会一直被视为有效）；同时记录最近一次
+  // 证据的外部稳定键，外部键变更后必须重新抓取证据。
+  const setDiscoveredFields = (fieldNames) => {
+    discoveredFields = new Set(
+      (fieldNames || []).map((value) => ewoPolicyString(value)).filter(Boolean),
+    );
+    fieldList.textContent = "";
+    discoveredFields.forEach((fieldName) => {
+      fieldList.appendChild(overviewEl("option", null, fieldName));
+    });
   };
-  discoveredFields.forEach((fieldName) => {
-    fieldList.appendChild(overviewEl("option", null, fieldName));
-  });
+  setDiscoveredFields(ewoPolicyDiscoveryFields(discoveryData));
+  const latestObservation = Array.isArray(discoveryData.observations) && discoveryData.observations.length
+    ? discoveryData.observations[0]
+    : null;
+  let lastEvidenceExternalKey = ewoPolicyString(latestObservation && latestObservation.externalKey);
   authorityGroup.appendChild(fieldList);
   bindingGroup.appendChild(authorityGroup);
 
@@ -1395,13 +1480,33 @@ function renderEwoDeliverablePolicy(container, item, policy, options = {}) {
       mode: selectedMode,
       enabled: enabledInput.checked,
       externalKey: ewoPolicyString(externalKeyInput.value) || null,
-      matchRule: { reportType: "ewo" },
+      // reportType/aggregate 必须跟随交付物能力配置；聚合绑定不要求单记录 externalKey。
+      matchRule: { reportType: capabilities.reportType || "ewo" },
       mapping: {},
       fieldAuthority: {},
     };
+    payload.matchRule.aggregate = capabilities.aggregate === true;
+    if (ewoBindingMode && ewoBindingMode.value === "legacy" && typeof storedEwoRule.aggregate === "boolean") {
+      payload.matchRule.aggregate = storedEwoRule.aggregate;
+    }
+    if (ewoBindingMode && ewoBindingMode.value !== "legacy") {
+      ["ewoNo", "projectCode", "subjectKeyword", "changeType", "changeSubType", "area", "state", "rspDepartment", "rspSmt", "submitStart", "submitEnd", "modelInfo"].forEach((key) => {
+        if (typeof storedEwoRule[key] === "string" && storedEwoRule[key].trim()) payload.matchRule[key] = storedEwoRule[key];
+      });
+      payload.bindingContractVersion = "2";
+      payload.matchRule.contractVersion = "2";
+      payload.matchRule.bindingMode = ewoBindingMode.value;
+      payload.matchRule.aggregate = ewoBindingMode.value === "record_set";
+      if (payload.matchRule.aggregate) payload.externalKey = null;
+      else {
+        payload.externalKey = (payload.externalKey || "").toUpperCase();
+        payload.matchRule.sourceItemId = payload.externalKey;
+      }
+    }
     matchInputs.forEach((input, key) => {
       const value = ewoPolicyString(input.value);
       if (value) payload.matchRule[key] = value;
+      else delete payload.matchRule[key];
     });
     EWO_POLICY_AUTOMATIC_FIELDS.forEach(([key]) => {
       const authorityInput = authorityGroup.querySelector(`[data-authority-field="${key}"]`);
@@ -1418,6 +1523,32 @@ function renderEwoDeliverablePolicy(container, item, policy, options = {}) {
     return payload;
   };
 
+  function refreshEwoBindingMode(migrating = false) {
+    if (!ewoBindingMode) return;
+    const mode = ewoBindingMode.value;
+    const setMode = mode === "record_set";
+    externalKeyLabel.hidden = setMode || (mode === "legacy" && storedEwoRule.aggregate === true);
+    externalKeyLabel.querySelector("span").textContent = mode === "single_record" ? "固定版本记录 ID" : "外部稳定键";
+    externalKeyInput.placeholder = mode === "single_record" ? "32位内部记录ID；不自动跟随修订" : "例如：EWO-2026-0001";
+    ["owner", "plannedDate"].forEach((key) => {
+      const input = authorityGroup.querySelector(`[data-authority-field="${key}"]`);
+      const mapping = authorityGroup.querySelector(`[data-mapping-field="${key}"]`);
+      if (input) {
+        if (setMode) input.checked = false;
+        input.disabled = setMode;
+        if (mapping) mapping.disabled = setMode || !input.checked;
+      }
+    });
+    if (migrating) enabledInput.checked = false;
+  }
+  if (ewoBindingMode) {
+    refreshEwoBindingMode();
+    ewoBindingMode.addEventListener("change", () => {
+      refreshEwoBindingMode(true);
+      refreshLocalReadiness();
+    });
+  }
+
   function refreshLocalReadiness() {
     const payload = buildPolicyPayload();
     const missing = [];
@@ -1427,9 +1558,21 @@ function renderEwoDeliverablePolicy(container, item, policy, options = {}) {
     const credentialReady = currentPolicy.credentialAvailable === true
       || (payload.credentialRef === "domain" && vaultConfigured);
     if (!credentialReady) missing.push(vaultConfigured ? "尚未绑定统一域账号凭据" : "凭据保护库未配置");
-    if (!payload.externalKey) missing.push("外部稳定键未确认");
-    const matchKeys = Object.keys(payload.matchRule).filter((key) => key !== "reportType");
-    if (matchKeys.length === 0) missing.push("至少填写一个 EWO 匹配条件");
+    const aggregateMode = payload.matchRule.aggregate === true;
+    if (!aggregateMode && !payload.externalKey) missing.push("外部稳定键未确认");
+    if (payload.enabled && !aggregateMode && !lastEvidenceExternalKey) {
+      missing.push("请先抓取映射证据（连续两次一致）");
+    }
+    if (
+      payload.enabled
+      && !aggregateMode
+      && lastEvidenceExternalKey
+      && payload.externalKey !== lastEvidenceExternalKey
+    ) {
+      missing.push("外部稳定键与最近一次映射证据不一致，请重新抓取证据");
+    }
+    const matchKeys = Object.keys(payload.matchRule).filter((key) => !["reportType", "aggregate", "contractVersion", "bindingMode", "sourceItemId"].includes(key));
+    if (matchKeys.length === 0) missing.push("至少填写一个匹配条件");
     const automaticFields = Object.keys(payload.fieldAuthority)
       .filter((key) => payload.fieldAuthority[key] === "automatic");
     if (automaticFields.length === 0) missing.push("至少选择一个自动字段");
@@ -1460,9 +1603,12 @@ function renderEwoDeliverablePolicy(container, item, policy, options = {}) {
       const value = ewoPolicyString(input.value);
       if (filterName && value) filters[filterName] = value;
     });
-    if (Object.keys(filters).length === 0 && payload.externalKey) filters.ewo_no = payload.externalKey;
+    if (Object.keys(filters).length === 0 && payload.externalKey) {
+      const firstField = Array.isArray(matchFields[0]) ? matchFields[0] : null;
+      if (firstField && firstField[2]) filters[firstField[2]] = payload.externalKey;
+    }
     if (Object.keys(filters).length === 0 && !payload.externalKey) {
-      discoveryStatus.textContent = "请先填写外部稳定键或至少一个 EWO 匹配条件。";
+      discoveryStatus.textContent = "请先填写外部稳定键或至少一个匹配条件。";
       discoveryStatus.className = "policy-discovery-status is-error";
       return;
     }
@@ -1470,14 +1616,34 @@ function renderEwoDeliverablePolicy(container, item, policy, options = {}) {
     discoveryStatus.className = "policy-discovery-status is-busy";
     discoveryStatus.textContent = "正在抓取脱敏映射证据...";
     try {
+      const evidencePayload = {
+        filters,
+        selectedExternalKey: payload.externalKey || null,
+        aggregate: payload.matchRule.aggregate === true,
+      };
+      if (payload.bindingContractVersion === "2") {
+        evidencePayload.contractVersion = "2";
+        evidencePayload.bindingMode = payload.matchRule.bindingMode;
+        if (payload.matchRule.sourceItemId) evidencePayload.sourceItemId = payload.matchRule.sourceItemId;
+        const ewoNames = { ewoNo: "ewo_no", projectCode: "project_code", subjectKeyword: "subject_keyword", changeType: "change_type", changeSubType: "change_sub_type", area: "area", state: "state", rspDepartment: "rsp_department", rspSmt: "rsp_smt", submitStart: "submit_start", submitEnd: "submit_end", modelInfo: "model_info" };
+        Object.entries(ewoNames).forEach(([key, name]) => {
+          if (payload.matchRule[key]) evidencePayload.filters[name] = payload.matchRule[key];
+        });
+      }
+      evidenceInputs.forEach((input, name) => {
+        if (name === "headers") {
+          // 后端 _clean_string_mapping 只接受 dict：多行请求头文本须先解析。
+          const parsed = parseHeaders(input.value || "");
+          if (Object.keys(parsed).length > 0) evidencePayload.headers = parsed;
+          return;
+        }
+        const value = ewoPolicyString(input.value);
+        if (value) evidencePayload[name] = value;
+      });
       const response = await fetch(`/api/project-status/deliverables/${encodeURIComponent(item.id)}/mapping-discovery`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({
-          base_url: ewoPolicyString(baseUrlInput.value) || EWO_POLICY_DEFAULT_ARAS_BASE_URL,
-          filters,
-          selectedExternalKey: payload.externalKey || null,
-        }),
+        body: JSON.stringify(evidencePayload),
       });
       const body = await overviewReadJson(response);
       if (!response.ok || !body || body.ok !== true) throw overviewRequestError(body, response.status);
@@ -1500,7 +1666,9 @@ function renderEwoDeliverablePolicy(container, item, policy, options = {}) {
       const fields = result.fieldReport && Array.isArray(result.fieldReport.fields)
         ? result.fieldReport.fields
         : [];
-      fields.forEach(addDiscoveredField);
+      // 只保留最近一次报告的字段集合；证据目标键随最新一次抓取更新。
+      setDiscoveredFields(fields);
+      lastEvidenceExternalKey = discoveredKey || lastEvidenceExternalKey;
       const confirmed = result.stability && Number.isFinite(Number(result.stability.confirmed))
         ? `${Math.min(Math.max(Number(result.stability.confirmed), 0), 2)}/2`
         : "0/2";
@@ -1571,14 +1739,15 @@ function renderEwoDeliverablePolicy(container, item, policy, options = {}) {
           syncState: saved.syncState,
           lastSuccessAt: saved.lastSuccessAt,
         };
-        renderEwoDeliverablePolicy(container, item, saved, {
-          ...options,
-          settings: settingsData,
-          discovery: discoveryData,
-        });
-        const refreshedStatus = container.querySelector(".policy-request-status");
-        updatePolicyStatusMessage(refreshedStatus, "更新方式已保存");
-        if (typeof options.onEvidenceRefresh === "function") void options.onEvidenceRefresh();
+        // 保存改变 mode/enabled → 重新获取权威数据；loadProjectOverview
+        // 的 finally 会经 handleHashChange 重绘详情页（仅此一次），提示经
+        // pendingPolicyStatusMessage 在新编辑器渲染完成后显示。
+        pendingPolicyStatusMessage = "更新方式已保存";
+        await loadProjectOverview();
+        if (overviewLoadError) {
+          pendingPolicyStatusMessage =
+            "已保存，但概览数据刷新失败，请刷新页面查看最新状态";
+        }
       } catch (err) {
         updatePolicyStatusMessage(status, redactSensitiveText(ewoPolicyErrorMessage(err)), true);
         save.disabled = false;
@@ -1587,10 +1756,19 @@ function renderEwoDeliverablePolicy(container, item, policy, options = {}) {
   );
   container.append(head, form);
   refreshLocalReadiness();
+  if (pendingPolicyStatusMessage) {
+    updatePolicyStatusMessage(status, pendingPolicyStatusMessage);
+    pendingPolicyStatusMessage = null;
+  }
 }
 
 async function loadDeliverablePolicy(container, item, options = {}) {
-  if (/ewo/i.test(String(item.source || ""))) {
+  // 能力驱动分发：sourceInfo 由后端能力注册表下发，不再按 source 文案/
+  // 硬编码 id 判断（CODEX 架构审计调整项）。
+  const capabilities = item.sourceInfo && typeof item.sourceInfo === "object"
+    ? item.sourceInfo
+    : null;
+  if (capabilities && capabilities.syncCapable) {
     container.appendChild(overviewEl("p", "policy-loading", "正在读取更新策略..."));
     try {
       const [policyResponse, settingsResponse, discoveryResponse] = await Promise.all([
@@ -1609,14 +1787,14 @@ async function loadDeliverablePolicy(container, item, options = {}) {
       const settingsBody = settingsResponse ? await overviewReadJson(settingsResponse) : null;
       const discoveryBody = discoveryResponse ? await overviewReadJson(discoveryResponse) : null;
       if (typeof options.onPolicyLoaded === "function") options.onPolicyLoaded(body.data || {});
-      renderEwoDeliverablePolicy(container, item, body.data, {
+      renderSyncBindingEditor(container, item, body.data, {
         ...options,
         settings: settingsBody && settingsBody.ok === true ? settingsBody.data : null,
         discovery: discoveryBody && discoveryBody.ok === true ? discoveryBody.data : null,
       });
     } catch (err) {
       // 无绑定或读取失败时按未启用展示，并保留脱敏后的错误信息。
-      renderEwoDeliverablePolicy(container, item, null, options);
+      renderSyncBindingEditor(container, item, null, options);
       container.appendChild(overviewEl(
         "p",
         "policy-request-status is-error",
@@ -1625,26 +1803,14 @@ async function loadDeliverablePolicy(container, item, options = {}) {
     }
     return;
   }
-  if (item.id !== "VPI-T2-D5") {
-    container.append(
-      overviewEl("strong", "policy-editor-title", "更新方式"),
-      overviewEl("p", "policy-static-mode", "手动维护"),
-    );
-    return;
-  }
-  container.appendChild(overviewEl("p", "policy-loading", "正在读取更新策略..."));
-  try {
-    const response = await fetch(`/api/project-status/deliverables/${encodeURIComponent(item.id)}/update-policy`, {
-      headers: { Accept: "application/json" },
-      cache: "no-store",
-    });
-    const body = await overviewReadJson(response);
-    if (!response.ok || !body || body.ok !== true) throw overviewRequestError(body, response.status);
-    renderDeliverablePolicyEditor(container, item, body.data);
-  } catch (err) {
-    container.textContent = "";
-    container.appendChild(overviewEl("p", "policy-request-status is-error", err instanceof Error ? err.message : String(err)));
-  }
+  // 非 syncCapable：解释性静态文案（无来源连接器或来源契约未验证）。
+  container.append(
+    overviewEl("strong", "policy-editor-title", "更新方式"),
+    overviewEl("p", "policy-static-mode",
+      capabilities && capabilities.syncNote
+        ? capabilities.syncNote
+        : "手动维护"),
+  );
 }
 
 const DELIVERABLE_FIXED_SOURCES = {
@@ -2215,8 +2381,14 @@ function renderDeliverableEvidence(
   const syncMissing = [];
   const syncSupported = !["VPI-T2-D1", "VPI-T2-D4"].includes(item.id);
   const syncModeReady = ["automatic", "hybrid"].includes(policy.mode);
-  const syncExternalKeyReady = typeof policy.externalKey === "string" && Boolean(policy.externalKey.trim());
-  const syncMatchRule = policy.matchRule && typeof policy.matchRule === "object" ? policy.matchRule : {};
+  const syncMatchRule = policy.matchRule
+    && typeof policy.matchRule === "object"
+    && !Array.isArray(policy.matchRule)
+    ? policy.matchRule
+    : {};
+  const syncAggregate = syncMatchRule.aggregate === true;
+  const syncExternalKeyReady = syncAggregate
+    || (typeof policy.externalKey === "string" && Boolean(policy.externalKey.trim()));
   const syncMatchRuleReady = Boolean(syncMatchRule.reportType) && Object.keys(syncMatchRule).length >= 2;
   const syncMapping = policy.mapping && typeof policy.mapping === "object" ? policy.mapping : {};
   const syncAuthorities = policy.fieldAuthority && typeof policy.fieldAuthority === "object"
@@ -2334,6 +2506,8 @@ function renderDeliverableEvidence(
       if (deliverableIndex >= 0) {
         expandOverviewDetail(deliverableIndex, { text: resultStatusText, className: resultStatusClass });
       }
+      // 同步可能发布新的分析/表单快照，刷新概览数据避免环图停留在旧快照。
+      await loadProjectOverview();
     } catch (err) {
       syncStatus.textContent = `同步失败：${redactSensitiveText(err instanceof Error ? err.message : String(err))}`;
       syncStatus.className = "evidence-sync-status is-error";
@@ -4126,14 +4300,12 @@ function renderEwoSyncSummary(host, item, analysisData, feedbackText = "", feedb
 }
 
 function renderDeliverableStatusChart(rawItem, actions = {}) {
+  // 与概览环图同口径：快照换算含 tone 归零，避免快照状态配手工颜色；
+  // 待同步类状态显示状态标签而非占位进度。
+  const item = deliverableDisplayItem(rawItem);
   const formDisplay = deliverableFormDisplay(rawItem);
-  const item = formDisplay
-    ? {
-        ...rawItem,
-        progress: formDisplay.progress,
-        status: formDisplay.status,
-      }
-    : rawItem;
+  const chartSyncDisplay = deliverableSyncDisplay(rawItem);
+  const chartHasValue = SYNC_DISPLAY_VALUE_STATES.has(chartSyncDisplay.state);
 
   const chart = overviewEl("section", "deliverable-current-status-chart");
   chart.setAttribute("role", "region");
@@ -4142,22 +4314,31 @@ function renderDeliverableStatusChart(rawItem, actions = {}) {
   const head = overviewEl("div", "deliverable-current-status-head");
   head.append(
     overviewEl("h6", "section-sub-title", "当前状态图表"),
-    overviewEl("span", `status-text is-${deliverableTone(item)}`, safeDisplayValue(item.status || "未设置")),
+    overviewEl(
+      "span",
+      `status-text is-${chartHasValue ? deliverableTone(item) : "primary"}`,
+      safeDisplayValue(deliverableStatusText(item, item)),
+    ),
   );
 
   const numericProgress = Number(item.progress);
-  const hasProgress = item.progress !== null
+  const hasProgress = chartHasValue
+    && item.progress !== null
     && item.progress !== undefined
     && Number.isFinite(numericProgress);
   const progress = hasProgress
     ? Math.min(Math.max(numericProgress, 0), 100)
-    : (item.status === "已完成" ? 100 : 0);
-  const progressLabel = hasProgress || item.status === "已完成" ? `${progress}%` : "未设置";
+    : (chartHasValue && item.status === "已完成" ? 100 : 0);
+  const progressLabel = chartHasValue && (hasProgress || item.status === "已完成")
+    ? `${progress}%`
+    : (chartHasValue ? "未设置" : chartSyncDisplay.label);
 
   const progressBox = overviewEl("div", "deliverable-current-status-progress");
   const progressLabelRow = overviewEl("div", "deliverable-current-status-label");
   const progressLabelText = overviewEl("span", "deliverable-progress-title");
-  if (formDisplay) {
+  if (!chartHasValue) {
+    progressLabelText.textContent = chartSyncDisplay.label;
+  } else if (formDisplay) {
     const datePart = formDisplay.snapshotAt ? String(formDisplay.snapshotAt).slice(0, 10) : "";
     progressLabelText.append(
       overviewEl("span", "deliverable-snapshot-tag", "快照进度"),
@@ -4304,6 +4485,8 @@ async function runDeliverableSyncFromAnalysis(
     const feedback = projectStatusSyncFeedback(data);
     const loaded = await loadDeliverableAnalysis(analysisPanel, item, statusChart, analysisOptions);
     if (loaded) analysisSyncReadiness.setStatus(feedback.text, feedback.tone);
+    // 同步可能发布新的分析/表单快照，刷新概览环图数据。
+    await loadProjectOverview();
   } catch (err) {
     analysisSyncReadiness.setStatus(
       `同步失败：${redactSensitiveText(err instanceof Error ? err.message : String(err))}`,
@@ -4344,6 +4527,14 @@ function buildEwoInteractiveQuerySpec(policy = {}, item = {}) {
     projectCode: "project_code",
     subjectKeyword: "subject_keyword",
     modelInfo: "model_info",
+    changeType: "change_type",
+    changeSubType: "change_sub_type",
+    area: "area",
+    state: "state",
+    rspDepartment: "rsp_department",
+    rspSmt: "rsp_smt",
+    submitStart: "submit_start",
+    submitEnd: "submit_end",
   };
   const filters = {};
   Object.entries(fieldMap).forEach(([policyKey, filterKey]) => {
@@ -5426,11 +5617,21 @@ function renderDeliverableDetailPage(deliverableId) {
     return;
   }
 
+  // 详情页展示口径与概览环图一致：快照换算的状态/进度统一走
+  // deliverableDisplayItem；手工字段（项目手工进度等）保留原始值。
+  const displayItem = deliverableDisplayItem(item);
+  const syncDisplay = deliverableSyncDisplay(item);
+  const hasDisplayValue = SYNC_DISPLAY_VALUE_STATES.has(syncDisplay.state);
+
   const page = overviewEl("article", "deliverable-detail-page");
 
-  // 切换交付物详情时重置车型筛选，避免上一个交付物的查找条件残留。
-  analysisModelFilter.model = "";
-  analysisModelFilter.match = "fuzzy";
+  // 切换交付物详情时重置车型筛选，避免上一个交付物的查找条件残留；
+  // 同一交付物的重绘（如保存同步绑定后）保留当前筛选（GPT 终审 P2）。
+  if (analysisModelFilter.deliverableId !== item.id) {
+    analysisModelFilter.model = "";
+    analysisModelFilter.match = "fuzzy";
+    analysisModelFilter.deliverableId = item.id;
+  }
 
   const head = overviewEl("div", "deliverable-detail-page-head");
   const headNav = overviewEl("div", "deliverable-detail-page-nav");
@@ -5457,7 +5658,11 @@ function renderDeliverableDetailPage(deliverableId) {
   detailEditPanel.setAttribute("aria-label", `${item.name} 编辑表单`);
 
   const headStatusGroup = overviewEl("div", "deliverable-page-status-group");
-  headStatusGroup.appendChild(overviewEl("span", `status-text is-${deliverableTone(item)}`, item.status));
+  headStatusGroup.appendChild(overviewEl(
+    "span",
+    `status-text is-${hasDisplayValue ? deliverableTone(displayItem) : "primary"}`,
+    deliverableStatusText(item, displayItem),
+  ));
   const editButton = overviewEl("button", "detail-edit", null);
   editButton.type = "button";
   const editLabel = `编辑 ${item.name}`;
@@ -5528,17 +5733,51 @@ function renderDeliverableDetailPage(deliverableId) {
   });
   metaSection.appendChild(statusChart.el);
   metaSection.appendChild(interactiveQueryHost);
+  if (/ewo/i.test(String(item.source || "")) && window.EWOEnrichment) {
+    const enrichmentHost = overviewEl("section", "deliverable-form-analysis");
+    enrichmentHost.appendChild(overviewEl("p", "section-hint", "使用下方已保存的EWO匹配条件准备增强报表。"));
+    enrichmentHost.setAttribute("data-ewo-enrichment", "true");
+    const enrichmentPanel = window.EWOEnrichment.mount({
+      host: enrichmentHost,
+      getFilters: () => {
+        const spec = buildEwoInteractiveQuerySpec(ewoInteractivePolicy, item);
+        if (!Object.keys(spec.filters).length) throw new Error("请先保存至少一项EWO匹配条件");
+        return spec.filters;
+      },
+      request: async (path, payload) => {
+        if ((path.endsWith("/jobs") || path.endsWith("/restore"))
+          && ewoInteractivePolicy.matchRule?.contractVersion === "2"
+          && ewoInteractivePolicy.matchRule.bindingMode === "single_record") {
+          payload = { ...payload, sourceItemId: ewoInteractivePolicy.matchRule.sourceItemId };
+        }
+        const response = await fetch(path, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const body = await overviewReadJson(response);
+        if (!response.ok || !body || body.ok !== true) throw overviewRequestError(body, response.status);
+        return body.data;
+      },
+    });
+    enrichmentHost.destroyEwoEnrichment = enrichmentPanel.destroy;
+    metaSection.appendChild(enrichmentHost);
+  }
   const grid = overviewEl("div", "detail-inline-grid");
-  const isSnapshotSource = Boolean(deliverableFormDisplay(item));
+  // 数据来源标注区分明细分析快照与表单快照；无生效快照时显示上游系统。
+  const snapshotSummary = deliverableSnapshotSummary(item);
+  const snapshotSourceLabel = snapshotSummary
+    ? (snapshotSummary.kind === "analysis" ? "明细分析快照" : "表单快照")
+    : null;
   const pairs = [
-    ["当前状态", item.status],
+    ["当前状态", deliverableStatusText(item, displayItem)],
     ["所属科室", item.department || "未设置"],
     ["所属阶段", item.stage || (overviewSavedState.phase && (overviewSavedState.phase.displayName || overviewSavedState.phase.id)) || ""],
     ["计划完成日期", item.plannedDate],
     ["实际完成日期", item.actualDate || "未完成"],
     ["项目手工进度", `${Number(item.progress) || 0}%`],
-    ["数据来源", isSnapshotSource ? "表单快照" : (item.source || "未设置")],
-    ["更新方式", item.updateMethod === "manual" ? "手动维护" : (item.updateMethod || deliverablePolicyModeLabel(item.updatePolicy && item.updatePolicy.mode))],
+    ["数据来源", snapshotSourceLabel || item.source || "未设置"],
+    ["更新方式", deliverablePolicyModeLabel(item.updateMethod || (item.updatePolicy && item.updatePolicy.mode))],
     ["更新时间", item.updatedAt || (overviewSavedState.phase && overviewSavedState.phase.updatedAt)],
     ["风险与备注", item.note || "无"],
   ];
@@ -5868,6 +6107,8 @@ async function runDeliverableFormArchiveSync(job, button, statusMessage, reload)
     }
     statusMessage.textContent = "后台同步完成，正在刷新表单快照...";
     await loadArchiveJobs(true);
+    // 归档同步可能发布新的表单快照，重新拉取概览数据再刷新关联视图。
+    await loadProjectOverview();
     if (typeof reload === "function") await reload();
   } catch (error) {
     statusMessage.textContent = `同步失败：${redactSensitiveText(error instanceof Error ? error.message : String(error))}`;
@@ -5915,14 +6156,18 @@ function renderDeliverableDetails(tbody, data) {
     renderTableState(tbody, "empty");
     return;
   }
-  rows.forEach((item, index) => {
+  rows.forEach((rawRow, index) => {
+    // 与状态总览环图共用同一份快照换算口径（外部归档行无快照原样透传）。
+    const item = deliverableDisplayItem(rawRow);
+    const syncDisplay = deliverableSyncDisplay(item);
+    const hasDisplayValue = SYNC_DISPLAY_VALUE_STATES.has(syncDisplay.state);
     const row = document.createElement("tr");
     row.className = "deliverable-detail-row";
     const values = [
       item.name,
-      item.status,
+      deliverableStatusText(item, item),
       item.plannedDate,
-      deliverableProgressOrDate(item),
+      hasDisplayValue ? deliverableProgressOrDate(item) : syncDisplay.label,
       item.note,
       item.source,
     ];
@@ -5930,7 +6175,8 @@ function renderDeliverableDetails(tbody, data) {
       const cell = overviewEl("td", null);
       cell.dataset.label = OVERVIEW_DETAIL_COLUMNS[cellIndex];
       if (cellIndex === 1) {
-        cell.appendChild(overviewEl("span", `status-text is-${deliverableTone(item)}`, safeDisplayValue(value)));
+        const statusTone = hasDisplayValue ? deliverableTone(item) : "primary";
+        cell.appendChild(overviewEl("span", `status-text is-${statusTone}`, safeDisplayValue(value)));
       } else {
         cell.textContent = safeDisplayValue(value);
       }
@@ -5998,9 +6244,17 @@ function renderProjectOverview() {
   }
   try {
     renderMilestoneTimeline(timelineBody, overviewSavedState);
-    renderPhaseSummary(phaseBody, overviewSavedState.phase, overviewSavedState.currentStage);
+    const nodeData = {
+      ...overviewSavedState,
+      deliverables: overviewSavedState.deliverables.map(deliverableDisplayItem),
+    };
+    if (window.VseNodeOverview && window.VseNodeOverview.render) {
+      window.VseNodeOverview.render(phaseBody, nodeData, openMilestoneEditor);
+    } else {
+      renderPhaseSummary(phaseBody, overviewSavedState.phase, overviewSavedState.currentStage);
+    }
     renderDeliverableProgress(progressGrid, overviewSavedState.deliverables);
-    renderRiskSummary(riskBody, overviewSavedState.summary);
+    window.VseNodeOverview.renderProjectRisks(riskBody, nodeData);
     renderExternalSyncSummary(externalSummary, overviewArchiveJobs);
     renderMilestoneMaintenance(maintenanceBody, overviewSavedState);
     renderDetailsSummary(detailsSummary, overviewSavedState);
@@ -7022,6 +7276,7 @@ function milestoneRowElement(row, index) {
     wrap.appendChild(control);
     control.addEventListener(field === "type" ? "change" : "input", () => {
       row[field] = control.value;
+      if (field === "type") row.status = MILESTONE_LABEL_BY_TYPE[control.value] || "未开始";
       wrap.classList.remove("is-invalid");
       const error = wrap.querySelector(".field-error");
       if (error) error.remove();
@@ -7194,9 +7449,8 @@ function validateMilestoneDraft() {
     if (!errors[dateKey] && date && (row.type === "done" || row.status === "已完成") && today && date > today) {
       errors[dateKey] = `已达成节点日期不能晚于当前日期 ${today}`;
     }
-    if (!errors[dateKey] && date && (row.type === "planned" || row.status === "未开始") && today && date < today) {
-      errors[dateKey] = `计划节点日期不能早于当前日期 ${today}`;
-    }
+    // A past planned date is a valid unfinished/overdue node, not an invalid draft.
+    // Keep it editable until the user explicitly confirms completion.
     });
   return errors;
 }
@@ -7597,6 +7851,10 @@ function renderRows(data, preferredColumns, mode = "") {
   wrap.className = "table-wrap";
   const table = document.createElement("table");
   table.className = "result-table";
+  const isSor = mode === "tdc-sor" || mode === "sor" || mode === "tdc_sor";
+  if (isSor) {
+    table.classList.add("sor-result-table");
+  }
 
   const headerRows = Array.isArray(data.headerRows) ? data.headerRows : null;
   const columns = Array.isArray(data.columns) ? data.columns : null;
@@ -7654,7 +7912,7 @@ function renderRows(data, preferredColumns, mode = "") {
   } else {
     const keys = orderedColumns(rows, preferredColumns);
     const headerRow = document.createElement("tr");
-    (keys.length ? keys : ["消息"]).forEach((key) => {
+    (keys.length ? keys : ["消息"]).forEach((key, i) => {
       const th = document.createElement("th");
       th.textContent = key;
       headerRow.appendChild(th);
@@ -7684,7 +7942,7 @@ function renderRows(data, preferredColumns, mode = "") {
           }
         } else {
           const keys = orderedColumns([row], preferredColumns);
-          keys.slice(0, colCount).forEach((k) => {
+          keys.slice(0, colCount).forEach((k, i) => {
             const td = document.createElement("td");
             td.textContent = safeDisplayValue(row[k]);
             tr.appendChild(td);
@@ -8021,6 +8279,103 @@ function validateDeliverableForm(form) {
   return false;
 }
 
+let tdcSorProjectRequestSeq = 0;
+
+async function loadTdcSorProjectOptions(form) {
+  if (!form) form = document.getElementById("deliverable-form");
+  if (!form) return;
+  const select = form.querySelector("#tdc-car-type-project-options");
+  const loadBtn = form.querySelector("#tdc-load-car-type-projects");
+  if (!select) return;
+
+  const baseUrl = fieldValue(form, "base_url");
+  const capturedHeaders = fieldValue(form, "headers");
+  const requestSeq = ++tdcSorProjectRequestSeq;
+  form.dataset.projectRequestSeq = String(requestSeq);
+  const capturedBaseUrl = baseUrl;
+  const hiddenId = form.querySelector('[name="car_type_project_id"]');
+  if (hiddenId) hiddenId.value = "";
+  select.value = "";
+  select.disabled = true;
+
+  if (loadBtn) {
+    loadBtn.disabled = true;
+    loadBtn.textContent = "加载中...";
+  }
+
+  try {
+    const headers = parseHeaders(capturedHeaders);
+    const resp = await fetch("/api/tdc/sor/car-type-projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ base_url: baseUrl, headers }),
+    });
+    const body = await resp.json();
+
+    const isDetached = typeof form.isConnected === "boolean" ? !form.isConnected : (document.body && !document.body.contains(form));
+    if (isDetached || Number(form.dataset.projectRequestSeq) !== requestSeq) {
+      return;
+    }
+    if (fieldValue(form, "base_url") !== capturedBaseUrl || fieldValue(form, "headers") !== capturedHeaders) {
+      return;
+    }
+
+    if (!resp.ok || !body.ok) {
+      const err = body.error || {};
+      const msg = formatApiErrorMessage(err, resp.status);
+      select.innerHTML = "";
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = `加载失败：${redactSensitiveText(msg)}`;
+      select.appendChild(opt);
+      return;
+    }
+
+    const rawProjects = (body.data && Array.isArray(body.data.projects)) ? body.data.projects : [];
+    const validProjects = rawProjects.filter((p) => p && typeof p.id === "string" && p.id.trim());
+    select.innerHTML = "";
+    if (validProjects.length === 0) {
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = "未找到可用车型项目";
+      select.appendChild(opt);
+      return;
+    }
+
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = `请选择车型项目（共 ${validProjects.length} 项）`;
+    select.appendChild(placeholder);
+
+    validProjects.forEach((proj) => {
+      const opt = document.createElement("option");
+      const idVal = proj.id.trim();
+      opt.value = idVal;
+      opt.dataset.projectNo = proj.projectNo || "";
+      opt.dataset.projectName = proj.projectName || "";
+      opt.textContent = proj.label || proj.projectNo || proj.projectName || idVal;
+      select.appendChild(opt);
+    });
+  } catch (err) {
+    const isDetached = typeof form.isConnected === "boolean" ? !form.isConnected : (document.body && !document.body.contains(form));
+    if (isDetached || Number(form.dataset.projectRequestSeq) !== requestSeq) {
+      return;
+    }
+    select.innerHTML = "";
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = `加载失败：${redactSensitiveText(err.message)}`;
+    select.appendChild(opt);
+  } finally {
+    const isDetached = typeof form.isConnected === "boolean" ? !form.isConnected : (document.body && !document.body.contains(form));
+    if (loadBtn && !isDetached && Number(form.dataset.projectRequestSeq) === requestSeq) {
+      select.disabled = false;
+      loadBtn.disabled = false;
+      loadBtn.textContent = "重新加载车型项目";
+    }
+  }
+}
+
 function buildDeliverableForm(item) {
   const form = document.createElement("form");
   form.id = "deliverable-form";
@@ -8069,15 +8424,92 @@ function buildDeliverableForm(item) {
     input.name = field.name;
     input.dataset.deliverableField = field.name;
     input.type = field.type === "date" ? "date" : field.type === "number" ? "number" : "text";
+    label.append(span, input);
     if (item.id === "tdc-sor" && field.name === "car_type_project") {
       input.placeholder = "例如：E262S（车型项目，可手动输入）";
       input.autocomplete = "off";
+
+      const hiddenId = document.createElement("input");
+      hiddenId.type = "hidden";
+      hiddenId.name = "car_type_project_id";
+      hiddenId.id = "tdc-car-type-project-id";
+
+      const projectGroup = document.createElement("div");
+      projectGroup.className = "car-type-project-group";
+
+      const select = document.createElement("select");
+      select.id = "tdc-car-type-project-options";
+      select.className = "car-type-project-options";
+      const defaultOption = document.createElement("option");
+      defaultOption.value = "";
+      defaultOption.textContent = "请选择车型项目（需先加载）";
+      select.appendChild(defaultOption);
+
+      const loadBtn = document.createElement("button");
+      loadBtn.type = "button";
+      loadBtn.id = "tdc-load-car-type-projects";
+      loadBtn.className = "segment car-type-load-btn";
+      loadBtn.textContent = "重新加载车型项目";
+
+      loadBtn.addEventListener("click", () => {
+        loadTdcSorProjectOptions(form);
+      });
+
+      select.addEventListener("change", () => {
+        const chosen = select.options && select.selectedIndex >= 0 ? select.options[select.selectedIndex] : null;
+        if (!chosen || !chosen.value) {
+          hiddenId.value = "";
+          return;
+        }
+        const visibleText = (chosen.dataset && (chosen.dataset.projectNo || chosen.dataset.projectName)) || "";
+        input.value = visibleText;
+        hiddenId.value = chosen.value;
+      });
+
+      const clearSelectedId = () => {
+        hiddenId.value = "";
+        select.value = "";
+      };
+      input.addEventListener("input", clearSelectedId);
+      input.addEventListener("change", clearSelectedId);
+
+      projectGroup.append(select, loadBtn);
+      label.append(hiddenId, projectGroup);
     }
-    label.append(span, input);
     fieldsGrid.appendChild(label);
   });
   fieldsSection.appendChild(fieldsGrid);
   form.appendChild(fieldsSection);
+
+  if (item.id === "tdc-sor") {
+    const baseUrlInput = form.querySelector("#tdc-base-url");
+    const headersInput = form.querySelector("#tdc-headers");
+    const invalidateSorProjects = () => {
+      form.dataset.projectRequestSeq = String(++tdcSorProjectRequestSeq);
+      const loadBtn = form.querySelector("#tdc-load-car-type-projects");
+      if (loadBtn) { loadBtn.disabled = false; loadBtn.textContent = "重新加载车型项目"; }
+      const hiddenId = form.querySelector('[name="car_type_project_id"]');
+      if (hiddenId) hiddenId.value = "";
+      const select = form.querySelector("#tdc-car-type-project-options");
+      if (select) {
+        select.disabled = false;
+        select.innerHTML = "";
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = "连接配置已变更，请重新加载车型项目";
+        select.appendChild(opt);
+        select.value = "";
+      }
+    };
+    if (baseUrlInput) {
+      baseUrlInput.addEventListener("input", invalidateSorProjects);
+      baseUrlInput.addEventListener("change", invalidateSorProjects);
+    }
+    if (headersInput) {
+      headersInput.addEventListener("input", invalidateSorProjects);
+      headersInput.addEventListener("change", invalidateSorProjects);
+    }
+  }
 
   const operations = document.createElement("section");
   operations.className = "form-block actions-block deliverable-actions";
@@ -8153,11 +8585,17 @@ function renderDeliverableDetail(item) {
   const error = document.getElementById("deliverable-error");
   const result = document.getElementById("deliverable-result");
   deliverableLatestRendered = deliverableRequestSeq;
+  Object.keys(deliverablePreviewStates).forEach((key) => delete deliverablePreviewStates[key]);
   detail.innerHTML = "";
   panel.hidden = true;
   error.hidden = true;
   result.className = "is-empty";
   result.textContent = "暂无结果";
+  const ctx = document.getElementById("deliverable-preview-context");
+  if (ctx) {
+    ctx.hidden = true;
+    ctx.textContent = "";
+  }
 
   const categoryName = (deliverableCategories.find((entry) => entry.id === item.category) || {}).name || item.category;
   const head = document.createElement("div");
@@ -8220,6 +8658,12 @@ function collectDeliverablePayload(item, operation) {
     const value = fieldValue(form, field.name);
     if (value) payload.filters[field.name] = value;
   });
+  if (item.id === "tdc-sor") {
+    const projectId = fieldValue(form, "car_type_project_id");
+    if (projectId) {
+      payload.filters.car_type_project_id = projectId;
+    }
+  }
   const numberNames = operation === "query"
     ? ["page", "page_size"]
     : operation === "crawl_all"
@@ -8274,7 +8718,40 @@ function showDeliverableError(message) {
   }
 }
 
-function renderDeliverableResult(data, item, operation) {
+const deliverablePreviewStates = {};
+
+function formatDeliverableFilterSummary(item, filters = {}) {
+  const parts = [];
+  const fieldMap = new Map();
+  (item.fields || []).forEach((f) => fieldMap.set(f.name, f.label || f.name));
+  Object.entries(filters).forEach(([key, val]) => {
+    if (key === "car_type_project_id") return;
+    if (val !== undefined && val !== null && String(val).trim()) {
+      const label = fieldMap.get(key) || key;
+      parts.push(`${label}: ${redactSensitiveText(String(val).trim())}`);
+    }
+  });
+  return parts.length ? parts.join("；") : "无筛选条件";
+}
+
+function getOrCreateDeliverablePreviewContext() {
+  let ctx = document.getElementById("deliverable-preview-context");
+  if (!ctx) {
+    ctx = document.createElement("div");
+    ctx.id = "deliverable-preview-context";
+    ctx.className = "deliverable-preview-context";
+    const panel = document.getElementById("deliverable-result-panel");
+    const result = document.getElementById("deliverable-result");
+    if (panel && result) {
+      panel.insertBefore(ctx, result);
+    } else if (panel) {
+      panel.appendChild(ctx);
+    }
+  }
+  return ctx;
+}
+
+function renderDeliverableResult(data, item, operation, capturedContext = null) {
   const panel = document.getElementById("deliverable-result-panel");
   const target = document.getElementById("deliverable-result");
   panel.hidden = false;
@@ -8282,6 +8759,21 @@ function renderDeliverableResult(data, item, operation) {
   target.className = "result-output-content";
   target.innerHTML = "";
   document.getElementById("deliverable-result-kind").textContent = DELIVERABLE_OPERATION_LABELS[operation] || operation;
+
+  const ctx = getOrCreateDeliverablePreviewContext();
+  if (capturedContext) {
+    deliverablePreviewStates[item.id] = capturedContext;
+    ctx.hidden = false;
+    ctx.textContent = `预览生成时间：${capturedContext.queryTime} · 筛选条件：${capturedContext.filterSummary}`;
+  } else if (deliverablePreviewStates[item.id] && deliverablePreviewStates[item.id].hasPreview) {
+    const prev = deliverablePreviewStates[item.id];
+    ctx.hidden = false;
+    ctx.textContent = `预览生成时间：${prev.queryTime} · 筛选条件：${prev.filterSummary}`;
+  } else {
+    ctx.hidden = true;
+    ctx.textContent = "";
+  }
+
   const meta = document.createElement("p");
   meta.className = "result-output-meta";
   meta.textContent = `${item.name} -> ${operation}`;
@@ -8296,7 +8788,7 @@ function renderDeliverableResult(data, item, operation) {
     warning.textContent = `列表接口尚未提供 ${data.unmappedColumns.length} 个官方导出列，已保留为空值；如需与内网报表完全一致，请使用官方导出预览。`;
     target.appendChild(warning);
   }
-  target.appendChild(renderRows(data, []));
+  target.appendChild(renderRows(data, [], item.id));
 }
 
 function recordRecentRun(item, operation, status, summary) {
@@ -8351,19 +8843,31 @@ async function runDeliverableOperation(item, operation) {
   const seq = ++deliverableRequestSeq;
   setDeliverableStatus(operation === "export" ? "导出中" : "运行中", true);
   showDeliverableError("");
-  const payload = collectDeliverablePayload(item, operation);
-  const endpoint = config.endpoints[operation];
-  if (!endpoint) {
-    deliverableRunning = false;
-    setDeliverableStatus("", false);
-    clearDeliverablePayloadSecrets(payload);
-    return;
+
+  const requestForm = document.getElementById("deliverable-form");
+  const prev = deliverablePreviewStates[item.id];
+  if (prev && prev.hasPreview) {
+    const ctx = getOrCreateDeliverablePreviewContext();
+    ctx.hidden = false;
+    ctx.textContent = `保留上次查询预览（生成时间：${prev.queryTime} · 筛选条件：${prev.filterSummary}）· 新操作处理中...`;
   }
+
+  let payload = null;
   try {
+    payload = collectDeliverablePayload(item, operation);
+    const endpoint = config.endpoints[operation];
+    if (!endpoint) {
+      throw new Error(`未配置操作端点: ${operation}`);
+    }
+
     if (operation === "export") {
       const outcome = await fetchBlobDownload(endpoint, payload, config.defaultExportName);
       if (seq > deliverableLatestRendered) {
         deliverableLatestRendered = seq;
+        delete deliverablePreviewStates[item.id];
+        const ctx = getOrCreateDeliverablePreviewContext();
+        ctx.hidden = true;
+        ctx.textContent = "";
         const panel = document.getElementById("deliverable-result-panel");
         const target = document.getElementById("deliverable-result");
         panel.hidden = false;
@@ -8376,7 +8880,7 @@ async function runDeliverableOperation(item, operation) {
         document.getElementById("deliverable-result-kind").textContent = "导出 XLSX";
       }
       recordRecentRun(item, operation, "success", `文件 ${outcome.fileName}`);
-      setDeliverableStatus(`已下载：${outcome.fileName}`, false);
+      if (requestForm === document.getElementById("deliverable-form")) setDeliverableStatus(`已下载：${outcome.fileName}`, false);
     } else {
       const resp = await fetch(endpoint, {
         method: "POST",
@@ -8390,19 +8894,42 @@ async function runDeliverableOperation(item, operation) {
       }
       if (seq > deliverableLatestRendered) {
         deliverableLatestRendered = seq;
-        renderDeliverableResult(body.data || {}, item, operation);
+        const capturedContext = {
+          hasPreview: true,
+          queryTime: new Date().toLocaleString(),
+          filterSummary: formatDeliverableFilterSummary(item, payload.filters),
+        };
+        renderDeliverableResult(body.data || {}, item, operation, capturedContext);
       }
       const data = body.data || {};
       recordRecentRun(item, operation, "success", `rows=${(data.rows || []).length}`);
-      setDeliverableStatus("完成", false);
+      if (requestForm === document.getElementById("deliverable-form")) setDeliverableStatus("完成", false);
     }
   } catch (err) {
     if (seq > deliverableLatestRendered) {
       deliverableLatestRendered = seq;
       showDeliverableError(redactSensitiveText(err.message));
+      const retained = deliverablePreviewStates[item.id];
+      if (operation === "export") {
+        document.getElementById("deliverable-result-kind").textContent = "导出失败";
+        if (retained && retained.hasPreview) {
+          const ctx = getOrCreateDeliverablePreviewContext();
+          ctx.hidden = false;
+          ctx.textContent = `保留上次查询预览（生成时间：${retained.queryTime} · 筛选条件：${retained.filterSummary}）· 导出失败`;
+        }
+      } else {
+        if (retained && retained.hasPreview) {
+          document.getElementById("deliverable-result-kind").textContent = `${DELIVERABLE_OPERATION_LABELS[operation] || operation}失败（保留上次预览）`;
+          const ctx = getOrCreateDeliverablePreviewContext();
+          ctx.hidden = false;
+          ctx.textContent = `保留上次查询预览（生成时间：${retained.queryTime} · 筛选条件：${retained.filterSummary}）· 操作失败`;
+        } else {
+          document.getElementById("deliverable-result-kind").textContent = `${DELIVERABLE_OPERATION_LABELS[operation] || operation}失败`;
+        }
+      }
     }
     recordRecentRun(item, operation, "failed", redactSensitiveText(err.message));
-    setDeliverableStatus("", false);
+    if (requestForm === document.getElementById("deliverable-form")) setDeliverableStatus(operation === "export" ? "导出失败" : "操作失败", false);
   } finally {
     clearDeliverablePayloadSecrets(payload);
     deliverableRunning = false;
@@ -9709,6 +10236,7 @@ async function loadArchiveJobs(keepSelection = true) {
   container.appendChild(archiveEl("p", "loading", "加载任务中..."));
 
   try {
+    await ensureSettingsData();
     const resp = await fetch("/api/scheduled-archive/jobs", {
       headers: { Accept: "application/json" },
       cache: "no-store",
@@ -10089,6 +10617,12 @@ function renderArchiveConfigCard(job) {
   const compatibleCredential = archiveEl("option", null, "兼容引用（unified-domain）");
   compatibleCredential.value = "unified-domain";
   aliasInput.append(keepCredential, domainCredential, compatibleCredential);
+  // 未配置凭据且凭据保护库可用时默认预选统一域账号，省去每次手动选择；
+  // 已配置的任务保持「保持当前登录信息」默认，避免重复提交凭据引用。
+  const vaultConfigured = settingsData !== null && settingsData.credentialVaultConfigured === true;
+  if (!job.credentialConfigured && vaultConfigured) {
+    aliasInput.value = "domain";
+  }
   aliasLabel.appendChild(aliasSpan);
   aliasLabel.appendChild(aliasInput);
   aliasLabel.appendChild(
@@ -10398,8 +10932,13 @@ async function handleArchiveSave(job) {
     showArchiveFieldErrors({ network: "保存请求失败，网络异常或服务器未响应" });
     if (formStatus) formStatus.textContent = "保存失败";
   } finally {
-    // Clear write-only alias input in finally
-    if (aliasInput) aliasInput.value = "";
+    // write-only 语义：保存成功后清空凭据引用输入。
+    // 失败路径没有重渲染，这里恢复用户本次提交的选择；未选择时才回填预选默认。
+    if (aliasInput) {
+      const vaultConfigured = settingsData !== null && settingsData.credentialVaultConfigured === true;
+      aliasInput.value = aliasVal
+        || (!job.credentialConfigured && vaultConfigured ? "domain" : "");
+    }
     if (clearAliasInput) clearAliasInput.checked = false;
     archiveMutating = false;
     if (saveBtn) {
@@ -10441,6 +10980,8 @@ async function handleArchiveSyncNow(job) {
     }
     if (formStatus) formStatus.textContent = "下载已完成，正在更新记录...";
     await loadArchiveJobs(true);
+    // 立即下载可能发布新的表单快照，同步刷新概览环图数据。
+    await loadProjectOverview();
   } catch (_e) {
     if (formStatus) formStatus.textContent = "下载请求失败，网络异常";
   } finally {
@@ -11132,6 +11673,23 @@ function setupArasForm() {
 
 let settingsData = null;
 let settingsMutating = false;
+
+// 归档工作台等面板在未打开系统设置时也需要凭据库状态；
+// 读取失败按未配置处理，不影响任务列表加载。
+async function ensureSettingsData() {
+  if (settingsData !== null) return settingsData;
+  try {
+    const resp = await fetch("/api/settings", {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+    const body = await resp.json();
+    if (resp.ok && body && body.ok) settingsData = body.data || {};
+  } catch (_err) {
+    return null;
+  }
+  return settingsData;
+}
 
 function showSettingsGlobalError(message) {
   const el = document.getElementById("settings-global-error");

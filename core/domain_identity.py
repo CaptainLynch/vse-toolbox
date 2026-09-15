@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+from core.diagnostic_recording import observed
+
 import json
+import hashlib
 import os
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from threading import RLock
+from urllib.parse import urlsplit
 
 from core.credential_provider import CredentialProviderError, ResolvedCredential
 
@@ -39,6 +44,7 @@ class WindowsDPAPICredentialVault:
             raise CredentialVaultError("Windows DPAPI is unavailable") from exc
         return win32crypt
 
+    @observed("identity.WindowsDPAPICredentialVault.store")
     def store(self, username: str, password: str) -> None:
         user = str(username or "").strip()
         secret = str(password or "")
@@ -61,6 +67,7 @@ class WindowsDPAPICredentialVault:
             clear = b""
             secret = ""
 
+    @observed("identity.WindowsDPAPICredentialVault.clear")
     def clear(self) -> None:
         try:
             self._path.unlink(missing_ok=True)
@@ -127,6 +134,19 @@ class DPAPICredentialProvider:
 class _SessionRecord:
     updated_at: datetime
     expires_at: datetime
+    source_root: str | None = None
+    scope: str | None = None
+
+
+def _identity_source_root(value: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError('Invalid identity source')
+    parsed = urlsplit(value)
+    if (parsed.scheme not in ('http', 'https') or not parsed.hostname
+            or parsed.username or parsed.password or parsed.query or parsed.fragment):
+        raise ValueError('Invalid identity source')
+    port = parsed.port or (443 if parsed.scheme == 'https' else 80)
+    return json.dumps([parsed.scheme, parsed.hostname.lower(), port, parsed.path.rstrip('/')])
 
 
 class DomainSessionRegistry:
@@ -134,30 +154,58 @@ class DomainSessionRegistry:
         self._ttl = ttl
         self._records: dict[str, _SessionRecord] = {}
         self._sessions: dict[str, Any] = {}
+        self._lock = RLock()
 
-    def mark_authenticated(self, system: str, session: Any | None = None) -> None:
+    @observed("identity.DomainSessionRegistry.mark_authenticated")
+    def mark_authenticated(self, system: str, session: Any | None = None, *,
+                           principal: str | None = None, source_root: str | None = None) -> None:
         now = datetime.now(timezone.utc)
-        self._records[system] = _SessionRecord(now, now + self._ttl)
-        if isinstance(session, str) and session in {"aras", "tdc"}:
-            self._records[session] = _SessionRecord(now, now + self._ttl)
-            return
-        if session is not None:
-            self._sessions[system] = session
+        source = scope = None
+        if principal is not None or source_root is not None:
+            if not isinstance(principal, str) or not principal.strip() or session is None:
+                raise ValueError('Incomplete identity binding')
+            source = _identity_source_root(source_root)
+            # Conservative exact principal: aliases produce separate scopes, never guessed equivalence.
+            scope = hashlib.sha256(json.dumps(
+                [system, source, principal.strip()], ensure_ascii=True
+            ).encode('utf-8')).hexdigest()
+        with self._lock:
+            self._records[system] = _SessionRecord(now, now + self._ttl, source, scope)
+            self._sessions.pop(system, None)
+            if isinstance(session, str) and session in {"aras", "tdc"}:
+                self._records[session] = _SessionRecord(now, now + self._ttl)
+                self._sessions.pop(session, None)
+                return
+            if session is not None:
+                self._sessions[system] = session
 
+    def bound_session(self, system: str, source_root: str) -> tuple[Any, str] | None:
+        source = _identity_source_root(source_root)
+        with self._lock:
+            record = self._records.get(system)
+            session = self.session(system)
+            if session is None or record is None or not record.scope or record.source_root != source:
+                return None
+            return session, record.scope
+
+    @observed("identity.DomainSessionRegistry.session")
     def session(self, system: str) -> Any | None:
-        record = self._records.get(system)
-        if record is None or record.expires_at <= datetime.now(timezone.utc):
-            self._sessions.pop(system, None)
-            return None
-        return self._sessions.get(system)
+        with self._lock:
+            record = self._records.get(system)
+            if record is None or record.expires_at <= datetime.now(timezone.utc):
+                self._sessions.pop(system, None)
+                return None
+            return self._sessions.get(system)
 
+    @observed("identity.DomainSessionRegistry.clear")
     def clear(self, system: str | None = None) -> None:
-        if system is None:
-            self._records.clear()
-            self._sessions.clear()
-        else:
-            self._records.pop(system, None)
-            self._sessions.pop(system, None)
+        with self._lock:
+            if system is None:
+                self._records.clear()
+                self._sessions.clear()
+            else:
+                self._records.pop(system, None)
+                self._sessions.pop(system, None)
 
     def payload(self) -> dict[str, dict[str, object]]:
         now = datetime.now(timezone.utc)

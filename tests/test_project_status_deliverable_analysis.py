@@ -192,6 +192,80 @@ def test_service_publishes_cache_trend_and_alert_items(tmp_db: DatabaseManager) 
     assert due_soon["items"][0]["days"] == 2
 
 
+def test_latest_link_summary_matches_detail_recalc_for_ewo(tmp_db: DatabaseManager) -> None:
+    """概览联动摘要与明细页同口径：EWO 交付物按当前日期重算逾期数。
+
+    EWO 行必须满足明细页重算的数据契约（部门默认范围关键词 + EWO 阶段码），
+    与 ARAS EWO 连接器产出的行结构一致。
+    """
+    service = ProjectStatusDeliverableAnalysisService(
+        tmp_db,
+        clock=lambda: date(2026, 8, 20),
+    )
+    service.publish(
+        "VPI-T2-D3",
+        201,
+        [
+            {
+                "id": "E-1",
+                "name": "门板缺件",
+                "responsibleDepartment": "车身设计科",
+                "_rsp_department": "技术中心_车体工程",
+                "owner": "陈璇",
+                "status": "IMPL",
+                "dueDate": "2026-08-25",
+            },
+            {
+                "id": "E-2",
+                "name": "尾门卡滞",
+                "responsibleDepartment": "车身设计科",
+                "_rsp_department": "技术中心_车体工程",
+                "owner": "李珊",
+                "status": "CLOSE",
+                "dueDate": "2026-08-10",
+                "completedDate": "2026-08-09",
+            },
+        ],
+        snapshot_at="2026-08-20T07:00:00Z",
+    )
+
+    # 发布日（2026-08-20）口径：dueDate 未到 → 逾期 0、完成 1（CLOSE 终态）。
+    stored = service.latest_link_summary("VPI-T2-D3")
+    assert stored == {
+        "snapshotAt": "2026-08-20T07:00:00.000Z",
+        "summary": {"total": 2, "completed": 1, "incomplete": 1, "overdue": 0},
+    }
+
+    # 查询日推进到 2026-08-26：明细页重算 overdue=1，联动摘要必须一致。
+    today_service = ProjectStatusDeliverableAnalysisService(
+        tmp_db,
+        clock=lambda: date(2026, 8, 26),
+    )
+    link = today_service.latest_link_summary("VPI-T2-D3")
+    assert link["summary"] == {"total": 2, "completed": 1, "incomplete": 1, "overdue": 1}
+    detail = today_service.overview("VPI-T2-D3")
+    assert detail["summary"]["overdue"] == 1
+
+    # 非 EWO 交付物直接读存储摘要（发布时 overdue=0 保持不变）。
+    service.publish(
+        "VPI-T2-D5",
+        202,
+        [
+            {
+                "id": "N-1",
+                "name": "数模任务",
+                "responsibleDepartment": "车身设计科",
+                "owner": "赵岩",
+                "status": "进行中",
+                "dueDate": "2026-08-25",
+            },
+        ],
+        snapshot_at="2026-08-20T07:00:00Z",
+    )
+    d5 = today_service.latest_link_summary("VPI-T2-D5")
+    assert d5["summary"] == {"total": 1, "completed": 0, "incomplete": 1, "overdue": 0}
+
+
 def test_service_returns_truthful_empty_cache(tmp_db: DatabaseManager) -> None:
     service = ProjectStatusDeliverableAnalysisService(tmp_db)
     result = service.overview("VPI-T2-D3")

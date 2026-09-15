@@ -27,8 +27,10 @@ def test_phase_metadata_update_and_dynamic_today(client_and_db) -> None:
     assert before["phase"]["today"] == "2026-08-23"
     # 主计划名称即车型锚点，种子默认 F610S。
     assert before["phase"]["displayName"] == "F610S"
-    assert before["phase"]["riskCount"] == 3
-    assert before["summary"]["risk"] == "EWO 流程已逾期 1 天"
+    # 展示状态机：D3/D5 处于待同步（不计业务风险），仅手工态 D4 的
+    # 计划日期逾期计入（08-15 → 08-23 共 8 天）。
+    assert before["phase"]["riskCount"] == 1
+    assert before["summary"]["risk"] == "造型 VDR 审批流程已逾期 8 天"
 
     response = client.patch(
         "/api/project-status/phases/VPI-T2",

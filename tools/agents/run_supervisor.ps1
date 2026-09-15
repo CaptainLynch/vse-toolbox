@@ -9,6 +9,8 @@ param(
     [ValidateSet("agy-heavy", "codex-controlled")]
     [string]$SupervisorProfile = "agy-heavy",
 
+    [string]$WorkerProfile,
+
     [switch]$DryRun
 )
 
@@ -77,6 +79,9 @@ try {
         "--profile", $SupervisorProfile,
         "--codex-profile", $CodexProfile
     )
+    if (-not [string]::IsNullOrWhiteSpace($WorkerProfile)) {
+        $arguments += @("--worker-profile", $WorkerProfile)
+    }
     if ($DryRun) {
         $arguments += "--dry-run"
     }

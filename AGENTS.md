@@ -25,141 +25,75 @@
   handoffs, or reports. Expose the minimum necessary exact value only when the
   Main Agent explicitly judges it essential for reproduction or verification.
 
+## Project Map / Agent Exploration Policy
+
+Project code location is map-first, scope-limited, and evidence-driven. The
+repository and tests remain authoritative; `PROJECT_MAP.md` is the default
+navigation index, not a replacement for reading the target implementation.
+
+- At the start of every non-trivial task, read `PROJECT_MAP.md` after restoring
+  the required memory state and before searching for code. Use its Task Router
+  to choose a domain and an initial file set.
+- The default production scope is `core/`, `services/`, `web/`, `main.py`,
+  `webui.py`, `excel_worker_entry.py`, `tools/excel_worker_cli.py`,
+  `tdc_probe_main.py`, and `tdc_probe_cli.py`.
+- Enter `tests/`, `*.spec`, `setup.cfg`, `requirements.txt`,
+  `.github/workflows/`, `tools/agents/`, `schemas/`, `docs/`, or `memory/`
+  only when the task needs tests, packaging, Agent infrastructure, contracts,
+  or documentation.
+- The following are default-deny paths and must not be read or indexed unless
+  the task explicitly concerns them: `crawl source/`, `爬虫源文件/`,
+  `error data/`, `build/`, `dist/`, `dist-probe/`, `production*/`,
+  `.build_production*/`, `.runtime/`, `artifacts/`, `tmp/`, `.tmp_*/`,
+  `.agents/runs/`, `.agents/logs/`, `.agents/worktrees/`, `.zcode/`,
+  `.excel_workbench/`, `design-previews/`, `meeting_outputs/`, caches, root
+  exploratory scripts, and raw XML/HAR/XLSX samples.
+- Searches must include an explicit scope, for example
+  `rg -n "symbol" core services tests` or
+  `rg -n "symbol" services/tdc_crawler.py tests/test_tdc_crawler.py`.
+  Do not use repository-root `rg --files`, recursive directory trees,
+  `Get-ChildItem -Recurse`, `find`, or equivalent full-repository scans.
+- Read the map-selected entrypoint and focused tests first. Expand only one
+  dependency/caller layer at a time when the contract is not explained; do not
+  fall back to a full scan because the first result is incomplete.
+- Raw HAR/XML/XLSX, browser mirrors, and error data are permitted only for an
+  explicit parsing or forensic task. Prefer the redacted summaries under
+  `docs/agents/`.
+- Before claiming the map is current, run
+  `python tools/generate_project_map.py --check`. If it fails, report map
+  drift and refresh or repair it; do not compensate with a full scan.
+- If the target is still not found after the mapped, scoped search, report a
+  map gap and the paths already checked, then request or justify a scope
+  expansion. Never silently widen the search.
+
 ## Runtime Selection
 
-Use exactly one runtime section.
+Use one lead per task. The user's current choice takes precedence over defaults.
 
-- In OpenAI Codex, follow **Local AGY CLI Delegation** for delegated project
-  work. Do not use `v4_flash_worker`, a DeepSeek-backed Codex subagent, or the
-  DeepSeek Harness for ordinary VSE Toolbox tasks. Use DeepSeek only when the
-  user explicitly requests it for the current task.
-- In ZCode, follow **ZCode Runtime Rules** only.
-- Do not invoke, request, or emulate another runtime's agents, skills, or
-  orchestration merely because both sections appear in this file. Determine the
-  runtime from the available tools, skills, and agent names; never start both
-  worker systems for one task.
+- In Codex, Codex owns architecture, public contracts, security, complex debugging and final integration. Bounded implementation, tests and mechanical work use the local ZCode Gemini worker through `C:/Users/Lynch/.zcode/tools/run-worker.ps1 -Workspace <repo> -TaskFile <contract.json>`.
+- In an interactive ZCode task, the selected model is the lead. During free GLM periods use the flagship actually available under the account, not a hardcoded model version. Use Gemini subagents for bounded work; do not keep a second Codex lead running in parallel.
+- A ZCode process invoked with a worker contract acts only as the worker. It must not recursively delegate or start Codex, AGY or DeepSeek. Model, quota and permission failures stop the route, never silently switch provider.
+- The old AGY MCP bridge is retired. AGY CLI and DeepSeek are explicit opt-in alternatives only, never fallback paths. A visible legacy Codex role file does not establish a valid provider configuration.
 
-## Local AGY CLI Delegation
+## Bounded Worker Contracts
 
-Codex is the Lead Engineer: it owns architecture, security-sensitive changes,
-complex debugging, cross-module reasoning, task routing, final review, and
-integration decisions. The locally installed `agy` CLI is the implementation
-worker runtime for bounded repository exploration, mechanical implementation,
-frontend work, tests, lint/type fixes, documentation, and repetitive
-refactoring. Invoke it as a local subprocess; do not represent it as a Codex
-subagent or call a remote model API directly.
+- Every task supplies task_id, objective, owned scope, constraints, acceptance criteria, risk_class and explicit verification_commands as argument arrays. Batch related implementation and tests; do not launch a fresh worker per function.
+- The supervisor uses isolated worktrees, checks dirty-scope conflicts and refuses high-risk/unclassified work to the current lead without another Codex planning call. The legacy profile label `agy-heavy` names this contract pipeline; `worker_agent` selects the runtime.
+- Gemini 3.8 Flash worker sessions use an effective 1M context cap; with the default output/reserve budget, 950848 input tokens are available. Gemini total usage is not cost-capped. Flash handles bounded routine work, 3.8 Flash handles bounded implementation/deep review, and Codex remains the final architecture/security/integration authority.
+- The guarded worker has only native Read/Grep/Glob/Edit/Write; no shell or nested agents. The supervisor runs the supplied checks externally. The installed PreToolUse guard blocks out-of-scope/control-file operations; worktree isolation is not an OS sandbox.
+- The lead inspects the actual diff, check results and concise worker report before integration. No auto-merge or push. Preserve unrelated changes. After at most two targeted repairs for the same cause, take over rather than retrying indefinitely.
+- Architecture, authentication/authorization, credentials/redaction, concurrency, destructive migrations and unclear public contracts remain with the lead. Delegate tests only after the lead defines the fixture/data contract and scenario assertions.
+- Use readonly-explorer for bounded evidence and code-reviewer for meaningful changes. They are directly configured Gemini roles, not AGY dispatchers. Avoid duplicate broad searches and full-file/log handoffs.
+- Runtime setup, verified boundaries and rollback: `docs/ZCODE_WORKER_RUNTIME.md`. Run evidence is local-only under `.agents/runs/`; promote durable conclusions into memory.
 
-The local harness uses structured JSON handoffs in `.agents/runs/` and isolated
-Git worktrees. Codex must inspect the worker diff, run configured checks,
-validate acceptance criteria, and return `PASS`, `FIX`, or `REJECT`; it must
-not blindly trust a worker result. Never let both agents edit the same
-worktree. Tasks involving architecture, authentication, authorization,
-security, destructive migrations, irreversible operations, or unclear
-acceptance criteria are routed to Codex or `manual` by default.
+## Main Controller Context Governance
 
-The AGY CLI invocation must use the configured local executable and model,
-`--sandbox`, bounded timeouts, and a JSON output schema. Never use
-`--dangerously-skip-permissions`. A headless permission denial is a blocked
-worker result, not permission to weaken the sandbox.
-
-## ZCode Runtime Rules
-
-### Main Agent
-
-The Main Agent is responsible for the final implementation and judgment.
-Normally use `glm-5.2` at `high` effort; use `max` only for difficult root
-cause analysis, cross-module bugs, concurrency or consistency problems,
-complex architecture, major refactors, high-risk data flow, or repeated failed
-attempts.
-
-The Main Agent understands the request, decides the implementation, modifies
-code, judges architecture and invariants, handles security and high-risk logic,
-integrates subagent evidence, fixes review findings, and completes final
-verification.
-
-### readonly-explorer
-
-Prefer `readonly-explorer` for broad repository search, implementation
-location, call-chain investigation, module or dependency mapping, architecture
-research, and pre-change evidence collection.
-
-`readonly-explorer` is strictly read-only. Its tool whitelist must not include
-Bash, Edit, Write, shell execution, or any other workspace-mutating capability.
-
-Do not make Main and `readonly-explorer` repeat the same broad search. The
-agent should return concise files, symbols, call chains, evidence, risks, and
-unanswered questions.
-
-The built-in `Explore` agent must not be used for normal repository exploration
-because its runtime tool set may expose Bash and therefore does not provide the
-required hard read-only boundary.
-
-Do not invoke the built-in `Explore` merely as a fallback. If
-`readonly-explorer` is unavailable, Main should perform the minimum necessary
-read-only investigation itself or report the configuration problem.
-
-### general-purpose
-
-Use built-in general-purpose only for clearly bounded, independent work such as
-a small feature, bounded bug fix, isolated test, or safely parallel code task.
-It must not decide unresolved architecture, security, public APIs, data models,
-or unclear cross-module changes.
-
-Prefer `general-purpose` (Flash) for the following mechanical,
-high-volume work types to conserve Main Agent tokens. In each case Main must
-first define the contract (fixture template, method signature, return shape,
-assertion checklist, or input-output spec) before delegating; Flash fills in
-the concrete implementation under that contract.
-
-1. **Test writing.** Once Main defines the fixture template, the service/data
-   contract under test, and the per-scenario assertion checklist, delegate the
-   actual test function bodies to Flash. Main should not hand-write every
-   scenario. This is the single largest recoverable token saving.
-2. **Call-site updates after signature changes.** When Main changes a method
-   signature or return type, delegate the mechanical sweep of all call sites
-   to Flash with the old/new contract and a list of affected files.
-3. **Small utility functions.** When Main specifies the input-output contract
-   (types, limits, edge cases), delegate the 5-15 line implementation to Flash.
-4. **Simple read-only query methods.** When Main defines the field list, filter
-   conditions, and ordering, delegate the SQL/query method body to Flash.
-5. **Mechanical fixes identified by review.** When a review finding is a
-   mechanical edit (renaming, adding a parameter, updating a repr) with no
-   architectural judgment required, delegate the fix to Flash. Main retains
-   complex fixes requiring root-cause reasoning.
-
-Main retains: lease/concurrency design, redaction boundary decisions, exception
-flow analysis, security/compatibility tradeoffs, architecture and data model
-decisions, review finding triage, and final verification.
-
-### code-reviewer
-
-After meaningful or risky changes, invoke `code-reviewer` for core logic,
-multiple files, cross-module behavior, authentication or permissions, data
-handling, concurrency, state machines, error handling, public behavior, or
-non-trivial regression risk. Do not invoke it mechanically for tiny,
-unambiguous, low-risk edits.
-
-### Recommended Workflow
-
-Simple task: Main -> modify -> focused verification -> done.
-
-Exploration task: readonly-explorer -> Main decision -> Main implementation ->
-focused verification.
-
-Important change: readonly-explorer when needed -> Main decision -> Main
-implementation -> code-reviewer -> Main fixes -> regression verification.
-
-For clearly bounded parallel work: readonly-explorer or general-purpose -> Main
-integration and final judgment -> code-reviewer when needed -> final
-verification. Do not delegate merely to consume model quota.
-
-Test-heavy change: Main defines contracts and fixture templates -> general-purpose
-(Flash) writes test scenario bodies -> Main reviews test diff and runs verification.
-Main should not hand-write every test scenario; the target is for Flash to produce
-60-80% of test code lines once the contract is settled.
-
-Mechanical follow-up: Main changes a signature or return type -> general-purpose
-(Flash) sweeps all call sites -> Main verifies compilation and runs focused tests.
+- Codex keeps its configured native context window; on this machine Astra's Codex client is configured with an effective `272000`-token window. The following values are orchestration watermarks within that window: soft reminder `150000`, Handoff trigger `180000`, hard guard `200000` input tokens.
+- Below `150000`, continue normally. From `150000` to `180000`, use bounded reads and summaries. At `180000`, finish only the current atomic operation and hand off. At `200000`, stop accumulating context and start a new micro-session.
+- A phase boundary above `150000`, an uncached input increment of `20000` or more, a tool return of `8192` or more characters, or any browser image/large AX payload requests a Handoff even when the token watermark is lower.
+- Handoffs contain only the task ID, changed files, diff summary, verification commands/results, risks and next action. Keep full logs, full diffs, screenshots and raw tool output in local evidence files.
+- The worker's separate `1000000` effective context cap remains unchanged. With the default `32768` output allowance and `16384` safety reserve, the normal Gemini 3.8 Flash route has `950848` input tokens available. A weekend model override is opt-in and must not change the normal Gemini 3.8 Flash route.
+- The ZCode gifted `GLM-5.3-Flash` weekend profile is `interactive-only`: a headless `-WorkerProfile weekend-5.3flash` invocation must stop with `interactive-required` because runtime headers/CAPTCHA come from the interactive host. Use the model in interactive ZCode and omit the option to restore the normal Gemini worker route.
 
 ## Persistent Project Memory Protocol
 

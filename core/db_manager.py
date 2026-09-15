@@ -16,6 +16,8 @@ core/db_manager.py — SQLite 数据库连接管理与 ORM 表结构初始化
 import json
 import secrets
 import sqlite3
+from core.diagnostic_recording import operation, observed
+from core.project_status_contracts import PROJECT_STATUS_SOURCE_CAPABILITIES
 import logging
 from pathlib import Path
 from contextlib import contextmanager
@@ -41,7 +43,8 @@ DEFAULT_DB_PATH = DEFAULT_DB_DIR / "vse_toolbox.db"
 #: 当前支持的 schema 版本。迁移完成后写入 PRAGMA user_version。
 #: 旧库 (< CURRENT_SCHEMA_VERSION) 增量升级；高于此版本的库拒绝降级，
 #: 避免新代码误读未知的较新 schema。
-CURRENT_SCHEMA_VERSION = 13
+# v14 also gates old executables: they must not rewrite EWO v2 rules as legacy rules.
+CURRENT_SCHEMA_VERSION = 14
 
 #: 租约时长安全范围（秒）。默认 900s，由调用方在范围内参数化。
 SYNC_LEASE_MIN_SECONDS = 60
@@ -530,6 +533,7 @@ TABLE_DEFINITIONS: list[str] = [
         last_error_type    TEXT,
         last_error_message TEXT,
         cursor_json        TEXT NOT NULL DEFAULT '{}',
+        sync_config_revision INTEGER NOT NULL DEFAULT 0,
         credential_ref     TEXT,
         lease_token        TEXT,
         lease_acquired_at  TEXT,
@@ -695,6 +699,8 @@ TABLE_DEFINITIONS: list[str] = [
         candidate_count        INTEGER NOT NULL,
         candidate_summary_json TEXT NOT NULL DEFAULT '[]',
         field_report_json      TEXT NOT NULL DEFAULT '{}',
+        config_signature       TEXT,
+        aggregated_candidate_json TEXT,
         created_at             TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
         FOREIGN KEY (deliverable_id) REFERENCES project_status_deliverables(id) ON DELETE CASCADE
     );
@@ -1197,6 +1203,37 @@ class DatabaseManager:
                     f"ADD COLUMN {column} {decl}"
                 )
 
+        # 聚合同步（用户 2026-09-13）：绑定与运行捕获同步配置修订号，
+        # 阻止在途旧运行跨换绑提交业务写入与快照（GPT 终审任务 2）。
+        for revision_table in (
+            "project_status_update_bindings",
+            "project_status_sync_runs",
+        ):
+            revision_columns = {
+                str(row["name"])
+                for row in conn.execute(f"PRAGMA table_info({revision_table})")
+            }
+            if "sync_config_revision" not in revision_columns:
+                conn.execute(
+                    f"ALTER TABLE {revision_table} "
+                    f"ADD COLUMN sync_config_revision INTEGER NOT NULL DEFAULT 0"
+                )
+
+        observation_columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(project_status_mapping_observations)")
+        }
+        if "config_signature" not in observation_columns:
+            conn.execute(
+                "ALTER TABLE project_status_mapping_observations "
+                "ADD COLUMN config_signature TEXT"
+            )
+        if "aggregated_candidate_json" not in observation_columns:
+            conn.execute(
+                "ALTER TABLE project_status_mapping_observations "
+                "ADD COLUMN aggregated_candidate_json TEXT"
+            )
+
         phase_columns = {
             str(row["name"])
             for row in conn.execute("PRAGMA table_info(project_status_phases)")
@@ -1395,12 +1432,15 @@ class DatabaseManager:
                 """,
                 [(phase_id, *item) for item in milestone_template],
             )
+        # 契约内交付物（D2/D3/D5）默认自动同步：初始状态为待同步占位，
+        # 首次同步成功前由展示层显示「待同步」；D1 保留手工演示值，
+        # D4 手工模式（A 面契约未验证）同样以占位值起步。
         deliverables = (
             ("VPI-T2-D1", "子系统开发策略", "已完成", "王晨", "2026-05-12", "2026-05-10", 100, "无", "内网"),
-            ("VPI-T2-D2", "SOR 定点流程", "已完成", "周敏", "2026-06-18", "2026-06-17", 100, "无", "TDC SOR"),
-            ("VPI-T2-D3", "EWO 流程", "进行中", "李珊", "2026-08-22", None, 72, "按计划推进", "ARAS EWO"),
-            ("VPI-T2-D4", "造型 VDR 审批流程", "待审批", "陈璇", "2026-08-15", None, 90, "等待设计总监审批", "TDC A 面（待契约确认）"),
-            ("VPI-T2-D5", "数模设计审核流程报表", "已逾期", "赵岩", "2026-08-08", None, 82, "逾期 5 天", "TDC 数模设计审核流程报表"),
+            ("VPI-T2-D2", "SOR 定点流程", "进行中", "周敏", "2026-06-18", None, 0, "待同步", "TDC SOR"),
+            ("VPI-T2-D3", "EWO 流程", "进行中", "李珊", "2026-08-22", None, 0, "待同步", "ARAS EWO"),
+            ("VPI-T2-D4", "造型 VDR 审批流程", "进行中", "陈璇", "2026-08-15", None, 0, "待同步", "TDC A 面（待契约确认）"),
+            ("VPI-T2-D5", "数模设计审核流程报表", "进行中", "赵岩", "2026-08-08", None, 0, "待同步", "TDC 数模设计审核流程报表"),
         )
         conn.executemany(
             """
@@ -1671,6 +1711,7 @@ class DatabaseManager:
             assert row is not None
             return str(row["updated_at"])
 
+    @observed("db.replace_project_status_analysis_cache")
     def replace_project_status_analysis_cache(
         self,
         deliverable_id: str,
@@ -1679,8 +1720,13 @@ class DatabaseManager:
         items: Sequence[Mapping[str, object]],
         *,
         retention_snapshots: int = 30,
-    ) -> None:
-        """Atomically publish one aggregate snapshot and replace the latest normalized items."""
+        expected_sync_config_revision: int | None = None,
+    ) -> bool:
+        """Atomically publish one aggregate snapshot and replace the latest normalized items.
+
+        expected_sync_config_revision 提供时（同步运行发布路径），在其写入事务内
+        校验绑定修订号；不一致（换绑）拒绝发布旧运行的分析快照并返回 False。
+        """
         bounded_retention = max(2, min(int(retention_snapshots), 365))
         department_counts_json = json.dumps(
             snapshot.get("department_counts", {}),
@@ -1696,6 +1742,18 @@ class DatabaseManager:
             if exists is None:
                 raise KeyError(deliverable_id)
             conn.execute("BEGIN IMMEDIATE")
+            if expected_sync_config_revision is not None:
+                # 换绑校验（GPT 终审任务 2d）：apply 后、发布前发生换绑 →
+                # 拒绝发布旧运行的分析快照。
+                binding_row = conn.execute(
+                    "SELECT sync_config_revision FROM project_status_update_bindings "
+                    "WHERE deliverable_id = ?",
+                    (deliverable_id,),
+                ).fetchone()
+                if int(binding_row["sync_config_revision"] or 0) != int(
+                    expected_sync_config_revision
+                ):
+                    return False
             conn.execute(
                 """
                 INSERT INTO project_status_analysis_snapshots (
@@ -1774,6 +1832,7 @@ class DatabaseManager:
                 """,
                 (deliverable_id, deliverable_id, bounded_retention),
             )
+            return True
 
     def list_project_status_analysis_snapshots(
         self,
@@ -1795,6 +1854,18 @@ class DatabaseManager:
                 (deliverable_id, bounded),
             ).fetchall()
             return [dict(row) for row in rows]
+
+    def clear_project_status_analysis_cache(self, deliverable_id: str) -> None:
+        """换绑/改匹配规则后清空该交付物的分析快照与明细缓存。"""
+        with self.get_connection() as conn:
+            conn.execute(
+                "DELETE FROM project_status_analysis_snapshots WHERE deliverable_id = ?",
+                (deliverable_id,),
+            )
+            conn.execute(
+                "DELETE FROM project_status_analysis_items WHERE deliverable_id = ?",
+                (deliverable_id,),
+            )
 
     def list_project_status_analysis_items(
         self,
@@ -1922,12 +1993,35 @@ class DatabaseManager:
             ).fetchall()
             return tuple(str(row["source_type"]) for row in rows)
 
-    def publish_deliverable_form_snapshot(self, snapshot: object) -> int:
-        """Atomically replace one source snapshot and its bounded form rows."""
+    @observed("db.publish_deliverable_form_snapshot")
+    def publish_deliverable_form_snapshot(
+        self,
+        snapshot: object,
+        *,
+        expected_sync_config_revision: int | None = None,
+    ) -> int:
+        """Atomically replace one source snapshot and its bounded form rows.
+
+        expected_sync_config_revision 提供时（EWO 同步运行发布路径），在事务内
+        校验绑定修订号；不一致（换绑）拒绝发布旧运行的表单快照并返回 0。
+        """
         payload = _form_snapshot_payload(snapshot)
         rows = payload["rows"]
         with self.get_connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            if expected_sync_config_revision is not None:
+                # 换绑校验（GPT 终审任务 2d）：apply 后、发布前发生换绑 →
+                # 拒绝发布旧运行的 EWO 表单快照。
+                form_deliverable = str(payload.get("formKey") or "")
+                binding_row = conn.execute(
+                    "SELECT sync_config_revision FROM project_status_update_bindings "
+                    "WHERE deliverable_id = ?",
+                    (form_deliverable,),
+                ).fetchone()
+                if binding_row is not None and int(
+                    binding_row["sync_config_revision"] or 0
+                ) != int(expected_sync_config_revision):
+                    return 0
             existing = conn.execute(
                 "SELECT id FROM deliverable_form_snapshots WHERE snapshot_key = ?",
                 (payload["snapshot_key"],),
@@ -2292,18 +2386,21 @@ class DatabaseManager:
 
     @staticmethod
     def _ensure_project_status_policy(conn: sqlite3.Connection, deliverable_id: str) -> None:
-        """Idempotently seed the confirmed authoritative source assignment."""
-        source_type = {
-            "VPI-T2-D2": "tdc", "VPI-T2-D3": "aras",
-            "VPI-T2-D4": "tdc", "VPI-T2-D5": "tdc",
-        }.get(deliverable_id, "none")
+        """Idempotently seed the confirmed authoritative source assignment.
+
+        契约内交付物（syncCapable）新库默认 automatic（enabled=0，待配置）；
+        其余交付物保持 manual。存量库由 INSERT OR IGNORE 保护，不受影响。
+        """
+        capabilities = PROJECT_STATUS_SOURCE_CAPABILITIES.get(deliverable_id, {})
+        source_type = str(capabilities.get("sourceType") or "none")
+        mode = "automatic" if capabilities.get("syncCapable") else "manual"
         conn.execute(
             """
             INSERT OR IGNORE INTO project_status_update_bindings
                 (deliverable_id, mode, source_type, enabled, sync_state)
-            VALUES (?, 'manual', ?, 0, 'idle')
+            VALUES (?, ?, ?, 0, 'idle')
             """,
-            (deliverable_id, source_type),
+            (deliverable_id, mode, source_type),
         )
         conn.executemany(
             """
@@ -2415,7 +2512,7 @@ class DatabaseManager:
                 """
                 SELECT id, deliverable_id, mode, source_type, external_key,
                        match_rule_json, mapping_json, enabled, interval_minutes,
-                       last_attempt_at, last_success_at, sync_state,
+                       last_attempt_at, last_success_at, sync_state, sync_config_revision,
                         last_error_type, last_error_message, credential_ref,
                         created_at, updated_at
                 FROM project_status_update_bindings
@@ -2460,12 +2557,19 @@ class DatabaseManager:
         field_authority: dict[str, str],
         credential_ref: str | None = None,
         interval_minutes: int = 60,
-    ) -> None:
-        """原子写入绑定与字段归属，自动归属同时解除人工锁。"""
+        expected_sync_config_revision: int | None = None,
+    ) -> int:
+        """原子写入绑定与字段归属，自动归属同时解除人工锁。
+
+        同步配置修订号（GPT 终审任务 2）：匹配规则、稳定键、映射或模式变化时
+        在本事务内 +1 并清空分析快照/明细缓存（旧车型数据隔离）；仅改
+        interval/credential 不递增、不清缓存。返回递增后的修订号。
+        """
         unknown = set(field_authority) - set(PROJECT_STATUS_EDITABLE_FIELDS)
         if unknown:
             raise ValueError(f"unknown project status field: {sorted(unknown)}")
         with self.get_connection() as conn:
+            conn.execute('BEGIN IMMEDIATE')
             deliverable = conn.execute(
                 "SELECT id FROM project_status_deliverables WHERE id = ?",
                 (deliverable_id,),
@@ -2473,16 +2577,39 @@ class DatabaseManager:
             if deliverable is None:
                 raise KeyError(deliverable_id)
             self._ensure_project_status_policy(conn, deliverable_id)
+            old_binding = conn.execute(
+                """
+                SELECT mode, external_key, match_rule_json, mapping_json,
+                       sync_config_revision
+                FROM project_status_update_bindings
+                WHERE deliverable_id = ?
+                """,
+                (deliverable_id,),
+            ).fetchone()
+            if (expected_sync_config_revision is not None
+                    and int(old_binding['sync_config_revision'] or 0) != expected_sync_config_revision):
+                raise ProjectStatusConcurrentUpdateError('Binding changed while validating the policy')
+            target_changed = (
+                old_binding["match_rule_json"] != match_rule_json
+                or old_binding["mapping_json"] != mapping_json
+                or old_binding["external_key"] != external_key
+                or old_binding["mode"] != mode
+            )
+            new_revision = int(old_binding["sync_config_revision"] or 0) + (
+                1 if target_changed else 0
+            )
             conn.execute(
                 """
                 UPDATE project_status_update_bindings
                 SET mode = ?, enabled = ?, external_key = ?, match_rule_json = ?,
                     mapping_json = ?, credential_ref = ?, interval_minutes = ?,
+                    sync_config_revision = ?,
+                    cursor_json = CASE WHEN ? THEN '{}' ELSE cursor_json END,
                     updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now', 'localtime')
                 WHERE deliverable_id = ?
                 """,
                 (mode, int(enabled), external_key, match_rule_json, mapping_json,
-                 credential_ref, interval_minutes, deliverable_id),
+                 credential_ref, interval_minutes, new_revision, int(target_changed), deliverable_id),
             )
             for field_name, authority in field_authority.items():
                 conn.execute(
@@ -2501,6 +2628,16 @@ class DatabaseManager:
                     """,
                     (deliverable_id, field_name, authority, deliverable_id, authority),
                 )
+            if target_changed:
+                conn.execute(
+                    "DELETE FROM project_status_analysis_snapshots WHERE deliverable_id = ?",
+                    (deliverable_id,),
+                )
+                conn.execute(
+                    "DELETE FROM project_status_analysis_items WHERE deliverable_id = ?",
+                    (deliverable_id,),
+                )
+        return new_revision
 
     def list_project_status_update_audit(
         self,
@@ -2532,7 +2669,7 @@ class DatabaseManager:
                 """
                 SELECT b.deliverable_id, b.mode, b.source_type, b.enabled, b.sync_state,
                        b.last_attempt_at, b.last_success_at, b.last_error_type,
-                       b.last_error_message, b.updated_at
+                       b.last_error_message, b.updated_at, b.match_rule_json
                 FROM project_status_update_bindings b
                 INNER JOIN project_status_deliverables d ON d.id = b.deliverable_id
                 WHERE d.phase_id = ?
@@ -2621,6 +2758,7 @@ class DatabaseManager:
         if sha256 is not None and (not isinstance(sha256, str) or not sha256.strip()):
             raise ValueError("artifact sha256 must be a non-empty string or None")
 
+    @observed("db.acquire_sync_lease")
     def acquire_sync_lease(
         self,
         binding_id: int,
@@ -2628,6 +2766,7 @@ class DatabaseManager:
         lease_seconds: int = SYNC_LEASE_DEFAULT_SECONDS,
         *,
         validate_runtime_prerequisites: bool = True,
+        expected_sync_config_revision: int | None = None,
     ) -> dict[str, Any]:
         """
         原子获取同步租约并创建一条 leased run。
@@ -2647,13 +2786,14 @@ class DatabaseManager:
         self._validate_lease_duration(lease_seconds)
 
         with self.get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             binding = conn.execute(
                 """
                 SELECT b.id, b.deliverable_id, b.mode, b.source_type, b.enabled,
                        b.external_key, b.match_rule_json, b.mapping_json,
-                       b.credential_ref,
+                       b.cursor_json, b.credential_ref, b.sync_config_revision,
                        b.lease_token, b.lease_expires_at, b.retry_policy_json,
-                       b.sync_state, d.phase_id
+                       b.sync_state, d.phase_id, d.updated_at AS deliverable_updated_at
                 FROM project_status_update_bindings b
                 INNER JOIN project_status_deliverables d ON d.id = b.deliverable_id
                 WHERE b.id = ?
@@ -2662,6 +2802,13 @@ class DatabaseManager:
             ).fetchone()
             if binding is None:
                 raise KeyError(binding_id)
+            if (
+                expected_sync_config_revision is not None
+                and int(binding["sync_config_revision"] or 0) != int(expected_sync_config_revision)
+            ):
+                raise SyncBindingNotReadyError(
+                    "binding configuration changed since listing; lease acquisition rejected"
+                )
             if not binding["enabled"]:
                 raise SyncBindingNotReadyError("binding is not enabled")
             if binding["mode"] not in ("automatic", "hybrid"):
@@ -2671,9 +2818,12 @@ class DatabaseManager:
             if binding["source_type"] == "none":
                 raise SyncBindingNotReadyError("binding source_type is 'none'")
             if validate_runtime_prerequisites:
-                if not binding["external_key"]:
-                    raise SyncBindingNotReadyError("binding external_key is not confirmed")
+                # 聚合绑定（按车型聚合，无单记录稳定键）豁免外部稳定键
+                #（GPT 终审 P1：租约入口此前阻断聚合首次同步）。
                 match_rule = _json_loads_or_none(binding["match_rule_json"])
+                aggregate_mode = isinstance(match_rule, dict) and match_rule.get("aggregate") is True
+                if not aggregate_mode and not binding["external_key"]:
+                    raise SyncBindingNotReadyError("binding external_key is not confirmed")
                 mapping = _json_loads_or_none(binding["mapping_json"])
                 if not isinstance(match_rule, dict) or not match_rule:
                     raise SyncBindingNotReadyError("binding match rule is empty")
@@ -2738,10 +2888,11 @@ class DatabaseManager:
                 """
                 INSERT INTO project_status_sync_runs
                     (binding_id, deliverable_id, trigger_type, run_state, attempt,
-                     created_at)
-                VALUES (?, ?, ?, 'leased', ?, ?)
+                     sync_config_revision, created_at)
+                VALUES (?, ?, ?, 'leased', ?, ?, ?)
                 """,
-                (binding_id, binding["deliverable_id"], trigger_type, attempt, now),
+                (binding_id, binding["deliverable_id"], trigger_type, attempt,
+                 int(binding["sync_config_revision"] or 0), now),
             )
             run_id = run_cursor.lastrowid
 
@@ -2751,6 +2902,7 @@ class DatabaseManager:
             ).fetchone()
             return {
                 "binding_id": binding_id,
+                "sync_config_revision": int(binding["sync_config_revision"] or 0),
                 "run_id": run_id,
                 "lease_token": lease_token,
                 "lease_expires_at": expires_row["lease_expires_at"],
@@ -2758,8 +2910,10 @@ class DatabaseManager:
                 "phase_id": binding["phase_id"],
                 "attempt": attempt,
                 "acquired_at": now,
+                "binding_snapshot": dict(binding),
             }
 
+    @observed("db.start_sync_run")
     def start_sync_run(
         self,
         binding_id: int,
@@ -2822,6 +2976,7 @@ class DatabaseManager:
         if run["run_state"] in ("success", "partial", "failed", "needs_attention", "expired"):
             raise SyncLeaseLostError(f"run already finalized as {run['run_state']}")
 
+    @observed("db.finalize_sync_success")
     def finalize_sync_success(
         self,
         binding_id: int,
@@ -2838,6 +2993,7 @@ class DatabaseManager:
         source_type: str,
         result_summary: str,
         artifacts: Sequence[dict[str, Any]] | None = None,
+        aggregate_mode: bool = False,
     ) -> dict[str, Any]:
         """
         单事务原子完成成功提交：
@@ -2857,17 +3013,68 @@ class DatabaseManager:
         """
         self._validate_trigger_type(trigger_type)
         with self.get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             self._assert_lease_holder(conn, binding_id, run_id, lease_token)
 
             binding = conn.execute(
                 """
-                SELECT external_key, cursor_json
+                SELECT external_key, cursor_json, sync_config_revision
                 FROM project_status_update_bindings
                 WHERE id = ?
                 """,
                 (binding_id,),
             ).fetchone()
             assert binding is not None
+
+            run_row = conn.execute(
+                """
+                SELECT run_state, deliverable_id, sync_config_revision
+                FROM project_status_sync_runs
+                WHERE id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+            assert run_row is not None
+            deliverable_id = run_row["deliverable_id"]
+
+            # 换绑校验（GPT 终审任务 2c）：运行捕获的修订号与绑定当前修订号
+            # 不一致 → 在途旧运行不得写业务行/游标/缓存；审计后转入
+            # needs_attention 并释放租约（不得标记成功）。
+            if int(run_row["sync_config_revision"] or 0) != int(
+                binding["sync_config_revision"] or 0
+            ):
+                now = self._utc_now(conn)
+                self._insert_audit_row(
+                    conn,
+                    deliverable_id,
+                    trigger_type,
+                    source_type,
+                    external_version,
+                    proposed_changes_json,
+                    "{}",
+                    _sanitize_json({"*": "binding config superseded"}),
+                    "skipped",
+                    None,
+                )
+                self._prune_project_status_audit(conn, deliverable_id)
+                self._finalize_run_and_release(
+                    conn,
+                    binding_id,
+                    run_id,
+                    "needs_attention",
+                    result_summary,
+                    "binding_config_superseded",
+                    "binding config changed while sync was in flight",
+                    now,
+                    sync_state="needs_attention",
+                    external_version=external_version,
+                    expected_lease_token=lease_token,
+                )
+                return {
+                    "updated_at": None,
+                    "applied_fields": (),
+                    "superseded": True,
+                }
 
             # 幂等：external_version 已处理 → skipped，不更新业务行但推进 run。
             # cursor 中的 processed_versions 保留处理顺序（非字典序），
@@ -2885,19 +3092,6 @@ class DatabaseManager:
                             processed_set.add(text)
 
             now = self._utc_now(conn)
-            run_row = conn.execute(
-                "SELECT run_state FROM project_status_sync_runs WHERE id = ?",
-                (run_id,),
-            ).fetchone()
-            assert run_row is not None
-
-            # 读取字段归属，判定哪些自动字段可写。
-            deliverable_id_row = conn.execute(
-                "SELECT deliverable_id FROM project_status_sync_runs WHERE id = ?",
-                (run_id,),
-            ).fetchone()
-            assert deliverable_id_row is not None
-            deliverable_id = deliverable_id_row["deliverable_id"]
 
             authorities = {
                 str(row["field_name"]): {
@@ -2945,7 +3139,20 @@ class DatabaseManager:
                 applicable[db_name] = value
 
             applied_any = bool(applicable)
-            already_processed = external_version in processed_set
+            if aggregate_mode:
+                # 聚合去重（GPT 终审任务 4）：内容摘要仅与当前绑定修订下
+                # 最近成功应用的内容版本比较，A→B→A 的第三次正常应用。
+                last_applied_version = (
+                    current_cursor.get("aggregate_last_content_version")
+                    if isinstance(current_cursor, dict)
+                    else None
+                )
+                already_processed = (
+                    last_applied_version is not None
+                    and last_applied_version == external_version
+                )
+            else:
+                already_processed = external_version in processed_set
 
             if already_processed:
                 # 幂等跳过：不更新业务行，audit result=skipped，run_state=success。
@@ -3013,12 +3220,21 @@ class DatabaseManager:
             )
             self._prune_project_status_audit(conn, deliverable_id)
 
-            # 推进 cursor：保留处理顺序，新版本追加到末尾，只留最后 100 条。
-            if external_version in processed_set:
-                next_processed = processed_versions
+            if aggregate_mode:
+                # 聚合去重基线仅在全部字段成功应用时推进（GPT 终审任务 4）：
+                # 部分/零字段应用必须使基线失效（置为 None 或 partial，P1-3），
+                # 绝不能保留旧基线，否则当来源回到旧版本时将被错误去重，导致数据永久不一致。
+                if applied_any and not skipped:
+                    next_cursor = {"aggregate_last_content_version": external_version}
+                else:
+                    next_cursor = {"aggregate_last_content_version": None, "partial": True}
             else:
-                next_processed = processed_versions + [external_version]
-            next_cursor = {"processed_versions": next_processed[-100:]}
+                # 推进 cursor：保留处理顺序，新版本追加到末尾，只留最后 100 条。
+                if external_version in processed_set:
+                    next_processed = processed_versions
+                else:
+                    next_processed = processed_versions + [external_version]
+                next_cursor = {"processed_versions": next_processed[-100:]}
             conn.execute(
                 f"""
                 UPDATE project_status_update_bindings
@@ -3064,6 +3280,7 @@ class DatabaseManager:
                 "skipped_fields": dict(skipped),
             }
 
+    @observed("db.finalize_sync_needs_attention")
     def finalize_sync_needs_attention(
         self,
         binding_id: int,
@@ -3079,6 +3296,7 @@ class DatabaseManager:
         不修改 project_status_deliverables，不推进 cursor/last_success_at。
         """
         with self.get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             self._assert_lease_holder(conn, binding_id, run_id, lease_token)
             now = self._utc_now(conn)
             deliverable_id_row = conn.execute(
@@ -3096,8 +3314,10 @@ class DatabaseManager:
                 sanitized_message,
                 now,
                 sync_state="needs_attention",
+                expected_lease_token=lease_token,
             )
 
+    @observed("db.finalize_sync_failure")
     def finalize_sync_failure(
         self,
         binding_id: int,
@@ -3113,6 +3333,7 @@ class DatabaseManager:
         不修改 project_status_deliverables，不推进 cursor/last_success_at。
         """
         with self.get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             self._assert_lease_holder(conn, binding_id, run_id, lease_token)
             now = self._utc_now(conn)
             self._finalize_run_and_release(
@@ -3125,8 +3346,10 @@ class DatabaseManager:
                 sanitized_message,
                 now,
                 sync_state="failed",
+                expected_lease_token=lease_token,
             )
 
+    @observed("db.finalize_sync_conflict")
     def finalize_sync_conflict(
         self,
         binding_id: int,
@@ -3145,6 +3368,7 @@ class DatabaseManager:
         """
         self._validate_trigger_type(trigger_type)
         with self.get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             self._assert_lease_holder(conn, binding_id, run_id, lease_token)
             now = self._utc_now(conn)
             self._insert_audit_row(
@@ -3170,6 +3394,7 @@ class DatabaseManager:
                 sanitized_message,
                 now,
                 sync_state="failed",
+                expected_lease_token=lease_token,
             )
 
     @staticmethod
@@ -3184,6 +3409,7 @@ class DatabaseManager:
         finished_at: str,
         sync_state: str = "success",
         external_version: str | None = None,
+        expected_lease_token: str | None = None,
     ) -> None:
         """更新 sync_runs 最终状态并清空 binding 当前租约。"""
         DatabaseManager._validate_run_state(run_state)
@@ -3197,6 +3423,11 @@ class DatabaseManager:
             (run_state, result_summary, error_type, error_message,
              finished_at, external_version, run_id),
         )
+        where_clause = "WHERE id = ?"
+        params: list[Any] = [sync_state, binding_id]
+        if expected_lease_token is not None:
+            where_clause += " AND (lease_token IS NULL OR lease_token = ?)"
+            params.append(expected_lease_token)
         conn.execute(
             f"""
             UPDATE project_status_update_bindings
@@ -3205,9 +3436,9 @@ class DatabaseManager:
                 lease_expires_at = NULL,
                 sync_state = ?,
                 updated_at = {_LOCAL_NOW_SQL}
-            WHERE id = ?
+            {where_clause}
             """,
-            (sync_state, binding_id),
+            params,
         )
 
     @staticmethod
@@ -3365,7 +3596,7 @@ class DatabaseManager:
                     """
                     SELECT b.id, b.deliverable_id, b.source_type, b.external_key,
                            b.match_rule_json, b.mapping_json, b.cursor_json,
-                           b.retry_policy_json, b.sync_state,
+                           b.retry_policy_json, b.sync_state, b.sync_config_revision,
                            CASE WHEN trim(COALESCE(b.credential_ref, '')) <> ''
                                 THEN 1 ELSE 0 END AS credential_configured,
                            d.phase_id, d.updated_at AS deliverable_updated_at
@@ -3383,7 +3614,7 @@ class DatabaseManager:
                     """
                     SELECT b.id, b.deliverable_id, b.source_type, b.external_key,
                            b.match_rule_json, b.mapping_json, b.cursor_json,
-                           b.retry_policy_json, b.sync_state,
+                           b.retry_policy_json, b.sync_state, b.sync_config_revision,
                            CASE WHEN trim(COALESCE(b.credential_ref, '')) <> ''
                                 THEN 1 ELSE 0 END AS credential_configured,
                            d.phase_id, d.updated_at AS deliverable_updated_at
@@ -3425,6 +3656,8 @@ class DatabaseManager:
         candidate_count: int,
         candidate_summary_json: str,
         field_report_json: str,
+        config_signature: str | None = None,
+        aggregated_candidate_json: str | None = None,
     ) -> int:
         allowed = {"matched", "not_found", "ambiguous", "missing_fields", "key_changed"}
         if result_state not in allowed:
@@ -3440,13 +3673,16 @@ class DatabaseManager:
                 INSERT INTO project_status_mapping_observations
                     (deliverable_id, source_type, result_state, external_key,
                      candidate_fingerprint, candidate_count,
-                     candidate_summary_json, field_report_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                     candidate_summary_json, field_report_json,
+                     config_signature, aggregated_candidate_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (deliverable_id, source_type, result_state, external_key,
                  candidate_fingerprint, candidate_count,
                  _sanitize_json(_json_loads_or_none(candidate_summary_json) or []),
-                 _sanitize_json(_json_loads_or_none(field_report_json) or {})),
+                 _sanitize_json(_json_loads_or_none(field_report_json) or {}),
+                 config_signature,
+                 _sanitize_json(_json_loads_or_none(aggregated_candidate_json) or {}) if aggregated_candidate_json else None),
             )
             conn.execute(
                 """
@@ -3467,7 +3703,8 @@ class DatabaseManager:
                 """
                 SELECT id, deliverable_id, source_type, result_state, external_key,
                        candidate_fingerprint, candidate_count,
-                       candidate_summary_json, field_report_json, created_at
+                       candidate_summary_json, field_report_json,
+                       config_signature, aggregated_candidate_json, created_at
                 FROM project_status_mapping_observations
                 WHERE deliverable_id = ? ORDER BY id DESC LIMIT ?
                 """,
@@ -3475,18 +3712,79 @@ class DatabaseManager:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def mapping_stability_count(self, deliverable_id: str) -> int:
+    def mapping_stability_count(
+        self,
+        deliverable_id: str,
+        expected_signature: str | None = None,
+    ) -> int:
         rows = self.list_mapping_observations(deliverable_id, 2)
         if not rows or rows[0]["result_state"] != "matched":
             return 0
-        key = rows[0]["external_key"]
+        binding_source_type: str | None = None
+        binding_external_key: str | None = None
+        binding_rule: Any = None
+        # History callers do not carry the request-local rule. Derive the
+        # current binding signature here so history, preview, enable and run
+        # all reject unsigned/stale evidence identically.
+        with self.get_connection() as conn:
+            binding = conn.execute(
+                "SELECT source_type, external_key, match_rule_json "
+                "FROM project_status_update_bindings WHERE deliverable_id = ?",
+                (deliverable_id,),
+            ).fetchone()
+        if binding is not None:
+            binding_source_type = str(binding["source_type"] or "").strip() or None
+            binding_external_key = str(binding["external_key"] or "").strip() or None
+            binding_rule = _json_loads_or_none(binding["match_rule_json"])
+        request_local_signature = expected_signature is not None
+        if expected_signature is None:
+            from services.project_status_records import compute_config_signature
+
+            if isinstance(binding_rule, dict):
+                try:
+                    expected_signature = compute_config_signature(
+                        str(binding["source_type"] or ""), binding_rule
+                    )
+                except (TypeError, ValueError):
+                    # A malformed current binding is viewable but cannot
+                    # authorize historical evidence.
+                    expected_signature = None
+        if not isinstance(expected_signature, str) or not expected_signature.strip():
+            # A missing/invalid current binding cannot authorize legacy rows
+            # whose observation signature is absent.  History remains
+            # readable, but its readiness counter is fail-closed.
+            return 0
+        # 聚合观测（无单记录稳定键）按记录集合指纹一致性计数，
+        # 与启用校验共用同一规则与判定（GPT 终审 P2：ready 与校验一致）。
+        from services.project_status_records import observation_is_aggregate
+        aggregate_mode = observation_is_aggregate(rows[0])
+        key_field = "candidate_fingerprint" if aggregate_mode else "external_key"
         source_type = rows[0]["source_type"]
+        if binding_source_type is not None and source_type != binding_source_type:
+            return 0
+        if (
+            not request_local_signature
+            and isinstance(binding_rule, dict)
+            and binding_rule
+            and (str(rows[0]["external_key"] or "").strip() or None)
+            != binding_external_key
+        ):
+            # History has no request-local key.  Once a real binding exists,
+            # its current stable key must agree with the latest evidence;
+            # aggregate bindings intentionally use NULL on both sides.
+            return 0
+        baseline = str(rows[0][key_field] or "")
         count = 0
         for row in rows:
             if (
                 row["result_state"] != "matched"
-                or row["external_key"] != key
+                or str(row[key_field] or "") != baseline
                 or row["source_type"] != source_type
+                or observation_is_aggregate(row) != aggregate_mode
+                or (
+                    expected_signature is not None
+                    and str(row.get("config_signature") or "").strip() != expected_signature
+                )
             ):
                 break
             count += 1
@@ -3578,6 +3876,7 @@ class DatabaseManager:
         actor: str,
         credential_ref: object = ARCHIVE_CREDENTIAL_UNCHANGED,
         interval_minutes: int = 60,
+        clear_analysis_cache: bool = False,
         retry_policy: object = ARCHIVE_RETRY_UNCHANGED,
     ) -> dict[str, Any]:
         """Optimistically update one fixed job and append a secret-free audit."""
@@ -3900,6 +4199,7 @@ class DatabaseManager:
             )
         return value
 
+    @observed("db.acquire_archive_job_lease")
     def acquire_archive_job_lease(
         self,
         job_id: int,
@@ -4015,6 +4315,7 @@ class DatabaseManager:
                 "acquired_at": now,
             }
 
+    @observed("db.start_archive_run")
     def start_archive_run(
         self, job_id: int, run_id: int, lease_token: str
     ) -> None:
@@ -4035,6 +4336,7 @@ class DatabaseManager:
             if cursor.rowcount != 1:
                 raise ArchiveLeaseLostError("archive run is not leased")
 
+    @observed("db.renew_archive_job_lease")
     def renew_archive_job_lease(
         self,
         job_id: int,
@@ -4081,6 +4383,7 @@ class DatabaseManager:
                 raise ArchiveLeaseLostError("archive lease renewal did not persist")
             return str(row["lease_expires_at"])
 
+    @observed("db.finalize_archive_run")
     def finalize_archive_run(
         self,
         job_id: int,
@@ -4279,28 +4582,29 @@ class DatabaseManager:
         Raises:
             sqlite3.Error: 数据库操作异常
         """
-        conn: sqlite3.Connection | None = None
-        try:
-            conn = sqlite3.connect(
-                str(self._db_path),
-                timeout=10,  # 等待锁的超时时间（秒）
-            )
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA foreign_keys=ON;")
+        with operation("db.transaction"):
+            conn: sqlite3.Connection | None = None
+            try:
+                conn = sqlite3.connect(
+                    str(self._db_path),
+                    timeout=10,  # 等待锁的超时时间（秒）
+                )
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA foreign_keys=ON;")
 
-            yield conn
+                yield conn
 
-            conn.commit()
+                conn.commit()
 
-        except sqlite3.Error:
-            if conn:
-                conn.rollback()
-            logger.exception("数据库事务回滚")
-            raise
+            except sqlite3.Error:
+                if conn:
+                    conn.rollback()
+                logger.exception("数据库事务回滚")
+                raise
 
-        finally:
-            if conn:
-                conn.close()
+            finally:
+                if conn:
+                    conn.close()
 
     def execute_script(self, script: str) -> None:
         """

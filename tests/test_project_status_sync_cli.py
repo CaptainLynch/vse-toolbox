@@ -9,6 +9,7 @@ import pytest
 
 import main as main_module
 from core.db_manager import DatabaseManager
+from services.project_status_records import compute_config_signature
 
 
 @pytest.fixture()
@@ -28,6 +29,8 @@ def cli_db(monkeypatch, tmp_path) -> DatabaseManager:
 
 def _enable_pilot_direct(db: DatabaseManager) -> int:
     """在 DB 层配置合规证据并启用 D5 试点绑定。"""
+    match_rule = {"reportType": "data_model", "incident": "FM-1"}
+    config_signature = compute_config_signature("tdc", match_rule)
     report = {
         "fields": ["currentApprover", "approvalComment", "incident", "reportType"],
         "statusOrApprovalFields": [],
@@ -44,6 +47,7 @@ def _enable_pilot_direct(db: DatabaseManager) -> int:
         candidate_count=1,
         candidate_summary_json=json.dumps([{"externalKey": "FM-1", "fields": {}}]),
         field_report_json=json.dumps(report),
+        config_signature=config_signature,
     )
     db.record_mapping_observation(
         deliverable_id="VPI-T2-D5",
@@ -54,6 +58,7 @@ def _enable_pilot_direct(db: DatabaseManager) -> int:
         candidate_count=1,
         candidate_summary_json=json.dumps([{"externalKey": "FM-1", "fields": {}}]),
         field_report_json=json.dumps(report),
+        config_signature=config_signature,
     )
     with db.get_connection() as conn:
         conn.execute(

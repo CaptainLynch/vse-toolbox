@@ -53,7 +53,11 @@ def test_project_status_read_contract_and_overview_compatibility(client) -> None
     data = _status(client)
     assert data["phase"]["id"] == "VPI-T2"
     assert data["phase"]["overallProgress"] == 64
-    assert data["phase"]["completedCount"] == 2
+    # 契约内交付物（D2/D3/D5）新库默认自动同步但未同步 → 待同步；
+    # D1（手工演示值）计入完成数，D4（手工模式，占位值）计入数值态。
+    assert data["phase"]["completedCount"] == 1
+    assert data["phase"]["pendingCount"] == 3
+    assert data["phase"]["totalCount"] == 5
     assert len(data["milestones"]) == 11
     assert [item["name"] for item in data["milestones"]] == list(MILESTONE_TEMPLATE_NAMES)
     assert all(item["date"] is None for item in data["milestones"])
@@ -76,6 +80,50 @@ def test_project_status_read_contract_and_overview_compatibility(client) -> None
     overview = client.get("/api/overview")
     assert overview.status_code == 200
     assert set(overview.get_json()) == {"projects", "deliverables", "feishu"}
+
+
+def test_project_status_payload_includes_latest_analysis_link(client) -> None:
+    """概览 payload 为每个交付物附带最新明细分析快照摘要（analysisLink）；
+    无快照时为 None，发布快照后与明细页分析摘要同源。"""
+    data = _status(client)
+    links = {item["id"]: item["analysisLink"] for item in data["deliverables"]}
+    assert links["VPI-T2-D1"] is None
+    assert links["VPI-T2-D3"] is None
+
+    db = client.application.extensions["deliverable_analysis"].db
+    snapshot = {
+        "total_count": 4,
+        "completed_count": 3,
+        "incomplete_count": 1,
+        "overdue_count": 1,
+        "due_soon_count": 0,
+        "missing_due_date_count": 0,
+        "department_counts": {"车身科": {"total": 4, "completed": 3, "incomplete": 1}},
+        "snapshot_at": "2026-09-12T08:00:00.000Z",
+    }
+    db.replace_project_status_analysis_cache("VPI-T2-D2", 21, snapshot, [])
+
+    reloaded = _status(client)
+    link = next(
+        item["analysisLink"]
+        for item in reloaded["deliverables"]
+        if item["id"] == "VPI-T2-D2"
+    )
+    assert link == {
+        "snapshotAt": "2026-09-12T08:00:00.000Z",
+        "summary": {
+            "total": 4,
+            "completed": 3,
+            "incomplete": 1,
+            "overdue": 1,
+        },
+    }
+    # 未发布快照的交付物保持 None。
+    assert next(
+        item["analysisLink"]
+        for item in reloaded["deliverables"]
+        if item["id"] == "VPI-T2-D1"
+    ) is None
 
 
 def test_project_status_update_persists_and_returns_shared_saved_state(client) -> None:  # type: ignore[no-untyped-def]
@@ -339,3 +387,29 @@ def test_milestone_update_empty_list_restores_default_template(client) -> None:
 
     persisted = _status(client)
     assert [item["name"] for item in persisted["milestones"]] == list(MILESTONE_TEMPLATE_NAMES)
+
+
+def test_project_status_payload_exposes_sync_display_and_capabilities(client) -> None:
+    """新库种子：契约内交付物默认 automatic（待配置），payload 下发展示
+    状态与来源能力；updateMethod 为 binding.mode 的兼容投影。"""
+    data = _status(client)
+    items = {item["id"]: item for item in data["deliverables"]}
+
+    for deliverable_id in ("VPI-T2-D2", "VPI-T2-D3", "VPI-T2-D5"):
+        item = items[deliverable_id]
+        assert item["syncDisplay"]["state"] == "pending_config"
+        assert item["updateMethod"] == "automatic"
+        assert item["sourceInfo"]["syncCapable"] is True
+        assert item["sourceInfo"]["matchFields"]
+        assert item["sourceInfo"]["evidenceFields"]
+
+    for deliverable_id in ("VPI-T2-D1", "VPI-T2-D4"):
+        item = items[deliverable_id]
+        assert item["syncDisplay"]["state"] == "manual"
+        assert item["updateMethod"] == "manual"
+        assert item["sourceInfo"]["syncCapable"] is False
+        assert item["sourceInfo"]["syncNote"]
+
+    assert items["VPI-T2-D2"]["sourceInfo"]["reportType"] == "sor"
+    assert items["VPI-T2-D3"]["sourceInfo"]["reportType"] == "ewo"
+    assert items["VPI-T2-D5"]["sourceInfo"]["reportType"] == "data_model"

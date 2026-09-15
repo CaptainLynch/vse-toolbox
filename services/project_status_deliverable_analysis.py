@@ -58,6 +58,12 @@ EWO_DEPARTMENT_KEYWORDS: tuple[str, ...] = (
     "外饰",
     "内饰",
 )
+# The same bounded department expression is used by project-status discovery
+# and scheduled execution.  It is part of the effective query identity when
+# an EWO binding does not provide an explicit rspDepartment filter.
+EWO_DEFAULT_RSP_DEPARTMENT_EXPRESSION = "|".join(
+    f"*{keyword}*" for keyword in EWO_DEPARTMENT_KEYWORDS
+)
 
 # 图表自定义标签的候选字段中文显示名；未映射的键原样展示。
 EWO_FIELD_LABELS: dict[str, str] = {
@@ -595,6 +601,12 @@ def normalize_analysis_rows(
         if not isinstance(row, Mapping):
             continue
         consumed_keys: set[str] = set()
+        fixed_ewo_id = row.get('_source_item_id') if ewo_source else None
+        if fixed_ewo_id is not None:
+            if not isinstance(fixed_ewo_id, str) or not re.fullmatch(r'[0-9A-Fa-f]{32}', fixed_ewo_id):
+                raise ValueError('EWO analysis source ID is invalid')
+            fixed_ewo_id = fixed_ewo_id.upper()
+            consumed_keys.add('_source_item_id')
         raw_key, key_consumed = _field_value_with_key(row, "item_key", checked_mapping)
         if key_consumed:
             consumed_keys.add(key_consumed)
@@ -664,6 +676,8 @@ def normalize_analysis_rows(
         fingerprint_source = "|".join(
             (str(raw_key or ""), title, department, owner, planned_date or "")
         )
+        if fixed_ewo_id is not None:
+            fingerprint_source = 'ewo-item:' + fixed_ewo_id
         item_key = hashlib.sha256(fingerprint_source.encode("utf-8")).hexdigest()
         if item_key in seen:
             continue
@@ -768,7 +782,8 @@ class ProjectStatusDeliverableAnalysisService:
         snapshot_at: object,
         mapping: Mapping[str, object] | None = None,
         source_type: str | None = None,
-    ) -> None:
+        expected_sync_config_revision: int | None = None,
+    ) -> bool:
         items = normalize_analysis_rows(rows, mapping, source_type=source_type)
         snapshot = summarize_analysis_items(
             items,
@@ -776,11 +791,12 @@ class ProjectStatusDeliverableAnalysisService:
             today=self._clock(),
             source_type=source_type,
         )
-        self.db.replace_project_status_analysis_cache(
+        return self.db.replace_project_status_analysis_cache(
             deliverable_id,
             source_run_id,
             snapshot,
             items,
+            expected_sync_config_revision=expected_sync_config_revision,
         )
 
     def overview(
@@ -871,6 +887,37 @@ class ProjectStatusDeliverableAnalysisService:
             "carType": car_type,
             "customCharts": custom_charts,
         }
+
+    def latest_link_summary(self, deliverable_id: str) -> dict[str, Any] | None:
+        """概览环图联动摘要：与 overview() 完全同口径。
+
+        EWO 交付物按当前日期重算逾期/临期，保证环图数字与明细页一致；
+        其余交付物直接读存储快照摘要。
+        """
+        deliverable = self._deliverable(deliverable_id)
+        rows = self.db.list_project_status_analysis_snapshots(deliverable_id, 1)
+        if not rows:
+            return None
+        latest = rows[0]
+        summary = {
+            "total": int(latest["total_count"]),
+            "completed": int(latest["completed_count"]),
+            "incomplete": int(latest["incomplete_count"]),
+            "overdue": int(latest["overdue_count"]),
+        }
+        if self._is_ewo_deliverable(deliverable_id, deliverable):
+            recalculated = summarize_analysis_items(
+                self._cached_items(deliverable_id, deliverable=deliverable),
+                snapshot_at=latest["snapshot_at"],
+                today=self._clock(),
+            )
+            summary = {
+                "total": int(recalculated["total_count"]),
+                "completed": int(recalculated["completed_count"]),
+                "incomplete": int(recalculated["incomplete_count"]),
+                "overdue": int(recalculated["overdue_count"]),
+            }
+        return {"snapshotAt": latest.get("snapshot_at"), "summary": summary}
 
     def items(
         self,

@@ -1,5 +1,10 @@
 # 阶段 0：项目地图、现状与根因证据
 
+> 状态：Historical
+> 读者：Developer、Agent（历史复盘）
+> 权威来源：2026-08-31 只读扫描；当前代码、测试和 `PROJECT_MAP.md` 优先
+> 默认读取：禁止默认读取，仅在根因或历史演进复盘时读取
+
 扫描时间：2026-08-31（主会话只读扫描）。AGY 证据：`.runtime/agy_phase0_scan.json`；监督器 doctor 显示 `AGY executable MISSING`、配置模型 `gemini-3.7-flash-high`、`sandbox ENABLED`。随后按本机 Antigravity 集成配置检查了 `C:\Users\Lynch\AppData\Local\agy\bin\agy.exe`，该路径同样不存在；因此没有可调用的本地 Gemini worker，未绕过沙箱，改由主会话完成等价扫描。
 
 ## 项目地图

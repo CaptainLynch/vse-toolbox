@@ -16,6 +16,8 @@ services/project_status_sync_runner.py — 独立同步运行器与 run_once 执
 
 from __future__ import annotations
 
+from core.diagnostic_recording import observed
+
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Protocol, Sequence
@@ -148,6 +150,8 @@ class SyncBindingContext:
     expected_deliverable_updated_at: str
     run_id: int = 0
     credential_ref: str = ""
+    # 运行开始时捕获的绑定修订号：apply/发布用它拒绝跨换绑的在途写入。
+    sync_config_revision: int = 0
 
 
 # ── Connector Protocol ──────────────────────────────────────────
@@ -285,6 +289,7 @@ class ProjectStatusSyncRunner:
         self._registry = registry
         self._analysis_service = analysis_service or ProjectStatusDeliverableAnalysisService(db)
 
+    @observed("sync.ProjectStatusSyncRunner.run_once", background=True)
     def run_once(
         self,
         deliverable_id: str | None = None,
@@ -370,6 +375,7 @@ class ProjectStatusSyncRunner:
             dry_run=True,
         )
 
+    @observed("sync.ProjectStatusSyncRunner._run_single_binding")
     def _run_single_binding(
         self,
         binding: dict[str, Any],
@@ -392,12 +398,13 @@ class ProjectStatusSyncRunner:
                 validate_runtime_prerequisites=validate_runtime_prerequisites,
             )
 
-        # 获取租约。
+        # 获取租约（P1-2：传入 listing 时捕获的 expected revision，若列出后发生换绑则拒绝领取并转入 needs_attention）。
         try:
             lease = self._service.acquire_sync_lease(
                 deliverable_id,
                 trigger_type,
                 validate_runtime_prerequisites=validate_runtime_prerequisites,
+                expected_sync_config_revision=binding.get("sync_config_revision"),
             )
         except SyncLeaseBusyError:
             return BindingRunResult(
@@ -435,25 +442,30 @@ class ProjectStatusSyncRunner:
             # leased → running。
             self._db.start_sync_run(binding_id, run_id, lease_token)
 
-            # 构造只读上下文。
+            # 构造只读上下文（优先采用租约事务内原子获取的一致性配置快照，P1-2）。
             try:
                 credential_ref = self._db.get_sync_binding_credential_ref(binding_id)
             except SyncBindingNotReadyError:
                 credential_ref = ""
+            effective_binding = lease.get("binding_snapshot") or binding
+            deliv_updated_at = effective_binding.get("deliverable_updated_at") or binding.get("deliverable_updated_at")
             context = SyncBindingContext(
                 binding_id=binding_id,
                 deliverable_id=deliverable_id,
-                phase_id=str(binding["phase_id"]),
-                source_type=source_type,
-                external_key=str(binding["external_key"] or ""),
-                match_rule=_safe_json_loads(binding["match_rule_json"]),
-                mapping=_safe_json_loads(binding["mapping_json"]),
-                cursor=_safe_json_loads(binding["cursor_json"]),
-                expected_deliverable_updated_at=str(
-                    binding["deliverable_updated_at"]
-                ),
+                phase_id=str(effective_binding.get("phase_id") or binding["phase_id"]),
+                source_type=str(effective_binding.get("source_type") or source_type),
+                external_key=str(effective_binding.get("external_key") or ""),
+                match_rule=_safe_json_loads(effective_binding.get("match_rule_json")),
+                mapping=_safe_json_loads(effective_binding.get("mapping_json")),
+                cursor=_safe_json_loads(effective_binding.get("cursor_json")),
+                expected_deliverable_updated_at=str(deliv_updated_at or ""),
                 run_id=run_id,
                 credential_ref=credential_ref,
+                sync_config_revision=int(
+                    effective_binding.get("sync_config_revision")
+                    if effective_binding.get("sync_config_revision") is not None
+                    else (lease.get("sync_config_revision") or 0)
+                ),
             )
 
             # 在数据库事务外调用 connector。
@@ -470,14 +482,21 @@ class ProjectStatusSyncRunner:
             if sync_result.final_state in {"success", "partial"} and snapshot.analysis_rows:
                 analysis_mapping = context.match_rule.get("analysisMapping")
                 try:
-                    self._analysis_service.publish(
+                    published = self._analysis_service.publish(
                         deliverable_id,
                         run_id,
                         snapshot.analysis_rows,
                         snapshot_at=snapshot.fetched_at,
                         mapping=(analysis_mapping if isinstance(analysis_mapping, Mapping) else None),
                         source_type=source_type,
+                        expected_sync_config_revision=context.sync_config_revision,
                     )
+                    if published is False:
+                        logger.warning(
+                            "deliverable analysis cache publish skipped for %s: "
+                            "binding config changed during sync",
+                            deliverable_id,
+                        )
                 except Exception as exc:
                     logger.warning(
                         "deliverable analysis cache publish failed for %s: %s",
@@ -494,7 +513,16 @@ class ProjectStatusSyncRunner:
                             source="project_status_sync",
                             artifacts=snapshot.artifacts,
                         )
-                        self._db.publish_deliverable_form_snapshot(form_snapshot)
+                        form_published = self._db.publish_deliverable_form_snapshot(
+                            form_snapshot,
+                            expected_sync_config_revision=context.sync_config_revision,
+                        )
+                        if not form_published:
+                            logger.warning(
+                                "EWO form snapshot publish skipped for %s: "
+                                "binding config changed during sync",
+                                deliverable_id,
+                            )
                     except Exception as exc:
                         logger.warning(
                             "EWO form snapshot publish failed for %s: %s",

@@ -1,3 +1,18 @@
+# Local worker supervisor
+
+The current default is **Codex lead + ZCode app-server with Gemini Flash/Pro slots**. Flash handles bounded high-throughput work; Pro handles complex implementation and deep review. Gemini worker context is capped at 1,000,000 tokens (with 950,848 input tokens available under the default output/reserve budget), while Gemini total usage is not limited for cost reasons. The Astra Codex client is separately configured with a 272,000-token effective context window. See [ZCode worker runtime](../../docs/ZCODE_WORKER_RUNTIME.md) for the active entry point, contract, guard, verification and rollback. The AGY documentation below describes the retained opt-in compatibility adapter; it is not the default route.
+
+The Codex lead has a separate orchestration policy: `150000` input tokens is the soft waterline, `180000` requests a phase Handoff, and `200000` is a hard guard for starting a new micro-session inside the configured 272,000-token window. The audit tool reports crossings and counterfactual excess input so the policy can be evaluated against a completed session.
+
+The project also defines the opt-in `weekend-5.3flash` profile for the ZCode gifted trial card. It is marked `interactive-only`: passing `-WorkerProfile weekend-5.3flash` to a headless launcher records `interactive-required` and starts no Worker because the card requires interactive runtime headers/CAPTCHA state. Use the model in an interactive ZCode session and return a compact Handoff; omitting the option preserves the normal Gemini Flash/Pro route.
+
+## Active dual-tier policy
+
+- `flash` → `gemini-3.8-flash-high` (currently verified local alias)
+- `pro` → `gemini-pro-agent` (CliproxyAPI-verified local alias for Gemini 3.1 Pro High)
+- `deep-review` is Pro read-only; security, authentication, authorization, concurrency, migration and public-contract work remain under Codex control.
+- `handoff.v1.json` is the only default Worker-to-lead delivery. Raw tool output, provider diagnostics and screenshots remain local evidence.
+
 # Codex + local AGY CLI harness
 
 The supervisor is a durable local handoff loop between Codex and the locally

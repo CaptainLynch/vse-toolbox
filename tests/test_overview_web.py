@@ -8,7 +8,9 @@ read-only overview guards, and the preserved `/api/overview` Flask route.
 
 from __future__ import annotations
 
+import json
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -146,9 +148,9 @@ def test_overview_editor_contract() -> None:
     assert "window.confirm" in overview_js
     assert "saveButton.disabled = saving" in overview_js
     assert "function loadDeliverablePolicy" in overview_js
-    assert "function renderDeliverablePolicyEditor" in overview_js
+    assert "function renderSyncBindingEditor" in overview_js
+    assert "renderDeliverablePolicyEditor" not in overview_js
     assert "更新方式已保存" in overview_js
-    assert "TDC 稳定编号尚未确认" in overview_js
     assert "fieldAuthority" in overview_js
 
 
@@ -699,7 +701,7 @@ def test_ewo_update_policy_is_editable_with_separate_interactive_refresh() -> No
     """交互式刷新不受后台同步就绪门禁影响，后台同步仍保留门禁。"""
     js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
     policy_js = _js_slice(
-        js_text, "function renderEwoDeliverablePolicy", "async function loadDeliverablePolicy"
+        js_text, "function renderSyncBindingEditor", "async function loadDeliverablePolicy"
     )
     chart_js = _js_slice(
         js_text, "function renderDeliverableStatusChart", "async function refreshEwoAnalysisFromStatusChart"
@@ -728,7 +730,7 @@ def test_ewo_policy_editor_exposes_binding_configuration_and_discovery_workflow(
     js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
     policy_js = _js_slice(
         js_text,
-        "function renderEwoDeliverablePolicy",
+        "function renderSyncBindingEditor",
         "async function loadDeliverablePolicy",
     )
     loader_js = _js_slice(
@@ -987,15 +989,23 @@ def test_deliverable_auto_hide_rule_contract() -> None:
 
 
 def test_deliverable_form_display_fallback_contract() -> None:
-    """无 formLink/summary 为空时回退手工值，有效 summary 才换算。"""
+    """无 analysisLink/formLink/summary 为空时回退手工值，有效 summary 才换算。"""
     js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
-    start = js_text.index("function deliverableFormDisplay")
-    end = js_text.index("function shouldShowDeliverable", start)
+    start = js_text.index("function deliverableSnapshotSummary")
+    end = js_text.index("const DELIVERABLE_AUTO_HIDE_NODE_KEYWORDS", start)
     block = js_text[start:end]
+    # 门控：仅在交付物启用同步（updatePolicy.enabled === true）时使用快照口径；
+    # 人工编辑的交付物始终显示手工值（需求 2026-09-12 确认）。
+    assert "policy.enabled !== true" in block
+    assert "item.updatePolicy" in block
+    # 明细分析快照优先（与明细页同源），其次表单快照联动摘要。
+    assert "item.analysisLink" in block
     assert "item.formLink" in block
     assert "total <= 0" in block
     assert "已完成" in block and "已逾期" in block and "进行中" in block
     assert "Math.round" in block
+    # 统一换算入口：环图与明细表必须共用 deliverableDisplayItem。
+    assert "function deliverableDisplayItem" in block
 
 
 def test_detail_collapse_note_inline_and_owner_removed_contract() -> None:
@@ -1141,3 +1151,370 @@ def test_archive_plan_sync_explicit_empty_and_colspan_contract() -> None:
     assert 'colspan="8"' not in html_text
     assert "cell.colSpan = OVERVIEW_DETAIL_COLUMNS.length + 1;" in js_text
     assert "cell.colSpan = 8;" not in js_text
+
+
+def test_overview_rings_link_to_deliverable_details_contract() -> None:
+    """需求 2026-09-12：状态总览环图可点击跳转对应交付物明细，且与明细表共用换算口径。"""
+    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+    progress_start = js_text.index("function renderDeliverableProgress")
+    progress_block = js_text[
+        progress_start:js_text.index("function renderRiskSummary", progress_start)
+    ]
+
+    # 环图卡片按钮化：可点击、可键盘聚焦、携带跳转目标。
+    assert "progress-ring is-clickable" in progress_block
+    assert 'card.setAttribute("role", "button")' in progress_block
+    assert 'card.setAttribute("tabindex", "0")' in progress_block
+    assert 'location.hash = `#deliverable/${encodeURIComponent(item.id)}`' in progress_block
+    assert 'event.key === "Enter" || event.key === " "' in progress_block
+
+    # 环图使用统一换算入口，不再各自内联合并快照字段。
+    assert "deliverableDisplayItem(rawItem)" in progress_block
+    assert "formDisplay ?" not in progress_block
+
+    details_start = js_text.index("function renderDeliverableDetails")
+    details_block = js_text[
+        details_start:js_text.index("function renderProjectOverview", details_start)
+    ]
+    assert "deliverableDisplayItem(rawRow)" in details_block
+
+    css_text = Path("web/static/style.css").read_text(encoding="utf-8-sig")
+    assert ".progress-ring.is-clickable" in css_text
+    assert "cursor: pointer" in css_text
+
+
+def test_deliverable_snapshot_display_prefers_analysis_link() -> None:
+    """环图换算优先取明细分析快照（analysisLink），其次表单快照（formLink）。"""
+    script = r"""
+const fs = require("fs");
+const vm = require("vm");
+const source = fs.readFileSync("web/static/app.js", "utf8");
+const code = source.slice(
+  source.indexOf("function deliverableSnapshotSummary"),
+  source.indexOf("const DELIVERABLE_AUTO_HIDE_NODE_KEYWORDS"),
+);
+const context = {};
+vm.runInNewContext(code + `
+const enabledPolicy = { enabled: true, mode: "automatic" };
+result = [
+  JSON.stringify(deliverableFormDisplay({
+    id: "X",
+    updatePolicy: enabledPolicy,
+    analysisLink: { snapshotAt: "A", summary: { total: 4, completed: 3, overdue: 1 } },
+    formLink: { snapshotAt: "B", summary: { total: 2, completed: 2, overdue: 0 } },
+  })),
+  JSON.stringify(deliverableFormDisplay({
+    id: "Y",
+    updatePolicy: enabledPolicy,
+    formLink: { snapshotAt: "B", summary: { total: 4, completed: 1, overdue: 2 } },
+  })),
+  JSON.stringify(deliverableFormDisplay({
+    id: "Z",
+    updatePolicy: enabledPolicy,
+    formLink: { snapshotAt: "B", summary: { total: 0, completed: 0, overdue: 0 } },
+  })),
+  JSON.stringify(deliverableDisplayItem({
+    id: "W",
+    updatePolicy: enabledPolicy,
+    status: "进行中",
+    progress: 60,
+    progressOrDate: "60%",
+    analysisLink: { snapshotAt: "A", summary: { total: 4, completed: 4, overdue: 0 } },
+  })),
+  JSON.stringify(deliverableDisplayItem({ id: "V", status: "进行中", progress: 60 })),
+  JSON.stringify(deliverableFormDisplay({
+    id: "M",
+    updatePolicy: { enabled: false, mode: "manual" },
+    analysisLink: { snapshotAt: "A", summary: { total: 4, completed: 3, overdue: 1 } },
+  })),
+  JSON.stringify(deliverableDisplayItem({
+    id: "N",
+    status: "进行中",
+    progress: 72,
+    progressOrDate: "72%",
+    analysisLink: { snapshotAt: "A", summary: { total: 4, completed: 3, overdue: 1 } },
+  })),
+];
+`, context);
+process.stdout.write(context.result.join("\n"));
+"""
+    result = subprocess.run(
+        ["node", "-e", script],
+        cwd=Path(__file__).resolve().parent.parent,
+        check=True,
+        capture_output=True,
+        # Node 固定输出 UTF-8；Windows 默认 GBK 解码会失败，必须显式指定。
+        encoding="utf-8",
+    )
+    lines = result.stdout.strip().splitlines()
+    assert len(lines) == 7
+    # 同步启用时 analysisLink 优先：4 项完成 3 项 → 75%、有逾期 → 已逾期。
+    assert lines[0] == '{"progress":75,"status":"已逾期","snapshotAt":"A"}'
+    # 无 analysisLink 时回退 formLink。
+    assert lines[1] == '{"progress":25,"status":"已逾期","snapshotAt":"B"}'
+    # total 为 0 的快照无效 → 回退手工值。
+    assert lines[2] == "null"
+    # 合并项：快照换算已完成 → 状态/进度/进度或日期一致。
+    assert json.loads(lines[3])["status"] == "已完成"
+    assert json.loads(lines[3])["progress"] == 100
+    assert json.loads(lines[3])["progressOrDate"] == "100%"
+    # 无任何快照 → 原样返回（手工口径不变）。
+    raw = json.loads(lines[4])
+    assert raw["progress"] == 60
+    assert "progressOrDate" not in raw
+    # 门控：同步未启用（人工编辑）→ 即使存在 analysisLink 也回退手工值。
+    assert lines[5] == "null"
+    gated = json.loads(lines[6])
+    assert gated["progress"] == 72
+    assert gated["status"] == "进行中"
+    assert gated["progressOrDate"] == "72%"
+
+
+def test_deliverable_detail_page_unified_display_contract() -> None:
+    """CODEX 审计修复：详情页标题/状态图/属性网格与概览环图同口径，
+    同步成功后刷新概览数据，保存失败恢复用户提交的凭据引用。"""
+    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+
+    # 状态图使用统一换算入口（含 tone 归零），不再保留手工 tone。
+    chart_start = js_text.index("function renderDeliverableStatusChart")
+    chart_block = js_text[chart_start:js_text.index("const chart = overviewEl", chart_start)]
+    assert "deliverableDisplayItem(rawItem)" in chart_block
+    assert "deliverableFormDisplay(rawItem)" in chart_block
+
+    # 详情页头与属性网格使用换算后的展示状态；数据来源区分两类快照。
+    detail_start = js_text.index("const displayItem = deliverableDisplayItem(item)")
+    detail_block = js_text[detail_start:js_text.index('function renderArchiveDeliverableDetailPage', detail_start)]
+    assert "deliverableTone(displayItem)" in detail_block
+    # 状态感知的当前状态行：四区共用 deliverableStatusText（paused 后缀统一）。
+    assert '["当前状态", deliverableStatusText(item, displayItem)]' in detail_block
+    assert '"明细分析快照"' in detail_block
+    assert '"表单快照"' in detail_block
+
+    # 四条同步/归档下载成功路径都刷新概览数据（环图 analysisLink 不停留旧快照）。
+    assert js_text.count("await loadProjectOverview();") >= 4
+
+    # 保存失败（无重渲染）恢复用户本次提交的凭据引用，而非强制回填 domain。
+    assert "aliasInput.value = aliasVal" in js_text
+
+
+def test_ring_date_label_percent_fallback() -> None:
+    """CODEX 审计修复：快照 100% 且无实际完成日期时，环图文案回退完成度。"""
+    script = r"""
+const fs = require("fs");
+const vm = require("vm");
+const source = fs.readFileSync("web/static/app.js", "utf8");
+const code = source.slice(
+  source.indexOf("function deliverableProgressOrDate"),
+  source.indexOf("function renderDeliverableProgress"),
+);
+const context = {};
+vm.runInNewContext(code + `
+result = [
+  ringDateLabel({ status: "已完成", progress: 100, progressOrDate: "100%" }),
+  ringDateLabel({ status: "已完成", progress: 100, progressOrDate: "2026-08-30" }),
+  ringDateLabel({ status: "已逾期", plannedDate: "2026-08-08", note: "逾期 5 天" }),
+];
+`, context);
+process.stdout.write(context.result.join("\n"));
+"""
+    result = subprocess.run(
+        ["node", "-e", script],
+        cwd=Path(__file__).resolve().parent.parent,
+        check=True,
+        capture_output=True,
+        encoding="utf-8",
+    )
+    lines = result.stdout.strip().splitlines()
+    assert lines[0] == "完成度 100%"
+    assert lines[1] == "实际完成 08-30"
+    assert lines[2] == "计划完成 08-08；逾期 5 天"
+
+
+def test_archive_credential_ref_prefills_domain_when_vault_ready_contract() -> None:
+    """需求 2026-09-12：未配置凭据且凭据保护库可用时，定时登录信息默认预选统一域账号。"""
+    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+
+    editor_start = js_text.index('aliasInput.name = "credentialRef"')
+    editor_end = js_text.index("aliasLabel.appendChild(aliasSpan)", editor_start)
+    block = js_text[editor_start:editor_end]
+    assert "settingsData.credentialVaultConfigured === true" in block
+    assert 'aliasInput.value = "domain"' in block
+    assert "!job.credentialConfigured" in block
+
+    # 凭据库状态在任务列表加载时已就绪（编辑器渲染是同步路径）。
+    loader_start = js_text.index("async function loadArchiveJobs")
+    loader_block = js_text[
+        loader_start:js_text.index("async function handleArchiveJobArchive", loader_start)
+    ]
+    assert "await ensureSettingsData()" in loader_block
+
+
+def test_sync_binding_editor_is_capability_driven_contract() -> None:
+    """CODEX 架构审计修复：绑定编辑器由 sourceInfo 能力配置驱动，
+    D2/D5 与 EWO 共用；假就绪修复（最近一次报告集合 + 证据目标核对）；
+    保存提交真实启用状态（不得硬编码 enabled:false 关闭既有绑定）。"""
+    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+
+    # 分发能力驱动：不再按 source 正则/硬编码 id 选择编辑器。
+    loader_block = js_text[
+        js_text.index("async function loadDeliverablePolicy"):
+        js_text.index("const DELIVERABLE_FIXED_SOURCES")
+    ]
+    assert "capabilities.syncCapable" in loader_block
+    assert 'renderSyncBindingEditor' in loader_block
+    assert "/ewo/i.test" not in loader_block
+    assert 'item.id !== "VPI-T2-D5"' not in loader_block
+    assert "function renderDeliverablePolicyEditor" not in js_text
+
+    editor_block = js_text[
+        js_text.index("function renderSyncBindingEditor"):
+        js_text.index("async function loadDeliverablePolicy")
+    ]
+    # 匹配规则与证据来源连接由能力配置渲染。
+    assert "capabilities.matchFields" in editor_block
+    assert "capabilities.evidenceFields" in editor_block
+    assert "capabilities.reportType" in editor_block
+    # 假就绪修复：最近一次报告集合替换 + 证据目标核对。
+    assert "setDiscoveredFields(fields)" in editor_block
+    assert "addDiscoveredField" not in editor_block
+    assert "外部稳定键与最近一次映射证据不一致" in editor_block
+    # 保存提交真实启用状态，不得硬编码关闭。
+    assert "enabled: false" not in editor_block
+    assert "enabled: enabledInput.checked" in editor_block
+    # GPT 终审 P1/P2 修复：保存后刷新权威数据；重绘由
+    # loadProjectOverview→handleHashChange 单次触发，提示经消息槽在
+    # 新编辑器渲染完成后显示（避免异步时序缺口与重复渲染）。
+    assert "await loadProjectOverview();" in editor_block
+    assert 'pendingPolicyStatusMessage = "更新方式已保存"' in editor_block
+    assert "renderDeliverableDetailPage(item.id)" not in editor_block
+    assert "pendingPolicyStatusMessage = null" in editor_block
+
+
+def test_sync_binding_editor_payload_and_evidence_contract() -> None:
+    """Gemini 交叉审计修复回归：reportType 跟随能力配置、headers 走
+    parseHeaders 序列化、历史无观测记录时强制先抓取证据、paused 后缀四区统一。"""
+    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+    editor_block = js_text[
+        js_text.index("function renderSyncBindingEditor"):
+        js_text.index("async function loadDeliverablePolicy")
+    ]
+
+    # P0 修复：保存载荷 reportType 跟随能力配置，不再写死 ewo。
+    assert 'matchRule: { reportType: capabilities.reportType || "ewo" }' in editor_block
+    assert 'matchRule: { reportType: "ewo" }' not in editor_block
+    # P0 修复：TDC 认证头文本经 parseHeaders 序列化为对象。
+    assert "evidencePayload.headers = parsed" in editor_block
+    assert "parseHeaders(input.value" in editor_block
+    # P1 修复：历史无观测记录时强制先抓取证据。
+    assert "请先抓取映射证据（连续两次一致）" in editor_block
+    # matchFields 空数组按能力配置采纳，不再回退 EWO 字段。
+    assert "Array.isArray(capabilities.matchFields)\n    ? capabilities.matchFields" in editor_block
+
+    # paused 后缀四区统一：环图/明细/详情头/状态图共用 deliverableStatusText。
+    progress_block = js_text[
+        js_text.index("function renderDeliverableProgress"):
+        js_text.index("function renderRiskSummary")
+    ]
+    details_block = js_text[
+        js_text.index("function renderDeliverableDetails"):
+        js_text.index("function renderProjectOverview")
+    ]
+    detail_page_block = js_text[
+        js_text.index("function renderDeliverableDetailPage"):
+        js_text.index("function renderArchiveDeliverableDetailPage")
+    ]
+    chart_block = js_text[
+        js_text.index("function renderDeliverableStatusChart"):
+        js_text.index("async function runDeliverableSyncFromAnalysis")
+    ]
+    assert "deliverableStatusText(" in progress_block
+    assert "deliverableStatusText(" in details_block
+    assert "deliverableStatusText(item, displayItem)" in detail_page_block
+    assert "deliverableStatusText(item, item)" in chart_block
+    # paused 为非数值态：deliverableStatusText 直接显示状态标签（无后缀特例）。
+    paused_helper = js_text[
+        js_text.index("function deliverableStatusText"):
+        js_text.index("function deliverablePendingDateLabel")
+    ]
+    assert "syncDisplay.label" in paused_helper
+    assert "（已暂停）" not in paused_helper
+
+
+def test_display_state_helpers_behavior() -> None:
+    """终审测试缺口（行为级）：展示状态助手与自动隐藏七态门控。"""
+    script = r"""
+const fs = require("fs");
+const vm = require("vm");
+const source = fs.readFileSync("web/static/app.js", "utf8");
+const code = source.slice(
+  source.indexOf("function deliverableSnapshotSummary"),
+  source.indexOf("function renderDeliverableProgress"),
+);
+const context = {
+  overviewSavedState: {
+    phase: { today: "2026-09-12" },
+    milestones: [{ name: "VPI 决策", date: "2026-09-01" }],
+  },
+};
+vm.runInNewContext(code + `
+const pendingDone = {
+  id: "VPI-T2-D2",
+  status: "已完成",
+  plannedDate: "2026-08-08",
+  syncDisplay: { state: "pending_first_sync", label: "待首次同步" },
+};
+const pausedRunning = {
+  id: "VPI-T2-D2",
+  status: "进行中",
+  syncDisplay: { state: "paused", label: "已暂停" },
+};
+const aggregateFormOnly = {
+  id: "VPI-T2-D5",
+  status: "进行中",
+  updatePolicy: { enabled: true, mode: "automatic", aggregate: true },
+  formLink: { snapshotAt: "2026-09-12T08:00:00.000Z", summary: { total: 4, completed: 4, overdue: 0 } },
+};
+const singleRecordForm = {
+  id: "VPI-T2-D5",
+  status: "进行中",
+  updatePolicy: { enabled: true, mode: "automatic", aggregate: false },
+  formLink: { snapshotAt: "2026-09-12T08:00:00.000Z", summary: { total: 4, completed: 4, overdue: 0 } },
+};
+result = [
+  deliverableStatusText(pausedRunning, pausedRunning),
+  deliverablePendingDateLabel(pendingDone),
+  shouldShowDeliverable(pendingDone, "auto"),
+  shouldShowDeliverable({ id: "VPI-T2-D2", status: "已完成" }, "auto"),
+  deliverableHasDisplayValue(pausedRunning),
+  deliverableHasDisplayValue(pendingDone),
+  deliverableStatusText({ id: "X", status: "已完成" }, { id: "X", status: "已完成" }),
+  deliverableFormDisplay(aggregateFormOnly) === null ? "aggregate-skipped" : "aggregate-used",
+  deliverableFormDisplay(singleRecordForm).progress,
+];
+`, context);
+process.stdout.write(context.result.join("\n"));
+"""
+    result = subprocess.run(
+        ["node", "-e", script],
+        cwd=Path(__file__).resolve().parent.parent,
+        check=True,
+        capture_output=True,
+        encoding="utf-8",
+    )
+    lines = result.stdout.strip().splitlines()
+    # paused 非数值态（GPT 终审 P1：同步不写 status/progress，
+    # 占位进度不可信）→ 显示状态标签。
+    assert lines[0] == "已暂停"
+    # 待同步态的计划逾期明确标注，且不写死业务文案。
+    assert lines[1] == "计划完成 08-08；已逾期 35 天（待同步）"
+    # 七态门控：待同步项即使手工状态为已完成也不被自动隐藏。
+    assert lines[2] == "true"
+    # 数值态（manual）已完成且节点已过 → 照旧隐藏。
+    assert lines[3] == "false"
+    assert lines[4] == "false"  # paused 是非数值态（无可信进度值）
+    assert lines[5] == "false"  # pending_first_sync 是非数值态
+    # 数值态（manual/snapshot）正常显示换算状态。
+    assert lines[6] == "已完成"
+    # 聚合绑定不做表单快照兜底（前后端换绑隔离一致）；单记录绑定正常换算（100%）。
+    assert lines[7] == "aggregate-skipped"
+    assert lines[8] == "100"

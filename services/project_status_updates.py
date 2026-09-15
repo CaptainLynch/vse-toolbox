@@ -5,6 +5,9 @@ services/project_status_updates.py - 项目状态交付物更新策略与审计�
 
 from __future__ import annotations
 
+from core.diagnostic_recording import observed
+from core.project_status_contracts import PROJECT_STATUS_SOURCE_CAPABILITIES
+from core.ewo_binding_v2 import normalize_ewo_v2_rule
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -16,6 +19,7 @@ from core.db_manager import (
     SyncBindingNotReadyError,
 )
 from core.redaction import redact_sensitive_text
+from services.project_status_records import compute_config_signature, observation_is_aggregate
 
 PROJECT_STATUS_PILOT_DELIVERABLE_ID = "VPI-T2-D5"
 PROJECT_STATUS_AUDIT_LIMIT = 100
@@ -25,6 +29,42 @@ PROJECT_STATUS_AUTOMATIC_API_FIELDS = frozenset({"owner", "plannedDate", "note"}
 
 #: connector 候选 field_values 允许的 API 字段（与自动归属字段一致）。
 SYNC_CANDIDATE_ALLOWED_FIELDS = frozenset(PROJECT_STATUS_AUTOMATIC_API_FIELDS)
+
+
+def _valid_mapping_source(source_field: object) -> bool:
+    """映射来源字段：字符串，或字符串列表（风险备注多列组合）。"""
+    if isinstance(source_field, str):
+        return bool(source_field.strip())
+    if isinstance(source_field, list):
+        return all(
+            isinstance(item, str) and bool(item.strip())
+            for item in source_field
+        ) and len(source_field) > 0
+    return False
+
+
+def _valid_match_rule_values(match_rule: Mapping[str, Any]) -> bool:
+    """Query rules contain only boolean aggregate and nonblank strings."""
+    return all(
+        isinstance(value, bool)
+        if key == "aggregate"
+        else isinstance(value, str) and bool(value.strip())
+        for key, value in match_rule.items()
+    )
+
+
+def _validate_ewo_v2_policy(rule, mapping, external_key, authorities=None):
+    if not any(key in rule for key in ('contractVersion', 'bindingMode', 'sourceItemId')):
+        return rule
+    normalized = normalize_ewo_v2_rule(dict(rule))
+    if normalized['bindingMode'] == 'record_set':
+        if external_key or set(mapping) - {'note'}:
+            raise ValueError('EWO集合不能配置单条键或负责人/计划日期自动映射')
+        if authorities and any(authorities.get(key) == 'automatic' for key in ('owner', 'plannedDate')):
+            raise ValueError('EWO集合的负责人和计划日期必须保持手工')
+    elif external_key != normalized['sourceItemId']:
+        raise ValueError('单条EWO外部键必须等于固定记录ID')
+    return normalized
 
 
 def _normalize_iso_date_value(value: str) -> str:
@@ -114,6 +154,7 @@ class SyncResult:
     updated_at: str | None
     message: str
 
+
 #: API 字段名 -> project_status_deliverables 列名。
 PROJECT_STATUS_EDITABLE_FIELDS: dict[str, str] = {
     "status": "status",
@@ -142,8 +183,21 @@ ALLOWED_TDC_MATCH_KEYS = frozenset(
         "modelNumber",
         "reportType",
         "processNo",
+        "processType",
         "carTypeProject",
+        "carTypeProjectId",
         "title",
+        "partName",
+        "version",
+        "latestCompletedNode",
+        "changeType",
+        "changeSubType",
+        "area",
+        "state",
+        "rspDepartment",
+        "rspSmt",
+        "submitStart",
+        "submitEnd",
         "sorNumber",
         "approvalStatus",
         "ewoNo",
@@ -152,31 +206,16 @@ ALLOWED_TDC_MATCH_KEYS = frozenset(
     }
 )
 
+#: 同步契约从 core 能力注册表派生（单一来源）：syncCapable 交付物即具备
+#: 自动同步契约；matchKeys 含 reportType 与各报表的过滤键。
 PROJECT_STATUS_SYNC_CONTRACTS: dict[str, dict[str, object]] = {
-    "VPI-T2-D2": {
-        "sourceType": "tdc",
-        "reportType": "sor",
-        "matchKeys": frozenset({
-            "processNo", "carTypeProject", "applicant", "title",
-            "partNumber", "sorNumber", "approvalStatus", "reportType",
-        }),
-    },
-    "VPI-T2-D3": {
-        "sourceType": "aras",
-        "reportType": "ewo",
-        "matchKeys": frozenset({
-            "ewoNo", "projectCode", "subjectKeyword", "modelInfo", "reportType",
-        }),
-    },
-    "VPI-T2-D5": {
-        "sourceType": "tdc",
-        "reportType": "data_model",
-        "matchKeys": frozenset({
-            "incident", "applicant", "department", "section",
-            "applicationStart", "applicationEnd", "projectModel",
-            "partNumber", "modelNumber", "reportType",
-        }),
-    },
+    deliverable_id: {
+        "sourceType": capabilities["sourceType"],
+        "reportType": capabilities["reportType"],
+        "matchKeys": frozenset((*capabilities["matchKeys"], "reportType")),
+    }
+    for deliverable_id, capabilities in PROJECT_STATUS_SOURCE_CAPABILITIES.items()
+    if capabilities.get("syncCapable")
 }
 
 _FORBIDDEN_CONFIG_FRAGMENTS = (
@@ -254,6 +293,7 @@ class ProjectStatusUpdateService:
     def __init__(self, db: DatabaseManager) -> None:
         self._db = db
 
+    @observed("policy.ProjectStatusUpdateService.apply_manual_update")
     def apply_manual_update(
         self,
         deliverable_id: str,
@@ -308,6 +348,7 @@ class ProjectStatusUpdateService:
         lease_seconds: int | None = None,
         *,
         validate_runtime_prerequisites: bool = True,
+        expected_sync_config_revision: int | None = None,
     ) -> dict[str, Any]:
         """
         为交付物获取同步租约并创建 leased run。
@@ -329,6 +370,8 @@ class ProjectStatusUpdateService:
         if lease_seconds is not None:
             kwargs["lease_seconds"] = lease_seconds
         kwargs["validate_runtime_prerequisites"] = validate_runtime_prerequisites
+        if expected_sync_config_revision is not None:
+            kwargs["expected_sync_config_revision"] = expected_sync_config_revision
         return self._db.acquire_sync_lease(int(binding["id"]), **kwargs)
 
     def assert_sync_ready(
@@ -337,12 +380,12 @@ class ProjectStatusUpdateService:
         *,
         validate_runtime_prerequisites: bool = True,
     ) -> dict[str, Any]:
-        """Validate binding policy, optionally including runtime prerequisites.
+        """Validate a binding before preview, enable, or automatic execution.
 
         ``validate_runtime_prerequisites=False`` is reserved for unattended
-        scheduled runs.  It still protects the scheduler from disabled or
-        incorrectly sourced bindings, while allowing the connector to produce
-        an actionable credential/matching/mapping result for the actual run.
+        scheduled runs.  It skips only credential resolution so the connector
+        can return an actionable runtime error; binding structure and current
+        signed mapping evidence remain mandatory in every mode.
         """
         raw = self._db.get_project_status_update_policy(deliverable_id)
         if raw is None:
@@ -355,14 +398,27 @@ class ProjectStatusUpdateService:
             raise SyncBindingNotReadyError("binding is not enabled for automatic sync")
         if binding["source_type"] != contract["sourceType"]:
             raise SyncBindingNotReadyError("binding source does not match the fixed contract")
-        if not validate_runtime_prerequisites:
-            return binding
 
         external_key = str(binding["external_key"] or "").strip() or None
         match_rule = _json_loads(binding["match_rule_json"])
         mapping = _json_loads(binding["mapping_json"])
-        if not str(binding.get("credential_ref") or "").strip():
-            raise SyncBindingNotReadyError("credential reference is not configured")
+        if not isinstance(match_rule, dict) or not match_rule:
+            raise SyncBindingNotReadyError("binding match rule is empty")
+        if not isinstance(mapping, dict) or not mapping:
+            raise SyncBindingNotReadyError("binding mapping is empty")
+        if "aggregate" in match_rule and not isinstance(match_rule["aggregate"], bool):
+            raise SyncBindingNotReadyError("binding aggregate flag is invalid")
+        if not _valid_match_rule_values(match_rule):
+            raise SyncBindingNotReadyError("binding match rule field types are invalid")
+        if not all(
+            _valid_mapping_source(value)
+            and (key == "note" or not isinstance(value, list))
+            for key, value in mapping.items()
+        ):
+            raise SyncBindingNotReadyError("binding mapping field types are invalid")
+        aggregate_mode = match_rule.get("aggregate") is True
+        if not aggregate_mode and not external_key:
+            raise SyncBindingNotReadyError("binding external_key is not confirmed")
         if (
             match_rule.get("reportType") != contract["reportType"]
             or len(match_rule) < 2
@@ -375,6 +431,11 @@ class ProjectStatusUpdateService:
             for row in raw["authorities"]
             if row["authority"] == "automatic"
         }
+        try:
+            _validate_ewo_v2_policy(match_rule, mapping, external_key,
+                                    {key: 'automatic' for key in automatic_fields})
+        except ValueError as exc:
+            raise SyncBindingNotReadyError(str(exc)) from None
         if (
             not automatic_fields
             or set(mapping) != automatic_fields
@@ -382,11 +443,16 @@ class ProjectStatusUpdateService:
             or _contains_forbidden_config_key(mapping)
         ):
             raise SyncBindingNotReadyError("automatic field mapping is not approved")
+
+        if validate_runtime_prerequisites and not str(binding.get("credential_ref") or "").strip():
+            raise SyncBindingNotReadyError("credential reference is not configured")
         evidence_error = self._mapping_evidence_error(
             deliverable_id,
             str(contract["sourceType"]),
             external_key,
             mapping,
+            aggregate=aggregate_mode,
+            match_rule=match_rule,
         )
         if evidence_error:
             raise SyncBindingNotReadyError(evidence_error)
@@ -398,32 +464,63 @@ class ProjectStatusUpdateService:
         source_type: str,
         external_key: str | None,
         mapping: Mapping[str, object],
+        *,
+        aggregate: bool = False,
+        match_rule: Mapping[str, Any] | None = None,
     ) -> str | None:
         observations = self._db.list_mapping_observations(deliverable_id, 2)
         if len(observations) < 2:
             return "启用同步前需要连续两次无歧义且目标一致的映射发现证据"
-        for row in observations:
-            if (
-                row["result_state"] != "matched"
-                or row["source_type"] != source_type
-                or row["external_key"] != external_key
-            ):
-                return "映射发现证据与当前来源或外部稳定键不一致"
+
+        expected_sig = compute_config_signature(source_type, match_rule) if match_rule is not None else None
+
+        if aggregate:
+            # 聚合模式（用户 2026-09-13 确认）：无单记录稳定键，
+            # 证据一致 = 连续两次 matched、记录集合指纹完全一致，且配置签名与当前匹配规则一致（P1-4）。
+            for row in observations:
+                if row["result_state"] != "matched" or row["source_type"] != source_type:
+                    return "映射发现证据与当前来源不一致"
+                if not observation_is_aggregate(row):
+                    return "映射发现证据与当前聚合模式不一致，请重新进行映射发现"
+                if expected_sig is not None and str(row.get("config_signature") or "").strip() != expected_sig:
+                    return "映射发现证据与当前配置规则不一致，请重新进行映射发现"
+            fingerprints = {
+                str(row["candidate_fingerprint"] or "").strip()
+                for row in observations
+            }
+            if len(fingerprints) != 1 or fingerprints == {""}:
+                return "聚合证据不稳定：连续两次抓取的记录集合不一致，请重新核对"
+        else:
+            for row in observations:
+                if (
+                    row["result_state"] != "matched"
+                    or row["source_type"] != source_type
+                    or row["external_key"] != external_key
+                ):
+                    return "映射发现证据与当前来源或外部稳定键不一致"
+                if expected_sig is not None and str(row.get("config_signature") or "").strip() != expected_sig:
+                    return "映射发现证据与当前配置规则不一致，请重新进行映射发现"
         report = _json_loads(observations[0]["field_report_json"])
         observed_fields = {
             str(value) for value in report.get("fields", [])
             if isinstance(value, str)
         }
-        mapped_source_fields = {
-            str(value).strip() for value in mapping.values()
-            if isinstance(value, str) and value.strip()
-        }
+        mapped_source_fields = set()
+        for value in mapping.values():
+            if isinstance(value, str) and value.strip():
+                mapped_source_fields.add(value.strip())
+            elif isinstance(value, list):
+                mapped_source_fields.update(
+                    str(item).strip() for item in value
+                    if isinstance(item, str) and item.strip()
+                )
         if not mapped_source_fields or not mapped_source_fields.issubset(
             observed_fields
         ):
             return "自动字段映射必须来自最新的脱敏字段报告并由用户确认"
         return None
 
+    @observed("policy.ProjectStatusUpdateService.apply_sync_update")
     def apply_sync_update(
         self,
         binding_id: int,
@@ -476,7 +573,10 @@ class ProjectStatusUpdateService:
 
         # matched：恰好一个 candidate，external_key 精确匹配。
         candidate = snapshot.candidates[0]
-        if candidate.external_key != binding["external_key"]:
+        match_rule = _json_loads(binding["match_rule_json"]) if binding.get("match_rule_json") else {}
+        is_aggregate = isinstance(match_rule, dict) and match_rule.get("aggregate") is True
+
+        if not is_aggregate and candidate.external_key != binding["external_key"]:
             self._db.finalize_sync_needs_attention(
                 binding_id,
                 run_id,
@@ -536,6 +636,7 @@ class ProjectStatusUpdateService:
                     f"sync applied for {binding['deliverable_id']}"
                 ),
                 artifacts=snapshot.artifacts,
+                aggregate_mode=is_aggregate,
             )
         except ProjectStatusConcurrentUpdateError:
             # 乐观锁冲突：写 conflict 审计并原子释放租约。
@@ -566,6 +667,20 @@ class ProjectStatusUpdateService:
                 ),
             )
 
+        if outcome.get("superseded"):
+            # 在途旧运行跨换绑：审计已记录、租约已释放、业务行未写。
+            return SyncResult(
+                run_id=run_id,
+                final_state="needs_attention",
+                applied_fields=(),
+                skipped_fields={},
+                external_version=snapshot.external_version,
+                updated_at=None,
+                message=self._sanitize_message(
+                    "binding config changed while sync was in flight"
+                ),
+            )
+
         updated_at = outcome["updated_at"]
         applied_fields = tuple(outcome["applied_fields"])
         skipped_fields = dict(outcome.get("skipped_fields") or {})
@@ -581,6 +696,7 @@ class ProjectStatusUpdateService:
             message=self._sanitize_message("sync completed"),
         )
 
+    @observed("policy.ProjectStatusUpdateService.finalize_sync_failure")
     def finalize_sync_failure(
         self,
         binding_id: int,
@@ -615,7 +731,7 @@ class ProjectStatusUpdateService:
                 """
                 SELECT b.id, b.deliverable_id, b.mode, b.source_type, b.enabled,
                        b.external_key, b.match_rule_json, b.mapping_json,
-                       d.phase_id
+                       b.sync_config_revision, d.phase_id
                 FROM project_status_update_bindings b
                 INNER JOIN project_status_deliverables d ON d.id = b.deliverable_id
                 WHERE b.id = ?
@@ -633,12 +749,23 @@ class ProjectStatusUpdateService:
             )
         if binding["source_type"] == "none":
             raise SyncBindingNotReadyError("binding source_type is 'none'")
-        if not binding["external_key"]:
-            raise SyncBindingNotReadyError("binding external_key is not confirmed")
         match_rule = _json_loads(binding["match_rule_json"])
         mapping = _json_loads(binding["mapping_json"])
-        if not match_rule or not mapping:
-            raise SyncBindingNotReadyError("binding match rule or mapping is empty")
+        if not isinstance(match_rule, dict) or not match_rule:
+            raise SyncBindingNotReadyError("binding match rule is invalid")
+        if not isinstance(mapping, dict) or not mapping:
+            raise SyncBindingNotReadyError("binding mapping is invalid")
+        if "aggregate" in match_rule and not isinstance(match_rule["aggregate"], bool):
+            raise SyncBindingNotReadyError("binding aggregate flag is invalid")
+        # 聚合绑定（按车型聚合，无单记录稳定键）豁免外部稳定键要求
+        # （GPT 终审 P1：run 路径此前阻断聚合首次同步）。
+        aggregate_mode = match_rule.get("aggregate") is True
+        if not aggregate_mode and not binding["external_key"]:
+            raise SyncBindingNotReadyError("binding external_key is not confirmed")
+        try:
+            _validate_ewo_v2_policy(match_rule, mapping, binding['external_key'])
+        except ValueError as exc:
+            raise SyncBindingNotReadyError(str(exc)) from None
         return binding
 
     def _validate_snapshot(
@@ -707,6 +834,7 @@ class ProjectStatusUpdateService:
         fields: dict[str, str] = {}
 
         unknown = set(payload) - {
+            "bindingContractVersion",
             "mode",
             "enabled",
             "externalKey",
@@ -752,8 +880,29 @@ class ProjectStatusUpdateService:
                         {str(key): str(value) for key, value in requested_authority.items()}
                     )
 
+        old_rule = _json_loads(binding['match_rule_json'])
+        old_v2 = isinstance(old_rule, dict) and old_rule.get('contractVersion') == '2'
+        new_v2 = isinstance(match_rule, dict) and any(
+            key in match_rule for key in ('contractVersion', 'bindingMode', 'sourceItemId'))
+        if old_v2 or new_v2:
+            if deliverable_id != 'VPI-T2-D3' or payload.get('bindingContractVersion') != '2':
+                fields['bindingContractVersion'] = '请使用新版EWO绑定编辑器显式确认合同版本'
+            if old_v2 and not new_v2:
+                fields['matchRule'] = '新版EWO绑定不能退回旧版合同'
+            if not old_v2 and enabled:
+                fields['enabled'] = '迁移须先保存为停用状态，再重新完成映射取证'
+            if isinstance(match_rule, dict) and isinstance(mapping, dict):
+                try:
+                    match_rule = _validate_ewo_v2_policy(match_rule, mapping, external_key, field_authority)
+                except ValueError as exc:
+                    fields['matchRule'] = str(exc)
+
         if mode not in PROJECT_STATUS_MODES:
             fields["mode"] = "模式必须是 manual、automatic 或 hybrid"
+        if isinstance(match_rule, dict) and "aggregate" in match_rule and not isinstance(
+            match_rule["aggregate"], bool
+        ):
+            fields["matchRule"] = "aggregate 必须是布尔值"
         if not isinstance(enabled, bool):
             fields["enabled"] = "enabled 必须是布尔值"
         if credential_ref is not None:
@@ -786,6 +935,8 @@ class ProjectStatusUpdateService:
             bad_keys = set(match_rule) - set(allowed_match_keys)
             if bad_keys:
                 fields["matchRule"] = "包含不允许的匹配键"
+            elif "matchRule" not in fields and not _valid_match_rule_values(match_rule):
+                fields["matchRule"] = "匹配规则字段类型无效"
             elif _contains_forbidden_config_key(match_rule):
                 fields["matchRule"] = "不允许配置 URL、主机或敏感请求键"
             elif len(_json_dumps(match_rule)) > _TEXT_LIMITS["match_rule"]:
@@ -798,10 +949,11 @@ class ProjectStatusUpdateService:
             if bad_mapping_keys:
                 fields["mapping"] = "字段映射仅允许负责人、计划日期和备注"
             elif any(
-                not isinstance(source_field, str) or not source_field.strip()
-                for source_field in mapping.values()
+                (key != "note" and isinstance(source_field, list))
+                or not _valid_mapping_source(source_field)
+                for key, source_field in mapping.items()
             ):
-                fields["mapping"] = "字段映射值必须是非空的 TDC 字段名"
+                fields["mapping"] = "字段映射值必须是非空 TDC 字段名（仅风险备注支持字段名列表）"
             elif _contains_forbidden_config_key(mapping):
                 fields["mapping"] = "不允许配置 URL、主机或敏感请求键"
             elif len(_json_dumps(mapping)) > _TEXT_LIMITS["mapping"]:
@@ -829,9 +981,10 @@ class ProjectStatusUpdateService:
         if unsupported_automatic_fields:
             fields["fieldAuthority"] = "试点仅允许负责人、计划日期和备注自动更新"
 
+        aggregate_mode = isinstance(match_rule, dict) and match_rule.get("aggregate") is True
+        if enabled and not aggregate_mode and not external_key:
+            fields["externalKey"] = "启用自动同步前必须先确认外部稳定键"
         if enabled:
-            if not external_key:
-                fields["externalKey"] = "启用自动同步前必须先确认外部稳定键"
             if not isinstance(match_rule, dict) or not match_rule:
                 fields["matchRule"] = "启用自动同步前必须配置至少一个匹配条件"
             elif not any(key in ALLOWED_TDC_MATCH_KEYS for key in match_rule):
@@ -860,8 +1013,10 @@ class ProjectStatusUpdateService:
                 evidence_error = self._mapping_evidence_error(
                     deliverable_id,
                     str(contract["sourceType"]),
-                    external_key,
+                    None if aggregate_mode else external_key,
                     mapping if isinstance(mapping, dict) else {},
+                    aggregate=aggregate_mode,
+                    match_rule=match_rule if isinstance(match_rule, dict) else None,
                 )
                 if evidence_error:
                     fields["enabled"] = evidence_error
@@ -873,17 +1028,18 @@ class ProjectStatusUpdateService:
             PROJECT_STATUS_EDITABLE_FIELDS[key]: value
             for key, value in field_authority.items()
         }
-        self._db.set_project_status_update_policy(
-            deliverable_id,
-            mode,
-            enabled,
-            external_key,
-            _json_dumps(match_rule),
-            _json_dumps(mapping),
-            normalized_authority,
-            credential_ref=credential_ref,
-            interval_minutes=interval_minutes,
-        )
+
+        try:
+            self._db.set_project_status_update_policy(
+                deliverable_id, mode, enabled, external_key,
+                _json_dumps(match_rule), _json_dumps(mapping), normalized_authority,
+                credential_ref=credential_ref, interval_minutes=interval_minutes,
+                expected_sync_config_revision=(
+                    int(binding.get('sync_config_revision') or 0) if deliverable_id == 'VPI-T2-D3' else None
+                ),
+            )
+        except ProjectStatusConcurrentUpdateError:
+            raise ProjectStatusPolicyError({'request': '绑定已发生变化，请刷新配置后重试'}) from None
         raw = self._db.get_project_status_update_policy(deliverable_id)
         assert raw is not None
         return self._policy_to_api(raw)

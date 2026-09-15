@@ -1,70 +1,18 @@
 # Current State
 
-Last checkpoint: 2026-09-07（生产测试 EXE 已构建：dist/VSE-WebUI.exe
-15,299,603 B，ZIP 15,021,945 B——比历史 15MB 邮件上限超 21,945 B，测试
-用途可用；干净冒烟 5 端点全 200。构建环境重建：py312 venv +
-PyInstaller 6.22.2 + UPX 5.0.1（.runtime 内）。打包配方未变，
-VSE-WebUI.spec 契约测试 4 passed）。
+## 2026-09-15 EWO v2：代码、回归与复测包完成；真实内网验收待现场执行
 
-## 生产测试 EXE（2026-09-07）
+- 用户授权的EWO改造本地实施完成；未执行真实内网生成/下载，不宣称线上故障已现场验证。
+- 交付包：dist/VSE-EWO-v2-20260915.zip（67032574 bytes），SHA256 df2d49918fc79434796a7c6db47d0d56736e346deadfb2d23eb1214634c592d9。配套.zip.sha256与展开目录保留，含WebUI/CLI、README、VERIFICATION、SHA256SUMS。不含用户data或HAR，不含新ExcelWorker。既有SOR复测包保留。
+- 全量最终：2112 passed/3 skipped/229.54s；最后专项105 passed/3.80s，Node增强面板测试通过、地图check和新增模块flake8通过。冻结EXE隔离验证Web启动、资源、未登录导表401、schema14、CLI --help通过；临时进程已结束。证据.runtime/ewo-v2/。
+- 4项实现由官方ZCode Gemini Flash隔离worker承担：T1关联、T2工作簿、T4增强面板、T0纯v2校验。第5次为只读源码摘录审查，无该范围P1/P2发现，不等同全库审计。记录TASK-ewo-pure-association-20260915-resume1、TASK-ewo-workbook-adapter-20260915、TASK-ewo-enrichment-ui-20260915、TASK-ewo-v2-contract-20260915、TASK-ewo-v2-review-20260915，隔离树及记录保留；无provider fallback。
+- 主控已完成EWO v2合同接入：contractVersion为字符串2，bindingMode single_record/record_set；single固定sourceItemId，record_set始终禁止owner/plannedDate自动映射；旧规则不自动迁移。新配置签名隔离旧证据，显式迁移须停用保存、两次新取证再启用，旧客户端缺bindingContractVersion拒绝修改。
+- 数据库升级为v14，让旧EXE在DDL之前拒绝新版数据库；升级保留旧绑定/字段归属。set_project_status_update_policy支持expected_sync_config_revision并BEGIN IMMEDIATE，防止迁移中的旧请求覆盖新版配置。升级前备份data与旧EXE；回退须恢复旧数据库副本，不能用旧程序编辑v14库。
+- Aras基础行仅v2注入_source_item_id，发现与执行按内部ID规范化；同号/空号记录保留，分析item_key固定按内部ID计算。缺失/空备注不清空，预览和执行一致。legacy通用业务编号身份优先级保持不变。
+- 增强链路为独立只读：完整列表prepare不生成，显式run官方生成；unknown禁止重发，下载失败复用file引用；按登录主体+固定来源+筛选签名恢复。单条增强只导出选定ID。API固定源、本机保护、会话换人时不返回前账号结果；生成/metadata/token/download均禁止redirect，token不持久化。
+- UI接入EWO详情，支持模式选择、迁移停用、集合手工字段保护、准备/生成/继续下载/恢复/状态刷新。基础记录ID可以在prepare后查看；增强不进入自动字段候选。
+- 实施/升级说明docs/EWO_IMPLEMENTATION_20260915.md；计划docs/superpowers/plans/2026-09-15-ewo-first-release.md末尾记最终状态。地图与API清单已刷新，83端点。无commit/merge/push，保留大量无关dirty变更。
 
-- 工件：dist/VSE-WebUI.exe；分发包
-  .runtime/VSE-WebUI-production-20260907.zip（仅含 exe，Deflate）。
-  SHA256 见 .runtime/VSE-WebUI-production-20260907.SHA256SUMS.txt
-  （exe 2491779f…；zip 9cb3073e…）。
-- 冒烟（干净环境）：/、/static/app.js、/api/overview、
-  /api/deliverables/catalog 全 200；overview 为种子规模（确认无旧进程
-  截胡——此前一次冒烟曾被残留 dev 服务器占用 5000 端口截获，作废重测）。
-- 生产测试注意：①exe 固定绑定 127.0.0.1:5000（core.config 常量，无
-  --port 参数），测试机需确保 5000 空闲；②首次运行在 exe 同级创建
-  data/ 全新种子库，勿与真实库混放；③ZIP 超历史邮件上限 21,945 B，
-  走邮件渠道需再瘦身或改投递方式。
+## 后续动作
 
-## 全项目评审（主审 + code-reviewer 两轮收敛，2026-09-07）
-
-- 主审 10 项发现（M1-M10，含 2 项干净项观察）+ 复核独立新增 5 项
-  （N1-N5）；第一轮 3 条裁决基于修复前代码，经证据回传后第二轮
-  re-verify 全部确认，**双方一致**。
-- 已修复关闭并契约锁定：M3 明细表 colspan/表头错位、N1 hasExplicitValue
-  显式空串保护（key in filters）、N3 plan-name 缓存复用
-  overviewSavedState。
-- 本轮已实施（3bcdd84）：M8 多选重绘前暂存未提交的
-  keyword/relationEwo/date 输入（pendingFilterInputs，apply/clear 清空）；
-  N2 archive_store os.link 在不支持硬链接介质降级 os.replace；N4
-  redaction 新增 _XML_RE XML 标签脱敏；M4 generate_preview_data.py 拒绝
-  缺省写主库（--db 显式指定或 --dry-run 预览）；M1 runner 映射提取
-  JOB_FORM_KEYS + tests/test_form_key_consistency.py 锁五处白名单一致；
-  M2 前端 PROJECT_PHASE_ID 常量收敛 5 处 VPI-T2 硬编码（VPI-T2-D*
-  交付物 ID 不变）。
-- 正向资产：38 写端点 loopback 全覆盖（TDC 9 端点经共享 helper）、
-  内联编辑脱敏、formLink 仅数值摘要、409 乐观锁自洽。
-
-## 冲突仲裁（重要）
-
-并行会话（GPT 迁移，docs/GPT_MIGRATION_PROMPT_b63397f7.md）曾改写本文件
-并声称"M4 自 5e100b3 起已有 --db/--dry-run、无需修复"。**git 历史证伪**：
-`git show 5e100b3:generate_preview_data.py` 不含 argparse（count=0），
-argparse 保护系 3bcdd84 实现（count=6）。遇并行写入冲突，以
-`git show <commit>:<file>` 取证为准；本文件按协议整体重写为权威状态。
-docs/{GPT_MIGRATION_PROMPT,SESSION_COMPLETION,SESSION_HANDOFF}_b63397f7.md
-为该会话遗留未跟踪文件，未纳入版本控制（保持原状，由用户决定去留）。
-
-## 验证
-
-- 全量 pytest：1703 passed, 2 skipped（skip 为环境条件：pwsh/symlink）。
-- flake8 / node --check 全绿；实际运行抽查
-  （tools/verify_consensus_fixes.py）：M8 关键字保留 ✓、N3 默认值
-  F610S ✓、目录 6 条 ✓。
-
-## Backlog（双方一致记录在案，按需排期）
-
-- N5：excel_worker_process_controller 子进程退出 stderr 摘要入
-  status.error。
-- M5：README.md"纯命令行/零 Web 框架"陈述与现状不符，需修订。
-- M6：tools/verify_*.py 头部补"需 5000 端口服务运行"前提说明。
-- M7：app.js ~11200 行，长期按域模块化拆分（需评估契约测试与打包）。
-
-## Next action
-
-- 无阻塞任务。branch 未推送远端；是否 push/发 PR 由用户决定。
-- 若并行 GPT 会话继续工作，请先协调：同一工作树禁止双写。
+用户在内网复测包：先备份data，登录并检查旧规则；再按说明迁移一个小集合或固定单条，确认两次取证、只读生成和恢复。不要自动触发生产生成，不重复解析原始HAR（410行/111列，406唯一编号+4空号的离线证据已核验）。若反馈新错误，优先分析新诊断与具体任务状态。

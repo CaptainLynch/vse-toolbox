@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from core.diagnostic_recording import observed
+
 import csv
 import json
 import os
@@ -55,6 +57,7 @@ class EWOExportResult:
         return self.columns
 
 
+@observed("export.export_report_csv")
 def export_report_csv(
     rows: Sequence[Mapping[str, object]],
     output_dir: Path | None = None,
@@ -94,6 +97,7 @@ def export_ewo_report_csv(
     return EWOExportResult(path=result.path, row_count=result.row_count, columns=result.fieldnames)
 
 
+@observed("export.export_report_contract_csv")
 def export_report_contract_csv(
     report_type: str,
     rows: Sequence[Mapping[str, object]],
@@ -132,6 +136,7 @@ def _select_columns(
     return [key for key in (preferred_columns or ()) if not _is_sensitive_column(key)]
 
 
+@observed("export._write_csv_atomically")
 def _write_csv_atomically(
     path: Path,
     columns: Sequence[str],
@@ -154,6 +159,7 @@ def _write_csv_atomically(
         raise
 
 
+@observed("export._write_table_csv_atomically")
 def _write_table_csv_atomically(
     path: Path,
     columns: Sequence[str],
@@ -176,6 +182,7 @@ def _write_table_csv_atomically(
         raise
 
 
+@observed("export._verify_csv")
 def _verify_csv(path: Path, expected_header: Sequence[str]) -> None:
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
         content = handle.read()

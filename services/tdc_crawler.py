@@ -3,13 +3,15 @@
 
 from __future__ import annotations
 
+from core.diagnostic_recording import observed, record_http
+
 import json
 import logging
 import math
 import re
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -74,12 +76,66 @@ class TDCCrawlerError(RuntimeError):
         request_id: str | None = None,
         status_code: int | None = None,
         completed_pages: int = 0,
+        operation: str | None = None,
+        report_type: str | None = None,
+        api_code: Any = None,
+        response_fields: tuple[str, ...] = (),
+        reason_available: bool | None = None,
     ) -> None:
         super().__init__(redact_sensitive_text(message))
         self.stage = stage
         self.request_id = request_id
         self.status_code = status_code
         self.completed_pages = completed_pages
+        self.operation = operation
+        self.report_type = report_type
+        self.api_code = api_code
+        self.response_fields = response_fields
+        self.reason_available = reason_available
+
+    def safe_diagnostic(self) -> dict[str, Any]:
+        """Allowlisted metadata only: safe to persist without upstream prose."""
+        result: dict[str, Any] = {"source": "tdc"}
+        if self.operation in ("query", "export"):
+            result["operation"] = self.operation
+        if self.report_type in ("sor", "sor_projects", "data_model", "a_face"):
+            result["reportType"] = self.report_type
+        if self.stage in (
+            "request", "export", "status-validation", "content-validation",
+            "parse-json", "api-validation", "export-validation",
+            "contract-validation", "pagination",
+        ):
+            result["stage"] = self.stage
+        if isinstance(self.request_id, str) and re.fullmatch(r"[a-f0-9]{8,32}", self.request_id):
+            result["requestId"] = self.request_id
+        if type(self.status_code) is int and 100 <= self.status_code <= 599:
+            result["upstreamHttpStatus"] = self.status_code
+        code = _safe_api_code(self.api_code)
+        if code is not None:
+            result["apiCode"] = code
+        allowed_fields = {"code", "msg", "message", "error", "data", "success", "status"}
+        result["responseFields"] = sorted({
+            name for name in self.response_fields
+            if isinstance(name, str) and name in allowed_fields
+        })
+        if type(self.reason_available) is bool:
+            result["reasonAvailable"] = self.reason_available
+        return result
+
+    def safe_diagnostic_message(self) -> str:
+        """Stable archival explanation; never include arbitrary exception text."""
+        details = self.safe_diagnostic()
+        labels = {"reportType": "report", "stage": "stage", "upstreamHttpStatus": "upstream_http",
+                  "apiCode": "api_code", "requestId": "request_id"}
+        parts = [f"{label}={details[key]}" for key, label in labels.items() if key in details]
+        if details["responseFields"]:
+            parts.append("fields=" + "|".join(details["responseFields"]))
+        if details.get("reasonAvailable") is False:
+            parts.append("reason=not_provided")
+        elif details.get("reasonAvailable") is True:
+            parts.append("reason=provided_not_persisted")
+        operation = details.get("operation", "request")
+        return f"TDC {operation} failed" + (f" ({', '.join(parts)})" if parts else "")
 
 
 @dataclass(frozen=True)
@@ -193,13 +249,10 @@ class TDCSORFilters:
                 "processInstanceStatus": self.approval_status,
             }
         )
-        # The visible project number and the selected project's internal ID are
-        # separate values in the production selector.  Keep the old text-only
-        # fallback for callers that do not have the project list metadata.
-        if self.car_type_project_id:
+        if self.car_type_project_id and self.car_type_project_id.strip():
+            # Official SOR requests use the internal ID in both parameters.
+            params["carTypeProject"] = self.car_type_project_id.strip()
             params["carTypeProjectAll[0]"] = self.car_type_project_id.strip()
-        elif "carTypeProject" in params:
-            params["carTypeProjectAll[0]"] = params["carTypeProject"]
         return params
 
 
@@ -224,6 +277,9 @@ class TDCPagedResult:
     duplicate_count: int
     stop_reason: str
     record_granularity: str
+    # True only when the response metadata or an explicit end-of-data page
+    # proves that no tail was omitted. Unknown/truncated results stay false.
+    complete: bool = False
 
 
 @dataclass(frozen=True)
@@ -259,7 +315,9 @@ class TDCCrawlerClient:
         self.headers = {str(key): str(value) for key, value in (headers or {}).items()}
         self.diagnostic_hook = diagnostic_hook
         self.output_dir = output_dir or (app_root() / "data" / "tdc")
+        self._car_type_projects_cache: list[dict[str, Any]] | None = None
 
+    @observed("tdc.TDCCrawlerClient.query_data_model_page")
     def query_data_model_page(
         self,
         filters: TDCDataModelFilters | None = None,
@@ -277,6 +335,7 @@ class TDCCrawlerClient:
             record_granularity="part_detail",
         )
 
+    @observed("tdc.TDCCrawlerClient.crawl_data_model_all")
     def crawl_data_model_all(
         self,
         filters: TDCDataModelFilters | None = None,
@@ -295,6 +354,7 @@ class TDCCrawlerClient:
             record_granularity="part_detail",
         )
 
+    @observed("tdc.TDCCrawlerClient.export_data_model")
     def export_data_model(
         self,
         filters: TDCDataModelFilters | None = None,
@@ -313,12 +373,13 @@ class TDCCrawlerClient:
             record_granularity="part_detail",
         )
 
+    @observed("tdc.TDCCrawlerClient.list_car_type_projects")
     def list_car_type_projects(self) -> list[dict[str, Any]]:
         result = self._request_json(
             report_type="sor_projects",
             route=SOR_PROJECT_LIST_PATH,
             referer_path=SOR_PAGE_PATH,
-            params={},
+            params={"sorEnabled": "true"},
             page=None,
             page_size=None,
         )
@@ -327,6 +388,95 @@ class TDCCrawlerClient:
             raise TDCCrawlerError("TDC car type project response does not contain a list", stage="parse-json")
         return [dict(item) for item in data]
 
+    def _get_cached_car_type_projects(self) -> list[dict[str, Any]]:
+        if self._car_type_projects_cache is not None:
+            return self._car_type_projects_cache
+        projects = self.list_car_type_projects()
+        self._car_type_projects_cache = projects
+        return projects
+
+    @observed("tdc.TDCCrawlerClient._resolve_sor_filters")
+    def _resolve_sor_filters(self, filters: TDCSORFilters | None) -> TDCSORFilters:
+        if filters is None:
+            return TDCSORFilters()
+
+        filters.to_params()  # Reject invalid dates/enums before any project lookup.
+        project_text = (filters.car_type_project or "").strip()
+        project_id = (filters.car_type_project_id or "").strip()
+
+        if not project_text and not project_id:
+            return filters
+
+        projects = self._get_cached_car_type_projects()
+
+        if project_id:
+            matched_by_id = [
+                p
+                for p in projects
+                if isinstance(p, Mapping)
+                and _project_scalar(p.get("id")) == project_id
+            ]
+            if not matched_by_id:
+                raise TDCCrawlerError(
+                    "指定的车型项目ID不存在或已失效，请重新核对车型项目配置。",
+                    stage="contract-validation",
+                )
+            if project_text:
+                text_matched = any(
+                    _project_scalar(p.get("projectNo")) == project_text
+                    or _project_scalar(p.get("projectName")) == project_text
+                    for p in matched_by_id
+                )
+                if not text_matched:
+                    raise TDCCrawlerError(
+                        "指定的车型项目ID与项目名称不匹配，请核对车型项目配置。",
+                        stage="contract-validation",
+                    )
+            return replace(
+                filters,
+                car_type_project_id=project_id,
+            )
+
+        matched = [
+            p
+            for p in projects
+            if isinstance(p, Mapping)
+            and (
+                _project_scalar(p.get("projectNo")) == project_text
+                or _project_scalar(p.get("projectName")) == project_text
+            )
+        ]
+
+        if not matched:
+            raise TDCCrawlerError(
+                "未找到匹配的车型项目，请核对车型项目编号或名称。",
+                stage="contract-validation",
+            )
+
+        candidate_ids: list[str] = []
+        for p in matched:
+            item_id = _project_scalar(p.get("id"))
+            if not item_id:
+                raise TDCCrawlerError(
+                    "匹配的车型项目缺少有效内部ID，无法进行查询或导出。",
+                    stage="contract-validation",
+                )
+            candidate_ids.append(item_id)
+
+        unique_ids = set(candidate_ids)
+        if len(unique_ids) > 1:
+            raise TDCCrawlerError(
+                "车型项目匹配到多个不同的内部ID，存在歧义，请指定明确的项目ID。",
+                stage="contract-validation",
+            )
+
+        resolved_id = candidate_ids[0]
+        return replace(
+            filters,
+            car_type_project_id=resolved_id,
+        )
+
+    @observed("tdc.TDCCrawlerClient.query_sor_page")
     def query_sor_page(
         self,
         filters: TDCSORFilters | None = None,
@@ -334,16 +484,18 @@ class TDCCrawlerClient:
         page: int = 1,
         page_size: int = 50,
     ) -> TDCPagedResult:
+        resolved = self._resolve_sor_filters(filters)
         return self._query_page(
             report_type="sor",
             route=SOR_LIST_PATH,
             referer_path=SOR_PAGE_PATH,
-            filter_params=(filters or TDCSORFilters()).to_params(),
+            filter_params=resolved.to_params(),
             page=page,
             page_size=page_size,
             record_granularity="workflow",
         )
 
+    @observed("tdc.TDCCrawlerClient.crawl_sor_all")
     def crawl_sor_all(
         self,
         filters: TDCSORFilters | None = None,
@@ -352,24 +504,28 @@ class TDCCrawlerClient:
         max_pages: int = 100,
         max_records: int = 10000,
     ) -> TDCPagedResult:
+        resolved = self._resolve_sor_filters(filters)
         return self._crawl_all(
             report_type="sor",
             query=self.query_sor_page,
-            filters=filters or TDCSORFilters(),
+            filters=resolved,
             page_size=page_size,
             max_pages=max_pages,
             max_records=max_records,
             record_granularity="workflow",
         )
 
+    @observed("tdc.TDCCrawlerClient.export_sor")
     def export_sor(
         self,
         filters: TDCSORFilters | None = None,
         *,
         file_name: str | None = None,
     ) -> TDCExportResult:
-        params = (filters or TDCSORFilters()).to_params()
+        resolved = self._resolve_sor_filters(filters)
+        params = resolved.to_params()
         params["pagePath"] = self._url(SOR_PAGE_PATH)
+        params.setdefault("bizName", "SOR")
         return self._export(
             report_type="sor",
             route=SOR_EXPORT_PATH,
@@ -423,6 +579,7 @@ class TDCCrawlerClient:
     crawl_aface_all = crawl_a_face_all
     export_aface = export_a_face
 
+    @observed("tdc.TDCCrawlerClient._query_page")
     def _query_page(
         self,
         *,
@@ -460,15 +617,16 @@ class TDCCrawlerClient:
                 request_id=request_id,
             )
         rows = [dict(item) for item in raw_rows]
-        current = _optional_int(data.get("current"), page)
-        size = _optional_int(data.get("size"), page_size)
-        total = _optional_int(data.get("total"))
-        pages = _optional_int(data.get("pages"))
+        current = _pagination_int(data, "current", default=page, minimum=1)
+        size = _pagination_int(data, "size", default=page_size, minimum=1)
+        total = _pagination_int(data, "total", minimum=0)
+        pages = _pagination_int(data, "pages", minimum=0)
+        assert current is not None and size is not None
         return TDCPagedResult(
             report_type=report_type,
             rows=rows,
-            page=current or page,
-            page_size=size or page_size,
+            page=current,
+            page_size=size,
             total=total,
             pages=pages,
             fetched_pages=1,
@@ -478,6 +636,7 @@ class TDCCrawlerClient:
             record_granularity=record_granularity,
         )
 
+    @observed("tdc.TDCCrawlerClient._crawl_all")
     def _crawl_all(
         self,
         *,
@@ -497,6 +656,7 @@ class TDCCrawlerClient:
         reported_total: int | None = None
         reported_pages: int | None = None
         accumulated_count = 0
+        metadata_inconsistent = False
         stop_reason = "max_pages"
 
         for page in range(1, max_pages + 1):
@@ -507,29 +667,128 @@ class TDCCrawlerClient:
                 self._emit_failure_event(report_type, exc, fetched_pages)
                 raise
             fetched_pages += 1
-            accumulated_count += len(result.rows)
-            reported_total = result.total if result.total is not None else reported_total
-            reported_pages = result.pages if result.pages is not None else reported_pages
+            rows_before = len(rows)
+            raw_page_count = len(result.rows)
+            page_mismatch = result.page != page
+            size_mismatch = result.page_size != page_size
+            invalid_page = page_mismatch or size_mismatch
+            # Never claim a complete result after discarding rows at the
+            # caller's safety boundary, even if page metadata says this was
+            # the last page.  The discarded rows may carry distinct business
+            # identities or content needed by the aggregate fingerprint.
+            overflowed = not invalid_page and rows_before + raw_page_count > max_records
+            if not invalid_page:
+                accumulated_count += len(result.rows)
             added = 0
-            for row in result.rows:
-                identity = _row_identity(report_type, row)
-                if identity in seen:
-                    duplicates += 1
-                    continue
-                seen.add(identity)
-                if len(rows) >= max_records:
-                    break
-                rows.append(row)
-                added += 1
+            if not invalid_page:
+                for row in result.rows:
+                    identity = _row_identity(report_type, row)
+                    if identity in seen:
+                        duplicates += 1
+                        continue
+                    seen.add(identity)
+                    if len(rows) >= max_records:
+                        break
+                    rows.append(row)
+                    added += 1
 
-            if len(rows) >= max_records:
+            if result.total is not None:
+                if (
+                    reported_total is not None and result.total != reported_total
+                ) or result.total < accumulated_count:
+                    metadata_inconsistent = True
+                if reported_total is None:
+                    reported_total = result.total
+            if result.pages is not None:
+                # A zero-page empty result is a valid server convention.
+                empty_zero_pages = (
+                    page == 1 and result.pages == 0 and not result.rows
+                    and result.total in (None, 0)
+                )
+                if (
+                    reported_pages is not None and result.pages != reported_pages
+                ) or (result.pages < page and not empty_zero_pages):
+                    metadata_inconsistent = True
+                if reported_pages is None:
+                    reported_pages = result.pages
+
+            total_reached = (
+                reported_total is not None
+                and reported_total <= max_records
+                and accumulated_count >= reported_total
+            )
+            pages_reached = reported_pages is not None and page >= reported_pages
+            if total_reached and reported_pages is not None and page < reported_pages:
+                # A server cannot simultaneously say that all records have
+                # been returned and that a later page still exists.  Do not
+                # choose total over pages as the authoritative source.
+                metadata_inconsistent = True
+
+            total_proven = (
+                reported_total is None
+                or (
+                    reported_total <= max_records
+                    and accumulated_count >= reported_total
+                    and len(rows) >= reported_total
+                )
+            )
+            reported_end = (
+                pages_reached
+                and total_proven
+            )
+            total_end = (
+                reported_total is not None
+                and reported_total <= max_records
+                and reported_pages is None
+                and accumulated_count >= reported_total
+                and len(rows) >= reported_total
+            )
+            if page_mismatch:
+                # The response is not for the page we requested.  Its rows
+                # are deliberately excluded from the result and cannot
+                # contribute to an end-of-data proof.
+                stop_reason = "inconsistent_page"
+            elif size_mismatch:
+                # The requested size cannot prove a short final page when
+                # the server uses a different size/offset contract.
+                stop_reason = "inconsistent_page_size"
+            elif metadata_inconsistent:
+                # Contradictory page metadata is not an end-of-data proof.
+                # Stop immediately and require a fresh, narrower query.
+                stop_reason = "inconsistent_metadata"
+            elif duplicates:
+                # A duplicate row means raw accumulated_count can no longer
+                # prove that the deduplicated result contains the declared
+                # record set.  Reject the result instead of authorizing a
+                # partial aggregate snapshot.
+                stop_reason = "duplicate_records"
+            elif not overflowed and (reported_end or total_end):
+                stop_reason = "reported_pages" if reported_end else "reported_total"
+            elif not overflowed and not result.rows:
+                # An empty page proves end-of-data only when it does not
+                # contradict the server's declared total.  A premature
+                # empty page is an incomplete result and must never be
+                # accepted by mapping discovery or sync execution.
+                stop_reason = (
+                    "incomplete_page"
+                    if (
+                        reported_total is not None
+                        and accumulated_count < reported_total
+                    )
+                    or (reported_pages is not None and page < reported_pages)
+                    else "empty_page"
+                )
+            elif not overflowed and len(result.rows) < page_size:
+                stop_reason = (
+                    "short_page"
+                    if (
+                        (reported_total is None or accumulated_count >= reported_total)
+                        and (reported_pages is None or page >= reported_pages)
+                    )
+                    else "incomplete_page"
+                )
+            elif len(rows) >= max_records:
                 stop_reason = "max_records"
-            elif not result.rows:
-                stop_reason = "empty_page"
-            elif reported_pages is not None and page >= reported_pages:
-                stop_reason = "reported_pages"
-            elif len(result.rows) < page_size:
-                stop_reason = "short_page"
             elif page >= max_pages:
                 stop_reason = "max_pages"
             else:
@@ -543,7 +802,6 @@ class TDCCrawlerClient:
                     page_type=report_type,
                     page=page,
                     page_size=page_size,
-                    current_page=page,
                     accumulated_count=accumulated_count,
                     unique_count=len(rows),
                     duplicate_count=duplicates,
@@ -554,6 +812,7 @@ class TDCCrawlerClient:
                     or (math.ceil(reported_total / page_size) if reported_total is not None else None),
                     stop_reason=stop_reason,
                     completed_pages=fetched_pages,
+                    current_page=result.page,
                 )
             )
             if stop_reason != "continue":
@@ -571,8 +830,10 @@ class TDCCrawlerClient:
             duplicate_count=duplicates,
             stop_reason=stop_reason,
             record_granularity=record_granularity,
+            complete=stop_reason in {"reported_pages", "reported_total", "empty_page", "short_page"},
         )
 
+    @observed("tdc.TDCCrawlerClient._request_json")
     def _request_json(
         self,
         *,
@@ -599,6 +860,8 @@ class TDCCrawlerClient:
                 f"TDC request failed: {type(exc).__name__}: {redact_sensitive_text(exc)}",
                 stage="request",
                 request_id=request_id,
+                operation="query",
+                report_type=report_type,
             ) from exc
 
         elapsed = _elapsed_ms(started)
@@ -631,6 +894,8 @@ class TDCCrawlerClient:
                 f"TDC HTTP {status} at {route}",
                 stage="status-validation",
                 request_id=request_id,
+                operation="query",
+                report_type=report_type,
                 status_code=status,
             )
         if _looks_like_html(response, content_type):
@@ -639,6 +904,8 @@ class TDCCrawlerClient:
                 "TDC response looks like a login HTML page, not JSON; refresh browser headers and Cookie/Authorization",
                 stage="content-validation",
                 request_id=request_id,
+                operation="query",
+                report_type=report_type,
                 status_code=status,
             )
         if not _is_json_content_type(content_type):
@@ -647,6 +914,8 @@ class TDCCrawlerClient:
                 f"TDC JSON endpoint returned unsupported Content-Type: {content_type or '<missing>'}",
                 stage="content-validation",
                 request_id=request_id,
+                operation="query",
+                report_type=report_type,
                 status_code=status,
             )
         try:
@@ -663,6 +932,8 @@ class TDCCrawlerClient:
                 "TDC response is not valid JSON",
                 stage="parse-json",
                 request_id=request_id,
+                operation="query",
+                report_type=report_type,
                 status_code=status,
             ) from exc
         if not isinstance(payload, dict):
@@ -671,6 +942,8 @@ class TDCCrawlerClient:
                 "TDC JSON response is not an object",
                 stage="parse-json",
                 request_id=request_id,
+                operation="query",
+                report_type=report_type,
                 status_code=status,
             )
         api_code = payload.get("code")
@@ -678,9 +951,14 @@ class TDCCrawlerClient:
             reason = redact_sensitive_text(payload.get("msg", "TDC API rejected the request"), limit=240)
             self._emit(TDCHttpDiagnosticEvent(**base_event, validation="api-error", reason=reason))
             raise TDCCrawlerError(
-                f"TDC API error code {api_code}: {reason}",
+                f"TDC API error code {_safe_api_code(api_code) if _safe_api_code(api_code) is not None else 'unrecognized'}: {reason}",
                 stage="api-validation",
+                api_code=api_code,
+                response_fields=tuple(payload.keys()),
+                reason_available=isinstance(payload.get("msg"), str) and bool(payload["msg"].strip()),
                 request_id=request_id,
+                operation="query",
+                report_type=report_type,
                 status_code=status,
             )
         data = payload.get("data")
@@ -698,6 +976,7 @@ class TDCCrawlerClient:
         )
         return payload, request_id
 
+    @observed("tdc.TDCCrawlerClient._export")
     def _export(
         self,
         *,
@@ -740,6 +1019,8 @@ class TDCCrawlerClient:
                 f"TDC export failed: {type(exc).__name__}: {redact_sensitive_text(exc)}",
                 stage="export",
                 request_id=request_id,
+                operation="export",
+                report_type=report_type,
             ) from exc
 
         elapsed = _elapsed_ms(started)
@@ -769,6 +1050,8 @@ class TDCCrawlerClient:
                 f"TDC export HTTP {status} at {route}",
                 stage="status-validation",
                 request_id=request_id,
+                operation="export",
+                report_type=report_type,
                 status_code=status,
             )
         if _looks_like_html(response, content_type):
@@ -777,6 +1060,8 @@ class TDCCrawlerClient:
                 "TDC export returned a login HTML page, not an XLSX file",
                 stage="export-validation",
                 request_id=request_id,
+                operation="export",
+                report_type=report_type,
                 status_code=status,
             )
         if not _is_xlsx_content_type(content_type):
@@ -794,15 +1079,25 @@ class TDCCrawlerClient:
                 )
                 if is_api_error:
                     raise TDCCrawlerError(
-                        f"TDC export API error code {api_code}: {reason}",
+                        f"TDC export API error code {_safe_api_code(api_code) if _safe_api_code(api_code) is not None else 'unrecognized'}: {reason}",
                         stage="api-validation",
                         request_id=request_id,
+                        operation="export",
+                        report_type=report_type,
+                        api_code=api_code,
+                        response_fields=json_fields,
+                        reason_available=reason not in _EXPORT_REASON_FALLBACKS,
                         status_code=status,
                     )
                 raise TDCCrawlerError(
                     f"TDC export returned JSON instead of an XLSX file: {reason}",
                     stage="export-validation",
                     request_id=request_id,
+                    operation="export",
+                    report_type=report_type,
+                    api_code=api_code,
+                    response_fields=json_fields,
+                    reason_available=reason not in _EXPORT_REASON_FALLBACKS,
                     status_code=status,
                 )
             self._emit(TDCHttpDiagnosticEvent(**event_args, validation="rejected-content-type"))
@@ -810,6 +1105,8 @@ class TDCCrawlerClient:
                 f"TDC export returned unsupported Content-Type: {content_type or '<missing>'}",
                 stage="export-validation",
                 request_id=request_id,
+                operation="export",
+                report_type=report_type,
                 status_code=status,
             )
         if not content.startswith(b"PK"):
@@ -818,6 +1115,8 @@ class TDCCrawlerClient:
                 "TDC export failed XLSX ZIP signature validation",
                 stage="export-validation",
                 request_id=request_id,
+                operation="export",
+                report_type=report_type,
                 status_code=status,
             )
 
@@ -866,6 +1165,7 @@ class TDCCrawlerClient:
         return f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else self.base_url.rstrip("/")
 
     def _emit(self, event: TDCHttpDiagnosticEvent) -> None:
+        record_http("tdc", event)
         logger.debug(
             "stage=%s request_id=%s page_type=%s path=%s status=%s records=%s stop=%s reason=%s",
             event.stage,
@@ -1011,6 +1311,28 @@ def _validate_timeout(value: float) -> float:
     return timeout
 
 
+def _pagination_int(
+    data: Mapping[str, Any], key: str, *, default: int | None = None, minimum: int,
+) -> int | None:
+    """Do not disguise explicitly invalid pagination as absent metadata."""
+    if key not in data:
+        return default
+    value = data[key]
+    # Nullable totals are used by endpoints that cannot report a count.
+    if value is None and default is None:
+        return None
+    if isinstance(value, str) and re.fullmatch(r"[0-9]+", value.strip()):
+        try:
+            value = int(value.strip())
+        except ValueError:
+            value = None
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise TDCCrawlerError(
+            f"TDC pagination field {key} is invalid", stage="parse-json",
+        )
+    return value
+
+
 def _optional_int(value: Any, default: int | None = None) -> int | None:
     if value is None or value == "":
         return default
@@ -1096,6 +1418,24 @@ def _is_json_content_type(content_type: str) -> bool:
     return lowered == "application/json" or lowered.endswith("+json")
 
 
+_EXPORT_REASON_FALLBACKS = {
+    "TDC export returned JSON instead of an XLSX file",
+    "TDC export API returned JSON instead of an XLSX file",
+}
+
+
+def _project_scalar(value: Any) -> str:
+    return str(value).strip() if type(value) in (str, int) else ""
+
+
+def _safe_api_code(value: Any) -> int | None:
+    if type(value) is int and -999999999999 <= value <= 999999999999:
+        return value
+    if isinstance(value, str) and re.fullmatch(r"-?\d{1,12}", value, flags=re.ASCII):
+        return int(value)
+    return None
+
+
 def _export_json_summary(response: Any) -> tuple[Any, str, tuple[str, ...]]:
     """Extract only safe, short diagnostics from a JSON response to export."""
     try:
@@ -1107,15 +1447,25 @@ def _export_json_summary(response: Any) -> tuple[Any, str, tuple[str, ...]]:
         return None, "TDC export returned JSON instead of an XLSX file", ()
 
     code = payload.get("code")
-    message = payload.get("msg")
-    if message is None:
-        message = payload.get("message")
-    if message is None:
-        message = payload.get("error")
-    if not isinstance(message, (str, int, float, bool)):
-        message = "TDC export API returned JSON instead of an XLSX file"
+    message: Any = "TDC export API returned JSON instead of an XLSX file"
+    # Only known message positions, at most one nested level. Never stringify
+    # records, arbitrary objects, stack traces, or the full response body.
+    candidates = [payload.get(key) for key in ("msg", "message", "error")]
+    for key in ("error", "data"):
+        nested = payload.get(key)
+        if isinstance(nested, Mapping):
+            candidates.extend(nested.get(name) for name in ("msg", "message"))
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            message = candidate
+            break
+        if type(candidate) in (int, float, bool):
+            message = candidate
+            break
     reason = redact_sensitive_text(message, limit=240, collapse_newlines=True)
-    fields = tuple(sorted(str(key) for key in payload.keys()))
+    fields = tuple(sorted(key for key in payload if key in {
+        "code", "msg", "message", "error", "data", "success", "status",
+    }))
     return code, reason, fields
 
 

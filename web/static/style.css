@@ -667,6 +667,22 @@ h4 {
   text-align: center;
 }
 
+.progress-ring.is-clickable {
+  cursor: pointer;
+  outline: none;
+  transition: background-color 120ms ease;
+}
+
+.progress-ring.is-clickable:hover {
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+
+.progress-ring.is-clickable:focus-visible {
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  outline: 2px solid var(--primary-active);
+  outline-offset: 2px;
+}
+
 .ring-visual {
   --ring-color: var(--muted);
   --progress: 0;
@@ -5968,6 +5984,86 @@ body.aras-running .result-panel {
   overflow-wrap: anywhere;
 }
 
+/* ── TDC SOR Result Table ─────────────────────────────────────────────── */
+.sor-result-table {
+  min-width: 2000px;
+  width: 100%;
+}
+
+.sor-result-table th,
+.sor-result-table td {
+  box-sizing: border-box;
+}
+
+/* Identifiers: ~130/160px minimum, avoid character-by-character wrap */
+.sor-result-table th:nth-child(1),
+.sor-result-table td:nth-child(1),
+.sor-result-table th:nth-child(2),
+.sor-result-table td:nth-child(2),
+.sor-result-table th:nth-child(4),
+.sor-result-table td:nth-child(4),
+.sor-result-table th:nth-child(7),
+.sor-result-table td:nth-child(7),
+.sor-result-table .col-identifier {
+  min-width: 140px;
+  white-space: nowrap;
+  word-break: keep-all;
+  overflow-wrap: normal;
+}
+
+/* Date cells: ~160px minimum, avoid character-by-character wrap */
+.sor-result-table th:nth-child(12),
+.sor-result-table td:nth-child(12),
+.sor-result-table .col-date {
+  min-width: 160px;
+  white-space: nowrap;
+  word-break: keep-all;
+  overflow-wrap: normal;
+}
+
+/* Title column: 220-280px, wraps at sensible boundaries */
+.sor-result-table th:nth-child(6),
+.sor-result-table td:nth-child(6),
+.sor-result-table .col-title {
+  min-width: 220px;
+  max-width: 280px;
+  white-space: normal;
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+
+.deliverable-preview-context {
+  margin-bottom: 10px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--on-dark-soft);
+  background: var(--surface-dark-elevated);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  line-height: 1.5;
+}
+
+.car-type-project-group {
+  display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
+  gap: 8px;
+  margin-top: 6px;
+  align-items: center;
+}
+
+.car-type-project-options {
+  flex: 1 1 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.car-type-load-btn {
+  max-width: 100%;
+  white-space: normal;
+  cursor: pointer;
+}
+
 /* ── Responsive Refinements (390px, 560px, 820px) ─────────────────────── */
 @media (max-width: 820px) {
   .settings-layout {
@@ -6668,3 +6764,10 @@ body.aras-running .result-panel {
 .form-filter-chip-remove:hover { background: var(--error); color: #fff; }
 
 .form-trend-note { margin-top: 6px; font-size: 12px; color: var(--muted-soft); }
+.ewo-enrichment-panel { display: grid; gap: 14px; }
+.ewo-meta-section, .ewo-counts-grid, .ewo-actions-toolbar { display: flex; flex-wrap: wrap; gap: 12px; }
+.ewo-count-item, .ewo-meta-row { padding: 8px 10px; border: 1px solid var(--border-color, #514a40); border-radius: 6px; }
+.ewo-table-section { overflow-x: auto; }
+.ewo-table { width: 100%; border-collapse: collapse; }
+.ewo-table th, .ewo-table td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border-color, #514a40); }
+.ewo-stale-notice, .ewo-unknown-notice, .ewo-error-stage-notice { color: #e9bb52; }

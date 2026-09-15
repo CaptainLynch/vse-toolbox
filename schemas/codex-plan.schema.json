@@ -5,7 +5,7 @@
   "required": ["task_id", "route", "reason", "risk", "worker_effort", "scope", "constraints", "acceptance_criteria"],
   "properties": {
     "task_id": {"type": "string"},
-    "route": {"enum": ["codex", "agy", "manual"]},
+    "route": {"enum": ["codex", "agy", "flash", "pro", "manual"]},
     "reason": {"type": "string"},
     "risk": {"enum": ["low", "medium", "high"]},
     "worker_effort": {"enum": ["low", "medium", "high"]},

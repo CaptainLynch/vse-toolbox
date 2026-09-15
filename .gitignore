@@ -57,3 +57,8 @@ tmp/
 
 # 本地 Python 虚拟环境（机器本地产物，不入库）
 .venv/
+
+# Local test/error dumps
+error data/
+.preflight-*
+

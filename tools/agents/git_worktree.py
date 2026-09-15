@@ -27,7 +27,7 @@ def create(root: Path, task_id: str, worktree_root: str = ".agents/worktrees") -
         raise ValueError("Worktree destination escapes configured root")
     if destination.exists():
         raise FileExistsError(f"Worktree already exists: {destination}")
-    branch = f"agent/{task_id}"
+    branch = f"codex/{task_id}"
     if _git(root, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}").returncode == 0:
         raise FileExistsError(f"Branch already exists: {branch}")
     parent.mkdir(parents=True, exist_ok=True)

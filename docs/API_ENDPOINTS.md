@@ -1,14 +1,18 @@
 # VSE Toolbox Web API 端点清单
 
-> 由 `tools/generate_api_endpoints.py` 从 `web/app.py` AST 解析自动生成，
-> 生成时间：2026-09-07 00:58，共 73 个端点。
+> 状态：Generated
+> 读者：Developer、Agent（API 任务）
+> 权威来源：`web/app.py`、`web/diagnostics.py`、`web/ewo_enrichment.py` 路由装饰器；参数行为以代码和测试为准
+> 默认读取：按 API/UI 任务读取
+> 由 `tools/generate_api_endpoints.py` 从上述路由模块 AST 解析自动生成，
+> 生成时间：2026-09-15 13:04，共 83 个端点。
 > 手工新增路由后请重跑该脚本刷新本清单。
 
 通用约定：
 
 - 写操作（POST/PATCH/PUT/DELETE）仅接受本机回环访问（loopback 校验）。
 - 响应统一为 `{"ok": true, "data": ...}` 或 `{"ok": false, "error": {...}}`。
-- 本清单只列路由与方法，参数契约以 `web/app.py` 对应处理函数与测试为准。
+- 本清单只列路由与方法，参数契约以 `web/app.py`、`web/diagnostics.py` 对应处理函数与测试为准。
 
 ## Aras 交互查询
 
@@ -23,6 +27,10 @@
 | POST | `/api/aras/paa/crawl-all` | `api_aras_paa_crawl_all` |
 | POST | `/api/aras/paa/export` | `api_aras_paa_export` |
 | POST | `/api/aras/paa/query` | `api_aras_paa_query` |
+| POST | `/api/aras/ewo/enrichment/jobs` | `ewo_enrichment_prepare` |
+| POST | `/api/aras/ewo/enrichment/jobs/<job_id>/run` | `ewo_enrichment_run` |
+| POST | `/api/aras/ewo/enrichment/jobs/<job_id>/status` | `ewo_enrichment_status` |
+| POST | `/api/aras/ewo/enrichment/jobs/restore` | `ewo_enrichment_restore` |
 
 ## Excel 任务
 
@@ -62,6 +70,17 @@
 | 方法 | 路径 | 处理函数 |
 | --- | --- | --- |
 | GET | `/api/deliverables/catalog` | `api_deliverables_catalog` |
+
+## 安全诊断录制
+
+| 方法 | 路径 | 处理函数 |
+| --- | --- | --- |
+| GET | `/api/diagnostics` | `diagnostic_status` |
+| GET | `/api/diagnostics/bundles/<identity>` | `diagnostic_download` |
+| POST | `/api/diagnostics/events` | `diagnostic_events` |
+| POST | `/api/diagnostics/mark` | `diagnostic_mark` |
+| POST | `/api/diagnostics/start` | `diagnostic_start` |
+| POST | `/api/diagnostics/stop` | `diagnostic_stop` |
 
 ## 定时归档任务
 

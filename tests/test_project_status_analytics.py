@@ -10,6 +10,7 @@ import pytest
 
 from core.db_manager import DatabaseManager
 from services.project_status_analytics import ProjectStatusAnalyticsService
+from services.project_status_records import compute_config_signature
 
 
 @pytest.fixture
@@ -57,6 +58,14 @@ def test_overview_no_evidence_defaults(service: ProjectStatusAnalyticsService) -
 def test_overview_matched_and_zero_candidate_count(
     test_db: DatabaseManager, service: ProjectStatusAnalyticsService
 ) -> None:
+    match_rule = {"reportType": "data_model", "incident": "FLOW-001"}
+    config_signature = compute_config_signature("tdc", match_rule)
+    with test_db.get_connection() as conn:
+        conn.execute(
+            "UPDATE project_status_update_bindings SET external_key=?, match_rule_json=? "
+            "WHERE deliverable_id=?",
+            ("FLOW-001", json.dumps(match_rule), "VPI-T2-D5"),
+        )
     test_db.record_mapping_observation(
         deliverable_id="VPI-T2-D5",
         source_type="tdc",
@@ -66,6 +75,7 @@ def test_overview_matched_and_zero_candidate_count(
         candidate_count=0,
         candidate_summary_json=json.dumps([{"incident": "FLOW-001", "secret": "hide"}]),
         field_report_json=json.dumps({"fields": ["owner", "status"]}),
+        config_signature=config_signature,
     )
     test_db.record_mapping_observation(
         deliverable_id="VPI-T2-D5",
@@ -76,6 +86,7 @@ def test_overview_matched_and_zero_candidate_count(
         candidate_count=0,
         candidate_summary_json=json.dumps([]),
         field_report_json=json.dumps({}),
+        config_signature=config_signature,
     )
 
     data = service.overview()

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import datetime as dt
 import importlib.util
 import json
@@ -29,6 +30,10 @@ def load_module(name: str, filename: str):
 checks = load_module("project_checks", "project_checks.py")
 worktrees = load_module("git_worktree", "git_worktree.py")
 agy_cli = load_module("agy_cli", "agy_cli.py")
+try:
+    from tools.agents import zcode_worker
+except ModuleNotFoundError:
+    import zcode_worker
 
 DEFAULT_FORBIDDEN = [
     "git push --force", "git reset --hard", "git clean -fd", "git checkout .", "git restore .", "git rebase",
@@ -55,9 +60,28 @@ IMPLEMENTATION = re.compile(
     re.I,
 )
 
+FLASH_TASK_KINDS = {"exploration", "mechanical", "test-only", "ui", "ordinary-implementation"}
+PRO_TASK_KINDS = {"complex-implementation", "root-cause", "deep-review"}
+DELEGABLE_TASK_KINDS = FLASH_TASK_KINDS | PRO_TASK_KINDS
+
 
 class CodexProfileUnavailable(RuntimeError):
     """Selected Codex provider profile cannot be used safely."""
+
+
+def validate_codex_lead_policy(config_path: Path | None = None) -> dict[str, str]:
+    """Require the user-selected Codex lead without imposing a worker cap."""
+    path = config_path or (Path.home() / ".codex" / "config.toml")
+    text = path.read_text(encoding="utf-8-sig")
+    model_match = re.search(r'^\s*model\s*=\s*"([^"]+)"', text, re.M)
+    effort_match = re.search(r'^\s*model_reasoning_effort\s*=\s*"([^"]+)"', text, re.M)
+    model = model_match.group(1) if model_match else ""
+    effort = effort_match.group(1) if effort_match else ""
+    if model != "gpt-5.6-luna":
+        raise ValueError("Codex lead model must be gpt-5.6-luna")
+    if effort != "max":
+        raise ValueError("Codex lead reasoning effort must be max")
+    return {"model": model, "reasoning_effort": effort, "context_policy": "native"}
 
 
 def now() -> str:
@@ -79,8 +103,86 @@ def append_event(run_dir: Path, agent: str, action: str, status: str, duration: 
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
+def persist_handoff(
+    run_dir: Path,
+    task: dict[str, Any],
+    result: dict[str, Any],
+    *,
+    model_id: str,
+    base_commit: str | None = None,
+    diff_stat: dict[str, Any] | None = None,
+    checks: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    handoff = zcode_worker.make_handoff(
+        task,
+        result,
+        model_id=model_id,
+        base_commit=base_commit,
+        diff_stat=diff_stat,
+        checks=checks,
+    )
+    zcode_worker.validate_handoff(handoff)
+    write_json(run_dir / "handoff.v1.json", handoff)
+    return handoff
+
+
 def config(root: Path) -> dict[str, Any]:
-    return read_json(root / ".agents" / "config.json")
+    local = root / ".agents" / "config.json"
+    if local.exists():
+        return read_json(local)
+    return read_json(Path.home() / ".zcode" / "worker-runtime" / "config.json")
+
+
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    result = copy.deepcopy(base)
+    for key, value in override.items():
+        if isinstance(result.get(key), dict) and isinstance(value, dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = copy.deepcopy(value)
+    return result
+
+
+def apply_worker_profile(cfg: dict[str, Any], profile: str | None) -> dict[str, Any]:
+    """Apply one explicit, allowlisted worker profile without mutating config."""
+    if profile is None or not str(profile).strip():
+        return copy.deepcopy(cfg)
+    name = str(profile).strip()
+    profiles = cfg.get("worker_profiles")
+    if not isinstance(profiles, dict) or not isinstance(profiles.get(name), dict):
+        raise ValueError(f"Unknown worker profile: {name}")
+    selected = profiles[name]
+    unknown = set(selected) - {
+        "description", "expires_at", "execution_mode", "zcode", "route_policy"
+    }
+    if unknown:
+        raise ValueError("Worker profile contains unsupported fields: " + ", ".join(sorted(unknown)))
+    zcode = selected.get("zcode")
+    if not isinstance(zcode, dict):
+        raise ValueError("Worker profile zcode object is required")
+    model = zcode.get("model")
+    allowed_models = zcode.get("allowed_models")
+    if not isinstance(model, str) or not model.strip():
+        raise ValueError("Worker profile model is required")
+    if not isinstance(allowed_models, list) or model not in allowed_models:
+        raise ValueError("Worker profile model must be in allowed_models")
+    execution_mode = selected.get("execution_mode", "headless")
+    if execution_mode not in {"headless", "interactive-only"}:
+        raise ValueError("Worker profile execution_mode must be headless or interactive-only")
+    for slot, settings in (zcode.get("model_slots") or {}).items():
+        if not isinstance(settings, dict) or settings.get("model") not in allowed_models:
+            raise ValueError(f"Worker profile slot is not allowlisted: {slot}")
+
+    merged = copy.deepcopy(cfg)
+    merged["zcode"] = _deep_merge(dict(cfg.get("zcode") or {}), zcode)
+    if "route_policy" in selected:
+        route_policy = selected["route_policy"]
+        if not isinstance(route_policy, dict):
+            raise ValueError("Worker profile route_policy must be an object")
+        merged["route_policy"] = _deep_merge(dict(cfg.get("route_policy") or {}), route_policy)
+    merged["_worker_profile_name"] = name
+    merged["_worker_profile_execution_mode"] = execution_mode
+    return merged
 
 
 def task_id() -> str:
@@ -117,6 +219,20 @@ def normalize_task(raw: dict[str, Any], generated_id: str | None = None) -> dict
         task_dict["risk_class"] = rc
     if raw.get("review_policy"):
         task_dict["review_policy"] = str(raw["review_policy"])
+    if raw.get("read_scope") is not None:
+        if not isinstance(raw["read_scope"], list) or not all(isinstance(item, str) and item for item in raw["read_scope"]):
+            raise ValueError("read_scope must be an array of non-empty strings")
+        task_dict["read_scope"] = list(raw["read_scope"])
+    for key in ("task_kind", "complexity", "mutation", "model_slot"):
+        if raw.get(key) is not None:
+            value = str(raw[key]).strip().lower().replace("_", "-")
+            if value:
+                task_dict[key] = value
+    if raw.get("self_repair_attempts") is not None:
+        value = raw["self_repair_attempts"]
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 5:
+            raise ValueError("self_repair_attempts must be an integer between 1 and 5")
+        task_dict["self_repair_attempts"] = value
     if raw.get("agy_self_repair_attempts") is not None:
         val = raw["agy_self_repair_attempts"]
         if isinstance(val, bool) or not isinstance(val, int) or not 1 <= val <= 5:
@@ -156,6 +272,9 @@ def evaluate_risk(task: dict[str, Any]) -> str:
         or risk_field == "high"
     ):
         return "high"
+    task_kind = str(task.get("task_kind", "")).strip().lower().replace("_", "-")
+    if task_kind in DELEGABLE_TASK_KINDS:
+        return "low"
     if any(label in LOW_RISK_CATEGORIES for label in labels) or risk_field == "low":
         return "low"
     if IMPLEMENTATION.search(objective) or any(IMPLEMENTATION.search(label) for label in labels):
@@ -286,6 +405,62 @@ def resolve_model(task: dict[str, Any], cfg: dict[str, Any]) -> str:
             return normalized_policy_map[str(raw_category).strip()]
 
     return default_model
+
+
+def resolve_worker_route(task: dict[str, Any], cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Resolve the controller and Gemini tier without allowing risk bypasses."""
+    if evaluate_risk(task) == "high":
+        return {
+            "controller": "codex",
+            "worker": None,
+            "consultant": "pro-readonly",
+            "reason": "High-risk task remains under Codex control",
+        }
+    kind = str(task.get("task_kind") or task.get("category") or task.get("risk_class") or "ordinary-implementation")
+    kind = kind.strip().lower().replace("_", "-")
+    if kind == "deep-review" or task.get("mutation") == "consult":
+        return {"controller": "codex", "worker": "pro", "readonly": True}
+    requested = str(task.get("model_slot", "")).strip().lower()
+    if requested in {"flash", "pro"}:
+        worker = requested
+    else:
+        policy = cfg.get("route_policy") if isinstance(cfg, dict) else None
+        if not isinstance(policy, dict) and isinstance(cfg, dict):
+            zcode_settings = cfg.get("zcode", {})
+            policy = zcode_settings.get("route_policy") if isinstance(zcode_settings, dict) else None
+        if not isinstance(policy, dict):
+            policy = {}
+        task_kinds = policy.get("task_kinds", {}) if isinstance(policy, dict) else {}
+        configured = task_kinds.get(kind) if isinstance(task_kinds, dict) else None
+        default = policy.get("default") if isinstance(policy, dict) else None
+        worker = configured if configured in {"flash", "pro"} else default
+        if worker not in {"flash", "pro"}:
+            worker = "pro" if kind in PRO_TASK_KINDS else "flash"
+    route = {"controller": "codex", "worker": worker}
+    if task.get("mutation") == "read" or task.get("context", {}).get("read_only") is True:
+        route["readonly"] = True
+    return route
+
+
+def resolve_worker_model(task: dict[str, Any], cfg: dict[str, Any]) -> dict[str, str]:
+    """Resolve a model slot only from the explicit ZCode allowlist."""
+    settings = cfg.get("zcode", cfg)
+    if not isinstance(settings, dict):
+        raise ValueError("Invalid ZCode settings")
+    route = resolve_worker_route(task, cfg)
+    slot = str(task.get("model_slot") or route.get("worker") or "flash").strip().lower()
+    slots = settings.get("model_slots", {})
+    entry = slots.get(slot) if isinstance(slots, dict) else None
+    if not isinstance(entry, dict):
+        if slot == "flash" and settings.get("model"):
+            entry = {"model": settings["model"], "thinking_level": settings.get("thinking_level", "high")}
+        else:
+            raise ValueError(f"No configured model slot: {slot}")
+    model = str(entry.get("model", "")).strip()
+    allowed = settings.get("allowed_models", [])
+    if not model or model not in allowed:
+        raise ValueError(f"Model for slot {slot} is not in the explicit allowlist")
+    return {"slot": slot, "model": model, "thinking_level": str(entry.get("thinking_level", "high"))}
 
 
 def build_contract_plan(task: dict[str, Any], reason: str = "Local agy-heavy task contract") -> dict[str, Any]:
@@ -562,13 +737,32 @@ def run(
     dry_run: bool,
     profile: str | None = None,
     codex_profile: str | None = None,
+    worker_profile: str | None = None,
 ) -> int:
-    cfg = config(root)
+    cfg = apply_worker_profile(config(root), worker_profile)
+    worker_runtime = cfg.get("worker_agent", "agy-cli")
+    if worker_runtime not in ("agy-cli", "zcode-app-server"):
+        raise ValueError("Unsupported worker runtime")
+    adapter = zcode_worker if worker_runtime == "zcode-app-server" else agy_cli
     effective_profile, requested_profile, override_reason = resolve_profile(task, cfg, profile)
     selected_codex_profile = resolve_codex_profile(cfg, codex_profile)
-    resolved_model = resolve_model(task, cfg)
-    effective_agy_settings = dict(cfg.get("agy", {}))
-    effective_agy_settings["model"] = resolved_model
+    worker_selection: dict[str, str] | None = None
+    if worker_runtime == "zcode-app-server":
+        effective_agy_settings = dict(cfg.get("zcode", {}))
+        route = resolve_worker_route(task, cfg)
+        if route.get("readonly"):
+            effective_agy_settings["readonly"] = True
+        if route.get("worker"):
+            worker_selection = resolve_worker_model(task, cfg)
+            effective_agy_settings["model"] = worker_selection["model"]
+            effective_agy_settings["thinking_level"] = worker_selection["thinking_level"]
+        resolved_model = effective_agy_settings.get("model")
+        if not resolved_model or resolved_model not in effective_agy_settings.get("allowed_models", []):
+            raise ValueError("ZCode worker model is not in its allowlist")
+    else:
+        resolved_model = resolve_model(task, cfg)
+        effective_agy_settings = dict(cfg.get("agy", {}))
+        effective_agy_settings["model"] = resolved_model
 
     run_dir = root / ".agents" / "runs" / task["task_id"]
     if run_dir.exists():
@@ -576,6 +770,42 @@ def run(
     run_dir.mkdir(parents=True)
     write_json(run_dir / "task.json", task)
     append_event(run_dir, "supervisor", "task-created", "ok")
+
+    if cfg.get("_worker_profile_execution_mode") == "interactive-only":
+        state = {
+            "task_id": task["task_id"],
+            "status": "interactive-required",
+            "route": "interactive",
+            "profile": effective_profile,
+            "requested_profile": requested_profile,
+            "codex_profile": selected_codex_profile["name"],
+            "model": resolved_model,
+            "worker_runtime": worker_runtime,
+            "worker_profile": worker_profile,
+            "execution_mode": "interactive-only",
+            "worktree": None,
+            "round": 0,
+            "updated_at": now(),
+            "reason": (
+                "This ZCode profile requires an interactive host for provider "
+                "runtime headers/CAPTCHA; no headless Worker was started."
+            ),
+        }
+        write_json(run_dir / "state.json", state)
+        append_event(run_dir, "supervisor", "interactive-profile-required", "stopped")
+        print(f"{task['task_id']}: {state['status']}")
+        return 0
+
+    if worker_runtime == "zcode-app-server" and effective_profile != "agy-heavy":
+        state = {"task_id": task["task_id"], "status": "awaiting-codex-or-manual",
+                 "route": "manual", "worktree": None, "worker_runtime": worker_runtime,
+                 "model": resolved_model, "updated_at": now(),
+                 "reason": "Current lead owns this task; no additional Codex process was started."}
+        if worker_profile:
+            state["worker_profile"] = worker_profile
+        write_json(run_dir / "state.json", state)
+        print(f"{task['task_id']}: {state['status']}")
+        return 0
 
     if effective_profile == "agy-heavy":
         plan = build_contract_plan(task)
@@ -613,11 +843,17 @@ def run(
         "requested_profile": requested_profile,
         "codex_profile": selected_codex_profile["name"],
         "model": resolved_model,
+        "worker_runtime": worker_runtime,
         "dry_run": dry_run,
         "worktree": None,
         "round": 0,
         "updated_at": now(),
     }
+    if worker_profile:
+        state["worker_profile"] = worker_profile
+    if worker_selection:
+        state["model_slot"] = worker_selection["slot"]
+        state["thinking_level"] = worker_selection["thinking_level"]
     if override_reason:
         state["profile_override_reason"] = override_reason
 
@@ -635,7 +871,7 @@ def run(
         expected_checks = task.get("verification_commands") if effective_profile == "agy-heavy" else command_checks(root, task)
         state["expected_commands"] = {
             "checks": expected_checks,
-            "worker": agy_cli.build_command(
+            "worker": adapter.build_command(effective_agy_settings) if worker_runtime == "zcode-app-server" else agy_cli.build_command(
                 effective_agy_settings,
                 ROOT / "schemas" / "worker-result.schema.json",
                 "<structured-task-json>",
@@ -654,6 +890,65 @@ def run(
         print(f"{task['task_id']}: routed to {plan['route']}; no worker was started.")
         return 0
 
+    if worker_runtime == "zcode-app-server":
+        try:
+            preflight = zcode_worker.preflight_runtime(
+                effective_agy_settings,
+                root=root,
+                task=task,
+            )
+        except (OSError, ValueError, KeyError) as exc:
+            state["status"] = "preflight-blocked"
+            state["failure_code"] = zcode_worker.classify_error(str(exc))
+            state["automatic_codex_takeover"] = False
+            state["preflight_error"] = str(exc)[:1200]
+            state["updated_at"] = now()
+            write_json(run_dir / "state.json", state)
+            append_event(run_dir, "zcode-app-server", "preflight", "blocked")
+            print(f"{task['task_id']}: {state['status']} - {state['preflight_error']}")
+            return 0
+        if preflight.get("status") != "passed":
+            state["status"] = "preflight-blocked"
+            state["failure_code"] = "config"
+            state["automatic_codex_takeover"] = False
+            state["preflight_error"] = "ZCode preflight did not pass"
+            state["updated_at"] = now()
+            write_json(run_dir / "state.json", state)
+            append_event(run_dir, "zcode-app-server", "preflight", "blocked")
+            print(f"{task['task_id']}: {state['status']}")
+            return 0
+        state["preflight"] = preflight
+        append_event(run_dir, "zcode-app-server", "preflight", "passed")
+        preflight_options = effective_agy_settings.get("preflight", {})
+        if isinstance(preflight_options, dict) and preflight_options.get("network_probe"):
+            try:
+                network_probe = zcode_worker.network_preflight(
+                    effective_agy_settings,
+                    run_dir / "preflight-workspace",
+                )
+            except (OSError, ValueError, KeyError, zcode_worker.ProtocolError, TimeoutError) as exc:
+                state["status"] = "preflight-blocked"
+                state["failure_code"] = zcode_worker.classify_error(str(exc))
+                state["automatic_codex_takeover"] = False
+                state["preflight_error"] = re.sub(r"https?://[^\s\"]+", "[endpoint]", str(exc))[:1200]
+                state["updated_at"] = now()
+                write_json(run_dir / "state.json", state)
+                append_event(run_dir, "zcode-app-server", "network-preflight", "blocked")
+                print(f"{task['task_id']}: {state['status']} - {state['preflight_error']}")
+                return 0
+            if network_probe.get("status") != "passed":
+                state["status"] = "preflight-blocked"
+                state["failure_code"] = "transport"
+                state["automatic_codex_takeover"] = False
+                state["preflight_error"] = "Network preflight did not pass"
+                state["updated_at"] = now()
+                write_json(run_dir / "state.json", state)
+                append_event(run_dir, "zcode-app-server", "network-preflight", "blocked")
+                print(f"{task['task_id']}: {state['status']}")
+                return 0
+            state["network_preflight"] = network_probe
+            append_event(run_dir, "zcode-app-server", "network-preflight", "passed")
+
     dirty_conflicts = dirty_scope_conflicts(root, task)
     if dirty_conflicts:
         state["status"] = "awaiting-codex-or-manual"
@@ -665,6 +960,14 @@ def run(
         print(f"{task['task_id']}: dirty scope conflicts require Codex/manual handling.")
         return 0
 
+    if worker_runtime == "zcode-app-server":
+        probe = cfg["worktree_root"].rstrip("/") + "/" + task["task_id"]
+        if _git(root, "check-ignore", "-q", probe).returncode != 0:
+            state["status"] = "awaiting-codex-or-manual"
+            state["takeover_reason"] = "Ignore the local .agents worktree/run directories before launching a worker."
+            write_json(run_dir / "state.json", state)
+            print(f"{task['task_id']}: {state['status']}")
+            return 0
     tree = worktrees.create(root, task["task_id"], cfg["worktree_root"])
     base_commit_res = _git(tree, "rev-parse", "HEAD")
     base_commit = base_commit_res.stdout.strip() if base_commit_res.returncode == 0 else None
@@ -686,7 +989,7 @@ def run(
     if effective_profile == "agy-heavy":
         state["round"] = 1
         started = time.monotonic()
-        worker = agy_cli.invoke(
+        worker = adapter.invoke(
             task,
             tree,
             run_dir,
@@ -695,10 +998,22 @@ def run(
             max_repair_attempts=repair_attempts,
         )
         write_json(run_dir / "worker-round-1.json", worker)
-        append_event(run_dir, "agy-cli", "worker-round-1", worker["status"], time.monotonic() - started)
+        append_event(run_dir, worker_runtime, "worker-round-1", worker["status"], time.monotonic() - started)
 
         if worker["status"] == "blocked":
-            state["status"] = "codex-takeover-required"
+            persist_handoff(
+                run_dir,
+                task,
+                worker,
+                model_id=str(resolved_model),
+                base_commit=base_commit,
+            )
+            state["status"] = (
+                "worker-blocked-awaiting-human"
+                if worker_runtime == "zcode-app-server"
+                else "codex-takeover-required"
+            )
+            state["automatic_codex_takeover"] = worker_runtime != "zcode-app-server"
             state["takeover_reason"] = worker["summary"]
             state["updated_at"] = now()
             write_json(run_dir / "state.json", state)
@@ -716,11 +1031,26 @@ def run(
             write_json(run_dir / "worker-round-1.json", worker)
             append_event(run_dir, "supervisor", "worker-round-1-transport-recovered", "partial")
 
+        persist_handoff(
+            run_dir,
+            task,
+            worker,
+            model_id=str(resolved_model),
+            base_commit=base_commit,
+            diff_stat={"files": len(evidence.get("changed_paths", [])), "insertions": 0, "deletions": 0},
+            checks=check_results,
+        )
+
         worker_ok = worker.get("status") == "completed" or bool(worker.get("transport_recovered"))
         checks_ok = bool(check_results) and all(r.get("exit_code") == 0 for r in check_results)
 
         if not worker_ok:
-            state["status"] = "codex-takeover-required"
+            state["status"] = (
+                "worker-failed-awaiting-human"
+                if worker_runtime == "zcode-app-server"
+                else "codex-takeover-required"
+            )
+            state["automatic_codex_takeover"] = worker_runtime != "zcode-app-server"
             state["takeover_reason"] = f"Worker finished with status '{worker.get('status')}': {worker.get('summary', '')}"
             state["updated_at"] = now()
             write_json(run_dir / "state.json", state)
@@ -730,7 +1060,12 @@ def run(
 
         if not checks_ok:
             failed_cmds = [" ".join(r.get("command", [])) for r in check_results if r.get("exit_code") != 0]
-            state["status"] = "codex-takeover-required"
+            state["status"] = (
+                "worker-checks-failed-awaiting-human"
+                if worker_runtime == "zcode-app-server"
+                else "codex-takeover-required"
+            )
+            state["automatic_codex_takeover"] = worker_runtime != "zcode-app-server"
             state["takeover_reason"] = f"Verification checks failed: {', '.join(failed_cmds)}"
             state["updated_at"] = now()
             write_json(run_dir / "state.json", state)
@@ -765,7 +1100,7 @@ def run(
         worker_task = dict(task)
         worker_task["review_feedback"] = state.get("review_feedback", [])
         started = time.monotonic()
-        worker = agy_cli.invoke(
+        worker = adapter.invoke(
             worker_task,
             tree,
             run_dir,
@@ -774,7 +1109,7 @@ def run(
             max_repair_attempts=repair_attempts,
         )
         write_json(run_dir / f"worker-round-{round_no}.json", worker)
-        append_event(run_dir, "agy-cli", f"worker-round-{round_no}", worker["status"], time.monotonic() - started)
+        append_event(run_dir, worker_runtime, f"worker-round-{round_no}", worker["status"], time.monotonic() - started)
         if worker["status"] == "blocked":
             state["status"] = "codex-takeover-required"
             state["takeover_reason"] = worker["summary"]
@@ -831,6 +1166,29 @@ def doctor(root: Path) -> int:
     checks_found = command_checks(root)
     git_ok = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], cwd=root, capture_output=True, text=True).returncode == 0
     cfg = config(root)
+    if cfg.get("worker_agent") == "zcode-app-server":
+        settings = cfg["zcode"]
+        try:
+            lead = validate_codex_lead_policy()
+            zcode_worker.verify_guard(root)
+            runtime = zcode_worker.load_runtime(settings)
+            print("Worker runtime: zcode-app-server")
+            print("Model: " + runtime["model"]["modelId"])
+            print("Codex lead: " + lead["model"] + " / " + lead["reasoning_effort"] + " / " + lead["context_policy"])
+            slots = settings.get("model_slots", {})
+            if isinstance(slots, dict):
+                for slot in ("flash", "pro"):
+                    entry = slots.get(slot)
+                    if isinstance(entry, dict) and entry.get("model"):
+                        print(f"ZCode slot {slot}: {entry['model']} / {entry.get('thinking_level', 'default')}")
+            print("Scope guard: verified")
+            executable_files_exist = all(Path(settings[k]).is_file() for k in ("node_executable", "cli_entry"))
+            print("Node/CLI files: " + str(executable_files_exist))
+            print("Model inference: not invoked by doctor")
+            return 0 if executable_files_exist else 1
+        except (OSError, ValueError, KeyError):
+            print("ZCode runtime configuration/guard check failed; no fallback attempted.")
+            return 1
     agy_settings = cfg.get("agy", {})
     agy_path = agy_cli.executable(agy_settings)
     agy_version = _command_line([agy_path, "--version"], root) if agy_path else "MISSING"
@@ -940,6 +1298,7 @@ def main() -> int:
     run_p.add_argument("--task-file", type=Path)
     run_p.add_argument("--profile", choices=["agy-heavy", "codex-controlled"], default=None, help="Supervisor execution profile")
     run_p.add_argument("--codex-profile", choices=["official", "relay"], default=None, help="Codex provider profile")
+    run_p.add_argument("--worker-profile", default=None, help="Explicit project worker profile override")
     run_p.add_argument("--dry-run", action="store_true")
     sub.add_parser("doctor")
     status_p = sub.add_parser("status")
@@ -963,6 +1322,7 @@ def main() -> int:
         args.dry_run,
         profile=args.profile,
         codex_profile=args.codex_profile,
+        worker_profile=args.worker_profile,
     )
 
 

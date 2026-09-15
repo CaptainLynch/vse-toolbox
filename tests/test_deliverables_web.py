@@ -474,11 +474,11 @@ def test_tdc_ui_exposes_fast_and_exact_preview_modes() -> None:
 def test_tdc_sor_ui_uses_manual_vehicle_project_input() -> None:
     js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
 
-    assert "/api/tdc/sor/car-type-projects" not in js_text
-    assert "loadTdcSorProjectOptions" not in js_text
-    assert "tdc-car-type-project-options" not in js_text
-    assert "重新加载车型项目" not in js_text
-    assert "car_type_project_id" not in js_text
+    assert "/api/tdc/sor/car-type-projects" in js_text
+    assert "loadTdcSorProjectOptions" in js_text
+    assert "tdc-car-type-project-options" in js_text
+    assert "重新加载车型项目" in js_text
+    assert "car_type_project_id" in js_text
     assert "input.dataset.deliverableField = field.name;" in js_text
 
 

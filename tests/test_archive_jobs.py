@@ -100,11 +100,11 @@ def _enable_archive_job(
 
 def test_archive_schema_version_and_tables(db: DatabaseManager) -> None:
     """断言归档任务 schema 为 12 且四张 scheduled_archive 表与索引已建立。"""
-    assert CURRENT_SCHEMA_VERSION == 13
+    assert CURRENT_SCHEMA_VERSION == 14
 
     with db.get_connection() as conn:
         user_version = conn.execute("PRAGMA user_version").fetchone()[0]
-        assert user_version == 13, f"PRAGMA user_version 应为 13，实际为 {user_version}"
+        assert user_version == CURRENT_SCHEMA_VERSION, f"数据库版本不符：{user_version}"
 
     expected_tables = {
         "scheduled_archive_jobs",

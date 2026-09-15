@@ -1,5 +1,10 @@
 # 生产环境数模设计审核流程报表与 SOR 信息采集指引
 
+> 状态：Reference / Evidence
+> 读者：Operator、Developer、Agent（生产取证任务）
+> 权威来源：脱敏生产采集结果；不能替代 `services/tdc_crawler.py` 和测试
+> 默认读取：仅数模/SOR 取证或契约任务
+
 > 目的：本机 VPN 当前只能验证 Aras 交付物链路。请在公司生产网络中按本文件采集最小必要证据，带回后再完成数模报表与 SOR 的字段契约、筛选映射和 UI 验证。不要把密码、Token、Cookie 或 Authorization 原文带出生产环境。
 
 ## 一、采集原则

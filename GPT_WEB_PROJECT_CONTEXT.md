@@ -1,5 +1,10 @@
 # VSE Toolbox - GPT Web Project Context
 
+> 状态：Historical / External Snapshot
+> 读者：Developer、Agent（外部 LLM 迁移复盘）
+> 权威来源：2026-08-20 快照；当前代码、测试和 `memory/` 优先
+> 默认读取：禁止默认读取；复用前必须重新核对代码和配置
+
 Snapshot date: 2026-08-20
 
 ## 1. Project Positioning

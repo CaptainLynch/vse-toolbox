@@ -37,6 +37,7 @@ from services.scheduled_archive_runner import (
     ArchiveSyncRunner,
 )
 from services.tdc_auth import TDCAuthError
+from services.tdc_crawler import TDCCrawlerError
 from services.windows_http import WinHTTPError, WinHTTPTimeoutError
 
 
@@ -587,6 +588,34 @@ def test_archive_connector_failure_is_audited_without_secret(
 
 
 # ── 4. Retry behavior (transient vs non-transient) ──────────────────────────
+
+
+def test_sor_api_failure_persists_safe_stage_without_retry_or_artifact(
+    db: DatabaseManager, registry: ArchiveConnectorRegistry,
+) -> None:
+    job_id = _enable_job(db, "tdc_sor", credential_ref="alias_sor")
+    failure = TDCCrawlerError(
+        "upstream private-business-value token=synthetic-secret",
+        operation="export", report_type="sor", stage="api-validation",
+        request_id="aabbccdd", status_code=200, api_code=1,
+        response_fields=("code", "error"), reason_available=True,
+    )
+    connector = FakeConnector(exception=failure)
+    runner, _ = _setup_runner(
+        db, registry, credentials={"alias_sor": ("user", "pass")},
+        connectors={"tdc_sor": connector},
+    )
+    result = runner.run_job(job_id)
+    assert result.outcome == "failed" and result.error_type == "query_failed"
+    assert connector.call_count == 1
+    assert result.run_id is not None
+    run = _get_run_row(db, result.run_id)
+    assert "stage=api-validation" in run["error_message"]
+    assert "api_code=1" in run["error_message"]
+    assert "aabbccdd" in run["error_message"]
+    assert "private-business-value" not in str(dict(run))
+    assert "synthetic-secret" not in str(dict(run))
+    assert _get_artifact_rows(db, result.run_id) == []
 
 
 def test_transient_error_retries_and_recovers_with_backoff(

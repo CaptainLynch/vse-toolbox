@@ -4,6 +4,7 @@
   "additionalProperties": true,
   "required": ["task_id", "status", "summary", "changed_files", "tests", "commands_executed", "risks", "unresolved", "needs_review"],
   "properties": {
+    "schema_version": {"type": "string"},
     "task_id": {"type": "string"},
     "status": {"enum": ["completed", "partial", "failed", "blocked"]},
     "summary": {"type": "string"},
@@ -25,6 +26,8 @@
         }
       }
     },
-    "needs_review": {"type": "boolean"}
+    "needs_review": {"type": "boolean"},
+    "failure_code": {"type": "string"},
+    "process": {"type": "object"}
   }
 }

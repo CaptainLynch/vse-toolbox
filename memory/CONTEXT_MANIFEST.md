@@ -14,7 +14,9 @@ navigation, not proof: the repository is always the source of truth.
    agent harness, crawlers, DPAPI/credentials, Excel COM, or packaging;
    otherwise skim the "do not retry" section.
 4. `memory/DECISIONS.md` — when a choice touches something already decided.
-5. Verify against the repository before working: `git status`, `git diff`,
+5. `PROJECT_MAP.md` — map-first code navigation, task routing, and default-deny
+   evidence boundaries.
+6. Verify against the repository before working: `git status`, `git diff`,
    `git log --oneline -10`, relevant code and tests.
 
 ## Files and update rules
@@ -25,6 +27,11 @@ navigation, not proof: the repository is always the source of truth.
 | `RECOVERY_NOTES.md` | Environment pitfalls, failed attempts (do-not-retry), verified root causes | Append + prune; wholesale rewrite allowed; never delete *why* an attempt failed |
 | `DECISIONS.md` | Durable decisions that constrain future work | Append-only; supersede, never delete |
 | `CONTEXT_MANIFEST.md` | This map: read order, doc freshness, fact priority | Edit only when memory layout or doc inventory changes |
+
+The repository-level `PROJECT_MAP.md` is the Agent-facing code map. It is
+generated from an explicit production allowlist and must be checked with
+`python tools/generate_project_map.py --check`; it is not part of the memory
+layer and does not override source code or tests.
 
 Checkpoint triggers and mechanics are defined in `AGENTS.md` → "Persistent
 Project Memory Protocol". A default milestone updates `CURRENT_STATE.md`
@@ -47,17 +54,31 @@ Tracked documentation, grouped by status:
 
 | Location | Status |
 | --- | --- |
-| `docs/superpowers/specs/` + `docs/superpowers/plans/` (dated) | Active convention: per-feature design spec + execution plan |
-| `docs/API_ENDPOINTS.md` | Generated Web API endpoint inventory (run `tools/generate_api_endpoints.py` to refresh; 2026-09-07) |
+| `docs/superpowers/specs/` (dated) | Active convention: per-feature design spec; task-scoped after implementation |
+| `docs/superpowers/plans/` (dated) | Consumed execution plans; historical/task-scoped after completion, not default Agent input |
+| `docs/API_ENDPOINTS.md` | Generated Web API endpoint inventory (run `tools/generate_api_endpoints.py` to refresh; route behavior remains in code/tests) |
 | `docs/*.md` (SCHEDULED_*, EXCEL_*, PRODUCTION_*, USER_GUIDE_*, PROD_DATA_MODEL_*) | Active architecture docs and runbooks |
-| `docs/agents/research_notes.md`, `crawl_source_index.md`, `paa_har_snapshot.md`, `crawler_contract.md` | Active reference for crawler work |
+| `docs/agents/crawl_source_index.md`, `paa_har_snapshot.md`, `crawler_contract.md` | Reference/evidence summaries for crawler work; raw samples remain default-deny |
+| `docs/agents/research_notes.md` | Scratch exploration notes; durable findings must be promoted to memory or active docs |
 | `DELIVERABLE_UPDATE_MODES_PILOT_ARCHITECTURE.md` | Active architecture reference for the implemented dual-mode (interactive/background) deliverable sync |
 | `DELIVERABLE_UPDATE_MODES_IMPLEMENTATION_PLAN.md` | Consumed sprint plan; historical (kept because the PILOT_ARCHITECTURE doc references it) |
 | `PROJECT_OVERVIEW_*.md`, `FRONTEND_REDESIGN_EXECUTION_PLAN.md`, `.codex.yaml`, `docs/agents/{project_state,task,review_feedback,role_*,SOP_worker_coding,implementation_plan}.md` | Deleted 2026-09-02: retired 2026-06 sprint artifacts + four-role agent subsystem (see DECISIONS). Recover via Git history if ever needed |
 | `DESIGN.md` | Active UI design-token document (warm cream / coral system adopted by the current dashboard) |
 | `GPT_WEB_PROJECT_CONTEXT.md` | External-LLM context snapshot (2026-08-20). Its §6 design constraints are durable (promoted into `DECISIONS.md`), but capability/branch claims are stale (Web Excel tasks and scheduled sync now exist; Python-version claim conflicts with `requirements.txt`). Refresh before reusing it for an external LLM session |
 | `docs/PHASE0_*`, `docs/PHASE1_*` | Historical refactor baseline (2026-06) |
-| `README.md` | Partially stale: claims CLI-only/"zero web framework" while the project now ships a full Flask WebUI; contains a stray `ACCEPTANCE_TEST` line; directory table incomplete. Do not rely on its structure description |
+| `README.md` | Active user entrypoint for WebUI/CLI/Worker; code structure is delegated to `PROJECT_MAP.md` |
+| `PROJECT_MAP.md` | Agent-facing generated code map; default navigation entrypoint, allowlist-driven and checked by `tools/generate_project_map.py` |
+
+Document lifecycle rules:
+
+- `Active` documents describe current behavior and must link to their code,
+  tests, or memory authority.
+- `Generated` documents are refreshed by their named generator and are not
+  hand-edited.
+- `Historical` plans, snapshots, and consumed designs remain available for
+  context but are not default Agent input.
+- `Scratch` and session handoff material belongs in `.runtime/` or an explicit
+  history area; only durable conclusions are promoted to memory.
 
 ## Fact priority on conflict
 

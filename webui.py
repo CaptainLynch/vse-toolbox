@@ -25,6 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="监听地址，默认 127.0.0.1（0.0.0.0 允许局域网访问，写接口仍仅限本机）",
     )
     parser.add_argument("--port", type=int, default=5000, help="监听端口，默认 5000")
+    parser.add_argument("--diagnostics", action="store_true", help="开启30分钟安全诊断录制（不启用Flask调试器）")
     return parser
 
 
@@ -35,6 +36,11 @@ def main(argv: list[str] | None = None) -> int:
     from web.app import create_app
 
     app = create_app()
+    if args.diagnostics:
+        try:
+            app.extensions["diagnostic_recorder"].start()
+        except Exception:
+            print("诊断录制未能开启，请在页面诊断控件中检查状态。")
     print(f"VSE Toolbox WebUI: http://{args.host}:{args.port}/  (Ctrl+C 退出)")
     print(f"数据目录: {app_root() / 'data'}")
     app.run(host=args.host, port=args.port, debug=False, use_reloader=False)

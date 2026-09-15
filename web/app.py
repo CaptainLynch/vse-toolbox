@@ -11,6 +11,7 @@ web/app.py — WEB 适配层：Flask 应用工厂 + /api/overview 路由
 
 import io
 import hashlib
+import json
 import ipaddress
 import logging
 import os
@@ -48,6 +49,7 @@ SYNC_CREDENTIAL_REF = "domain"
 from core.native_folder_picker import NativeFolderPickerError, choose_native_folder
 from core.project_status_contracts import (
     MILESTONE_STATUSES,
+    PROJECT_STATUS_SOURCE_CAPABILITIES,
     current_stage_label,
     milestone_display_status,
 )
@@ -81,8 +83,13 @@ from services.project_status_updates import (
     ProjectStatusUpdateService,
 )
 from services.project_status_discovery import MappingDiscoveryService
+from services.project_status_records import (
+    COMPLETE_RESULT_STOP_REASONS,
+    MAX_AGGREGATE_RECORDS,
+)
 from services.project_status_analytics import ProjectStatusAnalyticsService
 from services.project_status_deliverable_analysis import (
+    EWO_DEFAULT_RSP_DEPARTMENT_EXPRESSION,
     ProjectStatusDeliverableAnalysisService,
 )
 from services.deliverable_form_analysis import DeliverableFormAnalysisService
@@ -90,6 +97,7 @@ from services.project_status_sync_runner import (
     ProjectStatusSyncRunner,
     create_production_registry,
 )
+from services.project_status_connectors import build_project_status_ewo_filters
 from services.scheduled_archive_admin import (
     ArchiveAdminValidationError,
     ScheduledArchiveAdminService,
@@ -112,7 +120,7 @@ from services.aras_crawler import (
     NCRApprovalFilters,
     PAAReportFilters,
 )
-from services.aras_auth import ArasAuthError, ArasECMAuthClient
+from services.aras_auth import ArasAuthError, ArasECMAuthClient, DEFAULT_ARAS_BASE_URL
 from services.aras_department_mapping import normalize_departments, resolve_ncr_section_codes
 from services.aras_export import export_report_contract_csv
 from services.tdc_auth import TDCAuthError, TDCPasswordAuthClient
@@ -788,7 +796,11 @@ def _ncr_section_codes_from_filters(filters: dict[str, Any]) -> tuple[str, ...]:
         raise _ArasRequestError(str(exc)) from None
 
 
-def _ewo_filters_from_payload(payload: dict[str, Any]) -> EWOReportFilters:
+def _ewo_filters_from_payload(
+    payload: dict[str, Any],
+    *,
+    default_rsp_department: str | None = None,
+) -> EWOReportFilters:
     filters = _filter_payload(payload)
     return EWOReportFilters(
         ewo_no=_none_if_blank(filters.get("ewo_no")),
@@ -798,7 +810,11 @@ def _ewo_filters_from_payload(payload: dict[str, Any]) -> EWOReportFilters:
         change_sub_type=_none_if_blank(filters.get("change_sub_type")),
         area=_none_if_blank(filters.get("area")),
         state=_none_if_blank(filters.get("state")),
-        rsp_department=_none_if_blank(filters.get("rsp_department")),
+        rsp_department=(
+            _none_if_blank(filters.get("rsp_department"))
+            or _none_if_blank(default_rsp_department)
+        ),
+        rsp_smt=_none_if_blank(filters.get("rsp_smt")),
         submit_start=_none_if_blank(filters.get("submit_start")),
         submit_end=_none_if_blank(filters.get("submit_end")),
         model_info=_none_if_blank(filters.get("model_info")),
@@ -1018,6 +1034,164 @@ def _tdc_preview_source(payload: Mapping[str, Any]) -> str:
 
 _TDC_DATA_MODEL_FILTER_NAMES = tuple(field["name"] for field in _TDC_DATA_MODEL_FIELDS)
 _TDC_SOR_FILTER_NAMES = tuple(field["name"] for field in _TDC_SOR_FIELDS) + ("car_type_project_id",)
+
+_MAPPING_DISCOVERY_RULE_FIELDS: dict[tuple[str, str], dict[str, str]] = {
+    ("tdc", "data_model"): {
+        "serial_number": "incident",
+        "applicant": "applicant",
+        "department": "department",
+        "section": "section",
+        "application_start": "applicationStart",
+        "application_end": "applicationEnd",
+        "project_model": "projectModel",
+        "part_number": "partNumber",
+        "model_number": "modelNumber",
+    },
+    ("tdc", "sor"): {
+        "serial_number": "processNo",
+        "process_type": "processType",
+        "car_type_project": "carTypeProject",
+        "car_type_project_id": "carTypeProjectId",
+        "applicant": "applicant",
+        "title": "title",
+        "department": "department",
+        "section": "section",
+        "application_start": "applicationStart",
+        "application_end": "applicationEnd",
+        "part_number": "partNumber",
+        "part_name": "partName",
+        "version": "version",
+        "sor_number": "sorNumber",
+        "latest_completed_node": "latestCompletedNode",
+        "approval_status": "approvalStatus",
+    },
+    ("aras", "ewo"): {
+        "ewo_no": "ewoNo",
+        "project_code": "projectCode",
+        "subject_keyword": "subjectKeyword",
+        "change_type": "changeType",
+        "change_sub_type": "changeSubType",
+        "area": "area",
+        "state": "state",
+        "rsp_department": "rspDepartment",
+        "rsp_smt": "rspSmt",
+        "submit_start": "submitStart",
+        "submit_end": "submitEnd",
+        "model_info": "modelInfo",
+    },
+}
+
+
+def _mapping_discovery_query_identity(
+    payload: dict[str, Any],
+    deliverable_id: str,
+    selected_external_key: str | None = None,
+) -> tuple[dict[str, Any], dict[str, str | None]]:
+    """Freeze the validated, canonical query rule at POST request start."""
+    capability = PROJECT_STATUS_SOURCE_CAPABILITIES.get(deliverable_id) or {}
+    source_type = str(capability.get("sourceType") or "").strip()
+    report_type = str(capability.get("reportType") or "").strip()
+    mapping = _MAPPING_DISCOVERY_RULE_FIELDS.get((source_type, report_type))
+    if not mapping:
+        raise _ArasRequestError("mapping discovery is not available for this deliverable")
+    error_type = _TDCRequestError if source_type == "tdc" else _ArasRequestError
+    filters = payload.get("filters", {})
+    if not isinstance(filters, dict):
+        raise error_type("filters must be an object")
+    unknown = [name for name in filters if name not in mapping]
+    if unknown:
+        raise error_type("filters contains unsupported fields")
+    values: dict[str, str | None] = {}
+    rule: dict[str, Any] = {
+        "reportType": report_type,
+        "aggregate": capability.get("aggregate") is True,
+    }
+    aggregate = payload.get("aggregate", rule["aggregate"])
+    if not isinstance(aggregate, bool):
+        raise error_type("aggregate must be a boolean")
+    rule["aggregate"] = aggregate
+    versioned_ewo = any(key in payload for key in ('contractVersion', 'bindingMode', 'sourceItemId'))
+    if versioned_ewo:
+        if source_type != 'aras' or report_type != 'ewo':
+            raise error_type('Versioned EWO source mismatch')
+        for key in ('contractVersion', 'bindingMode', 'sourceItemId'):
+            if key in payload:
+                rule[key] = payload[key]
+    for name, rule_name in mapping.items():
+        value = filters.get(name)
+        if value is None:
+            values[name] = None
+            continue
+        if not isinstance(value, str):
+            raise error_type(f"{name} filter must be a string")
+        clean = value.strip() or None
+        values[name] = clean
+        if clean is not None:
+            rule[rule_name] = clean
+    if (
+        source_type == "aras"
+        and report_type == "ewo"
+        and not str(rule.get("rspDepartment") or "").strip()
+    ):
+        # The scheduled connector applies this bounded source-side scope
+        # whenever the binding omits rspDepartment.  Include it in the
+        # request identity so discovery evidence and execution query the
+        # same EWO population.
+        rule["rspDepartment"] = EWO_DEFAULT_RSP_DEPARTMENT_EXPRESSION
+    if not versioned_ewo and not aggregate and selected_external_key:
+        stable_filter_name = {
+            "tdc/data_model": "incident",
+            "tdc/sor": "processNo",
+            "aras/ewo": "ewoNo",
+        }.get(f"{source_type}/{report_type}")
+        if stable_filter_name:
+            existing = rule.get(stable_filter_name)
+            if existing is not None and existing != selected_external_key:
+                raise error_type("selected external key conflicts with the query filter")
+            rule[stable_filter_name] = selected_external_key
+            for filter_name, canonical_name in mapping.items():
+                if canonical_name == stable_filter_name:
+                    # Keep the actual crawler request aligned with the
+                    # request identity.  Previously selectedExternalKey was
+                    # used only by observe(), so the signed rule could claim
+                    # a narrower query than the rows actually fetched.
+                    values[filter_name] = selected_external_key
+                    break
+    if source_type == "aras" and report_type == "ewo" and rule.get("modelInfo"):
+        # In the established model-anchor mode the connector searches the
+        # model population and resolves a selected EWO number locally; an
+        # ewoNo filter is therefore not part of the effective query.
+        rule.pop("ewoNo", None)
+    if versioned_ewo:
+        from core.ewo_binding_v2 import normalize_ewo_v2_rule
+        rule = normalize_ewo_v2_rule(rule)
+        if not aggregate and selected_external_key != rule['sourceItemId']:
+            raise error_type('Selected EWO source ID mismatch')
+    return rule, values
+
+
+def _require_complete_mapping_result(result: Any, error_type: type[ValueError]) -> list[dict[str, Any]]:
+    """Accept only a crawler result with explicit end-of-data evidence."""
+    rows = getattr(result, "rows", None)
+    if not isinstance(rows, list) or any(not isinstance(row, Mapping) for row in rows):
+        raise error_type("mapping discovery result must contain a list of objects")
+    if len(rows) > MAX_AGGREGATE_RECORDS:
+        raise error_type(
+            f"mapping discovery result exceeds maximum {MAX_AGGREGATE_RECORDS}",
+            "DiscoveryLimitExceeded",
+            422,
+        )
+    stop_reason = str(getattr(result, "stop_reason", "unknown") or "unknown")
+    if (
+        getattr(result, "complete", None) is not True
+        or stop_reason not in COMPLETE_RESULT_STOP_REASONS
+    ):
+        raise error_type(
+            "mapping discovery query was incomplete; narrow the filters or retry",
+            "IncompleteDiscovery",
+            422,
+        )
+    return [dict(row) for row in rows]
 
 
 def _validate_tdc_base_url(
@@ -1284,8 +1458,6 @@ def _tdc_sor_project_options(projects: Sequence[Mapping[str, Any]]) -> list[dict
         project_id = _safe_tdc_sor_value(project.get("id"))
         project_no = _safe_tdc_sor_value(project.get("projectNo"))
         project_name = _safe_tdc_sor_value(project.get("projectName"))
-        if not project_id:
-            project_id = project_no or project_name
         if not project_id:
             continue
         identity = (project_id, project_no or "", project_name or "")
@@ -1559,11 +1731,39 @@ def _deliverable_form_link(
     return {"formKey": form_key, "snapshotAt": snapshot_at, "summary": summary}
 
 
+def _deliverable_analysis_link(
+    db: DatabaseManager,
+    deliverable_id: str,
+    analysis_service: ProjectStatusDeliverableAnalysisService | None = None,
+) -> dict[str, Any] | None:
+    """读取交付物最新明细分析快照摘要（与交付物明细页分析同源）。
+
+    传入 analysis_service 时走服务的 latest_link_summary（EWO 交付物按
+    当前日期重算逾期/临期，环图与明细页数字一致）；否则读存储摘要。
+    """
+    if analysis_service is not None:
+        return analysis_service.latest_link_summary(deliverable_id)
+    snapshots = db.list_project_status_analysis_snapshots(deliverable_id, 1)
+    if not snapshots:
+        return None
+    latest = snapshots[0]
+    return {
+        "snapshotAt": latest.get("snapshot_at"),
+        "summary": {
+            "total": int(latest.get("total_count") or 0),
+            "completed": int(latest.get("completed_count") or 0),
+            "incomplete": int(latest.get("incomplete_count") or 0),
+            "overdue": int(latest.get("overdue_count") or 0),
+        },
+    }
+
+
 def _project_status_payload(
     db: DatabaseManager,
     phase_id: str,
     *,
     today: date | None = None,
+    analysis_service: ProjectStatusDeliverableAnalysisService | None = None,
 ) -> dict[str, Any] | None:
     """把项目状态专用表序列化为前端唯一的已保存状态。"""
     phase_row, milestone_rows, deliverable_rows = db.get_project_status(phase_id)
@@ -1597,7 +1797,73 @@ def _project_status_payload(
                 "last_error_type": None,
                 "last_error_message": None,
                 "updated_at": row["updated_at"],
+                "match_rule_json": None,
             }
+        try:
+            raw_match_rule = summary.get("match_rule_json")
+            aggregate_binding = bool(
+                isinstance(raw_match_rule, str)
+                and raw_match_rule.strip()
+                and json.loads(raw_match_rule).get("aggregate") is True
+            )
+        except Exception:
+            aggregate_binding = False
+        form_link = _deliverable_form_link(db, str(row["id"]))
+        analysis_link = _deliverable_analysis_link(db, str(row["id"]), analysis_service)
+        capabilities = PROJECT_STATUS_SOURCE_CAPABILITIES.get(str(row["id"]), {})
+        form_summary = (
+            form_link.get("summary")
+            if isinstance(form_link, dict) and isinstance(form_link.get("summary"), dict)
+            else None
+        )
+        # 展示状态机：mode/enabled/有效快照/syncState 四输入，七态输出。
+        # 数值仅在 manual/paused/snapshot 三态展示；其余状态显示状态标签，
+        # 避免"默认自动但尚未同步"的交付物展示编造进度。
+        binding_mode = str(summary["mode"])
+        binding_enabled = bool(summary["enabled"])
+        binding_sync_state = str(summary["sync_state"] or "idle")
+        analysis_summary = (
+            analysis_link.get("summary")
+            if isinstance(analysis_link, dict) and isinstance(analysis_link.get("summary"), dict)
+            else None
+        )
+        # 有效快照选择与前端 deliverableFormDisplay 同规则：
+        # 分析快照优先；表单快照兜底仅限非聚合绑定（聚合绑定只信任
+        # 分析快照链路——GPT 终审 E：前后端换绑隔离一致）。
+        display_summary = analysis_summary or (
+            None if aggregate_binding else form_summary
+        )
+        analysis_total = int(display_summary.get("total") or 0) if display_summary else None
+        if binding_mode not in ("automatic", "hybrid"):
+            display_state, display_label = "manual", "手工维护"
+        elif not binding_enabled:
+            # 暂停 = 曾成功同步过（deliverable 手工列持有可信同步值）；
+            # 从未同步（无论是否残留独立快照或失败痕迹）一律待配置，
+            # 不把占位值当作可信展示值重新暴露。
+            if summary.get("last_success_at"):
+                display_state, display_label = "paused", "已暂停"
+            else:
+                display_state, display_label = "pending_config", "待配置"
+        elif analysis_total is None:
+            if binding_sync_state in ("failed", "needs_attention"):
+                display_state, display_label = "sync_failed", "同步失败"
+            elif binding_sync_state == "running":
+                display_state, display_label = "pending_first_sync", "同步中"
+            else:
+                display_state, display_label = "pending_first_sync", "待首次同步"
+        elif analysis_total <= 0:
+            display_state, display_label = "no_source_records", "无来源记录"
+        else:
+            display_state, display_label = "snapshot", "快照同步"
+        # 快照态的有效状态换算（与前端 deliverableFormDisplay 同规则）。
+        effective_status = row["status"]
+        if display_state == "snapshot" and display_summary:
+            if analysis_total and int(display_summary.get("completed") or 0) >= analysis_total:
+                effective_status = "已完成"
+            elif int(display_summary.get("overdue") or 0) > 0:
+                effective_status = "已逾期"
+            else:
+                effective_status = "进行中"
         deliverables.append(
             {
                 "id": row["id"],
@@ -1614,15 +1880,35 @@ def _project_status_payload(
                 "source": row["source"],
                 "department": row["department"],
                 "stage": row["stage"],
-                "updateMethod": row["update_method"],
+                # binding.mode 为唯一权威：updateMethod 是策略模式的兼容投影。
+                "updateMethod": binding_mode,
                 "tone": _PROJECT_STATUS_TONES[row["status"]],
+                "effectiveStatus": effective_status,
+                "syncDisplay": {
+                    "state": display_state,
+                    "label": display_label,
+                    "syncState": binding_sync_state,
+                    "lastError": summary["last_error_message"],
+                },
+                "sourceInfo": {
+                    "sourceType": capabilities.get("sourceType"),
+                    "reportType": capabilities.get("reportType"),
+                    "displayName": capabilities.get("displayName"),
+                    "syncCapable": bool(capabilities.get("syncCapable")),
+                    "manualOnly": bool(capabilities.get("manualOnly")),
+                    "syncNote": capabilities.get("syncNote"),
+                    "matchFields": [list(field) for field in capabilities.get("matchFields", ())],
+                    "evidenceFields": [dict(field) for field in capabilities.get("evidenceFields", ())],
+                },
                 "scheduleState": schedule_state,
                 "scheduleDays": schedule_days,
                 "updatedAt": row["updated_at"],
-                "formLink": _deliverable_form_link(db, str(row["id"])),
+                "formLink": form_link,
+                "analysisLink": analysis_link,
                 "updatePolicy": {
                     "mode": summary["mode"],
                     "enabled": bool(summary["enabled"]),
+                    "aggregate": aggregate_binding,
                     "sourceType": summary["source_type"],
                     "syncState": summary["sync_state"],
                     "lastAttemptAt": summary["last_attempt_at"],
@@ -1635,10 +1921,26 @@ def _project_status_payload(
             }
         )
 
-    completed_count = sum(item["status"] == "已完成" for item in deliverables)
+    # 汇总口径：数值态（manual/snapshot）计入完成与风险；
+    # paused/待同步类状态单列 pendingCount，不计完成也不计业务风险
+    # （同步不写 status/progress，paused 无可信进度值——GPT 终审 P1）。
+    value_states = {"manual", "snapshot"}
+    completed_count = sum(
+        1 for item in deliverables
+        if item["syncDisplay"]["state"] in value_states
+        and item["effectiveStatus"] == "已完成"
+    )
+    pending_count = sum(
+        1 for item in deliverables
+        if item["syncDisplay"]["state"] not in value_states
+    )
     risk_count = sum(
-        item["status"] == "已逾期" or item["scheduleState"] == "overdue"
-        for item in deliverables
+        1 for item in deliverables
+        if item["syncDisplay"]["state"] in value_states
+        and (
+            item["effectiveStatus"] == "已逾期"
+            or (item["syncDisplay"]["state"] != "snapshot" and item["scheduleState"] == "overdue")
+        )
     )
     overall_progress = int(phase_row["overall_progress"])
     planned_progress = int(phase_row["planned_progress"])
@@ -1646,7 +1948,11 @@ def _project_status_payload(
         (
             item
             for item in deliverables
-            if item["status"] == "已逾期" or item["scheduleState"] == "overdue"
+            if item["syncDisplay"]["state"] in value_states
+            and (
+                item["effectiveStatus"] == "已逾期"
+                or (item["syncDisplay"]["state"] != "snapshot" and item["scheduleState"] == "overdue")
+            )
         ),
         None,
     )
@@ -1654,6 +1960,8 @@ def _project_status_payload(
     if overdue:
         if overdue["scheduleState"] == "overdue" and overdue["scheduleDays"] is not None:
             risk_text = f'{overdue["name"]}已逾期 {overdue["scheduleDays"]} 天'
+        elif overdue["syncDisplay"]["state"] == "snapshot":
+            risk_text = f'{overdue["name"]}的快照存在逾期项'
         else:
             note = str(overdue["note"])
             risk_text = f'{overdue["name"]}已{note}' if note.startswith("逾期") else f'{overdue["name"]}：{note}'
@@ -1678,6 +1986,7 @@ def _project_status_payload(
             "updatedAt": updated_at,
             "overallProgress": overall_progress,
             "completedCount": completed_count,
+            "pendingCount": pending_count,
             "totalCount": len(deliverables),
             "riskCount": risk_count,
         },
@@ -2103,7 +2412,13 @@ def _tdc_error_response(exc: Exception, report_type: str, operation: str):
         return _json_error(400, "ValidationError", _sanitize_error_message(exc))
     if isinstance(exc, TDCCrawlerError):
         status = 400 if exc.stage == "contract-validation" else 502
-        return _json_error(status, "TDCCrawlerError", _sanitize_error_message(exc))
+        response = jsonify({"ok": False, "error": {
+            "type": "TDCCrawlerError",
+            "message": f"{_sanitize_error_message(exc)}; {exc.safe_diagnostic_message()}",
+            "diagnostic": exc.safe_diagnostic(),
+        }})
+        response.headers["Cache-Control"] = "no-store"
+        return response, status
     logger.warning("TDC %s %s API failed: %s", report_type, operation, type(exc).__name__)
     return _json_error(500, type(exc).__name__, "Unexpected server error")
 
@@ -2294,12 +2609,14 @@ def create_app(
         clock=project_status_clock,
     )
     deliverable_form_service = DeliverableFormAnalysisService(db)
+    app.extensions["deliverable_analysis"] = deliverable_analysis_service
 
     def current_project_status(phase_id: str) -> dict[str, Any] | None:
         return _project_status_payload(
             db,
             phase_id,
             today=project_status_clock() if project_status_clock else None,
+            analysis_service=deliverable_analysis_service,
         )
 
     settings_store = SettingsStore(db)
@@ -2315,6 +2632,15 @@ def create_app(
     app.extensions["scheduled_archive_admin"] = archive_admin_service
     app.extensions["settings_store"] = settings_store
     app.extensions["domain_sessions"] = domain_sessions
+    from core.ewo_export_jobs import EWOExportJobs
+    from services.ewo_enrichment import EWOEnrichment
+    from web.ewo_enrichment import register_ewo_enrichment
+
+    ewo_enrichment = EWOEnrichment(
+        EWOExportJobs(db.db_path), Path(db.db_path).parent / 'ewo-downloads'
+    )
+    app.extensions["ewo_enrichment"] = ewo_enrichment
+    register_ewo_enrichment(app, ewo_enrichment, domain_sessions, _local_web_mutation_error)
     app.extensions["domain_credential_vault"] = credential_vault
     app.extensions["tdc_export_cache"] = tdc_export_cache
     app.extensions["deliverable_form_analysis"] = deliverable_form_service
@@ -2694,9 +3020,12 @@ def create_app(
         if not isinstance(username, str) or not username.strip() or not isinstance(password, str) or not password:
             return _project_status_validation_error({"credentials": "域用户名和密码不能为空"})
         results: dict[str, object] = {}
+        domain_sessions.clear()
         try:
             login_result = ArasECMAuthClient().login(username.strip(), password)
-            domain_sessions.mark_authenticated("aras", login_result.session)
+            domain_sessions.mark_authenticated(
+                "aras", login_result.session, principal=username.strip(), source_root=DEFAULT_ARAS_BASE_URL
+            )
             results["aras"] = {"ok": True}
         except Exception as exc:
             results["aras"] = {"ok": False, "message": _sanitize_error_message(exc)}
@@ -3395,37 +3724,59 @@ def create_app(
             return _project_status_validation_error(
                 {"selectedExternalKey": "必须是字符串或 null"}
             )
+        if isinstance(selected, str):
+            selected = selected.strip() or None
         aras_client: ArasCrawlerClient | None = None
         try:
+            # Freeze the exact query identity before any external call. The
+            # binding may be rebound while the request is in flight; the old
+            # response must still carry the rule that produced it.
+            match_rule, values = _mapping_discovery_query_identity(
+                payload, deliverable_id, selected
+            )
             if deliverable_id in {"VPI-T2-D2", "VPI-T2-D5"}:
                 client = _build_tdc_client_from_payload(
                     payload, app.config["TDC_ALLOWED_HOSTS"]
                 )
                 if deliverable_id == "VPI-T2-D2":
-                    values = _tdc_filters_from_payload(payload, _TDC_SOR_FILTER_NAMES)
-                    rows = client.crawl_sor_all(
-                        _tdc_sor_filters(values), max_records=1000
-                    ).rows
+                    result = client.crawl_sor_all(
+                        _tdc_sor_filters(values), max_records=MAX_AGGREGATE_RECORDS
+                    )
                 else:
-                    values = _tdc_filters_from_payload(payload, _TDC_DATA_MODEL_FILTER_NAMES)
-                    rows = client.crawl_data_model_all(
-                        _tdc_data_model_filters(values), max_records=1000
-                    ).rows
-                result = discovery_service.observe(deliverable_id, "tdc", rows, selected)
+                    result = client.crawl_data_model_all(
+                        _tdc_data_model_filters(values), max_records=MAX_AGGREGATE_RECORDS
+                    )
+                rows = _require_complete_mapping_result(result, _TDCRequestError)
+                result = discovery_service.observe(
+                    deliverable_id, "tdc", rows, selected,
+                    aggregate=bool(match_rule["aggregate"]), match_rule=match_rule,
+                )
             elif deliverable_id == "VPI-T2-D3":
                 aras_client = _build_aras_client_from_payload(
                     payload, app.config["ARAS_ALLOWED_HOSTS"]
                 )
-                rows = aras_client.crawl_ewo_report_all(
-                    _ewo_filters_from_payload(payload), max_records=1000
-                ).rows
-                result = discovery_service.observe(deliverable_id, "aras", rows, selected)
+                crawl_result = aras_client.crawl_ewo_report_all(
+                    build_project_status_ewo_filters(match_rule),
+                    max_records=MAX_AGGREGATE_RECORDS,
+                )
+                rows = _require_complete_mapping_result(crawl_result, _ArasRequestError)
+                if match_rule.get('contractVersion') == '2':
+                    from services.ewo_binding_records import attach_ewo_source_ids
+                    rows = attach_ewo_source_ids(crawl_result)
+                result = discovery_service.observe(
+                    deliverable_id, "aras", rows, selected,
+                    aggregate=bool(match_rule["aggregate"]), match_rule=match_rule,
+                )
             else:
                 return _json_error(404, "NotFound", "未找到交付物")
             return jsonify({"ok": True, "data": result})
         except (_TDCRequestError, TDCCrawlerError, TDCAuthError) as exc:
             return _tdc_error_response(exc, "mapping-discovery", "query")
         except (_ArasRequestError, ArasCrawlerError, ArasAuthError) as exc:
+            return _aras_error_response(exc, aras_client, "mapping-discovery")
+        except ValueError as exc:
+            if deliverable_id in {"VPI-T2-D2", "VPI-T2-D5"}:
+                return _tdc_error_response(exc, "mapping-discovery", "query")
             return _aras_error_response(exc, aras_client, "mapping-discovery")
         except Exception as exc:
             logger.exception("mapping discovery failed")
@@ -3655,10 +4006,20 @@ def create_app(
         local_error = _local_web_mutation_error()
         if local_error is not None:
             return local_error
-        if deliverable_id == "VPI-T2-D1":
-            return _json_error(409, "ManualOnly", "该交付物仅允许手工维护")
-        if deliverable_id == "VPI-T2-D4":
-            return _json_error(409, "ContractBlocked", AFACE_CONTRACT_BLOCKER)
+        # 未知交付物保持 404（先于能力门控，避免 404 退化为 409）。
+        _, _, sync_now_deliverable_rows = db.get_project_status("VPI-T2")
+        if deliverable_id not in {str(row["id"]) for row in sync_now_deliverable_rows}:
+            return _json_error(404, "NotFound", "未找到交付物")
+        # sync-now 准入门控由能力注册表驱动（D1/D4 硬编码收敛，终审 P2）。
+        sync_block = PROJECT_STATUS_SOURCE_CAPABILITIES.get(deliverable_id, {})
+        if not sync_block.get("syncCapable"):
+            block_type = str(sync_block.get("syncBlockType") or "ManualOnly")
+            block_reason = (
+                AFACE_CONTRACT_BLOCKER
+                if block_type == "ContractBlocked"
+                else str(sync_block.get("blockReason") or "该交付物仅允许手工维护")
+            )
+            return _json_error(409, block_type, block_reason)
         try:
             update_service.assert_sync_ready(deliverable_id)
             runner = ProjectStatusSyncRunner(
@@ -4084,6 +4445,8 @@ def create_app(
     def api_tdc_a_face_export():
         return _json_error(400, "ContractBlocker", AFACE_CONTRACT_BLOCKER)
 
+    from web.diagnostics import install_diagnostics
+    install_diagnostics(app, local_guard=_local_web_mutation_error)
     return app
 
 
@@ -4097,4 +4460,9 @@ if __name__ == "__main__":
         selected_port = FLASK_PORT
     if not 1 <= selected_port <= 65535:
         selected_port = FLASK_PORT
-    app.run(host=FLASK_HOST, port=selected_port, debug=False)
+    if "--diagnostics" in sys.argv:
+        try:
+            app.extensions["diagnostic_recorder"].start()
+        except Exception:
+            print("诊断录制未能开启，请在页面诊断控件中检查状态。")
+    app.run(host=FLASK_HOST, port=selected_port, debug=False, use_reloader=False)
