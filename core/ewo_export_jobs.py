@@ -192,3 +192,40 @@ class EWOExportJobs:
                 lease_token=NULL,lease_until=NULL,updated=?
                 WHERE state IN ('generating','downloading') AND lease_until<=?''', (timestamp, timestamp))
             return cursor.rowcount
+
+    def list_jobs(self, limit=50):
+        with self._transaction() as conn:
+            rows = conn.execute(
+                'SELECT * FROM ewo_export_jobs ORDER BY created DESC LIMIT ?',
+                (max(1, min(limit, 200)),),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_job(self, job_id: str) -> dict | None:
+        with self._transaction() as conn:
+            row = conn.execute(
+                'SELECT * FROM ewo_export_jobs WHERE id=?', (job_id,)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def count_active_jobs(self) -> int:
+        with self._transaction() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM ewo_export_jobs WHERE state IN ('queued','generating','downloading')"
+            ).fetchone()
+            return int(row[0]) if row else 0
+
+    def cancel(self, job_id, scope=None, *, now=None):
+        timestamp = _now(now)
+        with self._transaction() as conn:
+            clause = "WHERE id=? AND state IN ('queued','generating','downloading')"
+            params = [timestamp, job_id]
+            if scope:
+                clause += " AND scope=?"
+                params.append(scope)
+            cursor = conn.execute(
+                f'''UPDATE ewo_export_jobs SET state='interrupted',
+                    lease_token=NULL,lease_until=NULL,updated=? {clause}''',
+                params,
+            )
+            return cursor.rowcount > 0

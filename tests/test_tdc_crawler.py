@@ -374,7 +374,7 @@ def test_full_crawl_short_or_empty_page_cannot_override_reported_tail() -> None:
     empty_session = FakeSession(
         [
             FakeResponse(page_payload([{"id": "1"}, {"id": "2"}], current=1, total=6, pages=3)),
-                FakeResponse(page_payload([], current=2, total=6, pages=3)),
+            FakeResponse(page_payload([], current=2, total=6, pages=3)),
         ]
     )
     empty_result = TDCCrawlerClient("https://tdc.example", session=empty_session).crawl_sor_all(
@@ -846,3 +846,35 @@ def test_sor_id_only_sends_both_project_parameters():
     TDCCrawlerClient("https://tdc.example", session=session).query_sor_page(TDCSORFilters(car_type_project_id="sor-id"))
     assert session.calls[1]["params"]["carTypeProject"] == "sor-id"
     assert session.calls[1]["params"]["carTypeProjectAll[0]"] == "sor-id"
+
+
+def test_safe_filename_truncation_and_boundaries() -> None:
+    from services.tdc_crawler import _safe_filename
+
+    # 1. Normal filename preserves extension
+    assert _safe_filename("export_2026.xlsx") == "export_2026.xlsx"
+    assert _safe_filename("export_2026") == "export_2026.xlsx"
+    assert _safe_filename("export_2026.XLSX") == "export_2026.xlsx"
+
+    # 2. Long filenames (>= 180 chars) truncate stem to 175 chars and retain .xlsx
+    long_name = "a" * 200 + ".xlsx"
+    safe = _safe_filename(long_name)
+    assert len(safe) == 175 + len(".xlsx")
+    assert safe.endswith(".xlsx")
+    assert safe == "a" * 175 + ".xlsx"
+
+    long_name_no_ext = "b" * 250
+    safe_no_ext = _safe_filename(long_name_no_ext)
+    assert len(safe_no_ext) == 175 + len(".xlsx")
+    assert safe_no_ext.endswith(".xlsx")
+    assert safe_no_ext == "b" * 175 + ".xlsx"
+
+    # 3. Path traversal and illegal chars sanitized
+    traversal = "../../secrets/report:1?.xlsx"
+    assert _safe_filename(traversal) == "report_1_.xlsx"
+
+    # 4. Empty or whitespace-only inputs fall back to default timestamped filename
+    fallback = _safe_filename("   ")
+    assert fallback.startswith("tdc_export_")
+    assert fallback.endswith(".xlsx")
+    assert len(fallback) < 50

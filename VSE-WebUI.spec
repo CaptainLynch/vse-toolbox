@@ -1,5 +1,42 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import atexit
+import json
+import os
+import shutil
+import tempfile
+from pathlib import Path
+
+
+def _clean_build_field(val, limit=100):
+    if not isinstance(val, str):
+        return None
+    cleaned = val.strip()
+    if not cleaned or len(cleaned) > limit:
+        return None
+    for ch in cleaned:
+        if ord(ch) < 32 or (127 <= ord(ch) <= 159):
+            return None
+    return cleaned
+
+
+version_datas = []
+raw_build_version = os.environ.get("VSE_TOOLBOX_VERSION")
+build_version = _clean_build_field(raw_build_version)
+if build_version:
+    build_channel = _clean_build_field(os.environ.get("VSE_TOOLBOX_CHANNEL")) or "standalone-exe"
+    build_id = _clean_build_field(os.environ.get("VSE_TOOLBOX_BUILD_ID")) or _clean_build_field(os.environ.get("GITHUB_SHA"))
+    version_payload = {
+        "version": build_version,
+        "channel": build_channel,
+        "buildId": build_id,
+    }
+    temp_dir = Path(tempfile.mkdtemp(prefix="vse_version_build_"))
+    atexit.register(lambda: shutil.rmtree(temp_dir, ignore_errors=True))
+    vjson_file = temp_dir / "version.json"
+    vjson_file.write_text(json.dumps(version_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    version_datas.append((str(vjson_file), "."))
+
 hiddenimports = ['requests', 'tkinter', 'tkinter.filedialog']
 # WinHTTP via COM (WinHttp.WinHttpRequest.5.1) is the WebUI's HTTP transport for
 # Aras/TDC auth on win32; pythoncom + pywintypes + win32com.client are imported
@@ -19,13 +56,14 @@ hiddenimports += [
 
 
 a = Analysis(
-    ['web\\app.py'],
+    ['webui.py'],
     pathex=[],
     binaries=[],
     datas=[
         ('web/templates', 'web/templates'),
         ('web/static', 'web/static'),
         ('core/report_headers.json', 'core'),
+        *version_datas,
     ],
     hiddenimports=hiddenimports,
     hookspath=[],

@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from core.db_manager import DatabaseManager
+from core.db_manager import DatabaseManager, MappedDeliverableReadOnlyError
 from services.project_status_updates import (
     PROJECT_STATUS_EDITABLE_FIELDS,
     ProjectStatusPolicyError,
@@ -162,6 +162,197 @@ def test_audit_capped_at_100(service, tmp_db: DatabaseManager) -> None:
     updates = service.list_updates("VPI-T2-D5")
     assert updates["total"] == 100
     assert updates["updates"][0]["id"] > updates["updates"][-1]["id"]
+
+
+def test_manual_update_denied_for_paused_mapped_binding_without_mutation(
+    service: ProjectStatusUpdateService,
+    tmp_db: DatabaseManager,
+) -> None:
+    """A configured target stays read-only after a failed/paused run."""
+    with tmp_db.get_connection() as conn:
+        conn.execute(
+            """
+            UPDATE project_status_update_bindings
+            SET mode = 'automatic', enabled = 0, external_key = ?,
+                match_rule_json = ?, mapping_json = ?, sync_state = 'failed',
+                last_error_type = 'SyntheticFailure'
+            WHERE deliverable_id = ?
+            """,
+            (
+                "FM-1",
+                json.dumps({"reportType": "data_model", "incident": "FM-1"}),
+                json.dumps({"owner": "currentApprover"}),
+                "VPI-T2-D5",
+            ),
+        )
+    before = _current_deliverable(tmp_db, "VPI-T2-D5")
+    values = _manual_values(before, progress=77)
+    with tmp_db.get_connection() as conn:
+        before_authority = [
+            tuple(row)
+            for row in conn.execute(
+                """
+                SELECT field_name, authority, source_type, locked_at, updated_at
+                FROM project_status_field_authority
+                WHERE deliverable_id = ? ORDER BY field_name
+                """,
+                ("VPI-T2-D5",),
+            ).fetchall()
+        ]
+        before_audit_count = conn.execute(
+            "SELECT COUNT(*) FROM project_status_update_audit WHERE deliverable_id = ?",
+            ("VPI-T2-D5",),
+        ).fetchone()[0]
+        before_phase = conn.execute(
+            "SELECT updated_at FROM project_status_phases WHERE id = 'VPI-T2'"
+        ).fetchone()[0]
+
+    with pytest.raises(MappedDeliverableReadOnlyError) as exc_info:
+        service.apply_manual_update(
+            "VPI-T2-D5", "VPI-T2", values, str(before["updated_at"])
+        )
+    assert "映射" in str(exc_info.value)
+    with pytest.raises(MappedDeliverableReadOnlyError):
+        tmp_db.update_project_status_deliverable(
+            "VPI-T2-D5",
+            "VPI-T2",
+            {"progress": 77},
+            str(before["updated_at"]),
+        )
+
+    after = _current_deliverable(tmp_db, "VPI-T2-D5")
+    assert tuple(after) == tuple(before)
+    with tmp_db.get_connection() as conn:
+        after_authority = [
+            tuple(row)
+            for row in conn.execute(
+                """
+                SELECT field_name, authority, source_type, locked_at, updated_at
+                FROM project_status_field_authority
+                WHERE deliverable_id = ? ORDER BY field_name
+                """,
+                ("VPI-T2-D5",),
+            ).fetchall()
+        ]
+        after_audit_count = conn.execute(
+            "SELECT COUNT(*) FROM project_status_update_audit WHERE deliverable_id = ?",
+            ("VPI-T2-D5",),
+        ).fetchone()[0]
+        after_phase = conn.execute(
+            "SELECT updated_at FROM project_status_phases WHERE id = 'VPI-T2'"
+        ).fetchone()[0]
+    assert after_authority == before_authority
+    assert after_audit_count == before_audit_count == 0
+    assert after_phase == before_phase
+
+
+def test_manual_update_malformed_nonempty_binding_fails_closed(
+    service: ProjectStatusUpdateService,
+    tmp_db: DatabaseManager,
+) -> None:
+    """Malformed nonempty rules cannot reopen a manual write path."""
+    with tmp_db.get_connection() as conn:
+        conn.execute(
+            """
+            UPDATE project_status_update_bindings
+            SET match_rule_json = '{not-json}', mapping_json = '{}'
+            WHERE deliverable_id = 'VPI-T2-D5'
+            """
+        )
+    row = _current_deliverable(tmp_db, "VPI-T2-D5")
+    with pytest.raises(MappedDeliverableReadOnlyError):
+        service.apply_manual_update(
+            "VPI-T2-D5",
+            "VPI-T2",
+            _manual_values(row, progress=66),
+            str(row["updated_at"]),
+        )
+
+
+@pytest.mark.parametrize(
+    ("rule_json", "mapping_json", "external_key"),
+    [
+        ('{"reportType":"data_model","incident":"FM-1\\u0000"}', "{}", None),
+        ('{"reportType":"data_model","incident":"FM-1"}', '{"note":["approver\\u0000"]}', None),
+        ('{"reportType":"data_model","incident":"FM-1"}', "{}", "FM-1\x00"),
+        ('{"reportType":"data_model","incident":"' + ('A' * 4005) + '"}', "{}", None),
+        ('{"reportType":"data_model","incident":"FM-1"}', '{"note":["' + ('B' * 4005) + '"]}', None),
+    ],
+)
+def test_manual_update_abnormal_rules_fail_closed_without_side_effects(
+    service: ProjectStatusUpdateService,
+    tmp_db: DatabaseManager,
+    rule_json: str,
+    mapping_json: str,
+    external_key: str | None,
+) -> None:
+    """Abnormal rules (control chars, oversized) must fail closed with no side effects."""
+    with tmp_db.get_connection() as conn:
+        conn.execute(
+            """
+            UPDATE project_status_update_bindings
+            SET mode = 'hybrid', enabled = 0, external_key = ?,
+                match_rule_json = ?, mapping_json = ?, sync_state = 'idle'
+            WHERE deliverable_id = 'VPI-T2-D5'
+            """,
+            (external_key, rule_json, mapping_json),
+        )
+    before = _current_deliverable(tmp_db, "VPI-T2-D5")
+    values = _manual_values(before, progress=88, remark="attempt update")
+    with tmp_db.get_connection() as conn:
+        before_authority = [
+            tuple(row)
+            for row in conn.execute(
+                """
+                SELECT field_name, authority, source_type, locked_at, updated_at
+                FROM project_status_field_authority
+                WHERE deliverable_id = 'VPI-T2-D5' ORDER BY field_name
+                """
+            ).fetchall()
+        ]
+        before_audit_count = conn.execute(
+            "SELECT COUNT(*) FROM project_status_update_audit WHERE deliverable_id = 'VPI-T2-D5'"
+        ).fetchone()[0]
+        before_phase = conn.execute(
+            "SELECT updated_at FROM project_status_phases WHERE id = 'VPI-T2'"
+        ).fetchone()[0]
+
+    with pytest.raises(MappedDeliverableReadOnlyError) as exc_info:
+        service.apply_manual_update(
+            "VPI-T2-D5", "VPI-T2", values, str(before["updated_at"])
+        )
+    assert "外部来源映射规则无效" in str(exc_info.value) or "映射" in str(exc_info.value)
+
+    with pytest.raises(MappedDeliverableReadOnlyError):
+        tmp_db.update_project_status_deliverable(
+            "VPI-T2-D5",
+            "VPI-T2",
+            {"progress": 88},
+            str(before["updated_at"]),
+        )
+
+    after = _current_deliverable(tmp_db, "VPI-T2-D5")
+    assert tuple(after) == tuple(before)
+    with tmp_db.get_connection() as conn:
+        after_authority = [
+            tuple(row)
+            for row in conn.execute(
+                """
+                SELECT field_name, authority, source_type, locked_at, updated_at
+                FROM project_status_field_authority
+                WHERE deliverable_id = 'VPI-T2-D5' ORDER BY field_name
+                """
+            ).fetchall()
+        ]
+        after_audit_count = conn.execute(
+            "SELECT COUNT(*) FROM project_status_update_audit WHERE deliverable_id = 'VPI-T2-D5'"
+        ).fetchone()[0]
+        after_phase = conn.execute(
+            "SELECT updated_at FROM project_status_phases WHERE id = 'VPI-T2'"
+        ).fetchone()[0]
+    assert after_authority == before_authority
+    assert after_audit_count == before_audit_count == 0
+    assert after_phase == before_phase
 
 
 def test_enable_requires_external_key_and_allowed_match_rule(service) -> None:

@@ -28,8 +28,10 @@ def client(monkeypatch, tmp_path):  # type: ignore[no-untyped-def]
 
 
 def _overview_html(html_text: str) -> str:
-    start = html_text.index('id="overview"')
-    end = html_text.index('id="aras-panel"')
+    start = html_text.find('id="overview"')
+    assert start != -1, "Start marker 'id=\"overview\"' not found"
+    end = html_text.find('id="aras-panel"', start)
+    assert end != -1, "End marker 'id=\"aras-panel\"' not found after 'id=\"overview\"'"
     return html_text[start:end]
 
 
@@ -41,9 +43,15 @@ def test_index_loads_new_overview_and_preserves_navigation(client) -> None:  # t
     assert "项目工作台" in html_text
     assert "<h2 id=\"session-title\">项目状态</h2>" in html_text
     assert 'class="panel-section project-overview"' in html_text
+    # 6 main top bar navigation domains
+    assert 'data-panel-link="overview"' in html_text
     assert 'data-panel-link="aras-panel"' in html_text
     assert 'data-panel-link="deliverables"' in html_text
+    assert 'data-panel-link="excel-tasks"' in html_text
+    assert 'data-panel-link="scheduled-archive"' in html_text
+    assert 'data-panel-link="settings-panel"' in html_text
     assert 'id="deliverables"' in html_text
+    assert 'id="excel-tasks"' in html_text
     assert "deliverables-workbench" in html_text
 
     for marker in ("projects-body", "deliverables-body", "feishu-body", "metric-card", "overview-grid"):
@@ -67,14 +75,12 @@ def test_overview_static_structure_and_unique_ids() -> None:
         'id="overview-timeline-body"',
         'id="overview-phase-summary"',
         'id="overview-progress-grid"',
-        'id="overview-risk-summary"',
         'id="overview-details-summary"',
         'id="overview-details-body"',
         "overview-switch",
         "milestone-timeline",
         "phase-summary",
         "deliverable-progress-grid",
-        "risk-summary",
         "overview-details-table",
         "visually-hidden",
     ):
@@ -119,14 +125,12 @@ def test_overview_server_loader_contract() -> None:
     assert 'fetch("/api/overview")' not in js_text
     storage_lines = [line for line in js_text.splitlines() if "localStorage" in line]
     assert storage_lines
-    assert all("THEME_KEY" in line for line in storage_lines)
+    assert all("THEME_KEY" in line or "GRID_COLUMN_PREF_KEY" in line for line in storage_lines)
 
 
 def test_overview_editor_contract() -> None:
     js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
-    start = js_text.index("const OVERVIEW_DETAIL_COLUMNS")
-    end = js_text.index("function parseHeaders")
-    overview_js = js_text[start:end]
+    overview_js = _js_slice(js_text, "const OVERVIEW_DETAIL_COLUMNS", "function parseHeaders")
 
     assert "/api/project-status/deliverables/" in js_text
     assert 'method: "PATCH"' in js_text
@@ -156,9 +160,7 @@ def test_overview_editor_contract() -> None:
 
 def test_overview_js_safe_dom_and_binding_contract() -> None:
     js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
-    start = js_text.index("const OVERVIEW_DETAIL_COLUMNS")
-    end = js_text.index("function parseHeaders")
-    overview_js = js_text[start:end]
+    overview_js = _js_slice(js_text, "const OVERVIEW_DETAIL_COLUMNS", "function parseHeaders")
 
     for marker in (
         "function setupOverviewTabs",
@@ -174,7 +176,7 @@ def test_overview_js_safe_dom_and_binding_contract() -> None:
         "function renderMilestoneTimeline",
         "function renderPhaseSummary",
         "function renderDeliverableProgress",
-        "function renderRiskSummary",
+        "function overviewBusinessSnapshotCondition",
         "function toggleDeliverableDetail",
         "document.createElement",
         "document.createElementNS",
@@ -197,18 +199,24 @@ def test_overview_js_safe_dom_and_binding_contract() -> None:
     assert "innerHTML" not in overview_js
     assert "console.log" not in js_text
     assert 'fetch("/api/overview")' not in js_text
-    assert "loadOverview" not in js_text
+    assert "loadOverview(" not in js_text
     assert "sessionStorage" not in js_text
     storage_lines = [line for line in js_text.splitlines() if "localStorage" in line]
     assert storage_lines
-    assert all("THEME_KEY" in line for line in storage_lines)
+    assert all("THEME_KEY" in line or "GRID_COLUMN_PREF_KEY" in line for line in storage_lines)
+
+
+def _css_slice(css_text: str, start_marker: str, end_marker: str) -> str:
+    start = css_text.find(start_marker)
+    assert start != -1, f"Start marker '{start_marker}' not found"
+    end = css_text.find(end_marker, start)
+    assert end != -1, f"End marker '{end_marker}' not found after '{start_marker}'"
+    return css_text[start:end]
 
 
 def test_overview_css_contract() -> None:
     css_text = Path("web/static/style.css").read_text(encoding="utf-8-sig")
-    start = css_text.index(".overview-tabpanel[hidden]")
-    end = css_text.index(".loading,\n.is-empty")
-    overview_css = css_text[start:end]
+    overview_css = _css_slice(css_text, ".overview-tabpanel[hidden]", ".loading")
 
     for marker in (
         ".project-overview",
@@ -279,12 +287,14 @@ def test_overview_api_route_contract_preserved(client) -> None:  # type: ignore[
 def test_overview_milestone_maintenance_static_structure() -> None:
     html_text = Path("web/templates/dashboard.html").read_text(encoding="utf-8-sig")
     overview_html = _overview_html(html_text)
-    details_start = overview_html.index('id="overview-details-panel"')
-    details_section = overview_html[details_start:]
 
-    assert "milestone-maintenance-band" in details_section
-    assert 'id="milestone-maintenance"' in details_section
-    assert details_section.index('id="overview-details-summary"') < details_section.index('id="milestone-maintenance"')
+    assert "milestone-maintenance-band" in overview_html
+    assert 'id="milestone-maintenance"' in overview_html
+    assert 'id="overview-details-summary"' in overview_html
+    summary_pos = overview_html.find('id="overview-details-summary"')
+    maint_pos = overview_html.find('id="milestone-maintenance"')
+    assert summary_pos != -1 and maint_pos != -1
+    assert summary_pos < maint_pos
     assert "<input" not in overview_html
     assert "<select" not in overview_html
     assert "<textarea" not in overview_html
@@ -334,9 +344,7 @@ def test_overview_milestone_editor_contract() -> None:
 
 def test_overview_milestone_maintenance_css_contract() -> None:
     css_text = Path("web/static/style.css").read_text(encoding="utf-8-sig")
-    start = css_text.index(".overview-tabpanel[hidden]")
-    end = css_text.index(".loading,\n.is-empty")
-    overview_css = css_text[start:end]
+    overview_css = _css_slice(css_text, ".overview-tabpanel[hidden]", ".loading")
 
     for marker in (
         ".milestone-maintenance",
@@ -549,9 +557,7 @@ def test_overview_deliverable_evidence_restrictions_and_guard() -> None:
 
 def test_overview_deliverable_evidence_api_and_sync_contract() -> None:
     js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
-    start = js_text.index("const OVERVIEW_DETAIL_COLUMNS")
-    end = js_text.index("function parseHeaders")
-    overview_js = js_text[start:end]
+    overview_js = _js_slice(js_text, "const OVERVIEW_DETAIL_COLUMNS", "function parseHeaders")
 
     assert "/api/project-status/deliverables/${encodeURIComponent(item.id)}/update-policy" in overview_js
     assert "/api/project-status/analytics" in overview_js
@@ -569,9 +575,7 @@ def test_overview_deliverable_evidence_api_and_sync_contract() -> None:
 
 def test_overview_deliverable_evidence_accessibility_and_fallbacks() -> None:
     js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
-    start = js_text.index("const OVERVIEW_DETAIL_COLUMNS")
-    end = js_text.index("function parseHeaders")
-    overview_js = js_text[start:end]
+    overview_js = _js_slice(js_text, "const OVERVIEW_DETAIL_COLUMNS", "function parseHeaders")
 
     # Accessible state regions
     assert 'loadingP.setAttribute("role", "status")' in overview_js
@@ -604,22 +608,30 @@ def test_overview_deliverable_evidence_accessibility_and_fallbacks() -> None:
     # Visible post-sync refresh preserving status
     assert "expandOverviewDetail(deliverableIndex, { text: resultStatusText, className: resultStatusClass })" in overview_js
 
-    d1_guard = overview_js.index('if (item.id === "VPI-T2-D1")')
-    d4_guard = overview_js.index('if (item.id === "VPI-T2-D4")')
-    first_evidence_fetch = overview_js.index('const [policyRes, analyticsRes')
-    sync_button = overview_js.index('const syncBtn = overviewEl')
+    d1_guard = overview_js.find('if (item.id === "VPI-T2-D1")')
+    d4_guard = overview_js.find('if (item.id === "VPI-T2-D4")')
+    first_evidence_fetch = overview_js.find('const [policyRes, analyticsRes')
+    sync_button = overview_js.find('const syncBtn = overviewEl')
+    assert d1_guard != -1 and d4_guard != -1 and first_evidence_fetch != -1 and sync_button != -1
     assert d1_guard < d4_guard < first_evidence_fetch < sync_button
 
 
 def _css_rule(css_text: str, selector: str) -> str:
     """Return the body of one top-level CSS rule for a selector."""
-    start = css_text.index(f"{selector} {{")
-    end = css_text.index("}", start)
+    marker = f"{selector} {{"
+    start = css_text.find(marker)
+    assert start != -1, f"Selector '{selector}' not found in CSS"
+    end = css_text.find("}", start)
+    assert end != -1, f"Closing brace not found for '{selector}'"
     return css_text[start:end]
 
 
 def _js_slice(js_text: str, start_marker: str, end_marker: str) -> str:
-    return js_text[js_text.index(start_marker):js_text.index(end_marker)]
+    start = js_text.find(start_marker)
+    assert start != -1, f"Start marker '{start_marker}' not found"
+    end = js_text.find(end_marker, start)
+    assert end != -1, f"End marker '{end_marker}' not found after '{start_marker}'"
+    return js_text[start:end]
 
 
 def test_overview_ewo_analysis_feedback_controls_are_searchable_multiselects() -> None:
@@ -655,7 +667,7 @@ def test_overview_ewo_second_round_ui_feedback_contract() -> None:
     assert "background: var(--surface-card);" in control_block
     select_block = _css_rule(css_text, ".analysis-select")
     assert "background: var(--surface-card);" in select_block
-    filter_css = css_text[css_text.index(".analysis-select {"):css_text.index(".analysis-filter-apply")]
+    filter_css = _css_slice(css_text, ".analysis-select {", ".analysis-filter-apply")
     assert "var(--surface)" not in filter_css
 
     # 2. 阶段在所有用户可见位置大写，请求值保持小写规范值。
@@ -881,9 +893,7 @@ def test_overview_custom_label_chart_returns_dom_element() -> None:
     同步/刷新入口全部失效。
     """
     js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
-    start = js_text.index("function renderCustomLabelChart")
-    end = js_text.index("function renderDeliverableAnalysis")
-    chart_js = js_text[start:end]
+    chart_js = _js_slice(js_text, "function renderCustomLabelChart", "function renderDeliverableAnalysis")
 
     assert "const rendered = renderDepartmentDoneChart(totals, groups, null, {" in chart_js
     assert "return rendered.el;" in chart_js
@@ -891,9 +901,7 @@ def test_overview_custom_label_chart_returns_dom_element() -> None:
 
 def test_overview_deliverable_evidence_css_contract() -> None:
     css_text = Path("web/static/style.css").read_text(encoding="utf-8-sig")
-    start = css_text.index(".overview-tabpanel[hidden]")
-    end = css_text.index(".loading,\n.is-empty")
-    overview_css = css_text[start:end]
+    overview_css = _css_slice(css_text, ".overview-tabpanel[hidden]", ".loading")
 
     for marker in (
         ".deliverable-evidence-panel",
@@ -922,7 +930,9 @@ def test_overview_deliverable_evidence_css_contract() -> None:
     ):
         assert marker in overview_css
 
-    mobile_break = css_text[css_text.index("@media (max-width: 560px)"):]
+    mobile_start = css_text.find("@media (max-width: 560px)")
+    assert mobile_start != -1, "Marker '@media (max-width: 560px)' not found"
+    mobile_break = css_text[mobile_start:]
     assert ".evidence-overview-grid" in mobile_break
     assert ".evidence-obs-grid" in mobile_break
 
@@ -963,9 +973,7 @@ def test_deliverable_auto_hide_rule_contract() -> None:
     """按节点状态自动显示：已完成交付物在项目越过关联节点后隐藏。"""
     js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
 
-    start = js_text.index("const DELIVERABLE_AUTO_HIDE_NODE_KEYWORDS")
-    end = js_text.index("let deliverableProgressFilterValue", start)
-    block = js_text[start:end]
+    block = _js_slice(js_text, "const DELIVERABLE_AUTO_HIDE_NODE_KEYWORDS", "let deliverableProgressFilterValue")
 
     # 节点关键字映射（用户示例：到了 VDR 阶段隐藏已完成的子系统开发策略）。
     assert '"VPI-T2-D1": ["VDR"]' in block
@@ -977,8 +985,7 @@ def test_deliverable_auto_hide_rule_contract() -> None:
     assert "deliverableFormDisplay(item)" in block
     assert 'if (status !== "已完成") return true;' in block
     assert "deliverableNodeReached(keywords)" in block
-    reached = js_text.index("function deliverableNodeReached")
-    reached_block = js_text[reached:js_text.index("function shouldShowDeliverable", reached)]
+    reached_block = _js_slice(js_text, "function deliverableNodeReached", "function shouldShowDeliverable")
     assert "milestone.date" in reached_block or "String(milestone.date" in reached_block
     assert "date <= today" in reached_block
     # 分词匹配而非子串匹配，避免「VPI-T2 Gate」误命中 VPI 关键字。
@@ -991,9 +998,7 @@ def test_deliverable_auto_hide_rule_contract() -> None:
 def test_deliverable_form_display_fallback_contract() -> None:
     """无 analysisLink/formLink/summary 为空时回退手工值，有效 summary 才换算。"""
     js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
-    start = js_text.index("function deliverableSnapshotSummary")
-    end = js_text.index("const DELIVERABLE_AUTO_HIDE_NODE_KEYWORDS", start)
-    block = js_text[start:end]
+    block = _js_slice(js_text, "function deliverableSnapshotSummary", "const DELIVERABLE_AUTO_HIDE_NODE_KEYWORDS")
     # 门控：仅在交付物启用同步（updatePolicy.enabled === true）时使用快照口径；
     # 人工编辑的交付物始终显示手工值（需求 2026-09-12 确认）。
     assert "policy.enabled !== true" in block
@@ -1006,6 +1011,12 @@ def test_deliverable_form_display_fallback_contract() -> None:
     assert "Math.round" in block
     # 统一换算入口：环图与明细表必须共用 deliverableDisplayItem。
     assert "function deliverableDisplayItem" in block
+    # 后端字段驱动：快照态优先消费 syncDisplay.display 三字段，
+    # 缺字段时才回退本地换算（保存后整体替换 payload，无乐观编辑）。
+    assert 'syncDisplay.state === "snapshot"' in block
+    assert "syncDisplay.displaySummary" in block
+    assert "syncDisplay.displayProgress" in block
+    assert "syncDisplay.displayStatus" in block
 
 
 def test_detail_collapse_note_inline_and_owner_removed_contract() -> None:
@@ -1013,7 +1024,7 @@ def test_detail_collapse_note_inline_and_owner_removed_contract() -> None:
     js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
     css_text = Path("web/static/style.css").read_text(encoding="utf-8-sig")
 
-    columns = js_text[js_text.index("const OVERVIEW_DETAIL_COLUMNS"):js_text.index("const OVERVIEW_DETAIL_COLUMNS") + 200]
+    columns = _js_slice(js_text, "const OVERVIEW_DETAIL_COLUMNS", "];")
     assert '"负责人"' not in columns.split(";")[0]
 
     for marker in (
@@ -1075,7 +1086,7 @@ def test_archive_project_filter_unified_label_and_placeholder_contract() -> None
 def test_filter_dims_multi_select_overflow_fix_contract() -> None:
     """需求 2026-09-06：筛选栏多选控件解除最小宽度，网格 150px 自适应。"""
     css_text = Path("web/static/style.css").read_text(encoding="utf-8-sig")
-    dims = css_text[css_text.index(".form-filter-row-dims"):css_text.index(".form-filter-row-time")]
+    dims = _css_slice(css_text, ".form-filter-row-dims", ".form-filter-row-time")
     assert "minmax(150px, 1fr)" in dims
     assert ".form-filter-row-dims .analysis-multi-select { min-width: 0; max-width: none; }" in css_text
 
@@ -1114,19 +1125,21 @@ def test_details_table_header_matches_column_constant() -> None:
     html_text = Path("web/templates/dashboard.html").read_text(encoding="utf-8-sig")
     js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
 
-    start = html_text.index('<table class="overview-details-table">')
-    head_end = html_text.index("</thead>", start)
-    headers = re.findall(r"<th[^>]*>(.*?)</th>", html_text[start:head_end], re.S)
+    start = html_text.find('<table class="overview-details-table">')
+    assert start != -1, "Start marker '<table class=\"overview-details-table\">' not found"
+    head_end = html_text.find("</thead>", start)
+    assert head_end != -1, "End marker '</thead>' not found after start"
+    table_head = html_text[start:head_end]
+    headers = re.findall(r"<th[^>]*>(.*?)</th>", table_head, re.S)
     headers = [re.sub(r"<[^>]+>", "", h).strip() for h in headers]
     # 最后一列是视觉隐藏的展开控制列，不承载明细字段。
     assert headers[-1] == "展开控制"
     data_headers = headers[:-1]
 
-    columns_start = js_text.index("const OVERVIEW_DETAIL_COLUMNS")
-    columns_end = js_text.index("];", columns_start)
+    columns_source = _js_slice(js_text, "const OVERVIEW_DETAIL_COLUMNS", "];")
     columns = [
         part.strip().strip('"')
-        for part in js_text[columns_start:columns_end].split("[", 1)[1].split(",")
+        for part in columns_source.split("[", 1)[1].split(",")
         if part.strip()
     ]
     assert data_headers == columns, (data_headers, columns)
@@ -1138,10 +1151,7 @@ def test_archive_plan_sync_explicit_empty_and_colspan_contract() -> None:
     js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
 
     # 显式配置以键存在为准（含空串），缺键才预填主计划名称。
-    sync_block = js_text[
-        js_text.index("async function applyArchivePlanNameSync"):
-        js_text.index("function archiveFilterDisplayValue")
-    ]
+    sync_block = _js_slice(js_text, "async function applyArchivePlanNameSync", "function archiveFilterDisplayValue")
     assert "const hasExplicitValue =" in sync_block
     assert "key in filters && filters[key] !== null && filters[key] !== undefined" in sync_block
     assert 'String(saved).trim() !== ""' not in sync_block
@@ -1156,10 +1166,7 @@ def test_archive_plan_sync_explicit_empty_and_colspan_contract() -> None:
 def test_overview_rings_link_to_deliverable_details_contract() -> None:
     """需求 2026-09-12：状态总览环图可点击跳转对应交付物明细，且与明细表共用换算口径。"""
     js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
-    progress_start = js_text.index("function renderDeliverableProgress")
-    progress_block = js_text[
-        progress_start:js_text.index("function renderRiskSummary", progress_start)
-    ]
+    progress_block = _js_slice(js_text, "function renderDeliverableProgress", "function overviewBusinessSnapshotCondition")
 
     # 环图卡片按钮化：可点击、可键盘聚焦、携带跳转目标。
     assert "progress-ring is-clickable" in progress_block
@@ -1172,10 +1179,7 @@ def test_overview_rings_link_to_deliverable_details_contract() -> None:
     assert "deliverableDisplayItem(rawItem)" in progress_block
     assert "formDisplay ?" not in progress_block
 
-    details_start = js_text.index("function renderDeliverableDetails")
-    details_block = js_text[
-        details_start:js_text.index("function renderProjectOverview", details_start)
-    ]
+    details_block = _js_slice(js_text, "function renderDeliverableDetails", "function renderProjectOverview")
     assert "deliverableDisplayItem(rawRow)" in details_block
 
     css_text = Path("web/static/style.css").read_text(encoding="utf-8-sig")
@@ -1234,6 +1238,25 @@ result = [
     progressOrDate: "72%",
     analysisLink: { snapshotAt: "A", summary: { total: 4, completed: 3, overdue: 1 } },
   })),
+  // 后端字段驱动：快照态的 display 三字段优先于本地链接换算。
+  JSON.stringify(deliverableFormDisplay({
+    id: "P",
+    status: "已逾期",
+    syncDisplay: {
+      state: "snapshot",
+      displayStatus: "已逾期",
+      displayProgress: 75,
+      displaySummary: { total: 4, completed: 3, overdue: 1, snapshotAt: "2026-09-15T08:00:00.000Z" },
+    },
+    analysisLink: { snapshotAt: "OLD", summary: { total: 9, completed: 1, overdue: 0 } },
+  })),
+  // manual 数值态不触发快照换算：formLink 存在也不改写手工口径。
+  JSON.stringify(deliverableFormDisplay({
+    id: "Q",
+    status: "进行中",
+    syncDisplay: { state: "manual", displayStatus: "进行中", displayProgress: 60, displaySummary: null },
+    formLink: { snapshotAt: "B", summary: { total: 4, completed: 4, overdue: 0 } },
+  })),
 ];
 `, context);
 process.stdout.write(context.result.join("\n"));
@@ -1247,7 +1270,7 @@ process.stdout.write(context.result.join("\n"));
         encoding="utf-8",
     )
     lines = result.stdout.strip().splitlines()
-    assert len(lines) == 7
+    assert len(lines) == 9
     # 同步启用时 analysisLink 优先：4 项完成 3 项 → 75%、有逾期 → 已逾期。
     assert lines[0] == '{"progress":75,"status":"已逾期","snapshotAt":"A"}'
     # 无 analysisLink 时回退 formLink。
@@ -1268,6 +1291,16 @@ process.stdout.write(context.result.join("\n"));
     assert gated["progress"] == 72
     assert gated["status"] == "进行中"
     assert gated["progressOrDate"] == "72%"
+    # 后端 display 三字段优先：75%/已逾期/快照时间取自 syncDisplay，
+    # 不再读取 analysisLink（保存后整体替换 payload，无乐观编辑）。
+    backend = json.loads(lines[7])
+    assert backend == {
+        "progress": 75,
+        "status": "已逾期",
+        "snapshotAt": "2026-09-15T08:00:00.000Z",
+    }
+    # manual 数值态：即使存在 formLink 也不做快照换算。
+    assert lines[8] == "null"
 
 
 def test_deliverable_detail_page_unified_display_contract() -> None:
@@ -1289,6 +1322,14 @@ def test_deliverable_detail_page_unified_display_contract() -> None:
     assert '["当前状态", deliverableStatusText(item, displayItem)]' in detail_block
     assert '"明细分析快照"' in detail_block
     assert '"表单快照"' in detail_block
+    # 详情头状态旁参考行：表单分析快照摘要（后端 formLink/analysisLink 驱动）。
+    assert "deliverableFormReferenceText(item)" in detail_block
+    ref_start = js_text.index("function deliverableFormReferenceText")
+    ref_block = js_text[ref_start:js_text.index("function deliverableDisplayItem", ref_start)]
+    assert "表单分析参考：已完成" in ref_block
+    assert "无表单来源" in ref_block
+    # 数据取自 formLink/analysisLink：经 deliverableSnapshotSummary 同源读取。
+    assert "deliverableSnapshotSummary(item)" in ref_block
 
     # 四条同步/归档下载成功路径都刷新概览数据（环图 analysisLink 不停留旧快照）。
     assert js_text.count("await loadProjectOverview();") >= 4
@@ -1334,18 +1375,13 @@ def test_archive_credential_ref_prefills_domain_when_vault_ready_contract() -> N
     """需求 2026-09-12：未配置凭据且凭据保护库可用时，定时登录信息默认预选统一域账号。"""
     js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
 
-    editor_start = js_text.index('aliasInput.name = "credentialRef"')
-    editor_end = js_text.index("aliasLabel.appendChild(aliasSpan)", editor_start)
-    block = js_text[editor_start:editor_end]
+    block = _js_slice(js_text, 'aliasInput.name = "credentialRef"', "aliasLabel.appendChild(aliasSpan)")
     assert "settingsData.credentialVaultConfigured === true" in block
     assert 'aliasInput.value = "domain"' in block
     assert "!job.credentialConfigured" in block
 
     # 凭据库状态在任务列表加载时已就绪（编辑器渲染是同步路径）。
-    loader_start = js_text.index("async function loadArchiveJobs")
-    loader_block = js_text[
-        loader_start:js_text.index("async function handleArchiveJobArchive", loader_start)
-    ]
+    loader_block = _js_slice(js_text, "async function loadArchiveJobs", "async function handleArchiveJobArchive")
     assert "await ensureSettingsData()" in loader_block
 
 
@@ -1356,20 +1392,14 @@ def test_sync_binding_editor_is_capability_driven_contract() -> None:
     js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
 
     # 分发能力驱动：不再按 source 正则/硬编码 id 选择编辑器。
-    loader_block = js_text[
-        js_text.index("async function loadDeliverablePolicy"):
-        js_text.index("const DELIVERABLE_FIXED_SOURCES")
-    ]
+    loader_block = _js_slice(js_text, "async function loadDeliverablePolicy", "const DELIVERABLE_FIXED_SOURCES")
     assert "capabilities.syncCapable" in loader_block
     assert 'renderSyncBindingEditor' in loader_block
     assert "/ewo/i.test" not in loader_block
     assert 'item.id !== "VPI-T2-D5"' not in loader_block
     assert "function renderDeliverablePolicyEditor" not in js_text
 
-    editor_block = js_text[
-        js_text.index("function renderSyncBindingEditor"):
-        js_text.index("async function loadDeliverablePolicy")
-    ]
+    editor_block = _js_slice(js_text, "function renderSyncBindingEditor", "async function loadDeliverablePolicy")
     # 匹配规则与证据来源连接由能力配置渲染。
     assert "capabilities.matchFields" in editor_block
     assert "capabilities.evidenceFields" in editor_block
@@ -1394,10 +1424,7 @@ def test_sync_binding_editor_payload_and_evidence_contract() -> None:
     """Gemini 交叉审计修复回归：reportType 跟随能力配置、headers 走
     parseHeaders 序列化、历史无观测记录时强制先抓取证据、paused 后缀四区统一。"""
     js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
-    editor_block = js_text[
-        js_text.index("function renderSyncBindingEditor"):
-        js_text.index("async function loadDeliverablePolicy")
-    ]
+    editor_block = _js_slice(js_text, "function renderSyncBindingEditor", "async function loadDeliverablePolicy")
 
     # P0 修复：保存载荷 reportType 跟随能力配置，不再写死 ewo。
     assert 'matchRule: { reportType: capabilities.reportType || "ewo" }' in editor_block
@@ -1411,31 +1438,16 @@ def test_sync_binding_editor_payload_and_evidence_contract() -> None:
     assert "Array.isArray(capabilities.matchFields)\n    ? capabilities.matchFields" in editor_block
 
     # paused 后缀四区统一：环图/明细/详情头/状态图共用 deliverableStatusText。
-    progress_block = js_text[
-        js_text.index("function renderDeliverableProgress"):
-        js_text.index("function renderRiskSummary")
-    ]
-    details_block = js_text[
-        js_text.index("function renderDeliverableDetails"):
-        js_text.index("function renderProjectOverview")
-    ]
-    detail_page_block = js_text[
-        js_text.index("function renderDeliverableDetailPage"):
-        js_text.index("function renderArchiveDeliverableDetailPage")
-    ]
-    chart_block = js_text[
-        js_text.index("function renderDeliverableStatusChart"):
-        js_text.index("async function runDeliverableSyncFromAnalysis")
-    ]
+    progress_block = _js_slice(js_text, "function renderDeliverableProgress", "function overviewBusinessSnapshotCondition")
+    details_block = _js_slice(js_text, "function renderDeliverableDetails", "function renderProjectOverview")
+    detail_page_block = _js_slice(js_text, "function renderDeliverableDetailPage", "function renderArchiveDeliverableDetailPage")
+    chart_block = _js_slice(js_text, "function renderDeliverableStatusChart", "async function runDeliverableSyncFromAnalysis")
     assert "deliverableStatusText(" in progress_block
     assert "deliverableStatusText(" in details_block
     assert "deliverableStatusText(item, displayItem)" in detail_page_block
     assert "deliverableStatusText(item, item)" in chart_block
     # paused 为非数值态：deliverableStatusText 直接显示状态标签（无后缀特例）。
-    paused_helper = js_text[
-        js_text.index("function deliverableStatusText"):
-        js_text.index("function deliverablePendingDateLabel")
-    ]
+    paused_helper = _js_slice(js_text, "function deliverableStatusText", "function deliverablePendingDateLabel")
     assert "syncDisplay.label" in paused_helper
     assert "（已暂停）" not in paused_helper
 
@@ -1518,3 +1530,85 @@ process.stdout.write(context.result.join("\n"));
     # 聚合绑定不做表单快照兜底（前后端换绑隔离一致）；单记录绑定正常换算（100%）。
     assert lines[7] == "aggregate-skipped"
     assert lines[8] == "100"
+
+
+def test_top_bar_navigation_six_main_domains() -> None:
+    """W1-1: 顶栏导航结构保留六大核心域，未建任务抽屉前禁止移除 Excel 与交付物顶栏入口。"""
+    html_text = Path("web/templates/dashboard.html").read_text(encoding="utf-8-sig")
+
+    # 提取顶栏 primary nav 的 links
+    nav_match = re.search(r'<nav[^>]*class="workspace-tabs"[^>]*>([\s\S]*?)</nav>', html_text)
+    assert nav_match is not None
+    nav_content = nav_match.group(1)
+
+    # 主导航严格保持 6 个一级入口
+    nav_links = re.findall(r'<a[^>]*href="#([^"]+)"[^>]*>([^<]+)</a>', nav_content)
+    assert len(nav_links) == 6
+    link_map = {panel_id: label.strip() for panel_id, label in nav_links}
+    assert "overview" in link_map and "概览" in link_map["overview"]
+    assert "aras-panel" in link_map and "系统查询" in link_map["aras-panel"]
+    assert "deliverables" in link_map and "交付物" in link_map["deliverables"]
+    assert "excel-tasks" in link_map and "Excel" in link_map["excel-tasks"]
+    assert "scheduled-archive" in link_map and "自动归档" in link_map["scheduled-archive"]
+    assert "settings-panel" in link_map and "设置" in link_map["settings-panel"]
+
+    # 业务系统查询面板标头回归 Aras 系统查询
+    assert '<h3>Aras 系统查询</h3>' in html_text
+    assert 'aria-label="系统查询"' in html_text
+
+    # 工作区在页面 DOM 中完整定义
+    assert 'data-panel-link="deliverables"' in html_text
+    assert 'data-panel-link="excel-tasks"' in html_text
+    assert 'id="deliverables"' in html_text
+    assert 'id="excel-tasks"' in html_text
+
+
+def test_hash_deep_linking_routing_contracts() -> None:
+    """W1-2: app.js handleHashChange 支持 Query 参数深链解析、穿透返回条与参数自动带入。"""
+    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+    html_text = Path("web/templates/dashboard.html").read_text(encoding="utf-8-sig")
+
+    # 1. 查询参数与路径分离解析
+    assert "const [hashPath, queryString] = rawHash.split(\"?\");" in js_text
+    assert "const searchParams = new URLSearchParams(queryString || \"\");" in js_text
+
+    # 2. 路由别名归一化（支持 dashboard、aras/system-query、archive、settings、excel）
+    assert 'panelId === "dashboard"' in js_text
+    assert 'panelId === "aras"' in js_text or 'panelId === "system-query"' in js_text
+    assert 'panelId === "archive"' in js_text
+    assert 'panelId === "settings"' in js_text
+    assert 'panelId === "excel"' in js_text
+
+    # 3. 概览子页签深链（tab=plan / tab=details）
+    assert 'searchParams.get("tab")' in js_text
+    assert 'isPlan = reqTab === "plan"' in js_text
+
+    # 4. 系统查询穿透参数带入与单号填写，严格对齐 HTML 真实 DOM input name
+    assert 'name="ewo_no"' in html_text
+    assert 'name="paa_no"' in html_text
+    assert 'name="ncr_no"' in html_text
+    assert 'searchParams.get("mode")' in js_text
+    assert 'input[name="ewo_no"]' in js_text
+    assert 'input[name="paa_no"]' in js_text
+    assert 'input[name="ncr_no"]' in js_text
+
+    # 5. TDC 模式深链路由支持（tdc-sor、tdc-data-model 穿透直达对应交付物）
+    assert 'reqMode === "tdc-sor"' in js_text or 'tdc_sor' in js_text
+    assert 'VPI-T2-D2' in js_text
+    assert 'VPI-T2-D5' in js_text
+
+    # 6. 穿透返回条与确定性回退（Safe DOM 实现，禁止 innerHTML，禁止 history.back）
+    assert "aras-deep-link-back-bar" in js_text
+    assert "← 返回项目看板" in js_text
+    assert 'window.location.hash = "#overview"' in js_text
+    back_bar_code = _js_slice(js_text, 'const fromOrigin = searchParams.get("from");', 'if (isDeliverables)')
+    assert "innerHTML" not in back_bar_code
+    assert "replaceChildren" in back_bar_code
+    assert "history.back" not in back_bar_code
+    assert "textContent" in back_bar_code
+    assert 'input[name="ncrNo"]' not in js_text
+
+    # 7. 交付物详情直达系统查询（openDeliverableInAras 采用深链路由）
+    assert "#aras-panel?mode=" in js_text
+    assert "from=overview" in js_text
+    assert "在系统查询中打开" in js_text

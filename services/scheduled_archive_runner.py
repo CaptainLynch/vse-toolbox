@@ -31,6 +31,7 @@ from core.db_manager import (
     ArchiveLeaseLostError,
     DatabaseManager,
 )
+from core.project_status_contracts import DELIVERABLE_LINK_REGISTRY
 from core.redaction import redact_sensitive_text
 from services.deliverable_form_analysis import build_form_snapshot
 from services.aras_auth import ArasAuthError
@@ -43,16 +44,13 @@ EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_ATTENTION = 2
 EXIT_INTERRUPTED = 130
-#: 归档任务 job_key → 统一表单 form_key 映射（与 core.db_manager
-#: ARCHIVE_JOB_CONTRACTS、deliverable_form_analysis.FORM_KEYS 对齐，
-#: 一致性由 tests/test_form_key_consistency.py 锁定）。
+#: 归档任务 job_key → 统一表单 form_key 映射（从
+#: core.project_status_contracts.DELIVERABLE_LINK_REGISTRY 单一注册表派生，
+#: 与 core.db_manager ARCHIVE_JOB_CONTRACTS、deliverable_form_analysis.FORM_KEYS
+#: 对齐，一致性由 tests/test_deliverable_registry.py 锁定）。
 JOB_FORM_KEYS = {
-    "aras_ewo": "VPI-T2-D3",
-    "aras_paa": "aras_paa",
-    "aras_ncr_progress": "aras_ncr_progress",
-    "aras_ncr_detail": "aras_ncr_detail",
-    "tdc_data_model": "tdc_data_model",
-    "tdc_sor": "tdc_sor",
+    job_key: entry["form_key"]
+    for job_key, entry in DELIVERABLE_LINK_REGISTRY.items()
 }
 _TEXT_LIMIT = 1000
 _TRANSIENT_ERRORS = (ConnectionError, TimeoutError, OSError, WinHTTPError)
@@ -746,8 +744,8 @@ class ArchiveSyncRunner:
                 error_message=_safe_text(message),
                 result_summary=_safe_text(message),
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.exception("未能将归档运行标记为失败: %s", exc)
 
     def _is_due(self, job: Mapping[str, object]) -> bool:
         value = job.get("last_attempt_at")

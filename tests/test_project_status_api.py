@@ -56,16 +56,33 @@ def test_project_status_read_contract_and_overview_compatibility(client) -> None
     # 契约内交付物（D2/D3/D5）新库默认自动同步但未同步 → 待同步；
     # D1（手工演示值）计入完成数，D4（手工模式，占位值）计入数值态。
     assert data["phase"]["completedCount"] == 1
+    # 外部快照驱动交付物（D6-D8，countsTowardCompletion=False）不进入
+    # 价值态汇总：pendingCount 分母仍为 D1-D5 的待同步/待配置 3 项。
     assert data["phase"]["pendingCount"] == 3
-    assert data["phase"]["totalCount"] == 5
+    assert data["phase"]["totalCount"] == 8
     assert len(data["milestones"]) == 11
     assert [item["name"] for item in data["milestones"]] == list(MILESTONE_TEMPLATE_NAMES)
     assert all(item["date"] is None for item in data["milestones"])
     assert all(item["status"] == "未开始" for item in data["milestones"])
     assert all(item["type"] == "planned" for item in data["milestones"])
     assert [item["sortOrder"] for item in data["milestones"]] == list(range(1, 12))
-    assert len(data["deliverables"]) == 5
-    assert data["deliverables"][0]["associations"] == []
+    assert len(data["deliverables"]) == 8
+    # associations 由单一关联注册表反查填充：D3 关联 aras_ewo 任务与
+    # aras-ewo 目录条目；D1/D4 未关联项目交付物为空数组。
+    by_id = {item["id"]: item for item in data["deliverables"]}
+    d3_associations = by_id["VPI-T2-D3"]["associations"]
+    assert [entry["type"] for entry in d3_associations] == ["archive_job", "catalog_item"]
+    assert d3_associations[0]["jobKey"] == "aras_ewo"
+    assert d3_associations[0]["href"] == "#archive-deliverable/aras_ewo"
+    assert d3_associations[0]["enabled"] is False
+    assert d3_associations[0]["lastSuccessAt"] is None
+    assert d3_associations[1]["catalogId"] == "aras-ewo"
+    assert d3_associations[1]["href"] == "#deliverables"
+    assert by_id["VPI-T2-D1"]["associations"] == []
+    assert by_id["VPI-T2-D4"]["associations"] == []
+    # D2/D5 关联各自的 TDC 归档任务。
+    assert by_id["VPI-T2-D2"]["associations"][0]["jobKey"] == "tdc_sor"
+    assert by_id["VPI-T2-D5"]["associations"][0]["jobKey"] == "tdc_data_model"
 
     form_links = {item["id"]: item["formLink"] for item in data["deliverables"]}
     assert form_links["VPI-T2-D1"] is None
@@ -76,6 +93,37 @@ def test_project_status_read_contract_and_overview_compatibility(client) -> None
     assert form_links["VPI-T2-D3"]["summary"] is None
     assert form_links["VPI-T2-D3"]["snapshotAt"] is None
     assert form_links["VPI-T2-D5"]["formKey"] == "tdc_data_model"
+    # D6-D8（外部快照驱动）：formLink 经注册表派生存在，无快照时 summary 为 None。
+    assert form_links["VPI-T2-D6"]["formKey"] == "aras_paa"
+    assert form_links["VPI-T2-D6"]["summary"] is None
+    assert form_links["VPI-T2-D7"]["formKey"] == "aras_ncr_progress"
+    assert form_links["VPI-T2-D8"]["formKey"] == "aras_ncr_detail"
+
+    # D6-D8：planned_date NULL → plannedDate/scheduleState/scheduleDays 均为
+    # null；payload 下发 formSnapshotDriven/countsTowardCompletion 标志；
+    # 手工编辑被拒并给出固定 readOnlyReason；展示状态机输出待同步。
+    for deliverable_id, expected_job in (
+        ("VPI-T2-D6", "aras_paa"),
+        ("VPI-T2-D7", "aras_ncr_progress"),
+        ("VPI-T2-D8", "aras_ncr_detail"),
+    ):
+        item = by_id[deliverable_id]
+        assert item["plannedDate"] is None
+        assert item["scheduleState"] is None
+        assert item["scheduleDays"] is None
+        assert item["formSnapshotDriven"] is True
+        assert item["countsTowardCompletion"] is False
+        assert item["manualEditable"] is False
+        assert item["readOnlyReason"] == "外部快照驱动，状态由归档快照自动映射"
+        assert item["syncDisplay"]["state"] == "pending_first_sync"
+        assert item["syncDisplay"]["label"] == "待同步"
+        assert item["syncDisplay"]["displayStatus"] is None
+        assert item["syncDisplay"]["displayProgress"] is None
+        assert item["syncDisplay"]["displaySummary"] is None
+        associations = item["associations"]
+        assert associations[0]["type"] == "archive_job"
+        assert associations[0]["jobKey"] == expected_job
+        assert associations[1]["type"] == "catalog_item"
 
     overview = client.get("/api/overview")
     assert overview.status_code == 200
@@ -413,3 +461,60 @@ def test_project_status_payload_exposes_sync_display_and_capabilities(client) ->
     assert items["VPI-T2-D2"]["sourceInfo"]["reportType"] == "sor"
     assert items["VPI-T2-D3"]["sourceInfo"]["reportType"] == "ewo"
     assert items["VPI-T2-D5"]["sourceInfo"]["reportType"] == "data_model"
+
+
+def test_form_snapshot_driven_deliverables_excluded_from_completion_counts(client) -> None:  # type: ignore[no-untyped-def]
+    """D6（外部快照驱动）即使快照全部完成也不进入完成统计分母：
+    completedCount 仍为 1，环图展示为快照态。"""
+    from services.deliverable_form_analysis import build_form_snapshot
+
+    data = _status(client)
+    assert data["phase"]["completedCount"] == 1
+    assert data["phase"]["pendingCount"] == 3
+
+    db = client.application.extensions["deliverable_analysis"].db
+    snapshot = build_form_snapshot(
+        "aras_paa",
+        [
+            {"_no": "PAA-CNT-1", "state": "CLOZ", "_submit_date": "2026-08-01"},
+            {"_no": "PAA-CNT-2", "state": "CLOZ", "_submit_date": "2026-08-02"},
+        ],
+        snapshot_at="2026-09-01T08:00:00Z",
+        source_run_id=1,
+        source="test archive",
+    )
+    assert db.publish_deliverable_form_snapshot(snapshot) > 0
+
+    data = _status(client)
+    d6 = next(item for item in data["deliverables"] if item["id"] == "VPI-T2-D6")
+    # 展示状态机进入快照态并展示数值。
+    assert d6["syncDisplay"]["state"] == "snapshot"
+    assert d6["syncDisplay"]["displayStatus"] == "已完成"
+    assert d6["syncDisplay"]["displayProgress"] == 100
+    # 但价值态汇总分母排除：完成数不增加、待同步数不减少。
+    assert data["phase"]["completedCount"] == 1
+    assert data["phase"]["pendingCount"] == 3
+    assert data["phase"]["totalCount"] == 8
+
+
+def test_project_status_manual_update_rejected_for_form_snapshot_driven(client) -> None:  # type: ignore[no-untyped-def]
+    """D6-D8 手工 PATCH 被写入门控拒绝（MappedDeliverableReadOnly）。"""
+    data = _status(client)
+    d6 = next(item for item in data["deliverables"] if item["id"] == "VPI-T2-D6")
+    response = client.patch(
+        "/api/project-status/deliverables/VPI-T2-D6",
+        json={
+            "status": "已完成",
+            "progress": 100,
+            "note": "x",
+            "owner": "y",
+            "plannedDate": "2026-09-30",
+            "actualDate": "2026-09-29",
+            "updatedAt": d6["updatedAt"],
+        },
+    )
+    assert response.status_code == 409
+    body = response.get_json()
+    assert body["ok"] is False
+    assert body["error"]["type"] == "MappedDeliverableReadOnly"
+    assert "外部快照驱动" in body["error"]["message"]

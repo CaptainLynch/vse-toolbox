@@ -934,6 +934,23 @@ class ExcelTaskRepository:
 
     renew_lease = renew
 
+    def cancel_task(self, task_id: int) -> bool:
+        """Cancel an Excel task if it is queued, leased, or running."""
+        if not isinstance(task_id, int) or isinstance(task_id, bool) or task_id < 1:
+            return False
+        with self._db.get_connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE excel_tasks
+                SET status = 'cancelled',
+                    error_message = coalesce(error_message, 'Cancelled by user'),
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE id = ? AND status IN ('queued', 'leased', 'running')
+                """,
+                (task_id,),
+            )
+            return cursor.rowcount > 0
+
     def finish(
         self,
         task_id: int,

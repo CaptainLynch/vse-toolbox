@@ -24,6 +24,44 @@ class FakeUsedRange:
         self.Columns = SimpleNamespace(Count=cols)
 
 
+class FakeBlockRange:
+    def __init__(self, sheet: "FakeSheet", top_left: tuple[int, int], bottom_right: tuple[int, int]):
+        self.sheet = sheet
+        self.r1, self.c1 = top_left
+        self.r2, self.c2 = bottom_right
+
+    def options(self, **kwargs):
+        return self
+
+    @property
+    def value(self):
+        rows = []
+        for r in range(self.r1, self.r2 + 1):
+            row = []
+            for c in range(self.c1, self.c2 + 1):
+                row.append(self.sheet._ranges.setdefault((r, c), FakeRange()).value)
+            rows.append(row)
+        if len(rows) == 1 and len(rows[0]) == 1:
+            return rows[0][0]
+        if len(rows) == 1:
+            return rows[0]
+        return rows
+
+    @value.setter
+    def value(self, val):
+        if isinstance(val, list) and val and isinstance(val[0], list):
+            for r_idx, row_vals in enumerate(val):
+                r = self.r1 + r_idx
+                for c_idx, cell_val in enumerate(row_vals):
+                    c = self.c1 + c_idx
+                    self.sheet._ranges.setdefault((r, c), FakeRange()).value = cell_val
+        elif isinstance(val, list):
+            for c_idx, cell_val in enumerate(val):
+                self.sheet._ranges.setdefault((self.r1, self.c1 + c_idx), FakeRange()).value = cell_val
+        else:
+            self.sheet._ranges.setdefault((self.r1, self.c1), FakeRange()).value = val
+
+
 class FakeSheet:
     def __init__(self, data=None):
         self.name = ""
@@ -36,8 +74,10 @@ class FakeSheet:
         self._cols = max((len(row) for row in data), default=1)
         self.api = SimpleNamespace(UsedRange=FakeUsedRange(self._rows, self._cols))
 
-    def range(self, address):
-        return self._ranges.setdefault(tuple(address), FakeRange())
+    def range(self, *args):
+        if len(args) == 2 and isinstance(args[0], tuple) and isinstance(args[1], tuple):
+            return FakeBlockRange(self, args[0], args[1])
+        return self._ranges.setdefault(tuple(args[0]), FakeRange())
 
 
 class FakeSheets:

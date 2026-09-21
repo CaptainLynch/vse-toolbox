@@ -31,13 +31,20 @@ PROJECT_STATUS_AUTOMATIC_API_FIELDS = frozenset({"owner", "plannedDate", "note"}
 SYNC_CANDIDATE_ALLOWED_FIELDS = frozenset(PROJECT_STATUS_AUTOMATIC_API_FIELDS)
 
 
+def _has_control_chars(val: str) -> bool:
+    for ch in val:
+        if ord(ch) < 32 or (127 <= ord(ch) <= 159):
+            return True
+    return False
+
+
 def _valid_mapping_source(source_field: object) -> bool:
     """映射来源字段：字符串，或字符串列表（风险备注多列组合）。"""
     if isinstance(source_field, str):
-        return bool(source_field.strip())
+        return bool(source_field.strip()) and not _has_control_chars(source_field)
     if isinstance(source_field, list):
         return all(
-            isinstance(item, str) and bool(item.strip())
+            isinstance(item, str) and bool(item.strip()) and not _has_control_chars(item)
             for item in source_field
         ) and len(source_field) > 0
     return False
@@ -48,7 +55,7 @@ def _valid_match_rule_values(match_rule: Mapping[str, Any]) -> bool:
     return all(
         isinstance(value, bool)
         if key == "aggregate"
-        else isinstance(value, str) and bool(value.strip())
+        else isinstance(value, str) and bool(value.strip()) and not _has_control_chars(value)
         for key, value in match_rule.items()
     )
 
@@ -918,13 +925,16 @@ class ProjectStatusUpdateService:
         if external_key is not None and not isinstance(external_key, str):
             fields["externalKey"] = "外部稳定键必须是字符串或 null"
         elif isinstance(external_key, str):
-            external_key = external_key.strip()
-            if len(external_key) > _TEXT_LIMITS["external_key"]:
-                fields["externalKey"] = (
-                    f"外部稳定键不能超过 {_TEXT_LIMITS['external_key']} 个字符"
-                )
-            if not external_key:
-                external_key = None
+            if _has_control_chars(external_key):
+                fields["externalKey"] = "外部稳定键包含非法控制字符"
+            else:
+                external_key = external_key.strip()
+                if len(external_key) > _TEXT_LIMITS["external_key"]:
+                    fields["externalKey"] = (
+                        f"外部稳定键不能超过 {_TEXT_LIMITS['external_key']} 个字符"
+                    )
+                if not external_key:
+                    external_key = None
 
         if not isinstance(match_rule, dict):
             fields["matchRule"] = "匹配规则必须是 JSON 对象"

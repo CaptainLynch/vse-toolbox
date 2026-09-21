@@ -8,8 +8,12 @@ def _source() -> str:
     return JS_PATH.read_text(encoding="utf-8-sig")
 
 
-def _slice(source: str, start: str, end: str) -> str:
-    return source[source.index(start):source.index(end)]
+def _slice(text: str, start_marker: str, end_marker: str) -> str:
+    start = text.find(start_marker)
+    assert start != -1, f"Start marker '{start_marker}' not found"
+    end = text.find(end_marker, start)
+    assert end != -1, f"End marker '{end_marker}' not found after '{start_marker}'"
+    return text[start:end]
 
 
 def test_interactive_helper_uses_existing_ewo_and_paa_query_contract() -> None:

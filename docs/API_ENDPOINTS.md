@@ -5,7 +5,7 @@
 > 权威来源：`web/app.py`、`web/diagnostics.py`、`web/ewo_enrichment.py` 路由装饰器；参数行为以代码和测试为准
 > 默认读取：按 API/UI 任务读取
 > 由 `tools/generate_api_endpoints.py` 从上述路由模块 AST 解析自动生成，
-> 生成时间：2026-09-15 13:04，共 83 个端点。
+> 生成时间：2026-09-20 17:28，共 91 个端点。
 > 手工新增路由后请重跑该脚本刷新本清单。
 
 通用约定：
@@ -118,6 +118,7 @@
 | 方法 | 路径 | 处理函数 |
 | --- | --- | --- |
 | GET | `/api/deliverable-forms/<form_key>/rows` | `api_deliverable_form_rows` |
+| GET | `/api/deliverable-forms/<form_key>/statistics` | `api_deliverable_form_statistics` |
 | GET | `/api/deliverable-forms/<form_key>/view` | `api_deliverable_form_view` |
 
 ## 页面与其他
@@ -125,6 +126,13 @@
 | 方法 | 路径 | 处理函数 |
 | --- | --- | --- |
 | GET/POST | `/` | `index` |
+| GET | `/api/tasks` | `api_tasks_list` |
+| GET | `/api/tasks/<task_id>` | `api_tasks_get` |
+| POST | `/api/tasks/<task_id>/cancel` | `api_tasks_cancel` |
+| GET | `/api/tasks/<task_id>/download` | `api_tasks_download` |
+| GET | `/api/tasks/<task_id>/result` | `api_tasks_result` |
+| POST | `/api/tasks/<task_id>/retry` | `api_tasks_retry` |
+| GET | `/api/version` | `api_version` |
 | GET | `/favicon.ico` | `favicon` |
 
 ## 项目状态与交付物

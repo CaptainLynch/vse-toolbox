@@ -185,3 +185,77 @@ def test_process_status_to_dict() -> None:
 
     status_error = ExcelWorkerProcessStatus("stopped", pid=1234, exit_code=1, error="fail")
     assert status_error.to_dict() == {"state": "stopped", "pid": 1234, "exitCode": 1, "error": "fail"}
+
+
+def test_process_controller_start_rejected_while_stopping(monkeypatch, repo: ExcelTaskRepository) -> None:
+    process = FakeProcess([])
+    monkeypatch.setattr("services.excel_worker_process_controller.subprocess.Popen", lambda *a, **k: process)
+    controller = ExcelWorkerProcessController(repo)
+    controller.start()
+    controller._status = ExcelWorkerProcessStatus("stopping", process.pid)
+    with pytest.raises(RuntimeError, match="already running or stopping"):
+        controller.start()
+
+
+def test_process_controller_stop_handles_kill_timeout(monkeypatch, repo: ExcelTaskRepository) -> None:
+    import subprocess
+
+    class HangingProcess(FakeProcess):
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired(self.command, timeout or 0)
+
+    process = HangingProcess([])
+    monkeypatch.setattr("services.excel_worker_process_controller.subprocess.Popen", lambda *a, **k: process)
+    controller = ExcelWorkerProcessController(repo)
+    controller.start()
+    status = controller.stop(timeout=0.01)
+    assert status.state == "stopped"
+    assert process.terminated is True
+    assert process.killed is True
+
+
+def test_process_controller_stop_preserves_replaced_process(monkeypatch, repo: ExcelTaskRepository, tmp_path: Path) -> None:
+    process1 = FakeProcess([])
+    process2 = FakeProcess([])
+    processes = [process1, process2]
+
+    monkeypatch.setattr("services.excel_worker_process_controller.subprocess.Popen", lambda *a, **k: processes.pop(0))
+    controller = ExcelWorkerProcessController(repo)
+    controller.start()
+    old_stop_file = controller._stop_file
+    assert old_stop_file is not None
+
+    new_stop_file = tmp_path / "new_worker.stop"
+    new_stop_file.write_text("new", encoding="ascii")
+
+    # Simulate replacement of process during stop wait
+    orig_wait = process1.wait
+
+    def hook_wait(timeout=None):
+        controller._process = process2
+        controller._stop_file = new_stop_file
+        controller._status = ExcelWorkerProcessStatus("running", process2.pid)
+        return orig_wait(timeout)
+
+    process1.wait = hook_wait
+    status = controller.stop(timeout=1.0)
+    # The running state and new stop file of process2 must be preserved!
+    assert status.state == "running"
+    assert controller._status.state == "running"
+    assert controller._stop_file == new_stop_file
+    assert new_stop_file.exists()
+    assert not old_stop_file.exists()
+
+
+def test_process_controller_status_preserves_stopping_while_process_alive(monkeypatch, repo: ExcelTaskRepository) -> None:
+    """status() must report 'stopping' while process is shutting down and poll() is None."""
+    process = FakeProcess([])
+    monkeypatch.setattr("services.excel_worker_process_controller.subprocess.Popen", lambda *a, **k: process)
+    controller = ExcelWorkerProcessController(repo)
+    controller.start()
+    controller._status = ExcelWorkerProcessStatus("stopping", process.pid)
+    # Process is still running (poll returns None)
+    assert process.poll() is None
+    status = controller.status()
+    assert status.state == "stopping"
+    assert status.pid == process.pid

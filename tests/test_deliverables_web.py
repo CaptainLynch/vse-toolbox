@@ -135,13 +135,13 @@ class FakeTDCWebClient:
     def query_data_model_page(self, filters, page=1, page_size=50):  # type: ignore[no-untyped-def]
         return self._query_result("data_model", filters, page=page, page_size=page_size)
 
-    def crawl_data_model_all(self, filters, page_size=50, max_pages=100, max_records=10000):  # type: ignore[no-untyped-def]
+    def crawl_data_model_all(self, filters, page_size=50, max_pages=100, max_records=10000, should_stop=None, on_page=None):  # type: ignore[no-untyped-def]
         return self._crawl_result("data_model", filters, page_size, max_pages, max_records)
 
     def query_sor_page(self, filters, page=1, page_size=50):  # type: ignore[no-untyped-def]
         return self._query_result("sor", filters, page=page, page_size=page_size)
 
-    def crawl_sor_all(self, filters, page_size=50, max_pages=100, max_records=10000):  # type: ignore[no-untyped-def]
+    def crawl_sor_all(self, filters, page_size=50, max_pages=100, max_records=10000, should_stop=None, on_page=None):  # type: ignore[no-untyped-def]
         return self._crawl_result("sor", filters, page_size, max_pages, max_records)
 
     def list_car_type_projects(self):  # type: ignore[no-untyped-def]
@@ -336,6 +336,10 @@ def client(monkeypatch, tmp_path):  # type: ignore[no-untyped-def]
     monkeypatch.setattr(web_app, "DIAGNOSTIC_DIR", tmp_path / "diagnostics")
     app = web_app.create_app(tdc_allowed_hosts=["tdc.example"])
     app.config.update(TESTING=True)
+    # 后台异步路径需要已建立的统一域会话
+    registry = app.extensions.get("domain_sessions")
+    if isinstance(registry, web_app.DomainSessionRegistry):
+        registry.mark_authenticated("tdc", object())
     return app.test_client()
 
 
@@ -388,6 +392,7 @@ def test_catalog_statuses_availability_and_schema(client) -> None:
         "output_formats",
         "operations",
         "fields",
+        "links",
     }
     by_id = {item["id"]: item for item in items}
     for item in items:
@@ -404,6 +409,53 @@ def test_catalog_statuses_availability_and_schema(client) -> None:
     assert by_id["tdc-data-model"]["output_formats"] == ["JSON", "XLSX"]
     assert by_id["tdc-sor"]["implementation_status"] == "已完整实现"
     assert by_id["tdc-sor"]["output_formats"] == ["JSON", "XLSX"]
+
+
+def test_catalog_links_follow_deliverable_registry(client) -> None:
+    """目录条目 links 字段与单一关联注册表一致（只追加，向后兼容）。"""
+    items = client.get("/api/deliverables/catalog").get_json()["data"]["deliverables"]
+    by_id = {item["id"]: item for item in items}
+    expected = {
+        "aras-ewo": {
+            "archiveJobKey": "aras_ewo",
+            "projectStatusDeliverableId": "VPI-T2-D3",
+            "displayCode": "DEL-003",
+            "formKey": "VPI-T2-D3",
+        },
+        "aras-paa": {
+            "archiveJobKey": "aras_paa",
+            "projectStatusDeliverableId": "VPI-T2-D6",
+            "displayCode": "DEL-006",
+            "formKey": "aras_paa",
+        },
+        "aras-ncr-progress": {
+            "archiveJobKey": "aras_ncr_progress",
+            "projectStatusDeliverableId": "VPI-T2-D7",
+            "displayCode": "DEL-007",
+            "formKey": "aras_ncr_progress",
+        },
+        "aras-ncr-detail": {
+            "archiveJobKey": "aras_ncr_detail",
+            "projectStatusDeliverableId": "VPI-T2-D8",
+            "displayCode": "DEL-008",
+            "formKey": "aras_ncr_detail",
+        },
+        "tdc-data-model": {
+            "archiveJobKey": "tdc_data_model",
+            "projectStatusDeliverableId": "VPI-T2-D5",
+            "displayCode": "DEL-005",
+            "formKey": "tdc_data_model",
+        },
+        "tdc-sor": {
+            "archiveJobKey": "tdc_sor",
+            "projectStatusDeliverableId": "VPI-T2-D2",
+            "displayCode": "DEL-002",
+            "formKey": "tdc_sor",
+        },
+    }
+    assert set(expected) == set(by_id)
+    for catalog_id, links in expected.items():
+        assert by_id[catalog_id]["links"] == links
     assert [field["name"] for field in by_id["tdc-data-model"]["fields"]] == [
         "serial_number",
         "applicant",
@@ -440,6 +492,44 @@ def test_catalog_statuses_availability_and_schema(client) -> None:
         assert by_id[aras_id]["target"]["panel"] == "aras-panel"
 
     assert "TDC 数模设计审核流程报表" in by_id["tdc-data-model"]["name"]
+
+
+def test_catalog_display_code_prefers_stored_display_code(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """顺延场景（display_code 冲突后重建）：catalog 与项目状态页展示码一致。
+
+    注册表常量只是种子值；存量库顺延重建后实际展示码可能不同（此处模拟
+    D6 顺延为 DEL-009）。catalog links.displayCode 必须优先取
+    project_status_deliverables 表的实际值，与 /api/project-status 的
+    displayCode 一致；表中查不到时回退注册表常量。
+    """
+    db = web_app.DatabaseManager(tmp_path / "catalog-display-code.db")
+    db.init_database()
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE project_status_deliverables SET display_code = 'DEL-009' "
+            "WHERE id = 'VPI-T2-D6'"
+        )
+    monkeypatch.setattr(web_app, "DatabaseManager", lambda: db)
+    app = web_app.create_app()
+    app.config.update(TESTING=True)
+    flask_client = app.test_client()
+
+    catalog = flask_client.get("/api/deliverables/catalog").get_json()["data"]["deliverables"]
+    links_by_id = {item["id"]: item["links"] for item in catalog}
+    # 顺延后实际展示码优先于注册表常量 DEL-006。
+    assert links_by_id["aras-paa"]["displayCode"] == "DEL-009"
+
+    status = flask_client.get("/api/project-status").get_json()["data"]
+    status_by_id = {row["id"]: row for row in status["deliverables"]}
+    assert status_by_id["VPI-T2-D6"]["displayCode"] == "DEL-009"
+    assert links_by_id["aras-paa"]["displayCode"] == status_by_id["VPI-T2-D6"]["displayCode"]
+
+    # 回退：表中无对应行时回退注册表常量。
+    with db.get_connection() as conn:
+        conn.execute("DELETE FROM project_status_deliverables WHERE id = 'VPI-T2-D2'")
+    catalog_after = flask_client.get("/api/deliverables/catalog").get_json()["data"]["deliverables"]
+    links_after = {item["id"]: item["links"] for item in catalog_after}
+    assert links_after["tdc-sor"]["displayCode"] == "DEL-002"
 
 
 def test_tdc_sor_car_type_project_endpoint_returns_safe_options(client) -> None:
@@ -778,56 +868,86 @@ def test_tdc_sor_query_browser_cookie_mode(client) -> None:
     assert filters.approval_status == "Completed"
 
 
+def _wait_for_tdc_background_task(client, task_id: str, timeout: float = 10.0) -> dict:
+    import time as _time
+
+    deadline = _time.time() + timeout
+    while _time.time() < deadline:
+        resp = client.get(f"/api/tasks/{task_id}")
+        assert resp.status_code == 200
+        task = resp.get_json()["data"]
+        if not task["is_active"]:
+            return task
+        _time.sleep(0.05)
+    raise AssertionError("background task did not finish in time")
+
+
 def test_tdc_crawl_all_contract(client) -> None:
     resp = client.post(
         "/api/tdc/data-model/crawl-all",
         json={
             "base_url": "https://tdc.example",
             "auth_mode": "browser",
-            "cookie": "sid=secret-cookie",
             "filters": {"part_number": "PART-1"},
             "page_size": 40,
             "max_pages": 6,
             "max_records": 120,
         },
     )
-    assert resp.status_code == 200
-    data = resp.get_json()["data"]
-    assert data["fetched_pages"] == 2
-    assert data["duplicate_count"] == 1
-    assert data["stop_reason"] == "reported_pages"
+    assert resp.status_code == 202
+    body = resp.get_json()
+    assert body["ok"] is True
+    assert body["data"]["source"] == "tdc"
+    task_id = body["data"]["taskId"]
+
+    task = _wait_for_tdc_background_task(client, task_id)
+    assert task["status"] == "succeeded"
+    assert task["task_type"] == "tdc_data_model_crawl"
+
     crawl_call = next(call for call in FakeTDCWebClient.calls if call["method"] == "data_model_crawl")
     assert crawl_call["page_size"] == 40
     assert crawl_call["max_pages"] == 6
     assert crawl_call["max_records"] == 120
     assert crawl_call["filters"].part_number == "PART-1"
 
+    result = client.get(f"/api/tasks/{task_id}/result")
+    assert result.status_code == 200
+    data = result.get_json()["data"]
+    assert data["fetched_pages"] == 2
+    assert data["duplicate_count"] == 1
+    assert data["stop_reason"] == "reported_pages"
 
-def test_tdc_export_streams_xlsx_and_cleans_temp_dir(client) -> None:
+
+def test_tdc_export_creates_async_xlsx_artifact(client) -> None:
     resp = client.post(
         "/api/tdc/data-model/export",
         json={
             "base_url": "https://tdc.example",
             "auth_mode": "browser",
-            "cookie": "sid=secret-cookie",
             "filters": {"part_number": "PART-1"},
             "file_name": "data-model-2026.xlsx",
         },
     )
-    assert resp.status_code == 200
-    assert resp.headers["Content-Type"] == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    assert "attachment" in resp.headers["Content-Disposition"]
-    assert "data-model-2026.xlsx" in resp.headers["Content-Disposition"]
-    assert resp.get_data().startswith(b"PK")
-    assert resp.headers["X-Export-Complete"] == "true"
-    assert resp.headers["X-Export-File-Name"] == "data-model-2026.xlsx"
-    assert resp.headers["X-Export-Byte-Count"] == "13"
-    init_call = next(call for call in FakeTDCWebClient.calls if call["method"] == "init")
-    output_dir = init_call["output_dir"]
-    assert output_dir is not None
-    assert not Path(output_dir).exists()
+    assert resp.status_code == 202
+    body = resp.get_json()
+    task_id = body["data"]["taskId"]
+
+    task = _wait_for_tdc_background_task(client, task_id)
+    assert task["status"] == "succeeded"
+    assert task["can_download"] is True
+
     export_call = next(call for call in FakeTDCWebClient.calls if call["method"] == "data_model_export")
-    assert export_call["file_name"] == "data-model-2026.xlsx"
+    # 工件按任务唯一化命名，避免并发导出互相覆盖
+    assert export_call["file_name"].startswith("data-model-2026_")
+    assert export_call["file_name"].endswith(".xlsx")
+
+    init_call = next(call for call in FakeTDCWebClient.calls if call["method"] == "init")
+    assert init_call["output_dir"] is not None
+
+    download = client.get(f"/api/tasks/{task_id}/download")
+    assert download.status_code == 200
+    assert "attachment" in download.headers["Content-Disposition"]
+    assert download.get_data().startswith(b"PK")
 
 
 def test_tdc_export_rejects_unsafe_file_names_without_client(client) -> None:
@@ -848,26 +968,28 @@ def test_tdc_export_rejects_unsafe_file_names_without_client(client) -> None:
     assert FakeTDCWebClient.calls == []
 
 
-def test_tdc_export_rejects_path_outside_temp_dir(client) -> None:
+def test_tdc_export_failure_is_sanitized_in_task_record(client) -> None:
     FakeTDCWebClient.export_outside = True
     resp = client.post(
         "/api/tdc/data-model/export",
         json={
             "base_url": "https://tdc.example",
             "auth_mode": "browser",
-            "cookie": "sid=secret-cookie",
             "filters": {},
         },
     )
-    assert resp.status_code == 502
-    body = resp.get_json()
-    assert body["ok"] is False
-    assert body["error"]["type"] == "TDCCrawlerError"
-    assert "outside the temporary output directory" in body["error"]["message"]
-    assert "C:" not in resp.get_data(as_text=True)
-    assert "fictional" not in resp.get_data(as_text=True)
+    assert resp.status_code == 202
+    task_id = resp.get_json()["data"]["taskId"]
+
+    task = _wait_for_tdc_background_task(client, task_id)
+    assert task["status"] == "failed"
+    error_text = task.get("error_message") or ""
+    assert "outside the download directory" in error_text
+    # 失败消息必须脱敏：本机/虚构路径不得回显到任务记录
+    assert "C:" not in error_text
+    assert "fictional" not in error_text
     init_call = next(call for call in FakeTDCWebClient.calls if call["method"] == "init")
-    assert not Path(init_call["output_dir"]).exists()
+    assert init_call["output_dir"] is not None
 
 
 def test_tdc_validation_host_auth_types_and_bounds(client) -> None:
@@ -1120,7 +1242,7 @@ def test_static_deliverables_guards() -> None:
     assert "sessionStorage" not in html_text
     storage_lines = [line for line in js_text.splitlines() if "localStorage" in line]
     assert storage_lines
-    assert all("THEME_KEY" in line for line in storage_lines)
+    assert all("THEME_KEY" in line or "GRID_COLUMN_PREF_KEY" in line for line in storage_lines)
     assert not re.search(
         r"(?:cookie|token|authorization|sessionid|csrf|password).{0,80}localStorage",
         html_text + js_text,

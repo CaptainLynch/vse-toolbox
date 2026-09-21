@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """Focused tests for the VSE Toolbox 定时归档管理 (Scheduled Archive Admin UI).
 
 Covers:
@@ -103,8 +103,8 @@ def test_index_renders_archive_nav_and_preserves_panels(client) -> None:
 def test_dashboard_html_cache_buster_updated() -> None:
     """Verify that cache buster query string in dashboard.html is updated."""
     html_text = Path("web/templates/dashboard.html").read_text(encoding="utf-8-sig")
-    assert '<link rel="stylesheet" href="/static/style.css?v=deliverable-form-analysis-20260901-r1" />' in html_text
-    assert '<script src="/static/app.js?v=deliverable-form-analysis-20260901-r1"></script>' in html_text
+    assert '<link rel="stylesheet" href="/static/style.css?v=deliverable-console-20260916" />' in html_text
+    assert '<script src="/static/app.js?v=deliverable-console-20260916"></script>' in html_text
 
 
 def test_archive_static_dom_hooks_and_unique_ids() -> None:
@@ -139,12 +139,18 @@ def test_archive_static_dom_hooks_and_unique_ids() -> None:
     assert len(all_ids) == len(set(all_ids)), "Duplicate element IDs found in dashboard.html"
 
 
+def _slice(text: str, start_marker: str, end_marker: str) -> str:
+    start = text.find(start_marker)
+    assert start != -1, f"Start marker '{start_marker}' not found"
+    end = text.find(end_marker, start)
+    assert end != -1, f"End marker '{end_marker}' not found after '{start_marker}'"
+    return text[start:end]
+
+
 def test_archive_accessibility_attributes() -> None:
     """Verify ARIA live regions, pressed switches, and panels in scheduled-archive template."""
     html_text = Path("web/templates/dashboard.html").read_text(encoding="utf-8-sig")
-    start = html_text.index('id="scheduled-archive"')
-    end = html_text.index('</main>')
-    archive_html = html_text[start:end]
+    archive_html = _slice(html_text, 'id="scheduled-archive"', '</main>')
 
     # Accessible button switch pattern (aria-pressed / aria-controls) avoiding role="tab" collision with overview
     assert 'role="tab"' not in archive_html
@@ -161,9 +167,7 @@ def test_archive_accessibility_attributes() -> None:
 
 def _get_archive_js_module() -> str:
     js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
-    start = js_text.index("/* ── Scheduled Archive Administration Module")
-    end = js_text.index("function updateArasActionButtons")
-    return js_text[start:end]
+    return _slice(js_text, "Scheduled Archive Administration Module", "function updateArasActionButtons")
 
 
 def test_no_inner_html_in_archive_js_module() -> None:
@@ -364,14 +368,19 @@ def test_archive_css_classes_and_responsive_rules() -> None:
         assert marker in css_text, f"Missing CSS marker: {marker}"
 
     # Responsive rules under max-width: 560px
-    mobile_css = css_text[css_text.index("@media (max-width: 560px)"):]
+    mobile_start = css_text.find("@media (max-width: 560px)")
+    assert mobile_start != -1, "Marker '@media (max-width: 560px)' not found"
+    mobile_css = css_text[mobile_start:]
     assert ".archive-layout" in mobile_css
     assert "grid-template-columns: 1fr;" in mobile_css
 
     # Base archive layout must be outside every max-width media block.
-    archive_base = css_text.index("/* ── Scheduled Archive Administration Styles")
-    archive_mobile = css_text.index("@media (max-width: 560px)", archive_base)
-    base_layout = css_text.index(".archive-layout {", archive_base)
+    archive_base = css_text.find("Scheduled Archive Administration Styles")
+    assert archive_base != -1, "Marker 'Scheduled Archive Administration Styles' not found"
+    archive_mobile = css_text.find("@media (max-width: 560px)", archive_base)
+    assert archive_mobile != -1, "Marker '@media (max-width: 560px)' not found after archive_base"
+    base_layout = css_text.find(".archive-layout {", archive_base)
+    assert base_layout != -1, "Marker '.archive-layout {' not found after archive_base"
     assert archive_base < base_layout < archive_mobile
     assert css_text.count("{") == css_text.count("}")
 

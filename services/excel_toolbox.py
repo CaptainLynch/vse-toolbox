@@ -205,8 +205,15 @@ class ExcelToolbox:
                 books.append(bl_book)
                 bl_sheet = bl_book.sheets[0]
                 rows, cols = self._used_size(bl_sheet)
-                for r in range(1, rows + 1):
-                    baseline_data[r] = tuple(bl_sheet.range((r, c)).value for c in range(1, cols + 1))
+                if rows > 0 and cols > 0:
+                    raw_vals = bl_sheet.range((1, 1), (rows, cols)).value
+                    if isinstance(raw_vals, list) and raw_vals and isinstance(raw_vals[0], list):
+                        for r, row_vals in enumerate(raw_vals, start=1):
+                            baseline_data[r] = tuple(row_vals)
+                    elif isinstance(raw_vals, list):
+                        baseline_data[1] = tuple(raw_vals)
+                    else:
+                        baseline_data[1] = (raw_vals,)
 
             for src in sources:
                 src_path = Path(src)
@@ -214,16 +221,25 @@ class ExcelToolbox:
                 books.append(src_book)
                 src_sheet = src_book.sheets[0]
                 rows, cols = self._used_size(src_sheet)
-                for r in range(1, rows + 1):
-                    for c in range(1, cols + 1):
-                        val = src_sheet.range((r, c)).value
-                        out_sheet.range((write_row, c)).value = val
-                        if baseline is not None:
-                            bl_row = baseline_data.get(write_row)
-                            bl_val = bl_row[c - 1] if bl_row and c - 1 < len(bl_row) else None
-                            if val != bl_val:
-                                self._highlight_cell(out_sheet, write_row, c, src_path.stem)
-                    write_row += 1
+                if rows > 0 and cols > 0:
+                    raw_vals = src_sheet.range((1, 1), (rows, cols)).value
+                    if isinstance(raw_vals, list) and raw_vals and isinstance(raw_vals[0], list):
+                        matrix = raw_vals
+                    elif isinstance(raw_vals, list):
+                        matrix = [raw_vals]
+                    else:
+                        matrix = [[raw_vals]]
+
+                    out_sheet.range((write_row, 1), (write_row + len(matrix) - 1, cols)).value = matrix
+                    if baseline is not None:
+                        for r_offset, row_vals in enumerate(matrix):
+                            curr_r = write_row + r_offset
+                            bl_row = baseline_data.get(curr_r)
+                            for c_idx, val in enumerate(row_vals, start=1):
+                                bl_val = bl_row[c_idx - 1] if bl_row and c_idx - 1 < len(bl_row) else None
+                                if val != bl_val:
+                                    self._highlight_cell(out_sheet, curr_r, c_idx, src_path.stem)
+                    write_row += len(matrix)
 
             if baseline is not None and self._color_map:
                 self._write_legend(out_book, self._color_map)
@@ -279,9 +295,17 @@ class ExcelToolbox:
                 books.append(bl_book)
                 bl_sheet = bl_book.sheets[0]
                 rows, cols = self._used_size(bl_sheet)
-                for r in range(1, rows + 1):
-                    for c in range(1, cols + 1):
-                        baseline_data[(r, c)] = bl_sheet.range((r, c)).value
+                if rows > 0 and cols > 0:
+                    raw_vals = bl_sheet.range((1, 1), (rows, cols)).value
+                    if isinstance(raw_vals, list) and raw_vals and isinstance(raw_vals[0], list):
+                        bl_matrix = raw_vals
+                    elif isinstance(raw_vals, list):
+                        bl_matrix = [raw_vals]
+                    else:
+                        bl_matrix = [[raw_vals]]
+                    for r, row_vals in enumerate(bl_matrix, start=1):
+                        for c, val in enumerate(row_vals, start=1):
+                            baseline_data[(r, c)] = val
 
             for src in sources:
                 src_path = Path(src)
@@ -289,12 +313,20 @@ class ExcelToolbox:
                 books.append(src_book)
                 src_sheet = src_book.sheets[0]
                 rows, cols = self._used_size(src_sheet)
-                for r in range(1, rows + 1):
-                    for c in range(1, cols + 1):
-                        val = src_sheet.range((r, c)).value
-                        out_sheet.range((r, c)).value = val
-                        if baseline is not None and val != baseline_data.get((r, c)):
-                            self._highlight_cell(out_sheet, r, c, src_path.stem)
+                if rows > 0 and cols > 0:
+                    raw_vals = src_sheet.range((1, 1), (rows, cols)).value
+                    if isinstance(raw_vals, list) and raw_vals and isinstance(raw_vals[0], list):
+                        matrix = raw_vals
+                    elif isinstance(raw_vals, list):
+                        matrix = [raw_vals]
+                    else:
+                        matrix = [[raw_vals]]
+                    out_sheet.range((1, 1), (len(matrix), cols)).value = matrix
+                    if baseline is not None:
+                        for r, row_vals in enumerate(matrix, start=1):
+                            for c, val in enumerate(row_vals, start=1):
+                                if val != baseline_data.get((r, c)):
+                                    self._highlight_cell(out_sheet, r, c, src_path.stem)
 
             if baseline is not None and self._color_map:
                 self._write_legend(out_book, self._color_map)

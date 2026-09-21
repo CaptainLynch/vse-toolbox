@@ -65,6 +65,10 @@ _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _ENUM_RE = re.compile(r"^[\w\u3400-\u9fff .()/+-]{1,128}$", re.UNICODE)
 
 
+class CrawlCancelled(RuntimeError):
+    """Raised at a pagination boundary when the caller requested cancellation."""
+
+
 class TDCCrawlerError(RuntimeError):
     """Raised when a TDC request or response cannot be used safely."""
 
@@ -343,6 +347,8 @@ class TDCCrawlerClient:
         page_size: int = 50,
         max_pages: int = 100,
         max_records: int = 10000,
+        should_stop: Callable[[], bool] | None = None,
+        on_page: Callable[[int, int], None] | None = None,
     ) -> TDCPagedResult:
         return self._crawl_all(
             report_type="data_model",
@@ -352,6 +358,8 @@ class TDCCrawlerClient:
             max_pages=max_pages,
             max_records=max_records,
             record_granularity="part_detail",
+            should_stop=should_stop,
+            on_page=on_page,
         )
 
     @observed("tdc.TDCCrawlerClient.export_data_model")
@@ -503,6 +511,8 @@ class TDCCrawlerClient:
         page_size: int = 50,
         max_pages: int = 100,
         max_records: int = 10000,
+        should_stop: Callable[[], bool] | None = None,
+        on_page: Callable[[int, int], None] | None = None,
     ) -> TDCPagedResult:
         resolved = self._resolve_sor_filters(filters)
         return self._crawl_all(
@@ -513,6 +523,8 @@ class TDCCrawlerClient:
             max_pages=max_pages,
             max_records=max_records,
             record_granularity="workflow",
+            should_stop=should_stop,
+            on_page=on_page,
         )
 
     @observed("tdc.TDCCrawlerClient.export_sor")
@@ -647,6 +659,8 @@ class TDCCrawlerClient:
         max_pages: int,
         max_records: int,
         record_granularity: str,
+        should_stop: Callable[[], bool] | None = None,
+        on_page: Callable[[int, int], None] | None = None,
     ) -> TDCPagedResult:
         _validate_limits(page_size=page_size, max_pages=max_pages, max_records=max_records)
         rows: list[dict[str, Any]] = []
@@ -660,6 +674,11 @@ class TDCCrawlerClient:
         stop_reason = "max_pages"
 
         for page in range(1, max_pages + 1):
+            if should_stop is not None and should_stop():
+                raise CrawlCancelled(
+                    f"cancelled at TDC {report_type} pagination boundary "
+                    f"(page {page}, rows {len(rows)})"
+                )
             try:
                 result = query(filters, page=page, page_size=page_size)
             except TDCCrawlerError as exc:
@@ -817,6 +836,8 @@ class TDCCrawlerClient:
             )
             if stop_reason != "continue":
                 break
+            if on_page is not None:
+                on_page(page, len(rows))
 
         return TDCPagedResult(
             report_type=report_type,
@@ -1494,10 +1515,15 @@ def _safe_filename(value: str) -> str:
     name = _PATH_CHARS_RE.sub("_", Path(str(value)).name).strip(" .")
     name = re.sub(r"\s+", " ", name)
     if not name:
-        name = f"tdc_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-    if not name.lower().endswith(".xlsx"):
-        name += ".xlsx"
-    return name[:180]
+        name = f"tdc_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    if name.lower().endswith(".xlsx"):
+        stem = name[:-5]
+    else:
+        stem = name
+    stem = stem[:175].rstrip(" .")
+    if not stem:
+        stem = f"tdc_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    return f"{stem}.xlsx"
 
 
 def _row_identity(report_type: str, row: Mapping[str, Any]) -> str:

@@ -35,6 +35,17 @@ def test_redact_debug_payload_recursively_filters_sensitive_keys_and_text():
         "private key": "[FILTERED]",
         "api key": "[FILTERED]",
     }
+    assert redact_debug_payload({"hdr": "Bearer some-unusual-token-value"}) == {
+        "hdr": "[FILTERED]",
+    }
+    assert redact_debug_payload({"non_sensitive_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature"}) == {
+        "non_sensitive_key": "[FILTERED]",
+    }
+    assert redact_debug_payload({"sid": "session-1", "arasauth": "auth-val", "jwt": "val"}) == {
+        "sid": "[FILTERED]",
+        "arasauth": "[FILTERED]",
+        "jwt": "[FILTERED]",
+    }
     assert payload["nested"]["profile"]["password"] == "secret-value"
 
 

@@ -58,7 +58,9 @@ def test_spec_files_exist() -> None:
 
 def test_webui_spec_excludes_excel_com() -> None:
     content = _read_spec("VSE-WebUI.spec")
-    assert "web\\\\app.py" in content or "web/app.py" in content
+    # Phase 5 W5-1：入口为 webui.py（readiness probe + --no-browser + 自动唤起
+    # 浏览器），经 web.app.create_app 达到同一 WebUI 运行时。
+    assert "webui.py" in content
     assert "name='VSE-WebUI'" in content or 'name="VSE-WebUI"' in content
 
     # Flask WebUI must not collect win32com or xlwings submodules

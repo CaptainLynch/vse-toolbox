@@ -418,6 +418,62 @@ def test_post_mutation_security_guard_runs_before_body_parsing(
         assert count == 0
 
 
+@pytest.mark.parametrize(
+    "bad_host",
+    [
+        "example.com",
+        "evil.com:5000",
+        "192.168.1.50:5000",
+        "attacker.local",
+    ],
+)
+def test_get_request_rejects_untrusted_host(client, bad_host: str) -> None:
+    """GET /api/excel-tasks rejects non-loopback Host with 403 LocalAccessRequired."""
+    headers = _loopback_headers(host=bad_host)
+    environ = {"REMOTE_ADDR": "127.0.0.1", "HTTP_HOST": bad_host}
+    resp = client.get("/api/excel-tasks", headers=headers, environ_base=environ)
+    assert resp.status_code == 403
+    assert resp.headers.get("Cache-Control") == "no-store"
+    assert resp.get_json() == {
+        "ok": False,
+        "error": {
+            "type": "LocalAccessRequired",
+            "message": "请求主机不受信任",
+        },
+    }
+
+
+def test_get_api_rejects_cross_site_fetch(client) -> None:
+    """GET /api/excel-tasks rejects Sec-Fetch-Site: cross-site with 403 CrossSiteRequest."""
+    headers = {"Sec-Fetch-Site": "cross-site", "Host": "localhost:5000"}
+    resp = client.get("/api/excel-tasks", headers=headers)
+    assert resp.status_code == 403
+    assert resp.headers.get("Cache-Control") == "no-store"
+    assert resp.get_json() == {
+        "ok": False,
+        "error": {
+            "type": "CrossSiteRequest",
+            "message": "拒绝跨站请求",
+        },
+    }
+
+
+def test_payload_too_large_rejects_with_413(client) -> None:
+    """POST request exceeding MAX_CONTENT_LENGTH (16MB) returns 413 PayloadTooLarge."""
+    huge_data = b"x" * (16 * 1024 * 1024 + 1024)
+    resp = client.post(
+        "/api/excel-tasks",
+        data=huge_data,
+        content_type="application/json",
+        headers=_loopback_headers(),
+    )
+    assert resp.status_code == 413
+    assert resp.headers.get("Cache-Control") == "no-store"
+    body = resp.get_json()
+    assert body["ok"] is False
+    assert body["error"]["type"] == "PayloadTooLarge"
+
+
 # ── 2. Task Creation (POST /api/excel-tasks) ────────────────────────────────
 
 

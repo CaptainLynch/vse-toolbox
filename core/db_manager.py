@@ -17,7 +17,11 @@ import json
 import secrets
 import sqlite3
 from core.diagnostic_recording import operation, observed
-from core.project_status_contracts import PROJECT_STATUS_SOURCE_CAPABILITIES
+from core.project_status_contracts import (
+    DELIVERABLE_LINK_REGISTRY,
+    PROJECT_STATUS_SOURCE_CAPABILITIES,
+    project_status_manual_editability,
+)
 import logging
 from pathlib import Path
 from contextlib import contextmanager
@@ -54,13 +58,27 @@ SYNC_LEASE_DEFAULT_SECONDS = 900
 #: 默认重试策略：max_attempts=1 即自动重试 0 次。
 SYNC_DEFAULT_RETRY_POLICY_JSON = '{"max_attempts":1}'
 
+#: 第三元组元素（deliverable_id）从 core.project_status_contracts
+#: DELIVERABLE_LINK_REGISTRY 单一注册表派生；source/report 字面量保留在本表。
 ARCHIVE_JOB_CONTRACTS: dict[str, tuple[str, str, str | None]] = {
-    "aras_ewo": ("aras", "ewo", "VPI-T2-D3"),
-    "aras_paa": ("aras", "paa", None),
-    "aras_ncr_progress": ("aras", "ncr_progress", None),
-    "aras_ncr_detail": ("aras", "ncr_detail", None),
-    "tdc_data_model": ("tdc", "data_model", "VPI-T2-D5"),
-    "tdc_sor": ("tdc", "sor", "VPI-T2-D2"),
+    "aras_ewo": ("aras", "ewo", DELIVERABLE_LINK_REGISTRY["aras_ewo"]["deliverable_id"]),
+    "aras_paa": ("aras", "paa", DELIVERABLE_LINK_REGISTRY["aras_paa"]["deliverable_id"]),
+    "aras_ncr_progress": (
+        "aras",
+        "ncr_progress",
+        DELIVERABLE_LINK_REGISTRY["aras_ncr_progress"]["deliverable_id"],
+    ),
+    "aras_ncr_detail": (
+        "aras",
+        "ncr_detail",
+        DELIVERABLE_LINK_REGISTRY["aras_ncr_detail"]["deliverable_id"],
+    ),
+    "tdc_data_model": (
+        "tdc",
+        "data_model",
+        DELIVERABLE_LINK_REGISTRY["tdc_data_model"]["deliverable_id"],
+    ),
+    "tdc_sor": ("tdc", "sor", DELIVERABLE_LINK_REGISTRY["tdc_sor"]["deliverable_id"]),
 }
 
 ARCHIVE_CREDENTIAL_UNCHANGED = object()
@@ -115,6 +133,20 @@ class SyncBindingNotReadyError(ValueError):
 
 class ProjectStatusConcurrentUpdateError(RuntimeError):
     """乐观锁检测到交付物已被并发修改；自动任务不得覆盖人工更新。"""
+
+
+class MappedDeliverableReadOnlyError(RuntimeError):
+    """手工写入命中了已配置外部映射的交付物。"""
+
+    error_type = "MappedDeliverableReadOnly"
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+# Keep a concise alias available to callers that use the API error name.
+MappedDeliverableReadOnly = MappedDeliverableReadOnlyError
 
 
 class ArchiveLeaseBusyError(RuntimeError):
@@ -417,6 +449,31 @@ _PROJECT_STATUS_MILESTONES_DDL = """
     );
     """
 
+# 项目状态交付物表 DDL 模板。外部快照驱动交付物（D6-D8）没有手工排期的
+# 计划完成日期，planned_date 允许为空（NULL 由展示层输出 plannedDate=null）；
+# 旧库的 NOT NULL 列由 _migrate_schema 用该模板检测并整表重建。
+_PROJECT_STATUS_DELIVERABLES_DDL = """
+    CREATE TABLE IF NOT EXISTS {table} (
+        id           TEXT PRIMARY KEY,
+        display_code TEXT NOT NULL UNIQUE,
+        phase_id     TEXT NOT NULL,
+        name         TEXT NOT NULL,
+        status       TEXT NOT NULL CHECK (status IN ('已完成', '进行中', '待审批', '已逾期')),
+        owner        TEXT NOT NULL,
+        planned_date TEXT,
+        actual_date  TEXT,
+        progress     INTEGER NOT NULL CHECK (progress BETWEEN 0 AND 100),
+        remark       TEXT NOT NULL DEFAULT '',
+        source       TEXT NOT NULL,
+        department   TEXT NOT NULL DEFAULT '',
+        stage        TEXT NOT NULL DEFAULT '',
+        update_method TEXT NOT NULL DEFAULT 'manual',
+        sort_order   INTEGER NOT NULL,
+        updated_at   TEXT NOT NULL,
+        FOREIGN KEY (phase_id) REFERENCES project_status_phases(id) ON DELETE CASCADE
+    );
+    """
+
 TABLE_DEFINITIONS: list[str] = [
     # 项目主表
     """
@@ -489,27 +546,7 @@ TABLE_DEFINITIONS: list[str] = [
     );
     """,
     _PROJECT_STATUS_MILESTONES_DDL.format(table="project_status_milestones"),
-    """
-    CREATE TABLE IF NOT EXISTS project_status_deliverables (
-        id           TEXT PRIMARY KEY,
-        display_code TEXT NOT NULL UNIQUE,
-        phase_id     TEXT NOT NULL,
-        name         TEXT NOT NULL,
-        status       TEXT NOT NULL CHECK (status IN ('已完成', '进行中', '待审批', '已逾期')),
-        owner        TEXT NOT NULL,
-        planned_date TEXT NOT NULL,
-        actual_date  TEXT,
-        progress     INTEGER NOT NULL CHECK (progress BETWEEN 0 AND 100),
-        remark       TEXT NOT NULL DEFAULT '',
-        source       TEXT NOT NULL,
-        department   TEXT NOT NULL DEFAULT '',
-        stage        TEXT NOT NULL DEFAULT '',
-        update_method TEXT NOT NULL DEFAULT 'manual',
-        sort_order   INTEGER NOT NULL,
-        updated_at   TEXT NOT NULL,
-        FOREIGN KEY (phase_id) REFERENCES project_status_phases(id) ON DELETE CASCADE
-    );
-    """,
+    _PROJECT_STATUS_DELIVERABLES_DDL.format(table="project_status_deliverables"),
     # 交付物更新策略绑定：试点默认 manual + tdc，自动写入未启用。
     # 调度相关内部列（cursor_json/credential_ref/lease_*/retry_policy_json）
     # 仅供同步运行器使用，不通过现有 policy API 返回。
@@ -985,6 +1022,30 @@ TABLE_DEFINITIONS: list[str] = [
     BEGIN
         SELECT RAISE(ABORT, 'excel download audit artifact does not belong to task');
     END;
+    """,
+    # 爬虫/异步任务表 (crawl_tasks, Schema v14 增量兼容表)
+    """
+    CREATE TABLE IF NOT EXISTS crawl_tasks (
+        task_id        TEXT PRIMARY KEY NOT NULL,
+        task_type      TEXT NOT NULL,
+        source         TEXT NOT NULL,
+        status         TEXT NOT NULL DEFAULT 'queued'
+                       CHECK (status IN ('queued', 'leased', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted')),
+        params_json    TEXT NOT NULL DEFAULT '{}',
+        progress_json  TEXT NOT NULL DEFAULT '{}',
+        artifact_path  TEXT,
+        error_message  TEXT,
+        created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_crawl_tasks_status
+        ON crawl_tasks(status, created_at);
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_crawl_tasks_source
+        ON crawl_tasks(source, status);
     """
 ]
 
@@ -1287,6 +1348,47 @@ class DatabaseManager:
             )
             used_codes.add(display_code)
             next_number += 1
+        # schema v14 后增补：外部快照驱动交付物（D6-D8）没有计划完成日期，
+        # planned_date 由 NOT NULL 放宽为可空。SQLite 无法修改列约束，检测到
+        # 旧库仍为 NOT NULL 时按模板整表重建并保留数据（必须在 display_code
+        # 补齐之后执行，确保源表已含全部当前列且无 NULL 编码行）。
+        deliverable_template_columns = {
+            str(column["name"]): int(column["notnull"])
+            for column in conn.execute("PRAGMA table_info(project_status_deliverables)")
+        }
+        if (
+            deliverable_template_columns
+            and deliverable_template_columns.get("planned_date") == 1
+        ):
+            # PRAGMA foreign_keys 在事务内是 no-op；先提交 display_code 补齐
+            # 的 DML，确保关闭外键后 DROP 父表不会级联清空子表。
+            conn.commit()
+            conn.execute("PRAGMA foreign_keys=OFF")
+            try:
+                conn.execute("DROP TABLE IF EXISTS project_status_deliverables_rebuild")
+                conn.execute(
+                    _PROJECT_STATUS_DELIVERABLES_DDL.format(
+                        table="project_status_deliverables_rebuild"
+                    )
+                )
+                conn.execute(
+                    "INSERT INTO project_status_deliverables_rebuild "
+                    "(id, display_code, phase_id, name, status, owner, planned_date, "
+                    "actual_date, progress, remark, source, department, stage, "
+                    "update_method, sort_order, updated_at) "
+                    "SELECT id, display_code, phase_id, name, status, owner, planned_date, "
+                    "actual_date, progress, remark, source, department, stage, "
+                    "update_method, sort_order, updated_at "
+                    "FROM project_status_deliverables"
+                )
+                conn.execute("DROP TABLE project_status_deliverables")
+                conn.execute(
+                    "ALTER TABLE project_status_deliverables_rebuild "
+                    "RENAME TO project_status_deliverables"
+                )
+                conn.commit()
+            finally:
+                conn.execute("PRAGMA foreign_keys=ON")
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_ps_deliverables_display_code "
             "ON project_status_deliverables(display_code)"
@@ -1354,6 +1456,27 @@ class DatabaseManager:
             "WHERE job_key = 'tdc_data_model' AND builtin = 1 "
             "AND display_name = 'TDC数模'"
         )
+
+        # crawl_tasks 增量表（保持 CURRENT_SCHEMA_VERSION = 14 严格不变）
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS crawl_tasks (
+                task_id        TEXT PRIMARY KEY NOT NULL,
+                task_type      TEXT NOT NULL,
+                source         TEXT NOT NULL,
+                status         TEXT NOT NULL DEFAULT 'queued'
+                               CHECK (status IN ('queued', 'leased', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted')),
+                params_json    TEXT NOT NULL DEFAULT '{}',
+                progress_json  TEXT NOT NULL DEFAULT '{}',
+                artifact_path  TEXT,
+                error_message  TEXT,
+                created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_crawl_tasks_status ON crawl_tasks(status, created_at);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_crawl_tasks_source ON crawl_tasks(source, status);")
 
         if existing_version < CURRENT_SCHEMA_VERSION:
             conn.execute(f"PRAGMA user_version = {CURRENT_SCHEMA_VERSION}")
@@ -1435,12 +1558,17 @@ class DatabaseManager:
         # 契约内交付物（D2/D3/D5）默认自动同步：初始状态为待同步占位，
         # 首次同步成功前由展示层显示「待同步」；D1 保留手工演示值，
         # D4 手工模式（A 面契约未验证）同样以占位值起步。
+        # D6-D8（外部快照驱动）无计划完成日期（planned_date NULL）与
+        # 手工进度，初始展示状态由展示状态机输出「待同步」。
         deliverables = (
             ("VPI-T2-D1", "子系统开发策略", "已完成", "王晨", "2026-05-12", "2026-05-10", 100, "无", "内网"),
             ("VPI-T2-D2", "SOR 定点流程", "进行中", "周敏", "2026-06-18", None, 0, "待同步", "TDC SOR"),
             ("VPI-T2-D3", "EWO 流程", "进行中", "李珊", "2026-08-22", None, 0, "待同步", "ARAS EWO"),
             ("VPI-T2-D4", "造型 VDR 审批流程", "进行中", "陈璇", "2026-08-15", None, 0, "待同步", "TDC A 面（待契约确认）"),
             ("VPI-T2-D5", "数模设计审核流程报表", "进行中", "赵岩", "2026-08-08", None, 0, "待同步", "TDC 数模设计审核流程报表"),
+            ("VPI-T2-D6", "PAA 报告", "进行中", "", None, None, 0, "", "ARAS PAA"),
+            ("VPI-T2-D7", "NCR 审批进度", "进行中", "", None, None, 0, "", "ARAS NCR"),
+            ("VPI-T2-D8", "NCR 审批明细", "进行中", "", None, None, 0, "", "ARAS NCR"),
         )
         conn.executemany(
             """
@@ -1451,9 +1579,44 @@ class DatabaseManager:
             """,
             [
                 (item[0], f"DEL-{index:03d}", *item[1:], index, snapshot)
-                for index, item in enumerate(deliverables, start=1)
+                for index, item in enumerate(deliverables[:5], start=1)
             ],
         )
+        # 存量库 display_code 补齐（D6-D8）：自定义交付物可能已占用
+        # DEL-006/007/008，固定编码种子行会被 INSERT OR IGNORE 静默跳过；
+        # 此时优先使用合同编码、被占用时取下一个可用编码，保证 D6-D8
+        # 交付物行与后续绑定/字段权威种子始终存在。
+        _deliverable_insert_sql = """
+            INSERT OR IGNORE INTO project_status_deliverables
+                (id, display_code, phase_id, name, status, owner, planned_date, actual_date,
+                 progress, remark, source, sort_order, updated_at)
+            VALUES (?, ?, 'VPI-T2', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        for index, item in enumerate(deliverables[5:], start=6):
+            exists = conn.execute(
+                "SELECT 1 FROM project_status_deliverables WHERE id = ?", (item[0],)
+            ).fetchone()
+            if exists is not None:
+                continue
+            used_codes = {
+                str(row["display_code"])
+                for row in conn.execute(
+                    "SELECT display_code FROM project_status_deliverables "
+                    "WHERE display_code IS NOT NULL"
+                )
+            }
+            preferred_code = f"DEL-{index:03d}"
+            if preferred_code not in used_codes:
+                display_code = preferred_code
+            else:
+                number = 1
+                while f"DEL-{number:03d}" in used_codes:
+                    number += 1
+                display_code = f"DEL-{number:03d}"
+            conn.execute(
+                _deliverable_insert_sql,
+                (item[0], display_code, *item[1:], index, snapshot),
+            )
         conn.execute(
             """
             UPDATE project_status_deliverables
@@ -1512,6 +1675,30 @@ class DatabaseManager:
               AND authority = 'manual' AND locked_at IS NULL
             """
         )
+        # 存量库幂等迁移（B）：老库中 syncCapable 交付物的绑定曾是 manual
+        # 种子（新库种子本就 automatic，此 UPDATE 对其 no-op）。仅翻转
+        # "从未动过"的 pristine manual 绑定——任一字段被用户改过（external
+        # key、匹配规则、映射、尝试/成功时间戳、enabled、mode）都保持原样。
+        # enabled 保持 0，不绕过证据/凭据门控；D1（ManualOnly）与 D4
+        # （ContractBlocked）不在 syncCapable 集合内，天然不受影响。
+        sync_capable_ids = tuple(
+            deliverable_id
+            for deliverable_id, capabilities in PROJECT_STATUS_SOURCE_CAPABILITIES.items()
+            if capabilities.get("syncCapable")
+        )
+        if sync_capable_ids:
+            placeholders = ", ".join("?" for _ in sync_capable_ids)
+            conn.execute(
+                f"""
+                UPDATE project_status_update_bindings
+                SET mode = 'automatic'
+                WHERE deliverable_id IN ({placeholders})
+                  AND mode = 'manual' AND enabled = 0
+                  AND external_key IS NULL AND match_rule_json = '{{}}' AND mapping_json = '{{}}'
+                  AND last_attempt_at IS NULL AND last_success_at IS NULL
+                """,
+                sync_capable_ids,
+            )
 
     @staticmethod
     def _seed_archive_jobs(conn: sqlite3.Connection) -> None:
@@ -2326,6 +2513,11 @@ class DatabaseManager:
     ) -> str:
         """以更新时间作乐观锁更新交付物，返回新更新时间。"""
         with self.get_connection() as conn:
+            # Serialize the binding check with policy writes.  A reader that
+            # checked editability before entering this method could otherwise
+            # race a mapping configuration change.
+            conn.execute("BEGIN IMMEDIATE")
+            self._assert_project_status_manual_editable(conn, deliverable_id)
             updated_at = self._update_project_status_deliverable_row(
                 conn,
                 deliverable_id,
@@ -2338,6 +2530,35 @@ class DatabaseManager:
                 (updated_at, phase_id),
             )
             return updated_at
+
+    @staticmethod
+    def _assert_project_status_manual_editable(
+        conn: sqlite3.Connection,
+        deliverable_id: str,
+    ) -> None:
+        """Recheck the current binding before any manual write.
+
+        A missing binding is the unconfigured default and remains editable;
+        ``_ensure_project_status_policy`` is called only after this guard in
+        the audited write path.  This ordering guarantees a mapped denial
+        cannot insert authority rows or an audit record as a side effect.
+        """
+        binding = conn.execute(
+            """
+            SELECT external_key, match_rule_json, mapping_json
+            FROM project_status_update_bindings
+            WHERE deliverable_id = ?
+            """,
+            (deliverable_id,),
+        ).fetchone()
+        if binding is None:
+            return
+        binding_values = dict(binding)
+        binding_values["deliverable_id"] = deliverable_id
+        editability = project_status_manual_editability(binding_values)
+        if editability["manualEditable"] is not True:
+            reason = str(editability.get("readOnlyReason") or "交付物已配置外部映射")
+            raise MappedDeliverableReadOnlyError(reason)
 
     @staticmethod
     def _update_project_status_deliverable_row(
@@ -2450,12 +2671,16 @@ class DatabaseManager:
         if invalid:
             raise ValueError(f"unknown project status field: {sorted(invalid)}")
         with self.get_connection() as conn:
+            # BEGIN IMMEDIATE makes the binding decision and the subsequent
+            # row/authority/audit changes one serialized transaction.
+            conn.execute("BEGIN IMMEDIATE")
             exists = conn.execute(
                 "SELECT id FROM project_status_deliverables WHERE id = ?",
                 (deliverable_id,),
             ).fetchone()
             if exists is None:
                 raise KeyError(deliverable_id)
+            self._assert_project_status_manual_editable(conn, deliverable_id)
             self._ensure_project_status_policy(conn, deliverable_id)
             updated_at = self._update_project_status_deliverable_row(
                 conn,
@@ -2667,7 +2892,8 @@ class DatabaseManager:
         with self.get_connection() as conn:
             rows = conn.execute(
                 """
-                SELECT b.deliverable_id, b.mode, b.source_type, b.enabled, b.sync_state,
+                SELECT b.deliverable_id, b.mode, b.source_type, b.enabled,
+                       b.external_key, b.mapping_json, b.sync_state,
                        b.last_attempt_at, b.last_success_at, b.last_error_type,
                        b.last_error_message, b.updated_at, b.match_rule_json
                 FROM project_status_update_bindings b
@@ -2819,7 +3045,7 @@ class DatabaseManager:
                 raise SyncBindingNotReadyError("binding source_type is 'none'")
             if validate_runtime_prerequisites:
                 # 聚合绑定（按车型聚合，无单记录稳定键）豁免外部稳定键
-                #（GPT 终审 P1：租约入口此前阻断聚合首次同步）。
+                # （GPT 终审 P1：租约入口此前阻断聚合首次同步）。
                 match_rule = _json_loads_or_none(binding["match_rule_json"])
                 aggregate_mode = isinstance(match_rule, dict) and match_rule.get("aggregate") is True
                 if not aggregate_mode and not binding["external_key"]:
@@ -3584,7 +3810,8 @@ class DatabaseManager:
         读取符合 run_once 条件的绑定，供 runner 使用。
 
         仅返回 enabled=1 且 mode in (automatic, hybrid) 的绑定，以 binding_id 升序。
-        同时读取 deliverable 当前 updated_at 和 phase_id。
+        同时读取 deliverable 当前 updated_at、phase_id 与绑定的 last_success_at
+        （调度层新鲜度跳过：last_success_at 距今不足 interval 时零网络复用快照）。
         不返回 credential_ref、lease_token 等敏感内部列。
 
         Args:
@@ -3594,18 +3821,19 @@ class DatabaseManager:
             if deliverable_id is not None:
                 rows = conn.execute(
                     """
-                    SELECT b.id, b.deliverable_id, b.source_type, b.external_key,
-                           b.match_rule_json, b.mapping_json, b.cursor_json,
-                           b.retry_policy_json, b.sync_state, b.sync_config_revision,
-                           CASE WHEN trim(COALESCE(b.credential_ref, '')) <> ''
-                                THEN 1 ELSE 0 END AS credential_configured,
-                           d.phase_id, d.updated_at AS deliverable_updated_at
-                    FROM project_status_update_bindings b
-                    INNER JOIN project_status_deliverables d ON d.id = b.deliverable_id
-                    WHERE b.enabled = 1
-                      AND b.mode IN ('automatic', 'hybrid')
-                      AND b.deliverable_id = ?
-                    ORDER BY b.id
+                SELECT b.id, b.deliverable_id, b.source_type, b.external_key,
+                       b.match_rule_json, b.mapping_json, b.cursor_json,
+                       b.retry_policy_json, b.sync_state, b.sync_config_revision,
+                       b.last_success_at,
+                       CASE WHEN trim(COALESCE(b.credential_ref, '')) <> ''
+                            THEN 1 ELSE 0 END AS credential_configured,
+                       d.phase_id, d.updated_at AS deliverable_updated_at
+                FROM project_status_update_bindings b
+                INNER JOIN project_status_deliverables d ON d.id = b.deliverable_id
+                WHERE b.enabled = 1
+                  AND b.mode IN ('automatic', 'hybrid')
+                  AND b.deliverable_id = ?
+                ORDER BY b.id
                     """,
                     (deliverable_id,),
                 ).fetchall()
@@ -3615,6 +3843,7 @@ class DatabaseManager:
                     SELECT b.id, b.deliverable_id, b.source_type, b.external_key,
                            b.match_rule_json, b.mapping_json, b.cursor_json,
                            b.retry_policy_json, b.sync_state, b.sync_config_revision,
+                           b.last_success_at,
                            CASE WHEN trim(COALESCE(b.credential_ref, '')) <> ''
                                 THEN 1 ELSE 0 END AS credential_configured,
                            d.phase_id, d.updated_at AS deliverable_updated_at
@@ -4218,6 +4447,7 @@ class DatabaseManager:
         self._validate_trigger_type(trigger_type)
         self._validate_lease_duration(lease_seconds)
         with self.get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             job = conn.execute(
                 """
                 SELECT id, job_key, source_type, report_type, template_key, archived_at,
@@ -4321,6 +4551,7 @@ class DatabaseManager:
     ) -> None:
         """Move a lease-owned archive run from leased to running."""
         with self.get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             self._assert_archive_lease_holder(
                 conn, job_id, run_id, lease_token
             )
@@ -4428,6 +4659,7 @@ class DatabaseManager:
             else None
         )
         with self.get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             self._assert_archive_lease_holder(
                 conn, job_id, run_id, lease_token
             )
@@ -4565,6 +4797,131 @@ class DatabaseManager:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def save_feishu_tasks(self, tasks: Sequence[Mapping[str, Any]]) -> int:
+        if not tasks:
+            return 0
+        saved_count = 0
+        with self.get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            for task in tasks:
+                existing = conn.execute(
+                    "SELECT id FROM feishu_tasks WHERE source_email_id = ?",
+                    (task["source_email_id"],),
+                ).fetchone()
+                if existing:
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO feishu_tasks (title, assignee, deadline, source_email_id)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        task["title"],
+                        task["assignee"],
+                        task["deadline"],
+                        task["source_email_id"],
+                    ),
+                )
+                saved_count += 1
+        return saved_count
+
+    def sync_unsynced_feishu_tasks_to_deliverables(self, project_id: int = 1) -> int:
+        with self.get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                """
+                SELECT id, title, assignee, deadline, source_email_id
+                FROM feishu_tasks
+                WHERE synced = 0
+                ORDER BY id
+                """
+            ).fetchall()
+            synced_ids: list[int] = []
+            for row in rows:
+                task_id = int(row["id"])
+                source_email_id = row["source_email_id"] or str(task_id)
+                conn.execute(
+                    """
+                    INSERT INTO deliverables
+                        (project_id, name, owner, due_date, status, remark)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        project_id,
+                        row["title"] or "未命名飞书待办",
+                        row["assignee"] or "",
+                        row["deadline"] or None,
+                        "pending",
+                        f"飞书待办同步: {source_email_id}",
+                    ),
+                )
+                synced_ids.append(task_id)
+            for task_id in synced_ids:
+                conn.execute(
+                    "UPDATE feishu_tasks SET synced = 1 WHERE id = ?",
+                    (task_id,),
+                )
+            return len(synced_ids)
+
+    def persist_scraped_deliverables(self, items: Sequence[Mapping[str, Any]]) -> int:
+        if not items:
+            return 0
+        with self.get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            project_map: dict[str, int] = {}
+            for item in items:
+                proj_name = item.get("project_id", "Unknown_Project")
+                if proj_name not in project_map:
+                    cursor = conn.execute("SELECT id FROM projects WHERE name = ?", (proj_name,))
+                    res = cursor.fetchone()
+                    if res:
+                        project_map[proj_name] = res[0]
+                    else:
+                        cursor = conn.execute("INSERT INTO projects (name, manager) VALUES (?, ?)", (proj_name, "Crawler"))
+                        project_map[proj_name] = cursor.lastrowid
+                conn.execute(
+                    """
+                    INSERT INTO deliverables (project_id, name, owner, status)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        project_map[proj_name],
+                        item.get("name", "未命名"),
+                        item.get("owner", ""),
+                        item.get("status", "pending"),
+                    ),
+                )
+        return len(items)
+
+    def get_deliverables_for_export(self) -> list[sqlite3.Row]:
+        with self.get_connection() as conn:
+            return conn.execute(
+                """
+                SELECT
+                    p.name    AS project_name,
+                    p.manager AS project_manager,
+                    d.name    AS deliverable_name,
+                    d.owner,
+                    d.due_date,
+                    d.status,
+                    d.remark,
+                    d.updated_at
+                FROM deliverables d
+                JOIN projects p ON d.project_id = p.id
+                ORDER BY d.due_date ASC
+                """
+            ).fetchall()
+
+    def get_feishu_tasks_summary(self) -> list[sqlite3.Row]:
+        with self.get_connection() as conn:
+            return conn.execute(
+                """
+                SELECT title, assignee, deadline, synced
+                FROM feishu_tasks
+                ORDER BY deadline ASC
+                """
+            ).fetchall()
+
     @contextmanager
     def get_connection(self) -> Generator[sqlite3.Connection, None, None]:
         """
@@ -4598,8 +4955,19 @@ class DatabaseManager:
 
             except sqlite3.Error:
                 if conn:
-                    conn.rollback()
-                logger.exception("数据库事务回滚")
+                    try:
+                        conn.rollback()
+                    except sqlite3.Error:
+                        pass
+                logger.exception("数据库事务异常回滚 (sqlite3.Error)")
+                raise
+            except BaseException as exc:
+                if conn:
+                    try:
+                        conn.rollback()
+                    except sqlite3.Error:
+                        pass
+                logger.info("数据库事务因应用程序异常回滚: %s: %s", type(exc).__name__, exc)
                 raise
 
             finally:
@@ -4655,6 +5023,8 @@ class DatabaseManager:
         Returns:
             表中的行数，表不存在时返回 -1
         """
+        if not table_name.isascii() or not table_name.isidentifier():
+            return -1
         if not self.table_exists(table_name):
             return -1
         try:
@@ -4668,3 +5038,144 @@ class DatabaseManager:
         except sqlite3.Error as e:
             logger.error("获取表 %s 行数时出错: %s", table_name, e)
             return -1
+
+    # ── crawl_tasks 任务持久化与调度支持 ────────────────────────────────
+
+    def create_crawl_task(
+        self,
+        task_id: str,
+        task_type: str,
+        source: str,
+        params_json: str = "{}",
+        progress_json: str = "{}",
+    ) -> dict[str, Any]:
+        """
+        创建新的爬虫/异步任务记录。
+        """
+        with self.get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO crawl_tasks (
+                    task_id, task_type, source, status, params_json, progress_json
+                ) VALUES (?, ?, ?, 'queued', ?, ?)
+                """,
+                (task_id, task_type, source, params_json, progress_json),
+            )
+            row = conn.execute(
+                "SELECT * FROM crawl_tasks WHERE task_id = ?", (task_id,)
+            ).fetchone()
+            return dict(row) if row else {}
+
+    def get_crawl_task(self, task_id: str) -> dict[str, Any] | None:
+        """根据 task_id 获取单个 crawl 任务。"""
+        with self.get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM crawl_tasks WHERE task_id = ?", (task_id,)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def list_crawl_tasks(
+        self,
+        status: str | None = None,
+        source: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """列出 crawl 任务，按创建时间逆序排列。"""
+        clauses = []
+        params: list[Any] = []
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        if source:
+            clauses.append("source = ?")
+            params.append(source)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        query = f"SELECT * FROM crawl_tasks {where} ORDER BY created_at DESC LIMIT ?"
+        params.append(max(1, min(limit, 500)))
+        with self.get_connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+            return [dict(r) for r in rows]
+
+    def update_crawl_task_progress(
+        self,
+        task_id: str,
+        progress_json: str,
+    ) -> bool:
+        """更新任务进度。"""
+        with self.get_connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE crawl_tasks
+                SET progress_json = ?,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE task_id = ?
+                """,
+                (progress_json, task_id),
+            )
+            return cursor.rowcount > 0
+
+    def update_crawl_task_status(
+        self,
+        task_id: str,
+        status: str,
+        *,
+        error_message: str | None = None,
+        artifact_path: str | None = None,
+        progress_json: str | None = None,
+    ) -> bool:
+        """更新任务状态及错误信息或产物路径。"""
+        updates = ["status = ?", "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"]
+        params: list[Any] = [status]
+        if error_message is not None:
+            updates.append("error_message = ?")
+            params.append(error_message)
+        if artifact_path is not None:
+            updates.append("artifact_path = ?")
+            params.append(artifact_path)
+        if progress_json is not None:
+            updates.append("progress_json = ?")
+            params.append(progress_json)
+        params.append(task_id)
+        with self.get_connection() as conn:
+            cursor = conn.execute(
+                f"UPDATE crawl_tasks SET {', '.join(updates)} WHERE task_id = ?",
+                params,
+            )
+            return cursor.rowcount > 0
+
+    def cancel_crawl_task(self, task_id: str) -> bool:
+        """取消 queued, leased 或 running 状态的任务。"""
+        with self.get_connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE crawl_tasks
+                SET status = 'cancelled',
+                    error_message = coalesce(error_message, 'Cancelled by user'),
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE task_id = ? AND status IN ('queued', 'leased', 'running')
+                """,
+                (task_id,),
+            )
+            return cursor.rowcount > 0
+
+    def sweep_interrupted_crawl_tasks(self) -> int:
+        """启动自检：将所有处于未完成孤儿状态的任务置为 interrupted。"""
+        with self.get_connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE crawl_tasks
+                SET status = 'interrupted',
+                    error_message = 'Interrupted by application restart',
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE status IN ('queued', 'leased', 'running')
+                """
+            )
+            return cursor.rowcount
+
+    def count_active_crawl_tasks(self) -> int:
+        """获取当前活跃（排队/执行中）的 crawl 任务数量。"""
+        with self.get_connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM crawl_tasks WHERE status IN ('queued', 'leased', 'running')"
+            ).fetchone()
+            return int(row[0]) if row else 0

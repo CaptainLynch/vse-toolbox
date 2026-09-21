@@ -7,6 +7,16 @@
 > 权威来源：当前代码、测试和 `memory/DECISIONS.md`
 > 默认读取：按相关任务读取
 
+## 2026-09-16 当前行为补充
+
+本节覆盖下文试点阶段关于“统一人工入口”“映射后可人工覆盖”“PATCH 行为不变”的旧口径；下文原始试点数据、行号及阶段状态保留为历史参考，不代表当前运行数据。
+
+- 手工编辑以 `core/project_status_contracts.py::project_status_manual_editability` 为准：有明确外部目标、集合规则或 EWO v2 选择时整项只读；未配置目标的默认 automatic 仍可编辑，异常配置拒绝编辑。mode/enabled 和字段归属不能单独代表编辑权限。
+- GET 每项返回 `manualEditable` 和 `readOnlyReason`。PATCH 在数据库写事务内复核，已映射项返回 `409 MappedDeliverableReadOnly`，不产生成功写入、字段锁或审计副作用；允许编辑项继续遵守版本冲突保护。
+- 现存字段人工锁继续约束自动同步，但不赋予已映射交付物新的手工保存权。
+- PAA/NCR 仅展示外部快照参考卡；NCR 明细不重复计数，不新增正式阶段交付物、不改变节点完成率。
+- 当前实现和审计见 [控制台修复报告](docs/DELIVERABLE_CONSOLE_AUDIT_20260916.md)，交互验收见 [UI TODO](docs/DELIVERABLE_CONSOLE_UI_TODO_20260916.md)。
+
 ## 0. 试点范围与已确认前提
 
 - 试点交付物：`VPI-T2-D5`「数模审批流程」（当前：已逾期，82%，负责人赵岩，
@@ -240,7 +250,7 @@ CREATE INDEX IF NOT EXISTS idx_ps_audit_deliverable ON project_status_update_aud
 | 方法/路径 | 用途 | 关键约束 |
 |---|---|---|
 | `GET /api/project-status`（不变） | 读取 | 响应新增每行 `updatePolicy` 摘要（mode/syncState/lastSuccessAt），属增量字段 |
-| `PATCH /api/project-status/deliverables/<id>`（不变） | 手动保存 | 走统一服务；服务端记 `trigger_type=manual`，按实际修改字段建人工锁；请求/响应结构不变 |
+| `PATCH /api/project-status/deliverables/<id>` | 手动保存 | 2026-09-16 起事务内拒绝已映射项，返回 `409 MappedDeliverableReadOnly`；允许编辑项仍走统一服务、版本校验及人工锁/审计 |
 | `GET /api/project-status/deliverables/<id>/update-policy` | 读策略 | 绑定 + 字段归属 + 最近审计摘要 |
 | `PATCH /api/project-status/deliverables/<id>/update-policy` | 写策略 | 白名单：`mode`、`source_type`、`external_key`、`match_rule_json`、`mapping_json`、`enabled`、`field_authority`；拒绝任意 URL/主机 |
 | `POST /api/project-status/deliverables/<id>/sync-preview` | 差异预览 | 复用 `_build_tdc_client_from_payload`（当次认证）；只返回清理后候选 + 建议差异，**不落库** |

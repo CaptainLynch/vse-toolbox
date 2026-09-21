@@ -183,6 +183,10 @@ class ArasAuthenticationError(ArasCrawlerError):
     """Raised when Aras redirects to login or rejects the supplied browser session."""
 
 
+class CrawlCancelled(RuntimeError):
+    """Raised at a pagination boundary when the caller requested cancellation."""
+
+
 _SENSITIVE_NAMES = ("cook" + "ie", "authori" + "zation", "tok" + "en", "api_key", "sid", "sessionid", "cs" + "rf", "secret")
 _SENSITIVE_DIAGNOSTIC_RE = re.compile(
     r"(?i)\b(" + "|".join(_SENSITIVE_NAMES) + r")\b(\s*[:=]?\s*)(?:Bearer\s+)?([^,\s;'\"}\]\[<]+)"
@@ -368,8 +372,14 @@ class ArasCrawlerClient:
         max_pages: int = 40,
         max_records: int = 2000,
         select_fields: Sequence[str] | None = None,
+        should_stop: Callable[[], bool] | None = None,
+        on_page: Callable[[int, int], None] | None = None,
     ) -> EWOReportPage:
-        """Fetch matching EWO rows page by page, bounded by explicit safety limits."""
+        """Fetch matching EWO rows page by page, bounded by explicit safety limits.
+
+        `should_stop` is probed at each page boundary for cooperative
+        cancellation; `on_page(page, rows_so_far)` reports pagination progress.
+        """
         _validate_crawl_limits(page_size, max_pages, max_records)
 
         rows: list[dict[str, str | None]] = []
@@ -385,6 +395,10 @@ class ArasCrawlerClient:
         seen_content: set[str] = set()
         unidentified_content: set[str] = set()
         while page <= max_pages and len(rows) < max_records:
+            if should_stop is not None and should_stop():
+                raise CrawlCancelled(
+                    f"cancelled at EWO pagination boundary (page {page}, rows {len(rows)})"
+                )
             current = self.query_ewo_report(
                 filters or EWOReportFilters(),
                 page=page,
@@ -448,6 +462,8 @@ class ArasCrawlerClient:
             if len(rows) >= max_records:
                 stop_reason = "max_records"
                 break
+            if on_page is not None:
+                on_page(page, len(rows))
             page += 1
         return EWOReportPage(
             rows=rows,
@@ -489,6 +505,8 @@ class ArasCrawlerClient:
         max_pages: int = 500,
         max_records: int = 12000,
         select_fields: Sequence[str] | None = None,
+        should_stop: Callable[[], bool] | None = None,
+        on_page: Callable[[int, int], None] | None = None,
     ) -> PAAReportPage:
         _validate_crawl_limits(page_size, max_pages, max_records)
 
@@ -499,6 +517,10 @@ class ArasCrawlerClient:
         last_page: int | None = None
         page = 1
         while page <= max_pages and len(rows) < max_records:
+            if should_stop is not None and should_stop():
+                raise CrawlCancelled(
+                    f"cancelled at PAA pagination boundary (page {page}, rows {len(rows)})"
+                )
             current = self.query_paa_report(
                 filters,
                 page=page,
@@ -517,6 +539,8 @@ class ArasCrawlerClient:
             item_ids.extend(current.item_ids[:remaining])
             if len(current.rows) < page_size or len(rows) >= max_records:
                 break
+            if on_page is not None:
+                on_page(page, len(rows))
             page += 1
         return PAAReportPage(
             rows=rows,
@@ -1195,6 +1219,11 @@ def _cdata(value: str) -> str:
 def _parse_xml(xml_text: str) -> ET.Element:
     if not xml_text:
         raise ArasCrawlerError("XML response is empty")
+    if len(xml_text.encode("utf-8", errors="ignore")) > 8 * 1024 * 1024:
+        raise ArasCrawlerError("XML response exceeds size limit")
+    upper = xml_text.upper()
+    if "<!DOCTYPE" in upper or "<!ENTITY" in upper:
+        raise ArasCrawlerError("XML response rejected: entity declarations forbidden")
     try:
         return ET.fromstring(xml_text)
     except ET.ParseError as exc:

@@ -1,4 +1,4 @@
-﻿# Python
+# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -61,4 +61,13 @@ tmp/
 # Local test/error dumps
 error data/
 .preflight-*
+
+# Build injected version metadata
+/version.json
+
+# Local temp artifacts and stray files
+/nul
+/smoke.pid
+/pelican_*
+
 

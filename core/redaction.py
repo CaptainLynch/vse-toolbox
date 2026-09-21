@@ -6,7 +6,7 @@ from __future__ import annotations
 import re
 
 _SENSITIVE_NAMES = (
-    r"authorization|set-cookie|cookie|token|api_key|apikey|credential_ref|credentialref|private_key|privatekey|sid|sessionid|arasauth|jsessionid|csrf|secret|password"
+    r"authorization|set-cookie|cookie|token|api_key|apikey|credential_ref|credentialref|private_key|privatekey|sid|sessionid|arasauth|jsessionid|csrf|secret|password|bearer|jwt"
 )
 
 _JSON_RE = re.compile(
@@ -14,7 +14,7 @@ _JSON_RE = re.compile(
 )
 _AUTH_HEADER_RE = re.compile(
     r"(?i)\b(authorization)\b(\s*[:=]\s*)(.*?)"
-    r"(?=(?:\s|,\s*)\b(?:set-cookie|cookie|token|api_key|sid|sessionid|arasauth|jsessionid|csrf|secret|password)\b\s*[:=]|[\r\n}\]\[]|$)"
+    r"(?=(?:\s|,\s*)\b(?:set-cookie|cookie|token|api_key|sid|sessionid|arasauth|jsessionid|csrf|secret|password|bearer|jwt)\b\s*[:=]|[\r\n}\]\[]|$)"
 )
 _COOKIE_HEADER_RE = re.compile(
     r"(?i)\b(set-cookie|cookie)\b(\s*[:=]\s*)(.*?)"
@@ -27,6 +27,7 @@ _HEADER_RE = re.compile(
     r"(\s*[:=]\s*)(?:Bearer\s+)?([^,\s;'\"}\]\[]+)"
 )
 _BEARER_RE = re.compile(r"(?i)\bBearer\s+([^,\s;'\"}\]\[]+)")
+_JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]+)?\b")
 _PEM_RE = re.compile(
     r"(?is)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----"
 )
@@ -53,6 +54,7 @@ def redact_sensitive_text(
     text = _XML_RE.sub(r"<\1>[redacted]</\1>", text)
     text = _PARAM_RE.sub(r"\1=[redacted]", text)
     text = _BEARER_RE.sub("Bearer [redacted]", text)
+    text = _JWT_RE.sub("[jwt redacted]", text)
     if collapse_newlines:
         text = _WHITESPACE_RE.sub(" ", text).strip()
     if limit is not None and len(text) > limit:

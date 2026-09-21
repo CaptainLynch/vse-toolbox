@@ -7,13 +7,13 @@ def test_overview_details_include_split_paa_and_ncr_rows() -> None:
     assert "NCR 审批进度" in source
     assert "NCR 审批明细" in source
     assert "overviewArchiveJobs" in source
-    assert "renderExternalSyncSummary" in source
+    assert "renderOverviewBusinessSnapshots" in source
 
 
 def test_external_rows_preserve_success_time_and_selected_archive_job() -> None:
     source = Path("web/static/app.js").read_text(encoding="utf-8-sig")
-    assert "progressOrDate: job.lastSuccessAt" in source
-    assert "selectedArchiveJobKey = item.externalJobKey" in source
+    assert "job.lastSuccessAt" in source
+    assert "selectedArchiveJobKey = definition.archiveJobKey" in source or "selectedArchiveJobKey = item.externalJobKey" in source
     assert "overviewArchiveJobs = archiveJobs.slice()" in source
     assert "archiveSyncStateLabel(job.syncState)" in source
 
@@ -41,10 +41,18 @@ def test_external_detail_matches_ewo_layout_with_collapsed_bottom_info() -> None
     assert "进入任务配置/重试" in source
 
 
+def _slice(text: str, start_marker: str, end_marker: str) -> str:
+    start = text.find(start_marker)
+    assert start != -1, f"Start marker '{start_marker}' not found"
+    end = text.find(end_marker, start)
+    assert end != -1, f"End marker '{end_marker}' not found after '{start_marker}'"
+    return text[start:end]
+
+
 def test_paa_detail_interactive_refresh_is_separate_from_archive_sync() -> None:
     source = Path("web/static/app.js").read_text(encoding="utf-8-sig")
-    detail = source[source.index("function renderArchiveDeliverableDetailPage"):source.index("function toggleDeliverableDetail")]
-    interactive = source[source.index("async function runPaaInteractiveRefresh"):source.index("function renderDeliverableDetailPage")]
+    detail = _slice(source, "function renderArchiveDeliverableDetailPage", "function toggleDeliverableDetail")
+    interactive = _slice(source, "async function runPaaInteractiveRefresh", "function renderDeliverableDetailPage")
 
     assert "const isPaa = job.jobKey === \"aras_paa\"" in detail
     assert "buildPaaInteractiveFilters" in interactive

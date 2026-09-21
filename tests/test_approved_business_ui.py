@@ -40,8 +40,10 @@ def test_project_status_views_and_phase_display_name() -> None:
     assert 'id="overview-details-panel"' in html
     assert 'id="overview-plan-panel"' in html
     assert 'id="overview-tab-plan"' in html
-    assert 'id="milestone-maintenance"' in html
-    assert html.index('id="overview-plan-panel"') < html.index('id="milestone-maintenance"')
+    plan_pos = html.find('id="overview-plan-panel"')
+    maint_pos = html.find('id="milestone-maintenance"')
+    assert plan_pos != -1 and maint_pos != -1
+    assert plan_pos < maint_pos
 
     # 2. Phase display name in timeline and summary
     assert "phase.displayName || phase.id" in js

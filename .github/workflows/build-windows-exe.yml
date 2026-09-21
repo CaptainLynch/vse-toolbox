@@ -87,6 +87,20 @@ jobs:
           python -m py_compile main.py web/app.py services/aras_crawler.py services/excel_toolbox.py services/office_toolbox.py core/config.py core/db_manager.py core/runtime_paths.py
           node --check web/static/app.js
 
+      - name: Generate version metadata
+        shell: pwsh
+        run: |
+          $ver = if ($env:VSE_TOOLBOX_VERSION) { $env:VSE_TOOLBOX_VERSION.Trim() } else { "0.1.0" }
+          $ch = if ($env:VSE_TOOLBOX_CHANNEL) { $env:VSE_TOOLBOX_CHANNEL.Trim() } else { "production-validation" }
+          $bid = if ($env:GITHUB_SHA) { $env:GITHUB_SHA.Trim() } else { "" }
+          $meta = @{
+              version = $ver
+              channel = $ch
+              buildId = $bid
+          } | ConvertTo-Json -Compress
+          $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+          [System.IO.File]::WriteAllText("version.json", $meta, $utf8NoBom)
+
       - name: Build single-file EXE with PyInstaller
         shell: pwsh
         run: |
@@ -112,6 +126,7 @@ jobs:
             --hidden-import flask `
             --add-data "web/templates;web/templates" `
             --add-data "web/static;web/static" `
+            --add-data "version.json;." `
             main.py
 
       - name: Write production-validation summary

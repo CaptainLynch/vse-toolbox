@@ -54,12 +54,24 @@ def _relationship_target(target: str) -> str:
     return normalized
 
 
+def _parse_member_xml(raw: bytes) -> ET.Element:
+    if len(raw) > _MAX_MEMBER_BYTES:
+        raise XLSXPreviewError("XLSX member exceeds size limit")
+    raw_upper = raw.upper()
+    if b"<!DOCTYPE" in raw_upper or b"<!ENTITY" in raw_upper:
+        raise XLSXPreviewError("XLSX member contains entity declarations")
+    try:
+        return ET.fromstring(raw)
+    except ET.ParseError as exc:
+        raise XLSXPreviewError("failed to parse XLSX XML member") from exc
+
+
 def _read_shared_strings(archive: ZipFile) -> list[str]:
     try:
         raw = _read_member(archive, "xl/sharedStrings.xml")
     except KeyError:
         return []
-    root = ET.fromstring(raw)
+    root = _parse_member_xml(raw)
     result: list[str] = []
     for item in root.findall(_tag("si")):
         result.append("".join(text.text or "" for text in item.iter(_tag("t"))))
@@ -95,8 +107,8 @@ def _read_cell_value(cell: ET.Element, shared_strings: list[str]) -> object | No
 
 
 def _read_sheet_names_and_paths(archive: ZipFile) -> tuple[tuple[str, str], ...]:
-    workbook = ET.fromstring(_read_member(archive, "xl/workbook.xml"))
-    relationships = ET.fromstring(_read_member(archive, "xl/_rels/workbook.xml.rels"))
+    workbook = _parse_member_xml(_read_member(archive, "xl/workbook.xml"))
+    relationships = _parse_member_xml(_read_member(archive, "xl/_rels/workbook.xml.rels"))
     targets = {
         relation.get("Id"): relation.get("Target")
         for relation in relationships.findall(f"{{{_PACKAGE_REL}}}Relationship")
@@ -122,7 +134,7 @@ def _read_sheet_rows(
     max_rows: int,
     max_columns: int,
 ) -> tuple[list[list[object | None]], bool]:
-    root = ET.fromstring(_read_member(archive, sheet_path))
+    root = _parse_member_xml(_read_member(archive, sheet_path))
     rows: list[list[object | None]] = []
     truncated = False
     for row_node in root.findall(f".//{{{_MAIN}}}sheetData/{{{_MAIN}}}row"):
@@ -130,9 +142,15 @@ def _read_sheet_rows(
             truncated = True
             break
         values: list[object | None] = []
+        current_column = 0
         for cell in row_node.findall(_tag("c")):
-            reference = cell.get("r") or ""
-            column = _column_index(reference)
+            reference = cell.get("r")
+            if reference:
+                column = _column_index(reference)
+                current_column = column + 1
+            else:
+                column = current_column
+                current_column += 1
             if column >= max_columns:
                 truncated = True
                 continue

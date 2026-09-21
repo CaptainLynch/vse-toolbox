@@ -1,5 +1,12 @@
 # Recovery Notes
 
+## 2026-09-16 — 非 UI 严格审计修复与 PyInstaller 版本元数据打包边界
+
+- **测试数据库隔离陷阱**：`DatabaseManager` 默认使用 `core.config.DB_PATH`，不读取 `VSE_TOOLBOX_DATABASE_PATH` 环境变量。在编写涉及 Web API / settings 的测试时，必须通过 `monkeypatch.setattr(web_app, "DatabaseManager", lambda *a, **kw: db_instance)` 显式传入基于 `tmp_path` 构造的实例；仅设置环境变量会导致测试悄悄修改真实 `data/vse_toolbox.db`。
+- **PowerShell UTF-8 BOM 与 Python json 解析**：`.NET` / PowerShell 的 `[System.Text.Encoding]::UTF8` 默认输出带有 `0xEF 0xBB 0xBF` 的 UTF-8 BOM。Python 标准 `encoding="utf-8"` 在 `json.loads` 时会抛出 `JSONDecodeError: Unexpected UTF-8 BOM`。修复策略为双向加固：写侧使用 `New-Object System.Text.UTF8Encoding $false` 强制无 BOM，读侧（`core/version.py`）统一采用 `encoding="utf-8-sig"`，保证对无 BOM 及历史带 BOM 格式皆能安全兼容。
+- **PyInstaller spec 动态 datas 陷阱**：若 spec 的 `datas` 列表中硬编码了当前不存在的文件（如 `('version.json', '.')`），PyInstaller 在无环境变量且无对应文件时会直接退出（exit 1）。正确方式是仅在确定存在有效元数据时动态将临时文件加入 datas（`*version_datas`），且临时文件生成在独立系统临时目录并在退出时通过 `atexit` 清理，严禁在仓库根目录留下脏文件，亦不可把工作区残留的历史旧 `version.json` 意外打包。
+- **映射编辑权限的控制字符与超长防绕过**：规则字符串、映射字段与外部稳定键必须使用 `_has_control_chars()`（检测 ASCII < 32 及 127-159 范围）与 `_TEXT_LIMITS` 检查。如 `{"incident": "FM-1\u0000"}` 这类包含控制字符或超长 JSON 必须 fail-closed 判定为 `manualEditable=False, PROJECT_STATUS_INVALID_MAPPING_READ_ONLY_REASON`；且在 `apply_project_status_manual_update` 与 `update_project_status_deliverable` 事务开启后立即检查，拒绝时不得对业务行、阶段、字段归属或审计记录产生任何写副作用。
+
 ## 2026-09-14 — 生产测试双 EXE 已构建并完成离线冒烟
 
 - 使用 canonical `tools/build_excel_bundle.ps1` 生成 `dist/VSE-Production-Test-20260914/`，包含 `VSE-WebUI.exe`、`VSE-ExcelWorker.exe` 与 `SHA256SUMS.txt`；清单哈希已用独立 `Get-FileHash` 重新核对。
@@ -391,6 +398,25 @@ repo are the authoritative record.
 
 - 2026-09-15 Gemini路由：取消Pro，仅3.8 Flash；旧pro槽位兼容映射Flash。此前EWO失败是Flash网络预检deadline，非Pro失败。新同30秒预算无工具探针25.77秒成功；尚不能区分上游/中继/启动延迟。doctor有独立Luna硬编码限制，勿混作网络故障。见docs/ZCODE_WORKER_RUNTIME.md。
 
+## 2026-09-16 非 UI 严格审计发现
+
+- `tests/test_version_and_usability.py:78` 仅设置 `VSE_TOOLBOX_DATABASE_PATH`，但 `core/db_manager.py:1059` 不读取该变量；`create_app()` 因而初始化真实 `data/vse_toolbox.db`。本轮执行该测试文件的非 UI 子集时，`test_settings_patch_and_read_preserves_advanced_values` 将 pytest 临时目录写入真实库的 `archiveDirectory`。原值未知，未擅自恢复或删除；修复测试隔离并由用户确认原值前，不要再次运行该 fixture。
+- `project_status_manual_editability` 只复用了部分绑定规则，未复用策略层的长度/控制字符等边界校验。临时库实验证明 `match_rule_json={"incident":"FM-1\\u0000"}` 仍被判为可手工编辑，且 `apply_manual_update` 成功写入；这违反“异常持久化配置 fail-closed”的审计合同。应集中共享校验或在只读判定中调用同一严格规范化器。
+- `core/project_status_contracts.py` 新增判定的 3 个 mypy 错误位于 `capabilities.get(... )` 的动态 `object` 迭代（约 91、106、129 行）；`core/version.py` 自身的聚焦 mypy 检查通过。版本功能还未接入打包元数据：当前 `VSE-WebUI.spec` 与 Windows workflow 未携带 `VERSION/version.json`，仅运行时环境变量不会自动写入 EXE。
+
+## 2026-09-16 非 UI 严格复审（二轮修改）
+
+- 第二轮已修复上一轮审计的测试库隔离、异常规则控制字符边界和 contracts 模块 mypy 问题。安全的版本/隔离选择集为 `10 passed, 1 deselected`，并核对默认数据库 mtime 未变化；项目状态/数据库选择集为 `329 passed`，额外后端/API/安全选择集为 `123 passed, 11 deselected`。
+- `VSE-WebUI.spec:47` 仍无条件收集 `version.json`；在没有 `VSE_TOOLBOX_VERSION`、且仓库没有该文件的当前环境，直接 PyInstaller 构建退出码 1，错误为 `Unable to find ... version.json`。需要避免缺失文件失败，也要避免残留旧文件被静默打包。
+- `.github/workflows/build-windows-exe.yml:101` 的 PowerShell `[System.Text.Encoding]::UTF8` 生成文件包含 `EF-BB-BF` BOM；`core/version.py:70` 以 UTF-8（非 `utf-8-sig`）读取，实际 `json.loads` 抛 `JSONDecodeError`，因此 CI 生成的版本元数据会被忽略。应统一写入/读取编码并增加冻结包验证。
+- 上一轮真实库副作用仍待用户确认：`data/vse_toolbox.db` 的 `archiveDirectory` 原值未知，未自动恢复或清理。本轮新 fixture 未再次修改默认库。
+
+## 2026-09-16 Codex 独立复审第三轮
+
+- 第三轮版本发布链修复经独立验证通过：`VSE-WebUI.spec` 在无版本和带版本环境均能在隔离输出目录构建成功，且不在工作区生成残留 `version.json`；带版本冻结 EXE 的 `/api/version` 在清除运行时版本环境变量后仍返回嵌入的版本、channel、buildId；无版本冻结 EXE 返回安全回退。
+- CI 的 `New-Object System.Text.UTF8Encoding $false` 实测 UTF-8 preamble 长度为 0；`core/version.py` 使用 `utf-8-sig` 兼容有 BOM/无 BOM 文件。版本/隔离测试、项目状态/数据库回归及静态检查均通过。
+- 无新的非 UI 阻断项。不要忘记上一轮真实 `data/vse_toolbox.db` 的 `archiveDirectory` 副作用：原值未知，未自动恢复；处理前需用户确认。
+
 
 ### 2026-09-15 预检总预算修复验证
 
@@ -410,3 +436,26 @@ repo are the authoritative record.
 - 新身份必须同时进入发现、执行与分析item_key；只改关联函数仍会让同号/空号同属性行被分析层合并。v2仅用_source_item_id生成item_key，legacy不改。
 - 候选预览也必须采用v2空值不清空规则；否则显示待清空而执行实际跳过。已补预览/执行一致性测试。
 - schema14为旧EXE保护门槛；此前只有HTTP版本确认不足以约束旧二进制。升级测试保留legacy规则，模拟v13 runtime会在DDL前拒绝v14数据库。
+
+## 2026-09-16 交付物控制台边界
+
+- manualEditable必须由真实目标/集合绑定判断，mode或enabled单独不能代表已映射；异常配置拒绝编辑。DB事务内复核才能避免策略配置和手工保存之间竞态。
+- 保留筛选DOM同时必须区分草稿、请求、成功显示条件；切页签时旧DOM仍可能读动态activeTab并串写，需锁定旧结果交互并保留切换/重试入口。
+- EWO关联状态不等于官方业务状态，待签人与责任工程师不同字段；下载错误不能只藏在折叠诊断里。
+- 本期PAA/NCR仅快照参考卡；不能擅自增加正式交付物或改变节点分母。验证与手工清单见docs/DELIVERABLE_CONSOLE_AUDIT_20260916.md和docs/DELIVERABLE_CONSOLE_UI_TODO_20260916.md。
+
+## 2026-09-16 — 最新 WebUI 生产测试包
+
+- 从当前含未提交控制台改动的工作区，以 `VSE-WebUI.spec` 使用 Python 3.12.10 / PyInstaller 6.21.0 构建单文件 `VSE-WebUI.exe`；构建退出码 0。当前主机 `upx` 不在 PATH，不能把本次 17.5 MB 包体当作已压缩产物；若未来有严格体积门槛，应在带 UPX 的受控构建环境重新构建并重新冒烟。
+- 产物目录 `dist/VSE-WebUI-production-20260916/` 仅有 EXE 和生成的 `SHA256SUMS.txt`；传输 ZIP 只包含 EXE。EXE SHA-256 为 `c8738a1ac8273361350bb0a19405246627f8a637847adfd1a6a9afb8069ed98e`，ZIP SHA-256 为 `9042fd0bb2ec00c14e8e44c4fd6ae3295d8acaf66bada4adb249d88676becaa7`。
+- `178 passed` 相关回归与三个修改 JS 的 Node 语法检查通过。将 EXE 复制到隔离 `.runtime` 目录，在子进程 PATH 仅含 Windows 系统目录、端口 5066 下启动；首页和 `/api/overview` 均 200，按 PID 结束后无残留进程。独立哈希、ZIP 单条目和完整 CRC 读取校验通过。
+- 离线冒烟不等于企业内网/干净机器/Office/人工 UI 验收；WebUI 单包不含 Excel Worker，真实 Excel 功能必须部署同版本 `VSE-ExcelWorker.exe`。证据保留在 `.runtime/webui-build-20260916.log`、`.runtime/production-package-targeted-20260916.log` 和 `.runtime/webui-production-smoke-20260916/`。
+
+## 2026-09-20 — 权限受限执行下的 pytest 假失败与 flake8 命名管道边界
+
+- **症状**：受限文件策略下全量 pytest 在 **16 秒内报 1391 errors**（只有 905 passed），错误为 `PermissionError: [WinError 5] ...\Temp\dsh-*\pytest-of-Lynch`；单测 `--tb=long` 只在 `_pytest/pathlib.py:354 cleanup_dead_symlinks` 抛出，外观酷似产品缺陷。
+- **根因**：该 basetemp 目录由更早一次被中断/受限的运行创建，之后对当前权限上下文**不可枚举也不可读取**（`Get-ChildItem`/`Get-Acl` 同样 WinError 5）；pytest 进入 `cleanup_dead_symlinks` 即失败，导致全部用例在 setup 阶段集体报错。改用工作区 basetemp（点号名与普通名都试过）同样复现，说明与目录名/磁盘无关，而与「目录由另一权限上下文的进程创建」有关。
+- **处置（do-not-retry）**：不要反复重试默认 basetemp，不要改路径名碰运气，也不要当产品缺陷去查业务代码。删除/绕开被锁目录、让当前进程新建 basetemp 即可；本轮在获得完整文件权限后，删除旧目录并重跑直接恢复（2294 passed / 3 skipped）。判据：产品级失败会给出具体断言与堆栈；本案 1391 个错误全部集中在 setup 且发生在十余秒内，属环境层特征。
+- **flake8 同名边界**：受限模式下 `python -m flake8`（默认多进程 Pool 需要命名管道）直接 `PermissionError [WinError 5] _winapi.CreateFile`；改用 `python -m flake8 -j 1` 可得可信结果，不需要放权。
+- **`.runtime/` 写入**：同一受限模式下 `Tee-Object`/写文件到 `.runtime/` 会被拒（Access denied），只能用 `-j 1` 之外的替代方式或先取到完整文件权限；恢复权限后按 AGENTS.md 约定把日志写回 `.runtime/`。
+

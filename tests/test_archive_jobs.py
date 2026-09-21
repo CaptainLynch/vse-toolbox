@@ -5,7 +5,7 @@ tests/test_archive_jobs.py — 归档任务种子与离线关系约束测试
 覆盖验收标准:
 1. 断言 schema 版本为 5，且存在四张 scheduled_archive 表结构及对应索引
 2. 断言 6 个固定 job_key，默认 disabled (enabled=0)，interval_minutes=60，max_attempts=2，且 EWO/PAA 默认筛选字段正确
-3. 断言 D2/D3/D5 仅关联 SOR/EWO/data-model，PAA/NCR 关联为空，且不存在 A 面任务
+3. 断言 D2/D3/D5 仅关联 SOR/EWO/data-model，D6-D8 合法关联 PAA/NCR，且不存在 A 面任务
 4. 断言重复调用 init_database() 保留已修改的 enabled / interval 等配置
 5. 断言离线 run / artifact 外键约束（RESTRICT / CASCADE）与 duplicate relative_path 唯一约束校验
 """
@@ -37,17 +37,17 @@ EXPECTED_SEEDS: dict[str, dict[str, str | None]] = {
     "aras_paa": {
         "source_type": "aras",
         "report_type": "paa",
-        "project_status_deliverable_id": None,
+        "project_status_deliverable_id": "VPI-T2-D6",
     },
     "aras_ncr_progress": {
         "source_type": "aras",
         "report_type": "ncr_progress",
-        "project_status_deliverable_id": None,
+        "project_status_deliverable_id": "VPI-T2-D7",
     },
     "aras_ncr_detail": {
         "source_type": "aras",
         "report_type": "ncr_detail",
-        "project_status_deliverable_id": None,
+        "project_status_deliverable_id": "VPI-T2-D8",
     },
     "tdc_data_model": {
         "source_type": "tdc",
@@ -227,7 +227,8 @@ def test_fixed_six_archive_jobs_seeded(db: DatabaseManager) -> None:
 
 
 def test_deliverable_links_and_no_a_face_seed(db: DatabaseManager) -> None:
-    """断言 D2/D3/D5 仅绑定 SOR/EWO/data-model，PAA/NCR 链接为 null，且绝不包含 A 面任务。"""
+    """断言 D2/D3/D5 仅绑定 SOR/EWO/data-model，D6-D8（外部快照驱动）
+    合法关联 PAA/NCR 任务，且绝不包含 A 面任务。"""
     with db.get_connection() as conn:
         rows = conn.execute(
             "SELECT job_key, source_type, report_type, project_status_deliverable_id "
@@ -240,9 +241,9 @@ def test_deliverable_links_and_no_a_face_seed(db: DatabaseManager) -> None:
     assert mapping["tdc_sor"] == "VPI-T2-D2", "tdc_sor 必须关联 VPI-T2-D2"
     assert mapping["tdc_data_model"] == "VPI-T2-D5", "tdc_data_model 必须关联 VPI-T2-D5"
 
-    assert mapping["aras_paa"] is None, "aras_paa 关联必须为 None"
-    assert mapping["aras_ncr_progress"] is None, "aras_ncr_progress 关联必须为 None"
-    assert mapping["aras_ncr_detail"] is None, "aras_ncr_detail 关联必须为 None"
+    assert mapping["aras_paa"] == "VPI-T2-D6", "aras_paa 必须关联 VPI-T2-D6"
+    assert mapping["aras_ncr_progress"] == "VPI-T2-D7", "aras_ncr_progress 必须关联 VPI-T2-D7"
+    assert mapping["aras_ncr_detail"] == "VPI-T2-D8", "aras_ncr_detail 必须关联 VPI-T2-D8"
 
     all_keys = [str(r["job_key"]).lower() for r in rows]
     all_reports = [str(r["report_type"]).lower() for r in rows]

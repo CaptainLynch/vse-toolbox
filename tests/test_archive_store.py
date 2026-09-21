@@ -240,3 +240,30 @@ def test_retention_plan_then_explicit_confined_delete(tmp_path: Path):
     assert not target.exists()
     with pytest.raises(ArchiveSafetyError):
         s.execute_retention([RetentionItem("../outside", 1, "")], root_id="root")
+
+
+def test_archive_fallback_non_overwriting_when_hardlink_unsupported(monkeypatch, tmp_path: Path):
+    s = store(tmp_path)
+
+    # Force os.link to fail with OSError (simulating unsupported hard links)
+    def fail_link(src, dst):
+        raise OSError("hard links not supported")
+
+    monkeypatch.setattr(os, "link", fail_link)
+
+    artifact = archive(s, b"first-content")
+    assert (tmp_path / artifact.relative_path).read_bytes() == b"first-content"
+
+    collision_attempted = [False]
+    orig_open = open
+
+    def fake_open(file, mode="r", *args, **kwargs):
+        if "xb" in mode and not collision_attempted[0]:
+            collision_attempted[0] = True
+            raise FileExistsError("simulated collision")
+        return orig_open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", fake_open)
+    artifact2 = archive(s, b"second-content")
+    assert collision_attempted[0] is True
+    assert (tmp_path / artifact2.relative_path).read_bytes() == b"second-content"

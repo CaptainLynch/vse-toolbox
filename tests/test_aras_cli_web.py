@@ -86,7 +86,7 @@ class FakeArasClient:
             raw_xml="<xml/>",
         )
 
-    def crawl_ewo_report_all(self, filters, page_size=50, max_pages=40, max_records=2000):  # type: ignore[no-untyped-def]
+    def crawl_ewo_report_all(self, filters, page_size=50, max_pages=40, max_records=2000, should_stop=None, on_page=None):  # type: ignore[no-untyped-def]
         if self.fail:
             raise self.fail
         self.__class__.calls.append(
@@ -131,7 +131,7 @@ class FakeArasClient:
             raw_xml="<xml/>",
         )
 
-    def crawl_paa_report_all(self, filters, page_size=50, max_pages=20, max_records=2000):  # type: ignore[no-untyped-def]
+    def crawl_paa_report_all(self, filters, page_size=50, max_pages=20, max_records=2000, should_stop=None, on_page=None):  # type: ignore[no-untyped-def]
         if self.fail:
             raise self.fail
         self.__class__.calls.append(
@@ -557,24 +557,19 @@ def test_paa_routes_contract_and_no_auth_echo(client) -> None:
         "Set-Cookie: [redacted] Authorization: [redacted]",
     ]
     assert query_data["page"] == 3
-    assert crawl.status_code == 200
-    crawl_data = crawl.get_json()["data"]
-    assert "headerRows" in crawl_data
-    assert "columns" in crawl_data
-    assert crawl_data["defaultVisibleCount"] == 12
-    assert crawl_data["rows"][0][:3] == [
-        "PAA-2",
-        "Closed",
-        "Cookie: [redacted] Authorization: [redacted] token=[redacted]",
-    ]
+    # 全量抓取已异步化：携带凭据的请求被凭据红线直接拒绝（凭据零入库、零回显）
+    assert crawl.status_code == 400
+    crawl_error = crawl.get_json()["error"]
+    assert crawl_error["type"] == "AsyncAuthUnsupported"
+    crawl_text = crawl.get_data(as_text=True)
+    assert "secret-cookie" not in crawl_text
+    assert "secret-auth" not in crawl_text
     query_call = next(call for call in FakeArasClient.calls if call.get("method") == "paa")
     assert query_call["filters"].paa_no == "PAA-1"
     assert query_call["filters"].mtl_rq_end == "2026-02-28"
     assert query_call["page"] == 3
-    crawl_call = next(call for call in FakeArasClient.calls if call.get("method") == "paa_all")
-    assert crawl_call["page_size"] == 40
-    assert crawl_call["max_pages"] == 6
-    assert crawl_call["max_records"] == 120
+    # 凭据红线拒绝后不得有任何抓取调用发生
+    assert not any(call.get("method") == "paa_all" for call in FakeArasClient.calls)
     assert "secret-cookie" not in query.get_data(as_text=True)
     assert "secret-auth" not in query.get_data(as_text=True)
     assert "abc123" not in query.get_data(as_text=True)
@@ -806,62 +801,129 @@ def test_paa_department_filter_normalizes_and_fails_closed(client) -> None:
     assert FakeArasClient.calls[-1]["filters"].department == "*车体工程*|*整车*"
 
 
-def test_ewo_export_route_streams_csv_with_export_headers(client) -> None:
+def _wait_for_background_task(client, task_id: str, timeout: float = 10.0) -> dict:
+    import time as _time
+
+    deadline = _time.time() + timeout
+    while _time.time() < deadline:
+        resp = client.get(f"/api/tasks/{task_id}")
+        assert resp.status_code == 200
+        task = resp.get_json()["data"]
+        if not task["is_active"]:
+            return task
+        _time.sleep(0.05)
+    raise AssertionError("background task did not finish in time")
+
+
+def test_ewo_export_route_creates_async_csv_artifact(client) -> None:
     resp = client.post(
         "/api/aras/ewo/export",
         json={
             "base_url": "http://aras.example",
-            "headers": {"Authorization": "secret-auth"},
-            "cookie": "sid=secret-cookie",
             "filters": {"project_code": "F610S"},
         },
     )
-    assert resp.status_code == 200
-    assert resp.headers["Content-Type"] == "text/csv; charset=utf-8"
-    assert "attachment" in resp.headers["Content-Disposition"]
-    assert "filename=" in resp.headers["Content-Disposition"]
-    body = resp.get_data(as_text=True)
-    assert "EWO-1" in body
-    assert "F610S" in body
-    assert resp.headers["X-Export-Complete"] == "true"
-    assert resp.headers["X-Export-Truncated"] == "false"
-    assert resp.headers["X-Export-Row-Count"] == "1"
+    assert resp.status_code == 202
+    body = resp.get_json()
+    assert body["ok"] is True
+    assert body["data"]["source"] == "aras"
+    task_id = body["data"]["taskId"]
+    assert body["data"]["statusUrl"] == f"/api/tasks/{task_id}"
+
+    task = _wait_for_background_task(client, task_id)
+    assert task["status"] == "succeeded"
+    assert task["can_download"] is True
+
     crawl_call = next(call for call in FakeArasClient.calls if call.get("method") == "ewo_all")
     assert crawl_call["page_size"] == 2000
     assert crawl_call["max_pages"] == 1000
     assert crawl_call["max_records"] == 10000
-    assert "secret-cookie" not in body
-    assert "secret-auth" not in body
+
+    download = client.get(f"/api/tasks/{task_id}/download")
+    assert download.status_code == 200
+    assert "attachment" in download.headers["Content-Disposition"]
+    assert "filename=" in download.headers["Content-Disposition"]
+    csv_body = download.get_data(as_text=True)
+    assert "EWO-1" in csv_body
+    assert "F610S" in csv_body
+    assert "secret-cookie" not in csv_body
+    assert "secret-auth" not in csv_body
 
 
-def test_paa_export_route_streams_csv_and_redacts_credentials(client) -> None:
+def test_paa_export_route_creates_async_csv_artifact_and_redacts(client) -> None:
     resp = client.post(
         "/api/aras/paa/export",
         json={
             "base_url": "http://aras.example",
-            "cookie": "sid=secret-cookie",
             "filters": {"department": "技术中心-车体工程"},
         },
     )
-    assert resp.status_code == 200
-    assert resp.headers["Content-Type"] == "text/csv; charset=utf-8"
-    assert resp.headers["X-Export-Complete"] == "true"
-    assert resp.headers["X-Export-Row-Count"] == "1"
-    body = resp.get_data(as_text=True)
-    assert "PAA-2" in body
-    assert "abc123" not in body
-    assert "tok123" not in body
-    assert "secret-cookie" not in body
-    assert "raw_xml" not in body
+    assert resp.status_code == 202
+    task_id = resp.get_json()["data"]["taskId"]
+
+    task = _wait_for_background_task(client, task_id)
+    assert task["status"] == "succeeded"
+
     crawl_call = next(call for call in FakeArasClient.calls if call.get("method") == "paa_all")
     assert crawl_call["page_size"] == 2000
     assert crawl_call["max_pages"] == 1000
     assert crawl_call["max_records"] == 10000
     assert crawl_call["filters"].department == "技术中心_车体工程"
 
+    download = client.get(f"/api/tasks/{task_id}/download")
+    assert download.status_code == 200
+    body = download.get_data(as_text=True)
+    assert "PAA-2" in body
+    assert "abc123" not in body
+    assert "tok123" not in body
+    assert "secret-cookie" not in body
+    assert "raw_xml" not in body
 
-def test_ewo_export_marks_truncation_via_headers(monkeypatch, client) -> None:
-    def truncated_crawl(self, filters=None, page_size=2000, max_pages=1000, max_records=10000):  # type: ignore[no-untyped-def]
+
+def test_paa_crawl_all_async_result_contract(client) -> None:
+    resp = client.post(
+        "/api/aras/paa/crawl-all",
+        json={
+            "base_url": "http://aras.example",
+            "filters": {"paa_no": "PAA-2"},
+            "page_size": 40,
+            "max_pages": 6,
+            "max_records": 120,
+        },
+    )
+    assert resp.status_code == 202
+    body = resp.get_json()
+    task_id = body["data"]["taskId"]
+
+    task = _wait_for_background_task(client, task_id)
+    assert task["status"] == "succeeded"
+    assert task["task_type"] == "paa_crawl"
+
+    crawl_call = next(call for call in FakeArasClient.calls if call.get("method") == "paa_all")
+    assert crawl_call["page_size"] == 40
+    assert crawl_call["max_pages"] == 6
+    assert crawl_call["max_records"] == 120
+
+    result = client.get(f"/api/tasks/{task_id}/result")
+    assert result.status_code == 200
+    result_data = result.get_json()["data"]
+    assert "headerRows" in result_data
+    assert "columns" in result_data
+    assert result_data["defaultVisibleCount"] == 12
+    assert result_data["rows"][0][:3] == [
+        "PAA-2",
+        "Closed",
+        "Cookie: [redacted] Authorization: [redacted] token=[redacted]",
+    ]
+    assert result_data["page"] == 2
+    # 结果工件内部不得包含未脱敏凭据
+    result_text = result.get_data(as_text=True)
+    assert "secret-cookie" not in result_text
+    assert "sid=abc123" not in result_text
+
+
+def test_ewo_export_marks_truncation_in_progress(monkeypatch, client) -> None:
+    def truncated_crawl(self, filters=None, page_size=2000, max_pages=1000, max_records=10000, should_stop=None, on_page=None):  # type: ignore[no-untyped-def]
         self.__class__.calls.append(
             {
                 "method": "ewo_all",
@@ -878,29 +940,29 @@ def test_ewo_export_marks_truncation_via_headers(monkeypatch, client) -> None:
         "/api/aras/ewo/export",
         json={"base_url": "http://aras.example", "filters": {}, "max_records": 100},
     )
-    assert resp.status_code == 200
-    assert resp.headers["X-Export-Complete"] == "false"
-    assert resp.headers["X-Export-Truncated"] == "true"
-    assert resp.headers["X-Export-Row-Count"] == "1"
+    assert resp.status_code == 202
+    task_id = resp.get_json()["data"]["taskId"]
+
+    task = _wait_for_background_task(client, task_id)
+    assert task["status"] == "succeeded"
+    assert "截断" in (task.get("progress") or {}).get("stage", "")
 
 
-def test_export_temp_dir_removed_after_response(monkeypatch, tmp_path) -> None:
+def test_export_artifact_lands_in_downloads_dir(monkeypatch, tmp_path) -> None:
     test_client = _make_test_client(monkeypatch, tmp_path, allowed_hosts=["aras.example"])
-    captured: list[str] = []
-    real_mkdtemp = tempfile.mkdtemp
-    fake_tempfile = SimpleNamespace(
-        mkdtemp=lambda *args, **kwargs: captured.append(real_mkdtemp(*args, **kwargs)) or captured[-1]
-    )
-    monkeypatch.setattr(web_app, "tempfile", fake_tempfile)
     resp = test_client.post(
         "/api/aras/ewo/export",
         json={"base_url": "http://aras.example", "filters": {}},
     )
-    assert resp.status_code == 200
-    assert "EWO-1" in resp.get_data(as_text=True)
-    assert len(captured) == 1
-    # 数据读入内存后临时目录已在响应返回前清理（不依赖响应关闭回调）
-    assert not Path(captured[0]).exists()
+    assert resp.status_code == 202
+    task_id = resp.get_json()["data"]["taskId"]
+
+    task = _wait_for_background_task(test_client, task_id)
+    assert task["status"] == "succeeded"
+
+    downloads_dir = tmp_path / "downloads"
+    files = [p.name for p in downloads_dir.iterdir() if p.is_file()]
+    assert any(name.startswith("ewo_export_") and name.endswith(".csv") for name in files)
 
 
 def test_ncr_detail_download_route_downloads_file(client) -> None:
@@ -1950,8 +2012,8 @@ def test_static_aras_export_download_markers_and_department_fields() -> None:
     assert 'id="aras-xml-actions"' in html_text
     assert 'id="aras-download-request-xml"' in html_text
     assert 'id="aras-download-response-xml"' in html_text
-    assert 'style.css?v=deliverable-form-analysis-20260901-r1' in html_text
-    assert 'app.js?v=deliverable-form-analysis-20260901-r1' in html_text
+    assert 'style.css?v=' in html_text
+    assert 'app.js?v=' in html_text
 
     # 导出 / 下载端点在前端配置中
     assert "/api/aras/ewo/export" in js_text

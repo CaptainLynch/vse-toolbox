@@ -11,9 +11,16 @@ import pytest
 
 from core.db_manager import CURRENT_SCHEMA_VERSION, DatabaseManager
 from core.project_status_contracts import (
+    DELIVERABLE_DEFAULT_MAPPINGS,
+    DELIVERABLE_FIELD_ALIASES,
+    PROJECT_STATUS_INVALID_MAPPING_READ_ONLY_REASON,
+    PROJECT_STATUS_MAPPED_READ_ONLY_REASON,
     current_stage_label,
+    get_deliverable_default_mapping,
+    get_deliverable_field_aliases,
     milestone_display_status,
     project_status_default_policy_mode,
+    project_status_manual_editability,
     project_status_source_capabilities,
 )
 
@@ -322,9 +329,18 @@ def test_database_migration_node_status_and_display_codes(tmp_path: Path) -> Non
             "SELECT id, display_code, sort_order FROM project_status_deliverables WHERE phase_id = 'VPI-T2' ORDER BY sort_order"
         ).fetchall()
 
-        assert len(deliv_rows) == 6
-        expected_codes = ["DEL-001", "DEL-002", "DEL-003", "DEL-004", "DEL-005", "DEL-006"]
-        expected_ids = ["VPI-T2-D1", "VPI-T2-D2", "VPI-T2-D3", "VPI-T2-D4", "VPI-T2-D5", "CUSTOM-DEL-6"]
+        # 存量库 6 行（含自定义交付物）保留原 id 与确定性编码；D6-D8 种子
+        # 行按合同编码优先、被占用时顺延补齐（DEL-006 已被 CUSTOM-DEL-6
+        # 占用，D6-D8 顺延为 DEL-007/008/009）。
+        assert len(deliv_rows) == 9
+        expected_codes = [
+            "DEL-001", "DEL-002", "DEL-003", "DEL-004", "DEL-005", "DEL-006",
+            "DEL-007", "DEL-008", "DEL-009",
+        ]
+        expected_ids = [
+            "VPI-T2-D1", "VPI-T2-D2", "VPI-T2-D3", "VPI-T2-D4", "VPI-T2-D5",
+            "CUSTOM-DEL-6", "VPI-T2-D6", "VPI-T2-D7", "VPI-T2-D8",
+        ]
 
         for idx, row in enumerate(deliv_rows):
             assert row["id"] == expected_ids[idx]
@@ -366,3 +382,486 @@ def test_source_capabilities_registry_contract() -> None:
         assert project_status_default_policy_mode(deliverable_id) == "automatic"
     # 未注册交付物兜底为手工。
     assert project_status_default_policy_mode("VPI-T2-D9") == "manual"
+
+
+@pytest.mark.parametrize(
+    ("binding", "manual_editable", "reason"),
+    [
+        (
+            {
+                "mode": "automatic",
+                "enabled": 0,
+                "external_key": None,
+                "match_rule_json": "{}",
+                "mapping_json": "{}",
+            },
+            True,
+            None,
+        ),
+        (
+            {
+                "mode": "automatic",
+                "enabled": 1,
+                "external_key": None,
+                "match_rule_json": "{}",
+                "mapping_json": "{}",
+            },
+            True,
+            None,
+        ),
+        # A filter-only rule does not identify a configured record target.
+        (
+            {
+                "mode": "hybrid",
+                "enabled": 0,
+                "deliverable_id": "VPI-T2-D5",
+                "external_key": None,
+                "match_rule_json": '{"reportType":"data_model","incident":"FM-1"}',
+                "mapping_json": "{}",
+            },
+            True,
+            None,
+        ),
+        (
+            {
+                "mode": "hybrid",
+                "enabled": 0,
+                "deliverable_id": "VPI-T2-D5",
+                "external_key": None,
+                "match_rule_json": '{"reportType":"data_model","incident":"FM-1"}',
+                "mapping_json": '{"note":["currentApprover","approvalComment"]}',
+            },
+            True,
+            None,
+        ),
+        (
+            {
+                "mode": "automatic",
+                "enabled": 0,
+                "external_key": "FM-1",
+                "match_rule_json": '{"reportType":"data_model","incident":"FM-1"}',
+                "mapping_json": "{}",
+                "sync_state": "failed",
+            },
+            False,
+            PROJECT_STATUS_MAPPED_READ_ONLY_REASON,
+        ),
+        (
+            {
+                "mode": "automatic",
+                "enabled": 0,
+                "external_key": None,
+                "match_rule_json": '{"reportType":"data_model","aggregate":true,"incident":"FM-1"}',
+                "mapping_json": "{}",
+                "sync_state": "failed",
+            },
+            False,
+            PROJECT_STATUS_MAPPED_READ_ONLY_REASON,
+        ),
+        (
+            {
+                "mode": "automatic",
+                "enabled": 0,
+                "external_key": None,
+                "match_rule_json": '{"contractVersion":"2","reportType":"ewo","bindingMode":"record_set","aggregate":true,"modelInfo":"F610S"}',
+                "mapping_json": "{}",
+            },
+            False,
+            PROJECT_STATUS_MAPPED_READ_ONLY_REASON,
+        ),
+        (
+            {
+                "mode": "automatic",
+                "enabled": 0,
+                "external_key": None,
+                "match_rule_json": '{"contractVersion":"2","reportType":"ewo","bindingMode":"single_record","aggregate":false,"sourceItemId":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","modelInfo":"F610S"}',
+                "mapping_json": "{}",
+            },
+            False,
+            PROJECT_STATUS_MAPPED_READ_ONLY_REASON,
+        ),
+        (
+            {
+                "mode": "automatic",
+                "enabled": 0,
+                "external_key": None,
+                "match_rule_json": "{broken",
+                "mapping_json": "{}",
+            },
+            False,
+            PROJECT_STATUS_INVALID_MAPPING_READ_ONLY_REASON,
+        ),
+        (
+            {
+                "mode": "automatic",
+                "enabled": 0,
+                "external_key": None,
+                "match_rule_json": '{"aggregate":"true","incident":"FM-1"}',
+                "mapping_json": "{}",
+            },
+            False,
+            PROJECT_STATUS_INVALID_MAPPING_READ_ONLY_REASON,
+        ),
+        (
+            {
+                "mode": "automatic",
+                "enabled": 0,
+                "deliverable_id": "VPI-T2-D5",
+                "external_key": None,
+                "match_rule_json": '{"reportType":"data_model","incident":"FM-1"}',
+                "mapping_json": '{"owner":42}',
+            },
+            False,
+            PROJECT_STATUS_INVALID_MAPPING_READ_ONLY_REASON,
+        ),
+        (
+            {
+                "mode": "automatic",
+                "enabled": 0,
+                "deliverable_id": "VPI-T2-D5",
+                "external_key": None,
+                "match_rule_json": '{"bogus":"x"}',
+                "mapping_json": "{}",
+            },
+            False,
+            PROJECT_STATUS_INVALID_MAPPING_READ_ONLY_REASON,
+        ),
+        (
+            {
+                "mode": "automatic",
+                "enabled": 0,
+                "deliverable_id": "VPI-T2-D5",
+                "external_key": None,
+                "match_rule_json": '{"reportType":"ewo","incident":"FM-1"}',
+                "mapping_json": "{}",
+            },
+            False,
+            PROJECT_STATUS_INVALID_MAPPING_READ_ONLY_REASON,
+        ),
+        (
+            {
+                "mode": "automatic",
+                "enabled": 0,
+                "deliverable_id": "VPI-T2-D5",
+                "external_key": None,
+                "match_rule_json": '{"reportType":"data_model","incident":"FM-1"}',
+                "mapping_json": '{"owner":["currentApprover"]}',
+            },
+            False,
+            PROJECT_STATUS_INVALID_MAPPING_READ_ONLY_REASON,
+        ),
+        (
+            {
+                "externalKey": None,
+                "matchRule": {"reportType": []},
+                "mapping": {},
+            },
+            False,
+            PROJECT_STATUS_INVALID_MAPPING_READ_ONLY_REASON,
+        ),
+        (
+            {
+                "externalKey": None,
+                "matchRule": {"reportType": {}},
+                "mapping": {},
+            },
+            False,
+            PROJECT_STATUS_INVALID_MAPPING_READ_ONLY_REASON,
+        ),
+        (
+            {
+                "binding": {
+                    "externalKey": None,
+                    "matchRule": {"reportType": []},
+                    "mapping": {},
+                },
+            },
+            False,
+            PROJECT_STATUS_INVALID_MAPPING_READ_ONLY_REASON,
+        ),
+        (
+            {
+                "binding": {
+                    "externalKey": None,
+                    "matchRule": {"reportType": {}},
+                    "mapping": {},
+                },
+            },
+            False,
+            PROJECT_STATUS_INVALID_MAPPING_READ_ONLY_REASON,
+        ),
+        # Control character in match rule
+        (
+            {
+                "mode": "hybrid",
+                "enabled": 0,
+                "deliverable_id": "VPI-T2-D5",
+                "external_key": None,
+                "match_rule_json": '{"reportType":"data_model","incident":"FM-1\\u0000"}',
+                "mapping_json": "{}",
+            },
+            False,
+            PROJECT_STATUS_INVALID_MAPPING_READ_ONLY_REASON,
+        ),
+        # Control character in mapping
+        (
+            {
+                "mode": "hybrid",
+                "enabled": 0,
+                "deliverable_id": "VPI-T2-D5",
+                "external_key": None,
+                "match_rule_json": '{"reportType":"data_model","incident":"FM-1"}',
+                "mapping_json": '{"note":["currentApprover\\u0000"]}',
+            },
+            False,
+            PROJECT_STATUS_INVALID_MAPPING_READ_ONLY_REASON,
+        ),
+        # Control character in external_key
+        (
+            {
+                "mode": "automatic",
+                "enabled": 0,
+                "deliverable_id": "VPI-T2-D5",
+                "external_key": "FM-1\x00",
+                "match_rule_json": '{"reportType":"data_model","incident":"FM-1"}',
+                "mapping_json": "{}",
+            },
+            False,
+            PROJECT_STATUS_INVALID_MAPPING_READ_ONLY_REASON,
+        ),
+        # Oversized match rule (> 4000 chars)
+        (
+            {
+                "mode": "hybrid",
+                "enabled": 0,
+                "deliverable_id": "VPI-T2-D5",
+                "external_key": None,
+                "match_rule_json": '{"reportType":"data_model","incident":"' + ('A' * 4005) + '"}',
+                "mapping_json": "{}",
+            },
+            False,
+            PROJECT_STATUS_INVALID_MAPPING_READ_ONLY_REASON,
+        ),
+        # Oversized mapping (> 4000 chars)
+        (
+            {
+                "mode": "hybrid",
+                "enabled": 0,
+                "deliverable_id": "VPI-T2-D5",
+                "external_key": None,
+                "match_rule_json": '{"reportType":"data_model","incident":"FM-1"}',
+                "mapping_json": '{"note":["' + ('B' * 4005) + '"]}',
+            },
+            False,
+            PROJECT_STATUS_INVALID_MAPPING_READ_ONLY_REASON,
+        ),
+    ],
+)
+def test_project_status_manual_editability_contract(
+    binding: dict[str, object],
+    manual_editable: bool,
+    reason: str | None,
+) -> None:
+    result = project_status_manual_editability(binding)
+    assert result == {"manualEditable": manual_editable, "readOnlyReason": reason}
+
+
+# ── 展示状态机 formSnapshotDriven 分支（D6-D8 外部快照驱动）────────────
+
+
+def _driven_state(**overrides: object) -> tuple[str, str, str]:
+    from core.project_status_contracts import deliverable_display_state
+
+    kwargs: dict[str, object] = {
+        "binding_mode": "manual",
+        "binding_enabled": False,
+        "binding_sync_state": "idle",
+        "last_success_at": None,
+        "analysis_summary": None,
+        "form_summary": None,
+        "aggregate": False,
+        "status_baseline": "进行中",
+        "form_snapshot_driven": True,
+    }
+    kwargs.update(overrides)
+    return deliverable_display_state(**kwargs)  # type: ignore[arg-type]
+
+
+def test_display_state_form_snapshot_driven_snapshot_state() -> None:
+    """有最新有效表单快照（total>0）→ snapshot 态，沿用快照换算。"""
+    state, label, effective = _driven_state(
+        form_summary={"total": 4, "completed": 1, "incomplete": 3, "overdue": 1},
+    )
+    assert (state, label) == ("snapshot", "快照同步")
+    assert effective == "已逾期"
+
+    state, label, effective = _driven_state(
+        form_summary={"total": 2, "completed": 2, "incomplete": 0, "overdue": 0},
+    )
+    assert (state, label) == ("snapshot", "快照同步")
+    assert effective == "已完成"
+
+
+def test_display_state_form_snapshot_driven_pending_first_sync() -> None:
+    """无快照或 total=0 → pending_first_sync（待同步），不展示数值。"""
+    assert _driven_state(form_summary=None)[:2] == ("pending_first_sync", "待同步")
+    assert _driven_state(
+        form_summary={"total": 0, "completed": 0, "incomplete": 0, "overdue": 0},
+    )[:2] == ("pending_first_sync", "待同步")
+
+
+def test_display_state_form_snapshot_driven_precedes_mode_decision() -> None:
+    """formSnapshotDriven 分支先于 mode 判定：manual 绑定也走快照态。"""
+    state, _, _ = _driven_state(
+        binding_mode="manual",
+        binding_enabled=False,
+        form_summary={"total": 3, "completed": 0, "incomplete": 3, "overdue": 0},
+    )
+    assert state == "snapshot"
+    # manual 绑定但无快照 → 待同步（而非手工维护）。
+    assert _driven_state(binding_mode="manual", form_summary=None)[:2] == (
+        "pending_first_sync",
+        "待同步",
+    )
+
+
+def test_display_state_form_snapshot_driven_aggregate_gate_kept() -> None:
+    """现有 aggregate 门控保留：聚合绑定时表单快照不作为有效摘要。"""
+    assert _driven_state(
+        aggregate=True,
+        form_summary={"total": 3, "completed": 0, "incomplete": 3, "overdue": 0},
+    )[:2] == ("pending_first_sync", "待同步")
+
+
+def test_display_state_non_driven_defaults_unchanged() -> None:
+    """未传 form_snapshot_driven（默认 False）时七态输出与既有口径一致。"""
+    from core.project_status_contracts import deliverable_display_state
+
+    assert deliverable_display_state(
+        "manual", False, "idle", None, None, None, False, "进行中",
+    ) == ("manual", "手工维护", "进行中")
+    assert deliverable_display_state(
+        "automatic", False, "idle", None, None, None, False, "进行中",
+    ) == ("pending_config", "待配置", "进行中")
+
+
+def test_manual_editability_form_snapshot_driven_deliverables() -> None:
+    """D6-D8 一律不可手工编辑，固定 readOnlyReason；D5 pristine 不受影响。"""
+    from core.project_status_contracts import (
+        PROJECT_STATUS_FORM_SNAPSHOT_READ_ONLY_REASON,
+    )
+
+    for deliverable_id in ("VPI-T2-D6", "VPI-T2-D7", "VPI-T2-D8"):
+        # 无绑定（binding None）也拒绝。
+        denied = project_status_manual_editability(None, deliverable_id=deliverable_id)
+        assert denied == {
+            "manualEditable": False,
+            "readOnlyReason": PROJECT_STATUS_FORM_SNAPSHOT_READ_ONLY_REASON,
+        }
+        # pristine manual 绑定同样拒绝。
+        denied = project_status_manual_editability(
+            {
+                "mode": "manual",
+                "enabled": 0,
+                "external_key": None,
+                "match_rule_json": "{}",
+                "mapping_json": "{}",
+            },
+            deliverable_id=deliverable_id,
+        )
+        assert denied["manualEditable"] is False
+        assert denied["readOnlyReason"] == PROJECT_STATUS_FORM_SNAPSHOT_READ_ONLY_REASON
+
+    # D5（pristine、未配置映射）仍可手工编辑。
+    editable = project_status_manual_editability(
+        {
+            "mode": "manual",
+            "enabled": 0,
+            "external_key": None,
+            "match_rule_json": "{}",
+            "mapping_json": "{}",
+        },
+        deliverable_id="VPI-T2-D5",
+    )
+    assert editable == {"manualEditable": True, "readOnlyReason": None}
+
+
+def test_source_capabilities_form_snapshot_driven_flags() -> None:
+    """D6-D8 能力标志：syncCapable=False、formSnapshotDriven=True、
+    countsTowardCompletion=False；默认策略仍为 manual（不进同步调度）。"""
+    for deliverable_id, report_type in (
+        ("VPI-T2-D6", "paa"),
+        ("VPI-T2-D7", "ncr_progress"),
+        ("VPI-T2-D8", "ncr_detail"),
+    ):
+        capabilities = project_status_source_capabilities(deliverable_id)
+        assert capabilities["sourceType"] == "aras"
+        assert capabilities["reportType"] == report_type
+        assert capabilities["syncCapable"] is False
+        assert capabilities["manualOnly"] is False
+        assert capabilities["formSnapshotDriven"] is True
+        assert capabilities["countsTowardCompletion"] is False
+        assert capabilities["syncNote"]
+        assert project_status_default_policy_mode(deliverable_id) == "manual"
+    # D1-D5 未声明新标志（payload 按缺省 True 处理计数分母）。
+    for deliverable_id in ("VPI-T2-D1", "VPI-T2-D2", "VPI-T2-D3", "VPI-T2-D4", "VPI-T2-D5"):
+        capabilities = project_status_source_capabilities(deliverable_id)
+        assert "formSnapshotDriven" not in capabilities
+        assert "countsTowardCompletion" not in capabilities
+
+
+def test_default_mappings_and_field_aliases_contracts() -> None:
+    """核心交付物（D2/D3/D5）内置标准映射与别名字典：确保开箱即用、防空映射。"""
+    assert "VPI-T2-D2" in DELIVERABLE_DEFAULT_MAPPINGS
+    assert "VPI-T2-D3" in DELIVERABLE_DEFAULT_MAPPINGS
+    assert "VPI-T2-D5" in DELIVERABLE_DEFAULT_MAPPINGS
+    assert "VPI-T2-D3" in DELIVERABLE_FIELD_ALIASES
+
+    d2_map = get_deliverable_default_mapping("VPI-T2-D2")
+    assert d2_map["owner"] == "startUserName"
+    assert "latestCompletedNode" in d2_map["note"]
+    assert "processInstanceStatus" in d2_map["note"]
+
+    d3_map = get_deliverable_default_mapping("VPI-T2-D3")
+    assert d3_map["owner"] == "_rsp_name"
+    assert d3_map["plannedDate"] == "_required_date"
+    assert "_subject" in d3_map["note"]
+
+    d5_map = get_deliverable_default_mapping("VPI-T2-D5")
+    assert d5_map["owner"] == "applicant"
+    assert "latestApproveLog" in d5_map["note"]
+    assert "status" in d5_map["note"]
+
+    assert get_deliverable_default_mapping("VPI-T2-D1") == {}
+    assert get_deliverable_default_mapping("UNKNOWN") == {}
+
+    d3_aliases = get_deliverable_field_aliases("VPI-T2-D3")
+    assert "_rsp_name" in d3_aliases["owner"]
+    assert "责任工程师名称" in d3_aliases["owner"]
+    assert "_required_date" in d3_aliases["plannedDate"]
+    assert "要求完成时间" in d3_aliases["plannedDate"]
+
+    # 交叉核验：默认映射的所有字段名必须属于 core/report_contracts 中已核实的源字段集合
+    from core.report_contracts import (
+        _EWO_SOURCE_FIELDS,
+        _TDC_SOR_SOURCE_FIELDS,
+        _TDC_DATA_MODEL_SOURCE_FIELDS,
+    )
+    sor_fields = {f for tup in _TDC_SOR_SOURCE_FIELDS.values() for f in tup}
+    ewo_fields = {f for tup in _EWO_SOURCE_FIELDS.values() for f in tup}
+    dm_fields = {f for tup in _TDC_DATA_MODEL_SOURCE_FIELDS.values() for f in tup}
+
+    assert d2_map["owner"] in sor_fields
+    assert all(f in sor_fields for f in d2_map["note"])
+
+    assert d3_map["owner"] in ewo_fields
+    assert d3_map["plannedDate"] in ewo_fields
+    assert all(f in ewo_fields for f in d3_map["note"])
+
+    assert d5_map["owner"] in dm_fields
+    assert all(f in dm_fields for f in d5_map["note"])
+
+    # 能力注册表中下发 defaultMapping 与 fieldAliases
+    d3_caps = project_status_source_capabilities("VPI-T2-D3")
+    assert d3_caps["defaultMapping"] == d3_map
+    assert d3_caps["fieldAliases"] == d3_aliases

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import zipfile
 from collections.abc import Mapping
 from pathlib import Path
@@ -22,7 +23,16 @@ _SENSITIVE_TERMS = (
     "api_key",
     "apikey",
     "privatekey",
+    "bearer",
+    "jwt",
+    "sid",
+    "sessionid",
+    "jsessionid",
+    "arasauth",
 )
+
+_BEARER_PATTERN = re.compile(r"(?i)\bBearer\s+\S+")
+_JWT_PATTERN = re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}")
 
 _EVENT_FIELDS = (
     "url",
@@ -40,6 +50,8 @@ _EVENT_FIELDS = (
 
 
 def _is_sensitive_text(value: str) -> bool:
+    if _BEARER_PATTERN.search(value) or _JWT_PATTERN.search(value):
+        return True
     lowered = value.casefold()
     compact = "".join(char for char in lowered if char.isalnum())
     return any(term in lowered or term.replace("_", "") in compact for term in _SENSITIVE_TERMS)

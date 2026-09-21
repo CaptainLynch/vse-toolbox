@@ -19,12 +19,14 @@ import re
 import shutil
 import sys
 import tempfile
-from datetime import date, datetime
+from dataclasses import asdict
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence, cast
 from urllib.parse import urlsplit
 
 from flask import Flask, current_app, has_app_context, jsonify, render_template, request, send_file
+from werkzeug.exceptions import RequestEntityTooLarge
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
@@ -48,10 +50,14 @@ from core.domain_identity import (
 SYNC_CREDENTIAL_REF = "domain"
 from core.native_folder_picker import NativeFolderPickerError, choose_native_folder
 from core.project_status_contracts import (
+    DELIVERABLE_LINK_REGISTRY,
     MILESTONE_STATUSES,
     PROJECT_STATUS_SOURCE_CAPABILITIES,
     current_stage_label,
+    deliverable_display_state,
+    find_registry_entry_by_deliverable_id,
     milestone_display_status,
+    project_status_manual_editability,
 )
 from core.report_contracts import matrix_payload, report_contracts, table_payload
 from core.runtime_paths import app_root
@@ -60,6 +66,7 @@ from core.db_manager import (
     ArchiveJobNotReadyError,
     ArchiveLeaseBusyError,
     DatabaseManager,
+    MappedDeliverableReadOnlyError,
     PROJECT_STATUS_MILESTONE_TEMPLATE,
     SyncBindingNotReadyError,
 )
@@ -71,6 +78,7 @@ from core.unified_status import (
     SyncState,
     UnifiedObjectStatus,
 )
+from core.version import get_app_version_info
 from core.excel_tasks import (
     ApprovedExcelRoots,
     ExcelIdempotencyConflictError,
@@ -93,6 +101,11 @@ from services.project_status_deliverable_analysis import (
     ProjectStatusDeliverableAnalysisService,
 )
 from services.deliverable_form_analysis import DeliverableFormAnalysisService
+from services.deliverable_statistics import (
+    STATISTICS_HISTORY_SNAPSHOT_LIMIT,
+    compute_form_statistics,
+    statistics_history_entry,
+)
 from services.project_status_sync_runner import (
     ProjectStatusSyncRunner,
     create_production_registry,
@@ -129,7 +142,6 @@ from services.tdc_crawler import (
     TDCCrawlerClient,
     TDCCrawlerError,
     TDCDataModelFilters,
-    TDCExportResult,
     TDCSORFilters,
 )
 from services.tdc_export_cache import TDCExportCache
@@ -442,6 +454,41 @@ def _local_web_mutation_error():
     return None
 
 
+def _enforce_local_web_access():
+    """Reject non-local or cross-site requests to prevent DNS rebinding and cross-site attacks."""
+    if not _loopback_hostname(request.remote_addr):
+        return _json_error(403, "LocalAccessRequired", "此操作仅允许从本机访问")
+    try:
+        host_url = urlsplit(f"//{request.host}")
+        host_name = host_url.hostname
+        host_port = host_url.port or (443 if request.scheme == "https" else 80)
+    except ValueError:
+        return _json_error(403, "LocalAccessRequired", "请求主机不受信任")
+    if not _loopback_hostname(host_name):
+        return _json_error(403, "LocalAccessRequired", "请求主机不受信任")
+
+    sec_fetch_site = request.headers.get("Sec-Fetch-Site", "").strip().lower()
+    if sec_fetch_site == "cross-site":
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+            return _json_error(403, "CrossSiteRequest", "拒绝跨站写操作")
+        if request.path.startswith("/api/"):
+            return _json_error(403, "CrossSiteRequest", "拒绝跨站请求")
+
+    origin = request.headers.get("Origin")
+    if origin is not None:
+        expected = (
+            request.scheme.lower(),
+            str(host_name).rstrip(".").lower(),
+            host_port,
+        )
+        if _origin_tuple(origin.strip()) != expected:
+            if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+                return _json_error(403, "CrossSiteRequest", "请求来源与本机服务不一致")
+            if request.path.startswith("/api/"):
+                return _json_error(403, "CrossSiteRequest", "请求来源与本机服务不一致")
+    return None
+
+
 def _save_web_diagnostic_report(
     report: MarkdownDiagnosticReport | None,
     exc: Exception,
@@ -727,6 +774,46 @@ def _shared_domain_session(system: str) -> Any | None:
     return registry.session(system)
 
 
+def _async_session_gate(system: str, payload: Mapping[str, Any]) -> tuple[Any | None, Any | None]:
+    """后台异步任务凭据准入（红线：凭据禁止入库持久化）。
+
+    密码模式与显式 Cookie/Authorization 只存在于请求生命周期内，无法随任务
+    参数安全落库；后台 worker 仅允许复用应用内存中的统一域会话对象。
+    Returns (session, error_response) — 恰好其一为 None。
+    """
+    auth_mode = str(payload.get("auth_mode") or "browser").strip().lower()
+    has_secret_headers = any(
+        name.lower() in {"authorization", "cookie", "set-cookie"}
+        for name in _clean_string_mapping(payload.get("headers"))
+    )
+    has_cookie = bool(
+        str(payload.get("cookie") or "").strip() or _clean_string_mapping(payload.get("cookies"))
+    )
+    has_userpass = bool(
+        str(payload.get("username") or "").strip() or str(payload.get("password") or "")
+    )
+    if auth_mode == "password" or has_userpass:
+        return None, _json_error(
+            400,
+            "AsyncAuthUnsupported",
+            "后台任务不支持账号密码模式：凭据禁止入库持久化；请使用「设置 → 统一域账号登录」后重试",
+        )
+    if has_secret_headers or has_cookie:
+        return None, _json_error(
+            400,
+            "AsyncAuthUnsupported",
+            "后台任务不支持显式 Cookie/Authorization 凭据：凭据禁止入库持久化；请使用统一域账号会话",
+        )
+    session = _shared_domain_session(system)
+    if session is None:
+        return None, _json_error(
+            401,
+            "DomainSessionRequired",
+            "尚未建立统一域账号会话：请先在「设置 → 统一域账号登录」完成登录",
+        )
+    return session, None
+
+
 def _close_owned_tdc_client(client: TDCCrawlerClient | None) -> None:
     """Close one-shot TDC sessions without closing the shared domain session."""
     if client is None:
@@ -920,35 +1007,6 @@ def _safe_attachment_basename(name: str, fallback: str = "ncr_detail") -> str:
     base = Path(str(name or "")).name
     base = _INVALID_ATTACHMENT_CHARS_RE.sub("_", base).strip(" .")
     return base or fallback
-
-
-def _send_csv_attachment(
-    path: Path,
-    page: Any,
-    max_pages: int,
-    max_records: int,
-    temp_dir: Path,
-):
-    """以 attachment 返回 CSV；可能截断时用 X-Export-* headers 明确告知。
-
-    send_file 的响应是 direct_passthrough，其 call_on_close 不会随 WSGI
-    app_iter 关闭触发（werkzeug 已知行为）；因此先把文件读入内存并立即删除
-    临时目录（无句柄占用），再以 BytesIO 发送，临时文件生命周期不会外泄。
-    """
-    truncated = len(page.rows) >= max_records or (page.page is not None and page.page >= max_pages)
-    data = path.read_bytes()
-    shutil.rmtree(temp_dir, ignore_errors=True)
-    response = send_file(
-        io.BytesIO(data),
-        mimetype="text/csv",
-        as_attachment=True,
-        download_name=path.name,
-    )
-    response.headers["Content-Type"] = "text/csv; charset=utf-8"
-    response.headers["X-Export-Complete"] = "false" if truncated else "true"
-    response.headers["X-Export-Truncated"] = "true" if truncated else "false"
-    response.headers["X-Export-Row-Count"] = str(len(page.rows))
-    return response
 
 
 def _tdc_positive_int(value: Any, name: str, default: int, maximum: int) -> int:
@@ -1360,6 +1418,8 @@ def _tdc_crawl(
     page_size: int,
     max_pages: int,
     max_records: int,
+    should_stop: Callable[[], bool] | None = None,
+    on_page: Callable[[int, int], None] | None = None,
 ):
     if report_type == "data_model":
         return client.crawl_data_model_all(
@@ -1367,12 +1427,16 @@ def _tdc_crawl(
             page_size=page_size,
             max_pages=max_pages,
             max_records=max_records,
+            should_stop=should_stop,
+            on_page=on_page,
         )
     return client.crawl_sor_all(
         filters,
         page_size=page_size,
         max_pages=max_pages,
         max_records=max_records,
+        should_stop=should_stop,
+        on_page=on_page,
     )
 
 
@@ -1695,14 +1759,69 @@ _PROJECT_STATUS_TONES = {
     "已逾期": "error",
 }
 
-#: 交付物 ↔ 统一表单分析 form_key 的后端单一映射（交付物代码与
-#: core.db_manager.ARCHIVE_JOB_CONTRACTS 的合同代码对齐）。payload 通过
+#: 交付物 ↔ 统一表单分析 form_key 的后端单一映射（从
+#: core.project_status_contracts.DELIVERABLE_LINK_REGISTRY 派生，仅保留
+#: deliverable_id 非 None 的条目，deliverable_id → form_key）。payload 通过
 #: formLink 下发给前端，前端不再各自维护该映射。
 DELIVERABLE_FORM_LINKS = {
-    "VPI-T2-D3": "VPI-T2-D3",
-    "VPI-T2-D2": "tdc_sor",
-    "VPI-T2-D5": "tdc_data_model",
+    entry["deliverable_id"]: entry["form_key"]
+    for entry in DELIVERABLE_LINK_REGISTRY.values()
+    if entry["deliverable_id"] is not None
 }
+
+
+def _deliverable_associations(
+    deliverable_id: str,
+    archive_jobs_by_key: Mapping[str, Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """按单一关联注册表反查交付物关联（归档任务 + 目录条目）。
+
+    未关联项目交付物的条目（如 D1/D4）返回空数组。
+    """
+    entry = find_registry_entry_by_deliverable_id(deliverable_id)
+    if entry is None:
+        return []
+    job_key = next(
+        (
+            candidate_key
+            for candidate_key, candidate in DELIVERABLE_LINK_REGISTRY.items()
+            if candidate is entry
+        ),
+        None,
+    )
+    catalog_name = next(
+        (
+            str(item["name"])
+            for item in _DELIVERABLES_CATALOG
+            if item["id"] == entry["catalog_id"]
+        ),
+        str(entry["catalog_id"]),
+    )
+    associations: list[dict[str, Any]] = []
+    job_row = archive_jobs_by_key.get(str(job_key or ""))
+    associations.append(
+        {
+            "type": "archive_job",
+            "jobKey": job_key,
+            "name": (
+                str(job_row.get("display_name") or job_key)
+                if job_row is not None
+                else catalog_name
+            ),
+            "enabled": bool(job_row["enabled"]) if job_row is not None else False,
+            "lastSuccessAt": job_row.get("last_success_at") if job_row is not None else None,
+            "href": f"#archive-deliverable/{job_key}",
+        }
+    )
+    associations.append(
+        {
+            "type": "catalog_item",
+            "catalogId": entry["catalog_id"],
+            "name": catalog_name,
+            "href": "#deliverables",
+        }
+    )
+    return associations
 
 
 def _deliverable_form_link(
@@ -1758,6 +1877,65 @@ def _deliverable_analysis_link(
     }
 
 
+#: 历史快照装载的每请求累计行数上限。30 份历史快照 × 每份最多 20000 行的
+#: 全量解码上界过大：按快照从新到旧装载，累计行数达到该上限即停止装载
+#: 剩余历史（最新快照行不受影响；单份快照内部行数上限维持 db 层现状）。
+_STATISTICS_MAX_HISTORY_ROWS = 20000
+
+
+def _deliverable_form_statistics_payload(
+    db: DatabaseManager,
+    form_key: str,
+) -> dict[str, Any]:
+    """快照统计分析读取装配：最新快照行 + 有界历史快照 → 纯函数。
+
+    只读已落库的规范化行，不做任何抓取或凭据解析；历史快照数量有界
+    （STATISTICS_HISTORY_SNAPSHOT_LIMIT），累计行数有界
+    （_STATISTICS_MAX_HISTORY_ROWS），避免端点无界读取。
+    historyTruncated=True 表示因行数上限停止装载，历史不完整。
+    """
+    latest = db.get_latest_deliverable_form_snapshot(form_key)
+    if latest is None:
+        return {
+            "formKey": str(form_key),
+            "hasSnapshot": False,
+            "snapshotAt": None,
+            "statistics": None,
+            "historyTruncated": False,
+        }
+    snapshot_id = int(latest["id"])
+    snapshot_at = str(latest.get("snapshot_at") or "")
+    rows = db.list_deliverable_form_snapshot_rows(snapshot_id)
+    history: list[dict[str, Any]] = []
+    history_rows_loaded = 0
+    history_truncated = False
+    snapshots = db.list_deliverable_form_snapshots(
+        form_key, limit=STATISTICS_HISTORY_SNAPSHOT_LIMIT + 1
+    )
+    for item in snapshots:
+        if int(item["id"]) == snapshot_id or len(history) >= STATISTICS_HISTORY_SNAPSHOT_LIMIT:
+            continue
+        if history_rows_loaded >= _STATISTICS_MAX_HISTORY_ROWS:
+            history_truncated = True
+            break
+        entry_rows = db.list_deliverable_form_snapshot_rows(int(item["id"]))
+        # 解码成本已发生，即使快照时间非法未入 history 也计入累计上界。
+        history_rows_loaded += len(entry_rows)
+        entry = statistics_history_entry(item.get("snapshot_at"), entry_rows)
+        if entry is not None:
+            history.append(entry)
+    statistics = compute_form_statistics(
+        str(form_key), rows, snapshot_at=snapshot_at, history=history
+    )
+    return {
+        "formKey": str(form_key),
+        "hasSnapshot": True,
+        "snapshotAt": snapshot_at or None,
+        "statistics": statistics,
+        "historyTruncated": history_truncated,
+    }
+
+
 def _project_status_payload(
     db: DatabaseManager,
     phase_id: str,
@@ -1770,14 +1948,27 @@ def _project_status_payload(
     if phase_row is None:
         return None
     current_day = today or date.today()
+    archive_jobs_by_key = {
+        str(row["job_key"]): row
+        for row in db.list_archive_jobs(include_archived=True)
+    }
     deliverables = []
     policy_summaries = db.get_project_status_update_policy_summaries(phase_id)
     for row in deliverable_rows:
         actual_date = row["actual_date"]
-        planned_day = date.fromisoformat(str(row["planned_date"]))
+        # planned_date 可空（外部快照驱动交付物 D6-D8 无手工排期）：
+        # NULL 或非法值均不做排期计算，payload 输出 plannedDate=null 且
+        # scheduleState/scheduleDays 为 null。
+        planned_raw = row["planned_date"]
+        planned_day: date | None = None
+        if planned_raw not in (None, ""):
+            try:
+                planned_day = date.fromisoformat(str(planned_raw))
+            except ValueError:
+                planned_day = None
         schedule_state: str | None = None
         schedule_days: int | None = None
-        if row["status"] != "已完成":
+        if row["status"] != "已完成" and planned_day is not None:
             delta = (planned_day - current_day).days
             if delta < 0:
                 schedule_state = "overdue"
@@ -1791,6 +1982,8 @@ def _project_status_payload(
                 "mode": "manual",
                 "source_type": "tdc",
                 "enabled": 0,
+                "external_key": None,
+                "mapping_json": "{}",
                 "sync_state": "idle",
                 "last_attempt_at": None,
                 "last_success_at": None,
@@ -1811,59 +2004,69 @@ def _project_status_payload(
         form_link = _deliverable_form_link(db, str(row["id"]))
         analysis_link = _deliverable_analysis_link(db, str(row["id"]), analysis_service)
         capabilities = PROJECT_STATUS_SOURCE_CAPABILITIES.get(str(row["id"]), {})
+        form_snapshot_driven = bool(capabilities.get("formSnapshotDriven"))
+        counts_toward_completion = capabilities.get("countsTowardCompletion") is not False
+        editability = project_status_manual_editability(
+            summary, deliverable_id=str(row["id"])
+        )
         form_summary = (
             form_link.get("summary")
             if isinstance(form_link, dict) and isinstance(form_link.get("summary"), dict)
             else None
         )
         # 展示状态机：mode/enabled/有效快照/syncState 四输入，七态输出。
-        # 数值仅在 manual/paused/snapshot 三态展示；其余状态显示状态标签，
-        # 避免"默认自动但尚未同步"的交付物展示编造进度。
+        # 纯函数提取至 core.project_status_contracts，前后端共用同一口径。
         binding_mode = str(summary["mode"])
-        binding_enabled = bool(summary["enabled"])
         binding_sync_state = str(summary["sync_state"] or "idle")
         analysis_summary = (
             analysis_link.get("summary")
             if isinstance(analysis_link, dict) and isinstance(analysis_link.get("summary"), dict)
             else None
         )
-        # 有效快照选择与前端 deliverableFormDisplay 同规则：
-        # 分析快照优先；表单快照兜底仅限非聚合绑定（聚合绑定只信任
-        # 分析快照链路——GPT 终审 E：前后端换绑隔离一致）。
-        display_summary = analysis_summary or (
-            None if aggregate_binding else form_summary
+        display_state, display_label, effective_status = deliverable_display_state(
+            binding_mode=binding_mode,
+            binding_enabled=bool(summary["enabled"]),
+            binding_sync_state=binding_sync_state,
+            last_success_at=summary.get("last_success_at"),
+            analysis_summary=analysis_summary,
+            form_summary=form_summary,
+            aggregate=aggregate_binding,
+            status_baseline=str(row["status"]),
+            form_snapshot_driven=form_snapshot_driven,
         )
-        analysis_total = int(display_summary.get("total") or 0) if display_summary else None
-        if binding_mode not in ("automatic", "hybrid"):
-            display_state, display_label = "manual", "手工维护"
-        elif not binding_enabled:
-            # 暂停 = 曾成功同步过（deliverable 手工列持有可信同步值）；
-            # 从未同步（无论是否残留独立快照或失败痕迹）一律待配置，
-            # 不把占位值当作可信展示值重新暴露。
-            if summary.get("last_success_at"):
-                display_state, display_label = "paused", "已暂停"
-            else:
-                display_state, display_label = "pending_config", "待配置"
-        elif analysis_total is None:
-            if binding_sync_state in ("failed", "needs_attention"):
-                display_state, display_label = "sync_failed", "同步失败"
-            elif binding_sync_state == "running":
-                display_state, display_label = "pending_first_sync", "同步中"
-            else:
-                display_state, display_label = "pending_first_sync", "待首次同步"
-        elif analysis_total <= 0:
-            display_state, display_label = "no_source_records", "无来源记录"
+        # display 三字段仅在数值态（manual/snapshot）填真实值，其余各态
+        # 一律 null，防止 total=0 或暂停残留渗入环图与自动隐藏；
+        # effectiveStatus 同源保留（node-overview 消费 item.effectiveStatus）。
+        if display_state == "snapshot" and (
+            analysis_summary or (form_summary if not aggregate_binding else None)
+        ):
+            source_summary = analysis_summary or form_summary or {}
+            source_link = analysis_link if analysis_summary is not None else form_link
+            display_total = int(source_summary.get("total") or 0)
+            display_completed = int(source_summary.get("completed") or 0)
+            display_summary_value: dict[str, Any] | None = {
+                "total": display_total,
+                "completed": display_completed,
+                "incomplete": int(source_summary.get("incomplete") or 0),
+                "overdue": int(source_summary.get("overdue") or 0),
+                "snapshotAt": source_link.get("snapshotAt") if isinstance(source_link, dict) else None,
+            }
+            display_progress_value: int | None = (
+                min(100, max(0, round(display_completed / display_total * 100)))
+                if display_total > 0
+                else None
+            )
+        elif display_state == "manual":
+            display_summary_value = None
+            display_progress_value = (
+                int(row["progress"]) if row["progress"] is not None else None
+            )
         else:
-            display_state, display_label = "snapshot", "快照同步"
-        # 快照态的有效状态换算（与前端 deliverableFormDisplay 同规则）。
-        effective_status = row["status"]
-        if display_state == "snapshot" and display_summary:
-            if analysis_total and int(display_summary.get("completed") or 0) >= analysis_total:
-                effective_status = "已完成"
-            elif int(display_summary.get("overdue") or 0) > 0:
-                effective_status = "已逾期"
-            else:
-                effective_status = "进行中"
+            display_summary_value = None
+            display_progress_value = None
+        display_status_value = (
+            effective_status if display_state in ("manual", "snapshot") else None
+        )
         deliverables.append(
             {
                 "id": row["id"],
@@ -1882,6 +2085,10 @@ def _project_status_payload(
                 "stage": row["stage"],
                 # binding.mode 为唯一权威：updateMethod 是策略模式的兼容投影。
                 "updateMethod": binding_mode,
+                "manualEditable": editability["manualEditable"],
+                "readOnlyReason": editability["readOnlyReason"],
+                "formSnapshotDriven": form_snapshot_driven,
+                "countsTowardCompletion": counts_toward_completion,
                 "tone": _PROJECT_STATUS_TONES[row["status"]],
                 "effectiveStatus": effective_status,
                 "syncDisplay": {
@@ -1889,6 +2096,10 @@ def _project_status_payload(
                     "label": display_label,
                     "syncState": binding_sync_state,
                     "lastError": summary["last_error_message"],
+                    # 仅数值态填真实值，其余各态一律 null（见上方注释）。
+                    "displayStatus": display_status_value,
+                    "displayProgress": display_progress_value,
+                    "displaySummary": display_summary_value,
                 },
                 "sourceInfo": {
                     "sourceType": capabilities.get("sourceType"),
@@ -1899,6 +2110,9 @@ def _project_status_payload(
                     "syncNote": capabilities.get("syncNote"),
                     "matchFields": [list(field) for field in capabilities.get("matchFields", ())],
                     "evidenceFields": [dict(field) for field in capabilities.get("evidenceFields", ())],
+                    "defaultMapping": capabilities.get("defaultMapping") or {},
+                    "fieldAliases": capabilities.get("fieldAliases") or {},
+                    "fieldSemantics": capabilities.get("fieldSemantics") or {},
                 },
                 "scheduleState": schedule_state,
                 "scheduleDays": schedule_days,
@@ -1917,25 +2131,32 @@ def _project_status_payload(
                     "lastErrorMessage": summary["last_error_message"],
                     "updatedAt": summary["updated_at"],
                 },
-                "associations": [],
+                "associations": _deliverable_associations(
+                    str(row["id"]), archive_jobs_by_key
+                ),
             }
         )
 
     # 汇总口径：数值态（manual/snapshot）计入完成与风险；
     # paused/待同步类状态单列 pendingCount，不计完成也不计业务风险
     # （同步不写 status/progress，paused 无可信进度值——GPT 终审 P1）。
+    # countsTowardCompletion=False 的交付物（外部快照驱动 D6-D8，仅展示
+    # 参考）不进入价值态汇总——总体进度分母仍为 D1-D5。
     value_states = {"manual", "snapshot"}
+    counting_deliverables = [
+        item for item in deliverables if item["countsTowardCompletion"]
+    ]
     completed_count = sum(
-        1 for item in deliverables
+        1 for item in counting_deliverables
         if item["syncDisplay"]["state"] in value_states
         and item["effectiveStatus"] == "已完成"
     )
     pending_count = sum(
-        1 for item in deliverables
+        1 for item in counting_deliverables
         if item["syncDisplay"]["state"] not in value_states
     )
     risk_count = sum(
-        1 for item in deliverables
+        1 for item in counting_deliverables
         if item["syncDisplay"]["state"] in value_states
         and (
             item["effectiveStatus"] == "已逾期"
@@ -1947,7 +2168,7 @@ def _project_status_payload(
     overdue = next(
         (
             item
-            for item in deliverables
+            for item in counting_deliverables
             if item["syncDisplay"]["state"] in value_states
             and (
                 item["effectiveStatus"] == "已逾期"
@@ -2262,31 +2483,6 @@ def _validate_project_status_milestones(
     return normalized, errors
 
 
-def _send_tdc_xlsx_attachment(result: Any, temp_dir: Path):
-    """读入内存后立即清理临时目录，再以 BytesIO 发送 XLSX。"""
-    path = Path(result.path)
-    resolved = path.resolve()
-    root = temp_dir.resolve()
-    if not resolved.is_relative_to(root):
-        raise TDCCrawlerError(
-            "TDC export produced a path outside the temporary output directory",
-            stage="export-validation",
-        )
-    data = resolved.read_bytes()
-    shutil.rmtree(temp_dir, ignore_errors=True)
-    response = send_file(
-        io.BytesIO(data),
-        mimetype=_TDC_XLSX_MIMETYPE,
-        as_attachment=True,
-        download_name=_safe_attachment_basename(path.name, fallback="tdc_export.xlsx"),
-    )
-    response.headers["Content-Type"] = _TDC_XLSX_MIMETYPE
-    response.headers["X-Export-Complete"] = "true"
-    response.headers["X-Export-File-Name"] = path.name
-    response.headers["X-Export-Byte-Count"] = str(len(data))
-    return response
-
-
 _NCR_PREVIEW_MAX_ROWS = 500
 
 
@@ -2463,6 +2659,49 @@ def _tdc_report_query(
         _close_owned_tdc_client(client)
 
 
+#: 后台任务结果 JSON 工件的大小上限（与同步响应体量级一致的安全上限）。
+_TASK_RESULT_MAX_BYTES = 64 * 1024 * 1024
+
+
+def _submit_background_task(
+    runner: Any,
+    task_type: str,
+    source: str,
+    params: Mapping[str, Any],
+    worker_fn: Callable[[Any], None],
+    *,
+    error_context: str,
+):
+    """提交后台任务并返回 202 Accepted + task_id 契约响应。"""
+    if runner is None:
+        return _json_error(503, "TaskEngineUnavailable", "后台任务引擎未初始化")
+    try:
+        tid = runner.submit_task(task_type, source, params, worker_fn)
+    except Exception:
+        logger.exception("Failed to submit background task (%s)", error_context)
+        return _json_error(500, "ServerError", "后台任务提交失败")
+    response = jsonify(
+        {
+            "ok": True,
+            "data": {
+                "taskId": tid,
+                "status": "queued",
+                "category": "crawl",
+                "source": source,
+                "statusUrl": f"/api/tasks/{tid}",
+                "resultUrl": f"/api/tasks/{tid}/result",
+            },
+        }
+    )
+    response.status_code = 202
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def _crawl_runner_from_request() -> Any:
+    return current_app.extensions.get("crawl_task_runner")
+
+
 def _tdc_report_crawl(
     report_type: str,
     filter_builder,
@@ -2473,7 +2712,6 @@ def _tdc_report_crawl(
     if error_response:
         return error_response
     assert payload is not None
-    client: TDCCrawlerClient | None = None
     try:
         filters = filter_builder(_tdc_filters_from_payload(payload, allowed_names))
         page_size = _tdc_positive_int(payload.get("page_size"), "page_size", 50, _TDC_PAGE_SIZE_MAX)
@@ -2482,12 +2720,16 @@ def _tdc_report_crawl(
             payload.get("max_records"), "max_records", 10000, _TDC_MAX_RECORDS_MAX
         )
         preview_source = _tdc_preview_source(payload)
-        if preview_source == "official_export":
-            preview_builder = (
-                _tdc_official_data_model_preview
-                if report_type == "data_model"
-                else _tdc_official_sor_preview
-            )
+    except Exception as exc:
+        return _tdc_error_response(exc, report_type, "crawl-all")
+    if preview_source == "official_export":
+        # 官方导出预览为本地解析路径，维持同步 200 契约（交付物控制台依赖）。
+        preview_builder = (
+            _tdc_official_data_model_preview
+            if report_type == "data_model"
+            else _tdc_official_sor_preview
+        )
+        try:
             data = preview_builder(
                 payload,
                 filters,
@@ -2497,7 +2739,22 @@ def _tdc_report_crawl(
                 max_records=max_records,
             )
             return jsonify({"ok": True, "data": data})
-        client = _build_tdc_client_from_payload(payload, allowed_hosts)
+        except Exception as exc:
+            return _tdc_error_response(exc, report_type, "crawl-all")
+
+    # 网络全量抓取路径转换为后台任务（202 Accepted + task_id）。
+    session, gate_error = _async_session_gate("tdc", payload)
+    if gate_error is not None:
+        return gate_error
+    try:
+        base_url = str(payload["base_url"]).strip()
+        _validate_tdc_base_url(base_url, allowed_hosts, require_https=False)
+    except Exception as exc:
+        return _tdc_error_response(exc, report_type, "crawl-all")
+
+    def worker(ctx):
+        client = TDCCrawlerClient(base_url, session=session, timeout=30.0)
+        # 会话为共享统一域会话：worker 线程内禁止关闭（无 app 上下文无法识别）。
         result = _tdc_crawl(
             client,
             report_type,
@@ -2505,12 +2762,34 @@ def _tdc_report_crawl(
             page_size=page_size,
             max_pages=max_pages,
             max_records=max_records,
+            should_stop=lambda: ctx.is_cancelled,
+            on_page=lambda page_no, rows_so_far: ctx.update_progress(
+                current=rows_so_far,
+                total=max_records,
+                stage=f"TDC {report_type} 全量抓取第 {page_no} 页",
+            ),
         )
-        return jsonify({"ok": True, "data": _tdc_result_data(result)})
-    except Exception as exc:
-        return _tdc_error_response(exc, report_type, "crawl-all")
-    finally:
-        _close_owned_tdc_client(client)
+        data = _tdc_result_data(result)
+        artifact = ctx.downloads_dir / f"{ctx.task_id}.result.json"
+        artifact.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        ctx.set_artifact(artifact)
+        ctx.update_progress(percent=100, stage="全量抓取完成")
+
+    params = {
+        "base_url": base_url,
+        "filters": asdict(filters),
+        "page_size": page_size,
+        "max_pages": max_pages,
+        "max_records": max_records,
+    }
+    return _submit_background_task(
+        _crawl_runner_from_request(),
+        f"tdc_{report_type}_crawl",
+        "tdc",
+        params,
+        worker,
+        error_context="TDC crawl-all",
+    )
 
 
 def _tdc_report_export(
@@ -2523,45 +2802,54 @@ def _tdc_report_export(
     if error_response:
         return error_response
     assert payload is not None
-    temp_dir = Path(tempfile.mkdtemp(prefix="tdc_export_"))
-    client: TDCCrawlerClient | None = None
     try:
         file_name = _tdc_file_name(payload.get("file_name"))
         filters = filter_builder(_tdc_filters_from_payload(payload, allowed_names))
-        if report_type == "data_model":
-            safe_name = file_name or "tdc_data_model.xlsx"
-            content, _ = _tdc_data_model_export_bytes(
-                payload,
-                filters,
-                allowed_hosts,
-                file_name=safe_name,
-            )
-            saved = (temp_dir / safe_name).resolve()
-            if not saved.is_relative_to(temp_dir.resolve()):
-                raise TDCCrawlerError(
-                    "TDC export produced a path outside the temporary output directory",
-                    stage="export-validation",
-                )
-            saved.write_bytes(content)
-            result = TDCExportResult(
-                report_type="data_model",
-                file_name=safe_name,
-                path=saved,
-                byte_count=len(content),
-                content_type=_TDC_XLSX_MIMETYPE,
-                signature_valid=content.startswith(b"PK"),
-                elapsed_ms=0.0,
-                record_granularity="part_detail",
-            )
-        else:
-            client = _build_tdc_client_from_payload(payload, allowed_hosts, output_dir=temp_dir)
-            result = _tdc_export(client, report_type, filters, file_name=file_name)
-        return _send_tdc_xlsx_attachment(result, temp_dir)
     except Exception as exc:
-        shutil.rmtree(temp_dir, ignore_errors=True)
         return _tdc_error_response(exc, report_type, "export")
-    finally:
-        _close_owned_tdc_client(client)
+
+    # 大导出转换为后台任务：官方工作簿下载 + XLSX 落盘至 data/downloads/，
+    # 由统一任务抽屉下载（7 天自动轮换清理）。
+    session, gate_error = _async_session_gate("tdc", payload)
+    if gate_error is not None:
+        return gate_error
+    try:
+        base_url = str(payload["base_url"]).strip()
+        _validate_tdc_base_url(base_url, allowed_hosts, require_https=False)
+    except Exception as exc:
+        return _tdc_error_response(exc, report_type, "export")
+
+    def worker(ctx):
+        # 会话为共享统一域会话：worker 线程内禁止关闭（无 app 上下文无法识别）。
+        client = TDCCrawlerClient(
+            base_url, session=session, timeout=30.0, output_dir=ctx.downloads_dir
+        )
+        ctx.update_progress(stage=f"正在生成 TDC {report_type} 官方导出")
+        user_name = file_name or f"tdc_{report_type}.xlsx"
+        unique_name = f"{Path(user_name).stem}_{ctx.task_id}.xlsx"
+        result = _tdc_export(client, report_type, filters, file_name=unique_name)
+        out_path = Path(result.path).resolve()
+        if not out_path.is_relative_to(ctx.downloads_dir.resolve()):
+            raise TDCCrawlerError(
+                "TDC export produced a path outside the download directory",
+                stage="export-validation",
+            )
+        ctx.set_artifact(out_path)
+        ctx.update_progress(percent=100, stage="导出完成")
+
+    params = {
+        "base_url": base_url,
+        "filters": asdict(filters),
+        "file_name": file_name,
+    }
+    return _submit_background_task(
+        _crawl_runner_from_request(),
+        f"tdc_{report_type}_export",
+        "tdc",
+        params,
+        worker,
+        error_context="TDC export",
+    )
 
 
 def create_app(
@@ -2597,6 +2885,17 @@ def create_app(
     app.config["TDC_ALLOWED_HOSTS"] = (
         tuple(tdc_allowed_hosts) if tdc_allowed_hosts is not None else _DEFAULT_TDC_ALLOWED_HOSTS
     )
+
+    version_info = get_app_version_info()
+    app.config["APP_VERSION_INFO"] = version_info
+    app.config["APP_VERSION"] = version_info.get("displayVersion", "开发工作区")
+    app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
+    app.before_request(_enforce_local_web_access)
+
+    @app.errorhandler(413)
+    @app.errorhandler(RequestEntityTooLarge)
+    def _request_entity_too_large(error=None):
+        return _json_error(413, "PayloadTooLarge", "请求体超过大小限制 (最大 16MB)")
 
     # DatabaseManager 实例化一次，init_database 只在启动时调用
     db = DatabaseManager()
@@ -2641,6 +2940,17 @@ def create_app(
     )
     app.extensions["ewo_enrichment"] = ewo_enrichment
     register_ewo_enrichment(app, ewo_enrichment, domain_sessions, _local_web_mutation_error)
+
+    from services.crawl_task_runner import CrawlTaskRunner, prune_old_artifacts
+    crawl_downloads_dir = Path(db.db_path).parent / "downloads"
+    crawl_task_runner = CrawlTaskRunner(db, downloads_dir=crawl_downloads_dir)
+    swept_tasks = crawl_task_runner.startup_sweep()
+    if swept_tasks > 0:
+        logger.info("Crawl tasks startup sweep: %d orphan tasks marked interrupted", swept_tasks)
+    pruned_artifacts = prune_old_artifacts(crawl_downloads_dir)
+    if pruned_artifacts > 0:
+        logger.info("Startup artifact pruning: %d expired files removed", pruned_artifacts)
+    app.extensions["crawl_task_runner"] = crawl_task_runner
     app.extensions["domain_credential_vault"] = credential_vault
     app.extensions["tdc_export_cache"] = tdc_export_cache
     app.extensions["deliverable_form_analysis"] = deliverable_form_service
@@ -2665,11 +2975,21 @@ def create_app(
 
     @app.route("/")
     def index():
-        return render_template("dashboard.html")
+        return render_template(
+            "dashboard.html",
+            app_version=app.config.get("APP_VERSION", "开发工作区"),
+        )
 
     @app.get("/favicon.ico")
     def favicon():
         return "", 204
+
+    @app.get("/api/version")
+    def api_version():
+        info = app.config.get("APP_VERSION_INFO") or get_app_version_info()
+        response = jsonify({"ok": True, "data": info})
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.route("/api/overview")
     def api_overview():
@@ -2907,6 +3227,529 @@ def create_app(
         except Exception:
             logger.exception("Excel artifact retention plan query failed")
             return _json_error(500, "ServerError", "Excel artifact retention plan query failed")
+
+    # ── 统一任务中心门面与工件下载 (Unified Task Center API Facade) ──────────
+
+    _CRAWL_TASK_TYPE_LABELS = {
+        "paa_crawl": "Aras PAA 全量抓取",
+        "paa_export": "Aras PAA 导出",
+        "ewo_export": "Aras EWO 导出",
+        "tdc_data_model_crawl": "TDC 数模审核全量抓取",
+        "tdc_data_model_export": "TDC 数模审核导出",
+        "tdc_sor_crawl": "TDC SOR 全量抓取",
+        "tdc_sor_export": "TDC SOR 导出",
+    }
+
+    def _crawl_task_title(task_type: str | None, source: str | None) -> str:
+        t = (task_type or "").lower()
+        if t in _CRAWL_TASK_TYPE_LABELS:
+            return _CRAWL_TASK_TYPE_LABELS[t]
+        s = (source or "aras").upper()
+        if "ewo" in t:
+            return f"{s} EWO 数据查询与抓取"
+        elif "paa" in t:
+            return f"{s} PAA 报表查询"
+        elif "ncr" in t:
+            return f"{s} NCR 报表抓取"
+        elif "sor" in t:
+            return f"{s} SOR 导出任务"
+        elif "model" in t or "data_model" in t:
+            return f"{s} 数模审核报表抓取"
+        elif "export" in t:
+            return f"{s} 数据导出任务"
+        return f"{s} {task_type or '后台任务'}"
+
+    def _crawl_task_entry(ct: dict[str, Any]) -> dict[str, Any]:
+        st = ct["status"]
+        is_active = st in ("queued", "leased", "running")
+        prog = {}
+        if ct.get("progress_json"):
+            try:
+                prog = json.loads(ct["progress_json"])
+            except Exception:
+                pass
+        art_path = ct.get("artifact_path")
+        has_art = False
+        if art_path:
+            try:
+                target_f = (crawl_task_runner.downloads_dir / art_path).resolve()
+                has_art = (
+                    target_f.is_file()
+                    and target_f.is_relative_to(crawl_task_runner.downloads_dir.resolve())
+                )
+            except Exception:
+                pass
+
+        tid = ct["task_id"]
+        # 仅注册了默认 handler 的任务类型可安全重试；抓取/导出任务的工作函数
+        # 与请求上下文（会话、筛选）绑定，过期后须从面板重新提交。
+        retryable = st in ("failed", "interrupted", "cancelled") and (
+            crawl_task_runner is not None
+            and crawl_task_runner.has_handler(ct.get("task_type") or "")
+        )
+        return {
+            "id": tid if tid.startswith("crawl_") else f"crawl_{tid}",
+            "raw_id": tid,
+            "category": "crawl",
+            "source": ct.get("source", "aras"),
+            "task_type": ct.get("task_type", "query"),
+            "title": _crawl_task_title(ct.get("task_type"), ct.get("source")),
+            "status": st,
+            "is_active": is_active,
+            "progress": prog,
+            "artifact_path": art_path if has_art else None,
+            "has_artifact": has_art,
+            "error_message": ct.get("error_message"),
+            "created_at": ct.get("created_at"),
+            "updated_at": ct.get("updated_at"),
+            "can_cancel": is_active,
+            "can_download": has_art and st == "succeeded",
+            "can_retry": retryable,
+            "manual_check_required": False,
+        }
+
+    def _excel_task_entry(et: dict[str, Any]) -> dict[str, Any]:
+        st = et["status"]
+        is_active = st in ("queued", "leased", "running")
+        has_art = False
+        try:
+            arts = excel_admin_service.list_artifacts(et["id"])
+            has_art = bool(arts)
+        except Exception:
+            pass
+        return {
+            "id": f"excel_{et['id']}",
+            "raw_id": str(et["id"]),
+            "category": "excel",
+            "source": "excel",
+            "task_type": et.get("operation", "transform"),
+            "title": f"Excel {et.get('operation', '处理')}",
+            "status": st,
+            "is_active": is_active,
+            "progress": {},
+            "artifact_path": None,
+            "has_artifact": has_art,
+            "error_message": et.get("errorMessage"),
+            "created_at": et.get("createdAt"),
+            "updated_at": et.get("updatedAt"),
+            "can_cancel": is_active,
+            "can_download": has_art and st == "succeeded",
+            "can_retry": False,
+            "manual_check_required": False,
+        }
+
+    def _ewo_task_entry(ej: dict[str, Any]) -> dict[str, Any]:
+        raw_st = ej["state"]
+        is_active = raw_st in ("queued", "generating", "downloading")
+        if raw_st == "queued":
+            norm_st = "queued"
+        elif raw_st in ("generating", "downloading"):
+            norm_st = "running"
+        elif raw_st in ("parsed", "generated"):
+            norm_st = "succeeded"
+        elif raw_st in ("generation_unknown",):
+            norm_st = "failed"
+        else:
+            norm_st = raw_st
+
+        has_art = bool(ej.get("file_id") or ej.get("snapshot_ref"))
+        ewo_dl_dir = (Path(db.db_path).parent / "ewo-downloads").resolve()
+        cand = []
+        if ewo_dl_dir.exists():
+            for f in ewo_dl_dir.iterdir():
+                if f.is_file() and ej["id"] in f.name:
+                    cand.append(f)
+                    break
+        if cand and cand[0].is_file():
+            has_art = True
+
+        c_ts = (
+            datetime.fromtimestamp(ej["created"], tz=timezone.utc).isoformat()
+            if ej.get("created")
+            else ""
+        )
+        u_ts = (
+            datetime.fromtimestamp(ej["updated"], tz=timezone.utc).isoformat()
+            if ej.get("updated")
+            else ""
+        )
+
+        # W3-3 冻结重试语义：generation_unknown 仅允许人工核查，禁止自动重发。
+        manual_check = raw_st == "generation_unknown"
+        return {
+            "id": f"ewo_{ej['id']}",
+            "raw_id": ej["id"],
+            "category": "ewo",
+            "source": "aras",
+            "task_type": "ewo_export",
+            "title": f"Aras EWO 增强导表 ({ej.get('scope', 'default')})",
+            "status": norm_st,
+            "raw_status": raw_st,
+            "is_active": is_active,
+            "progress": {},
+            "artifact_path": cand[0].name if cand else None,
+            "has_artifact": has_art,
+            "error_message": None,
+            "created_at": c_ts,
+            "updated_at": u_ts,
+            "can_cancel": is_active,
+            "can_download": has_art and norm_st == "succeeded",
+            "can_retry": raw_st in ("interrupted", "failed"),
+            "manual_check_required": manual_check,
+        }
+
+    def _find_unified_task_entry(task_id: str) -> dict[str, Any] | None:
+        tid = task_id.strip()
+        if crawl_task_runner is not None:
+            ct = crawl_task_runner.get_task(tid) or crawl_task_runner.get_task(tid.removeprefix("crawl_"))
+            if ct is not None:
+                return _crawl_task_entry(ct)
+        raw_ex_id = tid.removeprefix("excel_")
+        if raw_ex_id.isdigit() and excel_admin_service is not None:
+            try:
+                et = excel_admin_service.get_task(int(raw_ex_id))
+                return _excel_task_entry(et)
+            except KeyError:
+                pass
+        raw_ewo_id = tid.removeprefix("ewo_").strip()
+        if raw_ewo_id and re.fullmatch(r"[0-9a-fA-F-]{8,64}", raw_ewo_id):
+            try:
+                from core.ewo_export_jobs import EWOExportJobs
+                ej = EWOExportJobs(db.db_path).get_job(raw_ewo_id)
+                if ej is not None:
+                    return _ewo_task_entry(ej)
+            except Exception:
+                pass
+        return None
+
+    @app.get("/api/tasks")
+    def api_tasks_list():
+        category = request.args.get("category", "").strip().lower()
+        status_filter = request.args.get("status", "").strip().lower()
+        raw_limit = request.args.get("limit")
+        try:
+            limit = max(1, min(int(raw_limit), 200)) if raw_limit else 50
+        except (ValueError, TypeError):
+            limit = 50
+
+        aggregated: list[dict[str, Any]] = []
+
+        # 1. crawl_tasks
+        if crawl_task_runner is not None and (not category or category == "crawl"):
+            try:
+                for ct in crawl_task_runner.list_tasks(limit=limit * 2):
+                    aggregated.append(_crawl_task_entry(ct))
+            except Exception:
+                logger.exception("Failed to query crawl_tasks for unified task list")
+
+        # 2. excel_tasks
+        if excel_admin_service is not None and (not category or category == "excel"):
+            try:
+                for et in excel_admin_service.list_tasks(limit=limit * 2):
+                    aggregated.append(_excel_task_entry(et))
+            except Exception:
+                logger.exception("Failed to query excel_tasks for unified task list")
+
+        # 3. ewo_export_jobs（EWO 增强导表任务）
+        if (not category or category == "ewo"):
+            try:
+                from core.ewo_export_jobs import EWOExportJobs
+                ewo_jobs = EWOExportJobs(db.db_path).list_jobs(limit=limit * 2)
+                for ej in ewo_jobs:
+                    aggregated.append(_ewo_task_entry(ej))
+            except Exception:
+                logger.exception("Failed to query ewo_export_jobs for unified task list")
+
+        # Compute accurate total active count from database indices
+        active_crawl = db.count_active_crawl_tasks() if hasattr(db, "count_active_crawl_tasks") else 0
+        active_excel = 0
+        if excel_repository is not None:
+            try:
+                with db.get_connection() as conn:
+                    row = conn.execute(
+                        "SELECT COUNT(*) FROM excel_tasks WHERE status IN ('queued', 'leased', 'running')"
+                    ).fetchone()
+                    active_excel = int(row[0]) if row else 0
+            except Exception:
+                pass
+        active_ewo = 0
+        try:
+            from core.ewo_export_jobs import EWOExportJobs
+            active_ewo = EWOExportJobs(db.db_path).count_active_jobs()
+        except Exception:
+            pass
+        active_count = active_crawl + active_excel + active_ewo
+
+        if status_filter == "active":
+            aggregated = [t for t in aggregated if t["is_active"]]
+        elif status_filter in ("history", "finished"):
+            aggregated = [t for t in aggregated if not t["is_active"]]
+        elif status_filter:
+            aggregated = [t for t in aggregated if t["status"] == status_filter]
+
+        aggregated.sort(key=lambda t: t.get("created_at") or "", reverse=True)
+        paged = aggregated[:limit]
+
+        response = jsonify({
+            "ok": True,
+            "data": {
+                "tasks": paged,
+                "active_count": active_count,
+                "total_count": len(aggregated),
+            }
+        })
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.post("/api/tasks/<task_id>/cancel")
+    def api_tasks_cancel(task_id: str):
+        local_error = _local_web_mutation_error()
+        if local_error is not None:
+            return local_error
+
+        tid = task_id.strip()
+
+        # 1. Try crawl task
+        if crawl_task_runner is not None:
+            raw_tid = tid.removeprefix("crawl_")
+            ct = crawl_task_runner.get_task(tid) or crawl_task_runner.get_task(raw_tid)
+            if ct is not None:
+                if ct["status"] not in ("queued", "leased", "running"):
+                    return _json_error(409, "Conflict", f"Task is already {ct['status']}")
+                crawl_task_runner.cancel_task(ct["task_id"])
+                return jsonify({"ok": True, "data": {"taskId": task_id, "status": "cancelled"}})
+
+        # 2. Try excel task
+        raw_ex_id = tid.removeprefix("excel_")
+        if raw_ex_id.isdigit() and excel_admin_service is not None:
+            ex_id = int(raw_ex_id)
+            try:
+                et = excel_admin_service.get_task(ex_id)
+                if et["status"] not in ("queued", "leased", "running"):
+                    return _json_error(409, "Conflict", f"Task is already {et['status']}")
+                excel_admin_service.cancel_task(ex_id)
+                return jsonify({"ok": True, "data": {"taskId": task_id, "status": "cancelled"}})
+            except KeyError:
+                pass
+
+        # 3. Try EWO export job
+        raw_ewo_id = tid.removeprefix("ewo_").strip()
+        if raw_ewo_id and re.fullmatch(r"[0-9a-fA-F-]{8,64}", raw_ewo_id):
+            try:
+                from core.ewo_export_jobs import EWOExportJobs
+                ewo_jobs = EWOExportJobs(db.db_path)
+                ej = ewo_jobs.get_job(raw_ewo_id)
+                if ej is not None:
+                    if ej["state"] not in ("queued", "generating", "downloading"):
+                        return _json_error(409, "Conflict", f"Task is already {ej['state']}")
+                    ewo_jobs.cancel(raw_ewo_id)
+                    return jsonify({"ok": True, "data": {"taskId": task_id, "status": "cancelled"}})
+            except Exception:
+                pass
+
+        return _json_error(404, "NotFound", f"Task '{task_id}' was not found")
+
+    @app.post("/api/tasks/<task_id>/retry")
+    def api_tasks_retry(task_id: str):
+        local_error = _local_web_mutation_error()
+        if local_error is not None:
+            return local_error
+
+        tid = task_id.strip()
+
+        # 1. Try crawl task retry
+        if crawl_task_runner is not None:
+            raw_tid = tid.removeprefix("crawl_")
+            ct = crawl_task_runner.get_task(tid) or crawl_task_runner.get_task(raw_tid)
+            if ct is not None:
+                if ct["status"] not in ("failed", "cancelled", "interrupted"):
+                    return _json_error(409, "Conflict", f"Task cannot be retried (current status: {ct['status']})")
+                try:
+                    new_id = crawl_task_runner.retry_task(ct["task_id"])
+                    return jsonify({"ok": True, "data": {"taskId": ct["task_id"], "newTaskId": new_id, "status": "queued"}})
+                except (RuntimeError, ValueError) as exc:
+                    return _json_error(400, "CannotRetry", str(exc))
+
+        # 2. Try excel task retry (Excel transformations are not retry-safe per policy)
+        raw_ex_id = tid.removeprefix("excel_")
+        if raw_ex_id.isdigit() and excel_admin_service is not None:
+            ex_id = int(raw_ex_id)
+            try:
+                excel_admin_service.get_task(ex_id)
+                return _json_error(400, "CannotRetry", "Excel batch tasks must be re-submitted from Excel Toolbox")
+            except KeyError:
+                pass
+
+        # 3. Try EWO export job retry
+        raw_ewo_id = tid.removeprefix("ewo_").strip()
+        if raw_ewo_id and re.fullmatch(r"[0-9a-fA-F-]{8,64}", raw_ewo_id):
+            try:
+                from core.ewo_export_jobs import EWOExportJobs
+                ewo_jobs = EWOExportJobs(db.db_path)
+                ej = ewo_jobs.get_job(raw_ewo_id)
+                if ej is not None:
+                    # 业务红线：generation_unknown 表示外部生成结果未知，
+                    # 严禁自动重发，仅允许人工核查后再处理。
+                    if ej["state"] == "generation_unknown":
+                        return _json_error(
+                            409,
+                            "ManualCheckRequired",
+                            "EWO 生成结果未知，禁止自动重发；请先人工核查该任务的生成状态",
+                        )
+                    if ej["state"] not in ("interrupted", "failed"):
+                        return _json_error(409, "Conflict", f"EWO job cannot be retried (current state: {ej['state']})")
+                    try:
+                        targets = json.loads(ej["item_ids"]) if ej.get("item_ids") else []
+                    except (TypeError, ValueError):
+                        return _json_error(500, "ServerError", "EWO job selection data is corrupted")
+                    if not targets:
+                        return _json_error(409, "Conflict", "EWO job has no selection to retry")
+                    try:
+                        new_job = ewo_jobs.create(ej["scope"], targets)
+                    except ValueError as exc:
+                        return _json_error(400, "CannotRetry", str(exc))
+                    return jsonify({"ok": True, "data": {"taskId": task_id, "newTaskId": f"ewo_{new_job['id']}", "status": "queued"}})
+            except Exception:
+                logger.exception("EWO export job retry failed")
+                return _json_error(500, "ServerError", "EWO export job retry failed")
+
+        return _json_error(404, "NotFound", f"Task '{task_id}' was not found")
+
+    @app.get("/api/tasks/<task_id>/download")
+    def api_tasks_download(task_id: str):
+        tid = task_id.strip()
+
+        # 1. Try crawl task artifact
+        if crawl_task_runner is not None:
+            raw_tid = tid.removeprefix("crawl_")
+            ct = crawl_task_runner.get_task(tid) or crawl_task_runner.get_task(raw_tid)
+            if ct is not None:
+                art_rel = ct.get("artifact_path")
+                if not art_rel:
+                    return _json_error(404, "NotFound", "Task has no artifact")
+                downloads_dir = crawl_task_runner.downloads_dir.resolve()
+                try:
+                    target_file = (downloads_dir / art_rel).resolve()
+                    if not target_file.is_relative_to(downloads_dir):
+                        return _json_error(403, "Forbidden", "Unsafe artifact path")
+                except (ValueError, RuntimeError):
+                    return _json_error(403, "Forbidden", "Unsafe artifact path")
+                if not target_file.is_file():
+                    return _json_error(404, "NotFound", "Artifact file not found")
+                safe_name = _safe_attachment_basename(target_file.name, fallback="artifact.xlsx")
+                response = send_file(
+                    target_file,
+                    as_attachment=True,
+                    download_name=safe_name,
+                )
+                response.headers["Cache-Control"] = "no-store"
+                response.headers["X-Content-Type-Options"] = "nosniff"
+                return response
+
+        # 2. Try excel task artifact
+        raw_ex_id = tid.removeprefix("excel_")
+        if raw_ex_id.isdigit() and excel_admin_service is not None:
+            ex_id = int(raw_ex_id)
+            try:
+                excel_admin_service.get_task(ex_id)
+                arts = excel_admin_service.list_artifacts(ex_id)
+                if not arts:
+                    return _json_error(404, "NotFound", "Task has no artifact")
+                artifact = excel_admin_service.prepare_artifact_download(arts[0]["id"])
+                response = send_file(
+                    io.BytesIO(artifact.data),
+                    mimetype=artifact.mimetype,
+                    as_attachment=True,
+                    download_name=_safe_attachment_basename(
+                        artifact.display_name,
+                        fallback="excel-artifact.xlsx",
+                    ),
+                )
+                response.headers["Cache-Control"] = "no-store"
+                response.headers["X-Content-Type-Options"] = "nosniff"
+                return response
+            except KeyError:
+                pass
+            except Exception:
+                pass
+
+        # 3. Try EWO export artifact
+        raw_ewo_id = tid.removeprefix("ewo_").strip()
+        if raw_ewo_id and re.fullmatch(r"[0-9a-fA-F-]{8,64}", raw_ewo_id):
+            try:
+                from core.ewo_export_jobs import EWOExportJobs
+                ej = EWOExportJobs(db.db_path).get_job(raw_ewo_id)
+                if ej is not None:
+                    ewo_dl_dir = (Path(db.db_path).parent / "ewo-downloads").resolve()
+                    if ewo_dl_dir.exists():
+                        for f in ewo_dl_dir.iterdir():
+                            if f.is_file() and raw_ewo_id in f.name:
+                                target_file = f.resolve()
+                                try:
+                                    if not target_file.is_relative_to(ewo_dl_dir):
+                                        continue
+                                except (ValueError, RuntimeError):
+                                    continue
+                                safe_name = _safe_attachment_basename(target_file.name, fallback="ewo-export.xlsx")
+                                response = send_file(
+                                    target_file,
+                                    as_attachment=True,
+                                    download_name=safe_name,
+                                )
+                                response.headers["Cache-Control"] = "no-store"
+                                response.headers["X-Content-Type-Options"] = "nosniff"
+                                return response
+                    return _json_error(404, "NotFound", "Task has no artifact")
+            except Exception:
+                pass
+
+        return _json_error(404, "NotFound", f"Artifact for task '{task_id}' was not found")
+
+    @app.get("/api/tasks/<task_id>")
+    def api_tasks_get(task_id: str):
+        entry = _find_unified_task_entry(task_id.strip())
+        if entry is None:
+            return _json_error(404, "NotFound", f"Task '{task_id}' was not found")
+        response = jsonify({"ok": True, "data": entry})
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.get("/api/tasks/<task_id>/result")
+    def api_tasks_result(task_id: str):
+        """读取成功后台抓取任务的结果 JSON（与原同步响应 data 同构）。"""
+        if crawl_task_runner is None:
+            return _json_error(503, "TaskEngineUnavailable", "后台任务引擎未初始化")
+        tid = task_id.strip()
+        ct = crawl_task_runner.get_task(tid) or crawl_task_runner.get_task(tid.removeprefix("crawl_"))
+        if ct is None:
+            return _json_error(404, "NotFound", f"Task '{task_id}' was not found")
+        if ct["status"] != "succeeded":
+            return _json_error(
+                409,
+                "Conflict",
+                f"Task result is only available after success (current: {ct['status']})",
+            )
+        art_rel = ct.get("artifact_path")
+        if not art_rel or not art_rel.lower().endswith(".json"):
+            return _json_error(404, "NotFound", "Task has no JSON result artifact")
+        downloads_dir = crawl_task_runner.downloads_dir.resolve()
+        try:
+            target_file = (downloads_dir / art_rel).resolve()
+            if not target_file.is_relative_to(downloads_dir):
+                return _json_error(403, "Forbidden", "Unsafe artifact path")
+        except (ValueError, RuntimeError):
+            return _json_error(403, "Forbidden", "Unsafe artifact path")
+        if not target_file.is_file():
+            return _json_error(404, "NotFound", "Result artifact file not found")
+        if target_file.stat().st_size > _TASK_RESULT_MAX_BYTES:
+            return _json_error(413, "PayloadTooLarge", "Task result artifact exceeds size limit")
+        try:
+            data = json.loads(target_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return _json_error(500, "ServerError", "Task result artifact is unreadable")
+        response = jsonify({"ok": True, "data": data})
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.get("/api/scheduled-archive/folders")
     def api_scheduled_archive_folders():
@@ -3582,6 +4425,23 @@ def create_app(
             logger.exception("deliverable form rows failed")
             return _json_error(500, "ServerError", _sanitize_error_message(exc))
 
+    @app.get("/api/deliverable-forms/<form_key>/statistics")
+    def api_deliverable_form_statistics(form_key: str):
+        """确定性快照统计分析（纯统计学，无 AI）：读取最新快照行 + 有界
+        历史快照，交由 services.deliverable_statistics 纯函数计算。"""
+        try:
+            data = _deliverable_form_statistics_payload(db, form_key)
+            response = jsonify({"ok": True, "data": data})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except KeyError:
+            return _json_error(404, "NotFound", "未找到交付物表单")
+        except (TypeError, ValueError) as exc:
+            return _json_error(422, "ValidationError", _sanitize_error_message(exc))
+        except Exception as exc:
+            logger.exception("deliverable form statistics failed")
+            return _json_error(500, "ServerError", _sanitize_error_message(exc))
+
     @app.patch("/api/project-status/deliverables/<deliverable_id>")
     def api_project_status_deliverable_update(deliverable_id: str):
         local_error = _local_web_mutation_error()
@@ -3627,6 +4487,8 @@ def create_app(
             )
         except KeyError:
             return _json_error(404, "NotFound", "未找到交付物")
+        except MappedDeliverableReadOnlyError as exc:
+            return _json_error(409, "MappedDeliverableReadOnly", str(exc))
         except RuntimeError:
             return _json_error(409, "Conflict", "记录已被其他会话更新，请刷新后重试")
         except Exception as exc:
@@ -4100,12 +4962,57 @@ def create_app(
 
     @app.get("/api/deliverables/catalog")
     def api_deliverables_catalog():
+        # 按目录条目反查单一关联注册表，追加 links 字段；只追加，
+        # 不修改 _DELIVERABLES_CATALOG 字面量本身，向后兼容。
+        registry_by_catalog_id: dict[str, tuple[str, Mapping[str, Any]]] = {}
+        linked_deliverable_ids: set[str] = set()
+        for candidate_key, candidate in DELIVERABLE_LINK_REGISTRY.items():
+            registry_by_catalog_id[str(candidate["catalog_id"])] = (
+                candidate_key,
+                candidate,
+            )
+            linked_deliverable_ids.add(str(candidate["deliverable_id"]))
+        # displayCode 优先取 project_status_deliverables 表中的实际展示码：
+        # 存量库顺延场景（display_code 冲突后重建）下注册表常量可能与项目
+        # 状态页展示不一致；一次轻量查询取回映射复用，查不到回退注册表常量。
+        actual_display_codes: dict[str, str] = {}
+        if linked_deliverable_ids:
+            with db.get_connection() as conn:
+                placeholders = ", ".join("?" for _ in linked_deliverable_ids)
+                rows = conn.execute(
+                    "SELECT id, display_code FROM project_status_deliverables "
+                    f"WHERE id IN ({placeholders})",
+                    tuple(sorted(linked_deliverable_ids)),
+                ).fetchall()
+            for row in rows:
+                code = str(row["display_code"] or "").strip()
+                if code:
+                    actual_display_codes[str(row["id"])] = code
+        deliverables = []
+        for item in _DELIVERABLES_CATALOG:
+            linked = registry_by_catalog_id.get(str(item.get("id") or ""))
+            job_key, entry = linked if linked is not None else (None, None)
+            display_code = None
+            if entry is not None:
+                deliverable_id = str(entry["deliverable_id"])
+                display_code = (
+                    actual_display_codes.get(deliverable_id)
+                    or entry["display_code"]
+                )
+            enriched = dict(item)
+            enriched["links"] = {
+                "archiveJobKey": job_key,
+                "projectStatusDeliverableId": entry["deliverable_id"] if entry else None,
+                "displayCode": display_code,
+                "formKey": entry["form_key"] if entry else None,
+            }
+            deliverables.append(enriched)
         return jsonify(
             {
                 "ok": True,
                 "data": {
                     "categories": _DELIVERABLE_CATEGORIES,
-                    "deliverables": _DELIVERABLES_CATALOG,
+                    "deliverables": deliverables,
                 },
             }
         )
@@ -4188,34 +5095,59 @@ def create_app(
         if error_response:
             return error_response
         assert payload is not None
-        client: ArasCrawlerClient | None = None
+        session, gate_error = _async_session_gate("aras", payload)
+        if gate_error is not None:
+            return gate_error
         try:
-            client = _build_aras_client_from_payload(payload, app.config["ARAS_ALLOWED_HOSTS"])
+            base_url = str(payload["base_url"]).strip()
+            _validate_allowed_base_url(base_url, app.config["ARAS_ALLOWED_HOSTS"])
+            filters = _paa_filters_from_payload(payload)
+        except Exception as e:
+            return _aras_error_response(e, None, "PAA crawl-all")
+        page_size = _positive_int(payload.get("page_size"), 50)
+        max_pages = _positive_int(payload.get("max_pages"), 20)
+        max_records = _positive_int(payload.get("max_records"), 2000)
+        include_xml = _aras_xml_requested(payload)
+
+        def worker(ctx):
+            client = ArasCrawlerClient(base_url, session=session, timeout=30.0)
             result = client.crawl_paa_report_all(
-                _paa_filters_from_payload(payload),
-                page_size=_positive_int(payload.get("page_size"), 50),
-                max_pages=_positive_int(payload.get("max_pages"), 20),
-                max_records=_positive_int(payload.get("max_records"), 2000),
+                filters,
+                page_size=page_size,
+                max_pages=max_pages,
+                max_records=max_records,
+                should_stop=lambda: ctx.is_cancelled,
+                on_page=lambda page_no, rows_so_far: ctx.update_progress(
+                    current=rows_so_far,
+                    total=max_records,
+                    stage=f"PAA 全量抓取第 {page_no} 页",
+                ),
             )
             table = table_payload("paa", _safe_rows(result.rows))
-            return jsonify(
-                {
-                    "ok": True,
-                    "data": {
-                        **table,
-                        "page": result.page,
-                        "item_ids": result.item_ids,
-                        "count": len(result.rows),
-                        **(
-                            {"xml": _aras_xml_payload(result, payload)}
-                            if _aras_xml_requested(payload)
-                            else {}
-                        ),
-                    },
-                }
-            )
-        except Exception as e:
-            return _aras_error_response(e, client, "PAA crawl-all")
+            data: dict[str, Any] = {
+                **table,
+                "page": result.page,
+                "item_ids": result.item_ids,
+                "count": len(result.rows),
+            }
+            xml_payload = _aras_xml_payload(result, payload) if include_xml else None
+            if xml_payload:
+                data["xml"] = xml_payload
+            artifact = ctx.downloads_dir / f"{ctx.task_id}.result.json"
+            artifact.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            ctx.set_artifact(artifact)
+            ctx.update_progress(percent=100, stage="PAA 全量抓取完成")
+
+        params = {
+            "base_url": base_url,
+            "filters": asdict(filters),
+            "page_size": page_size,
+            "max_pages": max_pages,
+            "max_records": max_records,
+        }
+        return _submit_background_task(
+            crawl_task_runner, "paa_crawl", "aras", params, worker, error_context="PAA crawl-all"
+        )
 
     @app.post("/api/aras/ncr/progress")
     def api_aras_ncr_progress():
@@ -4293,23 +5225,58 @@ def create_app(
         if error_response:
             return error_response
         assert payload is not None
-        temp_dir = Path(tempfile.mkdtemp(prefix="aras_ewo_export_"))
-        client: ArasCrawlerClient | None = None
+        session, gate_error = _async_session_gate("aras", payload)
+        if gate_error is not None:
+            return gate_error
         try:
-            client = _build_aras_client_from_payload(payload, app.config["ARAS_ALLOWED_HOSTS"])
-            max_pages = _positive_int(payload.get("max_pages"), _EXPORT_DEFAULT_MAX_PAGES)
-            max_records = _positive_int(payload.get("max_records"), _EXPORT_DEFAULT_MAX_RECORDS)
+            base_url = str(payload["base_url"]).strip()
+            _validate_allowed_base_url(base_url, app.config["ARAS_ALLOWED_HOSTS"])
+            filters = _ewo_filters_from_payload(payload)
+        except Exception as e:
+            return _aras_error_response(e, None, "EWO export")
+        max_pages = _positive_int(payload.get("max_pages"), _EXPORT_DEFAULT_MAX_PAGES)
+        max_records = _positive_int(payload.get("max_records"), _EXPORT_DEFAULT_MAX_RECORDS)
+
+        def worker(ctx):
+            client = ArasCrawlerClient(base_url, session=session, timeout=30.0)
             page = client.crawl_ewo_report_all(
-                _ewo_filters_from_payload(payload),
+                filters,
                 page_size=_EXPORT_PAGE_SIZE,
                 max_pages=max_pages,
                 max_records=max_records,
+                should_stop=lambda: ctx.is_cancelled,
+                on_page=lambda page_no, rows_so_far: ctx.update_progress(
+                    current=rows_so_far,
+                    total=max_records,
+                    stage=f"EWO 全量抓取第 {page_no} 页",
+                ),
             )
-            export = export_report_contract_csv("ewo", page.rows, output_dir=temp_dir, file_name="ewo_export.csv")
-            return _send_csv_attachment(export.path, page, max_pages, max_records, temp_dir)
-        except Exception as e:
-            shutil.rmtree(temp_dir, ignore_errors=True)
-            return _aras_error_response(e, client, "EWO export")
+            ctx.update_progress(stage="正在生成 CSV 导出文件")
+            export = export_report_contract_csv(
+                "ewo",
+                page.rows,
+                output_dir=ctx.downloads_dir,
+                file_name=f"ewo_export_{ctx.task_id}.csv",
+            )
+            ctx.set_artifact(export.path)
+            if len(page.rows) >= max_records or (
+                getattr(page, "page", None) is not None and getattr(page, "page") >= max_pages
+            ):
+                ctx.update_progress(
+                    percent=100, stage="导出完成（结果已按 max_records/max_pages 截断）"
+                )
+            else:
+                ctx.update_progress(percent=100, stage="导出完成")
+
+        params = {
+            "base_url": base_url,
+            "filters": asdict(filters),
+            "max_pages": max_pages,
+            "max_records": max_records,
+        }
+        return _submit_background_task(
+            crawl_task_runner, "ewo_export", "aras", params, worker, error_context="EWO export"
+        )
 
     @app.post("/api/aras/paa/export")
     def api_aras_paa_export():
@@ -4317,23 +5284,58 @@ def create_app(
         if error_response:
             return error_response
         assert payload is not None
-        temp_dir = Path(tempfile.mkdtemp(prefix="aras_paa_export_"))
-        client: ArasCrawlerClient | None = None
+        session, gate_error = _async_session_gate("aras", payload)
+        if gate_error is not None:
+            return gate_error
         try:
-            client = _build_aras_client_from_payload(payload, app.config["ARAS_ALLOWED_HOSTS"])
-            max_pages = _positive_int(payload.get("max_pages"), _EXPORT_DEFAULT_MAX_PAGES)
-            max_records = _positive_int(payload.get("max_records"), _EXPORT_DEFAULT_MAX_RECORDS)
+            base_url = str(payload["base_url"]).strip()
+            _validate_allowed_base_url(base_url, app.config["ARAS_ALLOWED_HOSTS"])
+            filters = _paa_filters_from_payload(payload)
+        except Exception as e:
+            return _aras_error_response(e, None, "PAA export")
+        max_pages = _positive_int(payload.get("max_pages"), _EXPORT_DEFAULT_MAX_PAGES)
+        max_records = _positive_int(payload.get("max_records"), _EXPORT_DEFAULT_MAX_RECORDS)
+
+        def worker(ctx):
+            client = ArasCrawlerClient(base_url, session=session, timeout=30.0)
             page = client.crawl_paa_report_all(
-                _paa_filters_from_payload(payload),
+                filters,
                 page_size=_EXPORT_PAGE_SIZE,
                 max_pages=max_pages,
                 max_records=max_records,
+                should_stop=lambda: ctx.is_cancelled,
+                on_page=lambda page_no, rows_so_far: ctx.update_progress(
+                    current=rows_so_far,
+                    total=max_records,
+                    stage=f"PAA 全量抓取第 {page_no} 页",
+                ),
             )
-            export = export_report_contract_csv("paa", page.rows, output_dir=temp_dir, file_name="paa_export.csv")
-            return _send_csv_attachment(export.path, page, max_pages, max_records, temp_dir)
-        except Exception as e:
-            shutil.rmtree(temp_dir, ignore_errors=True)
-            return _aras_error_response(e, client, "PAA export")
+            ctx.update_progress(stage="正在生成 CSV 导出文件")
+            export = export_report_contract_csv(
+                "paa",
+                page.rows,
+                output_dir=ctx.downloads_dir,
+                file_name=f"paa_export_{ctx.task_id}.csv",
+            )
+            ctx.set_artifact(export.path)
+            if len(page.rows) >= max_records or (
+                getattr(page, "page", None) is not None and getattr(page, "page") >= max_pages
+            ):
+                ctx.update_progress(
+                    percent=100, stage="导出完成（结果已按 max_records/max_pages 截断）"
+                )
+            else:
+                ctx.update_progress(percent=100, stage="导出完成")
+
+        params = {
+            "base_url": base_url,
+            "filters": asdict(filters),
+            "max_pages": max_pages,
+            "max_records": max_records,
+        }
+        return _submit_background_task(
+            crawl_task_runner, "paa_export", "aras", params, worker, error_context="PAA export"
+        )
 
     @app.post("/api/aras/ncr/detail/download")
     def api_aras_ncr_detail_download():

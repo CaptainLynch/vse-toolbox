@@ -19,6 +19,7 @@ from core.db_manager import (
     DatabaseManager,
     _normalize_archive_retry_policy,
 )
+from core.project_status_contracts import find_registry_entry_by_job_key
 from services.scheduled_archive_connectors import (
     archive_filter_names,
     validate_archive_filters,
@@ -389,6 +390,12 @@ class ScheduledArchiveAdminService:
             "builtin": bool(row.get("builtin")),
             "archivedAt": row.get("archived_at"),
             "deliverableId": row["project_status_deliverable_id"],
+            # 按 job_key 反查单一关联注册表；模板派生的自定义任务查不到则为 None。
+            "formKey": (
+                registry_entry["form_key"]
+                if (registry_entry := find_registry_entry_by_job_key(job_key)) is not None
+                else None
+            ),
             "enabled": bool(row["enabled"]),
             "credentialConfigured": bool(row["credential_configured"]),
             "credentialAvailable": credential_available,

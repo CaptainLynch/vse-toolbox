@@ -1,11 +1,11 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>VSE Toolbox 控制台</title>
   <link rel="icon" href="data:," />
-  <link rel="stylesheet" href="/static/style.css?v=deliverable-form-analysis-20260901-r1" />
+  <link rel="stylesheet" href="/static/style.css?v=deliverable-console-20260916" />
 </head>
 <body data-theme="light" data-session-view="overview" data-current-command="ewo">
   <div class="app-shell">
@@ -16,21 +16,47 @@
           <p class="eyebrow">本地操作</p>
           <h1>VSE Toolbox</h1>
         </div>
-        <span class="version-chip">v0.1</span>
+        <span id="app-version-chip" class="version-chip" role="button" tabindex="0" title="点击查看版本与运行环境详情" aria-label="应用版本信息">{{ app_version|default('开发工作区', true) }}</span>
       </div>
 
       <nav class="workspace-tabs" aria-label="工作区导航">
         <a href="#overview" class="active" data-panel-link="overview">概览</a>
-        <a href="#aras-panel" data-panel-link="aras-panel">Aras</a>
+        <a href="#aras-panel" data-panel-link="aras-panel">系统查询</a>
         <a href="#deliverables" data-panel-link="deliverables">交付物</a>
         <a href="#excel-tasks" data-panel-link="excel-tasks">Excel</a>
-        <a href="#scheduled-archive" data-panel-link="scheduled-archive">自动下载与留存</a>
+        <a href="#scheduled-archive" data-panel-link="scheduled-archive">自动归档</a>
         <a href="#settings-panel" data-panel-link="settings-panel">设置</a>
       </nav>
 
-      <button id="theme-toggle" class="theme-toggle" type="button" aria-label="切换主题">
-        <span id="theme-label">浅色</span>
-      </button>
+      <div class="top-bar-actions">
+        <div class="global-session-status" aria-label="企业会话状态" role="region">
+          <div class="session-badge-group">
+            <span id="global-badge-aras" class="session-badge is-unknown" title="Aras / ECM 流程会话状态">
+              <span class="badge-dot" aria-hidden="true"></span>
+              <span class="badge-name">Aras</span>
+              <span id="global-badge-aras-text" class="badge-state">未认证</span>
+            </span>
+            <span id="global-badge-tdc" class="session-badge is-unknown" title="TDC 研发流程会话状态">
+              <span class="badge-dot" aria-hidden="true"></span>
+              <span class="badge-name">TDC</span>
+              <span id="global-badge-tdc-text" class="badge-state">未认证</span>
+            </span>
+          </div>
+          <button id="global-login-btn" class="global-login-btn" type="button" aria-haspopup="dialog">
+            登录 / 切换
+          </button>
+        </div>
+
+        <button id="task-center-btn" class="task-center-btn" type="button" aria-label="统一任务中心" title="打开统一任务中心" aria-haspopup="dialog">
+          <span class="task-center-icon" aria-hidden="true">📋</span>
+          <span class="task-center-label">任务</span>
+          <span id="task-center-badge" class="task-center-badge" hidden>0</span>
+        </button>
+
+        <button id="theme-toggle" class="theme-toggle" type="button" aria-label="切换主题">
+          <span id="theme-label">浅色</span>
+        </button>
+      </div>
     </header>
 
     <main class="workspace">
@@ -68,13 +94,6 @@
             <div id="overview-progress-grid" class="deliverable-progress-grid"><p class="loading">加载中</p></div>
           </section>
 
-          <section class="risk-summary overview-band" aria-label="风险摘要">
-            <div id="overview-risk-summary"><p class="loading">加载中</p></div>
-          </section>
-
-          <section class="overview-band external-sync-summary-band" aria-label="PAA NCR 同步概况">
-            <div id="overview-external-sync-summary"><p class="loading">加载中</p></div>
-          </section>
         </div>
 
         <div id="overview-details-panel" class="overview-tabpanel" role="tabpanel" aria-labelledby="overview-tab-details" hidden>
@@ -127,13 +146,13 @@
         </div>
       </section>
 
-      <section id="aras-panel" class="panel-section aras-workbench" hidden aria-label="Aras 工具">
+      <section id="aras-panel" class="panel-section aras-workbench" hidden aria-label="系统查询">
         <div class="aras-head">
           <div>
-            <p class="eyebrow">Aras</p>
-            <h3>Aras 查询工具</h3>
+            <p class="eyebrow">业务系统</p>
+            <h3>Aras 系统查询</h3>
           </div>
-          <div class="mode-toolbar" role="tablist" aria-label="Aras 查询模式">
+          <div class="mode-toolbar" role="tablist" aria-label="系统查询模式">
             <button type="button" class="segment active" data-aras-mode="ewo">EWO</button>
             <button type="button" class="segment" data-aras-mode="paa">PAA</button>
             <button type="button" class="segment" data-aras-mode="ncr-progress">NCR 进度</button>
@@ -242,6 +261,7 @@
           </div>
           <div id="aras-error" class="error-msg" hidden></div>
           <div id="aras-warning" class="error-msg" hidden></div>
+          <div id="aras-preview-context" class="deliverable-preview-context" hidden></div>
           <div id="aras-result" class="is-empty">暂无结果</div>
         </section>
       </section>
@@ -539,7 +559,7 @@
           <div>
             <p class="eyebrow">自动同步</p>
             <h3>定时任务</h3>
-            <p class="archive-purpose-note">自动下载与留存服务：定期自动获取业务数据并安全留存至指定目录，方便随时查看历史记录与配置变更。</p>
+            <p class="archive-purpose-note">自动下载与留存服务：定期自动获取业务数据并安全留存至指定目录，方便随时查看历史记录与配置变更。本页负责原始报表的自动下载归档；项目状态的自动同步在交付物明细页配置。</p>
           </div>
           <div class="archive-head-actions">
             <button id="archive-refresh-btn" class="segment" type="button">刷新任务</button>
@@ -615,65 +635,77 @@
           <form id="settings-form" class="settings-form" autocomplete="off">
             <div class="settings-card">
               <div class="settings-card-head">
-                <p class="eyebrow">目录与文件</p>
-                <h4>基础目录配置</h4>
+                <p class="eyebrow">业务目录</p>
+                <h4>日常业务目录设置</h4>
               </div>
               <div class="settings-grid">
                 <label class="wide">
-                  <span>归档保存目录 (archiveDirectory)</span>
+                  <span>归档保存目录</span>
                   <div class="settings-path-control">
-                    <input id="settings-field-archive-dir" name="archiveDirectory" type="text" placeholder="留空使用程序默认归档目录" />
+                    <input id="settings-field-archive-dir" name="archiveDirectory" type="text" placeholder="留空使用程序默认归档目录 (data/archive)" />
                     <button id="settings-browse-archive-btn" class="segment" type="button">选择目录</button>
                   </div>
                   <div id="settings-archive-picker" class="archive-folder-picker" hidden></div>
+                  <span class="field-note">定时自动下载与历史归档数据的存放位置。</span>
                 </label>
                 <label class="wide">
-                  <span>Excel 工作目录 (excelDirectory)</span>
+                  <span>Excel 工作目录</span>
                   <div class="settings-path-control">
-                    <input id="settings-field-excel-dir" name="excelDirectory" type="text" placeholder="留空使用默认 data/excel" />
+                    <input id="settings-field-excel-dir" name="excelDirectory" type="text" placeholder="留空使用默认目录 (data/excel)" />
                     <button id="settings-browse-excel-btn" class="segment" type="button">选择目录</button>
                   </div>
                   <div id="settings-excel-picker" class="archive-folder-picker" hidden></div>
-                </label>
-                <label>
-                  <span>临时文件目录 (temporaryDirectory)</span>
-                  <input id="settings-field-temp-dir" name="temporaryDirectory" type="text" placeholder="留空使用系统临时目录" />
-                </label>
-                <label>
-                  <span>诊断报告目录 (diagnosticDirectory)</span>
-                  <input id="settings-field-diag-dir" name="diagnosticDirectory" type="text" placeholder="留空使用默认 logs" />
+                  <span class="field-note">Excel 任务处理的输入与输出根目录。</span>
                 </label>
               </div>
             </div>
 
-            <div class="settings-card">
-              <div class="settings-card-head">
-                <p class="eyebrow">数值与策略</p>
-                <h4>数值与保留策略配置</h4>
-              </div>
-              <div class="settings-grid">
+            <details id="settings-advanced-details" class="settings-card settings-advanced-card">
+              <summary class="settings-card-head clickable">
+                <div>
+                  <p class="eyebrow">维护与调优</p>
+                  <h4>高级与维护设置（点击展开）</h4>
+                </div>
+                <span class="fold-hint">包含临时目录、诊断日志、单次请求重试与快照策略</span>
+              </summary>
+              <div class="settings-grid settings-advanced-grid">
                 <label>
-                  <span>默认定时下载频率（分钟）</span>
-                  <input id="settings-field-download-minutes" name="defaultDownloadMinutes" type="number" min="5" max="10080" value="60" />
+                  <span>临时文件缓存目录</span>
+                  <input id="settings-field-temp-dir" name="temporaryDirectory" type="text" placeholder="留空使用系统临时目录" />
+                  <span class="field-note">处理导出等操作时的中间临时目录。</span>
                 </label>
                 <label>
-                  <span>通用失败重试次数（归档任务请在任务卡设置）</span>
+                  <span>系统诊断日志目录</span>
+                  <input id="settings-field-diag-dir" name="diagnosticDirectory" type="text" placeholder="留空使用默认 logs 目录" />
+                  <span class="field-note">运行日志与排查诊断报告存储位置。</span>
+                </label>
+                <label>
+                  <span>网络请求失败重试次数</span>
                   <input id="settings-field-retry-count" name="retryCount" type="number" min="0" max="10" value="2" />
+                  <span class="field-note">仅控制单次查询与数据抓取失败时的自动重试次数；定时下载任务请在任务卡单独配置。</span>
                 </label>
                 <label>
-                  <span>临期预警天数</span>
+                  <span>默认定时下载周期（分钟）</span>
+                  <input id="settings-field-download-minutes" name="defaultDownloadMinutes" type="number" min="5" max="10080" value="60" />
+                  <span class="field-note">新建定时下载任务时的默认执行周期。</span>
+                </label>
+                <label>
+                  <span>交付物临期预警阈值（天）</span>
                   <input id="settings-field-due-soon-days" name="dueSoonDays" type="number" min="0" max="365" value="7" />
+                  <span class="field-note">交付物看板上标记为即将到期的提前天数。</span>
                 </label>
                 <label>
-                  <span>缓存快照数量</span>
+                  <span>历史快照保留数量</span>
                   <input id="settings-field-cache-snapshots" name="cacheSnapshotCount" type="number" min="1" max="365" value="30" />
+                  <span class="field-note">交付物历史状态快照保留的最大条数。</span>
                 </label>
                 <label>
-                  <span>文件保留天数</span>
+                  <span>历史文件保留天数</span>
                   <input id="settings-field-retention-days" name="retentionDays" type="number" min="1" max="3650" value="90" />
+                  <span class="field-note">归档文件和 Excel 输出建议清理的天数阈值。</span>
                 </label>
               </div>
-            </div>
+            </details>
 
             <div class="settings-actions-row">
               <button id="settings-save-btn" class="primary-btn" type="submit">保存设置</button>
@@ -771,12 +803,114 @@
         </div>
       </section>
     </main>
+
+    <!-- 原位域登录弹窗（保留当前操作页面、已填草稿与查询结果） -->
+    <div id="in-place-login-modal" class="in-place-modal" hidden role="dialog" aria-modal="true" aria-labelledby="in-place-login-title">
+      <div class="in-place-modal-backdrop" id="in-place-login-backdrop"></div>
+      <div class="in-place-modal-card" role="document">
+        <div class="in-place-modal-head">
+          <div>
+            <p class="eyebrow">企业域账号认证</p>
+            <h3 id="in-place-login-title">登录企业系统</h3>
+          </div>
+          <button id="in-place-login-close-btn" class="modal-close-btn" type="button" aria-label="关闭登录弹窗">&times;</button>
+        </div>
+        <div class="in-place-modal-body">
+          <p class="field-note">同时为 Aras 和 TDC 发起企业域账号校验；密码仅在内存中用于本次认证，不落盘、不写入前端缓存。</p>
+          <div id="in-place-login-notice" class="in-place-notice" hidden></div>
+          <form id="in-place-login-form" class="domain-login-form" autocomplete="on">
+            <div class="domain-login-grid">
+              <label>
+                <span>域用户名</span>
+                <input id="in-place-login-username" name="domainUsername" autocomplete="username" placeholder="请输入域账号用户名" required />
+              </label>
+              <label>
+                <span>域密码</span>
+                <input id="in-place-login-password" name="domainPassword" type="password" autocomplete="current-password" placeholder="请输入域账号密码" required />
+              </label>
+              <div class="login-auth-scope-card wide">
+                <div class="scope-row">
+                  <span class="scope-icon" aria-hidden="true">✓</span>
+                  <div class="scope-desc">
+                    <strong>当前会话查询</strong>
+                    <span>登录成功后建立内存会话，供当前页面各报表与交付物直接查询，关闭浏览器或超时后失效。</span>
+                  </div>
+                </div>
+                <label class="archive-checkbox-row wide scope-checkbox">
+                  <input type="checkbox" id="in-place-login-save-vault" name="saveForScheduled" />
+                  <span>允许本机自动任务使用已保存账号（写入 Windows 凭据保护库，供后台定时下载使用）</span>
+                </label>
+              </div>
+            </div>
+            <div class="domain-login-actions">
+              <button id="in-place-login-submit-btn" class="primary-btn" type="submit">立即登录</button>
+              <button id="in-place-login-cancel-btn" class="segment" type="button">取消</button>
+              <span id="in-place-login-status" class="archive-status-msg" aria-live="polite"></span>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- 版本与运行环境详情弹窗 -->
+    <div id="version-detail-modal" class="in-place-modal" hidden role="dialog" aria-modal="true" aria-labelledby="version-detail-title">
+      <div class="in-place-modal-backdrop" id="version-detail-backdrop"></div>
+      <div class="in-place-modal-card version-modal-card" role="document">
+        <div class="in-place-modal-head">
+          <div>
+            <p class="eyebrow">维护与诊断</p>
+            <h3 id="version-detail-title">版本与运行环境</h3>
+          </div>
+          <button id="version-detail-close-btn" class="modal-close-btn" type="button" aria-label="关闭">&times;</button>
+        </div>
+        <div class="version-detail-body">
+          <dl class="version-info-dl">
+            <dt>当前显示版本</dt><dd id="version-val-display">-</dd>
+            <dt>运行形态</dt><dd id="version-val-channel">-</dd>
+            <dt>构建标识</dt><dd id="version-val-build">无独立构建标识</dd>
+            <dt>运行环境详情</dt><dd id="version-val-detail">-</dd>
+          </dl>
+          <p class="field-note">维护提示：反馈问题时可复制上述版本标识并附带生成的诊断报告。</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- 统一任务中心抽屉 (Unified Task Center Drawer) -->
+    <div id="task-center-drawer-container" class="task-drawer-container" hidden>
+      <div id="task-center-backdrop" class="task-drawer-backdrop" aria-hidden="true"></div>
+      <aside id="task-center-drawer" class="task-drawer" role="dialog" aria-modal="true" aria-labelledby="task-drawer-title">
+        <div class="task-drawer-head">
+          <div class="task-drawer-title-wrap">
+            <h3 id="task-drawer-title">统一任务中心</h3>
+            <span id="task-drawer-active-count" class="task-drawer-active-chip">0 项进行中</span>
+          </div>
+          <div class="task-drawer-actions">
+            <button id="task-drawer-refresh-btn" class="icon-btn" type="button" title="刷新任务" aria-label="刷新任务">↻</button>
+            <button id="task-drawer-close-btn" class="modal-close-btn" type="button" title="关闭抽屉" aria-label="关闭">&times;</button>
+          </div>
+        </div>
+
+        <div class="task-drawer-tabs" aria-label="任务状态筛选">
+          <button id="task-tab-active" class="task-tab active" type="button" data-filter="active">运行中 (<span id="task-tab-active-count">0</span>)</button>
+          <button id="task-tab-history" class="task-tab" type="button" data-filter="history">已结束 (<span id="task-tab-history-count">0</span>)</button>
+          <button id="task-tab-all" class="task-tab" type="button" data-filter="all">全部</button>
+        </div>
+
+        <div id="task-drawer-content" class="task-drawer-content">
+          <div id="task-drawer-loading" class="task-drawer-empty" hidden><p class="loading">加载任务列表...</p></div>
+          <div id="task-drawer-items" class="task-items-container"></div>
+          <div id="task-drawer-empty" class="task-drawer-empty" hidden>
+            <p>暂无任务记录</p>
+          </div>
+        </div>
+      </aside>
+    </div>
   </div>
   <link rel="stylesheet" href="/static/diagnostics.css?v=1">
   <script src="/static/diagnostics.js?v=1"></script>
   <link rel="stylesheet" href="/static/node-overview.css?v=20260913">
-  <script src="/static/node-overview.js?v=20260913"></script>
-  <script src="/static/ewo-enrichment.js?v=20260915"></script>
-  <script src="/static/app.js?v=deliverable-form-analysis-20260901-r1"></script>
+  <script src="/static/node-overview.js?v=20260916"></script>
+  <script src="/static/ewo-enrichment.js?v=20260916"></script>
+  <script src="/static/app.js?v=deliverable-console-20260916"></script>
 </body>
 </html>

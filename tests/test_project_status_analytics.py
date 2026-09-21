@@ -30,7 +30,7 @@ def test_overview_no_evidence_defaults(service: ProjectStatusAnalyticsService) -
     assert data["phaseId"] == "VPI-T2"
     assert data["staleAfterHours"] == 24
     deliverables = data["deliverables"]
-    assert len(deliverables) == 5
+    assert len(deliverables) == 8
 
     expected_restrictions = {
         "VPI-T2-D1": "manual_only",
@@ -38,6 +38,11 @@ def test_overview_no_evidence_defaults(service: ProjectStatusAnalyticsService) -
         "VPI-T2-D3": None,
         "VPI-T2-D4": "contract_blocked",
         "VPI-T2-D5": None,
+        # 外部快照驱动交付物（D6-D8）：非 syncCapable 也非 manualOnly，
+        # 未注册同步限制条目。
+        "VPI-T2-D6": None,
+        "VPI-T2-D7": None,
+        "VPI-T2-D8": None,
     }
 
     for item in deliverables:

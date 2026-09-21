@@ -268,13 +268,24 @@ def test_old_schema_upgrade_preserves_data(tmp_path) -> None:
     manager.init_database()
 
     with manager.get_connection() as conn:
-        # 原有绑定数据保留。
+        # 原有绑定数据保留；该绑定是 pristine manual（外部键/规则/映射/
+        # 尝试与成功时间戳均为空），syncCapable 交付物（D5）按 B 幂等迁移
+        # 翻转为 automatic，enabled 保持 0 不绕过门控。
         binding = conn.execute(
             "SELECT mode, source_type, enabled, sync_state, cursor_json, "
-            "       retry_policy_json FROM project_status_update_bindings "
+            "       retry_policy_json, external_key, match_rule_json, "
+            "       mapping_json, last_attempt_at, last_success_at "
+            "FROM project_status_update_bindings "
             "WHERE deliverable_id='VPI-T2-D5'"
         ).fetchone()
-        assert binding["mode"] == "manual"
+        assert binding["mode"] == "automatic"
+        assert binding["enabled"] == 0
+        assert binding["source_type"] == "tdc"
+        assert binding["external_key"] is None
+        assert binding["match_rule_json"] == "{}"
+        assert binding["mapping_json"] == "{}"
+        assert binding["last_attempt_at"] is None
+        assert binding["last_success_at"] is None
         assert binding["cursor_json"] == "{}"
         assert json.loads(binding["retry_policy_json"])["max_attempts"] == 1
         # 原有审计保留。
@@ -553,14 +564,21 @@ def test_manually_locked_field_not_overwritten(service: ProjectStatusUpdateServi
     _enable_pilot_binding(service)
     lease = service.acquire_sync_lease("VPI-T2-D5", "scheduled")
 
-    # 手动保存 note 字段 → 建立人工锁。
-    row = _current_deliverable(db, "VPI-T2-D5")
-    service.apply_manual_update(
-        "VPI-T2-D5",
-        "VPI-T2",
-        {"status": row["status"], "owner": row["owner"], "remark": "人工修改备注"},
-        str(row["updated_at"]),
-    )
+    # The binding is mapped, so seed the synthetic pre-existing manual lock
+    # directly instead of routing a new manual write through the mapped guard.
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE project_status_deliverables SET remark = ? WHERE id = ?",
+            ("人工修改备注", "VPI-T2-D5"),
+        )
+        conn.execute(
+            """
+            UPDATE project_status_field_authority
+            SET authority = 'manual', locked_at = '2026-08-20 00:00:00.000'
+            WHERE deliverable_id = ? AND field_name = 'remark'
+            """,
+            ("VPI-T2-D5",),
+        )
 
     snapshot = _matched_snapshot(db, owner="赵岩2", note="应被跳过")
 
@@ -587,14 +605,21 @@ def test_all_fields_locked_yields_partial_and_cursor_advances(
     assert binding is not None
     lease = service.acquire_sync_lease("VPI-T2-D5", "scheduled")
 
-    # 手动更新所有自动映射的字段（owner 与 note），建立人工锁
-    row = _current_deliverable(db, "VPI-T2-D5")
-    service.apply_manual_update(
-        "VPI-T2-D5",
-        "VPI-T2",
-        {"status": row["status"], "owner": "人工所有者", "remark": "人工备注"},
-        str(row["updated_at"]),
-    )
+    # Seed pre-existing manual locks directly; mapped bindings reject new
+    # manual writes, while this test exercises sync field-authority handling.
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE project_status_deliverables SET owner = ?, remark = ? WHERE id = ?",
+            ("人工所有者", "人工备注", "VPI-T2-D5"),
+        )
+        conn.execute(
+            """
+            UPDATE project_status_field_authority
+            SET authority = 'manual', locked_at = '2026-08-20 00:00:00.000'
+            WHERE deliverable_id = ? AND field_name IN ('owner', 'remark')
+            """,
+            ("VPI-T2-D5",),
+        )
 
     snapshot = _matched_snapshot(db, owner="x", note="y")
 

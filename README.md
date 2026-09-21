@@ -65,6 +65,8 @@ python main.py
 - 独立 EXE 用户手册：`docs/USER_GUIDE_STANDALONE_EXE.md`
 - Excel Worker 契约：`docs/EXCEL_TASK_WORKER.md`
 - 定时归档架构：`docs/SCHEDULED_ARCHIVE_RUNNER_ARCHITECTURE.md`
+- 交付物控制台修复与审计：[实施口径、审查结论及验证结果](docs/DELIVERABLE_CONSOLE_AUDIT_20260916.md)
+- 交付物控制台验收：[受影响 UI 与手工测试 TODO](docs/DELIVERABLE_CONSOLE_UI_TODO_20260916.md)
 
 目录结构、任务路由、生产模块职责和默认拒绝路径以 `PROJECT_MAP.md` 为准；不要
 通过扫描仓库根目录来替代地图导航。

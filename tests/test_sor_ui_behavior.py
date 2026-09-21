@@ -179,6 +179,12 @@ class DocumentStub {{
     return new Element(tagName);
   }}
 
+  createTextNode(text) {{
+    const el = new Element('#text');
+    el._textContent = String(text);
+    return el;
+  }}
+
   getElementById(id) {{
     return this.body.querySelector('#' + id);
   }}
@@ -198,7 +204,15 @@ global.window = {{
   location: {{ hash: '' }},
   addEventListener: () => {{}},
   document: doc,
-  localStorage: {{ getItem: () => null, setItem: () => {{}} }},
+  localStorage: (() => {{
+    const store = new Map();
+    return {{
+      getItem: (k) => (store.has(String(k)) ? store.get(String(k)) : null),
+      setItem: (k, v) => {{ store.set(String(k), String(v)); }},
+      removeItem: (k) => {{ store.delete(String(k)); }},
+      clear: () => store.clear(),
+    }};
+  }})(),
 }};
 
 // Load app.js in sandbox

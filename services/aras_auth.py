@@ -891,6 +891,11 @@ def _validate_user_response_has_id(xml_text: str) -> bool:
 
     if not xml_text or not xml_text.strip():
         return False
+    if len(xml_text.encode("utf-8", errors="ignore")) > 4 * 1024 * 1024:
+        return False
+    upper = xml_text.upper()
+    if "<!DOCTYPE" in upper or "<!ENTITY" in upper:
+        return False
     try:
         root = ET.fromstring(xml_text)
     except ET.ParseError:

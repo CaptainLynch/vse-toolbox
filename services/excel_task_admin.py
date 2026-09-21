@@ -162,6 +162,11 @@ class ExcelTaskAdminService:
             raise KeyError(task_id)
         return self._task_payload(task)
 
+    def cancel_task(self, task_id: int) -> bool:
+        if self._repository.get_task(task_id) is None:
+            raise KeyError(task_id)
+        return self._repository.cancel_task(task_id)
+
     def list_runs(self, task_id: int) -> list[dict[str, Any]]:
         if self._repository.get_task(task_id) is None:
             raise KeyError(task_id)

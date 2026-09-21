@@ -5,6 +5,27 @@ delete. Per-plan rulings stay in their SDD ledger (`.superpowers/sdd/…`, local
 and get promoted here once they prove durable. Newest first. Keep entries
 short: decision, why, cost if violated, source pointer.
 
+## 2026-09-19 — HCI 与系统架构审计决策：统一任务模型、冻结重试语义与桌面/导航重构架构约束
+
+1. **统一任务模型与 Schema 纪律**：复用 `core/excel_tasks.py` 经审计的持久化范式（状态机、租约管理、不存凭据与 Token、幂等性），提供全局统一的任务抽屉 UI 与 `/api/tasks` 外观（facade），严格维持 Schema v14 兼容基线，`crawl_tasks` 采用增量式 DDL，禁止新建平行分裂的任务子系统。
+2. **冻结重试语义与 EWO 防重**：端点按外部副作用严格分类——纯读类查询与普通导出（EWO/PAA/NCR query/crawl-all、TDC query/crawl-all）允许重试；带外部写/生成副作用的 EWO 流程增强任务（`/api/aras/ewo/enrichment/jobs`）严禁盲目自动重试，`generation_unknown` 态仅允许通过状态复核（state check）探查，复用既有 durable ownership 模型。
+3. **工件统一生命周期**：产物统一落盘至 `data/downloads/`，执行 7 天自动归档清理淘汰策略（7-day pruning），避免单机环境磁盘膨胀。
+4. **进程内线程池与同源互斥**：采用进程内 `ThreadPoolExecutor(max_workers=2)`，明确否决 Celery/Redis 等外部重型依赖；针对同一数据源施加并发互斥锁（per-source mutual exclusion），避免共享 Cookie/Session 互踩；抓取支持在分页边界进行协作式取消（cooperative cancellation，<= 2s 响应延迟）。
+5. **Fail-closed 启动清理机制**：桌面 EXE 进程退出将终止运行中 daemon 线程；服务启动或重启时执行自检（startup sweep），将孤儿 `running` / `leased` 状态的抓取任务标记为 `interrupted`，彻底杜绝僵尸运行态与虚假进度。
+6. **桌面启动与就绪探测**：`webui.py` 新增端口连通性 readiness probe，仅在 HTTP 服务真正监听就绪后通过标准库 `webbrowser` 打开 `http://127.0.0.1:<port>`；提供 `--no-browser` 命令行标志以适配批处理与无头测试环境。
+7. **分期推进与测试解耦纪律**：Phase 1 优先落地 Hash 深链路由与测试套件解耦，明确约束「抽屉先行、未建任务抽屉前禁止移除 Excel 顶栏入口」——在统一任务抽屉与 `/api/tasks` 真正落地上线前，严格保留顶栏 6 大导航入口（包括交付物与 Excel 任务），禁止过早收拢或隐藏；专项重构测试套件中脆弱的字符串切片与位置断言（`tests/test_overview_web.py` 等），提升为语义化断言；全流程确保既有测试全绿且地图无漂移。
+Cost if violated: 任务语义分裂与重复建设；EWO 盲目重发引发服务端重复记录污染；磁盘空间泄露；僵尸任务混淆用户；UI 结构调整引发大规模陈旧测试假红。
+Source: `docs/HCI_BLUEPRINT_ARCHITECTURE_AUDIT_20260919.md` 架构审计与统一决策评审。
+
+## 2026-09-16 — WebUI 第一阶段易用性：原位登录现场保护、显式继续查询与设置分层
+
+1. **版本探测与环境退化**：建立 `core/version.py` 与 `GET /api/version`，优先读取注入环境变量与版本元数据文件，开发环境安全退化为「开发工作区」，冻结环境在无元数据时退化为「独立运行包」，严禁每次请求调用外部 Git 进程或泄漏物理路径。
+2. **顶栏独立指示与原位登录**：顶栏独立分别展示 Aras 与 TDC 会话状态；查询未认证或过期时提供原位登录模态浮层，登录取消或失败不刷新页面、不清空表单输入；登录成功后关闭浮层并提供显式【继续查询】按钮，禁止自动重放有副作用或未确认草稿的业务请求。
+3. **共享结构化错误与防重**：前端统一封装 `renderStructuredErrorCard`，包含业务影响说明、下一步明确动作与折叠技术详情；保存成功但刷新失败场景下明确告知「已保存」，仅提供刷新显示按钮，禁止诱导重复保存；EWO 未知生成状态严格禁止重发。
+4. **设置分层与兼容性保护**：日常业务目录默认展开，低频临时/诊断目录与重试、保留参数收纳在高级维护折叠区；标签清除底层代码字段名，保持 input id/name/类型完全兼容，确保折叠时保存不重置未编辑字段；明确重试次数仅控制实时在线抓取，不越界覆盖定时任务。
+Cost if violated: 页面跳转导致工程师填写的条件丢失；错误诱导重复提交业务写操作；设置保存误清空高级参数。
+Source: ZCode 会话 2026-09-16 WebUI 第一阶段易用性优化实施合同。
+
 ## 2026-09-06 — 环图"按节点状态自动显示"规则口径
 
 auto 模式下，交付物若已完成（完成态取快照换算口径，回退手工值）且主计划中
@@ -340,3 +361,10 @@ User approved the complete observable WebUI/Aras/TDC/sync/archive/storage chain,
 EWO新版合同使用字符串contractVersion=2和显式single_record/record_set；旧规则不自动迁移。内部sourceItemId只固定当前记录版本，不能跟随同号新修订。集合负责人/计划日期永远手工。迁移先停用保存，新签名两次取证后启用；旧HTTP客户端缺版本确认拒绝修改，并在事务内比较配置修订号。数据库schema14同时阻止旧EXE打开新版库，回退必须恢复旧库备份。
 
 官方导出为独立只读增强，不进入自动字段映射。账号+来源+筛选签名控制恢复；unknown生成结果禁止重发；基础与增强分别记时间；空号不按位置猜测关联。用户可以在prepare后查看真实基础内部ID，prepare无生成副作用。
+
+## 2026-09-16 交付物控制台首期范围（用户授权实施）
+
+- 已配置外部目标、集合或 EWO v2 映射时，整项禁止新的手工保存；默认 automatic 但无目标仍可编辑，异常配置拒绝。人工字段归属只约束同步写入，不绕过整项编辑限制。此规则覆盖旧文档的映射后人工覆盖入口。
+- PAA/NCR 首期使用两张快照参考进度卡；2026-09-13 的正式 NCR 交付物接入为后续规划，本期不登记、不计入节点分母；NCR 明细不重复统计。
+- 无节点隶属规则时隐藏交付物/风险占位，保留节点时间与主计划维护，不推断隶属关系。官方 EWO 增强仍只读。
+- 本次仅后端自动测试；UI 由用户按 docs/DELIVERABLE_CONSOLE_UI_TODO_20260916.md 手工验收，工程审计完成不代表 UI 已验收。

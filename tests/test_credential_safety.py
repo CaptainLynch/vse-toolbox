@@ -147,13 +147,24 @@ def test_redaction_limit_and_newline_collapse():
     assert safe_display_value("") == "-"
 
 
+def test_redact_sensitive_text_jwt_and_bearer():
+    raw_jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature"
+    text = f"User token is {raw_jwt} and authorization is Bearer secret-token-xyz"
+    redacted = redact_sensitive_text(text)
+    assert raw_jwt not in redacted
+    assert "secret-token-xyz" not in redacted
+    assert "[jwt redacted]" in redacted
+    assert "Bearer [redacted]" in redacted
+
+
 def test_web_frontend_redacts_sensitive_result_values_before_rendering():
     source = (ROOT / "web" / "static" / "app.js").read_text(encoding="utf-8")
 
     assert "function redactSensitiveText(value)" in source
     assert "function safeDisplayValue(value)" in source
     assert "valueCell.textContent = safeDisplayValue(value)" in source
-    assert "td.textContent = safeDisplayValue(row[key])" in source
+    # Phase 4 网格：单元格渲染必须仍经过 safeDisplayValue 再进入高亮装配
+    assert "appendHighlightedText(td, safeDisplayValue(value), state.filterText)" in source
     assert "showArasError(redactSensitiveText(err.message))" in source
     assert "raw_xml" in source
 

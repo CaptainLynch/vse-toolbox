@@ -13,6 +13,10 @@ import pytest
 
 import web.app as web_app
 from core.db_manager import DatabaseManager
+from core.project_status_contracts import (
+    PROJECT_STATUS_INVALID_MAPPING_READ_ONLY_REASON,
+    PROJECT_STATUS_MAPPED_READ_ONLY_REASON,
+)
 from services.project_status_sync_runner import (
     ConnectorRegistry,
     ProjectStatusConnector,
@@ -102,6 +106,218 @@ def _current_updated_at(db: DatabaseManager, deliverable_id: str) -> str:
         ).fetchone()
     assert row is not None
     return str(row["updated_at"])
+
+
+def test_manual_patch_rejects_mapped_deliverable_with_stable_error(
+    client,
+    test_db: DatabaseManager,
+) -> None:
+    """Mapped deliverables are rejected by the authoritative manual PATCH guard."""
+    with test_db.get_connection() as conn:
+        conn.execute(
+            """
+            UPDATE project_status_update_bindings
+            SET mode = 'automatic', enabled = 0, external_key = ?,
+                match_rule_json = ?, mapping_json = ?, sync_state = 'failed'
+            WHERE deliverable_id = ?
+            """,
+            (
+                "FM-1",
+                json.dumps({"reportType": "data_model", "incident": "FM-1"}),
+                json.dumps({"owner": "currentApprover"}),
+                "VPI-T2-D5",
+            ),
+        )
+    payload = client.get("/api/project-status?phase=VPI-T2").get_json()["data"]
+    d5 = next(item for item in payload["deliverables"] if item["id"] == "VPI-T2-D5")
+    assert d5["manualEditable"] is False
+    assert d5["readOnlyReason"] == PROJECT_STATUS_MAPPED_READ_ONLY_REASON
+    expected_updated_at = _current_updated_at(test_db, "VPI-T2-D5")
+    response = client.patch(
+        "/api/project-status/deliverables/VPI-T2-D5",
+        json={"progress": 12, "updatedAt": expected_updated_at},
+        headers=_loopback_headers(),
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+    assert response.status_code == 409
+    assert response.get_json() == {
+        "ok": False,
+        "error": {
+            "type": "MappedDeliverableReadOnly",
+            "message": "已配置外部来源映射，需通过同步结果维护",
+        },
+    }
+    with test_db.get_connection() as conn:
+        row = conn.execute(
+            "SELECT progress FROM project_status_deliverables WHERE id = ?",
+            ("VPI-T2-D5",),
+        ).fetchone()
+        audit_count = conn.execute(
+            "SELECT COUNT(*) FROM project_status_update_audit WHERE deliverable_id = ?",
+            ("VPI-T2-D5",),
+        ).fetchone()[0]
+    assert row["progress"] == 0
+    assert audit_count == 0
+
+
+def test_manual_patch_rejects_malformed_binding_without_mutation(
+    client,
+    test_db: DatabaseManager,
+) -> None:
+    """Malformed configured content fails closed and leaves manual state intact."""
+    with test_db.get_connection() as conn:
+        conn.execute(
+            """
+            UPDATE project_status_update_bindings
+            SET external_key = NULL,
+                match_rule_json = ?, mapping_json = ?, sync_state = 'failed'
+            WHERE deliverable_id = ?
+            """,
+            (
+                json.dumps({"reportType": "data_model", "incident": "FM-1"}),
+                json.dumps({"owner": 42}),
+                "VPI-T2-D5",
+            ),
+        )
+    payload = client.get("/api/project-status?phase=VPI-T2").get_json()["data"]
+    d5 = next(item for item in payload["deliverables"] if item["id"] == "VPI-T2-D5")
+    assert d5["manualEditable"] is False
+    assert d5["readOnlyReason"] == PROJECT_STATUS_INVALID_MAPPING_READ_ONLY_REASON
+    expected_updated_at = _current_updated_at(test_db, "VPI-T2-D5")
+    with test_db.get_connection() as conn:
+        before_authority = [
+            tuple(row)
+            for row in conn.execute(
+                """
+                SELECT field_name, authority, source_type, locked_at, updated_at
+                FROM project_status_field_authority
+                WHERE deliverable_id = ? ORDER BY field_name
+                """,
+                ("VPI-T2-D5",),
+            ).fetchall()
+        ]
+        before_phase = conn.execute(
+            "SELECT updated_at FROM project_status_phases WHERE id = 'VPI-T2'"
+        ).fetchone()[0]
+    response = client.patch(
+        "/api/project-status/deliverables/VPI-T2-D5",
+        json={"progress": 12, "updatedAt": expected_updated_at},
+        headers=_loopback_headers(),
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+    assert response.status_code == 409
+    assert response.get_json() == {
+        "ok": False,
+        "error": {
+            "type": "MappedDeliverableReadOnly",
+            "message": PROJECT_STATUS_INVALID_MAPPING_READ_ONLY_REASON,
+        },
+    }
+    with test_db.get_connection() as conn:
+        row = conn.execute(
+            "SELECT progress FROM project_status_deliverables WHERE id = ?",
+            ("VPI-T2-D5",),
+        ).fetchone()
+        audit_count = conn.execute(
+            "SELECT COUNT(*) FROM project_status_update_audit WHERE deliverable_id = ?",
+            ("VPI-T2-D5",),
+        ).fetchone()[0]
+        after_authority = [
+            tuple(row)
+            for row in conn.execute(
+                """
+                SELECT field_name, authority, source_type, locked_at, updated_at
+                FROM project_status_field_authority
+                WHERE deliverable_id = ? ORDER BY field_name
+                """,
+                ("VPI-T2-D5",),
+            ).fetchall()
+        ]
+        after_phase = conn.execute(
+            "SELECT updated_at FROM project_status_phases WHERE id = 'VPI-T2'"
+        ).fetchone()[0]
+    assert row["progress"] == 0
+    assert audit_count == 0
+    assert after_authority == before_authority
+    assert after_phase == before_phase
+
+
+@pytest.mark.parametrize(
+    ("rule_dict", "mapping_dict", "external_key"),
+    [
+        ({"reportType": "data_model", "incident": "FM-1\u0000"}, {}, None),
+        ({"reportType": "data_model", "incident": "FM-1"}, {"note": ["approver\u0000"]}, None),
+        ({"reportType": "data_model", "incident": "FM-1"}, {}, "FM-1\x00"),
+        ({"reportType": "data_model", "incident": "A" * 4005}, {}, None),
+        ({"reportType": "data_model", "incident": "FM-1"}, {"note": ["B" * 4005]}, None),
+    ],
+)
+def test_manual_patch_rejects_abnormal_rules_without_mutation(
+    client,
+    test_db: DatabaseManager,
+    rule_dict: dict[str, Any],
+    mapping_dict: dict[str, Any],
+    external_key: str | None,
+) -> None:
+    """Abnormal rules (control chars, oversized) fail closed in API and leave state intact."""
+    with test_db.get_connection() as conn:
+        conn.execute(
+            """
+            UPDATE project_status_update_bindings
+            SET mode = 'hybrid', enabled = 0, external_key = ?,
+                match_rule_json = ?, mapping_json = ?, sync_state = 'idle'
+            WHERE deliverable_id = 'VPI-T2-D5'
+            """,
+            (external_key, json.dumps(rule_dict, ensure_ascii=False), json.dumps(mapping_dict, ensure_ascii=False)),
+        )
+    payload = client.get("/api/project-status?phase=VPI-T2").get_json()["data"]
+    d5 = next(item for item in payload["deliverables"] if item["id"] == "VPI-T2-D5")
+    assert d5["manualEditable"] is False
+    assert d5["readOnlyReason"] == PROJECT_STATUS_INVALID_MAPPING_READ_ONLY_REASON
+    expected_updated_at = _current_updated_at(test_db, "VPI-T2-D5")
+
+    response = client.patch(
+        "/api/project-status/deliverables/VPI-T2-D5",
+        json={"progress": 15, "updatedAt": expected_updated_at},
+        headers=_loopback_headers(),
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+    assert response.status_code == 409
+    assert response.get_json() == {
+        "ok": False,
+        "error": {
+            "type": "MappedDeliverableReadOnly",
+            "message": PROJECT_STATUS_INVALID_MAPPING_READ_ONLY_REASON,
+        },
+    }
+    with test_db.get_connection() as conn:
+        row = conn.execute(
+            "SELECT progress FROM project_status_deliverables WHERE id = 'VPI-T2-D5'"
+        ).fetchone()
+        audit_count = conn.execute(
+            "SELECT COUNT(*) FROM project_status_update_audit WHERE deliverable_id = 'VPI-T2-D5'"
+        ).fetchone()[0]
+    assert row["progress"] == 0
+    assert audit_count == 0
+
+
+def test_project_status_payload_keeps_unconfigured_automatic_defaults_editable(
+    client,
+) -> None:
+    """Automatic mode alone does not turn the seeded placeholder into read-only.
+
+    外部快照驱动交付物（D6-D8，formSnapshotDriven）除外：一律只读，
+    readOnlyReason 固定为归档快照自动映射文案。"""
+    response = client.get("/api/project-status?phase=VPI-T2")
+    assert response.status_code == 200
+    deliverables = response.get_json()["data"]["deliverables"]
+    for item in deliverables:
+        if item.get("formSnapshotDriven") is True:
+            assert item["manualEditable"] is False
+            assert item["readOnlyReason"] == "外部快照驱动，状态由归档快照自动映射"
+            continue
+        assert item["manualEditable"] is True
+        assert item["readOnlyReason"] is None
 
 
 def test_debug_bundle_json_export_is_redacted_and_offline(client) -> None:  # type: ignore[no-untyped-def]

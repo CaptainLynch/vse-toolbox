@@ -57,7 +57,8 @@ class ExcelWorkerProcessController:
             if process is not None:
                 exit_code = process.poll()
                 if exit_code is None:
-                    self._status = ExcelWorkerProcessStatus("running", process.pid)
+                    if self._status.state != "stopping":
+                        self._status = ExcelWorkerProcessStatus("running", process.pid)
                 elif self._status.state in {"running", "stopping"}:
                     self._status = ExcelWorkerProcessStatus("stopped", process.pid, exit_code)
                     self._cleanup_stop_file()
@@ -65,8 +66,8 @@ class ExcelWorkerProcessController:
 
     def start(self) -> ExcelWorkerProcessStatus:
         with self._lock:
-            if self.status().state == "running":
-                raise RuntimeError("Excel worker is already running")
+            if self.status().state in {"running", "stopping"}:
+                raise RuntimeError("Excel worker is already running or stopping")
             stop_file = Path(tempfile.gettempdir()) / f"vse-excel-worker-{os.getpid()}-{secrets.token_hex(8)}.stop"
             roots = self._repository.roots
             if getattr(sys, "frozen", False):
@@ -117,9 +118,10 @@ class ExcelWorkerProcessController:
             if status.state != "running" or self._process is None:
                 return status
             process = self._process
+            stop_file = self._stop_file
             self._status = ExcelWorkerProcessStatus("stopping", process.pid)
-            if self._stop_file is not None:
-                self._stop_file.write_text("stop", encoding="ascii")
+            if stop_file is not None:
+                stop_file.write_text("stop", encoding="ascii")
         try:
             process.wait(timeout=max(0.0, float(timeout)))
         except subprocess.TimeoutExpired:
@@ -128,11 +130,21 @@ class ExcelWorkerProcessController:
                 process.wait(timeout=2.0)
             except subprocess.TimeoutExpired:
                 process.kill()
-                process.wait(timeout=2.0)
+                try:
+                    process.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    pass
         with self._lock:
-            self._status = ExcelWorkerProcessStatus("stopped", process.pid, process.returncode)
-            self._cleanup_stop_file()
-            return self._status
+            if self._process is process:
+                self._status = ExcelWorkerProcessStatus("stopped", process.pid, process.returncode)
+                self._cleanup_stop_file()
+                return self._status
+            if stop_file is not None:
+                try:
+                    stop_file.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            return self.status()
 
     def _cleanup_stop_file(self) -> None:
         if self._stop_file is not None:

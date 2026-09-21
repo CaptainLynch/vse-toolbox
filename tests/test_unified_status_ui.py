@@ -10,6 +10,14 @@ def _source() -> str:
     return JS_PATH.read_text(encoding="utf-8-sig")
 
 
+def _slice(text: str, start_marker: str, end_marker: str) -> str:
+    start = text.find(start_marker)
+    assert start != -1, f"Start marker '{start_marker}' not found"
+    end = text.find(end_marker, start)
+    assert end != -1, f"End marker '{end_marker}' not found after '{start_marker}'"
+    return text[start:end]
+
+
 def test_unified_status_loader_uses_encoded_deliverable_endpoint_and_public_contract() -> None:
     source = _source()
     assert "async function loadDeliverableUnifiedStatus" in source
@@ -20,9 +28,7 @@ def test_unified_status_loader_uses_encoded_deliverable_endpoint_and_public_cont
 
 def test_unified_status_cards_show_three_kinds_and_public_state_fields() -> None:
     source = _source()
-    start = source.index("function renderDeliverableUnifiedStatus")
-    end = source.index("async function loadDeliverableEvidence")
-    renderer = source[start:end]
+    renderer = _slice(source, "function renderDeliverableUnifiedStatus", "async function loadDeliverableEvidence")
 
     for marker in (
         "unified-status-cards",
@@ -47,9 +53,7 @@ def test_unified_status_cards_show_three_kinds_and_public_state_fields() -> None
 
 def test_unified_status_failure_is_redacted_and_has_retry_entrypoint() -> None:
     source = _source()
-    start = source.index("async function loadDeliverableUnifiedStatus")
-    end = source.index("function renderDeliverableEvidence")
-    loader = source[start:end]
+    loader = _slice(source, "async function loadDeliverableUnifiedStatus", "function renderDeliverableEvidence")
 
     assert "unified-status-load-error" in loader
     assert "unified-status-retry-btn" in loader
@@ -60,9 +64,7 @@ def test_unified_status_failure_is_redacted_and_has_retry_entrypoint() -> None:
 
 def test_unified_status_loader_is_wired_into_existing_evidence_area() -> None:
     source = _source()
-    start = source.index("async function loadDeliverableEvidence")
-    end = source.index("function renderDeliverableEvidence")
-    loader = source[start:end]
+    loader = _slice(source, "async function loadDeliverableEvidence", "function renderDeliverableEvidence")
 
     assert "loadDeliverableUnifiedStatus" in loader
     assert "evidence-unified-status" in loader

@@ -66,6 +66,9 @@ Tracked documentation, grouped by status:
 | `DESIGN.md` | Active UI design-token document (warm cream / coral system adopted by the current dashboard) |
 | `GPT_WEB_PROJECT_CONTEXT.md` | External-LLM context snapshot (2026-08-20). Its §6 design constraints are durable (promoted into `DECISIONS.md`), but capability/branch claims are stale (Web Excel tasks and scheduled sync now exist; Python-version claim conflicts with `requirements.txt`). Refresh before reusing it for an external LLM session |
 | `docs/PHASE0_*`, `docs/PHASE1_*` | Historical refactor baseline (2026-06) |
+| `docs/DELIVERABLE_CONSOLE_AUDIT_20260916.md` | 已实施控制台八项修复的口径、审计及后端验证证据 |
+| `docs/DELIVERABLE_CONSOLE_UI_TODO_20260916.md` | 受影响 UI 与用户手工验收清单；尚未验收 |
+| `docs/EWO_IMPLEMENTATION_20260915.md` | EWO v2 实施记录及 2026-09-16 控制台补充；历史评审通过链接保留 |
 | `README.md` | Active user entrypoint for WebUI/CLI/Worker; code structure is delegated to `PROJECT_MAP.md` |
 | `PROJECT_MAP.md` | Agent-facing generated code map; default navigation entrypoint, allowlist-driven and checked by `tools/generate_project_map.py` |
 

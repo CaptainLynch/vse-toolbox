@@ -95,19 +95,20 @@
     const bar = el("div", "node-focus-meta");
     bar.append(el("span", ctx.days < 0 ? "node-overdue" : "", `${ctx.node.status} · ${timing}`), el("span", null, `计划日期：${ctx.node.date || "未设置"}`));
     container.append(bar, el("p", "node-rule-note", "按主计划顺序定位第一个未完成节点；逾期不会自动跳过。"));
+    // Until an explicit membership rule exists, keep the node summary useful
+    // without showing project-wide delivery or risk placeholders. The header,
+    // timing and plan editor above remain available.
+    if (!ctx.ruleConfigured) return;
+
     const grid = el("div", "node-focus-grid");
     const deliveries = el("section", "node-focus-section");
     deliveries.appendChild(el("h4", null, "本节点交付物"));
-    if (!ctx.ruleConfigured) {
-      deliveries.append(el("strong", "node-rule-pending", "交付物规则待设置"), el("p", "node-empty", "后续按节点规则确定交付范围；下方全项目数据仅供参考，不计入本节点完成率。"));
-    } else {
-      deliveries.appendChild(el("p", "node-counts", ctx.total ? `已完成 ${ctx.completed} / ${ctx.total} 项 · ${ctx.progress}%` : "本节点规则未要求交付物"));
-      ctx.items.forEach(item => {
-        const row = el("div", "node-risk-row");
-        row.append(el("span", null, `${item.name} · ${hasValue(item) ? status(item) : item.syncDisplay.label || item.syncDisplay.state}`), detailLink(item));
-        deliveries.appendChild(row);
-      });
-    }
+    deliveries.appendChild(el("p", "node-counts", ctx.total ? `已完成 ${ctx.completed} / ${ctx.total} 项 · ${ctx.progress}%` : "本节点规则未要求交付物"));
+    ctx.items.forEach(item => {
+      const row = el("div", "node-risk-row");
+      row.append(el("span", null, `${item.name} · ${hasValue(item) ? status(item) : item.syncDisplay.label || item.syncDisplay.state}`), detailLink(item));
+      deliveries.appendChild(row);
+    });
     const risks = el("section", "node-focus-section");
     risks.appendChild(el("h4", null, "本节点风险与备注"));
     renderRiskList(risks, ctx.risks, ctx.dataIssues, ctx.ruleConfigured);

@@ -32,6 +32,28 @@
     }
   }
 
+  function stateLabel(state) {
+    var labels = {
+      queued: '待显式生成',
+      generating: '正在生成官方报表',
+      generation_unknown: '生成状态未知',
+      generated: '已生成，待读取',
+      downloading: '正在读取官方报表',
+      parsed: '已读取结果',
+    };
+    return labels[state] || (state ? String(state) : '未开始');
+  }
+
+  function errorStageLabel(stage) {
+    var normalized = String(stage || '').trim().toLowerCase().replace(/_/g, '-');
+    var labels = {
+      download: '下载阶段',
+      parse: '解析阶段',
+      'download-or-parse': '下载或解析阶段',
+    };
+    return labels[normalized] || '读取阶段';
+  }
+
   function mount(options) {
     if (!options || !options.host) {
       throw new Error('mount requires a host element in options');
@@ -53,7 +75,7 @@
     var staleWarningText = '';
 
     // Create container
-    var panel = document.createElement('div');
+    var panel = document.createElement('section');
     panel.className = 'ewo-enrichment-panel';
 
     // Header
@@ -62,7 +84,7 @@
 
     var title = document.createElement('h3');
     title.className = 'ewo-panel-title';
-    title.textContent = 'EWO增强导表状态（只读）';
+    title.textContent = '待签人与要求完成时间（官方报表补充）';
     header.appendChild(title);
 
     var readonlyExplanation = document.createElement('p');
@@ -83,10 +105,103 @@
     unknownNotice.style.display = 'none';
     panel.appendChild(unknownNotice);
 
-    var errorStageNotice = document.createElement('div');
-    errorStageNotice.className = 'ewo-error-stage-notice';
-    errorStageNotice.style.display = 'none';
-    panel.appendChild(errorStageNotice);
+    // Business-first result and snapshot times remain visible. Technical metadata
+    // is disclosed below, so the panel can be understood without a job ID.
+    var resultSection = document.createElement('section');
+    resultSection.className = 'ewo-result-section';
+    var resultHead = document.createElement('div');
+    resultHead.className = 'ewo-result-head';
+    var resultTitle = document.createElement('h4');
+    resultTitle.textContent = '结果预览';
+    var resultState = document.createElement('span');
+    resultState.className = 'ewo-result-state';
+    resultState.textContent = '未开始';
+    resultState.setAttribute('aria-live', 'polite');
+    resultHead.appendChild(resultTitle);
+    resultHead.appendChild(resultState);
+    resultSection.appendChild(resultHead);
+
+    var snapshotGrid = document.createElement('div');
+    snapshotGrid.className = 'ewo-snapshot-grid';
+
+    function createSnapshotCard(labelStr, initialText) {
+      var card = document.createElement('div');
+      card.className = 'ewo-snapshot-card';
+      var label = document.createElement('span');
+      label.className = 'ewo-snapshot-label';
+      label.textContent = labelStr;
+      var value = document.createElement('time');
+      value.className = 'ewo-snapshot-value';
+      value.textContent = initialText;
+      card.appendChild(label);
+      card.appendChild(value);
+      snapshotGrid.appendChild(card);
+      return value;
+    }
+
+    var baseSnapshotVal = createSnapshotCard('基础选择快照', '无');
+    var resultSnapshotVal = createSnapshotCard('结果快照时间', '尚未读取');
+    resultSection.appendChild(snapshotGrid);
+
+    var resultHint = document.createElement('p');
+    resultHint.className = 'ewo-result-hint';
+    resultHint.textContent = '请先准备官方报表，再由你显式点击生成。';
+    resultHint.setAttribute('aria-live', 'polite');
+    resultSection.appendChild(resultHint);
+    panel.appendChild(resultSection);
+
+    // Actions toolbar. Preparation and generation stay separate user actions.
+    var toolbar = document.createElement('div');
+    toolbar.className = 'ewo-actions-toolbar';
+
+    var btnPrepare = document.createElement('button');
+    btnPrepare.className = 'ewo-btn ewo-btn-prepare segment';
+    btnPrepare.textContent = '准备官方报表';
+    toolbar.appendChild(btnPrepare);
+
+    var btnRun = document.createElement('button');
+    btnRun.className = 'ewo-btn ewo-btn-run primary-btn';
+    btnRun.textContent = '生成官方报表';
+    btnRun.disabled = true;
+    btnRun.hidden = true;
+    toolbar.appendChild(btnRun);
+
+    var btnResume = document.createElement('button');
+    btnResume.className = 'ewo-btn ewo-btn-resume segment';
+    btnResume.textContent = '读取已生成报表';
+    btnResume.disabled = true;
+    btnResume.hidden = true;
+    toolbar.appendChild(btnResume);
+
+    panel.appendChild(toolbar);
+
+    // Technical details are folded by default. Unknown and stale notices above
+    // remain visible because they affect whether the result can be trusted.
+    var technicalDetails = document.createElement('details');
+    technicalDetails.className = 'ewo-technical-details';
+    var technicalSummary = document.createElement('summary');
+    technicalSummary.textContent = '获取详情';
+    technicalDetails.appendChild(technicalSummary);
+    var technicalBody = document.createElement('div');
+    technicalBody.className = 'ewo-technical-body';
+
+    var btnRestore = document.createElement('button');
+    btnRestore.className = 'ewo-btn ewo-btn-restore segment';
+    btnRestore.textContent = '恢复上次任务';
+
+    var btnRefresh = document.createElement('button');
+    btnRefresh.className = 'ewo-btn ewo-btn-refresh segment';
+    btnRefresh.textContent = '刷新任务状态';
+    btnRefresh.disabled = true;
+
+    var secondaryActions = document.createElement('div');
+    secondaryActions.className = 'ewo-secondary-actions';
+    var secondaryTitle = document.createElement('h5');
+    secondaryTitle.textContent = '任务控制';
+    secondaryActions.appendChild(secondaryTitle);
+    secondaryActions.appendChild(btnRestore);
+    secondaryActions.appendChild(btnRefresh);
+    technicalBody.appendChild(secondaryActions);
 
     // Meta section
     var metaSection = document.createElement('div');
@@ -106,60 +221,22 @@
       return value;
     }
 
-    var jobIdVal = createMetaRow('任务ID: ');
+    var jobIdVal = createMetaRow('任务 ID');
     jobIdVal.textContent = '无';
 
-    var stateVal = createMetaRow('任务状态: ');
+    var stateVal = createMetaRow('任务状态');
     stateVal.textContent = '未开始';
 
-    var baseTimeVal = createMetaRow('基准时间: ');
+    var baseTimeVal = createMetaRow('基础选择时间');
     baseTimeVal.textContent = '无';
 
-    var enhancementTimeVal = createMetaRow('增强时间: ');
+    var enhancementTimeVal = createMetaRow('结果读取时间');
     enhancementTimeVal.textContent = '无';
 
-    panel.appendChild(metaSection);
-    var baseDetails = document.createElement('details');
-    var baseSummary = document.createElement('summary');
-    baseSummary.textContent = '基础记录 ID（用于固定版本绑定）';
-    var baseRecordsHost = document.createElement('div');
-    baseRecordsHost.className = 'ewo-base-records';
-    baseDetails.appendChild(baseSummary);
-    baseDetails.appendChild(baseRecordsHost);
-    panel.appendChild(baseDetails);
+    var diagnosticVal = createMetaRow('诊断阶段');
+    diagnosticVal.textContent = '无';
 
-    // Actions toolbar
-    var toolbar = document.createElement('div');
-    toolbar.className = 'ewo-actions-toolbar';
-
-    var btnPrepare = document.createElement('button');
-    btnPrepare.className = 'ewo-btn ewo-btn-prepare';
-    btnPrepare.textContent = '准备增强导表';
-    toolbar.appendChild(btnPrepare);
-    var btnRestore = document.createElement('button');
-    btnRestore.className = 'ewo-btn ewo-btn-restore';
-    btnRestore.textContent = '恢复上次任务';
-    toolbar.appendChild(btnRestore);
-
-    var btnRun = document.createElement('button');
-    btnRun.className = 'ewo-btn ewo-btn-run';
-    btnRun.textContent = '生成并读取增强';
-    btnRun.disabled = true;
-    toolbar.appendChild(btnRun);
-
-    var btnResume = document.createElement('button');
-    btnResume.className = 'ewo-btn ewo-btn-resume';
-    btnResume.textContent = '继续读取已生成报表';
-    btnResume.disabled = true;
-    toolbar.appendChild(btnResume);
-
-    var btnRefresh = document.createElement('button');
-    btnRefresh.className = 'ewo-btn ewo-btn-refresh';
-    btnRefresh.textContent = '刷新状态';
-    btnRefresh.disabled = true;
-    toolbar.appendChild(btnRefresh);
-
-    panel.appendChild(toolbar);
+    technicalBody.appendChild(metaSection);
 
     // Counts summary
     var countsContainer = document.createElement('div');
@@ -187,7 +264,20 @@
     var countUnmatchedVal = createCountBadge('未匹配行数: ');
     var countAmbiguousVal = createCountBadge('歧义行数: ');
 
-    panel.appendChild(countsContainer);
+    technicalBody.appendChild(countsContainer);
+
+    var baseDetails = document.createElement('section');
+    baseDetails.className = 'ewo-base-records-section';
+    var baseTitle = document.createElement('h5');
+    baseTitle.textContent = '基础记录 ID（用于固定版本绑定）';
+    baseDetails.appendChild(baseTitle);
+    var baseRecordsHost = document.createElement('div');
+    baseRecordsHost.className = 'ewo-base-records';
+    baseDetails.appendChild(baseRecordsHost);
+    technicalBody.appendChild(baseDetails);
+
+    technicalDetails.appendChild(technicalBody);
+    panel.appendChild(technicalDetails);
 
     // Table section
     var tableSection = document.createElement('div');
@@ -195,7 +285,7 @@
 
     var tableLimitLabel = document.createElement('div');
     tableLimitLabel.className = 'ewo-table-limit-label';
-    tableLimitLabel.textContent = '显示记录：前 0 条（共 0 条）';
+    tableLimitLabel.textContent = '暂无结果；请先准备并显式生成官方报表';
     tableSection.appendChild(tableLimitLabel);
 
     var table = document.createElement('table');
@@ -203,7 +293,7 @@
 
     var thead = document.createElement('thead');
     var headerRow = document.createElement('tr');
-    var colHeaders = ['序号', '业务单号', '状态', '责任工程师名称', '要求完成时间'];
+    var colHeaders = ['序号', '业务单号', '关联状态', 'EWO状态', '待签人', '要求完成时间', '责任工程师'];
     for (var h = 0; h < colHeaders.length; h++) {
       var th = document.createElement('th');
       th.textContent = colHeaders[h];
@@ -230,6 +320,10 @@
         btnRun.disabled = true;
         btnResume.disabled = true;
         btnRefresh.disabled = true;
+        btnPrepare.hidden = true;
+        btnRun.hidden = true;
+        btnResume.hidden = true;
+        btnRefresh.hidden = !isValidJobId(currentJobId);
         return;
       }
       btnPrepare.disabled = false;
@@ -238,6 +332,38 @@
       btnRefresh.disabled = !hasValidJob;
       btnRun.disabled = !(hasValidJob && currentState === 'queued');
       btnResume.disabled = !(hasValidJob && currentState === 'generated');
+      btnPrepare.hidden = !(currentState === 'parsed' || !hasValidJob || !currentState);
+      btnRun.hidden = !(hasValidJob && currentState === 'queued');
+      btnResume.hidden = !(hasValidJob && currentState === 'generated');
+      btnRefresh.hidden = !hasValidJob;
+
+      // Keep generation as the primary action after preparation. Once the
+      // official file exists, reading that file becomes the primary recovery
+      // action; generation_unknown never enters either branch.
+      if (currentState === 'generated') {
+        btnRun.className = 'ewo-btn ewo-btn-run segment';
+        btnResume.className = 'ewo-btn ewo-btn-resume primary-btn';
+        btnResume.textContent = '读取已生成报表';
+      } else if (currentState === 'queued' || !currentState) {
+        btnRun.className = 'ewo-btn ewo-btn-run primary-btn';
+        btnResume.className = 'ewo-btn ewo-btn-resume segment';
+        btnRun.textContent = '生成官方报表';
+      } else {
+        btnRun.className = 'ewo-btn ewo-btn-run segment';
+        btnResume.className = 'ewo-btn ewo-btn-resume segment';
+        btnRun.textContent = currentState === 'generating'
+          ? '生成中…'
+          : currentState === 'downloading'
+            ? '读取中…'
+            : currentState === 'parsed'
+              ? '已读取结果'
+              : currentState === 'generation_unknown'
+                ? '生成状态未知'
+                : '生成官方报表';
+      }
+      if (currentState === 'generated') {
+        btnRun.textContent = '生成官方报表';
+      }
     }
 
     function renderStaleNotice() {
@@ -285,13 +411,36 @@
         baseRecordsHost.appendChild(line);
       });
 
-      if (data.errorStage) {
-        errorStageNotice.textContent = '错误阶段: ' + String(data.errorStage);
-        errorStageNotice.style.display = 'block';
+      var errorStage = typeof data.errorStage === 'string' ? data.errorStage.trim() : '';
+      var hasReadError = Boolean(errorStage) && currentState !== 'generation_unknown';
+      resultState.textContent = hasReadError
+        ? stateLabel(currentState) + ' · 读取失败'
+        : stateLabel(currentState);
+      baseSnapshotVal.textContent = formatUnixSeconds(data.baseTime);
+      baseSnapshotVal.setAttribute('datetime', formatUnixSeconds(data.baseTime));
+      resultSnapshotVal.textContent = data.enhancementTime
+        ? formatUnixSeconds(data.enhancementTime)
+        : '尚未读取';
+      if (data.enhancementTime) {
+        resultSnapshotVal.setAttribute('datetime', formatUnixSeconds(data.enhancementTime));
       } else {
-        errorStageNotice.textContent = '';
-        errorStageNotice.style.display = 'none';
+        resultSnapshotVal.setAttribute('datetime', '');
       }
+      resultHint.className = hasReadError ? 'ewo-result-hint ewo-result-hint-error' : 'ewo-result-hint';
+      resultHint.textContent = currentState === 'generation_unknown'
+          ? '生成结果未确认，请先在原系统核对后再决定下一步。'
+          : hasReadError
+              ? currentState === 'generated'
+                ? '官方报表在' + errorStageLabel(errorStage) + '未能完成读取。请显式点击“读取已生成报表”重试读取；不会重新生成文件。'
+                : '官方报表在' + errorStageLabel(errorStage) + '未能完成读取，请展开“获取详情”查看当前任务状态。'
+              : currentState === 'parsed'
+                ? '官方报表已读取，以下待签人和要求完成时间仅作补充展示。'
+                : currentState === 'generated'
+                  ? '官方报表已生成；请显式点击“读取已生成报表”获取结果。'
+                  : currentState === 'queued'
+                    ? '范围已准备完成；请显式点击“生成官方报表”开始官方导出。'
+                    : '正在处理官方报表，请根据当前状态继续操作。';
+      diagnosticVal.textContent = data.errorStage ? String(data.errorStage) : '无';
 
       if (currentState === 'generation_unknown') {
         unknownNotice.textContent = '生成状态未知，结果不确定，请前往原系统核对！不可直接重试生成。';
@@ -313,7 +462,9 @@
       var total = assocs.length;
       var limit = 100;
       var slice = assocs.slice(0, limit);
-      tableLimitLabel.textContent = '显示记录：前 ' + slice.length + ' 条（共 ' + total + ' 条）';
+      tableLimitLabel.textContent = Array.isArray(data.associations)
+        ? '显示记录：前 ' + slice.length + ' 条（共 ' + total + ' 条）'
+        : '暂无结果；请先准备并显式生成官方报表';
 
       while (tbody.firstChild) {
         tbody.removeChild(tbody.firstChild);
@@ -334,20 +485,30 @@
         tr.appendChild(tdNum);
 
         var tdStatus = document.createElement('td');
-        tdStatus.className = 'col-status';
+        tdStatus.className = 'col-association-status';
         tdStatus.textContent = String(item.status != null ? item.status : '');
         tr.appendChild(tdStatus);
 
         var fields = item.fields || {};
-        var tdEngineer = document.createElement('td');
-        tdEngineer.className = 'col-engineer';
-        tdEngineer.textContent = String(fields['责任工程师名称'] != null ? fields['责任工程师名称'] : '');
-        tr.appendChild(tdEngineer);
+        var tdEwoStatus = document.createElement('td');
+        tdEwoStatus.className = 'col-ewo-status';
+        tdEwoStatus.textContent = String(fields['状态'] != null ? fields['状态'] : '');
+        tr.appendChild(tdEwoStatus);
+
+        var tdPendingSigner = document.createElement('td');
+        tdPendingSigner.className = 'col-pending-signer';
+        tdPendingSigner.textContent = String(fields['当前阶段未签署的角色&人员'] != null ? fields['当前阶段未签署的角色&人员'] : '');
+        tr.appendChild(tdPendingSigner);
 
         var tdDueDate = document.createElement('td');
         tdDueDate.className = 'col-due-date';
         tdDueDate.textContent = String(fields['要求完成时间'] != null ? fields['要求完成时间'] : '');
         tr.appendChild(tdDueDate);
+
+        var tdEngineer = document.createElement('td');
+        tdEngineer.className = 'col-engineer';
+        tdEngineer.textContent = String(fields['责任工程师名称'] != null ? fields['责任工程师名称'] : '');
+        tr.appendChild(tdEngineer);
 
         tbody.appendChild(tr);
       }

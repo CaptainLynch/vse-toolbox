@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 services/feishu_imap.py — IMAP 邮件解析器（飞书待办提取）
 
@@ -28,13 +28,10 @@ import logging
 from typing import Optional
 
 from imapclient import IMAPClient
-from rich.console import Console
-from rich.prompt import Prompt
 
 from core.db_manager import DatabaseManager
 
 logger = logging.getLogger("vse_toolbox.feishu_imap")
-console = Console()
 
 # ── 默认 IMAP 配置 ─────────────────────────────────────────────
 # 使用者需根据实际邮箱服务商修改
@@ -60,6 +57,12 @@ TASK_DEADLINE_PATTERN = re.compile(
     r"(?:截止时间|截止日期|deadline)[：:]\s*(\d{4}[-/]\d{1,2}[-/]\d{1,2}(?:\s+\d{1,2}:\d{2})?)",
     re.IGNORECASE,
 )
+
+
+class Prompt:
+    @staticmethod
+    def ask(prompt: str = "") -> str:
+        return input(f"{prompt}: ").strip()
 
 
 class FeishuImapParser:
@@ -104,12 +107,9 @@ class FeishuImapParser:
         Returns:
             (邮箱地址, 密码) 元组
         """
-        console.print("\n[bold cyan]邮箱登录[/]")
-        console.print(f"[dim]IMAP 服务器: {self._imap_host}:{self._imap_port}[/]")
-
-        username = Prompt.ask("[bold]请输入邮箱地址[/]")
+        logger.info("IMAP 服务器: %s:%s", self._imap_host, self._imap_port)
+        username = Prompt.ask("请输入邮箱地址")
         password = getpass.getpass("请输入邮箱密码 / 应用专用密码: ")
-
         return username, password
 
     def _connect(self, username: str, password: str) -> None:
@@ -124,21 +124,21 @@ class FeishuImapParser:
             ConnectionError: 连接或认证失败
         """
         try:
-            console.print("[dim]正在连接 IMAP 服务器...[/]")
+            logger.info("正在连接 IMAP 服务器...")
             self._conn = IMAPClient(self._imap_host, port=self._imap_port, ssl=True)
             self._conn.login(username, password)
-            console.print("[green]✓ IMAP 连接成功[/]")
+            logger.info("IMAP 连接成功")
             logger.info("IMAP 连接成功: %s@%s", username, self._imap_host)
 
         except OSError as e:
             error_msg = f"IMAP 网络连接失败: {e}"
-            console.print(f"[red]错误: {error_msg}[/]")
+            # error logged
             logger.error(error_msg)
             raise ConnectionError(error_msg) from e
 
         except Exception as e:
             error_msg = f"IMAP 认证失败: {e}"
-            console.print(f"[red]错误: {error_msg}[/]")
+            # error logged
             logger.error(error_msg)
             raise ConnectionError(error_msg) from e
 
@@ -269,44 +269,13 @@ class FeishuImapParser:
         if not tasks:
             return 0
 
-        saved_count = 0
         try:
-            with self._db.get_connection() as conn:
-                for task in tasks:
-                    # 检查是否已存在（基于 source_email_id 去重）
-                    existing = conn.execute(
-                        "SELECT id FROM feishu_tasks WHERE source_email_id=?",
-                        (task["source_email_id"],),
-                    ).fetchone()
-
-                    if existing:
-                        logger.debug("邮件 %s 已解析过，跳过", task["source_email_id"])
-                        continue
-
-                    conn.execute(
-                        """
-                        INSERT INTO feishu_tasks (title, assignee, deadline, source_email_id)
-                        VALUES (?, ?, ?, ?)
-                        """,
-                        (
-                            task["title"],
-                            task["assignee"],
-                            task["deadline"],
-                            task["source_email_id"],
-                        ),
-                    )
-                    saved_count += 1
-
-                conn.commit()
-
+            saved_count = self._db.save_feishu_tasks(tasks)
             logger.info("飞书待办入库 %d 条", saved_count)
-
+            return saved_count
         except Exception as e:
-            console.print(f"[red]错误: 任务入库失败 — {e}[/]")
-            logger.exception("飞书待办入库失败")
+            logger.exception("飞书待办入库失败: %s", e)
             raise
-
-        return saved_count
 
     def sync_unsynced_tasks_to_deliverables(self, project_id: int = 1) -> int:
         """
@@ -318,46 +287,7 @@ class FeishuImapParser:
         Returns:
             本次同步的任务数量
         """
-        synced_count = 0
-        with self._db.get_connection() as conn:
-            rows = conn.execute(
-                """
-                SELECT id, title, assignee, deadline, source_email_id
-                FROM feishu_tasks
-                WHERE synced=0
-                ORDER BY id
-                """
-            ).fetchall()
-
-            synced_ids: list[int] = []
-            for row in rows:
-                task_id = int(row["id"])
-                source_email_id = row["source_email_id"] or str(task_id)
-                conn.execute(
-                    """
-                    INSERT INTO deliverables
-                        (project_id, name, owner, due_date, status, remark)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        project_id,
-                        row["title"] or "未命名飞书待办",
-                        row["assignee"] or "",
-                        row["deadline"] or None,
-                        "pending",
-                        f"飞书待办同步: {source_email_id}",
-                    ),
-                )
-                synced_ids.append(task_id)
-
-            for task_id in synced_ids:
-                conn.execute(
-                    "UPDATE feishu_tasks SET synced=1 WHERE id=?",
-                    (task_id,),
-                )
-
-            synced_count = len(synced_ids)
-
+        synced_count = self._db.sync_unsynced_feishu_tasks_to_deliverables(project_id)
         logger.info("飞书待办同步至交付物 %d 条", synced_count)
         return synced_count
 
@@ -368,7 +298,7 @@ class FeishuImapParser:
         Returns:
             成功解析并入库的任务数量
         """
-        console.print("\n[bold cyan]═══ 扫描飞书待办邮件 ═══[/]\n")
+        logger.info("扫描飞书待办邮件")
 
         # 步骤 1: 获取凭据
         username, password = self._get_credentials()
@@ -384,14 +314,14 @@ class FeishuImapParser:
             self._conn.select_folder(DEFAULT_MAILBOX, readonly=False)
 
             # 步骤 4: 搜索未读邮件
-            console.print("[dim]搜索未读邮件...[/]")
+            logger.info("搜索未读邮件...")
             ids = self._conn.search(["UNSEEN"])
 
             if not ids:
-                console.print("[yellow]未找到未读邮件[/]")
+                logger.info("未找到未读邮件")
                 return 0
 
-            console.print(f"[dim]找到 {len(ids)} 封未读邮件[/]")
+            logger.info("找到 %d 封未读邮件", len(ids))
 
             # 步骤 5: 逐封解析
             tasks: list[dict] = []
@@ -414,7 +344,7 @@ class FeishuImapParser:
                     task = self._parse_task_from_body(body, email_id)
                     if task:
                         tasks.append(task)
-                        console.print(f"  [green]✓[/] {task['title']}")
+                        logger.info("解析待办: %s", task['title'])
 
                 except Exception as e:
                     logger.warning("解析邮件 %s 时出错: %s", mid, e)
@@ -429,9 +359,7 @@ class FeishuImapParser:
                 logger.exception("飞书待办保存或同步失败")
                 raise
 
-            console.print(
-                f"\n[green]✓ 本次解析 {len(tasks)} 条，入库 {saved_count} 条新任务，同步 {synced_count} 条交付物[/]"
-            )
+            logger.info("本次解析 %d 条，入库 %d 条新任务，同步 %d 条交付物", len(tasks), saved_count, synced_count)
 
             return saved_count
 
@@ -439,10 +367,10 @@ class FeishuImapParser:
             # 已在 _connect 中处理过错误提示
             return 0
 
-        except Exception as e:
+        except Exception:
             if persistence_error:
                 raise
-            console.print(f"[red]错误: 邮件扫描异常 — {e}[/]")
+            # error logged
             logger.exception("邮件扫描异常")
             return 0
 
@@ -452,11 +380,11 @@ class FeishuImapParser:
 
 # ── 独立运行测试入口 ────────────────────────────────────────────
 if __name__ == "__main__":
-    console.print("[bold cyan]FeishuImapParser 独立测试[/]\n")
+    print("FeishuImapParser 独立测试")
 
     test_db = DatabaseManager()
     test_db.init_database()
 
     parser = FeishuImapParser(test_db)
     count = parser.scan_and_parse()
-    console.print(f"\n解析结果: {count} 条任务入库")
+    print(f"解析结果: {count} 条任务入库")

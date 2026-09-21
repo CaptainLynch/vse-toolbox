@@ -706,7 +706,8 @@ def test_form_snapshot_check_constraint_rebuild_allows_tdc_sor(
 
 def test_reinit_preserves_configured_binding(tmp_path: Path) -> None:
     """终审测试缺口：存量绑定保护——重新 init_database 不得翻转
-    已配置绑定的 mode/enabled（INSERT OR IGNORE 语义）。"""
+    已配置/已被用户动过的绑定（INSERT OR IGNORE 语义 + pristine 翻转
+    仅覆盖从未动过的 manual 绑定）。"""
     db = DatabaseManager(tmp_path / "reinit-binding.db")
     db.init_database()
     with db.get_connection() as conn:
@@ -715,10 +716,12 @@ def test_reinit_preserves_configured_binding(tmp_path: Path) -> None:
             "SET mode='automatic', enabled=1, external_key='KEEP-KEY', "
             "sync_state='success' WHERE deliverable_id='VPI-T2-D3'"
         )
-        # 旧库手工数据：新默认不得把存量 manual 翻转为 automatic。
+        # 旧库手工数据（被用户动过：持有同步成功历史）：pristine 翻转
+        # 迁移不得触碰，保持 manual。
         conn.execute(
             "UPDATE project_status_update_bindings "
-            "SET mode='manual', enabled=0, external_key=NULL "
+            "SET mode='manual', enabled=0, external_key=NULL, "
+            "last_success_at='2026-01-02T03:04:05.000Z' "
             "WHERE deliverable_id='VPI-T2-D2'"
         )
     db.init_database()
@@ -738,6 +741,133 @@ def test_reinit_preserves_configured_binding(tmp_path: Path) -> None:
         ).fetchone()
     assert manual_row["mode"] == "manual"
     assert manual_row["enabled"] == 0
+
+
+def test_pristine_manual_binding_flips_to_automatic_for_sync_capable(
+    tmp_path: Path,
+) -> None:
+    """存量库幂等迁移：syncCapable 交付物（D2/D3/D5）从未动过的 pristine
+    manual 绑定在再次 init_database 时翻转为 automatic；enabled 保持 0，
+    不绕过证据/凭据门控。"""
+    db = DatabaseManager(tmp_path / "pristine-flip.db")
+    db.init_database()
+    with db.get_connection() as conn:
+        # 模拟老库：种子曾是 manual（source_type 补丁之前的行为）。
+        conn.execute(
+            "UPDATE project_status_update_bindings "
+            "SET mode='manual' WHERE deliverable_id IN "
+            "('VPI-T2-D2','VPI-T2-D3','VPI-T2-D5')"
+        )
+        conn.commit()
+
+    db.init_database()  # 模拟应用升级后的再迁移
+
+    with db.get_connection() as conn:
+        rows = conn.execute(
+            "SELECT deliverable_id, mode, enabled, external_key, "
+            "match_rule_json, mapping_json, last_attempt_at, last_success_at "
+            "FROM project_status_update_bindings "
+            "WHERE deliverable_id IN ('VPI-T2-D2','VPI-T2-D3','VPI-T2-D5') "
+            "ORDER BY deliverable_id"
+        ).fetchall()
+    assert [(r["deliverable_id"], r["mode"]) for r in rows] == [
+        ("VPI-T2-D2", "automatic"),
+        ("VPI-T2-D3", "automatic"),
+        ("VPI-T2-D5", "automatic"),
+    ]
+    for row in rows:
+        assert row["enabled"] == 0
+        assert row["external_key"] is None
+        assert row["match_rule_json"] == "{}"
+        assert row["mapping_json"] == "{}"
+        assert row["last_attempt_at"] is None
+        assert row["last_success_at"] is None
+
+
+def test_touched_manual_bindings_stay_manual_after_reinit(tmp_path: Path) -> None:
+    """用户手工改过的绑定（任一 pristine 条件不满足）保持 manual：
+    external_key / match_rule / mapping / last_attempt / enabled 任一被改过。"""
+    db = DatabaseManager(tmp_path / "touched-manual.db")
+    db.init_database()
+    with db.get_connection() as conn:
+        # 全部先变为 pristine manual（老库形态）。
+        conn.execute(
+            "UPDATE project_status_update_bindings SET mode='manual' "
+            "WHERE deliverable_id IN ('VPI-T2-D2','VPI-T2-D3','VPI-T2-D5')"
+        )
+        # 再各自破坏一个 pristine 条件。
+        conn.execute(
+            "UPDATE project_status_update_bindings SET external_key='EWO-1' "
+            "WHERE deliverable_id='VPI-T2-D3'"
+        )
+        conn.execute(
+            "UPDATE project_status_update_bindings SET last_attempt_at='2026-09-01T00:00:00.000Z' "
+            "WHERE deliverable_id='VPI-T2-D5'"
+        )
+        conn.execute(
+            "UPDATE project_status_update_bindings SET match_rule_json='{\"reportType\": \"sor\"}' "
+            "WHERE deliverable_id='VPI-T2-D2'"
+        )
+        conn.commit()
+
+    db.init_database()
+
+    with db.get_connection() as conn:
+        modes = dict(
+            conn.execute(
+                "SELECT deliverable_id, mode FROM project_status_update_bindings "
+                "WHERE deliverable_id IN ('VPI-T2-D2','VPI-T2-D3','VPI-T2-D5')"
+            ).fetchall()
+        )
+    assert modes == {"VPI-T2-D2": "manual", "VPI-T2-D3": "manual", "VPI-T2-D5": "manual"}
+
+
+def test_manual_only_and_contract_blocked_deliverables_stay_manual(
+    tmp_path: Path,
+) -> None:
+    """D1（ManualOnly）与 D4（ContractBlocked）不受 pristine 翻转影响：
+    即使处于 pristine manual 形态也保持 manual。"""
+    db = DatabaseManager(tmp_path / "d1-d4-manual.db")
+    db.init_database()
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE project_status_update_bindings SET mode='manual' "
+            "WHERE deliverable_id IN ('VPI-T2-D1','VPI-T2-D4')"
+        )
+        conn.commit()
+
+    db.init_database()
+
+    with db.get_connection() as conn:
+        modes = dict(
+            conn.execute(
+                "SELECT deliverable_id, mode FROM project_status_update_bindings "
+                "WHERE deliverable_id IN ('VPI-T2-D1','VPI-T2-D4')"
+            ).fetchall()
+        )
+    assert modes == {"VPI-T2-D1": "manual", "VPI-T2-D4": "manual"}
+
+
+def test_fresh_seed_sync_capable_bindings_are_automatic(tmp_db: DatabaseManager) -> None:
+    """新库种子不受迁移影响：syncCapable 本就 automatic；D1/D4 manual；
+    D6-D8（外部快照驱动，非 syncCapable）保持 manual 绑定。"""
+    with tmp_db.get_connection() as conn:
+        modes = dict(
+            conn.execute(
+                "SELECT deliverable_id, mode FROM project_status_update_bindings "
+                "WHERE deliverable_id LIKE 'VPI-T2-D%' ORDER BY deliverable_id"
+            ).fetchall()
+        )
+    assert modes == {
+        "VPI-T2-D1": "manual",
+        "VPI-T2-D2": "automatic",
+        "VPI-T2-D3": "automatic",
+        "VPI-T2-D4": "manual",
+        "VPI-T2-D5": "automatic",
+        "VPI-T2-D6": "manual",
+        "VPI-T2-D7": "manual",
+        "VPI-T2-D8": "manual",
+    }
 
 
 def test_aggregate_binding_can_acquire_sync_lease_without_external_key(tmp_path: Path) -> None:
@@ -778,3 +908,185 @@ def test_aggregate_binding_can_acquire_sync_lease_without_external_key(tmp_path:
     from core.db_manager import SyncBindingNotReadyError
     with pytest.raises(SyncBindingNotReadyError):
         db.acquire_sync_lease(d3_binding_id, trigger_type="sync_now")
+
+
+def test_archive_lease_methods_execute_begin_immediate(tmp_path: Path) -> None:
+    """acquire_archive_job_lease and finalize_archive_run must issue BEGIN IMMEDIATE first."""
+    db = DatabaseManager(tmp_path / "test_immediate.db")
+    db.init_database()
+    executed_sql: list[str] = []
+
+    orig_get_connection = db.get_connection
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def tracked_get_connection():
+        with orig_get_connection() as conn:
+            conn.set_trace_callback(lambda s: executed_sql.append(str(s).strip()))
+            yield conn
+
+    db.get_connection = tracked_get_connection  # type: ignore[method-assign]
+
+    # Enable an existing seeded archive job to lease
+    with orig_get_connection() as conn:
+        row = conn.execute(
+            "SELECT id FROM scheduled_archive_jobs WHERE enabled = 1 LIMIT 1"
+        ).fetchone()
+        job_id = row["id"] if row else 1
+        conn.execute(
+            "UPDATE scheduled_archive_jobs SET enabled = 1, credential_ref = 'cred_ref' WHERE id = ?",
+            (job_id,),
+        )
+
+    executed_sql.clear()
+    lease = db.acquire_archive_job_lease(job_id, "scheduled", validate_runtime_prerequisites=False)
+    assert lease["lease_token"]
+    assert executed_sql[0] == "BEGIN IMMEDIATE"
+
+    executed_sql.clear()
+    db.finalize_archive_run(
+        job_id,
+        lease["run_id"],
+        lease["lease_token"],
+        "failed",
+        error_type="TestError",
+        error_message="Test failure",
+    )
+    assert executed_sql[0] == "BEGIN IMMEDIATE"
+
+
+def test_get_table_row_count_identifier_validation(tmp_path: Path) -> None:
+    """get_table_row_count strictly rejects non-ASCII or invalid identifiers."""
+    db = DatabaseManager(tmp_path / "test_ident.db")
+    db.init_database()
+
+    # Valid table returns >= 0
+    assert db.get_table_row_count("projects") >= 0
+    # Non-existent valid identifier returns -1
+    assert db.get_table_row_count("non_existent_table") == -1
+    # SQL injection / non-identifier patterns return -1 without querying
+    assert db.get_table_row_count("projects; DROP TABLE projects;--") == -1
+    assert db.get_table_row_count("table with spaces") == -1
+    assert db.get_table_row_count("表名") == -1
+
+
+def test_setup_cfg_decodable_with_cp936() -> None:
+    """setup.cfg must be pure ASCII to prevent UnicodeDecodeError on Windows CP936/GBK systems."""
+    setup_cfg = Path(__file__).resolve().parents[1] / "setup.cfg"
+    assert setup_cfg.is_file()
+    # Must decode cleanly under cp936 / gbk
+    content = setup_cfg.read_text(encoding="cp936")
+    assert "[flake8]" in content
+    assert "[mypy]" in content
+
+
+def _seed_deliverable_rows(db: DatabaseManager) -> list[sqlite3.Row]:
+    with db.get_connection() as conn:
+        return conn.execute(
+            "SELECT id, display_code, name, status, planned_date, progress, "
+            "       source, sort_order, phase_id "
+            "FROM project_status_deliverables ORDER BY sort_order"
+        ).fetchall()
+
+
+def test_seed_includes_form_snapshot_driven_deliverables(tmp_db: DatabaseManager) -> None:
+    """D6-D8（外部快照驱动）种子行：DEL-006/007/008、planned_date NULL、
+    progress 0、sort_order 6/7/8、归属 VPI-T2。"""
+    rows = _seed_deliverable_rows(tmp_db)
+    assert [row["id"] for row in rows] == [
+        "VPI-T2-D1", "VPI-T2-D2", "VPI-T2-D3", "VPI-T2-D4", "VPI-T2-D5",
+        "VPI-T2-D6", "VPI-T2-D7", "VPI-T2-D8",
+    ]
+    assert [row["display_code"] for row in rows][-3:] == ["DEL-006", "DEL-007", "DEL-008"]
+    for row in rows[-3:]:
+        assert row["name"] in ("PAA 报告", "NCR 审批进度", "NCR 审批明细")
+        assert row["planned_date"] is None
+        assert row["progress"] == 0
+        assert row["phase_id"] == "VPI-T2"
+        assert row["source"].startswith("ARAS")
+
+
+def test_seed_form_snapshot_driven_deliverables_idempotent(tmp_db: DatabaseManager) -> None:
+    """重复 init_database() 后 D6-D8 仍为单行且 planned_date 保持 NULL。"""
+    tmp_db.init_database()
+    tmp_db.init_database()
+    rows = _seed_deliverable_rows(tmp_db)
+    assert len(rows) == 8
+    assert all(row["planned_date"] is None for row in rows[-3:])
+
+
+def test_legacy_planned_date_not_null_is_relaxed_by_rebuild(tmp_path: Path) -> None:
+    """旧库 planned_date NOT NULL：迁移整表重建为可空列，数据保留、
+    子表不受级联影响，随后 D6-D8 种子行可写入 NULL。"""
+    db = DatabaseManager(db_path=tmp_path / "legacy-planned-date.db")
+    db.init_database()
+    with db.get_connection() as conn:
+        # 还原旧库形态：planned_date 恢复 NOT NULL（SQLite 无法 ALTER，
+        # 按旧 DDL 重建以模拟历史库）；D6-D8 是本次新增的种子行，先移除
+        # 以模拟升级前的存量库。
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute(
+            """
+            CREATE TABLE project_status_deliverables_legacy (
+                id           TEXT PRIMARY KEY,
+                display_code TEXT NOT NULL UNIQUE,
+                phase_id     TEXT NOT NULL,
+                name         TEXT NOT NULL,
+                status       TEXT NOT NULL CHECK (status IN ('已完成', '进行中', '待审批', '已逾期')),
+                owner        TEXT NOT NULL,
+                planned_date TEXT NOT NULL,
+                actual_date  TEXT,
+                progress     INTEGER NOT NULL CHECK (progress BETWEEN 0 AND 100),
+                remark       TEXT NOT NULL DEFAULT '',
+                source       TEXT NOT NULL,
+                department   TEXT NOT NULL DEFAULT '',
+                stage        TEXT NOT NULL DEFAULT '',
+                update_method TEXT NOT NULL DEFAULT 'manual',
+                sort_order   INTEGER NOT NULL,
+                updated_at   TEXT NOT NULL,
+                FOREIGN KEY (phase_id) REFERENCES project_status_phases(id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO project_status_deliverables_legacy
+                (id, display_code, phase_id, name, status, owner, planned_date,
+                 actual_date, progress, remark, source, department, stage,
+                 update_method, sort_order, updated_at)
+            SELECT id, display_code, phase_id, name, status, owner, planned_date,
+                 actual_date, progress, remark, source, department, stage,
+                 update_method, sort_order, updated_at
+            FROM project_status_deliverables
+            WHERE id NOT IN ('VPI-T2-D6', 'VPI-T2-D7', 'VPI-T2-D8')
+            """
+        )
+        conn.execute("DELETE FROM project_status_update_bindings WHERE deliverable_id IN ('VPI-T2-D6', 'VPI-T2-D7', 'VPI-T2-D8')")
+        conn.execute("DROP TABLE project_status_deliverables")
+        conn.execute(
+            "ALTER TABLE project_status_deliverables_legacy "
+            "RENAME TO project_status_deliverables"
+        )
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys=ON")
+
+    db.init_database()
+
+    with db.get_connection() as conn:
+        notnull = {
+            str(row["name"]): int(row["notnull"])
+            for row in conn.execute("PRAGMA table_info(project_status_deliverables)")
+        }["planned_date"]
+        assert notnull == 0
+        d1 = conn.execute(
+            "SELECT planned_date FROM project_status_deliverables WHERE id = 'VPI-T2-D1'"
+        ).fetchone()
+        assert d1["planned_date"] == "2026-05-12"
+        count = conn.execute("SELECT COUNT(*) FROM project_status_deliverables").fetchone()[0]
+        assert count == 8
+        # 子表数据未被级联清空。
+        assert conn.execute("SELECT COUNT(*) FROM project_status_phases").fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT COUNT(*) FROM project_status_update_bindings"
+        ).fetchone()[0] == 8
