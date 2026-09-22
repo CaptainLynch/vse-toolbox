@@ -1023,8 +1023,7 @@ function ringDateLabel(item) {
     // 无实际完成日期时回退展示完成度百分比，避免 "实际完成 " 空文案。
     return value.endsWith("%") ? `完成度 ${value}` : `实际完成 ${value.slice(5)}`;
   }
-  const label = item.plannedDate ? `计划完成 ${item.plannedDate.slice(5)}` : "计划完成 -";
-  return item.status === "已逾期" && item.note ? `${label}；${item.note}` : label;
+  return item.plannedDate ? `计划完成 ${item.plannedDate.slice(5)}` : "计划完成 -";
 }
 
 function renderDeliverableProgress(container, deliverables) {
@@ -1119,6 +1118,9 @@ function renderDeliverableProgress(container, deliverables) {
     const snapshotBadge = deliverableSnapshotBadge(item);
     if (snapshotBadge) copy.appendChild(snapshotBadge);
     card.append(visual, copy);
+    if (item.note) {
+      card.title = `${item.name}（${item.status}）：${item.note}`;
+    }
     container.appendChild(card);
   });
 }
@@ -1357,6 +1359,11 @@ async function renderDeliverablesSyncControlBar(container) {
 
   if (schedulerPollTimer) clearInterval(schedulerPollTimer);
   schedulerPollTimer = setInterval(() => {
+    if (!controlBar.isConnected) {
+      clearInterval(schedulerPollTimer);
+      schedulerPollTimer = null;
+      return;
+    }
     if (schedulerNextRunCountdown !== null && schedulerNextRunCountdown > 0) {
       schedulerNextRunCountdown -= 1;
       const mins = Math.floor(schedulerNextRunCountdown / 60);
@@ -1364,7 +1371,7 @@ async function renderDeliverablesSyncControlBar(container) {
       const timeSpan = controlBar.querySelector(".details-sync-meta");
       if (timeSpan && !timeSpan.textContent.includes("已暂停")) {
         const text = timeSpan.textContent;
-        const updated = text.replace(/下次自动同步：\d{2}:\d{2}/, `下次自动同步：${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`);
+        const updated = text.replace(/下次自动同步：\d+:\d{2}/, `下次自动同步：${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`);
         timeSpan.textContent = updated;
       }
     } else if (schedulerNextRunCountdown === 0) {
@@ -1565,6 +1572,16 @@ function ewoPolicyString(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function normalizeTdcDepartment(dept) {
+  if (!dept || typeof dept !== "string") return "";
+  const trimmed = dept.trim();
+  if (trimmed === "技术中心") return trimmed;
+  if (/^技术中心[_-]?/.test(trimmed)) {
+    return trimmed.replace(/^技术中心[_-]?/, "").trim();
+  }
+  return trimmed;
+}
+
 function ewoPolicyDiscoveryFields(discovery) {
   const observations = discovery && Array.isArray(discovery.observations)
     ? discovery.observations
@@ -1743,15 +1760,24 @@ function buildSyncSummaryCard(item, policy, capabilities, settings, advancedDeta
   const hint = POLICY_SYNC_HINTS[syncDisplay.state];
   if (hint) card.appendChild(overviewEl("p", "policy-sync-summary-hint", hint));
 
-  const facts = overviewEl("ul", "policy-sync-summary-facts");
-  [
+  const storedMatchRule = (currentPolicy.matchRule && typeof currentPolicy.matchRule === "object") ? currentPolicy.matchRule : {};
+  const factList = [
     ["最近尝试", safeDisplayValue(currentPolicy.lastAttemptAt || "无")],
     ["最近成功", safeDisplayValue(currentPolicy.lastSuccessAt || "无")],
-    [
-      "最近错误",
-      currentPolicy.lastErrorMessage ? redactSensitiveText(String(currentPolicy.lastErrorMessage)) : "无",
-    ],
-  ].forEach(([label, value]) => {
+  ];
+  if (currentPolicy.enabled === true) {
+    const currentModel = storedMatchRule.projectCode || storedMatchRule.modelInfo || storedMatchRule.carTypeProject || storedMatchRule.projectModel;
+    const currentDept = storedMatchRule.rspDepartment || storedMatchRule.department;
+    if (currentModel) factList.push(["车型项目", safeDisplayValue(currentModel)]);
+    if (currentDept) factList.push(["责任部门", safeDisplayValue(currentDept)]);
+    factList.push(["同步周期", `每 ${currentPolicy.intervalMinutes || 15} 分钟`]);
+  }
+  factList.push([
+    "最近错误",
+    currentPolicy.lastErrorMessage ? redactSensitiveText(String(currentPolicy.lastErrorMessage)) : "无",
+  ]);
+  const facts = overviewEl("ul", "policy-sync-summary-facts");
+  factList.forEach(([label, value]) => {
     const row = overviewEl("li", "policy-sync-summary-fact");
     row.append(
       overviewEl("span", "policy-sync-fact-label", label),
@@ -1771,6 +1797,12 @@ function buildSyncSummaryCard(item, policy, capabilities, settings, advancedDeta
   const enableBtn = overviewEl("button", "policy-sync-enable-btn", "开启自动同步");
   enableBtn.type = "button";
   enableBtn.hidden = !(capabilities.syncCapable === true && currentPolicy.enabled !== true);
+  const reconfigBtn = overviewEl("button", "policy-sync-reconfig-btn", "修改同步配置");
+  reconfigBtn.type = "button";
+  reconfigBtn.hidden = !(capabilities.syncCapable === true && currentPolicy.enabled === true);
+  reconfigBtn.addEventListener("click", () => {
+    wizardHost.hidden = !wizardHost.hidden;
+  });
   const syncNowBtn = overviewEl("button", "policy-sync-now-btn", "立即同步");
   syncNowBtn.type = "button";
   syncNowBtn.hidden = currentPolicy.enabled !== true;
@@ -1781,13 +1813,15 @@ function buildSyncSummaryCard(item, policy, capabilities, settings, advancedDeta
     advancedDetails.open = !advancedDetails.open;
     advancedBtn.setAttribute("aria-expanded", advancedDetails.open ? "true" : "false");
   });
-  actions.append(enableBtn, syncNowBtn, advancedBtn);
+  actions.append(syncNowBtn, reconfigBtn, enableBtn, advancedBtn);
   card.append(actions, wizardStatus, wizardHost);
 
-  // ── A2：轻量向导。第一步只收集最小输入：凭据引用（与高级设置
-  // 绑定表单同一数据源：统一域账号；仅一个可引用凭据时自动选中）
-  // + 外部编号（占位提示从能力注册表 matchFields 生成）。─────────
+  // ── A2：轻量向导。默认项目聚合，支持一键配置并启用 ─────────
   const primary = wizardPrimaryMatchField(capabilities);
+  const isEwo = capabilities.reportType === "ewo";
+  const isSor = capabilities.reportType === "sor";
+  const isDataModel = capabilities.reportType === "data_model";
+
   const credentialLabel = overviewEl("label", "policy-ewo-field policy-wizard-field");
   credentialLabel.appendChild(overviewEl("span", null, "同步凭据引用"));
   const credentialSelect = document.createElement("select");
@@ -1800,28 +1834,98 @@ function buildSyncSummaryCard(item, policy, capabilities, settings, advancedDeta
   const domainCredential = overviewEl("option", null, "统一域账号（domain）");
   domainCredential.value = "domain";
   credentialSelect.append(keepCredential, domainCredential);
-  // 仅一个可引用凭据（统一域账号）且当前未绑定 → 自动选中 domain。
-  if (currentPolicy.credentialAvailable !== true && vaultConfigured) credentialSelect.value = "domain";
+  if (vaultConfigured) credentialSelect.value = "domain";
+  else if (currentPolicy.credentialAvailable === true) credentialSelect.value = "";
   credentialLabel.appendChild(credentialSelect);
   credentialLabel.appendChild(overviewEl(
     "small",
     "policy-field-note",
     currentPolicy.credentialAvailable === true || vaultConfigured
-      ? "仅保存凭据别名引用，不保存用户名或密码。"
+      ? "使用已保存的统一域账号自动登录内网抓取数据。"
       : "请先到系统设置登录并勾选“保存至凭据保护库”。",
   ));
   wizardHost.appendChild(credentialLabel);
 
+  // 1. 车型项目 / 车型信息
+  const modelLabel = overviewEl("label", "policy-ewo-field policy-wizard-field");
+  modelLabel.appendChild(overviewEl("span", null, "车型项目 / 车型信息"));
+  const modelInput = document.createElement("input");
+  modelInput.type = "text";
+  modelInput.maxLength = 200;
+  modelInput.placeholder = "例如 F610S 或 N300（整车项目聚合）";
+  const initialModel = ewoPolicyString(
+    storedMatchRule.projectCode
+    || storedMatchRule.modelInfo
+    || storedMatchRule.carTypeProject
+    || storedMatchRule.projectModel
+    || ""
+  );
+  modelInput.value = initialModel;
+  modelLabel.appendChild(modelInput);
+  wizardHost.appendChild(modelLabel);
+
+  // 2. 责任部门
+  const departmentLabel = overviewEl("label", "policy-ewo-field policy-wizard-field");
+  departmentLabel.appendChild(overviewEl("span", null, "责任部门"));
+  const departmentInput = document.createElement("input");
+  departmentInput.type = "text";
+  departmentInput.maxLength = 200;
+  const isTdc = isSor || isDataModel || (capabilities && capabilities.sourceType === "tdc");
+  const defaultDept = isTdc ? "车体工程" : "技术中心_车体工程";
+  const initialDept = ewoPolicyString(
+    storedMatchRule.rspDepartment
+    || storedMatchRule.department
+    || defaultDept
+  );
+  departmentInput.value = initialDept;
+  departmentInput.placeholder = isTdc ? "TDC 部门（如 车体工程，支持留空）" : "默认：技术中心_车体工程";
+  departmentLabel.appendChild(departmentInput);
+  departmentLabel.appendChild(overviewEl(
+    "small",
+    "policy-field-note",
+    isTdc
+      ? "TDC 部门（如“车体工程”），支持留空查询全量数据。请勿填写 Aras 形式“技术中心_车体工程”。"
+      : "默认筛选“技术中心_车体工程”，支持按需修改。"
+  ));
+  wizardHost.appendChild(departmentLabel);
+
+  // 3. 定时同步周期
+  const intervalLabel = overviewEl("label", "policy-ewo-field policy-wizard-field");
+  intervalLabel.appendChild(overviewEl("span", null, "定时自动同步周期"));
+  const intervalSelect = document.createElement("select");
+  [
+    ["15", "每 15 分钟（推荐）"],
+    ["30", "每 30 分钟"],
+    ["60", "每 1 小时"],
+    ["360", "每 6 小时"],
+    ["1440", "每天"],
+  ].forEach(([val, label]) => {
+    const opt = overviewEl("option", null, label);
+    opt.value = val;
+    intervalSelect.appendChild(opt);
+  });
+  intervalSelect.value = String(currentPolicy.intervalMinutes || 15);
+  intervalLabel.appendChild(intervalSelect);
+  wizardHost.appendChild(intervalLabel);
+
+  // 4. 单工单编号（选填，留空则整车项目聚合）
   const numberLabel = overviewEl("label", "policy-ewo-field policy-wizard-field");
-  numberLabel.appendChild(overviewEl("span", null, primary ? primary.label : "外部编号"));
+  numberLabel.appendChild(overviewEl("span", null, isEwo ? "EWO 编号（选填，留空则整车聚合）" : (primary ? `${primary.label}（选填）` : "外部编号（选填）")));
   const numberInput = document.createElement("input");
   numberInput.type = "text";
   numberInput.maxLength = 200;
-  numberInput.placeholder = primary && primary.placeholder ? primary.placeholder : "请输入外部编号";
+  numberInput.placeholder = "选填，留空将对整车项目全部单据进行聚合统计";
+  if (storedMatchRule.ewoNo || storedMatchRule.processNo || storedMatchRule.incident) {
+    numberInput.value = ewoPolicyString(storedMatchRule.ewoNo || storedMatchRule.processNo || storedMatchRule.incident || "");
+  }
   numberLabel.appendChild(numberInput);
   wizardHost.appendChild(numberLabel);
 
-  const startBtn = overviewEl("button", "policy-wizard-start-btn", "开始配置并启用");
+  const startBtn = overviewEl(
+    "button",
+    "policy-wizard-start-btn",
+    currentPolicy.enabled === true ? "保存配置并同步" : "开始配置并启用",
+  );
   startBtn.type = "button";
   wizardHost.appendChild(startBtn);
 
@@ -1829,11 +1933,13 @@ function buildSyncSummaryCard(item, policy, capabilities, settings, advancedDeta
     updatePolicyStatusMessage(wizardStatus, message, isError);
   };
 
-  // 重挂向导输入区（凭据引用 + 外部编号输入 + 开始按钮）：候选选择
-  // 完成后与失败路径都必须恢复输入区，用户无需刷新页面即可重试。
+  // 重挂向导输入区
   const remountWizardInputs = () => {
     wizardHost.textContent = "";
     wizardHost.appendChild(credentialLabel);
+    wizardHost.appendChild(modelLabel);
+    wizardHost.appendChild(departmentLabel);
+    wizardHost.appendChild(intervalLabel);
     wizardHost.appendChild(numberLabel);
     wizardHost.appendChild(startBtn);
   };
@@ -1880,83 +1986,184 @@ function buildSyncSummaryCard(item, policy, capabilities, settings, advancedDeta
   });
 
   startBtn.addEventListener("click", async () => {
-    const number = ewoPolicyString(numberInput.value);
-    if (!primary || !number) {
-      setWizardStatus(primary ? `请先填写${primary.label}。` : "该交付物未配置匹配字段。", true);
-      return;
-    }
+    const modelVal = ewoPolicyString(modelInput.value);
+    const rawDeptVal = ewoPolicyString(departmentInput.value);
+    const deptVal = isTdc ? normalizeTdcDepartment(rawDeptVal) : rawDeptVal;
+    const specificNo = ewoPolicyString(numberInput.value);
+    const intervalMins = parseInt(intervalSelect.value, 10) || 15;
+
     if (
       currentPolicy.credentialAvailable !== true
       && !(credentialSelect.value === "domain" && vaultConfigured)
+      && !vaultConfigured
     ) {
       setWizardStatus("系统设置未检测到凭据保护库，请先登录并保存统一域账号。", true);
       return;
     }
-    if (currentPolicy.matchRule && currentPolicy.matchRule.contractVersion === "2") {
-      setWizardStatus("该绑定使用新版 EWO 绑定合同，请在高级设置中完成配置。", true);
+
+    if (!specificNo && !modelVal && primary) {
+      setWizardStatus("请填写车型项目或车型信息（例如 F610S）。", true);
       return;
     }
+
     startBtn.disabled = true;
     remountWizardInputs();
+
     try {
-      // ① 第一次映射发现取证（payload 按端点现有契约：filters +
-      //    selectedExternalKey + aggregate + 能力声明的证据连接默认值）。
-      setWizardStatus("正在抓取映射证据（第 1 次）...");
+      const aggregate = !specificNo;
+      const filters = {};
+      const matchRule = {
+        reportType: capabilities.reportType || (isEwo ? "ewo" : ""),
+        aggregate,
+      };
+
+      if (isEwo) {
+        matchRule.contractVersion = "2";
+        matchRule.bindingMode = aggregate ? "record_set" : "single_record";
+        if (modelVal) {
+          matchRule.projectCode = modelVal;
+          filters.project_code = modelVal;
+        }
+        if (deptVal) {
+          matchRule.rspDepartment = deptVal;
+          filters.rsp_department = deptVal;
+        }
+        if (specificNo) {
+          matchRule.ewoNo = specificNo;
+          filters.ewo_no = specificNo;
+        }
+      } else if (isSor) {
+        if (modelVal) {
+          matchRule.carTypeProject = modelVal;
+          filters.car_type_project = modelVal;
+        }
+        if (deptVal) {
+          matchRule.department = deptVal;
+          filters.department = deptVal;
+        }
+        if (specificNo) {
+          matchRule.processNo = specificNo;
+          filters.serial_number = specificNo;
+        }
+      } else if (isDataModel) {
+        if (modelVal) {
+          matchRule.projectModel = modelVal;
+          filters.project_model = modelVal;
+        }
+        if (deptVal) {
+          matchRule.department = deptVal;
+          filters.department = deptVal;
+        }
+        if (specificNo) {
+          matchRule.incident = specificNo;
+          filters.serial_number = specificNo;
+        }
+      } else if (primary) {
+        filters[primary.filterName] = specificNo || modelVal;
+        matchRule[primary.key] = specificNo || modelVal;
+      }
+
+      setWizardStatus("正在抓取映射证据（第 1/2 次）...");
       const payload = {
-        filters: { [primary.filterName]: number },
-        selectedExternalKey: null,
-        aggregate: capabilities.aggregate === true,
+        filters,
+        selectedExternalKey: specificNo || null,
+        aggregate,
         ...wizardEvidenceDefaults(capabilities),
       };
+      if (isEwo) {
+        payload.contractVersion = "2";
+        payload.bindingMode = aggregate ? "record_set" : "single_record";
+      }
+
       let result = await postMappingDiscovery(item.id, payload);
-      if (result.state === "ambiguous") {
+      if (result.state === "ambiguous" && !aggregate) {
         setWizardStatus("候选不唯一，请选择一次目标记录。");
         const selected = await pickCandidateOnce(result.candidates);
         remountWizardInputs();
         payload.selectedExternalKey = selected;
         result = await postMappingDiscovery(item.id, payload);
       }
-      if (result.state !== "matched") {
-        throw new Error(`映射发现未匹配（${ewoPolicyDiscoveryStateLabel(result.state)}），请核对编号后重试。`);
+      if (result.state !== "matched" && isTdc && deptVal) {
+        setWizardStatus("指定部门未匹配，正在尝试不限部门自动重试...");
+        const retryFilters = { ...filters };
+        delete retryFilters.department;
+        delete retryFilters.rsp_department;
+        const retryPayload = {
+          ...payload,
+          filters: retryFilters,
+        };
+        const retryResult = await postMappingDiscovery(item.id, retryPayload);
+        if (retryResult && (retryResult.state === "matched" || (retryResult.state === "ambiguous" && !aggregate))) {
+          result = retryResult;
+          delete filters.department;
+          delete filters.rsp_department;
+          delete matchRule.department;
+          delete matchRule.rspDepartment;
+        }
       }
-      // ② 映射稳定性 2/2：不足则自动执行第二次取证。
+      if (result.state !== "matched") {
+        const cCount = Number.isFinite(result.candidateCount) ? result.candidateCount : 0;
+        const fCount = result.fieldReport && Array.isArray(result.fieldReport.fields) ? result.fieldReport.fields.length : 0;
+        throw new Error(`映射发现未匹配（${ewoPolicyDiscoveryStateLabel(result.state)}，命中行数：${cCount}，字段数：${fCount}），请核对车型与筛选条件后重试。`);
+      }
+
+      // ② 稳定性取证 2/2
       let confirmed = Number(result.stability && result.stability.confirmed);
       if (!Number.isFinite(confirmed) || confirmed < 2) {
-        setWizardStatus("正在执行第二次取证（映射稳定性 2/2）...");
+        setWizardStatus("正在验证映射稳定性（第 2/2 次）...");
         result = await postMappingDiscovery(item.id, payload);
         confirmed = Number(result.stability && result.stability.confirmed);
         if (result.state !== "matched" || !Number.isFinite(confirmed) || confirmed < 2) {
-          throw new Error("映射稳定性未就绪（需连续两次一致的脱敏证据），请稍后重试或使用高级设置。");
+          throw new Error("映射稳定性未就绪（需连续两次一致的脱敏证据），请稍后重试。");
         }
       }
-      // ③ 从最新脱敏字段报告推导自动字段映射（推导失败 → 可重试错误）。
-      let mapping = wizardDeriveMappingFromFieldReport(capabilities, result.fieldReport);
-      if (!mapping && capabilities && capabilities.defaultMapping && Object.keys(capabilities.defaultMapping).length > 0) {
-        mapping = { ...capabilities.defaultMapping };
-      }
-      if (!mapping) {
-        throw new Error("无法从最新脱敏字段报告确定自动字段映射，请打开高级设置手工完成映射后保存。");
-      }
+
+      // ③ 字段映射与归属
+      let mapping = {};
       const fieldAuthority = {};
-      Object.keys(mapping).forEach((key) => { fieldAuthority[key] = "automatic"; });
-      // ④ 保存同步绑定（mode=automatic、enabled=true）。
-      setWizardStatus("正在保存同步绑定...");
-      const matchRule = {
-        reportType: capabilities.reportType,
-        aggregate: capabilities.aggregate === true,
-      };
-      matchRule[primary.key] = number;
+      if (aggregate) {
+        // 项目集合聚合模式：仅自动更新风险备注，负责人与计划完成日期由人工维护
+        if (isEwo) {
+          mapping = { note: ["_change_description", "_subject"] };
+          fieldAuthority.plannedDate = "manual";
+        } else if (isSor) {
+          mapping = { note: ["latestCompletedNode", "processInstanceStatus"] };
+        } else if (isDataModel) {
+          mapping = { note: ["latestApproveLog", "status"] };
+        } else if (capabilities.defaultMapping && capabilities.defaultMapping.note) {
+          mapping = { note: capabilities.defaultMapping.note };
+        } else {
+          mapping = { note: ["status"] };
+        }
+        fieldAuthority.note = "automatic";
+        fieldAuthority.owner = "manual";
+      } else {
+        mapping = wizardDeriveMappingFromFieldReport(capabilities, result.fieldReport);
+        if (!mapping && capabilities && capabilities.defaultMapping && Object.keys(capabilities.defaultMapping).length > 0) {
+          mapping = { ...capabilities.defaultMapping };
+        }
+        if (!mapping) {
+          throw new Error("无法从最新脱敏字段报告确定自动字段映射，请打开高级设置手工完成映射后保存。");
+        }
+        Object.keys(mapping).forEach((key) => { fieldAuthority[key] = "automatic"; });
+      }
+
+      // ④ 保存同步绑定并启用（一键完成）
+      setWizardStatus("正在保存配置并启用自动同步...");
       const patch = {
         mode: "automatic",
         enabled: true,
-        externalKey: capabilities.aggregate === true
-          ? null
-          : (ewoPolicyString(result.externalKey) || payload.selectedExternalKey || null),
+        externalKey: aggregate ? null : (ewoPolicyString(result.externalKey) || payload.selectedExternalKey || null),
         matchRule,
         mapping,
         fieldAuthority,
+        intervalMinutes: intervalMins,
       };
-      if (credentialSelect.value === "domain") patch.credentialRef = "domain";
+      if (isEwo) patch.bindingContractVersion = "2";
+      if (credentialSelect.value === "domain" || vaultConfigured) {
+        patch.credentialRef = "domain";
+      }
+
       const saveResponse = await fetch(`/api/project-status/deliverables/${encodeURIComponent(item.id)}/update-policy`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
@@ -1966,16 +2173,15 @@ function buildSyncSummaryCard(item, policy, capabilities, settings, advancedDeta
       if (!saveResponse.ok || !saveBody || saveBody.ok !== true) {
         throw overviewRequestError(saveBody, saveResponse.status);
       }
-      // ⑤ 自动触发一次 sync-now 并展示结果。
-      setWizardStatus("绑定已保存，正在触发一次同步...");
+
+      // ⑤ 触发首次同步
+      setWizardStatus("配置已启用，正在触发首次同步...");
       const syncData = await requestProjectStatusSync(item);
-      setWizardStatus(`开启完成。${syncResultText(syncData)}`);
+      setWizardStatus(`配置并启用成功！${syncResultText(syncData)}`);
       startBtn.disabled = false;
       await loadProjectOverview();
     } catch (err) {
-      setWizardStatus(`开启自动同步未完成：${redactSensitiveText(ewoPolicyErrorMessage(err))}`, true);
-      // 失败路径同样重挂输入区（含候选全部缺外部键被拒绝的情形），
-      // 保证用户无需刷新页面即可修改输入后重试。
+      setWizardStatus(`配置启用失败：${redactSensitiveText(ewoPolicyErrorMessage(err))}`, true);
       remountWizardInputs();
       startBtn.disabled = false;
     }
@@ -2107,6 +2313,26 @@ function renderSyncBindingEditor(container, item, policy, options = {}) {
     modeLabel.appendChild(overviewEl("small", "policy-field-note", "旧版保持原有单条/多条写入规则。迁移到新版须先停用保存，再重新取证；集合负责人和计划日期始终手工。"));
     bindingGrid.appendChild(modeLabel);
   }
+
+  const intervalLabel = overviewEl("label", "policy-ewo-field");
+  intervalLabel.appendChild(overviewEl("span", null, "定时同步周期"));
+  const intervalInput = document.createElement("select");
+  intervalInput.name = "intervalMinutes";
+  [
+    ["15", "每 15 分钟（推荐）"],
+    ["30", "每 30 分钟"],
+    ["60", "每 1 小时"],
+    ["360", "每 6 小时"],
+    ["1440", "每天"],
+  ].forEach(([val, label]) => {
+    const opt = overviewEl("option", null, label);
+    opt.value = val;
+    intervalInput.appendChild(opt);
+  });
+  intervalInput.value = String(currentPolicy.intervalMinutes || 15);
+  intervalLabel.appendChild(intervalInput);
+  intervalLabel.appendChild(overviewEl("small", "policy-field-note", "设置常驻后台调度器自动同步该交付物状态的执行频率。"));
+  bindingGrid.appendChild(intervalLabel);
 
   const matchGroup = overviewEl("fieldset", "policy-ewo-match");
   matchGroup.appendChild(overviewEl("legend", null, `匹配规则（报表类型固定为 ${capabilities.reportType || "ewo"}）`));
@@ -2320,8 +2546,12 @@ function renderSyncBindingEditor(container, item, policy, options = {}) {
         payload.matchRule.sourceItemId = payload.externalKey;
       }
     }
+    const isTdcMatch = capabilities.reportType === "sor" || capabilities.reportType === "data_model" || capabilities.sourceType === "tdc";
     matchInputs.forEach((input, key) => {
-      const value = ewoPolicyString(input.value);
+      let value = ewoPolicyString(input.value);
+      if (value && isTdcMatch && (key === "department" || key === "superDepartment")) {
+        value = normalizeTdcDepartment(value);
+      }
       if (value) payload.matchRule[key] = value;
       else delete payload.matchRule[key];
     });
@@ -2339,9 +2569,9 @@ function renderSyncBindingEditor(container, item, policy, options = {}) {
           sourceField = Array.isArray(defaultMap[key]) ? defaultMap[key].join("｜") : String(defaultMap[key]);
         }
         if (sourceField) {
-          if (key === "note" && (sourceField.includes("｜") || sourceField.includes(","))) {
-            payload.mapping[key] = sourceField.split(/[｜,]/).map((s) => s.trim()).filter(Boolean);
-          } else if (key === "note" && Array.isArray(defaultMap[key]) && sourceField === defaultMap[key].join("｜")) {
+          if (key === "note" && (sourceField.includes("｜") || sourceField.includes("|") || sourceField.includes(","))) {
+            payload.mapping[key] = sourceField.split(/[｜|,]/).map((s) => s.trim()).filter(Boolean);
+          } else if (key === "note" && Array.isArray(defaultMap[key]) && (sourceField === defaultMap[key].join("｜") || sourceField === defaultMap[key].join(" | ") || sourceField === defaultMap[key].join("|"))) {
             payload.mapping[key] = defaultMap[key];
           } else {
             payload.mapping[key] = sourceField;
@@ -2351,6 +2581,7 @@ function renderSyncBindingEditor(container, item, policy, options = {}) {
     });
     if (credentialInput.value === "domain") payload.credentialRef = "domain";
     if (credentialInput.value === "__clear__") payload.credentialRef = null;
+    payload.intervalMinutes = parseInt(intervalInput.value, 10) || 15;
     return payload;
   };
 
@@ -2370,6 +2601,19 @@ function renderSyncBindingEditor(container, item, policy, options = {}) {
         if (mapping) mapping.disabled = setMode || !input.checked;
       }
     });
+    if (setMode) {
+      const noteInput = authorityGroup.querySelector('[data-authority-field="note"]');
+      const noteMapping = authorityGroup.querySelector('[data-mapping-field="note"]');
+      if (noteInput && !noteInput.checked) {
+        noteInput.checked = true;
+      }
+      if (noteMapping && !noteMapping.value.trim() && defaultMap.note) {
+        noteMapping.value = Array.isArray(defaultMap.note) ? defaultMap.note.join(" | ") : String(defaultMap.note);
+      }
+      if (noteMapping && noteInput) {
+        noteMapping.disabled = !noteInput.checked;
+      }
+    }
     if (migrating) enabledInput.checked = false;
   }
   if (ewoBindingMode) {
@@ -2392,7 +2636,7 @@ function renderSyncBindingEditor(container, item, policy, options = {}) {
     const aggregateMode = payload.matchRule.aggregate === true;
     if (!aggregateMode && !payload.externalKey) missing.push("目标单号未确认（可填写EWO单号或抓取证据自动识别）");
     if (payload.enabled && !aggregateMode && !lastEvidenceExternalKey) {
-      missing.push("请先抓取映射证据（验证匹配结果）");
+      missing.push("请先抓取映射证据（连续两次一致）");
     }
     if (
       payload.enabled
@@ -2400,7 +2644,7 @@ function renderSyncBindingEditor(container, item, policy, options = {}) {
       && lastEvidenceExternalKey
       && payload.externalKey !== lastEvidenceExternalKey
     ) {
-      missing.push("目标单号与最近一次抓取证据不一致，请点击“抓取映射证据”重新验证");
+      missing.push("外部稳定键与最近一次映射证据不一致，请点击“抓取映射证据”重新验证");
     }
     const matchKeys = Object.keys(payload.matchRule).filter((key) => !["reportType", "aggregate", "contractVersion", "bindingMode", "sourceItemId"].includes(key));
     if (matchKeys.length === 0) missing.push("至少填写一个匹配条件");
@@ -2422,8 +2666,7 @@ function renderSyncBindingEditor(container, item, policy, options = {}) {
       missing.push("来源映射必须来自最近的脱敏字段报告");
     }
     const stability = discoveryData.stability && Number(discoveryData.stability.confirmed);
-    const usingStandardDefault = Object.keys(defaultMap).length > 0 && flatMappedFields.length > 0 && flatMappedFields.every((f) => defaultVals.includes(f));
-    if (!usingStandardDefault && (!Number.isFinite(stability) || stability < 2)) {
+    if (!Number.isFinite(stability) || stability < 2) {
       missing.push(`映射稳定性未就绪（${Number.isFinite(stability) ? `${Math.max(stability, 0)}/2` : "0/2"}）`);
     }
     if (payload.enabled && missing.length === 0) {
@@ -2620,6 +2863,109 @@ function renderSyncBindingEditor(container, item, policy, options = {}) {
   }
 }
 
+function renderSnapshotSyncCard(container, item, capabilities, options = {}) {
+  const jobKey = (capabilities && capabilities.archiveJobKey)
+    || (item.associations && item.associations.find((a) => a.type === "archive_job") && item.associations.find((a) => a.type === "archive_job").jobKey)
+    || "";
+  const jobAssoc = item.associations && Array.isArray(item.associations)
+    ? item.associations.find((a) => a.type === "archive_job")
+    : null;
+  const jobName = (jobAssoc && jobAssoc.name) || jobKey || "外部归档任务";
+  const lastSuccess = jobAssoc && jobAssoc.lastSuccessAt ? safeDisplayValue(jobAssoc.lastSuccessAt) : null;
+
+  const card = overviewEl("section", "policy-sync-summary policy-snapshot-sync-card");
+  card.setAttribute("aria-label", `${item.name} 数据同步（外部快照）`);
+
+  const head = overviewEl("div", "policy-sync-summary-head");
+  head.append(
+    overviewEl("strong", "policy-sync-summary-title", "数据同步（外部快照）"),
+    overviewEl("span", "policy-sync-summary-state", "快照驱动"),
+  );
+  card.appendChild(head);
+
+  const descText = lastSuccess
+    ? `该交付物由后台归档任务「${jobName}」的表单快照自动映射驱动。最近同步成功：${lastSuccess}。`
+    : `该交付物由后台归档任务「${jobName}」的表单快照自动映射驱动。`;
+  card.appendChild(overviewEl("p", "policy-sync-summary-hint", descText));
+
+  const isEnabled = Boolean(jobAssoc && jobAssoc.enabled);
+  const factList = [
+    ["数据来源", jobName],
+    ["驱动模式", "定时表单快照自动映射"],
+    ["任务状态", isEnabled ? "已启用" : "未启用（支持直接立即同步）"],
+    ["最近成功", lastSuccess || "尚未执行过快照同步"],
+  ];
+  const facts = overviewEl("ul", "policy-sync-summary-facts");
+  factList.forEach(([label, value]) => {
+    const row = overviewEl("li", "policy-sync-summary-fact");
+    row.append(
+      overviewEl("span", "policy-sync-fact-label", label),
+      overviewEl("span", "policy-sync-fact-value", value),
+    );
+    facts.appendChild(row);
+  });
+  card.appendChild(facts);
+
+  const actions = overviewEl("div", "policy-sync-summary-actions");
+  const snapshotSyncBtn = overviewEl("button", "policy-sync-now-btn", "立即同步快照");
+  snapshotSyncBtn.type = "button";
+  if (!jobKey) {
+    snapshotSyncBtn.disabled = true;
+    snapshotSyncBtn.title = "未关联到可同步的归档任务";
+  }
+
+  const jobLink = overviewEl("a", "policy-view-job-link", "查看同步任务");
+  jobLink.href = jobKey ? `#archive-deliverable/${encodeURIComponent(jobKey)}` : "#scheduled-archive";
+
+  const statusMsg = overviewEl("span", "policy-sync-status");
+  statusMsg.setAttribute("role", "status");
+  statusMsg.setAttribute("aria-live", "polite");
+
+  snapshotSyncBtn.addEventListener("click", async () => {
+    if (!jobKey) return;
+    snapshotSyncBtn.disabled = true;
+    snapshotSyncBtn.textContent = "正在同步快照...";
+    statusMsg.textContent = "正在执行后台归档同步...";
+    statusMsg.className = "policy-sync-status";
+    try {
+      const resp = await fetch(`/api/scheduled-archive/jobs/${encodeURIComponent(jobKey)}/sync-now`, {
+        method: "POST",
+        headers: { Accept: "application/json" },
+      });
+      const body = await resp.json();
+      if (!resp.ok || !body || body.ok !== true) {
+        const errMsg = body && body.error && body.error.message ? body.error.message : "同步未完成";
+        throw new Error(redactSensitiveText(errMsg));
+      }
+      const data = body.data || {};
+      const firstRes = Array.isArray(data.results) && data.results[0] ? data.results[0] : null;
+      if (data.exitCode !== 0 || (firstRes && firstRes.outcome !== "completed")) {
+        const errMsg = (firstRes && (firstRes.errorMessage || firstRes.errorType))
+          || (data.exitCode ? `同步未就绪（退出码 ${data.exitCode}）` : "同步未完成");
+        throw new Error(redactSensitiveText(errMsg));
+      }
+      statusMsg.textContent = "快照同步完成，正在刷新数据...";
+      statusMsg.className = "policy-sync-status is-success";
+      await loadArchiveJobs(true);
+      await loadProjectOverview();
+      if (typeof options.onFormReload === "function") {
+        await options.onFormReload();
+      }
+      statusMsg.textContent = "快照同步成功，已刷新最新明细与图表。";
+    } catch (err) {
+      statusMsg.textContent = `同步失败：${redactSensitiveText(err instanceof Error ? err.message : String(err))}`;
+      statusMsg.className = "policy-sync-status is-error";
+    } finally {
+      snapshotSyncBtn.disabled = false;
+      snapshotSyncBtn.textContent = "立即同步快照";
+    }
+  });
+
+  actions.append(snapshotSyncBtn, jobLink, statusMsg);
+  card.appendChild(actions);
+  container.appendChild(card);
+}
+
 async function loadDeliverablePolicy(container, item, options = {}) {
   // 能力驱动分发：sourceInfo 由后端能力注册表下发，不再按 source 文案/
   // 硬编码 id 判断（CODEX 架构审计调整项）。
@@ -2661,7 +3007,11 @@ async function loadDeliverablePolicy(container, item, options = {}) {
     }
     return;
   }
-  // 非 syncCapable：解释性静态文案（无来源连接器或来源契约未验证）。
+  if (item.formSnapshotDriven === true) {
+    renderSnapshotSyncCard(container, item, capabilities, options);
+    return;
+  }
+  // 非 syncCapable 且非 formSnapshotDriven：解释性静态文案（无来源连接器或来源契约未验证）。
   container.append(
     overviewEl("strong", "policy-editor-title", "更新方式"),
     overviewEl("p", "policy-static-mode",
@@ -3275,7 +3625,7 @@ function renderDeliverableEvidence(
     && syncExternalKeyReady
     && syncMatchRuleReady
     && syncFieldMappingReady
-    && (stabilityReady || hasDefaultMapping)
+    && stabilityReady
   );
   if (!syncReady) {
     const missing = [];
@@ -3285,7 +3635,7 @@ function renderDeliverableEvidence(
     if (!syncExternalKeyReady) missing.push("外部稳定键未确认");
     if (!syncMatchRuleReady) missing.push("匹配规则未确认");
     if (!syncFieldMappingReady) missing.push("自动字段映射未确认");
-    if (!stabilityReady && !hasDefaultMapping) missing.push(`映射稳定性未就绪 (${mappingProgressText})`);
+    if (!stabilityReady) missing.push(`映射稳定性未就绪 (${mappingProgressText})`);
     syncMissing.push(...missing);
   }
   setDeliverableAnalysisSyncReadiness(
@@ -3384,7 +3734,10 @@ function renderDeliverableEvidence(
     }
   });
 
-  syncActionBar.append(syncBtn, syncStatus);
+  if (syncSupported) {
+    syncActionBar.appendChild(syncBtn);
+  }
+  syncActionBar.appendChild(syncStatus);
   container.appendChild(syncActionBar);
 
   // 4. Candidate Differences Section
@@ -7084,7 +7437,15 @@ function renderDeliverableDetailPage(deliverableId) {
   if (displayItem.status === "已逾期" && overdueSummary && Number(overdueSummary.summary.overdue) > 0) {
     const riskBanner = overviewEl("div", "deliverable-overdue-risk-banner");
     const riskSpan = overviewEl("span", null);
-    riskSpan.innerHTML = `⚠️ <strong>过程工单超期预警</strong>：快照总计 <strong>${overdueSummary.summary.total}</strong> 笔单据，已完成 ${overdueSummary.summary.completed} 笔（推进进度 ${displayItem.progress}%）；检测到 <strong>${overdueSummary.summary.overdue}</strong> 笔在途单据已过要求完成时间，建议优先协调催办。`;
+    riskSpan.appendChild(document.createTextNode("⚠️ "));
+    riskSpan.appendChild(overviewEl("strong", null, "过程工单超期预警"));
+    riskSpan.appendChild(document.createTextNode("：快照总计 "));
+    riskSpan.appendChild(overviewEl("strong", null, String(overdueSummary.summary.total ?? 0)));
+    riskSpan.appendChild(document.createTextNode(
+      ` 笔单据，已完成 ${overdueSummary.summary.completed ?? 0} 笔（推进进度 ${displayItem.progress ?? 0}%）；检测到 `
+    ));
+    riskSpan.appendChild(overviewEl("strong", null, String(overdueSummary.summary.overdue ?? 0)));
+    riskSpan.appendChild(document.createTextNode(" 笔在途单据已过要求完成时间，建议优先协调催办。"));
     riskBanner.appendChild(riskSpan);
     head.appendChild(riskBanner);
   }
@@ -7292,6 +7653,11 @@ function renderDeliverableDetailPage(deliverableId) {
   loadDeliverablePolicy(policyPanel, item, {
     onEvidenceRefresh: refreshEvidence,
     onPolicyLoaded: (policy) => { ewoInteractivePolicy = policy || {}; },
+    onFormReload: () => {
+      if (formState) {
+        loadDeliverableFormView(analysisPanel, item, { state: formState, statusChart });
+      }
+    },
   });
   refreshEvidence();
 
@@ -7525,7 +7891,14 @@ async function runArchiveDetailBackgroundSync(job, syncButton, statusMessage, re
       headers: { Accept: "application/json" },
     });
     const body = await response.json();
-    if (!response.ok || !body.ok) throw new Error((body.error && body.error.message) || "同步失败");
+    if (!response.ok || !body || body.ok !== true) throw new Error((body && body.error && body.error.message) || "同步失败");
+    const data = body.data || {};
+    const firstRes = Array.isArray(data.results) && data.results[0] ? data.results[0] : null;
+    if (data.exitCode !== 0 || (firstRes && firstRes.outcome !== "completed")) {
+      const errMsg = (firstRes && (firstRes.errorMessage || firstRes.errorType))
+        || (data.exitCode ? `同步未就绪（退出码 ${data.exitCode}）` : "同步未完成");
+      throw new Error(redactSensitiveText(errMsg));
+    }
     statusMessage.textContent = "同步成功，正在刷新图表与明细...";
     await loadArchiveJobs(true);
     await renderHistory();
@@ -7551,6 +7924,13 @@ async function runDeliverableFormArchiveSync(job, button, statusMessage, reload)
     if (!response.ok || !body || body.ok !== true) {
       const message = body && body.error && body.error.message ? body.error.message : "后台同步未完成";
       throw new Error(redactSensitiveText(message));
+    }
+    const data = body.data || {};
+    const firstRes = Array.isArray(data.results) && data.results[0] ? data.results[0] : null;
+    if (data.exitCode !== 0 || (firstRes && firstRes.outcome !== "completed")) {
+      const errMsg = (firstRes && (firstRes.errorMessage || firstRes.errorType))
+        || (data.exitCode ? `同步未就绪（退出码 ${data.exitCode}）` : "后台同步未完成");
+      throw new Error(redactSensitiveText(errMsg));
     }
     statusMessage.textContent = "后台同步完成，正在刷新表单快照...";
     await loadArchiveJobs(true);

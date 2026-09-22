@@ -314,6 +314,7 @@ class ArchiveSyncRunner:
         self,
         job_id: int,
         *,
+        job_key: str = "",
         trigger_type: str = "scheduled",
         validate_runtime_prerequisites: bool = True,
     ) -> ArchiveJobRunResult:
@@ -427,7 +428,7 @@ class ArchiveSyncRunner:
         except ArchiveLeaseBusyError as exc:
             return ArchiveJobRunResult(
                 job_id,
-                "",
+                job_key or (str(lease.get("job_key")) if lease else ""),
                 "skipped",
                 error_type=_error_type(exc),
                 error_message=_safe_exception_message(exc),
@@ -435,7 +436,7 @@ class ArchiveSyncRunner:
         except ArchiveJobNotReadyError as exc:
             return ArchiveJobRunResult(
                 job_id,
-                "",
+                job_key or (str(lease.get("job_key")) if lease else ""),
                 "not_ready",
                 error_type=_error_type(exc),
                 error_message=_safe_exception_message(exc),
@@ -444,7 +445,7 @@ class ArchiveSyncRunner:
             if lease is None:
                 return ArchiveJobRunResult(
                     job_id,
-                    "",
+                    job_key or "",
                     "failed",
                     error_type=_error_type(exc),
                     error_message=_safe_exception_message(exc),
@@ -530,10 +531,16 @@ class ArchiveSyncRunner:
     ) -> ArchiveRunOnceResult:
         if trigger_type not in {"scheduled", "sync_now"}:
             raise ValueError("unsupported archive trigger_type")
-        jobs = self._db.list_archive_jobs(enabled_only=True)
+        enabled_only = trigger_type == "scheduled"
+        jobs = self._db.list_archive_jobs(enabled_only=enabled_only)
         if job_key is not None:
             jobs = [item for item in jobs if item["job_key"] == job_key]
             if not jobs:
+                error_msg = (
+                    "enabled archive job was not found"
+                    if enabled_only
+                    else "archive job was not found"
+                )
                 return ArchiveRunOnceResult(
                     (
                         ArchiveJobRunResult(
@@ -541,7 +548,7 @@ class ArchiveSyncRunner:
                             job_key,
                             "not_ready",
                             error_type="missing_job",
-                            error_message="enabled archive job was not found",
+                            error_message=error_msg,
                         ),
                     ),
                     dry_run,
@@ -570,6 +577,7 @@ class ArchiveSyncRunner:
             results.append(
                 self.run_job(
                     job_id,
+                    job_key=key,
                     trigger_type=trigger_type,
                     validate_runtime_prerequisites=trigger_type != "scheduled",
                 )

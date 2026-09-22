@@ -75,7 +75,7 @@ def _start_sync_scheduler() -> None:
         db.init_database()
         service = ProjectStatusUpdateService(db)
         runner = ProjectStatusSyncRunner(db, service, create_production_registry())
-        scheduler = ProjectStatusSyncScheduler(db, runner)
+        scheduler = ProjectStatusSyncScheduler(db, runner, register_global=True)
     except Exception:
         print("项目状态同步调度器启动失败，将在下次启动 WebUI 时重试。")
         return

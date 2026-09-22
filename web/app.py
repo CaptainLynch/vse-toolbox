@@ -55,6 +55,7 @@ from core.project_status_contracts import (
     PROJECT_STATUS_SOURCE_CAPABILITIES,
     current_stage_label,
     deliverable_display_state,
+    find_job_key_by_deliverable_id,
     find_registry_entry_by_deliverable_id,
     milestone_display_status,
     project_status_manual_editability,
@@ -1781,14 +1782,7 @@ def _deliverable_associations(
     entry = find_registry_entry_by_deliverable_id(deliverable_id)
     if entry is None:
         return []
-    job_key = next(
-        (
-            candidate_key
-            for candidate_key, candidate in DELIVERABLE_LINK_REGISTRY.items()
-            if candidate is entry
-        ),
-        None,
-    )
+    job_key = find_job_key_by_deliverable_id(deliverable_id)
     catalog_name = next(
         (
             str(item["name"])
@@ -2113,6 +2107,7 @@ def _project_status_payload(
                     "defaultMapping": capabilities.get("defaultMapping") or {},
                     "fieldAliases": capabilities.get("fieldAliases") or {},
                     "fieldSemantics": capabilities.get("fieldSemantics") or {},
+                    "archiveJobKey": find_job_key_by_deliverable_id(str(row["id"])),
                 },
                 "scheduleState": schedule_state,
                 "scheduleDays": schedule_days,
@@ -4957,7 +4952,7 @@ def create_app(
         interval = payload.get("intervalSeconds")
         paused = payload.get("paused")
         if interval is not None:
-            if not isinstance(interval, int) or interval <= 0:
+            if isinstance(interval, bool) or not isinstance(interval, int) or interval <= 0:
                 return _json_error(400, "ValidationError", "intervalSeconds must be a positive integer")
         if paused is not None:
             if not isinstance(paused, bool):
@@ -5021,7 +5016,7 @@ def create_app(
                 try:
                     runner_res = runner.run_once(
                         deliverable_id=d_id,
-                        trigger_type="manual_all",
+                        trigger_type="sync_now",
                         validate_runtime_prerequisites=False,
                     )
                     item_info = {"deliverableId": d_id, "status": "success"}

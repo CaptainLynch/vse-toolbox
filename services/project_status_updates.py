@@ -897,7 +897,16 @@ class ProjectStatusUpdateService:
             if old_v2 and not new_v2:
                 fields['matchRule'] = '新版EWO绑定不能退回旧版合同'
             if not old_v2 and enabled:
-                fields['enabled'] = '迁移须先保存为停用状态，再重新完成映射取证'
+                evidence_err = self._mapping_evidence_error(
+                    deliverable_id,
+                    str(contract["sourceType"]) if contract else "aras",
+                    None if (isinstance(match_rule, dict) and match_rule.get("aggregate") is True) else external_key,
+                    mapping if isinstance(mapping, dict) else {},
+                    aggregate=isinstance(match_rule, dict) and match_rule.get("aggregate") is True,
+                    match_rule=match_rule if isinstance(match_rule, dict) else None,
+                )
+                if evidence_err:
+                    fields["enabled"] = "迁移须先保存为停用状态，再重新完成映射取证"
             if isinstance(match_rule, dict) and isinstance(mapping, dict):
                 try:
                     match_rule = _validate_ewo_v2_policy(match_rule, mapping, external_key, field_authority)

@@ -91,6 +91,17 @@ def find_registry_entry_by_deliverable_id(deliverable_id: str) -> DeliverableLin
     return None
 
 
+def find_job_key_by_deliverable_id(deliverable_id: str) -> str | None:
+    """按项目状态交付物 id 反查归档任务 job_key；未关联交付物（如 D1/D4）返回 None。"""
+    target = str(deliverable_id or "")
+    if not target:
+        return None
+    for job_key, entry in DELIVERABLE_LINK_REGISTRY.items():
+        if entry["deliverable_id"] == target:
+            return job_key
+    return None
+
+
 def deliverable_display_state(
     binding_mode: str,
     binding_enabled: bool,
@@ -483,6 +494,7 @@ PROJECT_STATUS_SOURCE_CAPABILITIES: dict[str, dict[str, object]] = {
             ("title", "标题关键词", "title", "可选"),
             ("partNumber", "零件号", "part_number", "可选"),
             ("sorNumber", "SOR 编号", "sor_number", "可选"),
+            ("department", "部门", "department", "默认：技术中心_车体工程"),
             ("approvalStatus", "审批状态", "approval_status", "可选"),
         ),
         "evidenceFields": (
@@ -515,8 +527,9 @@ PROJECT_STATUS_SOURCE_CAPABILITIES: dict[str, dict[str, object]] = {
         "matchFields": (
             ("ewoNo", "EWO 编号", "ewo_no", "建议优先填写 EWO 编号"),
             ("projectCode", "车型项目", "project_code", "可选"),
-            ("subjectKeyword", "主题关键词", "subject_keyword", "可选"),
             ("modelInfo", "车型信息", "model_info", "可选"),
+            ("rspDepartment", "责任部门", "rsp_department", "默认：技术中心_车体工程"),
+            ("subjectKeyword", "主题关键词", "subject_keyword", "可选"),
         ),
         "evidenceFields": (
             {"name": "base_url", "label": "ECM 地址（仅用于抓取映射证据）", "type": "url", "placeholder": "http://ecm.sgmw.com.cn/innovatorserver"},

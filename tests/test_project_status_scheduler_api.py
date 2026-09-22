@@ -77,6 +77,12 @@ def test_scheduler_status_and_config_with_scheduler(client):
         # POST config validation
         res = client.post("/api/project-status/scheduler/config", json={"intervalSeconds": -10})
         assert res.status_code == 400
+        res = client.post("/api/project-status/scheduler/config", json={"intervalSeconds": True})
+        assert res.status_code == 400
+        res = client.post("/api/project-status/scheduler/config", json={"intervalSeconds": "300"})
+        assert res.status_code == 400
+        res = client.post("/api/project-status/scheduler/config", json={"paused": "not_bool"})
+        assert res.status_code == 400
 
         # POST sync-all
         res = client.post("/api/project-status/scheduler/sync-all")

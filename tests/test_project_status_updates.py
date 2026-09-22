@@ -535,3 +535,53 @@ def test_aggregate_match_rule_requires_boolean_flag(tmp_db: DatabaseManager) -> 
             "fieldAuthority": {"owner": "automatic"},
         })
     assert any("aggregate 必须是布尔值" in msg for msg in exc_info.value.fields.values())
+
+
+def test_migrate_v1_to_v2_with_valid_evidence_enables_directly(tmp_db: DatabaseManager) -> None:
+    """Migrating legacy v1 EWO binding to v2 record_set with valid 2/2 evidence enables in one step."""
+    from services.project_status_records import compute_config_signature
+    service = ProjectStatusUpdateService(tmp_db)
+
+    # 1. Database starts with a legacy v1 binding
+    tmp_db.set_project_status_update_policy(
+        deliverable_id="VPI-T2-D3",
+        mode="automatic",
+        enabled=False,
+        external_key=None,
+        match_rule_json=json.dumps({"reportType": "ewo", "aggregate": False}),
+        mapping_json=json.dumps({"note": "_subject"}),
+        field_authority={"owner": "manual", "planned_date": "manual", "remark": "automatic"},
+    )
+
+    # 2. Record 2 matching observations for the new v2 rule
+    new_rule = {
+        "reportType": "ewo",
+        "contractVersion": "2",
+        "bindingMode": "record_set",
+        "aggregate": True,
+        "projectCode": "F610S",
+    }
+    sig = compute_config_signature("aras", new_rule)
+    summary = json.dumps([{"externalKey": "agg:fp-1", "fields": {"_subject": "Test"}}])
+    report = json.dumps({"fields": ["_subject", "_change_description"]})
+    for _ in range(2):
+        tmp_db.record_mapping_observation(
+            "VPI-T2-D3", "aras", "matched", None, "agg:fp-1", 1,
+            summary, report, config_signature=sig,
+        )
+
+    # 3. Update directly to v2 and enabled=True
+    policy = service.update_update_policy("VPI-T2-D3", {
+        "mode": "automatic",
+        "enabled": True,
+        "credentialRef": "test-alias",
+        "bindingContractVersion": "2",
+        "matchRule": new_rule,
+        "mapping": {"note": "_subject"},
+        "fieldAuthority": {"note": "automatic"},
+        "intervalMinutes": 15,
+    })
+    assert policy["enabled"] is True
+    assert policy["matchRule"]["contractVersion"] == "2"
+    assert policy["matchRule"]["bindingMode"] == "record_set"
+    assert policy["intervalMinutes"] == 15

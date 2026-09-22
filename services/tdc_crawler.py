@@ -778,7 +778,7 @@ class TDCCrawlerClient:
             elif duplicates:
                 # A duplicate row means raw accumulated_count can no longer
                 # prove that the deduplicated result contains the declared
-                # record set.  Reject the result instead of authorizing a
+                # record set. Reject the result instead of authorizing a
                 # partial aggregate snapshot.
                 stop_reason = "duplicate_records"
             elif not overflowed and (reported_end or total_end):
@@ -1531,14 +1531,60 @@ def _row_identity(report_type: str, row: Mapping[str, Any]) -> str:
         workflow_key = next(
             (
                 f"{key}:{str(row.get(key)).strip()}"
-                for key in ("incident", "documentNo", "formId")
+                for key in ("incident", "documentNo", "formId", "processInstanceId", "instanceId")
                 if row.get(key) is not None and str(row.get(key)).strip()
             ),
             "workflow:unknown",
         )
+        wf_raw_ids = {
+            str(row.get(key)).strip()
+            for key in ("incident", "documentNo", "formId", "processInstanceId", "instanceId")
+            if row.get(key) is not None and str(row.get(key)).strip()
+        }
         detail = tuple(str(row.get(key) or "").strip() for key in ("partNumber", "modelNumber", "partName"))
+
+        item_key = None
+        for k in ("detailId", "partId", "subId", "rowId", "recordId", "id"):
+            val = str(row.get(k) or "").strip()
+            if val and val not in wf_raw_ids:
+                item_key = f"{k}:{val}"
+                break
+
+        row_num = next(
+            (
+                str(row.get(k)).strip()
+                for k in ("rowNo", "rowNum", "rowIndex", "lineNo", "seq")
+                if row.get(k) is not None and str(row.get(k)).strip()
+            ),
+            "",
+        )
+        extra_keys = (
+            "quantity",
+            "versionNumber",
+            "ewosorNumber",
+            "latestApproveLog",
+            "requestDate",
+            "status",
+            "applicant",
+            "department",
+            "superDepartment",
+        )
+        extra = tuple(
+            f"{k}:{str(row.get(k)).strip()}"
+            for k in extra_keys
+            if row.get(k) is not None and str(row.get(k)).strip()
+        )
+        parts = ["data_model", workflow_key]
         if any(detail):
-            return "data_model:" + workflow_key + ":" + "\x1f".join(detail)
+            parts.append("\x1f".join(detail))
+        if item_key:
+            parts.append(item_key)
+        if row_num:
+            parts.append(f"row:{row_num}")
+        if extra:
+            parts.append("\x1f".join(extra))
+        if len(parts) > 2:
+            return ":".join(parts)
         return "data_model:" + workflow_key
 
     candidates = ("id", "processInstanceId", "processNo")

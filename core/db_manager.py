@@ -1306,7 +1306,7 @@ class DatabaseManager:
         if has_null_sig:
             bindings = conn.execute(
                 "SELECT deliverable_id, source_type, match_rule_json "
-                "FROM project_status_deliverable_bindings "
+                "FROM project_status_update_bindings "
                 "WHERE enabled = 1"
             ).fetchall()
             for b in bindings:
@@ -1319,9 +1319,10 @@ class DatabaseManager:
                             "UPDATE project_status_mapping_observations "
                             "SET config_signature = ? "
                             "WHERE deliverable_id = ? "
+                            "  AND source_type = ? "
                             "  AND (config_signature IS NULL OR config_signature = '') "
                             "  AND result_state = 'matched'",
-                            (sig, b["deliverable_id"])
+                            (sig, b["deliverable_id"], b["source_type"])
                         )
                 except Exception:
                     pass
@@ -3855,7 +3856,7 @@ class DatabaseManager:
                 SELECT b.id, b.deliverable_id, b.source_type, b.external_key,
                        b.match_rule_json, b.mapping_json, b.cursor_json,
                        b.retry_policy_json, b.sync_state, b.sync_config_revision,
-                       b.last_success_at,
+                       b.last_success_at, b.interval_minutes,
                        CASE WHEN trim(COALESCE(b.credential_ref, '')) <> ''
                             THEN 1 ELSE 0 END AS credential_configured,
                        d.phase_id, d.updated_at AS deliverable_updated_at
@@ -3874,7 +3875,7 @@ class DatabaseManager:
                     SELECT b.id, b.deliverable_id, b.source_type, b.external_key,
                            b.match_rule_json, b.mapping_json, b.cursor_json,
                            b.retry_policy_json, b.sync_state, b.sync_config_revision,
-                           b.last_success_at,
+                           b.last_success_at, b.interval_minutes,
                            CASE WHEN trim(COALESCE(b.credential_ref, '')) <> ''
                                 THEN 1 ELSE 0 END AS credential_configured,
                            d.phase_id, d.updated_at AS deliverable_updated_at
@@ -4502,7 +4503,7 @@ class DatabaseManager:
                 raise ArchiveJobNotReadyError(
                     "archive job does not match a fixed approved contract"
                 )
-            if not job["enabled"]:
+            if trigger_type != "sync_now" and not job["enabled"]:
                 raise ArchiveJobNotReadyError("archive job is not enabled")
             if validate_runtime_prerequisites and not str(job["credential_ref"] or "").strip():
                 raise ArchiveJobNotReadyError(

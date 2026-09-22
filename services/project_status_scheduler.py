@@ -138,6 +138,7 @@ class ProjectStatusSyncScheduler:
         interval: int | None = None,
         stop_event: _StoppableEvent | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        register_global: bool = True,
     ) -> None:
         self._db = db
         self._runner = runner
@@ -154,7 +155,8 @@ class ProjectStatusSyncScheduler:
         self._last_tick_at: str | None = None
         self._last_results: list[dict[str, Any]] = []
         self._wake_event: threading.Event = threading.Event()
-        set_global_scheduler(self)
+        if register_global:
+            set_global_scheduler(self)
 
     @property
     def interval(self) -> int:
@@ -234,7 +236,7 @@ class ProjectStatusSyncScheduler:
             try:
                 runner_res = self._runner.run_once(
                     deliverable_id=deliverable_id,
-                    trigger_type="manual_all",
+                    trigger_type="sync_now",
                     validate_runtime_prerequisites=False,
                 )
                 item_info: dict[str, Any] = {"deliverableId": deliverable_id, "status": "success"}
@@ -337,4 +339,8 @@ class ProjectStatusSyncScheduler:
         last_success = _parse_success_at(binding.get("last_success_at"))
         if last_success is None:
             return False
-        return (now - last_success) < self._interval
+        interval = self._interval
+        im = binding.get("interval_minutes")
+        if isinstance(im, int) and not isinstance(im, bool) and im > 0:
+            interval = im * 60
+        return (now - last_success) < interval

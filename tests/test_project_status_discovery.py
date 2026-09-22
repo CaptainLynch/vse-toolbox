@@ -580,8 +580,6 @@ def test_candidate_preview_nonexistent_deliverable(tmp_path):
 def test_observe_aggregate_mode_fingerprint_semantics(tmp_db: DatabaseManager) -> None:
     """聚合观测：多记录 matched（无单记录筛选/歧义）；指纹=单号集合哈希；
     无单号行不计入（与连接器口径一致）。"""
-    import hashlib
-
     service = MappingDiscoveryService(tmp_db)
     rows_a = [
         {"incident": "F610S-3D-0001", "name": "组件A"},
@@ -593,7 +591,7 @@ def test_observe_aggregate_mode_fingerprint_semantics(tmp_db: DatabaseManager) -
     assert result_a["externalKey"] is None
     assert result_a["candidateCount"] == 2
     # 指纹=全部记录单号集合的确定性哈希（共享算法）；无单号行不计入
-    #（candidateCount 为 2 佐证）。
+    # （candidateCount 为 2 佐证）。
     stored = tmp_db.list_mapping_observations("VPI-T2-D5", 1)[0]
     expected_fp = aggregate_fingerprint([
         ("F610S-3D-0001", {"incident": "F610S-3D-0001", "name": "组件A"}),
@@ -607,6 +605,7 @@ def test_observe_aggregate_mode_fingerprint_semantics(tmp_db: DatabaseManager) -
         {"incident": "F610S-3D-0002", "name": "组件B"},
         {"incident": "F610S-3D-0003", "name": "组件C"},
     ], aggregate=True)
+    assert result_b["state"] == "matched"
     stored_b = tmp_db.list_mapping_observations("VPI-T2-D5", 1)[0]
     assert stored_b["candidate_fingerprint"] != expected_fp
 
@@ -1058,3 +1057,30 @@ def test_identified_records_boundaries_and_reorder_stability():
     oversized = [{"incident": str(i)} for i in range(MAX_AGGREGATE_RECORDS + 1)]
     with pytest.raises(ValueError, match="exceeds maximum"):
         identified_records(oversized)
+
+
+def test_observe_record_set_filters_legacy_scalar_mappings(tmp_path):
+    """Verifies record_set discovery drops legacy scalar owner/date without raising ValueError."""
+    db = DatabaseManager(tmp_path / "db.sqlite")
+    db.init_database()
+    # Save a legacy policy with owner, plannedDate and note
+    db.set_project_status_update_policy(
+        deliverable_id="VPI-T2-D3",
+        mode="automatic",
+        enabled=False,
+        external_key=None,
+        match_rule_json=json.dumps({"reportType": "ewo", "aggregate": False}),
+        mapping_json=json.dumps({"owner": "_rsp_name", "plannedDate": "_required_date", "note": "_subject"}),
+        field_authority={"owner": "automatic", "planned_date": "automatic", "remark": "automatic"},
+    )
+    service = MappingDiscoveryService(db)
+    rows = [{"_no": "EWO-001", "_source_item_id": "a" * 32, "_subject": "Test Note"}]
+    rule = {
+        "contractVersion": "2",
+        "bindingMode": "record_set",
+        "reportType": "ewo",
+        "aggregate": True,
+        "projectCode": "F610S",
+    }
+    result = service.observe("VPI-T2-D3", "aras", rows, aggregate=True, match_rule=rule)
+    assert result["state"] == "matched"

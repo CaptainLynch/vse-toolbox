@@ -1090,3 +1090,37 @@ def test_legacy_planned_date_not_null_is_relaxed_by_rebuild(tmp_path: Path) -> N
         assert conn.execute(
             "SELECT COUNT(*) FROM project_status_update_bindings"
         ).fetchone()[0] == 8
+
+
+def test_migration_backfills_null_config_signatures(tmp_path) -> None:
+    """Test that init_database backfills missing config_signature on matched observations."""
+    from services.project_status_records import compute_config_signature
+
+    db = DatabaseManager(tmp_path / "migration-test.db")
+    db.init_database()
+
+    # Insert a binding and an observation with null config_signature
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE project_status_update_bindings "
+            "SET enabled = 1, match_rule_json = '{\"testKey\": \"testVal\"}' "
+            "WHERE deliverable_id = 'VPI-T2-D2'"
+        )
+        conn.execute(
+            "INSERT INTO project_status_mapping_observations "
+            "(deliverable_id, source_type, result_state, candidate_count, candidate_fingerprint, config_signature) "
+            "VALUES ('VPI-T2-D2', 'tdc', 'matched', 1, 'fp-1', NULL)"
+        )
+        conn.commit()
+
+    # Re-run init_database (migration path)
+    db.init_database()
+
+    expected_sig = compute_config_signature("tdc", {"testKey": "testVal"})
+    with db.get_connection() as conn:
+        row = conn.execute(
+            "SELECT config_signature FROM project_status_mapping_observations "
+            "WHERE deliverable_id = 'VPI-T2-D2' AND candidate_fingerprint = 'fp-1'"
+        ).fetchone()
+        assert row is not None
+        assert row["config_signature"] == expected_sig

@@ -5,6 +5,58 @@ delete. Per-plan rulings stay in their SDD ledger (`.superpowers/sdd/…`, local
 and get promoted here once they prove durable. Newest first. Keep entries
 short: decision, why, cost if violated, source pointer.
 
+## 2026-09-22 — TDC 数模爬虫零件级粒度标识与责任部门解耦规范
+
+1. **TDC 数模 (D5) 零件级（part_detail）行唯一性标识规范**：
+   - TDC UWF 数模设计审核流程报表粒度为 `part_detail`（同一流程客观存在多行同零件号、同模号、同名称记录，如左/右侧第二排锁扣组件等）；
+   - `_row_identity` **必须优先使用行记录级主键/实例键**（`id`, `recordId`, `rowId`, `detailId`, `partId`, `subId`）；
+   - **禁止**将流程级标识（`processInstanceId`, `instanceId`）作为行级主键使用（它们代表流程/审批单，会导致同流程全部零件被误折叠为 1 行并误杀为 `duplicate_records`）；
+   - 流程级标识必须归入 `workflow_key`（与 `incident`, `documentNo`, `formId` 等同属流程级）。
+2. **向导责任部门多系统命名空间解耦与容错**：
+   - 向导禁止硬编码单一系统部门默认值；读取时禁止使用 `|| 默认值` 剥夺用户清空部门参数的权利；
+   - Aras 默认 `技术中心_车体工程`，TDC 默认 `车体工程`（提示可留空）；
+   - 提供 `normalizeTdcDepartment` 自动剥离 `技术中心_` / `技术中心-` 前缀；聚合取证若遇 `not_found` 支持自动尝试不带部门参数重试一次。
+Cost if violated: TDC 数模多页抓取时同名合法零件被误杀致第 1 页自杀式中断（HTTP 422）；或将 Aras 部门误注入 TDC 导致 0 命中。
+Source: 2026-09-22 生产实测取证与 code-reviewer 架构交叉审计结论。
+
+## 2026-09-22 — 归档同步的「用户显式触发」与「调度」门控必须分离，且前端禁止假成功
+
+1. **门控分离**：`ArchiveSyncRunner.run_once` 的 `enabled_only=True` 是**调度**语义的正确门控，
+   但**用户显式点击的同步**（交付物详情页【立即同步快照】→ `POST /api/scheduled-archive/jobs/<key>/sync-now`）
+   在默认（新库 6 个内置归档任务全 `enabled=0`）状态下会得到
+   `outcome=not_ready / errorType=missing_job`，而端点仍返回 HTTP 200 + `ok:true`。
+   若产品口径要求「用户无需先启用定时任务也能同步一次」（形态 A，用户已选），
+   必须新增**仅对 `trigger_type="sync_now"` 生效**的显式通道，**调度路径始终保持 `enabled_only=True`**。
+2. **前端禁止假成功**：任何 `sync-now` 类调用必须解析
+   `results[0].outcome/finalState/errorType/errorMessage`；`not_ready`/`failed`/非零 `exitCode`
+   一律按失败展示（脱敏）并给出可操作指引（去自动归档启用 / 保存统一域账号凭据）。
+   仅校验 HTTP 状态与 `body.ok` 即为缺陷。
+Cost if violated: 用户看到"同步成功"但交付物依旧无数据，比"没有按钮"更具误导性；
+调度门控被误放开又会让未启用的任务在后台自动运行。
+Source: 2026-09-22 主 Agent 独立代码审计（`docs/CODE_AUDIT_20260922_DELIVERABLE_SYNC_ZCODE.md`）
++ 复现证据 `.runtime/repro_out.txt`。
+
+## 2026-09-22 — 外部快照驱动交付物（D6-D8）同步入口形态：直接可点「立即同步快照」
+
+1. **D6/D7/D8（PAA / NCR 审批进度 / NCR 审批明细）** 虽为 `syncCapable=False`
+   的外部快照驱动交付物（`formSnapshotDriven=True`、`countsTowardCompletion=False`），
+   但**必须在交付物详情页提供可点的同步入口**，且 **不要求用户先到「自动归档」启用定时任务**：
+   入口直接调用对应归档任务的 `POST /api/scheduled-archive/jobs/<jobKey>/sync-now`
+   （后端 `ScheduledArchiveAdminService.sync_now` 本就不校验 `enabled`），
+   另附「查看同步任务」跳转 `#archive-deliverable/<jobKey>`；任务未启用时给
+   「去自动归档启用」的明确指引，**禁止**再渲染永久 `disabled` 的死按钮。
+2. **关联键单一来源**：归档任务键必须由 `DELIVERABLE_LINK_REGISTRY` 派生并随
+   `/api/project-status` 的 `sourceInfo` 下发（`archiveJobKey`），前端禁止硬编码映射。
+3. **TDC 与 Aras 部门命名空间严格分离**：`技术中心_车体工程` 是 **Aras** 口径
+   （`_rsp_department` / PAA `department` / EWO `responsibleDepartment`），
+   **禁止**作为 TDC（SOR `deptName`、数模 `superDepartment`）筛选默认值；
+   TDC 域值形如 `车体工程`（部门级）/ `外饰科`（科室级）。
+4. **实施与验证状态**：已完整落地实施并通过自动化测试、Node VM 契约核验与 code-reviewer 严格交叉代码审计（PASS）。
+Cost if violated: 用户面对不可用的灰按钮或「没有同步按钮」；再次把 Aras 部门默认值
+灌入 TDC 查询导致 D2/D5 一键同步必然失败（回归重演）；关联键硬编码使注册表漂移。
+Source: 2026-09-22 生产测试反馈 3 张截图 + 代码/契约/本地库取证实证 +
+`docs/PROD_TEST_20260922_DELIVERABLE_SYNC_ISSUES.md`。
+
 ## 2026-09-19 — HCI 与系统架构审计决策：统一任务模型、冻结重试语义与桌面/导航重构架构约束
 
 1. **统一任务模型与 Schema 纪律**：复用 `core/excel_tasks.py` 经审计的持久化范式（状态机、租约管理、不存凭据与 Token、幂等性），提供全局统一的任务抽屉 UI 与 `/api/tasks` 外观（facade），严格维持 Schema v14 兼容基线，`crawl_tasks` 采用增量式 DDL，禁止新建平行分裂的任务子系统。

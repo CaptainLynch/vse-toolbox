@@ -25,7 +25,15 @@ from services.project_status_scheduler import (
     SYNC_INTERVAL_ENV_VAR,
     ProjectStatusSyncScheduler,
     resolve_sync_interval,
+    set_global_scheduler,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_global_scheduler():
+    set_global_scheduler(None)
+    yield
+    set_global_scheduler(None)
 
 
 class FakeDb:
@@ -161,6 +169,25 @@ def test_interval_boundary_and_staleness_transition() -> None:
     scheduler.tick()
     assert len(runner.calls) == 1
     assert runner.calls[0]["deliverable_id"] == "VPI-T2-D5"
+
+
+def test_scheduler_respects_individual_binding_interval_minutes() -> None:
+    """绑定自定义 interval_minutes 优先于全局调度周期生效。"""
+    clock = FakeClock()
+    runner = FakeRunner()
+    # 绑定配置了 30 分钟 (1800 秒) 周期；全局调度器为 900 秒
+    binding = _binding("VPI-T2-D3", _format_epoch(clock.now - 1000))
+    binding["interval_minutes"] = 30
+    db = FakeDb([binding])
+
+    scheduler = ProjectStatusSyncScheduler(db, runner, clock=clock, interval=900)
+    scheduler.tick()
+    assert runner.calls == []  # 距上次成功 1000s < 1800s，判定为新鲜跳过
+
+    clock.advance(900)  # 距上次成功 1900s > 1800s，变为陈旧
+    scheduler.tick()
+    assert len(runner.calls) == 1
+    assert runner.calls[0]["deliverable_id"] == "VPI-T2-D3"
 
 
 def _format_epoch(epoch: float) -> str:
@@ -376,7 +403,30 @@ def test_scheduler_trigger_sync_all() -> None:
     assert len(runner.calls) == 2
     ids = {c["deliverable_id"] for c in runner.calls}
     assert ids == {"VPI-T2-D2", "VPI-T2-D3"}
-    assert all(c["trigger_type"] == "manual_all" for c in runner.calls)
+    # Contract: trigger_type must be "sync_now" to conform to ProjectStatusSyncRunner contract
+    assert all(c["trigger_type"] == "sync_now" for c in runner.calls)
+
+
+def test_scheduler_trigger_sync_all_contract_compliance() -> None:
+    """Verifies that trigger_sync_all does not pass illegal trigger_type to a contract-enforcing runner."""
+    class ContractEnforcingRunner:
+        def __init__(self):
+            self.calls = []
+
+        def run_once(self, deliverable_id: str, trigger_type: str, validate_runtime_prerequisites: bool = True):
+            if trigger_type not in {"scheduled", "sync_now"}:
+                raise ValueError(f"unsupported project-status trigger_type: {trigger_type}")
+            self.calls.append({"deliverable_id": deliverable_id, "trigger_type": trigger_type})
+            return None
+
+    db = FakeDb([_binding("VPI-T2-D2", None)])
+    runner = ContractEnforcingRunner()
+    scheduler = ProjectStatusSyncScheduler(db, runner, interval=900)
+    results = scheduler.trigger_sync_all(force=True)
+    assert len(results) == 1
+    assert results[0]["status"] == "success"
+    assert results[0]["deliverableId"] == "VPI-T2-D2"
+    assert runner.calls[0]["trigger_type"] == "sync_now"
 
 
 def test_global_scheduler_registry() -> None:

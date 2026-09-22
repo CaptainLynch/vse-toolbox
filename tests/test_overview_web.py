@@ -1368,7 +1368,7 @@ process.stdout.write(context.result.join("\n"));
     lines = result.stdout.strip().splitlines()
     assert lines[0] == "完成度 100%"
     assert lines[1] == "实际完成 08-30"
-    assert lines[2] == "计划完成 08-08；逾期 5 天"
+    assert lines[2] == "计划完成 08-08"
 
 
 def test_archive_credential_ref_prefills_domain_when_vault_ready_contract() -> None:

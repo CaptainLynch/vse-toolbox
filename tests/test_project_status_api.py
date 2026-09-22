@@ -462,6 +462,15 @@ def test_project_status_payload_exposes_sync_display_and_capabilities(client) ->
     assert items["VPI-T2-D3"]["sourceInfo"]["reportType"] == "ewo"
     assert items["VPI-T2-D5"]["sourceInfo"]["reportType"] == "data_model"
 
+    assert items["VPI-T2-D6"]["sourceInfo"]["archiveJobKey"] == "aras_paa"
+    assert items["VPI-T2-D7"]["sourceInfo"]["archiveJobKey"] == "aras_ncr_progress"
+    assert items["VPI-T2-D8"]["sourceInfo"]["archiveJobKey"] == "aras_ncr_detail"
+    assert items["VPI-T2-D1"]["sourceInfo"]["archiveJobKey"] is None
+    assert items["VPI-T2-D4"]["sourceInfo"]["archiveJobKey"] is None
+    assert items["VPI-T2-D2"]["sourceInfo"]["archiveJobKey"] == "tdc_sor"
+    assert items["VPI-T2-D3"]["sourceInfo"]["archiveJobKey"] == "aras_ewo"
+    assert items["VPI-T2-D5"]["sourceInfo"]["archiveJobKey"] == "tdc_data_model"
+
 
 def test_form_snapshot_driven_deliverables_excluded_from_completion_counts(client) -> None:  # type: ignore[no-untyped-def]
     """D6（外部快照驱动）即使快照全部完成也不进入完成统计分母：

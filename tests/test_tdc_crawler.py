@@ -878,3 +878,68 @@ def test_safe_filename_truncation_and_boundaries() -> None:
     assert fallback.startswith("tdc_export_")
     assert fallback.endswith(".xlsx")
     assert len(fallback) < 50
+
+
+def test_data_model_crawl_17_pages_with_duplicate_part_names_completes_safely() -> None:
+    """真实数据复现：全量 17 页（共 850 条，50条/页），同一流程内包含多个同名零件（如 27229272 第二排锁扣组件），
+    爬虫必须依据行唯一实例号正确识别，不被当作致命 duplicate_records 提前中断，完整爬取 17 页且 complete=True。"""
+    from services.project_status_connectors import _require_complete_result
+    from web.app import _TDCRequestError, _require_complete_mapping_result
+
+    total_pages = 17
+    page_size = 50
+    total_records = 850
+    responses = []
+
+    global_record_id = 1
+    for p in range(1, total_pages + 1):
+        rows = []
+        for i in range(page_size):
+            is_lock_buckle = (i % 5 == 0)
+            rows.append({
+                "id": f"REC-{global_record_id}",
+                "incident": "INC-100" if is_lock_buckle else f"INC-{p}-{i}",
+                "documentNo": "DOC-100" if is_lock_buckle else f"DOC-{p}-{i}",
+                "formId": "FORM-100" if is_lock_buckle else f"FORM-{p}-{i}",
+                "partNumber": "27229272" if is_lock_buckle else f"PART-{global_record_id}",
+                "modelNumber": "MDL-27229272" if is_lock_buckle else f"MDL-{global_record_id}",
+                "partName": "第二排锁扣组件" if is_lock_buckle else f"零件-{global_record_id}",
+                "versionNumber": "001",
+                "department": "车身科",
+                "superDepartment": "车体工程",
+                "projectModel": "F610S",
+                "status": "4",
+            })
+            global_record_id += 1
+        payload = {
+            "code": 200,
+            "data": {
+                "current": p,
+                "size": page_size,
+                "total": total_records,
+                "pages": total_pages,
+                "records": rows,
+            }
+        }
+        responses.append(FakeResponse(payload))
+
+    session = FakeSession(responses)
+    client = TDCCrawlerClient("https://tdc.example", session=session)
+
+    result = client.crawl_data_model_all(
+        TDCDataModelFilters(department="车体工程", project_model="F610S"),
+        page_size=page_size,
+        max_pages=20,
+        max_records=1000,
+    )
+
+    assert result.fetched_pages == 17
+    assert len(result.rows) == 850
+    assert result.unique_count == 850
+    assert result.duplicate_count == 0
+    assert result.stop_reason == "reported_pages"
+    assert result.complete is True
+
+    _require_complete_result(result)
+    mapping_rows = _require_complete_mapping_result(result, _TDCRequestError)
+    assert len(mapping_rows) == 850

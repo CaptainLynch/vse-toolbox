@@ -113,6 +113,8 @@ class MappingDiscoveryService:
         )
         if not isinstance(current_mapping, dict):
             current_mapping = {}
+        if versioned_ewo and effective_rule.get("bindingMode") == "record_set":
+            current_mapping = {k: v for k, v in current_mapping.items() if k == "note"}
 
         aggregated_candidate_values: dict[str, Any] | None = None
         cache_records: list[tuple[str, dict[str, Any]]] = []

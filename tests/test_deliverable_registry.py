@@ -98,6 +98,7 @@ def test_registry_six_way_closure_values() -> None:
         assert entry["form_key"] == form_key
         # 反查闭合：catalog_id / deliverable_id 反查回同一 job_key。
         from core.project_status_contracts import (
+            find_job_key_by_deliverable_id,
             find_registry_entry_by_catalog_id,
             find_registry_entry_by_deliverable_id,
         )
@@ -105,6 +106,7 @@ def test_registry_six_way_closure_values() -> None:
         assert by_catalog is not None and DELIVERABLE_LINK_REGISTRY[job_key] == by_catalog
         by_deliverable = find_registry_entry_by_deliverable_id(deliverable_id)
         assert by_deliverable is not None and DELIVERABLE_LINK_REGISTRY[job_key] == by_deliverable
+        assert find_job_key_by_deliverable_id(deliverable_id) == job_key
         # 派生表第三元组闭合。
         assert ARCHIVE_JOB_CONTRACTS[job_key][2] == deliverable_id
         assert JOB_FORM_KEYS[job_key] == form_key

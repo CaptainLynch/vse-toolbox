@@ -635,7 +635,12 @@ def test_acquire_rejects_disabled_and_missing_alias_before_mutations(db: Databas
     job_id = int(job["id"])
 
     # 1. 禁用状态 (enabled=0, credential_ref=NULL)
+    # 定时调度拒绝未启用任务
     with pytest.raises(ArchiveJobNotReadyError, match="not enabled"):
+        db.acquire_archive_job_lease(job_id, "scheduled")
+
+    # 手动 sync_now 准许未启用任务，但若未配置凭据仍前置拒绝
+    with pytest.raises(ArchiveJobNotReadyError, match="not configured"):
         db.acquire_archive_job_lease(job_id, "sync_now")
 
     with pytest.raises(ArchiveJobNotReadyError, match="not configured"):

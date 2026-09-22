@@ -1,5 +1,28 @@
 # Recovery Notes
 
+## 2026-09-22 — 归档 sync-now 的「假成功」链路（已验证根因，勿再踩）
+
+- **现象**：交付物详情页点【立即同步快照】提示「快照同步成功，已刷新最新明细与图表。」，
+  但交付物依旧「暂无表单快照数据」。
+- **链路**：`ArchiveSyncRunner.run_once` 使用 `list_archive_jobs(enabled_only=True)`
+  （`services/scheduled_archive_runner.py:533`）→ 任务停用时返回
+  `outcome="not_ready" / errorType="missing_job" / errorMessage="enabled archive job was not found"`
+  → `ScheduledArchiveAdminService.sync_now` 原样包装、不抛异常 → `web/app.py:4081` 返回
+  **HTTP 200 + `ok:true`** → 前端只校验 `resp.ok/body.ok`（`web/static/app.js:2933`）→ 判定成功。
+- **默认状态必现**：新库 6 个内置归档任务全部 `enabled=0`、`credential_configured=False`
+  （`core/db_manager.py` DDL `enabled INTEGER NOT NULL DEFAULT 0`）。
+- **复现脚本**：`.runtime/repro_snapshot_sync.py`（临时库、无副作用）→ 输出 `.runtime/repro_out.txt`。
+- **排查提示 1**：`tags`/`exitCode` 非零（本次 `exitCode=2`）也是失败信号，前端不得忽略。
+- **排查提示 2**：本机 `scheduled_archive_runs` 为空**不等于**归档任务从未跑过——
+  `deliverable_form_snapshots` 中可能存在 `source_run_id` 指向已轮换/清理的 run（如 101-103）。
+- **排查提示 3**：PowerShell 控制台 `Get-Content` 会把 UTF-8 中文显示成乱码（GBK 控制台），
+  判断文件是否损坏必须用 read 工具而非控制台输出；据此误判会导致无谓的"修复"。
+
+## 2026-09-22 — ProjectStatusSyncScheduler 全量同步 trigger_type 契约违背与 Mock 假绿排查
+
+- **Mock 对象掩盖契约违背陷阱**：在 `ProjectStatusSyncScheduler.trigger_sync_all` 与 `web/app.py` 中，曾传入 `trigger_type="manual_all"`。底层 `ProjectStatusSyncRunner.run_once` 与数据库表约束（`CHECK (trigger_type IN ('sync_now', 'scheduled'))`）会 100% 拒绝该类型并抛出 `ValueError`。但由于单元测试 `tests/test_project_status_scheduler.py` 使用了无校验的 `FakeRunner` Mock，且在测试中断言了 `c["trigger_type"] == "manual_all"`，导致测试不仅全部绿灯，甚至将非法契约反向固定。**防范规则**：对于跨层传递的枚举/状态值，必须至少编写一个接入严格契约校验桩（如 `ContractEnforcingRunner`）或真实底层 Runner 的用例，确保 mock 测试不脱离底层真实契约。
+- **Safe DOM 违规检测**：新增 UI 特性时严禁使用动态字符串插值 `innerHTML = \`...\``。即便需要渲染带格式（如 `<strong>`、emoji）的提示条，也应通过 `overviewEl` 与 `document.createTextNode` 组合构建安全树，确保全项目 Safe DOM 零动态 `innerHTML` 的红线不被突破。
+
 ## 2026-09-16 — 非 UI 严格审计修复与 PyInstaller 版本元数据打包边界
 
 - **测试数据库隔离陷阱**：`DatabaseManager` 默认使用 `core.config.DB_PATH`，不读取 `VSE_TOOLBOX_DATABASE_PATH` 环境变量。在编写涉及 Web API / settings 的测试时，必须通过 `monkeypatch.setattr(web_app, "DatabaseManager", lambda *a, **kw: db_instance)` 显式传入基于 `tmp_path` 构造的实例；仅设置环境变量会导致测试悄悄修改真实 `data/vse_toolbox.db`。
