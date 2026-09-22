@@ -39,6 +39,19 @@ SYNC_INTERVAL_ENV_VAR = "VSE_PROJECT_STATUS_SYNC_INTERVAL"
 #: last_success_at 由 db_manager 以 UTC strftime('%Y-%m-%dT%H:%M:%fZ') 写入。
 _SUCCESS_AT_FORMATS = ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ")
 
+_GLOBAL_SCHEDULER: ProjectStatusSyncScheduler | None = None
+
+
+def get_global_scheduler() -> ProjectStatusSyncScheduler | None:
+    """获取当前进程常驻的项目状态同步调度器实例。"""
+    return _GLOBAL_SCHEDULER
+
+
+def set_global_scheduler(scheduler: ProjectStatusSyncScheduler | None) -> None:
+    """设置或清理全局项目状态同步调度器实例。"""
+    global _GLOBAL_SCHEDULER
+    _GLOBAL_SCHEDULER = scheduler
+
 
 class _SyncSchedulerRunner(Protocol):
     """调度器依赖的 runner 最小协议（ProjectStatusSyncRunner 满足）。"""
@@ -136,15 +149,111 @@ class ProjectStatusSyncScheduler:
             raise ValueError("sync interval must be a positive number of seconds")
         self._stop_event = stop_event if stop_event is not None else threading.Event()
         self._sleep = sleep
+        self._paused: bool = False
+        self._last_tick_time: float | None = None
+        self._last_tick_at: str | None = None
+        self._last_results: list[dict[str, Any]] = []
+        self._wake_event: threading.Event = threading.Event()
+        set_global_scheduler(self)
 
     @property
     def interval(self) -> int:
         """当前生效的同步间隔（秒）。"""
         return self._interval
 
+    @property
+    def is_paused(self) -> bool:
+        """是否已处于暂停状态。"""
+        return self._paused
+
+    def pause(self) -> None:
+        """暂停自动调度循环（不终止后台线程）。"""
+        self._paused = True
+        logger.info("project status sync scheduler paused")
+
+    def resume(self) -> None:
+        """恢复自动调度循环并触发一次即时唤醒。"""
+        self._paused = False
+        self._wake_event.set()
+        logger.info("project status sync scheduler resumed")
+
+    def set_interval(self, seconds: int) -> None:
+        """动态修改自动同步间隔并唤醒调度循环。"""
+        if seconds <= 0:
+            raise ValueError("sync interval must be a positive number of seconds")
+        self._interval = seconds
+        self._wake_event.set()
+        logger.info("project status sync scheduler interval updated to %ss", seconds)
+
     def stop(self) -> None:
         """请求调度循环退出（幂等）。"""
         self._stop_event.set()
+        self._wake_event.set()
+
+    def get_status(self) -> dict[str, Any]:
+        """获取当前调度器运行状态快照。"""
+        now = self._clock()
+        eligible_count = 0
+        try:
+            eligible_count = len(self._db.list_eligible_sync_bindings(None))
+        except Exception:
+            pass
+        next_sec = None
+        if not self._paused and not self._stop_event.is_set():
+            if self._last_tick_time is not None:
+                passed = now - self._last_tick_time
+                next_sec = max(0, int(self._interval - passed))
+            else:
+                next_sec = self._interval
+        return {
+            "running": not self._stop_event.is_set(),
+            "paused": self._paused,
+            "intervalSeconds": self._interval,
+            "lastTickAt": self._last_tick_at,
+            "nextRunSeconds": next_sec,
+            "eligibleCount": eligible_count,
+            "lastResults": list(self._last_results),
+        }
+
+    def trigger_sync_all(self, force: bool = True) -> list[dict[str, Any]]:
+        """立即同步所有已启用的交付物绑定，返回聚合结果报告。"""
+        now = self._clock()
+        try:
+            bindings = self._db.list_eligible_sync_bindings(None)
+        except Exception as exc:
+            logger.exception("trigger_sync_all could not list eligible bindings")
+            return [{"error": redact_sensitive_text(str(exc), limit=200)}]
+
+        results: list[dict[str, Any]] = []
+        for binding in bindings:
+            deliverable_id = str(binding.get("deliverable_id") or "")
+            if not deliverable_id:
+                continue
+            if not force and self._is_fresh(binding, now):
+                continue
+            try:
+                runner_res = self._runner.run_once(
+                    deliverable_id=deliverable_id,
+                    trigger_type="manual_all",
+                    validate_runtime_prerequisites=False,
+                )
+                item_info: dict[str, Any] = {"deliverableId": deliverable_id, "status": "success"}
+                if hasattr(runner_res, "results") and runner_res.results:
+                    first = runner_res.results[0]
+                    item_info["outcome"] = getattr(first, "outcome", None)
+                    item_info["finalState"] = getattr(first, "final_state", None)
+                    item_info["appliedFields"] = list(getattr(first, "applied_fields", []))
+                results.append(item_info)
+            except Exception as exc:
+                results.append({
+                    "deliverableId": deliverable_id,
+                    "status": "error",
+                    "error": redact_sensitive_text(str(exc), limit=200),
+                })
+        self._last_results = list(results)
+        self._last_tick_time = now
+        self._last_tick_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        return results
 
     def run_forever(self) -> None:
         """阻塞执行调度循环；作为 daemon 线程 target 使用。"""
@@ -154,14 +263,38 @@ class ProjectStatusSyncScheduler:
         try:
             while not self._stop_event.is_set():
                 self.tick()
-                if self._stop_event.wait(self._interval):
+                if self._wait_for_next_tick():
                     break
-                # wait 返回 False 表示超时到期，进入下一 tick。
         finally:
             logger.info("project status sync scheduler stopped")
 
+    def _wait_for_next_tick(self) -> bool:
+        """等待至下一次 tick 或收到停止信号。返回 True 表示应退出循环。"""
+        self._wake_event.clear()
+        if self._stop_event.is_set():
+            return True
+        start_wait = self._clock()
+        while not self._stop_event.is_set():
+            if self._wake_event.is_set():
+                self._wake_event.clear()
+                return False
+            passed = self._clock() - start_wait
+            remaining = self._interval - passed
+            if remaining <= 0:
+                return False
+            slice_sec = min(remaining, 1.0)
+            if self._stop_event.wait(slice_sec):
+                return True
+        return True
+
     def tick(self) -> None:
         """单次调度：新鲜绑定零网络跳过，陈旧绑定逐个补偿同步。"""
+        if self._paused:
+            logger.debug("sync scheduler is paused, skipping tick")
+            return
+        now = self._clock()
+        self._last_tick_time = now
+        self._last_tick_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         try:
             bindings = self._db.list_eligible_sync_bindings(None)
         except Exception:
@@ -170,9 +303,8 @@ class ProjectStatusSyncScheduler:
             return
         if not bindings:
             return  # 无启用绑定：no-op。
-        now = self._clock()
         for binding in bindings:
-            if self._stop_event.is_set():
+            if self._stop_event.is_set() or self._paused:
                 return
             deliverable_id = str(binding.get("deliverable_id") or "")
             if not deliverable_id:

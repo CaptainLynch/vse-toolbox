@@ -1,5 +1,30 @@
 # Current State
 
+## 2026-09-22 交付物明细定时自动同步与交互去黑话化改造（实施与全套测试验证通过）
+
+- **任务背景**：用户实际使用中反馈两项体验痛点：1) 点击同步偶发 409 报错（`映射发现证据与当前配置规则不一致`）；2) 同步成功后快照状态依然显示“已逾期”，引发业务误解；3) 同步配置中要求用户手工理解并输入“外部稳定键”，技术黑话严重影响人机交互；4) 诉求在交付物明细（非自动归档下载）增加直观的定时自动同步控制与状态感知。
+- **实施内容**：
+  1. **[409 根因消除与历史自愈]**（`core/db_manager.py`）：在数据库初始化/迁移中补齐历史映射证据 `config_signature` 自动回填机制，消除存量数据库升级时因历史证据签名为空导致的 409 阻断。
+  2. **[交付物明细定时同步控制台]**（`services/project_status_scheduler.py`、`web/app.py`、`web/static/app.js`、`web/static/style.css`）：
+     - 升级常驻调度器为动态受控实例（支持动态频率调节、暂停/恢复、即时全量同步与状态查询），提供全局实例访问接口；
+     - 新增 3 个 REST 端点：`GET /api/project-status/scheduler`（状态快照与倒计时）、`POST /api/project-status/scheduler/config`（动态频率 15m/30m/1h 及暂停恢复）、`POST /api/project-status/scheduler/sync-all`（并发同步全部已启用交付物）；
+     - 前端交付物明细表头挂载可视化「交付物自动同步控制条」：包含运行指示绿灯、实时倒计时计算器（每秒平滑递减）、同步频率下拉调节、以及【立即全量同步】与【暂停/恢复调度】按钮。
+  3. **[交互去黑话化与外部稳定键隐化]**（`web/static/app.js`）：
+     - 将生硬的“外部稳定键”重命名为业务直观的“关联目标单号”；占位提示与说明改为“选填，输入需跟踪的目标单号（留空自动关联）”；
+     - 建立匹配规则联动：用户在匹配条件中输入 EWO 编号时，前端自动静默双向绑定，彻底消除必须手工填两遍的负担；
+     - 优化异常报错语义（`ewoPolicyErrorMessage`），将底层底层签名与代码异常转化为人话提示。
+  4. **[状态与风险解耦表达]**（`web/static/app.js`、`web/static/style.css`）：
+     - 在交付物明细表格的状态列增加红/黄风险角标（如 `(11单超期)`），鼠标悬浮展示具体风险说明；
+     - 在交付物详情页顶部增加专属的「过程工单超期预警提示条」，明确区分“交付物里程碑进度（如 72%）”与“快照内客观超期工单数量（如 11 笔）”，彻底消灭“明明同步成功却显示已逾期”的认知混淆。
+- **全套验证证据**：
+  - 调度器与 API 专项契约测试：`python -m pytest tests/test_project_status_scheduler.py tests/test_project_status_scheduler_api.py -q` → **19 passed in 1.45s**；
+  - 交付物与状态综合测试：`python -m pytest tests/test_project_status_*.py tests/test_deliverable_*.py -q` → **200 passed in 17.07s**；
+  - 门禁 lint：`python -m flake8 -j 1 services/project_status_scheduler.py web/app.py core/db_manager.py tests/test_project_status_scheduler.py tests/test_project_status_scheduler_api.py` → **零告警**；
+  - 前端脚本语法：`node --check web/static/{app,diagnostics,ewo-enrichment,node-overview}.js` → **全部通过**；
+  - 项目地图与端点文档：`python tools/generate_project_map.py --check` EXIT 0，`API_ENDPOINTS.md` 94 个端点同步更新；
+  - 浏览器真实运行验收：捕获控制条运行态（`phase3_01`）、暂停态（`phase3_02`）、全量同步后（`phase3_03`）、工单超期预警条（`phase3_04`）、去黑话表单（`phase3_05`）5 张关键截图。
+- **当前状态与下一步**：全部改动保留在工作区未 commit（与既有未提交改动混同）；用户可直接双击桌面启动脚本或刷新页面体验全新的定时同步控制台。
+
 ## 2026-09-21 生产测试单文件 EXE 构建并经微信 clawbot 投递成功（工件与校验码已交付）
 
 - **交付物**：`dist/hci-20260921/VSE-WebUI.exe`（21,389,261 字节，SHA-256 `5cbdefa52fff0ff5cbde802d1e1ee48e6eba7065927e6458f7ee35ea237123b6`），分发压缩包 `dist/hci-20260921/VSE-WebUI-0.3.0-production-test-20260921.zip`（21,047,640 字节，SHA-256 `9654dea2510d4159bf8aaa18812a87f1435244534523ebd06d0402308cc3e3af`）。

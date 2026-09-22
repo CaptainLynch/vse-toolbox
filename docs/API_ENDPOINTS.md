@@ -5,7 +5,7 @@
 > 权威来源：`web/app.py`、`web/diagnostics.py`、`web/ewo_enrichment.py` 路由装饰器；参数行为以代码和测试为准
 > 默认读取：按 API/UI 任务读取
 > 由 `tools/generate_api_endpoints.py` 从上述路由模块 AST 解析自动生成，
-> 生成时间：2026-09-20 17:28，共 91 个端点。
+> 生成时间：2026-09-22 08:06，共 94 个端点。
 > 手工新增路由后请重跑该脚本刷新本清单。
 
 通用约定：
@@ -158,4 +158,7 @@
 | PATCH | `/api/project-status/phases/<phase_id>/milestones` | `api_project_status_milestones_update` |
 | GET | `/api/project-status/runs` | `api_project_status_runs` |
 | GET | `/api/project-status/runs/<int:run_id>/artifacts` | `api_project_status_run_artifacts` |
+| GET | `/api/project-status/scheduler` | `api_project_status_scheduler_status` |
+| POST | `/api/project-status/scheduler/config` | `api_project_status_scheduler_config` |
+| POST | `/api/project-status/scheduler/sync-all` | `api_project_status_scheduler_sync_all` |
 | GET | `/api/project-status/updates` | `api_project_status_updates` |

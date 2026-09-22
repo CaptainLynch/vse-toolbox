@@ -1277,6 +1277,175 @@ function renderOverviewBusinessSnapshots(container) {
   container.appendChild(section);
 }
 
+let schedulerPollTimer = null;
+let schedulerNextRunCountdown = null;
+
+async function renderDeliverablesSyncControlBar(container) {
+  const controlBar = overviewEl("div", "details-sync-control-bar");
+
+  // 左侧：运行指示与倒计时信息
+  const statusWrap = overviewEl("div", "details-sync-control-status");
+  const indicator = overviewEl("span", "details-sync-indicator is-running", "🟢 交付物自动同步：检测中");
+  const meta = overviewEl("span", "details-sync-meta", "正在获取调度器状态...");
+  statusWrap.append(indicator, meta);
+
+  // 右侧：控制操作（频率选择、全量同步、暂停/恢复）
+  const actions = overviewEl("div", "details-sync-actions");
+
+  const intervalLabel = overviewEl("label", "details-sync-interval-label");
+  intervalLabel.appendChild(overviewEl("span", null, "同步频率："));
+  const intervalSelect = document.createElement("select");
+  [
+    [900, "每 15 分钟（默认）"],
+    [1800, "每 30 分钟"],
+    [3600, "每 1 小时"],
+    [0, "暂停自动调度"],
+  ].forEach(([val, text]) => {
+    const opt = document.createElement("option");
+    opt.value = String(val);
+    opt.textContent = text;
+    intervalSelect.appendChild(opt);
+  });
+  intervalLabel.appendChild(intervalSelect);
+
+  const syncAllBtn = overviewEl("button", "btn is-primary sync-all-btn", "立即全量同步");
+  syncAllBtn.type = "button";
+
+  const pauseBtn = overviewEl("button", "btn is-secondary pause-btn", "暂停调度");
+  pauseBtn.type = "button";
+
+  actions.append(intervalLabel, syncAllBtn, pauseBtn);
+  controlBar.append(statusWrap, actions);
+
+  const msgLine = overviewEl("div", "details-sync-msg");
+  msgLine.hidden = true;
+  controlBar.appendChild(msgLine);
+
+  container.appendChild(controlBar);
+
+  async function refreshSchedulerUI() {
+    try {
+      const res = await fetch("/api/project-status/scheduler", { headers: { Accept: "application/json" } });
+      const body = await overviewReadJson(res);
+      if (!res.ok || !body || !body.data) return;
+      const s = body.data;
+
+      const isPaused = s.paused === true;
+      indicator.className = `details-sync-indicator ${isPaused ? "is-paused" : "is-running"}`;
+      indicator.textContent = isPaused ? "⏸️ 自动同步已暂停" : "🟢 交付物自动同步：运行中";
+      pauseBtn.textContent = isPaused ? "恢复调度" : "暂停调度";
+
+      intervalSelect.value = isPaused ? "0" : String(s.intervalSeconds || 900);
+      schedulerNextRunCountdown = s.nextRunSeconds;
+
+      updateMetaText(s.lastTickAt, schedulerNextRunCountdown, isPaused, s.eligibleCount);
+    } catch (e) {
+      meta.textContent = "调度器状态读取失败";
+    }
+  }
+
+  function updateMetaText(lastTickAt, nextRunSeconds, isPaused, count) {
+    if (isPaused) {
+      meta.textContent = `已暂停自动轮询（${count || 0}项交付物绑定）· 上次完成：${lastTickAt || "暂无"}`;
+      return;
+    }
+    const mins = nextRunSeconds !== null && nextRunSeconds !== undefined ? Math.floor(nextRunSeconds / 60) : 0;
+    const secs = nextRunSeconds !== null && nextRunSeconds !== undefined ? nextRunSeconds % 60 : 0;
+    const timeStr = `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+    meta.textContent = `下次自动同步：${timeStr}（共${count || 0}项已启用交付物）· 上次完成：${lastTickAt ? lastTickAt.slice(11, 19) : "无"}`;
+  }
+
+  if (schedulerPollTimer) clearInterval(schedulerPollTimer);
+  schedulerPollTimer = setInterval(() => {
+    if (schedulerNextRunCountdown !== null && schedulerNextRunCountdown > 0) {
+      schedulerNextRunCountdown -= 1;
+      const mins = Math.floor(schedulerNextRunCountdown / 60);
+      const secs = schedulerNextRunCountdown % 60;
+      const timeSpan = controlBar.querySelector(".details-sync-meta");
+      if (timeSpan && !timeSpan.textContent.includes("已暂停")) {
+        const text = timeSpan.textContent;
+        const updated = text.replace(/下次自动同步：\d{2}:\d{2}/, `下次自动同步：${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`);
+        timeSpan.textContent = updated;
+      }
+    } else if (schedulerNextRunCountdown === 0) {
+      schedulerNextRunCountdown = null;
+      refreshSchedulerUI();
+    }
+  }, 1000);
+
+  intervalSelect.addEventListener("change", async () => {
+    const val = parseInt(intervalSelect.value, 10);
+    const isPause = val === 0;
+    try {
+      intervalSelect.disabled = true;
+      const payload = isPause ? { paused: true } : { intervalSeconds: val, paused: false };
+      const res = await fetch("/api/project-status/scheduler/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const body = await overviewReadJson(res);
+      if (!res.ok || !body || !body.ok) throw new Error(body?.error?.message || "更新配置失败");
+      await refreshSchedulerUI();
+      msgLine.textContent = isPause ? "已暂停交付物自动同步调度。" : `自动同步频率已调整为 ${intervalSelect.options[intervalSelect.selectedIndex].text}。`;
+      msgLine.hidden = false;
+      setTimeout(() => { msgLine.hidden = true; }, 4000);
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      intervalSelect.disabled = false;
+    }
+  });
+
+  pauseBtn.addEventListener("click", async () => {
+    try {
+      pauseBtn.disabled = true;
+      const isPausing = pauseBtn.textContent.includes("暂停");
+      const res = await fetch("/api/project-status/scheduler/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ paused: isPausing }),
+      });
+      const body = await overviewReadJson(res);
+      if (!res.ok || !body || !body.ok) throw new Error(body?.error?.message || "更新配置失败");
+      await refreshSchedulerUI();
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      pauseBtn.disabled = false;
+    }
+  });
+
+  syncAllBtn.addEventListener("click", async () => {
+    try {
+      syncAllBtn.disabled = true;
+      syncAllBtn.textContent = "正在全量同步...";
+      msgLine.textContent = "正在并发同步全部已启用交付物，请稍候...";
+      msgLine.hidden = false;
+      const res = await fetch("/api/project-status/scheduler/sync-all", {
+        method: "POST",
+        headers: { Accept: "application/json" },
+      });
+      const body = await overviewReadJson(res);
+      if (!res.ok || !body || !body.ok) throw new Error(body?.error?.message || "全量同步失败");
+      const results = body.data?.results || [];
+      const successes = results.filter((r) => r.status === "success").length;
+      msgLine.textContent = `全量同步完成：成功同步 ${successes}/${results.length} 项交付物。`;
+      await refreshSchedulerUI();
+      await loadProjectOverview();
+      setTimeout(() => { msgLine.hidden = true; }, 5000);
+    } catch (err) {
+      msgLine.textContent = `全量同步失败：${err.message}`;
+      msgLine.hidden = false;
+    } finally {
+      syncAllBtn.disabled = false;
+      syncAllBtn.textContent = "立即全量同步";
+    }
+  });
+
+  await refreshSchedulerUI();
+}
+
 function renderDetailsSummary(container, data) {
   clearOverviewContainer(container);
   const phase = data.phase;
@@ -1293,6 +1462,7 @@ function renderDetailsSummary(container, data) {
     bar.appendChild(cell);
   });
   container.appendChild(bar);
+  renderDeliverablesSyncControlBar(container);
 }
 
 const DELIVERABLE_POLICY_MODE_LABELS = {
@@ -1425,7 +1595,14 @@ function ewoPolicyErrorMessage(error) {
       .join("；");
     if (fields) return fields;
   }
-  return error instanceof Error ? error.message : String(error);
+  let msg = error instanceof Error ? error.message : String(error || "");
+  if (msg.includes("映射发现证据与当前配置规则不一致")) {
+    return "配置规则已更新，系统已自动重置证据；请点击“保存同步绑定”或重新抓取证据";
+  }
+  if (msg.includes("外部稳定键")) {
+    msg = msg.replace(/外部稳定键/g, "目标单号");
+  }
+  return msg;
 }
 
 // 保存成功后的状态提示：详情页重绘由 loadProjectOverview 的
@@ -1901,16 +2078,16 @@ function renderSyncBindingEditor(container, item, policy, options = {}) {
   bindingGrid.appendChild(credentialLabel);
 
   const externalKeyLabel = overviewEl("label", "policy-ewo-field");
-  externalKeyLabel.appendChild(overviewEl("span", null, "外部稳定键"));
+  externalKeyLabel.appendChild(overviewEl("span", null, "关联目标单号"));
   const externalKeyInput = document.createElement("input");
   externalKeyInput.type = "text";
   externalKeyInput.name = "externalKey";
   externalKeyInput.id = `policy-external-key-${itemToken}`;
   externalKeyInput.maxLength = 200;
   externalKeyInput.value = ewoPolicyString(currentPolicy.externalKey);
-  externalKeyInput.placeholder = "例如：EWO-2026-0001";
+  externalKeyInput.placeholder = "选填，输入需跟踪的目标单号（留空自动关联）";
   externalKeyLabel.appendChild(externalKeyInput);
-  externalKeyLabel.appendChild(overviewEl("small", "policy-field-note", "必须与映射发现记录中的唯一外部记录一致。"));
+  externalKeyLabel.appendChild(overviewEl("small", "policy-field-note", "需跟踪的外部单号；如留空，将在保存或抓取时根据匹配条件自动关联。"));
   bindingGrid.appendChild(externalKeyLabel);
   const ewoBindingMode = capabilities.reportType === "ewo" ? document.createElement("select") : null;
   if (ewoBindingMode) ewoBindingMode.name = "ewoBindingMode";
@@ -1949,6 +2126,11 @@ function renderSyncBindingEditor(container, item, policy, options = {}) {
     input.dataset.filterName = filterName || key;
     input.value = ewoPolicyString(matchRule[key]);
     input.placeholder = placeholder || "可选";
+    input.addEventListener("input", () => {
+      if ((key === "ewoNo" || key === "sourceItemId") && !externalKeyInput.value.trim()) {
+        externalKeyInput.value = input.value.trim();
+      }
+    });
     field.appendChild(input);
     matchInputs.set(key, input);
     matchGroup.appendChild(field);
@@ -2143,6 +2325,9 @@ function renderSyncBindingEditor(container, item, policy, options = {}) {
       if (value) payload.matchRule[key] = value;
       else delete payload.matchRule[key];
     });
+    if (!payload.externalKey && !payload.matchRule.aggregate) {
+      if (payload.matchRule.ewoNo) payload.externalKey = payload.matchRule.ewoNo;
+    }
     EWO_POLICY_AUTOMATIC_FIELDS.forEach(([key]) => {
       const authorityInput = authorityGroup.querySelector(`[data-authority-field="${key}"]`);
       const mappingInput = authorityGroup.querySelector(`[data-mapping-field="${key}"]`);
@@ -2174,8 +2359,8 @@ function renderSyncBindingEditor(container, item, policy, options = {}) {
     const mode = ewoBindingMode.value;
     const setMode = mode === "record_set";
     externalKeyLabel.hidden = setMode || (mode === "legacy" && storedEwoRule.aggregate === true);
-    externalKeyLabel.querySelector("span").textContent = mode === "single_record" ? "固定版本记录 ID" : "外部稳定键";
-    externalKeyInput.placeholder = mode === "single_record" ? "32位内部记录ID；不自动跟随修订" : "例如：EWO-2026-0001";
+    externalKeyLabel.querySelector("span").textContent = mode === "single_record" ? "固定版本记录 ID" : "关联目标单号";
+    externalKeyInput.placeholder = mode === "single_record" ? "32位内部记录ID；不自动跟随修订" : "选填，输入需跟踪的目标单号（留空自动关联）";
     ["owner", "plannedDate"].forEach((key) => {
       const input = authorityGroup.querySelector(`[data-authority-field="${key}"]`);
       const mapping = authorityGroup.querySelector(`[data-mapping-field="${key}"]`);
@@ -2205,9 +2390,9 @@ function renderSyncBindingEditor(container, item, policy, options = {}) {
       || (payload.credentialRef === "domain" && vaultConfigured);
     if (!credentialReady) missing.push(vaultConfigured ? "尚未绑定统一域账号凭据" : "凭据保护库未配置");
     const aggregateMode = payload.matchRule.aggregate === true;
-    if (!aggregateMode && !payload.externalKey) missing.push("外部稳定键未确认");
+    if (!aggregateMode && !payload.externalKey) missing.push("目标单号未确认（可填写EWO单号或抓取证据自动识别）");
     if (payload.enabled && !aggregateMode && !lastEvidenceExternalKey) {
-      missing.push("请先抓取映射证据（连续两次一致）");
+      missing.push("请先抓取映射证据（验证匹配结果）");
     }
     if (
       payload.enabled
@@ -2215,7 +2400,7 @@ function renderSyncBindingEditor(container, item, policy, options = {}) {
       && lastEvidenceExternalKey
       && payload.externalKey !== lastEvidenceExternalKey
     ) {
-      missing.push("外部稳定键与最近一次映射证据不一致，请重新抓取证据");
+      missing.push("目标单号与最近一次抓取证据不一致，请点击“抓取映射证据”重新验证");
     }
     const matchKeys = Object.keys(payload.matchRule).filter((key) => !["reportType", "aggregate", "contractVersion", "bindingMode", "sourceItemId"].includes(key));
     if (matchKeys.length === 0) missing.push("至少填写一个匹配条件");
@@ -6895,6 +7080,14 @@ function renderDeliverableDetailPage(deliverableId) {
       `手工字段只读：${redactSensitiveText(manualEditState.reason)}`,
     ));
   }
+  const overdueSummary = deliverableSnapshotSummary(displayItem);
+  if (displayItem.status === "已逾期" && overdueSummary && Number(overdueSummary.summary.overdue) > 0) {
+    const riskBanner = overviewEl("div", "deliverable-overdue-risk-banner");
+    const riskSpan = overviewEl("span", null);
+    riskSpan.innerHTML = `⚠️ <strong>过程工单超期预警</strong>：快照总计 <strong>${overdueSummary.summary.total}</strong> 笔单据，已完成 ${overdueSummary.summary.completed} 笔（推进进度 ${displayItem.progress}%）；检测到 <strong>${overdueSummary.summary.overdue}</strong> 笔在途单据已过要求完成时间，建议优先协调催办。`;
+    riskBanner.appendChild(riskSpan);
+    head.appendChild(riskBanner);
+  }
   page.appendChild(head);
   page.appendChild(detailEditPanel);
 
@@ -7476,6 +7669,12 @@ function renderDeliverableDetails(tbody, data) {
       if (cellIndex === 1) {
         const statusTone = hasDisplayValue ? deliverableTone(item) : "primary";
         cell.appendChild(overviewEl("span", `status-text is-${statusTone}`, safeDisplayValue(value)));
+        const snapshot = deliverableSnapshotSummary(item);
+        if (item.status === "已逾期" && snapshot && Number(snapshot.summary.overdue) > 0) {
+          const riskNote = overviewEl("span", "badge-risk-note", `${snapshot.summary.overdue}单超期`);
+          riskNote.title = `快照中存在 ${snapshot.summary.overdue} 笔在途工单超过完成时限，交付物推进进度为 ${item.progress}%`;
+          cell.appendChild(riskNote);
+        }
       } else {
         cell.textContent = safeDisplayValue(value);
       }

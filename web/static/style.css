@@ -837,6 +837,104 @@ h4 {
   overflow-wrap: anywhere;
 }
 
+/* 交付物明细自动同步控制条与风险预警条 */
+.details-sync-control-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--hairline);
+}
+
+.details-sync-control-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+
+.details-sync-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.details-sync-indicator.is-running {
+  color: #10b981;
+}
+
+.details-sync-indicator.is-paused {
+  color: #f59e0b;
+}
+
+.details-sync-meta {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.details-sync-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.details-sync-interval-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.details-sync-actions select {
+  padding: 4px 8px;
+  font-size: 12px;
+  border-radius: 4px;
+  border: 1px solid var(--hairline);
+  background: var(--canvas);
+  color: var(--ink);
+}
+
+.details-sync-msg {
+  width: 100%;
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.badge-risk-note {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #dc2626;
+  background: rgba(220, 38, 38, 0.1);
+  border-radius: 4px;
+}
+
+.deliverable-overdue-risk-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 12px 0 16px 0;
+  padding: 10px 16px;
+  background: #fffbeb;
+  border: 1px solid #fef3c7;
+  border-left: 4px solid #f59e0b;
+  border-radius: 6px;
+  color: #92400e;
+  font-size: 13px;
+}
+
 .overview-table-wrap {
   width: 100%;
   overflow-x: auto;

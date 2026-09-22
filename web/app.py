@@ -4921,6 +4921,126 @@ def create_app(
             logger.exception("project status sync-now failed")
             return _json_error(500, "ServerError", _sanitize_error_message(exc))
 
+    @app.get("/api/project-status/scheduler")
+    def api_project_status_scheduler_status():
+        from services.project_status_scheduler import get_global_scheduler
+        scheduler = get_global_scheduler()
+        if scheduler is not None:
+            data = scheduler.get_status()
+        else:
+            bindings = []
+            try:
+                bindings = db.list_eligible_sync_bindings(None)
+            except Exception:
+                pass
+            data = {
+                "running": False,
+                "paused": False,
+                "intervalSeconds": 900,
+                "lastTickAt": None,
+                "nextRunSeconds": None,
+                "eligibleCount": len(bindings),
+                "lastResults": [],
+            }
+        response = jsonify({"ok": True, "data": data})
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.post("/api/project-status/scheduler/config")
+    def api_project_status_scheduler_config():
+        local_error = _local_web_mutation_error()
+        if local_error is not None:
+            return local_error
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return _json_error(400, "ValidationError", "JSON object body is required")
+        interval = payload.get("intervalSeconds")
+        paused = payload.get("paused")
+        if interval is not None:
+            if not isinstance(interval, int) or interval <= 0:
+                return _json_error(400, "ValidationError", "intervalSeconds must be a positive integer")
+        if paused is not None:
+            if not isinstance(paused, bool):
+                return _json_error(400, "ValidationError", "paused must be a boolean")
+
+        from services.project_status_scheduler import get_global_scheduler
+        scheduler = get_global_scheduler()
+        if scheduler is not None:
+            if interval is not None:
+                scheduler.set_interval(interval)
+            if paused is not None:
+                if paused:
+                    scheduler.pause()
+                else:
+                    scheduler.resume()
+            data = scheduler.get_status()
+        else:
+            eligible_count = 0
+            try:
+                eligible_count = len(db.list_eligible_sync_bindings(None))
+            except Exception:
+                pass
+            data = {
+                "running": False,
+                "paused": bool(paused),
+                "intervalSeconds": interval or 900,
+                "lastTickAt": None,
+                "nextRunSeconds": None,
+                "eligibleCount": eligible_count,
+                "lastResults": [],
+            }
+        response = jsonify({"ok": True, "data": data})
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.post("/api/project-status/scheduler/sync-all")
+    def api_project_status_scheduler_sync_all():
+        local_error = _local_web_mutation_error()
+        if local_error is not None:
+            return local_error
+        from services.project_status_scheduler import get_global_scheduler
+        scheduler = get_global_scheduler()
+        if scheduler is not None:
+            results = scheduler.trigger_sync_all(force=True)
+        else:
+            runner = ProjectStatusSyncRunner(
+                db,
+                update_service,
+                create_production_registry(),
+            )
+            bindings = []
+            try:
+                bindings = db.list_eligible_sync_bindings(None)
+            except Exception:
+                pass
+            results = []
+            for b in bindings:
+                d_id = str(b.get("deliverable_id") or "")
+                if not d_id:
+                    continue
+                try:
+                    runner_res = runner.run_once(
+                        deliverable_id=d_id,
+                        trigger_type="manual_all",
+                        validate_runtime_prerequisites=False,
+                    )
+                    item_info = {"deliverableId": d_id, "status": "success"}
+                    if hasattr(runner_res, "results") and runner_res.results:
+                        first = runner_res.results[0]
+                        item_info["outcome"] = getattr(first, "outcome", None)
+                        item_info["finalState"] = getattr(first, "final_state", None)
+                        item_info["appliedFields"] = list(getattr(first, "applied_fields", []))
+                    results.append(item_info)
+                except Exception as exc:
+                    results.append({
+                        "deliverableId": d_id,
+                        "status": "error",
+                        "error": _sanitize_error_message(exc),
+                    })
+        response = jsonify({"ok": True, "data": {"results": results, "count": len(results)}})
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
     @app.patch("/api/project-status/phases/<phase_id>/milestones")
     def api_project_status_milestones_update(phase_id: str):
         local_error = _local_web_mutation_error()

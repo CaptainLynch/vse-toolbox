@@ -315,3 +315,81 @@ def test_immediate_stop_event_contract_for_run_forever() -> None:
 
     assert len(runner.calls) == 1
     assert runner.calls[0]["deliverable_id"] == "VPI-T2-D2"
+
+
+def test_scheduler_pause_and_resume() -> None:
+    db = FakeDb([_binding("VPI-T2-D2", None)])
+    runner = FakeRunner()
+    scheduler = ProjectStatusSyncScheduler(
+        db, runner, clock=FakeClock(), interval=900
+    )
+    assert not scheduler.is_paused
+
+    scheduler.pause()
+    assert scheduler.is_paused
+    scheduler.tick()
+    assert len(runner.calls) == 0  # 暂停时跳过执行
+
+    scheduler.resume()
+    assert not scheduler.is_paused
+    scheduler.tick()
+    assert len(runner.calls) == 1  # 恢复后正常执行
+
+
+def test_scheduler_dynamic_interval() -> None:
+    scheduler = ProjectStatusSyncScheduler(
+        FakeDb([]), FakeRunner(), clock=FakeClock(), interval=900
+    )
+    assert scheduler.interval == 900
+    scheduler.set_interval(300)
+    assert scheduler.interval == 300
+    with pytest.raises(ValueError):
+        scheduler.set_interval(-1)
+
+
+def test_scheduler_get_status() -> None:
+    clock = FakeClock(1_000_000.0)
+    db = FakeDb([_binding("VPI-T2-D2", None), _binding("VPI-T2-D3", None)])
+    scheduler = ProjectStatusSyncScheduler(
+        db, FakeRunner(), clock=clock, interval=900
+    )
+    status = scheduler.get_status()
+    assert status["running"] is True
+    assert status["paused"] is False
+    assert status["intervalSeconds"] == 900
+    assert status["eligibleCount"] == 2
+    assert status["nextRunSeconds"] == 900
+
+    scheduler.pause()
+    assert scheduler.get_status()["paused"] is True
+    assert scheduler.get_status()["nextRunSeconds"] is None
+
+
+def test_scheduler_trigger_sync_all() -> None:
+    db = FakeDb([_binding("VPI-T2-D2", None), _binding("VPI-T2-D3", None)])
+    runner = FakeRunner()
+    scheduler = ProjectStatusSyncScheduler(
+        db, runner, clock=FakeClock(), interval=900
+    )
+    results = scheduler.trigger_sync_all(force=True)
+    assert len(results) == 2
+    assert len(runner.calls) == 2
+    ids = {c["deliverable_id"] for c in runner.calls}
+    assert ids == {"VPI-T2-D2", "VPI-T2-D3"}
+    assert all(c["trigger_type"] == "manual_all" for c in runner.calls)
+
+
+def test_global_scheduler_registry() -> None:
+    from services.project_status_scheduler import (
+        get_global_scheduler,
+        set_global_scheduler,
+    )
+    set_global_scheduler(None)
+    assert get_global_scheduler() is None
+
+    scheduler = ProjectStatusSyncScheduler(
+        FakeDb([]), FakeRunner(), clock=FakeClock(), interval=900
+    )
+    assert get_global_scheduler() is scheduler
+    set_global_scheduler(None)
+    assert get_global_scheduler() is None

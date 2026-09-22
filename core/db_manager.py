@@ -1295,6 +1295,37 @@ class DatabaseManager:
                 "ADD COLUMN aggregated_candidate_json TEXT"
             )
 
+        # 兼容性迁移：若存量历史 mapping_observations 的 config_signature 为空，
+        # 但存在匹配当前绑定的合法证据，自动根据绑定 match_rule_json 计算回填，
+        # 杜绝存量数据升级后调用 sync-now 时因签名缺失误判 409。
+        has_null_sig = conn.execute(
+            "SELECT 1 FROM project_status_mapping_observations "
+            "WHERE (config_signature IS NULL OR config_signature = '') "
+            "  AND result_state = 'matched' LIMIT 1"
+        ).fetchone()
+        if has_null_sig:
+            bindings = conn.execute(
+                "SELECT deliverable_id, source_type, match_rule_json "
+                "FROM project_status_deliverable_bindings "
+                "WHERE enabled = 1"
+            ).fetchall()
+            for b in bindings:
+                try:
+                    rule = json.loads(b["match_rule_json"]) if b["match_rule_json"] else None
+                    if isinstance(rule, dict):
+                        from services.project_status_records import compute_config_signature
+                        sig = compute_config_signature(b["source_type"], rule)
+                        conn.execute(
+                            "UPDATE project_status_mapping_observations "
+                            "SET config_signature = ? "
+                            "WHERE deliverable_id = ? "
+                            "  AND (config_signature IS NULL OR config_signature = '') "
+                            "  AND result_state = 'matched'",
+                            (sig, b["deliverable_id"])
+                        )
+                except Exception:
+                    pass
+
         phase_columns = {
             str(row["name"])
             for row in conn.execute("PRAGMA table_info(project_status_phases)")
