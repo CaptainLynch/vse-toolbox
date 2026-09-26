@@ -679,7 +679,7 @@ def serialize_report_json(result: TDCContractProbeResult) -> str:
 def serialize_report_markdown(result: TDCContractProbeResult) -> str:
     """将报告序列化为 Markdown 字符串。"""
     lines: list[str] = []
-    lines.append(f"# TDC 数模同步契约探测报告")
+    lines.append("# TDC 数模同步契约探测报告")
     lines.append("")
     lines.append(f"- schema_version: {result.schema_version}")
     lines.append(f"- generated_at: {result.generated_at}")

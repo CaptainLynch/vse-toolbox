@@ -99,6 +99,48 @@ def _error_type(exc: BaseException) -> str:
     return "connector_error"
 
 
+#: 未就绪原因码 → 可操作指引码（闭集，前端据此给出「去哪里配什么」）。
+#: 只允许闭集映射：绝不把 DB/上游的自由文本透出到响应。
+_REMEDY_BY_REASON: dict[str, str] = {
+    "credential_not_configured": "bind_domain_credential",
+    "job_disabled": "enable_job",
+    "contract_mismatch": "restore_job_contract",
+    "filters_invalid": "repair_job_filters",
+    "retry_policy_invalid": "repair_retry_policy",
+    "unknown": "inspect_job_configuration",
+}
+
+#: 失败类别（`_error_type` 的闭集返回值）→ 可操作指引码。
+_REMEDY_BY_ERROR_TYPE: dict[str, str] = {
+    "job_not_ready": "inspect_job_configuration",
+    "missing_job": "inspect_job_configuration",
+    "credential_unavailable": "save_domain_credential",
+    "credential_invalid": "refresh_domain_credential",
+    "authentication_error": "refresh_domain_credential",
+    "lease_busy": "wait_and_retry",
+    "query_failed": "retry_or_narrow_filters",
+    "timeout": "retry_or_narrow_filters",
+    "connector_unavailable": "restore_job_contract",
+    "internal_data": "inspect_job_configuration",
+    "invalid_data": "inspect_job_configuration",
+}
+
+
+def remedy_for_error_type(error_type: str | None) -> str | None:
+    """按失败类别返回闭集指引码；未登记类别返回 None（宁缺勿猜）。"""
+    if not error_type:
+        return None
+    return _REMEDY_BY_ERROR_TYPE.get(str(error_type))
+
+
+def remedy_for(exc: BaseException) -> str | None:
+    """返回异常对应的闭集指引码；优先使用更具体的未就绪原因码。"""
+    if isinstance(exc, ArchiveJobNotReadyError):
+        reason = str(getattr(exc, "reason", "unknown"))
+        return _REMEDY_BY_REASON.get(reason, "inspect_job_configuration")
+    return remedy_for_error_type(_error_type(exc))
+
+
 def _safe_exception_message(exc: BaseException) -> str:
     """Return a stable diagnostic without reflecting external exception text."""
     if isinstance(exc, TDCCrawlerError):
@@ -226,6 +268,8 @@ class ArchiveJobRunResult:
     final_state: str | None = None
     error_type: str | None = None
     error_message: str | None = None
+    #: 闭集指引码（见 remedy_for）；仅用于让调用方给出可操作下一步。
+    remedy: str | None = None
 
 
 @dataclass(frozen=True)
@@ -440,6 +484,7 @@ class ArchiveSyncRunner:
                 "not_ready",
                 error_type=_error_type(exc),
                 error_message=_safe_exception_message(exc),
+                remedy=remedy_for(exc),
             )
         except Exception as exc:
             if lease is None:
@@ -549,6 +594,7 @@ class ArchiveSyncRunner:
                             "not_ready",
                             error_type="missing_job",
                             error_message=error_msg,
+                            remedy=remedy_for_error_type("missing_job"),
                         ),
                     ),
                     dry_run,
@@ -683,6 +729,7 @@ class ArchiveSyncRunner:
             "needs_attention",
             error_type,
             safe_message,
+            remedy_for_error_type(error_type),
         )
 
     def _finalize_exception(
@@ -725,6 +772,7 @@ class ArchiveSyncRunner:
                 run_id,
                 error_type="lease_lost",
                 error_message=_safe_exception_message(lost),
+                remedy=remedy_for_error_type("lease_lost"),
             )
         return ArchiveJobRunResult(
             job_id,
@@ -734,6 +782,7 @@ class ArchiveSyncRunner:
             final_state,
             category,
             message,
+            remedy_for(exc),
         )
 
     def _safe_finalize_failure(

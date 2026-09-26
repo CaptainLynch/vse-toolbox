@@ -400,14 +400,14 @@ def test_statistics_ui_static_contract() -> None:
     # Safe DOM：统计分析代码段不允许 innerHTML。
     assert "innerHTML" not in statistics_source
 
-    # 外部快照驱动徽标（环图卡与明细行）。
-    assert "snapshot-driven-badge" in js
-    assert "外部快照·参考" in js
+    # 外部快照徽标已按用户 2026-09-25 口径移除（卡片与明细行都不再展示）；
+    # formSnapshotDriven 能力标志仍保留，继续驱动展示状态机与不计入分母口径。
+    assert "snapshot-driven-badge" not in js
+    assert "外部快照·参考" not in js
     assert "formSnapshotDriven" in js
 
     for marker in (
         ".deliverable-statistics",
-        ".snapshot-driven-badge",
         ".statistics-metric-grid",
         ".statistics-status-fill",
         ".statistics-top-table",

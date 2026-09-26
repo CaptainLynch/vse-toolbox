@@ -16,6 +16,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Mapping, Sequence
 
 from core.db_manager import DatabaseManager
+from core.project_status_contracts import project_status_source_capabilities
 from core.redaction import redact_sensitive_text
 
 # EWO 的业务范围由来源系统的 `_rsp_smt` 字段决定。这里的常量同时供
@@ -174,9 +175,41 @@ _COMPLETED_STATUSES = frozenset({
 
 
 def is_ewo_source_type(source_type: object) -> bool:
-    """Return whether an explicit source type is an EWO analysis source."""
+    """Return whether an explicit source type is an EWO analysis source.
+
+    注意：裸 ``"aras"`` 保留在集合内**仅为兼容历史缓存行**（旧版本把所有
+    Aras 报表都写成 ``"aras"``）。新的写入路径必须使用限定标签
+    （``analysis_source_type``）：``aras_ewo`` 才是 EWO，PAA/NCR 分别是
+    ``aras_paa`` / ``aras_ncr``，否则 EWO 的阶段/逾期状态机会污染它们。
+    """
     normalized = str(source_type or "").strip().casefold()
     return normalized in _EWO_SOURCE_TYPES
+
+
+#: Aras 报表 → 限定来源标签（禁止与 EWO 共用裸 "aras"）。
+#: EWO 也必须显式限定：裸 "aras" 只作为历史缓存行的读取兼容而保留。
+_ARAS_REPORT_SOURCE_TAGS: dict[str, str] = {
+    "ewo": "aras_ewo",
+    "paa": "aras_paa",
+    "ncr_progress": "aras_ncr",
+    "ncr_detail": "aras_ncr",
+}
+
+
+def analysis_source_type(source_type: object, report_type: object = None) -> str:
+    """分析缓存使用的来源标签（写入侧唯一口径）。
+
+    EWO 的阶段机（``EWO_ACTIVE_STAGES`` / ``EWO_TERMINAL_STAGE``）只适用于
+    EWO 报表。历史上所有 Aras 报表都以裸 ``"aras"`` 落库，导致 PAA/NCR 的
+    分析项被按 EWO 语义归一化与评分；写入侧改用按报表限定的标签后，
+    ``is_ewo_source_type`` 对 PAA/NCR 自然为 False。EWO 自身写作 ``aras_ewo``，
+    裸 ``"aras"`` 仅保留为历史缓存行的读取兼容。
+    """
+    normalized = str(source_type or "").strip().casefold()
+    report = str(report_type or "").strip().casefold()
+    if normalized == "aras" and report in _ARAS_REPORT_SOURCE_TAGS:
+        return _ARAS_REPORT_SOURCE_TAGS[report]
+    return normalized
 
 
 def normalize_ewo_stage(value: object) -> str | None:
@@ -1293,7 +1326,12 @@ class ProjectStatusDeliverableAnalysisService:
 
     @staticmethod
     def _is_ewo_deliverable(deliverable_id: str, deliverable: Mapping[str, Any]) -> bool:
-        if deliverable_id != "VPI-T2-D3":
+        # EWO 判定来自能力注册表 reportType（取代 deliverable_id 硬编码），
+        # 并用交付物来源文案作为二次约束。
+        report = str(
+            project_status_source_capabilities(deliverable_id).get("reportType") or ""
+        ).strip().casefold()
+        if report != "ewo":
             return False
         source = re.sub(r"[\s_-]+", "", str(deliverable.get("source") or "")).casefold()
         return source == "arasewo"

@@ -28,9 +28,11 @@ class ResolvedCredential:
 
 class CredentialProvider(Protocol):
     @contextmanager
-    def resolve(self, credential_ref: str) -> Iterator[ResolvedCredential]: ...
+    def resolve(self, credential_ref: str) -> Iterator[ResolvedCredential]:
+        ...
 
-    def is_available(self, credential_ref: str) -> bool: ...
+    def is_available(self, credential_ref: str) -> bool:
+        ...
 
 
 class WindowsCredentialManagerProvider:

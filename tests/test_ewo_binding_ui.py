@@ -11,7 +11,7 @@ def test_migrating_editor_sets_explicit_version_and_manual_scalar_authority():
     result = run_node_vm_test('''
     const render = vm.runInContext('renderSyncBindingEditor', context);
     const host = doc.createElement('div'); doc.body.appendChild(host);
-    const item = {id:'VPI-T2-D3',name:'EWO',sourceInfo:{reportType:'ewo',aggregate:true}};
+    const item = {id:'VPI-T2-D3',name:'EWO',sourceInfo:{reportType:'ewo',aggregate:true,supportsRecordSet:true}};
     const policy = {mode:'hybrid',enabled:true,externalKey:'E-1',credentialAvailable:true,
       matchRule:{reportType:'ewo',aggregate:true,modelInfo:'SYNTHETIC'},
       mapping:{owner:'engineer',plannedDate:'due',note:'summary'},
@@ -27,7 +27,12 @@ def test_migrating_editor_sets_explicit_version_and_manual_scalar_authority():
     global.fetch = async (path,options) => { sent=JSON.parse(options.body); throw new Error('stop after capture'); };
     host.querySelector('form').dispatchEvent({type:'submit',preventDefault(){}});
     await new Promise(resolve=>setTimeout(resolve,0));
-    return {before,owner:owner.checked,date:date.checked,disabled:owner.disabled,enabled:enabled.checked,sent};
+    // 版本化绑定合同由后端能力决定：未声明 supportsRecordSet 的交付物不渲染该控件。
+    const host2 = doc.createElement('div'); doc.body.appendChild(host2);
+    const nonVersioned = {id:'VPI-T2-D6',name:'PAA',sourceInfo:{reportType:'paa',aggregate:true,supportsRecordSet:false}};
+    render(host2, nonVersioned, policy);
+    const legacyModeAbsent = host2.querySelector('[name="ewoBindingMode"]') === null;
+    return {before,owner:owner.checked,date:date.checked,disabled:owner.disabled,enabled:enabled.checked,sent,legacyModeAbsent};
     ''')
     assert result['before'] == {'mode': 'legacy', 'owner': True, 'enabled': True}
     assert result['owner'] is False and result['date'] is False
@@ -36,3 +41,4 @@ def test_migrating_editor_sets_explicit_version_and_manual_scalar_authority():
     assert result['sent']['matchRule']['bindingMode'] == 'record_set'
     assert result['sent']['externalKey'] is None
     assert result['sent']['mapping'] == {'note': 'summary'}
+    assert result['legacyModeAbsent'] is True

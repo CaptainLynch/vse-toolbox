@@ -24,6 +24,7 @@ from services.aras_crawler import (
     NCRApprovalFilters,
     PAAReportFilters,
 )
+from services.aras_ncr_workbook import parse_ncr_workbook
 from services.scheduled_archive_runner import (
     ArchiveCollection,
     ArchiveConnectorRegistry,
@@ -38,7 +39,6 @@ from services.tdc_crawler import (
 from services.xlsx_preview import (
     XLSXPreviewError,
     read_xlsx_preview,
-    read_xlsx_workbook_preview,
 )
 
 _MAX_TEXT = 512
@@ -46,9 +46,17 @@ _TDC_MAX_RECORDS = 10000
 _ARAS_EWO_MAX_RECORDS = 2000
 _ARAS_PAA_MAX_RECORDS = 12000
 
+#: 工作簿投影失败但不在既有三码内的补充码（runner 的闭集消息表对未知码
+#: 退化为 form_projection_failed，具体停机原因由 manifest 的簿记事实披露）。
+FORM_PROJECTION_ADMISSION_FAILED = "official_workbook_admission_failed"
+
 
 class _WorkbookPreviewTruncatedError(ValueError):
-    """Raised when a bounded preview cannot represent the whole workbook."""
+    """Raised when a bounded preview cannot represent the whole workbook.
+
+    TDC 官方工作簿的投影仍然使用该类型（ARAS NCR 已迁移到
+    `services.aras_ncr_workbook` 的簿记事实 + 准入停机原因）。
+    """
 
 
 _ARCHIVE_SENSITIVE_KEY_PARTS = (
@@ -72,6 +80,7 @@ _TDC_DATA_MODEL_KEYS = {
     "projectModel",
     "partNumber",
     "modelNumber",
+    "status",
 }
 _TDC_SOR_KEYS = {
     "processNo",
@@ -306,79 +315,6 @@ def _official_workbook_rows(path: Path, report_type: str) -> tuple[dict[str, obj
     return tuple(result)
 
 
-def _official_form_rows(
-    path: Path,
-    report_type: str,
-) -> tuple[dict[str, object], ...] | None:
-    """Read the approved NCR workbook into positional, sheet-aware rows."""
-    if report_type not in {"ncr_progress", "ncr_detail"}:
-        raise ValueError("unsupported ARAS form workbook report")
-    try:
-        previews = read_xlsx_workbook_preview(path, max_rows=20001, max_columns=200)
-    except XLSXPreviewError:
-        return None
-    contract = report_contracts()[report_type]
-    header_index = 1 if report_type == "ncr_progress" else 0
-    expected = [
-        str(value or "").strip()
-        for value in contract["headerRows"][header_index]
-    ]
-    expected_indexes = {
-        label: index
-        for index, label in enumerate(expected)
-        if label
-    }
-    minimum_data_row = len(contract["headerRows"])
-    result: list[dict[str, object]] = []
-    for sheet_index, preview in enumerate(previews):
-        rows = preview.rows
-        if report_type == "ncr_progress" and sheet_index > 0:
-            continue
-        if preview.truncated:
-            raise _WorkbookPreviewTruncatedError(
-                "official workbook preview truncated"
-            )
-        if len(rows) <= header_index:
-            continue
-        # NCR 进度的 second sheet is a filter summary, not the report table.
-        actual = [str(value or "").strip() for value in rows[header_index]]
-        actual = actual[: len(expected)] + [""] * max(0, len(expected) - len(actual))
-        if report_type == "ncr_progress" and actual != expected:
-            raise ValueError(
-                f"official ARAS {report_type} export header does not match the approved contract"
-            )
-        if report_type == "ncr_detail":
-            # The vehicle sheet has a dynamic model-matrix block while the
-            # engine sheet omits that block.  Align stable named columns to
-            # the approved schema so cost and workflow fields keep the same
-            # positions on both sheets.
-            actual_nonempty = {label for label in actual if label}
-            required = set(expected[:17]) - {""}
-            if not required.issubset(actual_nonempty):
-                raise ValueError(
-                    f"official ARAS {report_type} export header does not match the approved contract"
-                )
-        data_start = minimum_data_row
-        if report_type == "ncr_detail" and actual != expected:
-            # The engine sheet has a one-row header and no model matrix.
-            data_start = header_index + 1
-        for raw_row in rows[data_start:]:
-            if not raw_row or not any(value not in (None, "") for value in raw_row):
-                continue
-            values: list[object | None]
-            if report_type == "ncr_detail" and actual != expected:
-                values = [None] * len(expected)
-                for source_index, label in enumerate(actual):
-                    target_index = expected_indexes.get(label)
-                    if target_index is not None and source_index < len(raw_row):
-                        values[target_index] = raw_row[source_index]
-            else:
-                values = list(raw_row[: len(expected)])
-                values.extend([None] * max(0, len(expected) - len(values)))
-            result.append({"values": values, "sheetName": preview.sheet_name})
-    return tuple(result)
-
-
 class TDCArchiveConnector:
     """Collect official XLSX plus normalized API rows for TDC jobs."""
 
@@ -516,6 +452,7 @@ class TDCArchiveConnector:
             project_model=_text(rule.get("projectModel")),
             part_number=_text(rule.get("partNumber")),
             model_number=_text(rule.get("modelNumber")),
+            status=_text(rule.get("status")),
         )
 
     @staticmethod
@@ -643,17 +580,20 @@ class ArasArchiveConnector:
             # Validate and normalize while the download is still alive.  This
             # also prevents an invalid workbook from leaving an unreferenced
             # official artifact in the archive root.
-            form_projection_error: str | None = None
-            try:
-                form_rows = _official_form_rows(downloaded, context.report_type)
-            except _WorkbookPreviewTruncatedError:
-                form_rows = None
-                form_projection_error = "official_workbook_truncated"
-            except ValueError:
-                form_rows = None
-                form_projection_error = "official_workbook_contract_invalid"
-            if form_rows is None and form_projection_error is None:
-                form_projection_error = "official_workbook_unreadable"
+            #
+            # 唯一解析口径（用户 2026-09-25 架构定案）：归档与同步路径共用
+            # services.aras_ncr_workbook，产出同一份「按已批准表头标签命名」的行，
+            # 避免同一交付物因最后写入者不同而出现两种快照形状。
+            outcome = parse_ncr_workbook(downloaded, context.report_type)
+            form_projection_error = outcome.projection_error
+            form_rows: tuple[dict[str, object], ...] | None = None
+            if form_projection_error is None:
+                if outcome.complete:
+                    form_rows = outcome.named_rows()
+                else:
+                    # 簿记不平 / 存在未归类行 / 空表：不落库部分投影，
+                    # 官方产物仍保留，run 以 attention 披露。
+                    form_projection_error = FORM_PROJECTION_ADMISSION_FAILED
             with downloaded.open("rb") as stream:
                 official = archive.write_stream(
                     stream,
@@ -675,6 +615,10 @@ class ArasArchiveConnector:
                     if form_rows is not None
                     else "pending_verified_workbook_contract"
                 ),
+                # 簿记事实（有界、非敏感）：用于生产证据校准准入策略。
+                "bookkeeping": outcome.bookkeeping_facts(),
+                "stopReason": outcome.stop_reason,
+                "projectionError": form_projection_error,
             },
             source=context.source_type,
             report=context.report_type,

@@ -6,7 +6,10 @@ services/project_status_updates.py - 项目状态交付物更新策略与审计�
 from __future__ import annotations
 
 from core.diagnostic_recording import observed
-from core.project_status_contracts import PROJECT_STATUS_SOURCE_CAPABILITIES
+from core.project_status_contracts import (
+    PROJECT_STATUS_SOURCE_CAPABILITIES,
+    project_status_supports_record_set,
+)
 from core.ewo_binding_v2 import normalize_ewo_v2_rule
 import json
 from dataclasses import dataclass, field
@@ -210,6 +213,7 @@ ALLOWED_TDC_MATCH_KEYS = frozenset(
         "ewoNo",
         "projectCode",
         "subjectKeyword",
+        "status",
     }
 )
 
@@ -512,6 +516,16 @@ class ProjectStatusUpdateService:
             str(value) for value in report.get("fields", [])
             if isinstance(value, str)
         }
+        if isinstance(mapping, dict) and isinstance(mapping.get("note"), list):
+            valid_notes = [
+                str(item).strip()
+                for item in mapping["note"]
+                if isinstance(item, str) and item.strip() in observed_fields
+            ]
+            if not valid_notes:
+                return "自动字段映射必须来自最新的脱敏字段报告并由用户确认"
+            mapping["note"] = valid_notes
+
         mapped_source_fields = set()
         for value in mapping.values():
             if isinstance(value, str) and value.strip():
@@ -892,7 +906,10 @@ class ProjectStatusUpdateService:
         new_v2 = isinstance(match_rule, dict) and any(
             key in match_rule for key in ('contractVersion', 'bindingMode', 'sourceItemId'))
         if old_v2 or new_v2:
-            if deliverable_id != 'VPI-T2-D3' or payload.get('bindingContractVersion') != '2':
+            if (
+                not project_status_supports_record_set(deliverable_id)
+                or payload.get('bindingContractVersion') != '2'
+            ):
                 fields['bindingContractVersion'] = '请使用新版EWO绑定编辑器显式确认合同版本'
             if old_v2 and not new_v2:
                 fields['matchRule'] = '新版EWO绑定不能退回旧版合同'
@@ -1054,7 +1071,9 @@ class ProjectStatusUpdateService:
                 _json_dumps(match_rule), _json_dumps(mapping), normalized_authority,
                 credential_ref=credential_ref, interval_minutes=interval_minutes,
                 expected_sync_config_revision=(
-                    int(binding.get('sync_config_revision') or 0) if deliverable_id == 'VPI-T2-D3' else None
+                    int(binding.get('sync_config_revision') or 0)
+                    if project_status_supports_record_set(deliverable_id)
+                    else None
                 ),
             )
         except ProjectStatusConcurrentUpdateError:

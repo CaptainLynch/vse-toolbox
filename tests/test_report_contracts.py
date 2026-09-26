@@ -9,6 +9,10 @@ import pytest
 
 from core.report_contracts import report_contracts, table_payload
 from services.aras_crawler import ArasCrawlerClient
+from services.deliverable_form_analysis import (
+    _duplicate_data_header_labels,
+    form_definition,
+)
 
 
 # ── 1. Report Contracts Structural Invariants ─────────────────────────────────
@@ -117,16 +121,72 @@ def test_ncr_progress_report_contract_invariants() -> None:
     assert "NCR编号" in labels
 
 
+def test_ncr_progress_duplicate_role_labels_are_pinned_to_date_and_owner_groups() -> None:
+    """契约守护：NCR 进度数据表头的 11 组同名角色标签必须仍是「办理时间/执行人」两块。
+
+    这是官方工作簿的既有事实（不能改契约来规避）：一个标签名对应两个列，
+    因此**位置视图**才是唯一无损的值来源（见 services/aras_ncr_workbook 的
+    `named_row()` 与 services/deliverable_form_analysis 的位置优先读取）。
+    若上游表头有变化（例如消歧、增删角色），本测试失败以提醒重新评估读取口径。
+    """
+    contract = report_contracts()["ncr_progress"]
+    parent, labels = contract["headerRows"][0], contract["headerRows"][1]
+    parent_labels = [str(value or "").strip() for value in parent]
+    names = [str(value or "").strip() for value in labels]
+    role_names = [
+        "NCR管理员", "PE科室经理", "价值工程师", "价值工程经理", "PE部门总监",
+        "财务工程师", "平台项目管理专家", "海外项目总监", "平台首席",
+        "动力平台首席", "财务部总监",
+    ]
+
+    # 父表头两块的语义（不可互换）：列 36 起是「办理时间」，列 52 起是「执行人」。
+    assert parent_labels[36] == "办理时间"
+    assert parent_labels[52] == "执行人"
+
+    # 11 个角色标签各出现两次，且两组索引恰好是 37..47 与 52..62。
+    for role in role_names:
+        indexes = [index for index, name in enumerate(names) if name == role]
+        assert indexes == [37 + role_names.index(role), 52 + role_names.index(role)]
+
+    duplicates = {
+        name for name in names if name and names.count(name) > 1
+    }
+    assert duplicates == set(role_names)
+
+    # 阶段日期按标签解析时必须命中第一组（办理时间），不是第二组（执行人）。
+    definition = form_definition("aras_ncr_progress")
+    assert _duplicate_data_header_labels(definition) == tuple(role_names)
+    for offset, role in enumerate(role_names):
+        first = next(
+            int(column["index"])
+            for column in definition["columns"]
+            if column["label"] == role
+        )
+        assert first == 37 + offset
+
+
 def test_ncr_detail_report_contract_invariants() -> None:
-    """NCR detail defines 65 columns, five header rows, data header at row 5 (index 4), and defaultVisibleCount 17."""
+    """NCR detail defines 65 columns, five header rows, data header at row 1 (index 0), and defaultVisibleCount 17."""
     contract = report_contracts()["ncr_detail"]
     assert contract["columnCount"] == 65
     assert contract["defaultVisibleCount"] == 17
-    assert contract.get("dataHeaderRow", 0) == 4  # 5th header row (0-indexed 4)
+    # 列标签行 = headerRows[0]（稳定的 17 个命名列 + 车型矩阵列）。
+    # 原值 4 指向车型矩阵带（TBD/车型号），使列标签全部落空、
+    # 按标签取值（状态 / 区域 / 项目 / NCR编号）必然失败；官方工作簿解析
+    # （services.aras_ncr_workbook）一直使用 headerRows[0]，两者现已对齐。
+    assert contract.get("dataHeaderRow", 0) == 0
 
     header_rows = contract["headerRows"]
     assert len(header_rows) == 5  # Five header rows
     assert len(header_rows[4]) == 65
+
+    labels = [str(label or "").strip() for label in header_rows[0]]
+    for required_label in (
+        "状态", "提交日期", "项目", "区域", "NCR编号", "当前节点", "采购科室",
+    ):
+        assert required_label in labels
+    # 稳定的 17 个命名列必须落在索引 0..16（与官方工作簿投影一致）。
+    assert all(labels[index] for index in range(17))
 
 
 # ── 2. table_payload Source-Key Normalization ─────────────────────────────────
@@ -192,7 +252,10 @@ def test_table_payload_normalization_with_fictional_rows(
     second_row = rows[1]
     assert len(second_row) == expected_col_count
     assert all(value is None for value in second_row)
-    if report_type == "tdc_sor":
+    if report_type in {"tdc_sor", "ncr_progress", "ncr_detail"}:
+        # NCR 的命名行以「已批准表头标签」为键，因此列映射是完备的：
+        # 不存在的键不会填值（上面的 all-None 断言），但每一列都显式声明了
+        # 自己的来源标签，不再依赖字典位置。
         assert result["unmappedColumns"] == []
         assert result["mappingComplete"] is True
     else:
@@ -204,6 +267,38 @@ def test_table_payload_normalization_with_fictional_rows(
     assert "invented_col_b" not in raw_str
     assert "invented_col_c" not in raw_str
     assert "invented_col_d" not in raw_str
+
+
+@pytest.mark.parametrize(
+    ("report_type", "row", "expected_pairs"),
+    [
+        (
+            "ncr_progress",
+            {"状态": "审批中", "区域": "车身工程科", "项目": "F999X", "NCR编号": "NCR-1"},
+            {"状态": "审批中", "区域": "车身工程科", "项目": "F999X", "NCR编号": "NCR-1"},
+        ),
+        (
+            "ncr_detail",
+            {"状态": "已完成", "项目": "F888Y", "NCR编号": "NCR-2", "当前节点": "CLOSE"},
+            {"状态": "已完成", "项目": "F888Y", "NCR编号": "NCR-2", "当前节点": "CLOSE"},
+        ),
+    ],
+)
+def test_table_payload_resolves_ncr_rows_by_approved_header_label(
+    report_type: str,
+    row: dict[str, object],
+    expected_pairs: dict[str, object],
+) -> None:
+    """NCR 命名行按已批准表头标签取值（同步与归档两条路径同形）。"""
+    result = table_payload(report_type, [row])
+    labels = [column["label"] for column in result["columns"]]
+    values = result["rows"][0]
+    by_label = {
+        label: values[index]
+        for index, label in enumerate(labels)
+        if label in expected_pairs
+    }
+    assert by_label == expected_pairs
 
 
 def test_table_payload_empty_input_rows() -> None:

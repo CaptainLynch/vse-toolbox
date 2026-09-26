@@ -585,3 +585,106 @@ def test_migrate_v1_to_v2_with_valid_evidence_enables_directly(tmp_db: DatabaseM
     assert policy["matchRule"]["contractVersion"] == "2"
     assert policy["matchRule"]["bindingMode"] == "record_set"
     assert policy["intervalMinutes"] == 15
+
+
+def test_mapping_evidence_error_sanitizes_note_list_and_persists(tmp_db: DatabaseManager) -> None:
+    """note 列表包含未知字段时只要有至少 1 个有效字段即放行并清洗写回，全未知则阻断。"""
+    service = ProjectStatusUpdateService(tmp_db)
+    match_rule = {
+        "reportType": "data_model",
+        "aggregate": True,
+        "projectModel": "F610S",
+    }
+    sig = compute_config_signature("tdc", match_rule)
+    summary = json.dumps([{"externalKey": "agg:fp-1", "fields": {"latestApproveLog": "ok"}}])
+    report = json.dumps({"fields": ["latestApproveLog", "applicant", "incident"]})
+
+    for _ in range(2):
+        tmp_db.record_mapping_observation(
+            "VPI-T2-D5", "tdc", "matched", None, "agg:fp-1", 1,
+            summary, report, config_signature=sig,
+        )
+
+    # 1. 候选包含有效字段 latestApproveLog 与未知字段 unknown_field -> 放行并清洗
+    policy = service.update_update_policy("VPI-T2-D5", {
+        "mode": "automatic",
+        "enabled": True,
+        "credentialRef": "test-alias",
+        "matchRule": match_rule,
+        "mapping": {"note": ["latestApproveLog", "unknown_field"]},
+        "fieldAuthority": {"note": "automatic"},
+    })
+    assert policy["enabled"] is True
+    assert policy["mapping"]["note"] == ["latestApproveLog"]
+
+    # 验证底层 DB 持久化的是清洗后的列表
+    raw = tmp_db.get_project_status_update_policy("VPI-T2-D5")
+    assert json.loads(raw["binding"]["mapping_json"])["note"] == ["latestApproveLog"]
+
+    # 2. 候选全部为未知字段 -> 阻断
+    with pytest.raises(ProjectStatusPolicyError) as exc_info:
+        service.update_update_policy("VPI-T2-D5", {
+            "mode": "automatic",
+            "enabled": True,
+            "credentialRef": "test-alias",
+            "matchRule": match_rule,
+            "mapping": {"note": ["non_existent_1", "non_existent_2"]},
+            "fieldAuthority": {"note": "automatic"},
+        })
+    assert "自动字段映射必须来自最新的脱敏字段报告" in exc_info.value.fields.get("enabled", "")
+
+
+def test_data_model_status_in_match_rule_is_allowed(tmp_db: DatabaseManager) -> None:
+    """VPI-T2-D5 支持在 matchRule 中配置 status 筛选。"""
+    service = ProjectStatusUpdateService(tmp_db)
+    match_rule = {
+        "reportType": "data_model",
+        "aggregate": True,
+        "projectModel": "F610S",
+        "status": "审批完成",
+    }
+    sig = compute_config_signature("tdc", match_rule)
+    summary = json.dumps([{"externalKey": "agg:fp-1", "fields": {"latestApproveLog": "ok"}}])
+    report = json.dumps({"fields": ["latestApproveLog"]})
+
+    for _ in range(2):
+        tmp_db.record_mapping_observation(
+            "VPI-T2-D5", "tdc", "matched", None, "agg:fp-1", 1,
+            summary, report, config_signature=sig,
+        )
+
+    policy = service.update_update_policy("VPI-T2-D5", {
+        "mode": "automatic",
+        "enabled": True,
+        "credentialRef": "test-alias",
+        "matchRule": match_rule,
+        "mapping": {"note": ["latestApproveLog"]},
+        "fieldAuthority": {"note": "automatic"},
+    })
+    assert policy["enabled"] is True
+    assert policy["matchRule"]["status"] == "审批完成"
+
+
+def test_assert_sync_ready_is_strictly_read_only(tmp_db: DatabaseManager) -> None:
+    """assert_sync_ready 必须是纯只读校验，严禁在校验方法内部静默修改 SQLite 绑定。"""
+    service = ProjectStatusUpdateService(tmp_db)
+    _record_two_observations_for_d5(tmp_db)
+
+    service.update_update_policy("VPI-T2-D5", {
+        "mode": "automatic",
+        "enabled": True,
+        "credentialRef": "test-alias",
+        "externalKey": "FM-1",
+        "matchRule": {"reportType": "data_model", "incident": "FM-1"},
+        "mapping": {"owner": "currentApprover"},
+        "fieldAuthority": {"owner": "automatic"},
+    })
+
+    binding_before = tmp_db.get_sync_binding_by_deliverable("VPI-T2-D5")
+    assert binding_before is not None
+
+    ready_binding = service.assert_sync_ready("VPI-T2-D5")
+    assert ready_binding["id"] == binding_before["id"]
+
+    binding_after = tmp_db.get_sync_binding_by_deliverable("VPI-T2-D5")
+    assert binding_after == binding_before

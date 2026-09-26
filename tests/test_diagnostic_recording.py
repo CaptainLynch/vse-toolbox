@@ -204,3 +204,33 @@ def test_native_error_code_survives_without_native_error_message(tmp_path):
         data = json.loads(bundle.read('exceptions.json'))[0]['data']
         assert data['causes'][1]['errno'] == 5
         assert b'SYNTHETIC_SECRET' not in bundle.read('exceptions.json')
+
+
+def test_product_disclosure_payloads_survive_recording(tmp_path):
+    """产品披露事件（NCR 部门过滤 / 歧义表头标签）必须在录制产物里可读。
+
+    回归背景：`emit` 的事件名能留存，但 `safe_metadata` 只白名单转发固定键，
+    文本值还必须在闭集词表内——用非白名单键的 payload 会被整体投影成 `{}`，
+    "记录了"并不等于"运维读得到"。NCR 两处披露曾同时踩到这个坑。
+    """
+    recorder = dr.Recorder(tmp_path)
+    identity = recorder.start()['id']
+    with dr.recording_scope(recorder):
+        dr.emit('ncr_department_filter', {'kept_count': 2, 'dropped_count': 4},
+                name='sync_connector.ncr_department_filter')
+        dr.emit('forms.ambiguous_header_labels',
+                {'report_type': 'ncr_progress', 'row_count': 3,
+                 'remedy': 'reproject_from_archived_workbook'},
+                name='forms.normalize_form_rows')
+    with zipfile.ZipFile(io.BytesIO(recorder.export(identity))) as bundle:
+        events = [json.loads(line) for line in bundle.read('events.jsonl').splitlines()]
+    disclosure = {
+        event['kind']: event['data'] for event in events
+        if event['kind'] in {'ncr_department_filter', 'forms.ambiguous_header_labels'}
+    }
+    assert disclosure['ncr_department_filter'] == {'kept_count': 2, 'dropped_count': 4}
+    assert disclosure['forms.ambiguous_header_labels'] == {
+        'report_type': 'ncr_progress',
+        'row_count': 3,
+        'remedy': 'reproject_from_archived_workbook',
+    }

@@ -79,7 +79,7 @@ _EWO_SOURCE_FIELDS: dict[int, tuple[str, ...]] = {
 _PAA_SOURCE_FIELDS: dict[int, tuple[str, ...]] = {
     0: ("_no", "keyed_name"),
     1: ("_auth_type",),
-    2: ("created_by_id__keyed_name",),
+    2: ("created_by_id__keyed_name", "created_by_id"),
     3: ("_requester_smt",),
     4: ("_requester_department",),
     5: ("_requester_phone",),
@@ -89,7 +89,7 @@ _PAA_SOURCE_FIELDS: dict[int, tuple[str, ...]] = {
     9: ("created_on",),
     10: ("_submit_date",),
     11: ("_issue_date",),
-    12: ("_pe_tdc_name", "_pe_tdc__keyed_name"),
+    12: ("_pe_tdc_name", "_pe_tdc__keyed_name", "_pe_tdc"),
     13: ("_pe_tdc_smt",),
     14: ("_pe_tdc_department",),
     15: ("_pe_tdc_phone",),
@@ -176,6 +176,36 @@ _SOURCE_FIELDS_BY_REPORT: dict[str, dict[int, tuple[str, ...]]] = {
     "tdc_data_model": _TDC_DATA_MODEL_SOURCE_FIELDS,
     "tdc_sor": _TDC_SOR_SOURCE_FIELDS,
 }
+
+#: 命名行以「已批准表头标签」为键的报表（官方 ARAS 工作簿投影）。
+#: 这类报表不需要按列序号维护字段表：列标签本身就是行内的键，
+#: 因此按契约声明顺序把标签映射回同一索引，即可复用统一的取值语义。
+_LABEL_KEYED_REPORTS: frozenset[str] = frozenset({"ncr_progress", "ncr_detail"})
+
+
+@lru_cache(maxsize=None)
+def _label_source_fields(report_type: str) -> dict[int, tuple[str, ...]]:
+    """按已批准表头标签派生 index → (label,) 源字段映射。"""
+    contract = report_contracts()[report_type]
+    header_rows = contract["headerRows"]
+    data_header_row = int(contract.get("dataHeaderRow", 0))
+    labels = header_rows[data_header_row]
+    return {
+        index: (str(label).strip(),)
+        for index, label in enumerate(labels)
+        if str(label or "").strip()
+    }
+
+
+def _source_field_map(report_type: str) -> Mapping[int, tuple[str, ...]]:
+    """报表的 index → 源字段映射（显式表优先，标签键报表按需派生）。"""
+    explicit = _SOURCE_FIELDS_BY_REPORT.get(report_type)
+    if explicit is not None:
+        return explicit
+    if report_type in _LABEL_KEYED_REPORTS:
+        return _label_source_fields(report_type)
+    return {}
+
 
 _TRANSFORMS_BY_REPORT_INDEX: dict[tuple[str, int], str] = {
     ("ewo", 1): "aras_sub_sort",
@@ -275,7 +305,7 @@ def _column_specs(report_type: str, contract: Mapping[str, Any]) -> tuple[list[d
     header_rows = contract["headerRows"]
     data_header_row = int(contract.get("dataHeaderRow", 0))
     labels = header_rows[data_header_row]
-    source_map = _SOURCE_FIELDS_BY_REPORT.get(report_type, {})
+    source_map = _source_field_map(report_type)
     columns: list[dict[str, object]] = []
     unmapped: list[str] = []
     for index, label in enumerate(labels):

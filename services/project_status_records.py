@@ -20,6 +20,7 @@ from typing import Any, Mapping, Sequence
 
 from core.redaction import redact_sensitive_text
 from core.ewo_binding_v2 import normalize_ewo_v2_rule
+from services.pagination_integrity import COMPLETE_STOP_REASONS as COMPLETE_RESULT_STOP_REASONS  # noqa: F401
 from services.project_status_deliverable_analysis import (
     EWO_DEFAULT_RSP_DEPARTMENT_EXPRESSION,
 )
@@ -27,15 +28,15 @@ from services.project_status_deliverable_analysis import (
 IDENTITY_FIELDS: tuple[str, ...] = (
     "_no", "formId", "incident", "documentNo", "processInstanceId",
     "processNo", "id", "ewo_no", "item_number", "itemNumber",
+    "NCR编号", "ncrNo", "ncr_no",
 )
 
 _AGGREGATE_FINGERPRINT_PREFIX = "agg:"
 _IDENTITY_MAX_LEN = 1000
 MAX_AGGREGATE_RECORDS = 5000
 # Only these crawler stop reasons carry an explicit end-of-data proof.
-COMPLETE_RESULT_STOP_REASONS = frozenset(
-    {"reported_pages", "reported_total", "empty_page", "short_page"}
-)
+# 权威定义在 services/pagination_integrity（与两个爬虫的生产者同源），此处只做
+# 名称保持以兼容既有消费者（连接器 / web 门控）；不要在本文件另立字面集合。
 
 # 查询规则的固定身份合同。这里列的是实际 crawler filter 的 camelCase
 # 名称，而不是“看起来像敏感词就丢弃”的模糊规则。凭据、Cookie 等永远
@@ -47,7 +48,7 @@ _QUERY_RULE_KEYS_BY_SOURCE: dict[str, frozenset[str]] = {
             "section", "applicationStart", "applicationEnd", "projectModel",
             "partNumber", "modelNumber", "processNo", "processType",
             "carTypeProject", "carTypeProjectId", "title", "partName", "version",
-            "sorNumber", "latestCompletedNode", "approvalStatus",
+            "sorNumber", "latestCompletedNode", "approvalStatus", "status",
         }
     ),
     "aras": frozenset(
@@ -55,6 +56,7 @@ _QUERY_RULE_KEYS_BY_SOURCE: dict[str, frozenset[str]] = {
             "reportType", "aggregate", "ewoNo", "projectCode", "subjectKeyword",
             "changeType", "changeSubType", "area", "state", "rspDepartment",
             "rspSmt", "submitStart", "submitEnd", "modelInfo",
+            "paaNo", "ncrNo", "projectModel", "projectNames", "department", "sectionCode",
         }
     ),
 }

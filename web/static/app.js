@@ -253,33 +253,6 @@ let overviewDraft = null;
 let overviewSaving = false;
 let milestoneLocalSeq = 0;
 let overviewRequestSeq = 0;
-let overviewBusinessSnapshotRequestSeq = 0;
-
-const OVERVIEW_BUSINESS_SNAPSHOT_DEFINITIONS = [
-  {
-    formKey: "aras_paa",
-    title: "PAA 变更记录",
-    scopeLabel: "ARAS PAA 外部源快照范围",
-    archiveJobKey: "aras_paa",
-  },
-  {
-    formKey: "aras_ncr_progress",
-    title: "NCR 审批进度",
-    scopeLabel: "ARAS NCR 审批进度外部源快照范围",
-    archiveJobKey: "aras_ncr_progress",
-  },
-];
-
-function createOverviewBusinessSnapshotCache(status = "idle") {
-  return Object.fromEntries(
-    OVERVIEW_BUSINESS_SNAPSHOT_DEFINITIONS.map(({ formKey }) => [
-      formKey,
-      { status, data: null, error: "" },
-    ]),
-  );
-}
-
-let overviewBusinessSnapshots = createOverviewBusinessSnapshotCache();
 
 function overviewEl(tagName, className, text) {
   const node = document.createElement(tagName);
@@ -349,6 +322,9 @@ function overviewRequestError(body, status) {
   err.errorCode = err.code;
   err.errorType = err.type;
   err.errorMessage = error && typeof error.message === "string" ? error.message : "";
+  err.diagnostic = error && error.diagnostic && typeof error.diagnostic === "object"
+    ? error.diagnostic
+    : null;
   return err;
 }
 
@@ -971,6 +947,13 @@ function deliverableNodeReached(keywords) {
   });
 }
 
+// 看板可见性：由后端能力注册表单一来源下发（item.boardVisible）。
+// 仅影响两块看板（首页交付物卡片区与交付物明细表）的渲染；
+// 交付物本身仍在 payload 中，详情页/分析接口/审计/统计一律不受影响。
+function deliverableBoardVisible(item) {
+  return !item || item.boardVisible !== false;
+}
+
 function shouldShowDeliverable(item, filterValue) {
   if (filterValue !== "auto") return true;
   const keywords = DELIVERABLE_AUTO_HIDE_NODE_KEYWORDS[item.id];
@@ -1008,14 +991,9 @@ function deliverableProgressOrDate(item) {
   return "-";
 }
 
-// 外部快照驱动交付物（D6-D8）徽标：状态由归档表单快照自动映射，
-// 仅展示参考，不计入总体进度统计分母。
-function deliverableSnapshotBadge(item) {
-  if (!item || item.formSnapshotDriven !== true) return null;
-  const badge = overviewEl("span", "snapshot-driven-badge", "外部快照·参考");
-  badge.title = "状态由外部表单快照自动映射，仅展示参考，不计入总体进度";
-  return badge;
-}
+// 外部快照参考徽标已按用户 2026-09-25 口径移除：交付物卡片与明细行
+// 不再展示参考标签。formSnapshotDriven 能力标志本身保留，
+// 仍驱动展示状态机与「不计入完成分母」口径。
 
 function ringDateLabel(item) {
   if (item.status === "已完成") {
@@ -1069,7 +1047,8 @@ function renderDeliverableProgress(container, deliverables) {
     const hint = band.querySelector(".deliverable-auto-hidden");
     if (hint) {
       const hiddenCount = deliverables.filter(
-        (item) => !shouldShowDeliverable(item, deliverableProgressFilterValue),
+        (item) => deliverableBoardVisible(item)
+          && !shouldShowDeliverable(item, deliverableProgressFilterValue),
       ).length;
       hint.textContent = deliverableProgressFilterValue === "auto" && hiddenCount
         ? `已隐藏 ${hiddenCount} 项已完成交付物`
@@ -1078,6 +1057,7 @@ function renderDeliverableProgress(container, deliverables) {
   }
 
   deliverables.forEach((rawItem) => {
+    if (!deliverableBoardVisible(rawItem)) return;
     if (!shouldShowDeliverable(rawItem, deliverableProgressFilterValue)) return;
     const item = deliverableDisplayItem(rawItem);
     const syncDisplay = deliverableSyncDisplay(item);
@@ -1115,168 +1095,12 @@ function renderDeliverableProgress(container, deliverables) {
       overviewEl("span", `ring-status is-${hasDisplayValue ? deliverableTone(item) : "primary"}`, ringStatusText),
       overviewEl("span", "ring-date", hasDisplayValue ? ringDateLabel(item) : deliverablePendingDateLabel(item)),
     );
-    const snapshotBadge = deliverableSnapshotBadge(item);
-    if (snapshotBadge) copy.appendChild(snapshotBadge);
     card.append(visual, copy);
     if (item.note) {
       card.title = `${item.name}（${item.status}）：${item.note}`;
     }
     container.appendChild(card);
   });
-}
-
-function overviewBusinessSnapshotCondition(entry) {
-  if (!entry || entry.status === "loading") {
-    return { kind: "loading", label: "读取中", detail: "正在读取最近一次外部源快照。" };
-  }
-  if (entry.status === "error") {
-    return {
-      kind: "error",
-      label: "读取失败",
-      detail: entry.error || "外部源快照暂时不可用。",
-    };
-  }
-
-  const data = entry.data && typeof entry.data === "object" ? entry.data : {};
-  const snapshot = data.snapshot && typeof data.snapshot === "object" ? data.snapshot : null;
-  const snapshotAt = data.snapshotAt || (snapshot && snapshot.snapshotAt) || "";
-  const summary = data.summary && typeof data.summary === "object" ? data.summary : {};
-  const total = Number(summary.total);
-  const completed = Number(summary.completed);
-  const sync = data.sync && typeof data.sync === "object" ? data.sync : {};
-  const syncState = String(sync.state || "").trim().toLowerCase();
-  const snapshotTime = Date.parse(String(snapshotAt || ""));
-  const attemptTime = Date.parse(String(sync.lastAttemptAt || ""));
-  const hasStaleAttempt = Number.isFinite(snapshotTime)
-    && Number.isFinite(attemptTime)
-    && attemptTime > snapshotTime;
-  const staleSync = ["running", "failed", "needs_attention"].includes(syncState) || hasStaleAttempt;
-
-  if (!snapshot || !snapshotAt) {
-    return {
-      kind: "no-snapshot",
-      stale: staleSync,
-      label: staleSync
-        ? (syncState === "running" ? "同步中，暂无快照" : "同步异常，暂无快照")
-        : "暂无快照",
-      detail: staleSync
-        ? "后台同步尚未形成可用快照，当前没有可展示的外部记录。"
-        : "外部源尚未生成可展示的业务快照。",
-      snapshotAt: "",
-      lastAttemptAt: sync.lastAttemptAt || "",
-    };
-  }
-  if (!Number.isFinite(total) || total <= 0) {
-    return {
-      kind: "empty-snapshot",
-      stale: staleSync,
-      label: staleSync
-        ? (syncState === "running" ? "同步中，空快照" : "同步异常，空快照")
-        : "空快照",
-      detail: staleSync
-        ? "最近一次快照没有可统计的外部记录，后台同步尚未形成新快照。"
-        : "最近一次快照已读取，但没有可统计的外部记录。",
-      snapshotAt,
-      lastAttemptAt: sync.lastAttemptAt || "",
-      total: 0,
-      completed: 0,
-    };
-  }
-
-  const safeTotal = Math.max(0, Math.floor(total));
-  const safeCompleted = Math.max(0, Math.min(safeTotal, Math.floor(Number.isFinite(completed) ? completed : 0)));
-  return {
-    kind: staleSync ? "stale-snapshot" : "snapshot",
-    stale: staleSync,
-    label: staleSync
-      ? (syncState === "running" ? "同步中，展示上次快照" : "同步异常，展示上次快照")
-      : "快照已同步",
-    detail: staleSync
-      ? "后台同步尚未形成新快照，以下数字来自最近一次可用快照。"
-      : "以下数字来自最近一次可用快照。",
-    snapshotAt,
-    lastAttemptAt: sync.lastAttemptAt || "",
-    total: safeTotal,
-    completed: safeCompleted,
-  };
-}
-
-function renderOverviewBusinessSnapshots(container) {
-  if (!container) return;
-  const section = overviewEl("section", "business-snapshot-section");
-  section.append(
-    overviewEl("p", "eyebrow", "外部业务快照"),
-    overviewEl("h5", "business-snapshot-title", "PAA / NCR 外部源进度（参考）"),
-    overviewEl("p", "business-snapshot-description", "快照仅用于业务参考，不计入项目交付物或主计划节点完成统计。"),
-  );
-  const grid = overviewEl("div", "business-snapshot-grid");
-
-  OVERVIEW_BUSINESS_SNAPSHOT_DEFINITIONS.forEach((definition) => {
-    const entry = overviewBusinessSnapshots[definition.formKey] || { status: "loading" };
-    const condition = overviewBusinessSnapshotCondition(entry);
-    const card = overviewEl(
-      "article",
-      `business-snapshot-card is-${condition.kind}${condition.stale ? " is-stale" : ""}`,
-    );
-    card.setAttribute("aria-label", `${definition.title}：${condition.label}`);
-
-    const head = overviewEl("div", "business-snapshot-card-head");
-    head.append(
-      overviewEl("strong", "business-snapshot-card-title", definition.title),
-      overviewEl("span", `business-snapshot-status is-${condition.kind}${condition.stale ? " is-stale" : ""}`, condition.label),
-    );
-    card.appendChild(head);
-
-    const count = overviewEl("strong", "business-snapshot-count");
-    if (condition.kind === "snapshot" || condition.kind === "stale-snapshot") {
-      count.textContent = `已完成 ${condition.completed} / 总计 ${condition.total}`;
-      const track = overviewEl("span", "business-snapshot-track");
-      const fill = overviewEl("span", "business-snapshot-fill");
-      fill.style.width = `${(condition.completed / Math.max(1, condition.total)) * 100}%`;
-      track.appendChild(fill);
-      card.append(count, track);
-    } else if (condition.kind === "empty-snapshot") {
-      count.textContent = "已完成 0 / 总计 0";
-      card.appendChild(count);
-    } else {
-      count.textContent = "已完成 — / 总计 —";
-      card.appendChild(count);
-    }
-
-    card.appendChild(overviewEl("p", "business-snapshot-detail", condition.detail));
-    card.appendChild(overviewEl(
-      "small",
-      "business-snapshot-scope",
-      `统计范围：${definition.scopeLabel}（外部源，不等同于认证项目范围）`,
-    ));
-    card.appendChild(overviewEl(
-      "small",
-      "business-snapshot-time",
-      `快照时间：${condition.snapshotAt ? archiveFormatDate(condition.snapshotAt) : "暂无"}`,
-    ));
-    if (condition.lastAttemptAt && condition.stale) {
-      card.appendChild(overviewEl(
-        "small",
-        "business-snapshot-attempt",
-        `最近尝试：${archiveFormatDate(condition.lastAttemptAt)}`,
-      ));
-    }
-
-    const job = (Array.isArray(overviewArchiveJobs) ? overviewArchiveJobs : [])
-      .find((candidate) => candidate && candidate.jobKey === definition.archiveJobKey);
-    if (job) {
-      const detailButton = overviewEl("button", "business-snapshot-detail-btn", "查看外部明细");
-      detailButton.type = "button";
-      detailButton.addEventListener("click", () => {
-        selectedArchiveJobKey = definition.archiveJobKey;
-        location.hash = `#archive-deliverable/${encodeURIComponent(definition.archiveJobKey)}`;
-      });
-      card.appendChild(detailButton);
-    }
-    grid.appendChild(card);
-  });
-  section.appendChild(grid);
-  container.appendChild(section);
 }
 
 let schedulerPollTimer = null;
@@ -1605,6 +1429,29 @@ function ewoPolicyDiscoveryStateLabel(value) {
   return labels[value] || "待确认";
 }
 
+// 抓取完整性事实（有界枚举与计数）：把后端 error.diagnostic 渲染为可读尾注，
+// 让「不完整」类失败能自诊断，而不是只回一句"narrow the filters or retry"。
+function ewoPolicyPaginationDiagnosticText(diagnostic) {
+  if (!diagnostic || typeof diagnostic !== "object") return "";
+  const parts = [];
+  const stop = ewoPolicyString(diagnostic.stopReason);
+  if (stop) parts.push(`停止原因：${stop}`);
+  [
+    ["rowCount", "返回行数"],
+    ["uniqueCount", "去重后行数"],
+    ["duplicateCount", "重复行数"],
+    ["declaredTotal", "声明总数"],
+    ["declaredPages", "声明页数"],
+    ["fetchedPages", "已抓页数"],
+  ].forEach(([key, label]) => {
+    const value = diagnostic[key];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      parts.push(`${label}：${value}`);
+    }
+  });
+  return parts.length ? `（${parts.join("，")}）` : "";
+}
+
 function ewoPolicyErrorMessage(error) {
   if (error && error.fields && typeof error.fields === "object") {
     const fields = Object.entries(error.fields)
@@ -1619,7 +1466,10 @@ function ewoPolicyErrorMessage(error) {
   if (msg.includes("外部稳定键")) {
     msg = msg.replace(/外部稳定键/g, "目标单号");
   }
-  return msg;
+  const facts = error && error.diagnostic
+    ? ewoPolicyPaginationDiagnosticText(error.diagnostic)
+    : "";
+  return facts ? `${msg}${facts}` : msg;
 }
 
 // 保存成功后的状态提示：详情页重绘由 loadProjectOverview 的
@@ -1760,6 +1610,17 @@ function buildSyncSummaryCard(item, policy, capabilities, settings, advancedDeta
   const hint = POLICY_SYNC_HINTS[syncDisplay.state];
   if (hint) card.appendChild(overviewEl("p", "policy-sync-summary-hint", hint));
 
+  // 官方工作簿导出（NCR）的准入语义如实披露：complete 只表示满足准入策略，
+  // 不等于证明源端零丢失（能力注册表 sourceInfo.completenessPolicy）。
+  if (capabilities && capabilities.completenessPolicy === "workbook_admission") {
+    card.appendChild(overviewEl(
+      "p",
+      "policy-sync-summary-hint",
+      "来源为官方工作簿导出：仅当表头契约成立且逐行归类核对无剩余时才写入快照；"
+      + "该类来源没有声明总数，因此不构成源端零丢失的证明。",
+    ));
+  }
+
   const storedMatchRule = (currentPolicy.matchRule && typeof currentPolicy.matchRule === "object") ? currentPolicy.matchRule : {};
   const factList = [
     ["最近尝试", safeDisplayValue(currentPolicy.lastAttemptAt || "无")],
@@ -1770,6 +1631,7 @@ function buildSyncSummaryCard(item, policy, capabilities, settings, advancedDeta
     const currentDept = storedMatchRule.rspDepartment || storedMatchRule.department;
     if (currentModel) factList.push(["车型项目", safeDisplayValue(currentModel)]);
     if (currentDept) factList.push(["责任部门", safeDisplayValue(currentDept)]);
+    if (storedMatchRule.status) factList.push(["状态", safeDisplayValue(storedMatchRule.status)]);
     factList.push(["同步周期", `每 ${currentPolicy.intervalMinutes || 15} 分钟`]);
   }
   factList.push([
@@ -1821,6 +1683,8 @@ function buildSyncSummaryCard(item, policy, capabilities, settings, advancedDeta
   const isEwo = capabilities.reportType === "ewo";
   const isSor = capabilities.reportType === "sor";
   const isDataModel = capabilities.reportType === "data_model";
+  const isPaa = capabilities.reportType === "paa";
+  const isNcr = capabilities.reportType === "ncr_progress" || capabilities.reportType === "ncr_detail";
 
   const credentialLabel = overviewEl("label", "policy-ewo-field policy-wizard-field");
   credentialLabel.appendChild(overviewEl("span", null, "同步凭据引用"));
@@ -1871,23 +1735,46 @@ function buildSyncSummaryCard(item, policy, capabilities, settings, advancedDeta
   departmentInput.type = "text";
   departmentInput.maxLength = 200;
   const isTdc = isSor || isDataModel || (capabilities && capabilities.sourceType === "tdc");
-  const defaultDept = isTdc ? "车体工程" : "技术中心_车体工程";
+  // 默认责任部门来自后端能力注册表（sourceInfo.defaultDepartment）；TDC 用其
+  // 自身命名空间默认值。非 TDC 且注册表未声明时保留历史预填值，避免改变
+  // 既有 EWO 查询范围（EWO 的隐式默认由来源侧有界表达式拥有）。
+  const declaredDept = ewoPolicyString(capabilities && capabilities.defaultDepartment);
+  const defaultDept = isTdc ? "车体工程" : (declaredDept || "技术中心_车体工程");
   const initialDept = ewoPolicyString(
     storedMatchRule.rspDepartment
     || storedMatchRule.department
     || defaultDept
   );
   departmentInput.value = initialDept;
-  departmentInput.placeholder = isTdc ? "TDC 部门（如 车体工程，支持留空）" : "默认：技术中心_车体工程";
+  departmentInput.placeholder = isTdc
+    ? "TDC 部门（如 车体工程，支持留空）"
+    : `默认：${defaultDept}`;
   departmentLabel.appendChild(departmentInput);
   departmentLabel.appendChild(overviewEl(
     "small",
     "policy-field-note",
     isTdc
       ? "TDC 部门（如“车体工程”），支持留空查询全量数据。请勿填写 Aras 形式“技术中心_车体工程”。"
-      : "默认筛选“技术中心_车体工程”，支持按需修改。"
+      : `默认筛选“${defaultDept}”，支持按需修改。`
   ));
   wizardHost.appendChild(departmentLabel);
+
+  // 2.5 状态（选填，数模设计审核流程）
+  let statusLabel = null;
+  let statusInput = null;
+  if (isDataModel) {
+    statusLabel = overviewEl("label", "policy-ewo-field policy-wizard-field");
+    statusLabel.appendChild(overviewEl("span", null, "状态（选填）"));
+    statusInput = document.createElement("input");
+    statusInput.type = "text";
+    statusInput.maxLength = 200;
+    statusInput.placeholder = "选填，如：审批中、已完成，留空查询全部";
+    if (storedMatchRule.status) {
+      statusInput.value = ewoPolicyString(storedMatchRule.status);
+    }
+    statusLabel.appendChild(statusInput);
+    wizardHost.appendChild(statusLabel);
+  }
 
   // 3. 定时同步周期
   const intervalLabel = overviewEl("label", "policy-ewo-field policy-wizard-field");
@@ -1910,13 +1797,27 @@ function buildSyncSummaryCard(item, policy, capabilities, settings, advancedDeta
 
   // 4. 单工单编号（选填，留空则整车项目聚合）
   const numberLabel = overviewEl("label", "policy-ewo-field policy-wizard-field");
-  numberLabel.appendChild(overviewEl("span", null, isEwo ? "EWO 编号（选填，留空则整车聚合）" : (primary ? `${primary.label}（选填）` : "外部编号（选填）")));
+  const numberText = isEwo
+    ? "EWO 编号（选填，留空则整车聚合）"
+    : isPaa
+    ? "PAA 编号（选填，留空则整车聚合）"
+    : isNcr
+    ? "NCR 编号（选填，留空则整车聚合）"
+    : (primary ? `${primary.label}（选填）` : "外部编号（选填）");
+  numberLabel.appendChild(overviewEl("span", null, numberText));
   const numberInput = document.createElement("input");
   numberInput.type = "text";
   numberInput.maxLength = 200;
   numberInput.placeholder = "选填，留空将对整车项目全部单据进行聚合统计";
-  if (storedMatchRule.ewoNo || storedMatchRule.processNo || storedMatchRule.incident) {
-    numberInput.value = ewoPolicyString(storedMatchRule.ewoNo || storedMatchRule.processNo || storedMatchRule.incident || "");
+  if (storedMatchRule.ewoNo || storedMatchRule.processNo || storedMatchRule.incident || storedMatchRule.paaNo || storedMatchRule.ncrNo) {
+    numberInput.value = ewoPolicyString(
+      storedMatchRule.ewoNo
+      || storedMatchRule.processNo
+      || storedMatchRule.incident
+      || storedMatchRule.paaNo
+      || storedMatchRule.ncrNo
+      || ""
+    );
   }
   numberLabel.appendChild(numberInput);
   wizardHost.appendChild(numberLabel);
@@ -1939,6 +1840,9 @@ function buildSyncSummaryCard(item, policy, capabilities, settings, advancedDeta
     wizardHost.appendChild(credentialLabel);
     wizardHost.appendChild(modelLabel);
     wizardHost.appendChild(departmentLabel);
+    if (statusLabel) {
+      wizardHost.appendChild(statusLabel);
+    }
     wizardHost.appendChild(intervalLabel);
     wizardHost.appendChild(numberLabel);
     wizardHost.appendChild(startBtn);
@@ -2054,8 +1958,39 @@ function buildSyncSummaryCard(item, policy, capabilities, settings, advancedDeta
           matchRule.department = deptVal;
           filters.department = deptVal;
         }
+        const statusVal = statusInput ? ewoPolicyString(statusInput.value) : "";
+        if (statusVal) {
+          matchRule.status = statusVal;
+          filters.status = statusVal;
+        }
         if (specificNo) {
           matchRule.incident = specificNo;
+          filters.serial_number = specificNo;
+        }
+      } else if (isPaa) {
+        if (modelVal) {
+          matchRule.projectModel = modelVal;
+          filters.project_model = modelVal;
+        }
+        if (deptVal) {
+          matchRule.department = deptVal;
+          filters.department = deptVal;
+        }
+        if (specificNo) {
+          matchRule.paaNo = specificNo;
+          filters.serial_number = specificNo;
+        }
+      } else if (isNcr) {
+        if (modelVal) {
+          matchRule.projectModel = modelVal;
+          filters.project_model = modelVal;
+        }
+        if (deptVal) {
+          matchRule.department = deptVal;
+          filters.department = deptVal;
+        }
+        if (specificNo) {
+          matchRule.ncrNo = specificNo;
           filters.serial_number = specificNo;
         }
       } else if (primary) {
@@ -2123,18 +2058,43 @@ function buildSyncSummaryCard(item, policy, capabilities, settings, advancedDeta
       const fieldAuthority = {};
       if (aggregate) {
         // 项目集合聚合模式：仅自动更新风险备注，负责人与计划完成日期由人工维护
+        let candidateNotes = [];
         if (isEwo) {
-          mapping = { note: ["_change_description", "_subject"] };
+          candidateNotes = ["_change_description", "_subject"];
           fieldAuthority.plannedDate = "manual";
         } else if (isSor) {
-          mapping = { note: ["latestCompletedNode", "processInstanceStatus"] };
+          candidateNotes = ["latestCompletedNode", "processInstanceStatus"];
         } else if (isDataModel) {
-          mapping = { note: ["latestApproveLog", "status"] };
+          candidateNotes = ["latestApproveLog", "status"];
         } else if (capabilities.defaultMapping && capabilities.defaultMapping.note) {
-          mapping = { note: capabilities.defaultMapping.note };
+          candidateNotes = Array.isArray(capabilities.defaultMapping.note)
+            ? capabilities.defaultMapping.note
+            : [capabilities.defaultMapping.note];
         } else {
-          mapping = { note: ["status"] };
+          candidateNotes = ["status"];
         }
+
+        const reportedFields = Array.isArray(result && result.fieldReport && result.fieldReport.fields)
+          ? result.fieldReport.fields
+          : [];
+        let matchedNotes = candidateNotes.filter((f) => reportedFields.includes(f));
+        if (matchedNotes.length === 0 && result && result.fieldReport) {
+          const statusOrApproval = Array.isArray(result.fieldReport.statusOrApprovalFields)
+            ? result.fieldReport.statusOrApprovalFields
+            : [];
+          const statusColNames = statusOrApproval
+            .map((entry) => (typeof entry === "string" ? entry : entry && entry.field))
+            .filter((col) => col && reportedFields.includes(col));
+          if (statusColNames.length > 0) {
+            matchedNotes = statusColNames;
+          }
+        }
+
+        if (matchedNotes.length === 0) {
+          throw new Error("无法从最新脱敏字段报告确定有效的备注映射字段，请打开高级设置手工确认映射后保存。");
+        }
+
+        mapping = { note: matchedNotes };
         fieldAuthority.note = "automatic";
         fieldAuthority.owner = "manual";
       } else {
@@ -2295,7 +2255,10 @@ function renderSyncBindingEditor(container, item, policy, options = {}) {
   externalKeyLabel.appendChild(externalKeyInput);
   externalKeyLabel.appendChild(overviewEl("small", "policy-field-note", "需跟踪的外部单号；如留空，将在保存或抓取时根据匹配条件自动关联。"));
   bindingGrid.appendChild(externalKeyLabel);
-  const ewoBindingMode = capabilities.reportType === "ewo" ? document.createElement("select") : null;
+  // 版本化绑定合同由后端能力注册表下发（sourceInfo.supportsRecordSet），
+  // 前端不再按 reportType 自行推断能力。
+  const supportsRecordSet = capabilities.supportsRecordSet === true;
+  const ewoBindingMode = supportsRecordSet ? document.createElement("select") : null;
   if (ewoBindingMode) ewoBindingMode.name = "ewoBindingMode";
   const storedEwoRule = currentPolicy.matchRule || {};
   if (ewoBindingMode) {
@@ -2863,109 +2826,6 @@ function renderSyncBindingEditor(container, item, policy, options = {}) {
   }
 }
 
-function renderSnapshotSyncCard(container, item, capabilities, options = {}) {
-  const jobKey = (capabilities && capabilities.archiveJobKey)
-    || (item.associations && item.associations.find((a) => a.type === "archive_job") && item.associations.find((a) => a.type === "archive_job").jobKey)
-    || "";
-  const jobAssoc = item.associations && Array.isArray(item.associations)
-    ? item.associations.find((a) => a.type === "archive_job")
-    : null;
-  const jobName = (jobAssoc && jobAssoc.name) || jobKey || "外部归档任务";
-  const lastSuccess = jobAssoc && jobAssoc.lastSuccessAt ? safeDisplayValue(jobAssoc.lastSuccessAt) : null;
-
-  const card = overviewEl("section", "policy-sync-summary policy-snapshot-sync-card");
-  card.setAttribute("aria-label", `${item.name} 数据同步（外部快照）`);
-
-  const head = overviewEl("div", "policy-sync-summary-head");
-  head.append(
-    overviewEl("strong", "policy-sync-summary-title", "数据同步（外部快照）"),
-    overviewEl("span", "policy-sync-summary-state", "快照驱动"),
-  );
-  card.appendChild(head);
-
-  const descText = lastSuccess
-    ? `该交付物由后台归档任务「${jobName}」的表单快照自动映射驱动。最近同步成功：${lastSuccess}。`
-    : `该交付物由后台归档任务「${jobName}」的表单快照自动映射驱动。`;
-  card.appendChild(overviewEl("p", "policy-sync-summary-hint", descText));
-
-  const isEnabled = Boolean(jobAssoc && jobAssoc.enabled);
-  const factList = [
-    ["数据来源", jobName],
-    ["驱动模式", "定时表单快照自动映射"],
-    ["任务状态", isEnabled ? "已启用" : "未启用（支持直接立即同步）"],
-    ["最近成功", lastSuccess || "尚未执行过快照同步"],
-  ];
-  const facts = overviewEl("ul", "policy-sync-summary-facts");
-  factList.forEach(([label, value]) => {
-    const row = overviewEl("li", "policy-sync-summary-fact");
-    row.append(
-      overviewEl("span", "policy-sync-fact-label", label),
-      overviewEl("span", "policy-sync-fact-value", value),
-    );
-    facts.appendChild(row);
-  });
-  card.appendChild(facts);
-
-  const actions = overviewEl("div", "policy-sync-summary-actions");
-  const snapshotSyncBtn = overviewEl("button", "policy-sync-now-btn", "立即同步快照");
-  snapshotSyncBtn.type = "button";
-  if (!jobKey) {
-    snapshotSyncBtn.disabled = true;
-    snapshotSyncBtn.title = "未关联到可同步的归档任务";
-  }
-
-  const jobLink = overviewEl("a", "policy-view-job-link", "查看同步任务");
-  jobLink.href = jobKey ? `#archive-deliverable/${encodeURIComponent(jobKey)}` : "#scheduled-archive";
-
-  const statusMsg = overviewEl("span", "policy-sync-status");
-  statusMsg.setAttribute("role", "status");
-  statusMsg.setAttribute("aria-live", "polite");
-
-  snapshotSyncBtn.addEventListener("click", async () => {
-    if (!jobKey) return;
-    snapshotSyncBtn.disabled = true;
-    snapshotSyncBtn.textContent = "正在同步快照...";
-    statusMsg.textContent = "正在执行后台归档同步...";
-    statusMsg.className = "policy-sync-status";
-    try {
-      const resp = await fetch(`/api/scheduled-archive/jobs/${encodeURIComponent(jobKey)}/sync-now`, {
-        method: "POST",
-        headers: { Accept: "application/json" },
-      });
-      const body = await resp.json();
-      if (!resp.ok || !body || body.ok !== true) {
-        const errMsg = body && body.error && body.error.message ? body.error.message : "同步未完成";
-        throw new Error(redactSensitiveText(errMsg));
-      }
-      const data = body.data || {};
-      const firstRes = Array.isArray(data.results) && data.results[0] ? data.results[0] : null;
-      if (data.exitCode !== 0 || (firstRes && firstRes.outcome !== "completed")) {
-        const errMsg = (firstRes && (firstRes.errorMessage || firstRes.errorType))
-          || (data.exitCode ? `同步未就绪（退出码 ${data.exitCode}）` : "同步未完成");
-        throw new Error(redactSensitiveText(errMsg));
-      }
-      statusMsg.textContent = "快照同步完成，正在刷新数据...";
-      statusMsg.className = "policy-sync-status is-success";
-      await loadArchiveJobs(true);
-      await loadProjectOverview();
-      if (typeof options.onFormReload === "function") {
-        await options.onFormReload();
-      }
-      statusMsg.textContent = "快照同步成功，已刷新最新明细与图表。";
-    } catch (err) {
-      statusMsg.textContent = `同步失败：${redactSensitiveText(err instanceof Error ? err.message : String(err))}`;
-      statusMsg.className = "policy-sync-status is-error";
-    } finally {
-      snapshotSyncBtn.disabled = false;
-      snapshotSyncBtn.textContent = "立即同步快照";
-    }
-  });
-
-  actions.append(snapshotSyncBtn, jobLink, statusMsg);
-  card.appendChild(actions);
-  container.appendChild(card);
-}
-
 async function loadDeliverablePolicy(container, item, options = {}) {
   // 能力驱动分发：sourceInfo 由后端能力注册表下发，不再按 source 文案/
   // 硬编码 id 判断（CODEX 架构审计调整项）。
@@ -3007,11 +2867,9 @@ async function loadDeliverablePolicy(container, item, options = {}) {
     }
     return;
   }
-  if (item.formSnapshotDriven === true) {
-    renderSnapshotSyncCard(container, item, capabilities, options);
-    return;
-  }
-  // 非 syncCapable 且非 formSnapshotDriven：解释性静态文案（无来源连接器或来源契约未验证）。
+  // 非 syncCapable：解释性静态文案（无来源连接器或来源契约未验证）。
+  // 同步入口只按 syncCapable 判定；快照驱动的展示状态机不再分叉出
+  // 第二套（历史上不可达的）快照同步卡。
   container.append(
     overviewEl("strong", "policy-editor-title", "更新方式"),
     overviewEl("p", "policy-static-mode",
@@ -3027,6 +2885,9 @@ const DELIVERABLE_FIXED_SOURCES = {
   "VPI-T2-D3": "ARAS EWO",
   "VPI-T2-D4": "TDC A 面（契约待验证）",
   "VPI-T2-D5": "数模设计审核流程报表",
+  "VPI-T2-D6": "ARAS PAA 报告",
+  "VPI-T2-D7": "ARAS NCR 审批进度",
+  "VPI-T2-D8": "ARAS NCR 审批明细",
 };
 
 const DELIVERABLE_FIELD_LABELS = {
@@ -3590,9 +3451,9 @@ function renderDeliverableEvidence(
     ? item.sourceInfo
     : {};
   const syncMissing = [];
-  const syncSupported = capabilities.syncCapable !== undefined
-    ? Boolean(capabilities.syncCapable)
-    : !["VPI-T2-D1", "VPI-T2-D4"].includes(item.id);
+  // 同步支持只由后端能力注册表决定（sourceInfo.syncCapable）；能力缺失时
+  // 按"不支持"fail-closed，不再按交付物 id 兜底（P1：注册表单一来源）。
+  const syncSupported = capabilities.syncCapable === true;
   const syncModeReady = ["automatic", "hybrid"].includes(policy.mode);
   const syncMatchRule = policy.matchRule
     && typeof policy.matchRule === "object"
@@ -5036,9 +4897,8 @@ function renderDeliverableAnalysisActionBar(item, options = {}) {
   const capabilities = item && item.sourceInfo && typeof item.sourceInfo === "object"
     ? item.sourceInfo
     : {};
-  const syncSupported = capabilities.syncCapable !== undefined
-    ? Boolean(capabilities.syncCapable)
-    : !["VPI-T2-D1", "VPI-T2-D4"].includes(item.id);
+  // 同步支持只由后端能力注册表决定（sourceInfo.syncCapable），缺失即不支持。
+  const syncSupported = capabilities.syncCapable === true;
   const syncState = options.analysisSyncReadiness || null;
   let syncReady = Boolean(syncState && syncState.ready === true);
   let syncReadinessMessage = syncState && syncState.message
@@ -5858,20 +5718,18 @@ async function refreshEwoFormFromStatusChart(item, statusChart, formPanel, formS
 const DELIVERABLE_FORM_TABS = {
   "VPI-T2-D3": [
     ["departmentStatus", "部门状态"],
-    ["sectionStatus", "科室状态"],
     ["quantityTrend", "数量趋势"],
   ],
   aras_paa: [
     ["departmentStatus", "部门状态"],
-    ["sectionStatus", "科室状态"],
     ["quantityTrend", "数量趋势"],
   ],
   aras_ncr_progress: [
     ["departmentStatus", "部门状态"],
-    ["sectionStatus", "区域状态"],
     ["quantityTrend", "数量趋势"],
   ],
   aras_ncr_detail: [
+    ["sectionCounts", "按科室"],
     ["departmentCost", "部门成本"],
     ["sectionCost", "科室成本"],
   ],
@@ -5965,6 +5823,7 @@ function createDeliverableFormState(formKey) {
   const tabs = DELIVERABLE_FORM_TABS[formKey] || [];
   return {
     activeTab: tabs.length ? tabs[0][0] : "",
+    boardTab: "bySection",
     filterStateByTab: {},
     draftFilterStateByTab: {},
     displayedFilterStateByTab: {},
@@ -5973,6 +5832,9 @@ function createDeliverableFormState(formKey) {
     viewStatus: "idle",
     overdueThresholds: null,
     viewOwner: "",
+    rollupEditing: false,
+    rollupDraft: null,
+    rollupError: null,
   };
 }
 
@@ -6557,6 +6419,353 @@ function renderFormStatusBars(entries, filterKey, state, onReload, title, descri
   return section;
 }
 
+// ===== 部门总状态双分页看板 + 科室归集（读时归集口径，见 docs/PLAN_20260926_DEPT_STATUS_TABS_SECTION_ROLLUP.md） =====
+
+const FORM_STATE_PALETTE = [
+  "#cc785c", "#6b7fb3", "#9a7bb0", "#56a08c", "#b8863b", "#7d8471",
+  "#4d86c5", "#8a6aa8", "#2f8f83", "#9c6b8f", "#b0913f", "#5f7d61",
+];
+const FORM_STATE_NEUTRAL = "#a8a29a";
+
+function formDimensionColor(label, index) {
+  if (label === "CLOSE") return "var(--success)";
+  if (label === "其他状态" || label === "未归集") return FORM_STATE_NEUTRAL;
+  return FORM_STATE_PALETTE[index % FORM_STATE_PALETTE.length];
+}
+
+function renderFormDimensionLegend(rows) {
+  const legend = overviewEl("div", "form-chart-legend");
+  (Array.isArray(rows) ? rows : []).forEach((row, index) => {
+    const item = overviewEl("span", "form-chart-legend-item", String(row && row.label || ""));
+    item.style.color = formDimensionColor(String(row && row.label || ""), index);
+    legend.appendChild(item);
+  });
+  return legend;
+}
+
+function renderFormMatrixBars(entries, opts) {
+  const box = overviewEl("div", "form-status-bars");
+  const safeEntries = Array.isArray(entries) ? entries : [];
+  const max = Math.max(1, ...safeEntries.map((entry) => Number(entry && entry.total) || 0));
+  safeEntries.forEach((entry) => {
+    const label = String(entry && entry.label || "未命名");
+    const total = Number(entry && entry.total) || 0;
+    const row = overviewEl("div", "form-status-bar-row");
+    if (entry && entry.filterable === false) {
+      row.title = "其他状态（OPEN / CANCEL / 起草 / 挂起等）单独展示，不并入状态筛选";
+    } else {
+      row.setAttribute("role", "button");
+      row.setAttribute("tabindex", "0");
+      row.setAttribute("aria-label", `${label}：共 ${total} 条`);
+      const activate = () => {
+        appendFormFilter(opts.state, opts.filterKey, label);
+        if (typeof opts.onReload === "function") opts.onReload();
+      };
+      row.addEventListener("click", activate);
+      row.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          activate();
+        }
+      });
+    }
+    const name = overviewEl("span", "form-status-bar-label", safeDisplayValue(label));
+    const track = overviewEl("span", "form-status-bar-track");
+    const segments = Array.isArray(entry && entry.segments) ? entry.segments : [];
+    segments.forEach((segment) => {
+      const count = Math.max(0, Number(segment && segment.count) || 0);
+      if (!count) return;
+      const fill = overviewEl("span", "form-status-bar-fill form-matrix-fill");
+      const width = (count / max) * 100;
+      fill.style.width = `${width}%`;
+      fill.style.background = String(segment && segment.color || FORM_STATE_NEUTRAL);
+      fill.title = `${label} · ${String(segment && segment.label || "")}：${count} 条（占 ${Math.round((count / (total || 1)) * 100)}%）`;
+      if (width >= 8) {
+        fill.appendChild(overviewEl("span", "form-matrix-seg-label", String(count)));
+      }
+      track.appendChild(fill);
+    });
+    const numbers = overviewEl("span", "form-status-bar-numbers", `共 ${total}`);
+    row.append(name, track, numbers);
+    box.appendChild(row);
+  });
+  if (!safeEntries.length) box.appendChild(overviewEl("p", "form-chart-empty", "暂无可分析的表单数据"));
+  return box;
+}
+
+function renderDepartmentStatusBoard(data, state, onReload) {
+  const section = overviewEl("section", "form-chart-panel-content");
+  const matrix = data && data.charts && data.charts.sectionStageMatrix;
+  section.append(
+    overviewEl("h5", "form-chart-title", "部门总状态"),
+    overviewEl("p", "form-chart-description", state.boardTab === "byStatus"
+      ? "按审批节点 / 业务状态统计（完整状态按流程顺序展示，含当前无数据状态），柱内色段为归集后科室的数量占比；点击状态行可追加筛选。"
+      : "按归集后科室统计，柱内色段为各审批节点 / 业务状态的数量占比；点击科室行可追加科室筛选，悬停查看状态明细。"),
+  );
+  const tabList = overviewEl("div", "form-chart-tab-list dept-board-tab-list");
+  tabList.setAttribute("role", "tablist");
+  [["bySection", "按科室"], ["byStatus", "按状态"]].forEach(([key, label]) => {
+    const button = overviewEl("button", "form-chart-tab dept-board-tab", label);
+    button.type = "button";
+    button.setAttribute("role", "tab");
+    button.setAttribute("aria-selected", state.boardTab === key ? "true" : "false");
+    button.classList.toggle("is-active", state.boardTab === key);
+    button.addEventListener("click", () => {
+      if (state.boardTab === key) return;
+      state.boardTab = key;
+      if (typeof onReload === "function") onReload();
+    });
+    tabList.appendChild(button);
+  });
+  section.appendChild(tabList);
+  if (!matrix || !Array.isArray(matrix.sections) || !Array.isArray(matrix.stages)) {
+    section.appendChild(overviewEl("p", "form-chart-empty", "暂无可分析的表单数据"));
+    section.appendChild(renderSectionRollupPanel(data, state, onReload));
+    return section;
+  }
+  const sectionRows = matrix.sections;
+  const stageRows = matrix.stages;
+  const stageColors = new Map(stageRows.map((row, index) => [row.label, formDimensionColor(row.label, index)]));
+  const sectionColors = new Map(sectionRows.map((row, index) => [row.label, formDimensionColor(row.label, index)]));
+  if (state.boardTab === "byStatus") {
+    section.appendChild(renderFormDimensionLegend(sectionRows));
+    section.appendChild(renderFormMatrixBars(
+      stageRows.map((row) => ({
+        label: row.label,
+        total: row.total,
+        filterable: row.label !== "其他状态",
+        segments: (row.cells || []).map((cell) => ({
+          label: cell.label,
+          count: cell.count,
+          color: sectionColors.get(cell.label) || FORM_STATE_NEUTRAL,
+        })),
+      })),
+      { filterKey: "stage", state, onReload },
+    ));
+  } else {
+    section.appendChild(renderFormDimensionLegend(stageRows.map((row) => ({ label: row.label }))));
+    section.appendChild(renderFormMatrixBars(
+      sectionRows.map((row) => ({
+        label: row.label,
+        total: row.total,
+        segments: (row.cells || []).map((cell) => ({
+          label: cell.label,
+          count: cell.count,
+          color: stageColors.get(cell.label) || FORM_STATE_NEUTRAL,
+        })),
+      })),
+      { filterKey: "section", state, onReload },
+    ));
+  }
+  section.appendChild(renderSectionRollupPanel(data, state, onReload));
+  return section;
+}
+
+function renderSectionCountsBoard(data, state, onReload) {
+  const section = overviewEl("section", "form-chart-panel-content");
+  section.append(
+    overviewEl("h5", "form-chart-title", "按科室统计"),
+    overviewEl("p", "form-chart-description", "NCR明细无状态维度，仅按归集后科室统计数量；点击科室行可追加科室筛选。"),
+  );
+  const counts = data && data.charts && Array.isArray(data.charts.sectionCounts) ? data.charts.sectionCounts : [];
+  section.appendChild(renderFormMatrixBars(
+    counts.map((row) => ({
+      label: row.label,
+      total: Number(row.total) || 0,
+      segments: [{
+        label: "NCR明细",
+        count: Number(row.total) || 0,
+        color: formDimensionColor(row.label, counts.indexOf(row)),
+      }],
+    })),
+    { filterKey: "section", state, onReload },
+  ));
+  section.appendChild(renderSectionRollupPanel(data, state, onReload));
+  return section;
+}
+
+function cloneRollupTargets(targets) {
+  return (Array.isArray(targets) ? targets : []).map((entry) => ({
+    target: String(entry && entry.target || ""),
+    aliases: (entry && Array.isArray(entry.aliases) ? entry.aliases : []).map((alias) => String(alias || "")),
+  }));
+}
+
+function renderSectionRollupPanel(data, state, onReload) {
+  const rules = data && data.sectionRollup;
+  const hasRules = Boolean(rules && Array.isArray(rules.targets));
+  const panel = overviewEl("details", "form-rollup-panel");
+  panel.open = state.rollupEditing === true || state.rollupPanelOpen === true;
+  panel.addEventListener("toggle", () => {
+    state.rollupPanelOpen = panel.open;
+  });
+  panel.appendChild(overviewEl("summary", null, "科室归集规则"));
+  const body = overviewEl("div", "form-rollup-body");
+  panel.appendChild(body);
+  if (!hasRules) {
+    body.appendChild(overviewEl("p", "form-rollup-hint", "当前交付物未启用科室归集。"));
+    return panel;
+  }
+  body.appendChild(overviewEl(
+    "p",
+    "form-rollup-hint",
+    "历史科室先归集到现行科室再统计；「科室 / 区域」筛选同样按归集口径，未登记的历史值计入「未归集」，不会静默丢弃。规则保存在本地数据库，保存后立即生效——只调整统计口径，不改写原始数据，无需重新同步。",
+  ));
+  const renderFresh = () => panel.replaceWith(renderSectionRollupPanel(data, state, onReload));
+
+  if (state.rollupEditing === true) {
+    if (!Array.isArray(state.rollupDraft)) state.rollupDraft = cloneRollupTargets(rules.targets);
+    if (state.rollupError) {
+      const errorLine = overviewEl("p", "form-rollup-error", String(state.rollupError.message || "保存失败，请检查规则。"));
+      const fields = state.rollupError.fields;
+      if (fields && typeof fields === "object") {
+        Object.entries(fields).forEach(([key, message]) => {
+          errorLine.appendChild(document.createTextNode(` ${key}：${String(message)}`));
+        });
+      }
+      body.appendChild(errorLine);
+    }
+    state.rollupDraft.forEach((entry, entryIndex) => {
+      const row = overviewEl("div", "form-rollup-row");
+      if (entry.target) {
+        row.appendChild(overviewEl("span", "form-rollup-target", entry.target));
+      } else {
+        const targetInput = overviewEl("input", "form-rollup-add-input form-rollup-target-input");
+        targetInput.type = "text";
+        targetInput.placeholder = "新目标科室名称";
+        targetInput.value = String(entry.draftTarget || "");
+        targetInput.addEventListener("input", () => {
+          entry.draftTarget = targetInput.value;
+        });
+        row.appendChild(targetInput);
+      }
+      const aliasArea = overviewEl("div", "form-rollup-aliases");
+      entry.aliases.forEach((alias, aliasIndex) => {
+        const chip = overviewEl("span", "form-rollup-chip");
+        chip.appendChild(document.createTextNode(alias));
+        const remove = overviewEl("button", "form-rollup-chip-remove", "×");
+        remove.type = "button";
+        remove.title = `移除 ${alias}`;
+        remove.addEventListener("click", () => {
+          entry.aliases.splice(aliasIndex, 1);
+          renderFresh();
+        });
+        chip.appendChild(remove);
+        aliasArea.appendChild(chip);
+      });
+      const aliasInput = overviewEl("input", "form-rollup-add-input");
+      aliasInput.type = "text";
+      aliasInput.placeholder = "添加历史科室值";
+      const addButton = overviewEl("button", "btn is-secondary form-rollup-add-btn", "添加");
+      addButton.type = "button";
+      addButton.addEventListener("click", () => {
+        const value = String(aliasInput.value || "").trim();
+        if (!value) return;
+        entry.aliases.push(value);
+        renderFresh();
+      });
+      aliasArea.append(aliasInput, addButton);
+      row.appendChild(aliasArea);
+      body.appendChild(row);
+    });
+    const actions = overviewEl("div", "form-rollup-actions");
+    const addTarget = overviewEl("button", "btn is-secondary", "+ 新增目标科室");
+    addTarget.type = "button";
+    addTarget.addEventListener("click", () => {
+      state.rollupDraft.push({ target: "", aliases: [] });
+      renderFresh();
+    });
+    const hint = overviewEl("span", "form-rollup-hint", "同一历史值只能归属一个目标科室，保存时校验；空值与重复值会被拦截。");
+    const spacer = overviewEl("span", "form-rollup-spacer");
+    const cancel = overviewEl("button", "btn is-secondary", "取消");
+    cancel.type = "button";
+    cancel.addEventListener("click", () => {
+      state.rollupEditing = false;
+      state.rollupDraft = null;
+      state.rollupError = null;
+      renderFresh();
+    });
+    const save = overviewEl("button", "btn is-primary form-rollup-save", "保存规则");
+    save.type = "button";
+    save.addEventListener("click", async () => {
+      const payload = {
+        targets: state.rollupDraft.map((entry) => ({
+          target: String(entry.target || entry.draftTarget || "").trim(),
+          aliases: entry.aliases.map((alias) => String(alias || "").trim()).filter(Boolean),
+        })),
+      };
+      save.disabled = true;
+      try {
+        const response = await fetch("/api/project-status/section-rollup", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const bodyJson = await response.json().catch(() => null);
+        if (!response.ok || !bodyJson || bodyJson.ok !== true) {
+          const error = bodyJson && bodyJson.error ? bodyJson.error : {};
+          state.rollupError = { message: error.message || "保存失败，请检查规则。", fields: error.fields || null };
+          renderFresh();
+          return;
+        }
+        state.rollupEditing = false;
+        state.rollupDraft = null;
+        state.rollupError = null;
+        if (typeof onReload === "function") onReload();
+      } catch (error) {
+        state.rollupError = { message: `保存失败：${error instanceof Error ? error.message : "网络错误"}`, fields: null };
+        renderFresh();
+      }
+    });
+    actions.append(addTarget, hint, spacer, save, cancel);
+    body.appendChild(actions);
+    return panel;
+  }
+
+  const table = overviewEl("table", "form-rollup-table");
+  const thead = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  ["归集到", "包含的历史值"].forEach((label) => headRow.appendChild(overviewEl("th", null, label)));
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+  const tbody = document.createElement("tbody");
+  rules.targets.forEach((entry) => {
+    const tr = document.createElement("tr");
+    tr.append(
+      overviewEl("td", "form-rollup-target", String(entry.target || "")),
+      overviewEl("td", null, entry.aliases && entry.aliases.length ? entry.aliases.join("、") : "（当前仅本科室自身）"),
+    );
+    tbody.appendChild(tr);
+  });
+  const unassignedRow = document.createElement("tr");
+  unassignedRow.append(
+    overviewEl("td", "form-rollup-target", "未归集"),
+    overviewEl("td", null, "未登记的其他历史科室值（固定兜底，无需配置）"),
+  );
+  tbody.appendChild(unassignedRow);
+  table.appendChild(tbody);
+  body.appendChild(table);
+
+  const actions = overviewEl("div", "form-rollup-actions");
+  const spacer = overviewEl("span", "form-rollup-spacer");
+  const updatedAt = rules.updatedAt ? String(rules.updatedAt) : "";
+  if (updatedAt) {
+    actions.appendChild(overviewEl("span", "form-rollup-hint", `最近更新：${updatedAt}`));
+  }
+  actions.appendChild(spacer);
+  const edit = overviewEl("button", "btn is-secondary form-rollup-edit", "编辑规则");
+  edit.type = "button";
+  edit.addEventListener("click", () => {
+    state.rollupEditing = true;
+    state.rollupDraft = cloneRollupTargets(rules.targets);
+    state.rollupError = null;
+    renderFresh();
+  });
+  actions.appendChild(edit);
+  body.appendChild(actions);
+  return panel;
+}
+
 function renderFormTrendSvgChart(points, state, onReload) {
   const wrap = overviewEl("div", "form-trend-chart");
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -6848,16 +7057,22 @@ function renderFormChartTabs(data, state, onReload, options = {}) {
   const charts = data && data.charts && typeof data.charts === "object" ? data.charts : {};
   const chartTitles = DELIVERABLE_FORM_CHART_TITLES[formKey] || {};
   if (state.activeTab === "departmentStatus") {
-    const department = charts.departmentStatus && Array.isArray(charts.departmentStatus.stages)
-      ? charts.departmentStatus.stages
-      : [];
-    const [title, description] = chartTitles.departmentStatus
-      || ["部门总状态", "各阶段 / 审批节点按期推进数与逾期风险数"];
-    chartPanel.appendChild(renderFormStatusBars(department, "stage", state, onReload, title, description));
+    if (charts.sectionStageMatrix) {
+      chartPanel.appendChild(renderDepartmentStatusBoard(data, state, onReload));
+    } else {
+      const department = charts.departmentStatus && Array.isArray(charts.departmentStatus.stages)
+        ? charts.departmentStatus.stages
+        : [];
+      const [title, description] = chartTitles.departmentStatus
+        || ["部门总状态", "各阶段 / 审批节点按期推进数与逾期风险数"];
+      chartPanel.appendChild(renderFormStatusBars(department, "stage", state, onReload, title, description));
+    }
   } else if (state.activeTab === "sectionStatus") {
     const [title, description] = chartTitles.sectionStatus
       || [formKey === "aras_ncr_progress" ? "区域状态" : "科室状态", "点击一个科室或区域可追加筛选"];
     chartPanel.appendChild(renderFormStatusBars(charts.sectionStatus, "section", state, onReload, title, description));
+  } else if (state.activeTab === "sectionCounts") {
+    chartPanel.appendChild(renderSectionCountsBoard(data, state, onReload));
   } else if (state.activeTab === "quantityTrend") {
     const content = overviewEl("section", "form-chart-panel-content");
     content.append(
@@ -8018,12 +8233,16 @@ async function renderExternalDeliverablesReference() {
 function renderDeliverableDetails(tbody, data) {
   if (!tbody) return;
   tbody.textContent = "";
+  // 行索引必须保持为 payload（overviewSavedState.deliverables）下标：
+  // 详情展开/内联编辑/证据面板都以该下标回查交付物。看板可见性过滤因此
+  // 只能跳过渲染，不能改变下标语义（否则会打开错误的交付物）。
   const rows = overviewDeliverableRows(data);
-  if (rows.length === 0) {
+  if (rows.filter(deliverableBoardVisible).length === 0) {
     renderTableState(tbody, "empty");
     return;
   }
   rows.forEach((rawRow, index) => {
+    if (!deliverableBoardVisible(rawRow)) return;
     // 与状态总览环图共用同一份快照换算口径。
     const item = deliverableDisplayItem(rawRow);
     const manualEditState = deliverableManualEditState(item);
@@ -8031,6 +8250,9 @@ function renderDeliverableDetails(tbody, data) {
     const hasDisplayValue = SYNC_DISPLAY_VALUE_STATES.has(syncDisplay.state);
     const row = document.createElement("tr");
     row.className = "deliverable-detail-row";
+    // payload 下标写进 DOM：看板过滤后 DOM 位置不再等于 payload 下标，
+    // 回查（overviewDetailsRow / 展开 / 编辑）必须按该属性定位。
+    row.dataset.deliverableIndex = String(index);
     row.dataset.manualEditable = manualEditState.editable ? "true" : "false";
     if (!manualEditState.editable) {
       row.title = `手工字段只读：${manualEditState.reason}`;
@@ -8065,10 +8287,6 @@ function renderDeliverableDetails(tbody, data) {
           `手工字段只读：${redactSensitiveText(manualEditState.reason)}`,
         ));
       }
-      if (cellIndex === 0) {
-        const snapshotBadge = deliverableSnapshotBadge(item);
-        if (snapshotBadge) cell.appendChild(snapshotBadge);
-      }
       row.appendChild(cell);
     });
     const controlCell = overviewEl("td", "detail-expand-cell");
@@ -8100,39 +8318,6 @@ function renderDeliverableDetails(tbody, data) {
     });
     tbody.appendChild(row);
   });
-}
-
-async function loadOverviewBusinessSnapshots(loadSequence) {
-  const requestSequence = ++overviewBusinessSnapshotRequestSeq;
-  overviewBusinessSnapshots = createOverviewBusinessSnapshotCache("loading");
-  const results = await Promise.all(
-    OVERVIEW_BUSINESS_SNAPSHOT_DEFINITIONS.map(async (definition) => {
-      try {
-        const query = new URLSearchParams({ trendLimit: "1" });
-        const response = await fetch(
-          `/api/deliverable-forms/${encodeURIComponent(definition.formKey)}/view?${query.toString()}`,
-          { headers: { Accept: "application/json" }, cache: "no-store" },
-        );
-        const body = await overviewReadJson(response);
-        if (!response.ok || !body || body.ok !== true) {
-          throw overviewRequestError(body, response.status);
-        }
-        return { formKey: definition.formKey, status: "ready", data: body.data || {}, error: "" };
-      } catch (error) {
-        return {
-          formKey: definition.formKey,
-          status: "error",
-          data: null,
-          error: redactSensitiveText(error instanceof Error ? error.message : String(error)),
-        };
-      }
-    }),
-  );
-  if (loadSequence !== overviewRequestSeq || requestSequence !== overviewBusinessSnapshotRequestSeq) return false;
-  overviewBusinessSnapshots = Object.fromEntries(
-    results.map(({ formKey, status, data, error }) => [formKey, { status, data, error }]),
-  );
-  return true;
 }
 
 function renderProjectOverview() {
@@ -8174,7 +8359,6 @@ function renderProjectOverview() {
       renderPhaseSummary(phaseBody, overviewSavedState.phase, overviewSavedState.currentStage);
     }
     renderDeliverableProgress(progressGrid, overviewSavedState.deliverables);
-    renderOverviewBusinessSnapshots(progressGrid);
     renderMilestoneMaintenance(maintenanceBody, overviewSavedState);
     renderDetailsSummary(detailsSummary, overviewSavedState);
     renderDeliverableDetails(detailsBody, overviewSavedState);
@@ -8228,10 +8412,6 @@ function setupOverviewTabs() {
 
 async function loadProjectOverview() {
   const loadSequence = ++overviewRequestSeq;
-  // Invalidate any snapshot requests from the previous overview load before
-  // starting the next one, including a load that later fails early.
-  ++overviewBusinessSnapshotRequestSeq;
-  overviewBusinessSnapshots = createOverviewBusinessSnapshotCache("loading");
   overviewLoading = true;
   overviewLoadError = null;
   renderProjectOverview();
@@ -8254,7 +8434,6 @@ async function loadProjectOverview() {
       if (loadSequence !== overviewRequestSeq) return;
       overviewArchiveJobs = [];
     }
-    await loadOverviewBusinessSnapshots(loadSequence);
   } catch (err) {
     if (loadSequence !== overviewRequestSeq) return;
     overviewSavedState = null;
@@ -8324,7 +8503,19 @@ function setupOverviewGuards() {
 function overviewDetailsRow(index) {
   const tbody = document.getElementById("overview-details-body");
   if (!tbody) return null;
-  return tbody.querySelectorAll("tr.deliverable-detail-row")[index] || null;
+  const rows = Array.from(tbody.querySelectorAll("tr.deliverable-detail-row"));
+  // 首选按 payload 下标定位（看板可见性过滤后 DOM 位置不再等于下标）。
+  const byIndex = rows.find(
+    (row) => row.dataset && row.dataset.deliverableIndex === String(index),
+  );
+  if (byIndex) return byIndex;
+  // 渲染行一律带 data-deliverable-index：命中不到即表示该下标已被看板过滤隐藏，
+  // 此时按 DOM 位置回退会展开另一个交付物，必须返回 null。
+  const indexTagged = rows.some(
+    (row) => row.dataset && row.dataset.deliverableIndex !== undefined,
+  );
+  if (indexTagged) return null;
+  return rows[index] || null;
 }
 
 function expandOverviewDetail(index, statusInfo = null) {

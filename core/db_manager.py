@@ -20,6 +20,7 @@ from core.diagnostic_recording import operation, observed
 from core.project_status_contracts import (
     DELIVERABLE_LINK_REGISTRY,
     PROJECT_STATUS_SOURCE_CAPABILITIES,
+    find_deliverable_id_by_form_key,
     project_status_manual_editability,
 )
 import logging
@@ -158,7 +159,25 @@ class ArchiveLeaseLostError(RuntimeError):
 
 
 class ArchiveJobNotReadyError(ValueError):
-    """归档 job 缺少启用、凭据或固定合同前置条件。"""
+    """归档 job 缺少启用、凭据或固定合同前置条件。
+
+    `reason` 是**闭集**原因码（不反射异常原文），由上层映射为可操作指引；
+    调用方不得把上游/自由文本放进该字段。
+    """
+
+    #: 闭集原因码（新增值必须同步 services/scheduled_archive_runner 的指引映射）。
+    REASONS: tuple[str, ...] = (
+        "credential_not_configured",
+        "job_disabled",
+        "contract_mismatch",
+        "filters_invalid",
+        "retry_policy_invalid",
+        "unknown",
+    )
+
+    def __init__(self, message: str, reason: str = "unknown") -> None:
+        super().__init__(message)
+        self.reason = reason if reason in self.REASONS else "unknown"
 
 
 def _json_loads_or_none(value: Any) -> Any:
@@ -2230,16 +2249,20 @@ class DatabaseManager:
             conn.execute("BEGIN IMMEDIATE")
             if expected_sync_config_revision is not None:
                 # 换绑校验（GPT 终审任务 2d）：apply 后、发布前发生换绑 →
-                # 拒绝发布旧运行的 EWO 表单快照。
-                form_deliverable = str(payload.get("formKey") or "")
+                # 拒绝发布旧运行的表单快照。
+                form_key = str(payload.get("form_key") or payload.get("formKey") or "")
+                form_deliverable = find_deliverable_id_by_form_key(form_key) or form_key
                 binding_row = conn.execute(
                     "SELECT sync_config_revision FROM project_status_update_bindings "
                     "WHERE deliverable_id = ?",
                     (form_deliverable,),
                 ).fetchone()
-                if binding_row is not None and int(
-                    binding_row["sync_config_revision"] or 0
-                ) != int(expected_sync_config_revision):
+                if (
+                    binding_row is None
+                    or binding_row["sync_config_revision"] is None
+                    or int(binding_row["sync_config_revision"] or 0)
+                    != int(expected_sync_config_revision)
+                ):
                     return 0
             existing = conn.execute(
                 "SELECT id FROM deliverable_form_snapshots WHERE snapshot_key = ?",
@@ -4231,7 +4254,8 @@ class DatabaseManager:
                 raise TypeError("credential_ref must be a string, null, or omitted")
             if enabled and not next_ref:
                 raise ArchiveJobNotReadyError(
-                    "enabled archive job requires a credential reference alias"
+                    "enabled archive job requires a credential reference alias",
+                    reason="credential_not_configured",
                 )
 
             current_retry = _json_loads_or_none(row["retry_policy_json"])
@@ -4456,7 +4480,8 @@ class DatabaseManager:
         value = str(row["credential_ref"] or "").strip()
         if not value and require_configured:
             raise ArchiveJobNotReadyError(
-                "archive job credential reference is not configured"
+                "archive job credential reference is not configured",
+                reason="credential_not_configured",
             )
         return value
 
@@ -4501,22 +4526,30 @@ class DatabaseManager:
             )
             if contract is None or actual != contract or job["archived_at"] is not None:
                 raise ArchiveJobNotReadyError(
-                    "archive job does not match a fixed approved contract"
+                    "archive job does not match a fixed approved contract",
+                    reason="contract_mismatch",
                 )
             if trigger_type != "sync_now" and not job["enabled"]:
-                raise ArchiveJobNotReadyError("archive job is not enabled")
+                raise ArchiveJobNotReadyError(
+                    "archive job is not enabled", reason="job_disabled"
+                )
             if validate_runtime_prerequisites and not str(job["credential_ref"] or "").strip():
                 raise ArchiveJobNotReadyError(
-                    "archive job credential reference is not configured"
+                    "archive job credential reference is not configured",
+                    reason="credential_not_configured",
                 )
             filters = _json_loads_or_none(job["filters_json"])
             retry_policy = _json_loads_or_none(job["retry_policy_json"])
             if not isinstance(filters, dict):
-                raise ArchiveJobNotReadyError("archive job filters are invalid")
+                raise ArchiveJobNotReadyError(
+                    "archive job filters are invalid", reason="filters_invalid"
+                )
             try:
                 retry_policy = _normalize_archive_retry_policy(retry_policy)
             except (TypeError, ValueError):
-                raise ArchiveJobNotReadyError("archive job retry policy is invalid")
+                raise ArchiveJobNotReadyError(
+                    "archive job retry policy is invalid", reason="retry_policy_invalid"
+                )
 
             now = self._utc_now(conn)
             lease_token = secrets.token_urlsafe(32)

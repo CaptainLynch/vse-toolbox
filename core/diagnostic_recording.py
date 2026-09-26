@@ -71,6 +71,11 @@ _FIELDS = set('code msg message error data success status rows items total pages
 _NUMBER_FIELDS.update({'api_code', 'completed_pages'})
 _NUMBER_FIELDS.add('job_id')
 _TEXT_FIELDS.add('final_state')
+# NCR 披露事件（部门过滤 / 歧义表头标签）的载荷必须可读：键走白名单、文本值走
+# 闭集词表。否则 emit 的事件名留存、data 却是 {}，等于"记录了但读不到"。
+_NUMBER_FIELDS.update({'kept_count', 'dropped_count'})
+_TEXT_FIELDS.update({'report_type', 'remedy'})
+_VALUES.add('reproject_from_archived_workbook')
 
 
 def _dumps(value):

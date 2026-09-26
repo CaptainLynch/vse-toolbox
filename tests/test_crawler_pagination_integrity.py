@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -193,3 +194,110 @@ def test_ewo_allows_same_business_number_with_distinct_item_ids():
     _require_complete_result(result)
     assert len(_require_complete_mapping_result(result, _TDCRequestError)) == 3
     assert result.item_ids == ["A", "B", "C"]
+
+
+# ── 不完整失败必须自带完整性事实（否则线上无法定位）──────────────────────────
+
+
+def test_incomplete_discovery_error_carries_pagination_diagnostic():
+    result = SimpleNamespace(
+        rows=[{"id": "A"}],
+        complete=False,
+        stop_reason="duplicate_records",
+        unique_count=48,
+        duplicate_count=2,
+        total=50,
+        pages=2,
+        fetched_pages=2,
+    )
+    with pytest.raises(_TDCRequestError) as excinfo:
+        _require_complete_mapping_result(result, _TDCRequestError)
+    diagnostic = excinfo.value.diagnostic
+    assert diagnostic == {
+        "stopReason": "duplicate_records",
+        "rowCount": 1,
+        "uniqueCount": 48,
+        "duplicateCount": 2,
+        "declaredTotal": 50,
+        "declaredPages": 2,
+        "fetchedPages": 2,
+    }
+
+
+def test_incomplete_diagnostic_tolerates_results_without_pagination_metadata():
+    """Aras 的 EWOReportPage 没有 unique/duplicate/total/pages，不得因此抛错。"""
+    result = SimpleNamespace(
+        rows=[{"_no": "EWO-1"}],
+        complete=False,
+        stop_reason="max_pages",
+        fetched_pages=7,
+    )
+    with pytest.raises(_TDCRequestError) as excinfo:
+        _require_complete_mapping_result(result, _TDCRequestError)
+    diagnostic = excinfo.value.diagnostic
+    assert diagnostic["stopReason"] == "max_pages"
+    assert diagnostic["uniqueCount"] is None
+    assert diagnostic["declaredTotal"] is None
+    assert diagnostic["fetchedPages"] == 7
+
+
+def test_json_error_exposes_diagnostic_payload():
+    """错误出口必须真正把 diagnostic 写进响应体（前端据此展示事实）。"""
+    from flask import Flask
+
+    from web.app import _json_error
+
+    app = Flask(__name__)
+    with app.app_context():
+        response, status = _json_error(
+            422,
+            "IncompleteDiscovery",
+            "mapping discovery query was incomplete; narrow the filters or retry",
+            None,
+            diagnostic={"stopReason": "duplicate_records"},
+        )
+        payload = response.get_json()
+    assert status == 422
+    assert payload["ok"] is False
+    assert payload["error"]["diagnostic"] == {"stopReason": "duplicate_records"}
+
+
+def test_paa_crawler_pagination_integrity_survives_gates():
+    """PAAReportPage 完整爬取结果必须同时通过 _require_complete_result 与 _require_complete_mapping_result。"""
+    from services.aras_crawler import PAAReportPage
+    from services.project_status_connectors import _require_complete_result
+    from web.app import _require_complete_mapping_result, _ArasRequestError
+
+    # 完整结束结果：短页或空页判定为 complete=True
+    paa_page = PAAReportPage(
+        rows=[{"_no": "PAA-2026-001", "_pe_tdc": "PE-1"}],
+        page=1,
+        item_ids=["item-paa-1"],
+        raw_xml="<xml/>",
+        fetched_pages=1,
+        stop_reason="short_page",
+        complete=True,
+    )
+
+    # 1. 业务同步门禁
+    _require_complete_result(paa_page)
+
+    # 2. 映射发现门禁
+    rows = _require_complete_mapping_result(paa_page, _ArasRequestError)
+    assert len(rows) == 1
+    assert rows[0]["_no"] == "PAA-2026-001"
+
+    # 3. 不完整结果（如 max_pages）被两个门禁安全拦截
+    incomplete_page = PAAReportPage(
+        rows=[{"_no": "PAA-2026-001"}],
+        page=1,
+        item_ids=["item-paa-1"],
+        raw_xml="<xml/>",
+        fetched_pages=10,
+        stop_reason="max_pages",
+        complete=False,
+    )
+    with pytest.raises(ValueError, match="incomplete"):
+        _require_complete_result(incomplete_page)
+    with pytest.raises(_ArasRequestError):
+        _require_complete_mapping_result(incomplete_page, _ArasRequestError)

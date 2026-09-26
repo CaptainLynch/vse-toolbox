@@ -176,7 +176,6 @@ def test_overview_js_safe_dom_and_binding_contract() -> None:
         "function renderMilestoneTimeline",
         "function renderPhaseSummary",
         "function renderDeliverableProgress",
-        "function overviewBusinessSnapshotCondition",
         "function toggleDeliverableDetail",
         "document.createElement",
         "document.createElementNS",
@@ -1166,7 +1165,7 @@ def test_archive_plan_sync_explicit_empty_and_colspan_contract() -> None:
 def test_overview_rings_link_to_deliverable_details_contract() -> None:
     """需求 2026-09-12：状态总览环图可点击跳转对应交付物明细，且与明细表共用换算口径。"""
     js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
-    progress_block = _js_slice(js_text, "function renderDeliverableProgress", "function overviewBusinessSnapshotCondition")
+    progress_block = _js_slice(js_text, "function renderDeliverableProgress", "async function renderDeliverablesSyncControlBar")
 
     # 环图卡片按钮化：可点击、可键盘聚焦、携带跳转目标。
     assert "progress-ring is-clickable" in progress_block
@@ -1438,7 +1437,7 @@ def test_sync_binding_editor_payload_and_evidence_contract() -> None:
     assert "Array.isArray(capabilities.matchFields)\n    ? capabilities.matchFields" in editor_block
 
     # paused 后缀四区统一：环图/明细/详情头/状态图共用 deliverableStatusText。
-    progress_block = _js_slice(js_text, "function renderDeliverableProgress", "function overviewBusinessSnapshotCondition")
+    progress_block = _js_slice(js_text, "function renderDeliverableProgress", "async function renderDeliverablesSyncControlBar")
     details_block = _js_slice(js_text, "function renderDeliverableDetails", "function renderProjectOverview")
     detail_page_block = _js_slice(js_text, "function renderDeliverableDetailPage", "function renderArchiveDeliverableDetailPage")
     chart_block = _js_slice(js_text, "function renderDeliverableStatusChart", "async function runDeliverableSyncFromAnalysis")
@@ -1612,3 +1611,46 @@ def test_hash_deep_linking_routing_contracts() -> None:
     assert "#aras-panel?mode=" in js_text
     assert "from=overview" in js_text
     assert "在系统查询中打开" in js_text
+
+
+def test_board_visibility_contract_hides_d1_d4_and_removes_snapshot_panel() -> None:
+    """看板可见性由后端能力注册表下发，两块看板同时遵守；外部快照展示已移除。"""
+    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+    css_text = Path("web/static/style.css").read_text(encoding="utf-8-sig")
+    contracts = Path("core/project_status_contracts.py").read_text(encoding="utf-8")
+
+    # 单一来源：注册表显式声明 D1/D4 不看板；纯函数按缺省可见派生。
+    assert '"VPI-T2-D1"' in contracts and '"VPI-T2-D4"' in contracts
+    assert contracts.count('"boardVisible": False') == 2
+    assert "def project_status_board_visible(" in contracts
+
+    # 前端只消费后端下发的 item.boardVisible，不硬编码交付物 id。
+    helper = _js_slice(js_text, "function deliverableBoardVisible", "function shouldShowDeliverable")
+    assert "item.boardVisible !== false" in helper
+    assert "VPI-T2-D1" not in helper and "VPI-T2-D4" not in helper
+
+    # 首页卡片区：过滤在看板渲染器内；明细表：跳过渲染但必须保持 payload 下标
+    # 语义（展开/内联编辑/证据面板都以 payload 下标回查交付物），
+    # 因此行上写入 deliverableIndex，回查优先按该属性定位。
+    assert "if (!deliverableBoardVisible(rawItem)) return;" in js_text
+    assert "if (!deliverableBoardVisible(rawRow)) return;" in js_text
+    assert "row.dataset.deliverableIndex = String(index);" in js_text
+    assert "row.dataset.deliverableIndex === String(index)" in js_text
+    assert "overviewDeliverableRows(data).filter(deliverableBoardVisible)" not in js_text
+
+    # 外部业务快照面板与「外部快照·参考」徽标已删除（展示层），能力/接口保留。
+    for removed in (
+        "renderOverviewBusinessSnapshots",
+        "OVERVIEW_BUSINESS_SNAPSHOT_DEFINITIONS",
+        "overviewBusinessSnapshots",
+        "loadOverviewBusinessSnapshots",
+        "deliverableSnapshotBadge",
+        "snapshot-driven-badge",
+        "外部快照·参考",
+    ):
+        assert removed not in js_text, f"{removed} should be removed"
+    assert "business-snapshot" not in css_text
+    assert "snapshot-driven-badge" not in css_text
+    # 归档任务状态与表单视图接口仍被归档明细页与交付物明细页消费。
+    assert "overviewArchiveJobs" in js_text
+    assert "/api/deliverable-forms/" in js_text

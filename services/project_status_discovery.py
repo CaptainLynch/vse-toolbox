@@ -9,6 +9,7 @@ import re
 from typing import Any, Mapping, Sequence
 
 from core.db_manager import DatabaseManager
+from core.project_status_contracts import project_status_supports_record_set
 from core.redaction import redact_sensitive_text
 from services.project_status_records import (
     IDENTITY_FIELDS as _IDENTITY_FIELDS,
@@ -99,8 +100,8 @@ class MappingDiscoveryService:
         if versioned_ewo:
             from core.ewo_binding_v2 import identified_ewo_v2_rows, normalize_ewo_v2_rule
             effective_rule = normalize_ewo_v2_rule(effective_rule)
-            if source_type != 'aras' or deliverable_id != 'VPI-T2-D3':
-                raise ValueError('Versioned EWO source mismatch')
+            if source_type != 'aras' or not project_status_supports_record_set(deliverable_id):
+                raise ValueError('Versioned record-set source mismatch')
             keyed = identified_ewo_v2_rows(safe_rows)
             full_keyed = identified_ewo_v2_rows(full_rows)
             if not aggregate:

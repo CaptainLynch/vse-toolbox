@@ -24,14 +24,19 @@ from services.aras_crawler import (
     NCRApprovalFilters,
     PAAReportFilters,
 )
+from services.aras_ncr_workbook import (
+    NcrWorkbookOutcome,
+    NcrWorkbookRow,
+    parse_ncr_workbook,
+)
 from services.scheduled_archive_connectors import (
     ArasArchiveConnector,
     TDCArchiveConnector,
-    _official_form_rows,
     _official_workbook_rows,
     _sanitize_archive_rows,
     create_production_archive_registry,
 )
+from services.pagination_integrity import WorkbookBookkeeping
 from services.scheduled_archive_runner import (
     ArchiveConnectorRegistry,
     ArchiveJobContext,
@@ -326,13 +331,25 @@ def test_official_ncr_form_rows_align_vehicle_and_engine_columns(tmp_path: Path)
     path = tmp_path / "official-ncr-detail.xlsx"
     _write_official_ncr_form_xlsx(path)
 
-    rows = _official_form_rows(path, "ncr_detail")
+    outcome = parse_ncr_workbook(path, "ncr_detail")
+    rows = outcome.named_rows()
 
-    assert rows is not None
+    assert outcome.complete is True
     assert len(rows) == 2
     assert [item["sheetName"] for item in rows] == ["整车", "发动机"]
-    assert len(rows[1]["values"]) == 65
-    assert rows[1]["values"][36] == "10"
+    detail_labels = [
+        str(value or "").strip()
+        for value in report_contracts()["ncr_detail"]["headerRows"][0]
+    ]
+    # 两条工作表都按已批准列名对齐：成本列在两侧落在同一标签下，
+    # 行形状是按标签命名的字典（与同步路径同形），并携带契约顺序的位置视图。
+    for row in rows:
+        assert row["NCR编号"] == "NCR-SYNTH-1"
+        assert row["测算工程工装费用(万元)"] == "10"
+        assert row["批准工程工装费用（万元）"] == "9"
+        assert len(row["values"]) == 65
+        assert row["values"][detail_labels.index("测算工程工装费用(万元)")] == "10"
+    assert outcome.bookkeeping_facts()["rowsParsed"] == 2
 
 
 def test_official_ncr_truncated_preview_is_rejected(
@@ -345,12 +362,16 @@ def test_official_ncr_truncated_preview_is_rejected(
         truncated=True,
     )
     monkeypatch.setattr(
-        "services.scheduled_archive_connectors.read_xlsx_workbook_preview",
+        "services.aras_ncr_workbook.read_xlsx_workbook_preview",
         lambda *args, **kwargs: (preview,),
     )
 
-    with pytest.raises(ValueError, match="truncated"):
-        _official_form_rows(tmp_path / "ncr.xlsx", "ncr_progress")
+    outcome = parse_ncr_workbook(tmp_path / "ncr.xlsx", "ncr_progress")
+
+    assert outcome.complete is False
+    assert outcome.stop_reason == "workbook_truncated"
+    assert outcome.projection_error == "official_workbook_truncated"
+    assert outcome.named_rows() == ()
 
 
 def test_tdc_truncated_preview_is_exposed_on_collection(
@@ -730,12 +751,109 @@ def test_aras_ncr_progress_detail_success(
     manifest_art = collection.artifacts[1]
     assert manifest_art.display_name == f"{report_type}-manifest.json"
     manifest_data = json.loads((tmp_path / manifest_art.relative_path).read_text(encoding="utf-8"))
-    assert manifest_data == {
-        "jobKey": job_key,
-        "recordCount": None,
-        "normalization": "pending_verified_workbook_contract",
+    assert manifest_data["jobKey"] == job_key
+    assert manifest_data["recordCount"] is None
+    assert manifest_data["normalization"] == "pending_verified_workbook_contract"
+    # 簿记事实随 manifest 披露：用于生产证据校准 NCR 准入策略。
+    assert manifest_data["stopReason"] == "workbook_unreadable"
+    assert manifest_data["projectionError"] == "official_workbook_unreadable"
+    assert manifest_data["bookkeeping"] == {
+        "rowsRead": 0,
+        "rowsParsed": 0,
+        "rowsBlank": 0,
+        "rowsHeader": 0,
+        "rowsUnclassified": 0,
+        "cellsOutsideContract": 0,
     }
     assert collection.form_projection_error == "official_workbook_unreadable"
+
+
+def test_aras_ncr_admission_failure_blocks_projection_but_keeps_official_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """准入失败（簿记不平）时：不落库任何部分投影，但官方产物仍归档并可取证。"""
+    connector, _, _ = make_harness(tmp_path, ArasArchiveConnector)
+    monkeypatch.setattr(
+        "services.scheduled_archive_connectors.parse_ncr_workbook",
+        lambda path, report_type: NcrWorkbookOutcome(
+            report_type=report_type,
+            rows=(
+                NcrWorkbookRow(
+                    values=("NCR-1",),
+                    labels={"NCR编号": "NCR-1"},
+                    sheet_name="Sheet1",
+                ),
+            ),
+            bookkeeping=WorkbookBookkeeping(
+                read_rows=11, parsed_rows=8, blank_rows=2
+            ),
+            projection_error=None,
+            stop_reason="workbook_accounting_mismatch",
+        ),
+    )
+
+    collection = connector.collect(
+        make_context(
+            "aras_ncr_progress",
+            source_type="aras",
+            report_type="ncr_progress",
+            output_subdir="ncr_admission",
+            run_id=79,
+        ),
+        random_credential()[0],
+    )
+
+    assert collection.form_rows is None
+    assert collection.form_projection_error == "official_workbook_admission_failed"
+    assert collection.record_count == 0
+    assert [a.artifact_type for a in collection.artifacts] == [
+        "official_xlsx",
+        "manifest_json",
+    ]
+    manifest = json.loads(
+        (tmp_path / collection.artifacts[1].relative_path).read_text(encoding="utf-8")
+    )
+    assert manifest["stopReason"] == "workbook_accounting_mismatch"
+    assert manifest["projectionError"] == "official_workbook_admission_failed"
+    assert manifest["recordCount"] is None
+    assert manifest["normalization"] == "pending_verified_workbook_contract"
+    # 簿记事实随 manifest 披露，供生产证据校准准入策略。
+    assert manifest["bookkeeping"]["rowsRead"] == 11
+    assert manifest["bookkeeping"]["rowsParsed"] == 8
+
+
+def test_ncr_archive_path_has_no_binding_department_narrowing(tmp_path: Path) -> None:
+    """已知差异（钉住，待生产证据后统一）：归档路径不做内存部门收窄。
+
+    归档任务用 `sectionCode/sectionCodes` 走**上游**查询；交付物绑定则在
+    `services.project_status_connectors._collect_ncr_rows` 里再按 `department`
+    做一次内存收窄（并在丢弃行时发诊断事件）。因此两者的**行集合**口径仍不同，
+    只有行**形状**已统一。删除/新增任一侧的收窄都必须同时更新本测试与
+    `docs/PLAN_20260925_BOARD_TRIM_AND_ARAS_UNIFY.md` 的延后项说明。
+    """
+    import services.project_status_connectors as project_connectors
+
+    archive_source = Path(
+        __import__(
+            "services.scheduled_archive_connectors", fromlist=["__file__"]
+        ).__file__
+    ).read_text(encoding="utf-8")
+    assert "_filter_ncr_rows_by_department" not in archive_source
+    assert "_filter_ncr_rows_by_department" in Path(
+        project_connectors.__file__
+    ).read_text(encoding="utf-8")
+
+    # 归档侧仍接受更宽的键集（含 sectionCodes / otherCondition）。
+    archive_filters = ArasArchiveConnector._ncr_filters(
+        {
+            "sectionCodes": ["SEC-01"],
+            "otherCondition": "1",
+            "peStart": "2026-05-02",
+        }
+    )
+    assert archive_filters.section_codes == ("SEC-01",)
+    assert archive_filters.othercondition == "1"
 
 
 def test_aras_ncr_form_projection_runs_before_download_directory_cleanup(
@@ -745,13 +863,25 @@ def test_aras_ncr_form_projection_runs_before_download_directory_cleanup(
     connector, _, _ = make_harness(tmp_path, ArasArchiveConnector)
     seen_paths: list[bool] = []
 
-    def parse_live_workbook(path: Path, report_type: str) -> tuple[dict[str, object], ...]:
+    def parse_live_workbook(path: Path, report_type: str) -> NcrWorkbookOutcome:
         seen_paths.append(path.is_file())
         assert report_type == "ncr_progress"
-        return ({"values": ["NCR-SYNTH-1"], "sheetName": "Sheet1"},)
+        return NcrWorkbookOutcome(
+            report_type="ncr_progress",
+            rows=(
+                NcrWorkbookRow(
+                    values=("NCR-SYNTH-1",),
+                    labels={"NCR编号": "NCR-SYNTH-1"},
+                    sheet_name="Sheet1",
+                ),
+            ),
+            bookkeeping=WorkbookBookkeeping(read_rows=1, parsed_rows=1),
+            projection_error=None,
+            stop_reason="workbook_rows",
+        )
 
     monkeypatch.setattr(
-        "services.scheduled_archive_connectors._official_form_rows",
+        "services.scheduled_archive_connectors.parse_ncr_workbook",
         parse_live_workbook,
     )
     collection = connector.collect(
@@ -767,7 +897,10 @@ def test_aras_ncr_form_projection_runs_before_download_directory_cleanup(
 
     assert seen_paths == [True]
     assert collection.record_count == 1
-    assert collection.form_rows == ({"values": ["NCR-SYNTH-1"], "sheetName": "Sheet1"},)
+    # 归档路径发布与同步路径同形的命名行（按已批准表头标签 + 契约顺序的位置视图）。
+    assert collection.form_rows == (
+        {"NCR编号": "NCR-SYNTH-1", "values": ["NCR-SYNTH-1"], "sheetName": "Sheet1"},
+    )
 
 
 @pytest.mark.parametrize(

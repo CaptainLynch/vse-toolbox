@@ -70,6 +70,34 @@ navigation index, not a replacement for reading the target implementation.
 
 Use one lead per task. The user's current choice takes precedence over defaults.
 
+### Expert Advisor routing for DSH and ZCode leads
+
+- The DeepSeek Harness + v4.1 Flash main agent and the ZCode interactive lead
+  on its selected model (including GLM-5.3-Flash) decide whether a Codex second opinion is
+  useful. Follow C:/Users/Lynch/.dsh/skills/expert-advisor/SKILL.md for the
+  full trigger, profile and safety contract. Only the interactive lead may
+  call the Expert Advisor. Bounded implementation, tests, documentation
+  and focused evidence collection remain delegable to ZCode workers.
+- After enough local evidence, consult once before committing to a nontrivial
+  architecture design or implementation plan. The user need not name a scenario
+  or supply two options. Also consult after two focused debugging passes leave
+  conflicting evidence on a high-impact issue, or when the user explicitly
+  requests an independent opinion.
+- Choose sol-high for ordinary nontrivial design, sol-xhigh for complex
+  multi-module public contracts, concurrency or rollback, and astra-medium
+  or astra-high for hard-to-reverse security, silent-data-loss or destructive
+  migration decisions. Use astra-high when evidence conflicts or several
+  high-risk boundaries are coupled. Do not upgrade after a failed call.
+- Skip routine implementation, tests, documentation, settled decisions and
+  questions a focused local check can answer. Do not re-consult the same
+  decision without material new evidence. A keyword alone is not a trigger.
+- The lead prepares a redacted self-contained package, checks status and
+  dry-run with the chosen profile, then makes at most one live call for that
+  decision. All profiles share one ledger and rolling limits. It independently
+  judges the advice and retains implementation responsibility. If the route is
+  unavailable or rejects the call, continue without switching profile,
+  account, provider or harness.
+
 - In Codex, Codex owns architecture, public contracts, security, complex debugging and final integration. Bounded implementation, tests and mechanical work use the local ZCode Gemini worker through `C:/Users/Lynch/.zcode/tools/run-worker.ps1 -Workspace <repo> -TaskFile <contract.json>`.
 - In an interactive ZCode task, the selected model is the lead. During free GLM periods use the flagship actually available under the account, not a hardcoded model version. Use Gemini subagents for bounded work; do not keep a second Codex lead running in parallel.
 - A ZCode process invoked with a worker contract acts only as the worker. It must not recursively delegate or start Codex, AGY or DeepSeek. Model, quota and permission failures stop the route, never silently switch provider.

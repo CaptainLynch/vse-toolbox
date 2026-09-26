@@ -8,6 +8,12 @@ import pytest
 from core.archive_store import ArchiveStore
 from core.credential_provider import MemoryCredentialProvider
 from services.aras_crawler import EWOReportFilters
+from services.aras_ncr_workbook import (
+    NcrWorkbookError,
+    NcrWorkbookOutcome,
+    NcrWorkbookRow,
+)
+from services.pagination_integrity import WorkbookBookkeeping
 from services.tdc_crawler import TDCCrawlerError
 from services.project_status_connectors import (
     ArasProjectStatusConnector,
@@ -188,8 +194,8 @@ def test_aras_rejects_unapproved_report_before_auth(tmp_path: Path):
         auth_factory=FakeAuth,
     )
     value = context("aras")
-    value = SyncBindingContext(**{**value.__dict__, "match_rule": {"reportType": "paa"}})
-    with pytest.raises(ValueError, match="EWO only"):
+    value = SyncBindingContext(**{**value.__dict__, "match_rule": {"reportType": "unapproved"}})
+    with pytest.raises(ValueError, match="does not support"):
         connector.collect(value)
 
 
@@ -424,7 +430,7 @@ def test_aras_connector_passes_all_non_model_ewo_filters(tmp_path: Path):
             return SimpleNamespace(as_metadata=lambda: {})
 
     connector = ArasProjectStatusConnector(
-        MemoryCredentialProvider({"domain": ("user", "pass")} ),
+        MemoryCredentialProvider({"domain": ("user", "pass")}),
         FakeArchive(), auth_factory=FakeAuth, crawler_factory=FakeCrawler,
     )
     ctx = SyncBindingContext(
@@ -669,3 +675,163 @@ def test_aggregate_flag_requires_strict_boolean():
     snapshot = _snapshot(ctx, rows, [])
     assert snapshot.match_state == "not_found"
     assert snapshot.candidates == ()
+
+
+def test_paa_report_page_has_complete_and_stop_reason():
+    """PAAReportPage 必须具备 complete、stop_reason 与 fetched_pages，供 _require_complete_result 判定。"""
+    from services.aras_crawler import PAAReportPage
+    from services.project_status_connectors import _require_complete_result
+
+    # 默认值
+    page = PAAReportPage(rows=[{"_no": "PAA-001"}], page=1, item_ids=["item-1"], raw_xml="<xml/>")
+    assert page.fetched_pages == 1
+    assert page.stop_reason == "single_page"
+    assert page.complete is False
+    assert page.truncated is False
+
+    # crawl 完成态结果通过 _require_complete_result 校验
+    completed_page = PAAReportPage(
+        rows=[{"_no": "PAA-001"}],
+        page=1,
+        item_ids=["item-1"],
+        raw_xml="<xml/>",
+        fetched_pages=1,
+        stop_reason="short_page",
+        complete=True,
+    )
+    _require_complete_result(completed_page)
+
+
+def test_ncr_filters_extracts_department_as_section_code():
+    """_ncr_filters 正确提取 department 作为 section_code。"""
+    rule_with_dept = {"projectModel": "F610S", "department": "技术中心_车体工程"}
+    filters = ArasProjectStatusConnector._ncr_filters(rule_with_dept)
+    assert filters.section_code == "技术中心_车体工程"
+    assert filters.project_names == ["F610S"]
+
+    rule_with_sec = {"projectModel": "F610S", "sectionCode": "SEC-01", "department": "技术中心_车体工程"}
+    filters2 = ArasProjectStatusConnector._ncr_filters(rule_with_sec)
+    assert filters2.section_code == "SEC-01"
+
+
+def test_ncr_collect_rows_fails_closed_when_workbook_admission_fails(
+    monkeypatch, tmp_path
+) -> None:
+    """同步路径：工作簿准入不通过（如簿记不平）必须整体失败，不得写部分数据。"""
+    import services.aras_ncr_workbook as workbook
+
+    def fake_parse(path, report_type):
+        return NcrWorkbookOutcome(
+            report_type=report_type,
+            rows=(
+                NcrWorkbookRow(
+                    values=(),
+                    labels={"NCR编号": "NCR-1"},
+                    sheet_name="Sheet1",
+                ),
+            ),
+            bookkeeping=WorkbookBookkeeping(
+                read_rows=5, parsed_rows=1, header_rows=3
+            ),
+            projection_error=None,
+            stop_reason="workbook_accounting_mismatch",
+        )
+
+    monkeypatch.setattr(workbook, "parse_ncr_workbook", fake_parse)
+
+    dummy_file = tmp_path / "ncr.xlsx"
+    dummy_file.write_bytes(b"PK")
+
+    class FakeCrawler:
+        def query_ncr_approval_progress(self, filters):
+            return SimpleNamespace(file_id="F1", file_name="f.xlsx")
+
+        def download_ncr_progress_file(self, export, target_dir):
+            return dummy_file
+
+    with pytest.raises(NcrWorkbookError, match="workbook_accounting_mismatch"):
+        ArasProjectStatusConnector._collect_ncr_rows(
+            FakeCrawler(), "ncr_progress", {"projectModel": "F610S"}
+        )
+
+
+def test_ncr_collect_rows_filters_department_in_memory(monkeypatch, tmp_path):
+    """_collect_ncr_rows 在内存中依据 rule 中的部门进行过滤。
+
+    行形状为「按已批准表头标签命名」的字典：与归档路径同形，
+    部门过滤读取命名行的 区域/采购科室 等标签。
+    """
+    sections = ["车体工程科", "底盘工程科", "技术中心_车体工程", "", "技术中心", "工程"]
+    parsed_rows = tuple(
+        NcrWorkbookRow(
+            values=(),
+            labels={"NCR编号": f"NCR-00{index}", "区域": section},
+            sheet_name="Sheet1",
+        )
+        for index, section in enumerate(sections, start=1)
+    )
+
+    import services.aras_ncr_workbook as workbook
+
+    def fake_parse(path, report_type):
+        assert report_type == "ncr_progress"
+        return NcrWorkbookOutcome(
+            report_type=report_type,
+            rows=parsed_rows,
+            bookkeeping=WorkbookBookkeeping(
+                read_rows=len(parsed_rows), parsed_rows=len(parsed_rows)
+            ),
+            projection_error=None,
+            stop_reason="workbook_rows",
+        )
+
+    monkeypatch.setattr(workbook, "parse_ncr_workbook", fake_parse)
+
+    dummy_file = tmp_path / "ncr.xlsx"
+    dummy_file.write_bytes(b"PK")
+
+    class FakeCrawler:
+        def query_ncr_approval_progress(self, filters):
+            return SimpleNamespace(file_id="F1", file_name="f.xlsx")
+
+        def download_ncr_progress_file(self, export, target_dir):
+            return dummy_file
+
+    crawler = FakeCrawler()
+    rule = {"projectModel": "F610S", "department": "技术中心_车体工程"}
+    events: list[tuple[str, object, str]] = []
+    monkeypatch.setattr(
+        "services.project_status_connectors.emit",
+        lambda kind, data=None, *, name="", exception=None: events.append(
+            (kind, data, name)
+        ),
+    )
+    rows = ArasProjectStatusConnector._collect_ncr_rows(crawler, "ncr_progress", rule)
+
+    # 应该仅匹配车体工程科和技术中心_车体工程，排除底盘、空科室、泛化上级/字词
+    assert len(rows) == 2
+    # 写入侧形状：命名行必须同时携带契约顺序的位置视图（重复表头标签时是权威值来源）。
+    assert all(isinstance(row["values"], list) for row in rows)
+    assert all("NCR编号" in row for row in rows)
+    ncrs = [r["NCR编号"] for r in rows]
+    assert "NCR-001" in ncrs
+    assert "NCR-003" in ncrs
+    assert "NCR-002" not in ncrs
+    # 丢弃数经诊断渠道披露，且载荷键必须落在录制白名单内（否则录制产物里 data 为空）。
+    assert [event[0] for event in events] == ["ncr_department_filter"]
+    assert events[0][1] == {"kept_count": 2, "dropped_count": 4}
+
+    # 丢弃行数必须可核对（该过滤发生在工作簿准入门之后，准入簿记覆盖不到它）。
+    from services.project_status_connectors import _filter_ncr_rows_by_department
+
+    kept, dropped = _filter_ncr_rows_by_department(
+        [row.named_row() for row in parsed_rows], "技术中心_车体工程"
+    )
+    assert len(kept) == 2 and dropped == 4
+    all_rows, no_drop = _filter_ncr_rows_by_department(
+        [row.named_row() for row in parsed_rows], None
+    )
+    assert len(all_rows) == 6 and no_drop == 0
+    assert "NCR-004" not in ncrs
+    assert "NCR-005" not in ncrs
+    assert "NCR-006" not in ncrs

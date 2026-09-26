@@ -29,12 +29,17 @@ from core.db_manager import (
     SyncLeaseLostError,
 )
 from core.credential_provider import CredentialProviderError
+from core.project_status_contracts import (
+    find_registry_entry_by_deliverable_id,
+    project_status_source_capabilities,
+)
 from core.redaction import redact_sensitive_text
 from services.deliverable_form_analysis import build_form_snapshot
 from services.aras_auth import ArasAuthError
 from services.aras_crawler import ArasAuthenticationError, ArasCrawlerError
 from services.project_status_deliverable_analysis import (
     ProjectStatusDeliverableAnalysisService,
+    analysis_source_type,
 )
 from services.project_status_updates import (
     ConnectorSnapshot,
@@ -164,7 +169,8 @@ class ProjectStatusConnector(Protocol):
     实现者不得访问 DatabaseManager，不得写业务表、audit、run 或 artifact。
     """
 
-    def collect(self, context: SyncBindingContext) -> ConnectorSnapshot: ...
+    def collect(self, context: SyncBindingContext) -> ConnectorSnapshot:
+        ...
 
 
 # ── Connector Registry ──────────────────────────────────────────
@@ -481,6 +487,12 @@ class ProjectStatusSyncRunner:
             )
             if sync_result.final_state in {"success", "partial"} and snapshot.analysis_rows:
                 analysis_mapping = context.match_rule.get("analysisMapping")
+                # 分析缓存使用按报表限定的来源标签：EWO 的阶段/逾期语义
+                # 不得外溢到 PAA/NCR（写入侧唯一口径）。
+                analysis_source = analysis_source_type(
+                    source_type,
+                    project_status_source_capabilities(deliverable_id).get("reportType"),
+                )
                 try:
                     published = self._analysis_service.publish(
                         deliverable_id,
@@ -488,7 +500,7 @@ class ProjectStatusSyncRunner:
                         snapshot.analysis_rows,
                         snapshot_at=snapshot.fetched_at,
                         mapping=(analysis_mapping if isinstance(analysis_mapping, Mapping) else None),
-                        source_type=source_type,
+                        source_type=analysis_source,
                         expected_sync_config_revision=context.sync_config_revision,
                     )
                     if published is False:
@@ -503,10 +515,14 @@ class ProjectStatusSyncRunner:
                         deliverable_id,
                         _sanitize(str(exc)),
                     )
-                if deliverable_id == "VPI-T2-D3":
+                reg_entry = find_registry_entry_by_deliverable_id(deliverable_id)
+                # 表单快照 form_key 一律来自单一关联注册表；未关联交付物
+                # （D1/D4 等）不发布表单快照。
+                form_key = reg_entry.get("form_key") if reg_entry else None
+                if form_key is not None:
                     try:
                         form_snapshot = build_form_snapshot(
-                            "VPI-T2-D3",
+                            form_key,
                             snapshot.analysis_rows,
                             snapshot_at=snapshot.fetched_at,
                             source_run_id=run_id,
@@ -519,14 +535,16 @@ class ProjectStatusSyncRunner:
                         )
                         if not form_published:
                             logger.warning(
-                                "EWO form snapshot publish skipped for %s: "
+                                "form snapshot publish skipped for %s (%s): "
                                 "binding config changed during sync",
                                 deliverable_id,
+                                form_key,
                             )
                     except Exception as exc:
                         logger.warning(
-                            "EWO form snapshot publish failed for %s: %s",
+                            "form snapshot publish failed for %s (%s): %s",
                             deliverable_id,
+                            form_key,
                             _sanitize(str(exc)),
                         )
             return self._result_from_sync(

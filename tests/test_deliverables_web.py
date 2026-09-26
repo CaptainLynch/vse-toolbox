@@ -466,6 +466,7 @@ def test_catalog_links_follow_deliverable_registry(client) -> None:
         "project_model",
         "part_number",
         "model_number",
+        "status",
     ]
     assert [field["name"] for field in by_id["tdc-sor"]["fields"]] == [
         "serial_number",

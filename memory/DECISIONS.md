@@ -5,6 +5,106 @@ delete. Per-plan rulings stay in their SDD ledger (`.superpowers/sdd/…`, local
 and get promoted here once they prove durable. Newest first. Keep entries
 short: decision, why, cost if violated, source pointer.
 
+## 2026-09-25 — NCR 命名行：位置视图是权威值来源，标签字典只是有损投影
+
+1. **`NcrWorkbookRow.named_row()` 必须携带契约顺序的 `values`**。官方 NCR 进度数据表头有 11 个
+   角色标签各出现两次（列 37..47 办理时间 / 列 52..62 执行人），标签字典按「后写覆盖先写」构建，
+   是**有损**投影：按标签重建位置视图必然丢掉一个同名列。因此位置数组是权威值来源，
+   读取侧位置优先，标签键只供按标签取值的消费者使用。
+   代价：命名行多一个数组键；任何对快照行做 exact-equality 的断言都必须同步更新。
+   违反代价：11 个办理时间日期被静默覆盖 → 所有节点被误判逾期（2026-09-25 审计 Major）。
+   来源：`docs/PLAN_20260925_BOARD_TRIM_AND_ARAS_UNIFY.md`（审计修复轮）+ Codex `sol-high` 咨询裁决。
+2. **不采用「父表头消歧」改标签键**。那会改变命名行形状、破坏与 Aras 命名行一致的约定，
+   并要求所有按角色标签取值的代码同步改；收益小于风险。
+3. **行身份语义不得因行形状改变而变**：`_ncr_row_identity()` 优先 `NCR编号` 标签、否则前 10 列拼接，
+   使同一行带不带位置视图得到相同 `rowKey`（修复不产生新身份键）。
+4. **历史有损快照不回填、也不假装已修**：只带标签键的行保持原读取边界，并 emit
+   `forms.ambiguous_header_labels`（有界、非敏感）+ `remedy=reproject_from_archived_workbook`；
+   补救路径是重新同步（归档路径保留官方 XLSX 原件）。禁止把历史行当作修复后的正确数据。
+5. **重复表头标签是契约事实，必须由守护测试钉住**（重复标签集合、索引、父表头语义、
+   阶段日期命中第一组）。上游表头一变即失败提醒重评读取口径；**禁止改契约文件规避**重复标签。
+6. **EWO 分析缓存来源标签写作 `aras_ewo`**：所有 Aras 报表写入侧都用限定标签，
+   裸 `"aras"` 仅保留为历史缓存读兼容（`is_ewo_source_type` 对两者皆真，读取语义不变）。
+7. **披露事件的载荷必须落在录制白名单内**：`core/diagnostic_recording.safe_metadata` 只转发
+   `_NUMBER_FIELDS` 数字键与 `_TEXT_FIELDS` + 闭集 `_VALUES` 的文本键，其余键在落盘时被整体丢弃
+   （事件名仍留存，`data` 变 `{}`）。产品新增诊断必须用白名单内的键名，或按既有做法把词条加入 `_VALUES`；
+   新增披露必须配一个"经 `Recorder` 录制导出后 `data` 可读"的回归测试。
+   违反代价：告警看起来存在，运维实际读不到任何数字（2026-09-25 两处 NCR 披露同时踩坑）。
+8. **历史快照不回填、读时不诊断**：`normalize_form_rows` 的生产唯一调用点是发布路径
+   `build_form_snapshot`；快照读取路径不重新归一化。因此纠正历史错误数据的唯一路径是重新同步
+   （归档保留官方 XLSX）。**禁止**把库里历史行的 `values` 当权威去"重投影"——那是被覆盖值还原出的污染数据。
+9. **同名表头标签的列一律不还原**：`_ncr_header_mapping_values()` 对重复标签（NCR 进度 11 组）不填任何位置，
+   宁可"未判定"也不让执行人姓名落进办理时间列；带位置视图的行不走该分支。
+
+## 2026-09-25 — PAA/NCR 与 EWO 同构：单一解析口径、工作簿准入门、来源标签限定、元数据取代硬编码
+
+1. **NCR 官方工作簿只有一个解析口径**：`services/aras_ncr_workbook.parse_ncr_workbook()`。
+   同步路径（`project_status_connectors`）与归档路径（`scheduled_archive_connectors`）都必须
+   消费它，行形状统一为「按已批准表头标签命名的字典 + `sheetName`」。禁止任一路径再自建解析
+   或发布位置行——读取按 `snapshot_at DESC` 取最新，双形状会让同一交付物的明细/图表口径
+   随"最后写入者"翻转。
+2. **完备性词表仍由 `services/pagination_integrity.py` 单点拥有**：官方工作簿准入新增
+   `WorkbookBookkeeping` + `decide_workbook_outcome()`，`COMPLETE_STOP_REASONS` 增加
+   `workbook_rows`。判定只消费簿记事实（读取/解析/空行/表头/未归类行、表头契约、截断），
+   不消费业务字段语义。**`complete` 只表示"满足准入策略"，不等于"证明源端零丢失"**；
+   官方工作簿没有声明总数，不得宣称与分页报表同等的源端全量保证。
+3. **NCR 准入 fail-closed 的分支优先级即契约**：不可读 → 表头不符 → 截断 → 行被拒 →
+   簿记不平 → 存在未归类行 → 空表 → 通过。同步路径 `require_complete_workbook()` 抛错；
+   归档路径保留官方产物，以 `projection_error` + manifest 簿记事实披露并转 attention。
+4. **EWO 阶段机只适用于 EWO**：分析缓存写入侧必须用 `analysis_source_type()` 产出的限定标签
+   （`aras_ewo` / `aras_paa` / `aras_ncr`）。裸 `"aras"` 仅保留为历史缓存读兼容，
+   禁止在新写入路径使用（否则 PAA/NCR 会被按 EWO 语义归一化与评分）。
+5. **能力注册表是同步契约的唯一来源**：`supportsRecordSet` / `completenessPolicy` /
+   `defaultDepartment` / `filterKeys` / `boardVisible` 一律从
+   `core/project_status_contracts.py` 派生。禁止在连接器、路由、前端再写
+   `deliverable_id == "VPI-T2-D3"` 之类的行为分支，也禁止把默认责任部门硬编码在连接器里。
+   `filterKeys` 必须与连接器实际消费的查询键一致（由测试守护），`matchKeys` 必须包含
+   `filterKeys`（PATCH 校验与连接器同源）。
+6. **看板可见性与统计参与解耦**：`boardVisible=False`（当前 D1/D4）只影响首页卡片区与
+   交付物明细表的渲染，不改变交付物存在性、详情页、分析接口、审计与完成度统计分母。
+   `countsTowardCompletion` 仍单独控制分母参与。
+Cost if violated: 同一交付物两种快照形状导致明细/图表忽多忽少；NCR 少行被当完整写入（静默丢数）；
+PAA/NCR 被 EWO 语义误判逾期；新增交付物仍需改多处 id 分支（结构继续漂移）。
+Source: 2026-09-25 用户批准 `docs/PLAN_20260925_BOARD_TRIM_AND_ARAS_UNIFY.md`（外部顾问 `sol-xhigh`
+第二意见已采纳：P1/P2/语义隔离同次上线、服务端看板投影、工作簿准入 (a)、双写者同形、不断言源端全量）。
+
+## 2026-09-25 — 分页完整性容忍度契约修订（方案 1-A 的 95% 阈值不得定案，方向改为有界放行 + 显式披露）
+
+1. **方案 1-A 的 95% 相对覆盖率阈值不得作为长期安全阈值**：该阈值只约束 `declared_total − unique_count`，不约束实际折叠条数（809 行可少 40 条、10 万行可少 5,000 条仍判 complete）。在拿到生产身份/抓取证据前，任何非零容忍度不得定案。
+2. **长期方向（外部顾问裁决，lead 采纳）**：终局放行采用有界容忍 + 显式披露——容忍度为调用方显式传入的策略参数（默认严格；TDC data_model/sor 显式选有界容忍，Aras 保持严格，完整性模块不识别来源业务语义）；放行终局须携带独立 stop_reason（`reported_pages_with_duplicates`，待消费方审计后纳入 `COMPLETE_STOP_REASONS`）与折叠数/声明总数/去重数诊断；`complete=True` 语义为"满足准入策略"，不得表述为"证明零丢失"。
+3. **临时护栏（Phase 1）**：`allowance = 0（declared_total < 20）；否则 min(1, floor(0.01 × declared_total))`；折叠数与 `max(0, final_total − unique_count)` 均不得超过 allowance；簿记一致性核对（原始读取数 = 去重数 + 折叠数）须对 `overflowed` 豁免。上限如需提高（例如至 3 条）必须用 `min` 形态并以生产证据校准。
+4. **禁止**：仅凭相对比例放行；在 `services/pagination_integrity.py` 内识别 TDC/Aras 业务来源或字段语义（容忍度只经调用方参数进入）。
+Cost if violated: 行键缺陷或上游重发造成的成规模误折叠被判 complete → 静默数据丢失并污染聚合统计与完成度分母；或回退到第 1 页 1 条业务重复即熔断的 HTTP 422 产线阻断。
+Source: 2026-09-25 外部专家顾问裁决（脱敏咨询包：分页完整性方案 1-A 安全边界定案）；关键主张已由 lead 在当前代码上核验（`services/pagination_integrity.py:67-76,120-131`、`services/tdc_crawler.py` 去重循环与溢出豁免、词表消费方清单）。
+
+## 2026-09-23 — SOR 聚合字段映射容错、数模状态全链路闭环与 PAA/NCR 白名单补齐
+
+1. **聚合向导 note 字段映射容错与清洗**：
+   - 前端向导在聚合模式下，禁止硬编码 note 映射列，必须与最新脱敏字段报告（`fieldReport.fields`）做动态交集；
+   - 后端在 `_mapping_evidence_error` 校验中，对列表型 `note` 字段只要候选列与 `observed_fields` 交集非空即可放行，并将清洗后的交集列表写入数据库，严格保证存库 `mapping ⊆ observed_fields`。
+2. **数模状态筛选（8 点契约闭环）与严格全等完成态**：
+   - `TDCDataModelFilters` 及相关 8 处注册表完整闭环支持 `status` 字段；
+   - 完成态枚举扩充支持 `{"4", "已完成", "完成", "审批完成", "审批通过", "已归档", "归档", "已发布", "流程结束", "已生效"}`，禁止使用子串匹配以防“审核不通过”误判；
+   - 严禁将快照完成时间反写进数据库业务表的 `actual_date`，维持 Field Authority 人工隔离。
+3. **PAA / NCR 映射发现白名单覆盖**：
+   - `web/app.py` 的 `_MAPPING_DISCOVERY_RULE_FIELDS` 必须完整注册 `("aras", "paa")`, `("aras", "ncr_progress")`, `("aras", "ncr_detail")`，且必须包含 `department` 字段与单号别名（`serial_number` 与 `ncr_no` / `paa_no`）。
+Cost if violated: SOR 向导因局部字段缺失抛 HTTP 422 阻断启用；数模状态无法按需筛选且完成度始终为 0%；PAA/NCR 映射发现抛 HTTP 400 filters contains unsupported fields。
+Source: 2026-09-23 生产实测与子智能体 code-reviewer 架构审计。
+
+## 2026-09-23 — 分页完整性翻页熔断放宽 (方案 1-A) 与 PAA/NCR 交付物同步向导全量同构化 (方案 2-A)
+
+1. **分页翻页熔断放宽（方案 1-A）**：
+   - 爬虫翻页中途（`page < reported_pages`），单页出现轻微重复时不提前熔断，爬虫必须继续翻页抓取后续页（返回 `continue`）；
+   - 在翻满声明页数（`page >= reported_pages`）且总记录数较多（>= 20）时，允许极轻微业务重复（去重行数覆盖率 >= 95% 时判定为 `"reported_pages"` 完整）；
+   - 少量记录样本（< 20）或去重行数严重不足（< 95%）时，依然 fail-closed 判为 `duplicate_records`（防大批量漏数据）。
+2. **PAA/NCR 交付物同步向导全面同构化解耦（方案 2-A）**：
+   - 彻底废除 D6-D8（PAA、NCR 进度、NCR 明细）必须跳页面至「自动归档」配置的割裂链路；
+   - 将 D6-D8 全面升级为 `syncCapable=True`，注册各自的标准字段映射（`defaultMapping`）与字段别名推导词表（`fieldAliases`）；
+   - 前端详情页统一呈现【数据同步向导】（凭据默认统一域账号、车型项目输入、责任部门预填 `技术中心_车体工程`、定时周期下拉），点一次即可一键配置并首次同步，常驻【立即同步】与【修改同步配置】；
+   - 后端连接器与运行器在同步执行后全自动构造并持久化表单快照（`publish_deliverable_form_snapshot`），无缝保持表单视图与统计图表的实时更新。
+Cost if violated: TDC 多页抓取在第 1 页因 1 条业务重复即中断失败（HTTP 422）；PAA/NCR 交付物同步体验与 EWO 割裂，必须跳出页面去配置归档。
+Source: 2026-09-23 用户生产测试确认方案 1-A 与方案 2-A。
+
 ## 2026-09-22 — TDC 数模爬虫零件级粒度标识与责任部门解耦规范
 
 1. **TDC 数模 (D5) 零件级（part_detail）行唯一性标识规范**：
@@ -18,6 +118,31 @@ short: decision, why, cost if violated, source pointer.
    - 提供 `normalizeTdcDepartment` 自动剥离 `技术中心_` / `技术中心-` 前缀；聚合取证若遇 `not_found` 支持自动尝试不带部门参数重试一次。
 Cost if violated: TDC 数模多页抓取时同名合法零件被误杀致第 1 页自杀式中断（HTTP 422）；或将 Aras 部门误注入 TDC 导致 0 命中。
 Source: 2026-09-22 生产实测取证与 code-reviewer 架构交叉审计结论。
+
+## 2026-09-22 — 分页完整性契约单一拥有者 + 错误出口统一 + 失败指引闭集化
+
+1. **`complete/stop_reason` 判定只有一个拥有者**：`services/pagination_integrity.py`
+   （叶子模块，无第三方依赖、不 import 上层、**不消费业务字段语义**）拥有 `stop_reason` 词表
+   （`COMPLETE_STOP_REASONS` / `is_complete()`）与元数据驱动的终局判定
+   （`decide_page_outcome()`，分支顺序即契约）。TDC 与 Aras 两个生产者都必须经它派生 `complete`；
+   **禁止**任一爬虫再立字面集合（`tests/test_pagination_integrity.py` 有反向守护）。
+   `services/project_status_records.COMPLETE_RESULT_STOP_REASONS` 仅为兼容别名（同一对象）。
+   Why：此前同一语义在两个爬虫各自实现，改一处必漏另一处（D3/EWO 迟早同类失败）。
+2. **分页完整性只管簿记，不管业务身份**：`complete` 只由页号/大小/声明总数与页数/去重计数决定；
+   业务身份永远只属 `services/project_status_records`。
+3. **错误出口唯一**：`web/app.py:_json_error` 是唯一错误出口，`diagnostic` 只承载**有界、非敏感**的
+   枚举与计数（如 `stopReason/uniqueCount/duplicateCount/declaredTotal/declaredPages/fetchedPages`）；
+   禁止放入上游原文、凭据或业务行内容。抓取类失败**必须**携带完整性事实，否则线上无法定案。
+4. **失败指引闭集化**：`ArchiveJobNotReadyError.reason`（credential_not_configured / job_disabled /
+   contract_mismatch / filters_invalid / retry_policy_invalid / unknown）与
+   `remedy` 指引码（bind_domain_credential / save_domain_credential / …）均为闭集；
+   前端只匹配闭集码，**严禁**匹配英文原文文案。
+5. **热路径禁止 vault I/O**：`/api/project-status` 只能透出 `credentialConfigured`（既有布尔列）；
+   「凭据是否真的可用」留给点击时的 `sync-now` 结果。
+Cost if violated: 语义再次分裂并第三次返工；错误响应缺失事实导致又一轮盲猜；
+前端匹配英文串在文案变化时静默失效；热路径凭据探测拖慢项目状态接口。
+Source: `docs/ARCH_REVIEW_20260922_SYNC_FIX_FEASIBILITY.md`（架构评估）+
+本轮实施与门禁证据（全量 2346 passed）。
 
 ## 2026-09-22 — 归档同步的「用户显式触发」与「调度」门控必须分离，且前端禁止假成功
 
@@ -420,3 +545,20 @@ EWO新版合同使用字符串contractVersion=2和显式single_record/record_set
 - PAA/NCR 首期使用两张快照参考进度卡；2026-09-13 的正式 NCR 交付物接入为后续规划，本期不登记、不计入节点分母；NCR 明细不重复统计。
 - 无节点隶属规则时隐藏交付物/风险占位，保留节点时间与主计划维护，不推断隶属关系。官方 EWO 增强仍只读。
 - 本次仅后端自动测试；UI 由用户按 docs/DELIVERABLE_CONSOLE_UI_TODO_20260916.md 手工验收，工程审计完成不代表 UI 已验收。
+
+## 2026-09-25 Expert Advisor 自主路由阈值
+
+DSH 与 ZCode 的交互主代理可在用户未指定场景时自行决定是否咨询 Codex：先本地取证，仅当高影响决策有真实方案取舍，或高影响故障两轮聚焦排查后证据仍冲突时触发；用户明确要求第二意见也触发。普通实现、测试、文档和已定案问题跳过。每个决策最多咨询一次，重要新证据出现才可重新评估；顾问只提供意见，主代理保留最终裁决和验证责任，worker 不得调用。统一入口继续执行脱敏、隔离、额度和失败即停止的现有门禁。
+## 2026-09-25 Expert Advisor 顾问模型与自主触发（取代同日旧高影响双方案阈值）
+
+DSH DeepSeek Harness + v4.1 Flash 主代理和 ZCode Gemini 3.8 Flash 交互主代理，在非琐碎的架构设计与实施方案定案前自主寻求 Codex 第二意见，不要求用户点名或先有两个候选方案；普通执行和已定案事项跳过。选档：sol-high 为一般方案，sol-xhigh 为复杂多模块公共契约/并发/回滚，astra-medium 为边界较清楚的难回退安全、静默丢数、破坏性迁移决策，astra-high 为同类决策且有证据冲突或多处耦合。Codex 只提供意见，主代理独立裁决和负责实施；worker 不得调用。
+
+四档经受控只读官方 CLI 的固定白名单传递，所有档位共用 provider 账本、额度、隔离与失败即停守卫。新增滚动 5 小时 2 次、7 日 8 次，Astra 另限日 1/7 日 2；从 2026-09-25 16:22 +08:00 前向生效，旧启动仍计入原自然日和每任务额度。旧受控只读模式的请求前零工具不可达缺口仍在，用户此前已接受该剩余风险。
+
+## 2026-09-25 Expert Advisor 本地额度重置与验证
+
+用户明确允许重置本机 Expert Advisor 配额。采用策略中的 local_quota_reset_at 前向计数，而非删除或改写账本；重置前的启动和结果继续留存，重置后的所有 Sol/Astra 档位仍共享原本地上限。此操作不触碰 ChatGPT Plus 的服务端用量或信用额度。用户授权后，DSH sol-high 与 ZCode astra-medium 各一次纯合成 live 已通过；验证后再次设置本地计数起点，为真实项目保留额度。项目中的自动路由规则与角色责任不变。
+
+## 2026-09-25 Expert Advisor 共享 7 日额度改为 30（取代先前 8 次）
+
+用户明确要求把前一轮讨论的本地滚动 7 日上限直接设为 30 次。codex-readonly 的 Sol/high、Sol/xhigh、Astra/medium、Astra/high 四档继续共用一个 provider 账本，weekly_cap=30。其他护栏保持：滚动 5 小时 2 次、自然日 10 次、每任务 2 次；Astra 另限自然日 1 次、滚动 7 日 2 次。此变更不重置 ChatGPT Plus 服务端额度或历史账本，也不自动扩大顾问触发场景。

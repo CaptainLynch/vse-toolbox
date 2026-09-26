@@ -79,6 +79,7 @@ def test_data_model_filter_mapping_and_empty_omission() -> None:
         project_model="P100",
         part_number="PART-1",
         model_number="DM-1",
+        status="已完成",
     )
 
     assert filters.to_params() == {
@@ -91,8 +92,9 @@ def test_data_model_filter_mapping_and_empty_omission() -> None:
         "projectModel": "P100",
         "partNumber": "PART-1",
         "modelNumber": "DM-1",
+        "status": "已完成",
     }
-    assert TDCDataModelFilters(serial_number=" ", part_number=None).to_params() == {}
+    assert TDCDataModelFilters(serial_number=" ", part_number=None, status=None).to_params() == {}
 
 
 def test_sor_filter_mapping_project_pair_and_validation() -> None:
@@ -943,3 +945,72 @@ def test_data_model_crawl_17_pages_with_duplicate_part_names_completes_safely() 
     _require_complete_result(result)
     mapping_rows = _require_complete_mapping_result(result, _TDCRequestError)
     assert len(mapping_rows) == 850
+
+
+def test_data_model_crawl_continues_when_page_one_has_duplicate_across_17_pages() -> None:
+    """生产线上复现保护（方案 1-A）：
+    当第 1 页出现 1 条重复记录时，爬虫不得在第 1 页中断熔断（HTTP 422），必须继续爬取全部 17 页并在终局成功完成。"""
+    from services.project_status_connectors import _require_complete_result
+    from web.app import _TDCRequestError, _require_complete_mapping_result
+
+    total_pages = 17
+    page_size = 50
+    total_records = 850
+    responses = []
+
+    global_record_id = 1
+    for p in range(1, total_pages + 1):
+        rows = []
+        for i in range(page_size):
+            # 在第 1 页第 1 行刻意制造 1 条与第 0 行 100% 相同的重复数据
+            if p == 1 and i == 1:
+                duplicate_row = dict(rows[0])
+                rows.append(duplicate_row)
+                continue
+            rows.append({
+                "id": f"REC-{global_record_id}",
+                "incident": f"INC-{p}-{i}",
+                "documentNo": f"DOC-{p}-{i}",
+                "formId": f"FORM-{p}-{i}",
+                "partNumber": f"PART-{global_record_id}",
+                "modelNumber": f"MDL-{global_record_id}",
+                "partName": f"零件-{global_record_id}",
+                "versionNumber": "001",
+                "department": "车身科",
+                "superDepartment": "车体工程",
+                "projectModel": "F610S",
+                "status": "4",
+            })
+            global_record_id += 1
+        payload = {
+            "code": 200,
+            "data": {
+                "current": p,
+                "size": page_size,
+                "total": total_records,
+                "pages": total_pages,
+                "records": rows,
+            }
+        }
+        responses.append(FakeResponse(payload))
+
+    session = FakeSession(responses)
+    client = TDCCrawlerClient("https://tdc.example", session=session)
+
+    result = client.crawl_data_model_all(
+        TDCDataModelFilters(department="车体工程", project_model="F610S"),
+        page_size=page_size,
+        max_pages=20,
+        max_records=1000,
+    )
+
+    # 验证没有在第 1 页停滞，而是顺利抓完了全部 17 页
+    assert result.fetched_pages == 17
+    assert result.duplicate_count == 1
+    assert result.unique_count == 849
+    assert result.stop_reason == "reported_pages"
+    assert result.complete is True
+
+    _require_complete_result(result)
+    mapping_rows = _require_complete_mapping_result(result, _TDCRequestError)
+    assert len(mapping_rows) == 849

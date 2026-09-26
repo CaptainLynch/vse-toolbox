@@ -19,9 +19,14 @@ from core.project_status_contracts import (
     get_deliverable_default_mapping,
     get_deliverable_field_aliases,
     milestone_display_status,
+    project_status_board_visible,
+    project_status_completeness_policy,
+    project_status_default_department,
     project_status_default_policy_mode,
     project_status_manual_editability,
     project_status_source_capabilities,
+    project_status_supports_record_set,
+    project_status_sync_contract,
 )
 
 
@@ -356,7 +361,7 @@ def test_source_capabilities_registry_contract() -> None:
     """能力注册表单一来源：契约内交付物可自动同步，键集与连接器消费键一致。"""
     from services.project_status_updates import PROJECT_STATUS_SYNC_CONTRACTS
 
-    sync_ids = {"VPI-T2-D2", "VPI-T2-D3", "VPI-T2-D5"}
+    sync_ids = {"VPI-T2-D2", "VPI-T2-D3", "VPI-T2-D5", "VPI-T2-D6", "VPI-T2-D7", "VPI-T2-D8"}
     assert set(PROJECT_STATUS_SYNC_CONTRACTS) == sync_ids
     for deliverable_id in sync_ids:
         capabilities = project_status_source_capabilities(deliverable_id)
@@ -787,8 +792,8 @@ def test_manual_editability_form_snapshot_driven_deliverables() -> None:
 
 
 def test_source_capabilities_form_snapshot_driven_flags() -> None:
-    """D6-D8 能力标志：syncCapable=False、formSnapshotDriven=True、
-    countsTowardCompletion=False；默认策略仍为 manual（不进同步调度）。"""
+    """D6-D8 能力标志：syncCapable=True、formSnapshotDriven=True、
+    countsTowardCompletion=False；默认策略为 automatic（进入同步调度但不计入完成度）。"""
     for deliverable_id, report_type in (
         ("VPI-T2-D6", "paa"),
         ("VPI-T2-D7", "ncr_progress"),
@@ -797,17 +802,108 @@ def test_source_capabilities_form_snapshot_driven_flags() -> None:
         capabilities = project_status_source_capabilities(deliverable_id)
         assert capabilities["sourceType"] == "aras"
         assert capabilities["reportType"] == report_type
-        assert capabilities["syncCapable"] is False
+        assert capabilities["syncCapable"] is True
         assert capabilities["manualOnly"] is False
         assert capabilities["formSnapshotDriven"] is True
         assert capabilities["countsTowardCompletion"] is False
-        assert capabilities["syncNote"]
-        assert project_status_default_policy_mode(deliverable_id) == "manual"
+        assert project_status_default_policy_mode(deliverable_id) == "automatic"
     # D1-D5 未声明新标志（payload 按缺省 True 处理计数分母）。
     for deliverable_id in ("VPI-T2-D1", "VPI-T2-D2", "VPI-T2-D3", "VPI-T2-D4", "VPI-T2-D5"):
         capabilities = project_status_source_capabilities(deliverable_id)
         assert "formSnapshotDriven" not in capabilities
         assert "countsTowardCompletion" not in capabilities
+
+
+def test_sync_contract_metadata_contract() -> None:
+    """同步契约扩展元数据：版本化合同、完备性策略、默认部门、筛选键。"""
+    # 版本化记录集合仅 EWO 声明。
+    assert project_status_supports_record_set("VPI-T2-D3") is True
+    for deliverable_id in (
+        "VPI-T2-D1", "VPI-T2-D2", "VPI-T2-D4",
+        "VPI-T2-D5", "VPI-T2-D6", "VPI-T2-D7", "VPI-T2-D8",
+    ):
+        assert project_status_supports_record_set(deliverable_id) is False
+
+    # 完备性策略：只有官方工作簿导出（NCR）走工作簿准入门。
+    assert project_status_completeness_policy("VPI-T2-D7") == "workbook_admission"
+    assert project_status_completeness_policy("VPI-T2-D8") == "workbook_admission"
+    for deliverable_id in ("VPI-T2-D2", "VPI-T2-D3", "VPI-T2-D5", "VPI-T2-D6"):
+        assert project_status_completeness_policy(deliverable_id) == "paged_result"
+
+    # 默认责任部门：PAA 由注册表声明（不再是连接器内硬编码）；
+    # NCR/TDC/EWO 无隐式默认。
+    assert project_status_default_department("VPI-T2-D6") == "技术中心_车体工程"
+    for deliverable_id in ("VPI-T2-D2", "VPI-T2-D3", "VPI-T2-D5", "VPI-T2-D7", "VPI-T2-D8"):
+        assert project_status_default_department(deliverable_id) is None
+
+    # 看板可见性：仅 D1/D4 不看板，其余缺省可见。
+    assert project_status_board_visible("VPI-T2-D1") is False
+    assert project_status_board_visible("VPI-T2-D4") is False
+    for deliverable_id in ("VPI-T2-D2", "VPI-T2-D3", "VPI-T2-D5", "VPI-T2-D6", "VPI-T2-D7", "VPI-T2-D8"):
+        assert project_status_board_visible(deliverable_id) is True
+
+    # 未注册交付物回退到最保守口径。
+    fallback = project_status_sync_contract("VPI-T2-UNKNOWN")
+    assert fallback == {
+        "supportsRecordSet": False,
+        "completenessPolicy": "paged_result",
+        "defaultDepartment": None,
+        "filterKeys": (),
+    }
+
+
+@pytest.mark.parametrize(
+    ("deliverable_id", "builder_path"),
+    [
+        ("VPI-T2-D2", "tdc_sor"),
+        ("VPI-T2-D3", "ewo"),
+        ("VPI-T2-D5", "tdc_data_model"),
+        ("VPI-T2-D6", "paa"),
+        ("VPI-T2-D7", "ncr"),
+        ("VPI-T2-D8", "ncr"),
+    ],
+)
+def test_declared_filter_keys_match_connector_consumption(
+    deliverable_id: str, builder_path: str
+) -> None:
+    """声明的 filterKeys 与连接器实际消费的查询键必须一致（防空转与漂移）。
+
+    - 每个声明键单独出现时都必须改变过滤器（证明它真的进入查询）；
+    - 未声明的探针键不得改变过滤器（证明连接器不偷读未声明键）；
+    - 声明键必须是绑定 matchKeys 的子集（PATCH 校验与连接器同源）。
+    """
+    from services.project_status_connectors import (
+        ArasProjectStatusConnector,
+        TDCProjectStatusConnector,
+        build_project_status_ewo_filters,
+    )
+
+    builders = {
+        "tdc_sor": TDCProjectStatusConnector._sor_filters,
+        "tdc_data_model": TDCProjectStatusConnector._data_model_filters,
+        "ewo": build_project_status_ewo_filters,
+        "paa": ArasProjectStatusConnector._paa_filters,
+        "ncr": ArasProjectStatusConnector._ncr_filters,
+    }
+    build = builders[builder_path]
+
+    declared = project_status_sync_contract(deliverable_id)["filterKeys"]
+    assert declared, f"{deliverable_id} must declare filterKeys"
+
+    baseline = build({})
+    full_rule = {key: f"sentinel-{key}" for key in declared}
+    for key in declared:
+        single = build({key: f"sentinel-{key}"})
+        assert single != baseline, f"declared filter key {key} is not consumed"
+
+    full = build(full_rule)
+    for probe in ("undeclaredProbe", "reportTypeProbe"):
+        assert build({**full_rule, probe: "x"}) == full, (
+            f"connector consumes undeclared rule key {probe}"
+        )
+
+    match_keys = set(project_status_source_capabilities(deliverable_id).get("matchKeys", ()))
+    assert set(declared) <= match_keys, "filterKeys 必须包含在 matchKeys 内"
 
 
 def test_default_mappings_and_field_aliases_contracts() -> None:
@@ -861,7 +957,58 @@ def test_default_mappings_and_field_aliases_contracts() -> None:
     assert d5_map["owner"] in dm_fields
     assert all(f in dm_fields for f in d5_map["note"])
 
+    # D6 (PAA)
+    from core.report_contracts import _PAA_SOURCE_FIELDS, report_contracts
+    paa_fields = {f for tup in _PAA_SOURCE_FIELDS.values() for f in tup}
+    d6_map = get_deliverable_default_mapping("VPI-T2-D6")
+    assert d6_map["owner"] in paa_fields
+    assert d6_map["plannedDate"] in paa_fields
+    assert all(f in paa_fields for f in d6_map["note"])
+
+    # D7 (NCR Progress)
+    ncr_progress_headers = set(report_contracts()["ncr_progress"]["headerRows"][1])
+    d7_map = get_deliverable_default_mapping("VPI-T2-D7")
+    assert d7_map["owner"] in ncr_progress_headers
+    assert all(f in ncr_progress_headers for f in d7_map["note"])
+
+    # D8 (NCR Detail)
+    ncr_detail_headers = set(report_contracts()["ncr_detail"]["headerRows"][0])
+    d8_map = get_deliverable_default_mapping("VPI-T2-D8")
+    assert d8_map["owner"] in ncr_detail_headers
+    assert all(f in ncr_detail_headers for f in d8_map["note"])
+
     # 能力注册表中下发 defaultMapping 与 fieldAliases
     d3_caps = project_status_source_capabilities("VPI-T2-D3")
     assert d3_caps["defaultMapping"] == d3_map
     assert d3_caps["fieldAliases"] == d3_aliases
+
+    # find_deliverable_id_by_form_key 反查测试
+    from core.project_status_contracts import find_deliverable_id_by_form_key
+    assert find_deliverable_id_by_form_key("VPI-T2-D3") == "VPI-T2-D3"
+    assert find_deliverable_id_by_form_key("aras_paa") == "VPI-T2-D6"
+    assert find_deliverable_id_by_form_key("aras_ncr_progress") == "VPI-T2-D7"
+    assert find_deliverable_id_by_form_key("aras_ncr_detail") == "VPI-T2-D8"
+    assert find_deliverable_id_by_form_key("tdc_data_model") == "VPI-T2-D5"
+    assert find_deliverable_id_by_form_key("tdc_sor") == "VPI-T2-D2"
+    assert find_deliverable_id_by_form_key("unknown") is None
+    assert find_deliverable_id_by_form_key("") is None
+
+    # 严禁在别名与 fieldSemantics 中引用不存在的列名 (_req_by, 执行人, 责任人, 更改内容)
+    d6_aliases = get_deliverable_field_aliases("VPI-T2-D6")
+    d7_aliases = get_deliverable_field_aliases("VPI-T2-D7")
+    d8_aliases = get_deliverable_field_aliases("VPI-T2-D8")
+    assert "_req_by" not in d6_aliases.get("owner", ())
+    assert "执行人" not in d7_aliases.get("owner", ())
+    assert "责任人" not in d8_aliases.get("owner", ())
+    assert "执行人" not in d8_aliases.get("owner", ())
+    assert "更改内容" not in d8_aliases.get("note", ())
+
+    d6_caps = project_status_source_capabilities("VPI-T2-D6")
+    d7_caps = project_status_source_capabilities("VPI-T2-D7")
+    d8_caps = project_status_source_capabilities("VPI-T2-D8")
+    for caps in (d6_caps, d7_caps, d8_caps):
+        semantics_text = str(caps.get("fieldSemantics") or "")
+        assert "_req_by" not in semantics_text
+        assert "「执行人」" not in semantics_text
+        assert "「责任人」" not in semantics_text
+        assert "「更改内容」" not in semantics_text

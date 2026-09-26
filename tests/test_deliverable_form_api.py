@@ -10,7 +10,21 @@ import pytest
 
 import web.app as web_app
 from core.db_manager import DatabaseManager
+from core.section_rollup import SectionRollupStore
 from services.deliverable_form_analysis import build_form_snapshot, form_definition
+
+
+def _save_rollup_rules(db: DatabaseManager, *, aliases: dict[str, list[str]] | None = None) -> dict:
+    """登记默认五个目标科室；aliases 提供各目标的历史值（测试用对照）。"""
+    merged = aliases or {}
+    targets = [
+        {"target": "车身科", "aliases": merged.get("车身科", [])},
+        {"target": "车体科", "aliases": merged.get("车体科", [])},
+        {"target": "内饰科", "aliases": merged.get("内饰科", [])},
+        {"target": "外饰科", "aliases": merged.get("外饰科", [])},
+        {"target": "车体架构集成科", "aliases": merged.get("车体架构集成科", [])},
+    ]
+    return SectionRollupStore(db).save({"targets": targets})
 
 
 def _paa_snapshot(*, snapshot_at: str, source_run_id: int) -> object:
@@ -211,12 +225,14 @@ def test_form_rows_endpoint_accepts_only_allowlisted_filters(client) -> None:
     db.publish_deliverable_form_snapshot(
         _paa_snapshot(snapshot_at="2026-09-01T18:00:00Z", source_run_id=2)
     )
+    # 归集激活后 section 筛选按归集口径：登记「车体工程」为车身科历史值。
+    _save_rollup_rules(db, aliases={"车身科": ["车体工程"]})
 
     response = http.get(
         "/api/deliverable-forms/aras_paa/rows",
         query_string={
             "department": "车身开发部",
-            "section": "车体工程",
+            "section": "车身科",
             "model": "F610S",
             "status": "CLOSE",
             "offset": "0",
@@ -228,6 +244,9 @@ def test_form_rows_endpoint_accepts_only_allowlisted_filters(client) -> None:
     data = response.get_json()["data"]
     assert data["total"] == 1
     assert data["items"][0]["dimensions"]["model"] == "F610S"
+    # 「车体工程」作为车身科历史别名被归集筛选命中。
+    assert data["items"][0]["dimensions"]["section"] == "车体工程"
+    assert data["items"][0]["sectionRollupTarget"] == "车身科"
 
     invalid = http.get(
         "/api/deliverable-forms/aras_paa/rows",
@@ -244,20 +263,23 @@ def test_form_view_filters_charts_and_daily_trend_from_same_snapshot_rows(client
     db.publish_deliverable_form_snapshot(
         _paa_snapshot(snapshot_at="2026-09-01T18:00:00Z", source_run_id=2)
     )
+    # 归集激活后 section 筛选按归集口径：登记「车体工程」为车身科历史值。
+    _save_rollup_rules(db, aliases={"车身科": ["车体工程"]})
 
     response = http.get(
         "/api/deliverable-forms/aras_paa/view",
-        query_string={"section": "车体工程", "model": "F610S"},
+        query_string={"section": "车身科", "model": "F610S"},
     )
 
     assert response.status_code == 200
     data = response.get_json()["data"]
     assert data["summary"]["total"] == 1
     assert data["summary"]["completed"] == 1
+    # sectionStatus 保持原始值口径（筛选命中的是「车体工程」别名行）。
     assert data["charts"]["sectionStatus"][0]["label"] == "车体工程"
     assert all(point["total"] == 1 for point in data["charts"]["quantityTrend"])
     assert data["filters"]["applied"] == {
-        "section": "车体工程",
+        "section": "车身科",
         "model": "F610S",
     }
 
@@ -556,3 +578,216 @@ def test_tdc_sor_rows_endpoint_supports_section_filter(client) -> None:
     assert body["ok"] is True
     assert body["data"]["total"] == 1
     assert body["data"]["items"][0]["dimensions"]["section"] == "车身科"
+
+
+def test_publish_deliverable_form_snapshot_optimistic_lock(client) -> None:
+    """publish_deliverable_form_snapshot 校验 expected_sync_config_revision：换绑时拒绝发布。"""
+    _, db = client
+    # 模拟设置 VPI-T2-D6 (aras_paa) 的修订号为 5
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE project_status_update_bindings SET sync_config_revision = 5 WHERE deliverable_id = 'VPI-T2-D6'"
+        )
+
+    snap = _paa_snapshot(snapshot_at="2026-09-01T20:00:00Z", source_run_id=10)
+
+    # 1. 预期修订号不一致 (4 != 5) → 拒绝发布，返回 0
+    res_mismatch = db.publish_deliverable_form_snapshot(snap, expected_sync_config_revision=4)
+    assert res_mismatch == 0
+
+    # 2. 预期修订号一致 (5 == 5) → 允许发布，返回 snapshot_id > 0
+    res_match = db.publish_deliverable_form_snapshot(snap, expected_sync_config_revision=5)
+    assert res_match > 0
+
+    # 3. 交付物绑定不存在 (binding_row 为 None) 且指定了修订号 → 拒绝发布，返回 0 (fail-closed)
+    snap_unknown = build_form_snapshot(
+        "aras_paa",
+        (),
+        snapshot_at="2026-09-01T21:00:00Z",
+        source_run_id=11,
+        source="project_status_sync",
+    )
+    with db.get_connection() as conn:
+        conn.execute("DELETE FROM project_status_update_bindings WHERE deliverable_id = 'VPI-T2-D6'")
+    res_deleted = db.publish_deliverable_form_snapshot(snap_unknown, expected_sync_config_revision=5)
+    assert res_deleted == 0
+
+
+# ===== 科室归集：规则端点 + 双分页矩阵 + 归集筛选（读时归集口径） =====
+
+
+def test_section_rollup_endpoints_roundtrip_and_validation(client) -> None:
+    http, _ = client
+
+    default = http.get("/api/project-status/section-rollup")
+    assert default.status_code == 200
+    body = default.get_json()
+    assert body["ok"] is True
+    assert [entry["target"] for entry in body["data"]["targets"]] == [
+        "车身科", "车体科", "内饰科", "外饰科", "车体架构集成科",
+    ]
+
+    saved = http.put(
+        "/api/project-status/section-rollup",
+        json={"targets": [{"target": "车身科", "aliases": ["结构工程科"]}]},
+    )
+    assert saved.status_code == 200
+    saved_body = saved.get_json()
+    assert saved_body["ok"] is True
+    assert saved_body["data"]["targets"][0]["aliases"] == ["结构工程科"]
+    assert saved_body["data"]["updatedAt"]
+
+    refetched = http.get("/api/project-status/section-rollup")
+    assert refetched.get_json()["data"]["targets"][0]["aliases"] == ["结构工程科"]
+
+    invalid = http.put(
+        "/api/project-status/section-rollup",
+        json={
+            "targets": [
+                {"target": "车身科", "aliases": ["结构工程科"]},
+                {"target": "内饰科", "aliases": ["结构工程科"]},
+            ],
+        },
+    )
+    assert invalid.status_code == 422
+    fields = invalid.get_json()["error"]["fields"]
+    assert "只能归属一个目标科室" in fields["targets.2.aliases"]
+
+    non_object = http.put(
+        "/api/project-status/section-rollup",
+        data=json.dumps(["x"]),
+        content_type="application/json",
+    )
+    assert non_object.status_code == 400
+
+
+def test_form_view_matrix_and_rollup_filtered_rows(client) -> None:
+    http, db = client
+    db.publish_deliverable_form_snapshot(
+        _paa_snapshot(snapshot_at="2026-09-01T18:00:00Z", source_run_id=2)
+    )
+    _save_rollup_rules(db, aliases={"车身科": ["车体工程"]})
+
+    view = http.get("/api/deliverable-forms/aras_paa/view")
+    data = view.get_json()["data"]
+    matrix = data["charts"]["sectionStageMatrix"]
+    assert [entry["label"] for entry in matrix["sections"]] == [
+        "车身科", "车体科", "内饰科", "外饰科", "车体架构集成科", "未归集",
+    ]
+    body_section = next(entry for entry in matrix["sections"] if entry["label"] == "车身科")
+    assert body_section["total"] == 1  # 「车体工程」归集到车身科
+    unassigned_section = matrix["sections"][-1]
+    assert unassigned_section["total"] == 1  # 「动力总成」未登记 → 未归集
+    assert matrix["stages"][0]["label"] == "DRAFT1"
+    assert data["sectionRollup"]["targets"][0]["aliases"] == ["车体工程"]
+
+    # 归集筛选：选目标科室 = 含历史别名行；「未归集」= 未登记行。
+    filtered = http.get(
+        "/api/deliverable-forms/aras_paa/view",
+        query_string={"section": "车身科"},
+    )
+    assert filtered.get_json()["data"]["summary"]["total"] == 1
+    unassigned_view = http.get(
+        "/api/deliverable-forms/aras_paa/view",
+        query_string={"section": "未归集"},
+    )
+    assert unassigned_view.get_json()["data"]["summary"]["total"] == 1
+
+    rows = http.get("/api/deliverable-forms/aras_paa/rows", query_string={"section": "车身科"})
+    rows_data = rows.get_json()["data"]
+    assert rows_data["total"] == 1
+    assert rows_data["items"][0]["sectionRollupTarget"] == "车身科"
+    assert rows_data["items"][0]["dimensions"]["section"] == "车体工程"
+
+
+def test_form_rows_attach_rollup_target_and_tdc_forms_stay_raw(client) -> None:
+    http, db = client
+    db.publish_deliverable_form_snapshot(
+        _paa_snapshot(snapshot_at="2026-09-01T18:00:00Z", source_run_id=2)
+    )
+    db.publish_deliverable_form_snapshot(
+        _tdc_snapshot(snapshot_at="2026-09-02T18:00:00Z", source_run_id=3)
+    )
+    _save_rollup_rules(db, aliases={"车身科": ["车体工程"]})
+
+    rows = http.get("/api/deliverable-forms/aras_paa/rows")
+    items = rows.get_json()["data"]["items"]
+    assert {item["sectionRollupTarget"] for item in items} == {"车身科", "未归集"}
+
+    tdc_view = http.get("/api/deliverable-forms/tdc_data_model/view")
+    tdc_data = tdc_view.get_json()["data"]
+    assert "sectionStageMatrix" not in tdc_data["charts"]
+    assert "sectionRollup" not in tdc_data
+    tdc_rows = http.get("/api/deliverable-forms/tdc_data_model/rows")
+    tdc_items = tdc_rows.get_json()["data"]["items"]
+    assert tdc_items and all("sectionRollupTarget" not in item for item in tdc_items)
+
+
+def test_rollup_rule_change_takes_effect_without_resync(client) -> None:
+    http, db = client
+    db.publish_deliverable_form_snapshot(
+        _paa_snapshot(snapshot_at="2026-09-01T18:00:00Z", source_run_id=2)
+    )
+    _save_rollup_rules(db, aliases={"车身科": ["车体工程"]})
+
+    before = http.get(
+        "/api/deliverable-forms/aras_paa/view",
+        query_string={"section": "车身科"},
+    )
+    assert before.get_json()["data"]["summary"]["total"] == 1
+
+    http.put(
+        "/api/project-status/section-rollup",
+        json={"targets": [{"target": "车身科", "aliases": []}]},
+    )
+
+    after = http.get(
+        "/api/deliverable-forms/aras_paa/view",
+        query_string={"section": "车身科"},
+    )
+    assert after.get_json()["data"]["summary"]["total"] == 0
+    # 不带筛选的视图矩阵：别名移除后两行都落入「未归集」，无需重新同步。
+    unfiltered = http.get("/api/deliverable-forms/aras_paa/view")
+    matrix = unfiltered.get_json()["data"]["charts"]["sectionStageMatrix"]
+    assert next(entry for entry in matrix["sections"] if entry["label"] == "未归集")["total"] == 2
+    assert next(entry for entry in matrix["sections"] if entry["label"] == "车身科")["total"] == 0
+
+
+def test_rows_section_filter_combined_with_threshold_override(client) -> None:
+    """审计钉住：SQL 预筛(非 section) → 阈值重算 → 归集筛选 → 切片 的组合路径。"""
+    http, db = client
+    db.publish_deliverable_form_snapshot(
+        _paa_snapshot(snapshot_at="2026-09-01T18:00:00Z", source_run_id=2)
+    )
+    _save_rollup_rules(db, aliases={"车身科": ["车体工程"]})
+
+    # 已完成的「车体工程」行（归集为车身科）在阈值重算后为 not_applicable，
+    # 逾期筛选必须将其排除；分页 total 在归集筛选之后计算。
+    combined = http.get(
+        "/api/deliverable-forms/aras_paa/rows",
+        query_string={
+            "section": "车身科",
+            "overdueDaysStage": "1",
+            "overdueState": "overdue",
+        },
+    )
+    assert combined.status_code == 200
+    combined_data = combined.get_json()["data"]
+    assert combined_data["total"] == 0
+    assert combined_data["items"] == []
+
+    section_only = http.get(
+        "/api/deliverable-forms/aras_paa/rows",
+        query_string={"section": "车身科", "overdueDaysStage": "1"},
+    )
+    assert section_only.status_code == 200
+    section_data = section_only.get_json()["data"]
+    assert section_data["total"] == 1
+    assert section_data["items"][0]["sectionRollupTarget"] == "车身科"
+    assert section_data["items"][0]["dimensions"]["section"] == "车体工程"
+
+    unassigned_only = http.get(
+        "/api/deliverable-forms/aras_paa/rows",
+        query_string={"section": "未归集", "overdueDaysStage": "1"},
+    )
+    assert unassigned_only.get_json()["data"]["total"] == 1

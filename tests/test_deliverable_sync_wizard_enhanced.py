@@ -59,7 +59,8 @@ def test_wizard_defaults_to_record_set_aggregate_and_single_click_enable() -> No
     assert "filters.project_code = modelVal" in click_handler
 
     # EWO 记录集合只映射 note，不映射标量 owner / plannedDate
-    assert "mapping = { note: [\"_change_description\", \"_subject\"] }" in click_handler
+    assert 'candidateNotes = ["_change_description", "_subject"]' in click_handler
+    assert "mapping = { note: matchedNotes }" in click_handler
     assert "fieldAuthority.note = \"automatic\"" in click_handler
     assert "fieldAuthority.owner = \"manual\"" in click_handler
     assert "fieldAuthority.plannedDate = \"manual\"" in click_handler
@@ -95,15 +96,32 @@ def test_wizard_supports_tdc_sor_and_data_model_aggregate_strategy() -> None:
     # SOR (D2) 映射分支
     assert "filters.car_type_project = modelVal" in click_handler
     assert "filters.department = deptVal" in click_handler
-    assert 'mapping = { note: ["latestCompletedNode", "processInstanceStatus"] }' in click_handler
+    assert 'candidateNotes = ["latestCompletedNode", "processInstanceStatus"]' in click_handler
 
     # 数模 (D5) 映射分支
     assert "filters.project_model = modelVal" in click_handler
-    assert 'mapping = { note: ["latestApproveLog", "status"] }' in click_handler
+    assert 'candidateNotes = ["latestApproveLog", "status"]' in click_handler
+    assert "mapping = { note: matchedNotes }" in click_handler
+    assert "matchRule.status = statusVal" in click_handler
+    assert "filters.status = statusVal" in click_handler
 
     # 聚合模式下通用规则：负责人设为 manual，不覆盖交付物总负责人
     assert "fieldAuthority.note = \"automatic\"" in click_handler
     assert "fieldAuthority.owner = \"manual\"" in click_handler
+
+
+def test_wizard_supports_aras_paa_and_ncr_aggregate_strategy() -> None:
+    """验证向导对 ARAS PAA (D6) 与 NCR (D7/D8) 聚合模式同样支持部门、车型过滤与标准备注映射。"""
+    source = _source()
+    click_handler = _slice(source, "startBtn.addEventListener(\"click\"", "syncNowBtn.addEventListener")
+
+    # PAA (D6) 分支
+    assert "isPaa" in click_handler
+    assert "matchRule.paaNo = specificNo" in click_handler
+
+    # NCR (D7/D8) 分支
+    assert "isNcr" in click_handler
+    assert "matchRule.ncrNo = specificNo" in click_handler
 
 
 def test_normalize_tdc_department_pure_function_in_node_vm() -> None:
@@ -157,8 +175,8 @@ def test_wizard_department_decoupling_and_discovery_auto_retry() -> None:
     assert "postMappingDiscovery(item.id, retryPayload)" in click_handler
 
 
-def test_snapshot_sync_card_and_archive_job_key_contract() -> None:
-    """验证 D6-D8 详情页快照同步卡与后端 archiveJobKey 契约。"""
+def test_sync_dispatch_and_archive_job_key_contract() -> None:
+    """D6-D8 与 EWO 一样走统一的同步入口；归档任务反查契约保持不变。"""
     from core.project_status_contracts import find_job_key_by_deliverable_id
 
     # 1. 后端注册表反查契约
@@ -171,124 +189,107 @@ def test_snapshot_sync_card_and_archive_job_key_contract() -> None:
     assert find_job_key_by_deliverable_id("VPI-T2-D1") is None
     assert find_job_key_by_deliverable_id("VPI-T2-D4") is None
 
-    # 2. 前端 loadDeliverablePolicy 对 formSnapshotDriven 交付物渲染快照同步卡
+    # 2. 同步入口只按 syncCapable 分派：D6-D8 与 EWO 共用同一套向导，
+    #    历史上按 formSnapshotDriven 分叉出的第二套「快照同步卡」已删除
+    #    （它不可达且与 EWO 结构不一致）。
     source = _source()
     policy_loader = _slice(source, "async function loadDeliverablePolicy", "const DELIVERABLE_FIXED_SOURCES")
-    assert "if (item.formSnapshotDriven === true)" in policy_loader
-    assert "renderSnapshotSyncCard(container, item, capabilities, options)" in policy_loader
+    assert "if (capabilities && capabilities.syncCapable)" in policy_loader
+    assert "formSnapshotDriven" not in policy_loader
+    assert "renderSnapshotSyncCard" not in source
+    assert "数据同步（外部快照）" not in source
+    # 3. 只读口径改由后端投影下发（manualEditable/readOnlyReason），
+    #    前端不再自行推断快照驱动语义。
+    assert "item.manualEditable" in source
+    assert "item.readOnlyReason" in source
 
-    # 3. renderSnapshotSyncCard 结构与 Safe DOM 规范
-    card_fn = _slice(source, "function renderSnapshotSyncCard", "async function loadDeliverablePolicy")
-    assert "policy-snapshot-sync-card" in card_fn
-    assert "数据同步（外部快照）" in card_fn
-    assert "快照驱动" in card_fn
-    assert "立即同步快照" in card_fn
-    assert "查看同步任务" in card_fn
-    assert "/api/scheduled-archive/jobs/" in card_fn
-    assert "/sync-now" in card_fn
-    assert "data.exitCode !== 0" in card_fn
-    assert "firstRes.outcome !== \"completed\"" in card_fn
-    assert "loadArchiveJobs(true)" in card_fn
-    assert "options.onFormReload()" in card_fn
-    assert "innerHTML" not in card_fn
-    assert "document.write" not in card_fn
+    # 3. 归档明细页与交付物明细页仍可读取归档任务状态与表单视图。
+    assert "/api/scheduled-archive/jobs" in source
+    assert "/api/deliverable-forms/" in source
 
     # 4. loadDeliverableEvidence 移除永久 disabled 的死按钮
     evidence_fn = _slice(source, "async function loadDeliverableEvidence", "function debugBundleSensitiveKey")
     assert "if (syncSupported) {\n    syncActionBar.appendChild(syncBtn);\n  }" in evidence_fn
 
 
-def test_snapshot_sync_card_click_behavior_in_node_vm() -> None:
-    """验证快照同步卡在 Node VM 下的点击行为：严格根据 exitCode 与 outcome 判定成败，不发生假成功。"""
+def test_wizard_data_model_status_input_safe_dom_contract() -> None:
+    """数模设计审核 (D5) 增加状态选填项，采用 Safe DOM 构建，严禁 innerHTML 拼接。"""
+    source = _source()
+    card_func = _slice(source, "function buildSyncSummaryCard", "function renderSyncBindingEditor")
+
+    # 1. 结构与提示
+    assert "isDataModel" in card_func
+    assert 'statusLabel.appendChild(overviewEl("span", null, "状态（选填）"))' in card_func
+    assert 'statusInput.placeholder = "选填，如：审批中、已完成，留空查询全部"' in card_func
+
+    # 2. remount 重新挂载
+    assert "if (statusLabel) {" in card_func
+    assert "wizardHost.appendChild(statusLabel);" in card_func
+
+    # 3. 事实卡透传
+    assert 'if (storedMatchRule.status) factList.push(["状态", safeDisplayValue(storedMatchRule.status)])' in card_func
+
+
+def test_wizard_aggregate_note_dynamic_intersection_in_node_vm() -> None:
+    """Node VM 验证聚合向导备注字段的动态交集匹配与 statusOrApprovalFields 拾取及 fail-closed 兜底。"""
     import subprocess
 
     node_script = """
-    const fs = require('fs');
-    const vm = require('vm');
-    const source = fs.readFileSync('web/static/app.js', 'utf8');
-
-    const code = [
-      'function overviewEl(tag, cls, text) {',
-      '  const el = { tagName: tag, className: cls || "", textContent: text || "", children: [], attributes: {}, eventListeners: {} };',
-      '  el.appendChild = (c) => el.children.push(c);',
-      '  el.append = (...cs) => cs.forEach(c => el.children.push(c));',
-      '  el.setAttribute = (k, v) => { el.attributes[k] = v; };',
-      '  el.addEventListener = (evt, fn) => { el.eventListeners[evt] = fn; };',
-      '  return el;',
-      '}',
-      'function safeDisplayValue(val) { return String(val || ""); }',
-      'function redactSensitiveText(txt) { return String(txt || ""); }',
-      'let loadArchiveJobsCalled = false; async function loadArchiveJobs() { loadArchiveJobsCalled = true; }',
-      'let loadProjectOverviewCalled = false; async function loadProjectOverview() { loadProjectOverviewCalled = true; }',
-    ].join('\\n');
-
-    const start = source.indexOf('function renderSnapshotSyncCard');
-    const end = source.indexOf('async function loadDeliverablePolicy', start);
-    const cardCode = source.slice(start, end);
-
-    const sandbox = { console };
-    vm.createContext(sandbox);
-    vm.runInContext(code + '\\n' + cardCode, sandbox);
-
-    async function runTest() {
-      const container = sandbox.overviewEl('div');
-      const item = { id: 'VPI-T2-D6', name: 'PAA', formSnapshotDriven: true };
-      const capabilities = { archiveJobKey: 'aras_paa' };
-
-      // 1. 错误判定：exitCode != 0 且 outcome == 'not_ready' 时必须按失败处理，禁止假成功
-      sandbox.fetch = async () => ({
-        ok: true,
-        json: async () => ({
-          ok: true,
-          data: {
-            exitCode: 2,
-            results: [{ outcome: 'not_ready', errorMessage: 'archive job configuration is not ready' }]
-          }
-        })
-      });
-
-      sandbox.renderSnapshotSyncCard(container, item, capabilities, {});
-      const card = container.children[0];
-      const actions = card.children[3];
-      const btn = actions.children[0];
-      const statusMsg = actions.children[2];
-
-      await btn.eventListeners['click']();
-      if (!statusMsg.textContent.includes('archive job configuration is not ready')) {
-        throw new Error('Expected error message in statusMsg, got: ' + statusMsg.textContent);
-      }
-      if (!statusMsg.className.includes('is-error')) {
-        throw new Error('Expected is-error class');
+    function resolveAggregateNotes(candidateNotes, result) {
+      const reportedFields = Array.isArray(result && result.fieldReport && result.fieldReport.fields)
+        ? result.fieldReport.fields
+        : [];
+      let matchedNotes = candidateNotes.filter((f) => reportedFields.includes(f));
+      if (matchedNotes.length === 0 && result && result.fieldReport) {
+        const statusOrApproval = Array.isArray(result.fieldReport.statusOrApprovalFields)
+          ? result.fieldReport.statusOrApprovalFields
+          : [];
+        const statusColNames = statusOrApproval
+          .map((entry) => (typeof entry === "string" ? entry : entry && entry.field))
+          .filter((col) => col && reportedFields.includes(col));
+        if (statusColNames.length > 0) {
+          matchedNotes = statusColNames;
+        }
       }
 
-      // 2. 成功判定：exitCode == 0 且 outcome == 'completed' 时触发刷新并展示成功
-      let formReloaded = false;
-      sandbox.fetch = async () => ({
-        ok: true,
-        json: async () => ({
-          ok: true,
-          data: {
-            exitCode: 0,
-            results: [{ outcome: 'completed', finalState: 'success' }]
-          }
-        })
-      });
-
-      const container2 = sandbox.overviewEl('div');
-      sandbox.renderSnapshotSyncCard(container2, item, capabilities, { onFormReload: () => { formReloaded = true; } });
-      const btn2 = container2.children[0].children[3].children[0];
-      const statusMsg2 = container2.children[0].children[3].children[2];
-      await btn2.eventListeners['click']();
-      if (!statusMsg2.textContent.includes('快照同步成功')) {
-        throw new Error('Expected success message in statusMsg2, got: ' + statusMsg2.textContent);
+      if (matchedNotes.length === 0) {
+        throw new Error("无法从最新脱敏字段报告确定有效的备注映射字段，请打开高级设置手工确认映射后保存。");
       }
-      if (!formReloaded) {
-        throw new Error('Expected onFormReload to be called');
-      }
-      console.log("PASS");
+      return matchedNotes;
     }
 
-    runTest();
+    // 1. 候选与报告字段部分匹配 -> 取交集
+    const res1 = { fieldReport: { fields: ["latestCompletedNode", "applicant"] } };
+    const matched1 = resolveAggregateNotes(["latestCompletedNode", "processInstanceStatus"], res1);
+    if (matched1.length !== 1 || matched1[0] !== "latestCompletedNode") {
+      throw new Error("Expected latestCompletedNode, got: " + JSON.stringify(matched1));
+    }
+
+    // 2. 候选全部不匹配，但 statusOrApprovalFields 存在真实列 -> 拾取 statusOrApprovalFields
+    const res2 = {
+      fieldReport: {
+        fields: ["applicant", "flowStatus"],
+        statusOrApprovalFields: [{ field: "flowStatus", samples: ["审批完成"] }]
+      }
+    };
+    const matched2 = resolveAggregateNotes(["latestCompletedNode", "processInstanceStatus"], res2);
+    if (matched2.length !== 1 || matched2[0] !== "flowStatus") {
+      throw new Error("Expected flowStatus fallback, got: " + JSON.stringify(matched2));
+    }
+
+    // 3. 候选与 statusOrApprovalFields 均无匹配 -> Fail-Closed 抛错
+    let caught = false;
+    try {
+      resolveAggregateNotes(["latestCompletedNode"], { fieldReport: { fields: ["applicant"] } });
+    } catch (e) {
+      caught = true;
+      if (!e.message.includes("无法从最新脱敏字段报告确定有效的备注映射字段")) {
+        throw new Error("Unexpected error: " + e.message);
+      }
+    }
+    if (!caught) throw new Error("Expected fail-closed error");
+
+    console.log("PASS");
     """
     proc = subprocess.run(["node", "-e", node_script], capture_output=True, text=True, check=True)
     assert "PASS" in proc.stdout

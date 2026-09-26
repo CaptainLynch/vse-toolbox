@@ -67,6 +67,18 @@ def test_project_status_read_contract_and_overview_compatibility(client) -> None
     assert all(item["type"] == "planned" for item in data["milestones"])
     assert [item["sortOrder"] for item in data["milestones"]] == list(range(1, 12))
     assert len(data["deliverables"]) == 8
+    # 看板可见性由能力注册表单一来源下发：D1/D4 不进两块看板，但仍在
+    # deliverables 全量字段中出现（详情页/分析接口/审计/统计参与不变）。
+    board_flags = {item["id"]: item["boardVisible"] for item in data["deliverables"]}
+    assert board_flags["VPI-T2-D1"] is False
+    assert board_flags["VPI-T2-D4"] is False
+    assert all(
+        board_flags[deliverable_id] is True
+        for deliverable_id in (
+            "VPI-T2-D2", "VPI-T2-D3", "VPI-T2-D5",
+            "VPI-T2-D6", "VPI-T2-D7", "VPI-T2-D8",
+        )
+    )
     # associations 由单一关联注册表反查填充：D3 关联 aras_ewo 任务与
     # aras-ewo 目录条目；D1/D4 未关联项目交付物为空数组。
     by_id = {item["id"]: item for item in data["deliverables"]}
@@ -76,6 +88,12 @@ def test_project_status_read_contract_and_overview_compatibility(client) -> None
     assert d3_associations[0]["href"] == "#archive-deliverable/aras_ewo"
     assert d3_associations[0]["enabled"] is False
     assert d3_associations[0]["lastSuccessAt"] is None
+    # 凭据引用是否已绑定必须随 associations 下发，卡片才能展示真实就绪状态，
+    # 而不是声称「支持直接立即同步」却必然失败。
+    assert d3_associations[0]["credentialConfigured"] is False
+    assert by_id["VPI-T2-D6"]["associations"][0]["credentialConfigured"] is False
+    assert by_id["VPI-T2-D7"]["associations"][0]["credentialConfigured"] is False
+    assert by_id["VPI-T2-D8"]["associations"][0]["credentialConfigured"] is False
     assert d3_associations[1]["catalogId"] == "aras-ewo"
     assert d3_associations[1]["href"] == "#deliverables"
     assert by_id["VPI-T2-D1"]["associations"] == []
@@ -527,3 +545,83 @@ def test_project_status_manual_update_rejected_for_form_snapshot_driven(client) 
     assert body["ok"] is False
     assert body["error"]["type"] == "MappedDeliverableReadOnly"
     assert "外部快照驱动" in body["error"]["message"]
+
+
+def test_mapping_discovery_rule_fields_whitelists_paa_and_ncr() -> None:
+    """PAA (D6), NCR progress (D7), and NCR detail (D8) support mapping discovery whitelist fields."""
+    from web.app import _mapping_discovery_query_identity
+
+    # PAA (D6)
+    paa_payload = {
+        "filters": {
+            "department": "技术中心_车体工程",
+            "project_model": "F610S",
+            "paa_no": "PAA-2026-001",
+            "section_code": "SEC-01",
+            "ewo_no": "EWO-2026-001",
+        },
+        "aggregate": True,
+    }
+    paa_rule, paa_values = _mapping_discovery_query_identity(paa_payload, "VPI-T2-D6")
+    assert paa_rule["department"] == "技术中心_车体工程"
+    assert paa_rule["projectModel"] == "F610S"
+    assert paa_rule["paaNo"] == "PAA-2026-001"
+    assert paa_rule["sectionCode"] == "SEC-01"
+    assert paa_rule["ewoNo"] == "EWO-2026-001"
+
+    # PAA serial_number alias
+    paa_alias_payload = {
+        "filters": {
+            "serial_number": "PAA-2026-002",
+        },
+        "aggregate": True,
+    }
+    paa_alias_rule, _ = _mapping_discovery_query_identity(paa_alias_payload, "VPI-T2-D6")
+    assert paa_alias_rule["paaNo"] == "PAA-2026-002"
+
+    # NCR progress (D7)
+    ncr_progress_payload = {
+        "filters": {
+            "department": "技术中心_车体工程",
+            "project_model": "F610S",
+            "ncr_no": "NCR-2026-001",
+        },
+        "aggregate": True,
+    }
+    ncr_rule, _ = _mapping_discovery_query_identity(ncr_progress_payload, "VPI-T2-D7")
+    assert ncr_rule["department"] == "技术中心_车体工程"
+    assert ncr_rule["projectModel"] == "F610S"
+    assert ncr_rule["ncrNo"] == "NCR-2026-001"
+
+    # NCR detail (D8) with serial_number alias
+    ncr_detail_payload = {
+        "filters": {
+            "department": "技术中心_车体工程",
+            "project_model": "F610S",
+            "serial_number": "NCR-2026-002",
+        },
+        "aggregate": True,
+    }
+    ncr_detail_rule, _ = _mapping_discovery_query_identity(ncr_detail_payload, "VPI-T2-D8")
+    assert ncr_detail_rule["department"] == "技术中心_车体工程"
+    assert ncr_detail_rule["projectModel"] == "F610S"
+    assert ncr_detail_rule["ncrNo"] == "NCR-2026-002"
+
+
+def test_tdc_data_model_mapping_discovery_supports_status_filter() -> None:
+    """TDC 数模 (D5) 映射发现支持 status 筛选。"""
+    from web.app import _mapping_discovery_query_identity
+
+    payload = {
+        "filters": {
+            "project_model": "F610S",
+            "department": "车体工程",
+            "status": "审批中",
+        },
+        "aggregate": True,
+    }
+    rule, values = _mapping_discovery_query_identity(payload, "VPI-T2-D5")
+    assert rule["projectModel"] == "F610S"
+    assert rule["department"] == "车体工程"
+    assert rule["status"] == "审批中"
+    assert values["status"] == "审批中"

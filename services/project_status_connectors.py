@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from core.diagnostic_recording import observed
+from core.diagnostic_recording import emit, observed
 
 import hashlib
 import json
@@ -16,8 +16,17 @@ from typing import Any, Callable, Mapping, Sequence
 
 from core.archive_store import ArchiveStore
 from core.credential_provider import CredentialProvider
+from core.project_status_contracts import (
+    project_status_default_department,
+    project_status_supports_record_set,
+)
 from services.aras_auth import ArasECMAuthClient
-from services.aras_crawler import ArasCrawlerClient, EWOReportFilters
+from services.aras_crawler import (
+    ArasCrawlerClient,
+    EWOReportFilters,
+    NCRApprovalFilters,
+    PAAReportFilters,
+)
 from services.project_status_sync_runner import SyncBindingContext
 from services.project_status_updates import ConnectorCandidate, ConnectorSnapshot
 from services.project_status_deliverable_analysis import (
@@ -32,7 +41,6 @@ from services.tdc_crawler import (
 from services.windows_http import WinHTTPError
 
 # 身份字段统一来自共享记录模块（与 discovery 完全一致，GPT 终审任务 3）。
-from services.project_status_records import IDENTITY_FIELDS as _IDENTITY_FIELDS
 from services.project_status_records import (
     COMPLETE_RESULT_STOP_REASONS,
     MAX_AGGREGATE_RECORDS,
@@ -45,6 +53,14 @@ from services.project_status_records import (
 _MAX_ROWS = MAX_AGGREGATE_RECORDS
 logger = logging.getLogger(__name__)
 _TRANSIENT_ERRORS = (ConnectionError, TimeoutError, OSError, WinHTTPError)
+
+#: PAA 未显式配置责任部门时的默认值（能力注册表单一来源）。
+_PAA_DELIVERABLE_ID = "VPI-T2-D6"
+
+
+def _paa_default_department() -> str | None:
+    return project_status_default_department(_PAA_DELIVERABLE_ID)
+
 
 # 科室合并后 `_rsp_smt` 混杂，默认范围改按上级部门 `_rsp_department` 的
 # 包含式 LIKE 并集；`*` 触发 `_search_elements` 的 like 条件（crawler 现有约定）。
@@ -128,8 +144,12 @@ def _ewo_v2_snapshot(context, rows, artifacts, analysis_rows):
     from core.ewo_binding_v2 import identified_ewo_v2_rows, normalize_ewo_v2_rule
     from services.ewo_binding_records import ewo_v2_candidate_values
 
-    if context.source_type != 'aras' or context.deliverable_id != 'VPI-T2-D3':
-        raise ValueError('Versioned EWO source mismatch')
+    # 版本化记录集合契约由能力注册表声明（取代 deliverable_id 硬编码）。
+    if (
+        context.source_type != "aras"
+        or not project_status_supports_record_set(context.deliverable_id)
+    ):
+        raise ValueError("Versioned record-set source mismatch")
     rule = normalize_ewo_v2_rule(dict(context.match_rule))
     records = identified_ewo_v2_rows(rows)
     if rule['bindingMode'] == 'single_record':
@@ -282,6 +302,7 @@ class TDCProjectStatusConnector:
             application_start=_clean_scalar(rule.get("applicationStart")), application_end=_clean_scalar(rule.get("applicationEnd")),
             project_model=_clean_scalar(rule.get("projectModel")), part_number=_clean_scalar(rule.get("partNumber")),
             model_number=_clean_scalar(rule.get("modelNumber")),
+            status=_clean_scalar(rule.get("status")),
         )
 
     @staticmethod
@@ -336,6 +357,46 @@ def build_project_status_ewo_filters(rule: Mapping[str, Any]) -> EWOReportFilter
     )
 
 
+def _filter_ncr_rows_by_department(
+    rows: Sequence[Mapping[str, Any]], department: str | None
+) -> tuple[list[dict[str, Any]], int]:
+    """按责任部门在内存中收窄 NCR 命名行；返回 (保留行, 丢弃行数)。
+
+    为什么保留这一层：NCR 绑定把责任部门同时传给上游 `section_code`，上游
+    收窄强度未经生产验证，因此本地再按 区域/采购科室 等命名列做一次收窄
+    （与历史行为一致）。丢弃行数必须由调用方披露到诊断渠道——该过滤发生在
+    工作簿准入门之后，准入簿记无法覆盖它，不披露就等于静默少行。
+    """
+    cleaned = [dict(row) for row in rows]
+    target = _clean_scalar(department)
+    if not target:
+        return cleaned, 0
+    normalized_target = target.casefold()
+    clean_target = (
+        normalized_target.removeprefix("技术中心_")
+        .removeprefix("上汽通用五菱_")
+        .strip()
+    )
+    kept: list[dict[str, Any]] = []
+    for row in cleaned:
+        candidates = [
+            str(row.get(key) or "").strip().casefold()
+            for key in ("区域", "采购科室", "department", "section", "section_code", "sectionCode")
+            if row.get(key)
+        ]
+        if not candidates:
+            continue
+        if any(
+            candidate == normalized_target
+            or (clean_target and candidate == clean_target)
+            or (clean_target and len(clean_target) >= 2 and clean_target in candidate)
+            or (normalized_target in candidate)
+            for candidate in candidates
+        ):
+            kept.append(row)
+    return kept, len(cleaned) - len(kept)
+
+
 class ArasProjectStatusConnector:
     def __init__(self, credentials: CredentialProvider, archive: ArchiveStore, *, timeout: float = 60.0, auth_factory: Callable[..., Any] = ArasECMAuthClient, crawler_factory: Callable[..., Any] = ArasCrawlerClient) -> None:
         self.credentials = credentials
@@ -347,25 +408,126 @@ class ArasProjectStatusConnector:
     @observed("sync_connector.ArasProjectStatusConnector.collect")
     def collect(self, context: SyncBindingContext) -> ConnectorSnapshot:
         report = str(context.match_rule.get("reportType") or "ewo")
-        if report != "ewo":
-            raise ValueError("Aras project-status connector supports EWO only")
+        if context.deliverable_id == "VPI-T2-D6":
+            report = "paa"
+        elif context.deliverable_id == "VPI-T2-D7":
+            report = "ncr_progress"
+        elif context.deliverable_id == "VPI-T2-D8":
+            report = "ncr_detail"
+
+        if report not in {"ewo", "paa", "ncr_progress", "ncr_detail"}:
+            raise ValueError(f"Aras project-status connector does not support {report}")
+
         with self.credentials.resolve(context.credential_ref) as secret:
             auth = self.auth_factory(timeout=self.timeout)
             login = auth.login(secret.username, secret.password)
             try:
                 crawler = self.crawler_factory(auth.base_url, session=login.session, timeout=self.timeout, prewarm=False)
-                filters = build_project_status_ewo_filters(context.match_rule)
-                result = crawler.crawl_ewo_report_all(
-                    filters, max_records=MAX_AGGREGATE_RECORDS
-                )
-                _require_complete_result(result)
-                if context.match_rule.get('contractVersion') is not None:
-                    from services.ewo_binding_records import attach_ewo_source_ids
-                    from dataclasses import replace
-                    result = replace(result, rows=attach_ewo_source_ids(result))
+                if report == "ewo":
+                    filters = build_project_status_ewo_filters(context.match_rule)
+                    result = crawler.crawl_ewo_report_all(
+                        filters, max_records=MAX_AGGREGATE_RECORDS
+                    )
+                    _require_complete_result(result)
+                    rows = result.rows
+                    if context.match_rule.get('contractVersion') is not None:
+                        from services.ewo_binding_records import attach_ewo_source_ids
+                        from dataclasses import replace
+                        result = replace(result, rows=attach_ewo_source_ids(result))
+                        rows = result.rows
+                elif report == "paa":
+                    paa_filters = self._paa_filters(context.match_rule)
+                    result = crawler.crawl_paa_report_all(
+                        paa_filters, max_records=MAX_AGGREGATE_RECORDS
+                    )
+                    _require_complete_result(result)
+                    rows = result.rows
+                elif report in {"ncr_progress", "ncr_detail"}:
+                    rows = self._collect_ncr_rows(crawler, report, context.match_rule)
+                else:
+                    rows = []
             finally:
                 _close_session(login.session)
-        fields = sorted({str(key) for row in result.rows for key in row})
-        csv_item = self.archive.write_csv(result.rows, fields, source="aras", report="ewo", run_id=context.run_id, file_name="ewo.csv", artifact_type="csv")
-        json_item = self.archive.write_json(result.rows, source="aras", report="ewo", run_id=context.run_id, file_name="ewo.json", artifact_type="json")
-        return _snapshot(context, result.rows, [csv_item.as_metadata(), json_item.as_metadata()])
+        fields = sorted({str(key) for row in rows for key in row})
+        csv_item = self.archive.write_csv(rows, fields, source="aras", report=report, run_id=context.run_id, file_name=f"{report}.csv", artifact_type="csv")
+        json_item = self.archive.write_json(rows, source="aras", report=report, run_id=context.run_id, file_name=f"{report}.json", artifact_type="json")
+        return _snapshot(context, rows, [csv_item.as_metadata(), json_item.as_metadata()])
+
+    @staticmethod
+    def _paa_filters(rule: Mapping[str, Any]) -> PAAReportFilters:
+        model = _clean_scalar(rule.get("projectModel")) or _clean_scalar(rule.get("projectCode"))
+        # 默认责任部门来自能力注册表（单一来源），不再在本函数内硬编码。
+        dept = (
+            _clean_scalar(rule.get("department"))
+            or _clean_scalar(rule.get("rspDepartment"))
+            or _paa_default_department()
+        )
+        return PAAReportFilters(
+            paa_no=_clean_scalar(rule.get("paaNo")),
+            ewo_no=_clean_scalar(rule.get("ewoNo")),
+            vehicle_keyword=model,
+            department=dept,
+        )
+
+    @staticmethod
+    def _ncr_filters(rule: Mapping[str, Any]) -> NCRApprovalFilters:
+        model = _clean_scalar(rule.get("projectModel")) or _clean_scalar(rule.get("projectNames"))
+        project_names = [model] if model else []
+        sec = (
+            _clean_scalar(rule.get("sectionCode"))
+            or _clean_scalar(rule.get("section_code"))
+            or _clean_scalar(rule.get("department"))
+            or _clean_scalar(rule.get("rspDepartment"))
+        )
+        return NCRApprovalFilters(
+            ncr_no=_clean_scalar(rule.get("ncrNo")),
+            project_names=project_names,
+            section_code=sec,
+            change_type=_clean_scalar(rule.get("changeType")),
+        )
+
+    @classmethod
+    def _collect_ncr_rows(cls, crawler: Any, report: str, rule: Mapping[str, Any]) -> list[dict[str, Any]]:
+        """NCR 取数：唯一解析口径 + 工作簿准入 fail-closed。
+
+        与归档路径共用 `services.aras_ncr_workbook`，产出的行形状按已批准表头
+        标签命名（与 EWO/PAA 的命名行同形），因此同一交付物在两条写入路径
+        不会再出现两种快照形状。
+
+        完备性：官方工作簿没有声明总数，准入策略为「表头契约成立 + 逐行归类
+        核对无剩余 + 未被预览截断」（`services.pagination_integrity.
+        decide_workbook_outcome`）。任一不成立即 fail-closed，不允许把可能的
+        部分数据当成完整写入；`complete` 只表示满足准入策略，不等于证明源端零丢失。
+        """
+        from services.aras_ncr_workbook import parse_ncr_workbook, require_complete_workbook
+
+        filters = cls._ncr_filters(rule)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            if report == "ncr_progress":
+                export = crawler.query_ncr_approval_progress(filters)
+                downloaded = crawler.download_ncr_progress_file(export, Path(temp_dir))
+            else:
+                export = crawler.extract_ncr_approval_detail(filters)
+                downloaded = crawler.download_ncr_detail_file(export.file_name, Path(temp_dir))
+            outcome = parse_ncr_workbook(downloaded, report)
+            require_complete_workbook(outcome)
+            named_rows: list[dict[str, Any]] = [dict(row) for row in outcome.named_rows()]
+
+            dept = (
+                _clean_scalar(rule.get("department"))
+                or _clean_scalar(rule.get("rspDepartment"))
+                or _clean_scalar(rule.get("sectionCode"))
+                or _clean_scalar(rule.get("section_code"))
+            )
+            named_rows, dropped = _filter_ncr_rows_by_department(named_rows, dept)
+            if dropped:
+                # 部门收窄会丢弃行；丢弃数必须进入诊断渠道，避免"看起来干净"的
+                # 静默少行（准入门只核对工作簿归类，不覆盖此处的策略过滤）。
+                emit(
+                    "ncr_department_filter",
+                    # 键必须在 core/diagnostic_recording 的数字白名单内，
+                    # 否则录制产物里的 data 为空、丢弃数实际不可读。
+                    {"kept_count": len(named_rows), "dropped_count": dropped},
+                    name="sync_connector.ArasProjectStatusConnector._collect_ncr_rows",
+                )
+            return named_rows

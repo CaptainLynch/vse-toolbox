@@ -3,16 +3,48 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
-from core.archive_store import ArchiveStore
 from core.db_manager import DatabaseManager
 from services.project_status_deliverable_analysis import (
     EWO_ACTIVE_STAGES,
     EWO_DEFAULT_DEPARTMENTS,
     EWO_STAGES,
     ProjectStatusDeliverableAnalysisService,
+    analysis_source_type,
+    is_ewo_source_type,
     normalize_analysis_rows,
     normalize_ewo_stage,
 )
+
+
+def test_ewo_stage_semantics_do_not_leak_onto_paa_ncr() -> None:
+    """EWO 阶段机只适用于 EWO：所有 Aras 报表写入侧都使用限定来源标签。"""
+    # EWO 自身也写限定标签；裸 "aras" 只在 is_ewo_source_type 里作历史兼容。
+    assert analysis_source_type("aras", "ewo") == "aras_ewo"
+    assert analysis_source_type("aras", "paa") == "aras_paa"
+    assert analysis_source_type("aras", "ncr_progress") == "aras_ncr"
+    assert analysis_source_type("aras", "ncr_detail") == "aras_ncr"
+    assert analysis_source_type("tdc", "sor") == "tdc"
+
+    assert is_ewo_source_type("aras") is True
+    assert is_ewo_source_type("aras_ewo") is True
+    assert is_ewo_source_type("aras_paa") is False
+    assert is_ewo_source_type("aras_ncr") is False
+
+    # PAA 行即使带有 EWO 风格 state 文本也不得被归一化成 EWO 阶段。
+    paa_rows = normalize_analysis_rows(
+        [{"_no": "PAA-1", "_exted_reason": "卡点", "state": "close"}],
+        source_type=analysis_source_type("aras", "paa"),
+    )
+    assert paa_rows[0]["source_stage"] is None
+    assert paa_rows[0]["stage_attention"] is False
+
+    # 同一行用 EWO 标签仍走 EWO 语义（行为不变）。
+    ewo_rows = normalize_analysis_rows(
+        [{"_no": "EWO-9", "_subject": "关闭", "state": " close "}],
+        source_type=analysis_source_type("aras", "ewo"),
+    )
+    assert ewo_rows[0]["source_stage"] == "close"
+    assert ewo_rows[0]["is_completed"] is True
 
 
 def test_ewo_stage_normalizer_and_defaults() -> None:

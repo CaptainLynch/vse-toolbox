@@ -6,7 +6,7 @@ resolve credentials, acquire leases, or call an external service.
 
 from __future__ import annotations
 
-from core.diagnostic_recording import observed
+from core.diagnostic_recording import emit, observed
 
 import calendar
 import hashlib
@@ -17,6 +17,15 @@ from typing import Any, Mapping, Sequence
 
 from core.redaction import redact_sensitive_text
 from core.report_contracts import report_contracts, table_payload
+from core.section_rollup import (
+    resolve_section,
+    rollup_targets_in_order,
+    unassigned_label,
+)
+from core.project_status_contracts import (
+    find_deliverable_id_by_form_key,
+    find_job_key_by_deliverable_id,
+)
 
 FORM_KEYS = frozenset(
     {
@@ -164,6 +173,10 @@ _KEY_COLUMN_LABELS = {
 _TDC_HIDDEN_COLUMN_INDEXES = {"tdc_data_model": frozenset({12, 13})}
 _TDC_DEFAULT_VISIBLE_COUNT = 15
 _TDC_DEPRECATED_STATUS = "已废弃"
+_TDC_DATA_MODEL_COMPLETED_STATUSES = frozenset(
+    {"4", "已完成", "完成", "审批完成", "审批通过", "已归档", "归档", "已发布", "流程结束", "已生效"}
+)
+TDC_DATA_MODEL_COMPLETED_STATUSES = _TDC_DATA_MODEL_COMPLETED_STATUSES
 # SOR 定点流程的审批状态口径：API 返回中英文混合（Completed/审批中），
 # 统一归一化为中文；已完成/Completed 计为完成；已终止/已作废为终态，
 # 不计入未完成，也不参与逾期判定。
@@ -428,6 +441,7 @@ def classify_overdue(
             row.get("isCompleted")
             or status in terminal
             or _normalize_stage(status) == "CLOSE"
+            or (report == "tdc_data_model" and str(status or "").strip() in _TDC_DATA_MODEL_COMPLETED_STATUSES)
         ):
             return "not_applicable"
         current = _snapshot_date(snapshot_at)
@@ -676,7 +690,8 @@ def _dimensions_from_mapping(
         department = ""
         section = _source_value(row, "department")
         model = _source_value(row, "publishProperty", "publishingProperties")
-        status = _normalize_tdc_status(_source_value(row, "status"))
+        raw_status = _source_value(row, "status", "flowStatus", "流程状态")
+        status = _normalize_tdc_status(raw_status)
         stage = _normalize_stage(_source_value(row, "projectModel"))
         submitted = _source_value(row, "requestDate")
         planned = None
@@ -742,6 +757,13 @@ def _dimensions_from_mapping(
     }
     if report == "tdc_sor":
         dates["isCompleted"] = status in _SOR_COMPLETED_STATUSES
+    elif report == "tdc_data_model":
+        raw_str = str(raw_status or "").strip()
+        norm_str = str(status or "").strip()
+        dates["isCompleted"] = (
+            raw_str in _TDC_DATA_MODEL_COMPLETED_STATUSES
+            or norm_str in _TDC_DATA_MODEL_COMPLETED_STATUSES
+        )
     return dimensions, dates
 
 
@@ -811,7 +833,16 @@ def _dimensions_from_tdc(
     与逾期判定起点。
     """
     submitted = _positional_value(values, definition, "申请日期")
-    status = _normalize_tdc_status(_positional_value(values, definition, "状态"))
+    raw_status = _positional_value_any(
+        values, definition, ("状态", "流程状态", "status", "flowStatus")
+    )
+    status = _normalize_tdc_status(raw_status)
+    raw_str = str(raw_status or "").strip()
+    norm_str = str(status or "").strip()
+    is_completed = (
+        raw_str in _TDC_DATA_MODEL_COMPLETED_STATUSES
+        or norm_str in _TDC_DATA_MODEL_COMPLETED_STATUSES
+    )
     return (
         {
             "department": "",
@@ -830,6 +861,7 @@ def _dimensions_from_tdc(
             "submittedDate": _date_text(submitted),
             "plannedDate": None,
             "stageStart": _date_text(submitted),
+            "isCompleted": is_completed,
         },
     )
 
@@ -981,6 +1013,83 @@ def _tdc_header_mapping_values(
     return [row.get(name) if name else None for name in header_names]
 
 
+def _duplicate_data_header_labels(definition: Mapping[str, Any]) -> tuple[str, ...]:
+    """数据表头里重复的非空标签（按首次出现顺序，同名只列一次）。
+
+    NCR 审批进度的数据表头有 11 个角色标签各出现两次（`办理时间` 与 `执行人`
+    两个合并父表头块）。对这类"一个标签名对应多个列"的表头，仅靠标签键无法
+    无损还原位置视图——历史（与旧版）命名行只带标签键，这些列的日期会被静默丢弃。
+    """
+    header_rows = definition.get("headerRows", [])
+    header_index = int(definition.get("dataHeaderRow", 0))
+    if (
+        not isinstance(header_rows, Sequence)
+        or isinstance(header_rows, (str, bytes))
+        or not 0 <= header_index < len(header_rows)
+    ):
+        return ()
+    headers = header_rows[header_index]
+    if not isinstance(headers, Sequence) or isinstance(headers, (str, bytes)):
+        return ()
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for header in headers:
+        name = str(header or "").strip()
+        if not name:
+            continue
+        if name in seen and name not in duplicates:
+            duplicates.append(name)
+        seen.add(name)
+    return tuple(duplicates)
+
+
+def _ncr_row_identity(source: Mapping[str, object], values: Sequence[object]) -> str:
+    """NCR 行身份（去重键输入）：优先 `NCR编号` 标签，缺失时回退前 10 列拼接。
+
+    两条分支（带位置视图 / 只带标签键）必须给出同一身份，否则同一行会因为
+    "现在带了位置视图"而改变 rowKey。
+    """
+    labeled = _source_value(source, "NCR编号", "ncr_no", "ncrNo", "_no")
+    return str(labeled or "|".join(str(value or "") for value in values[:10]))
+
+
+def _ncr_header_mapping_values(
+    row: Mapping[str, object],
+    definition: Mapping[str, Any],
+    ambiguous_labels: Sequence[str] = (),
+) -> list[object] | None:
+    """Restore positional NCR values from an approved workbook-header row.
+
+    命名行以已批准表头标签为键（sync 与 archive 两条写入路径现在同形）。
+    这里按契约声明的列标签行还原位置视图，使 NCR 维度/成本口径与位置行
+    路径完全同源，避免出现第二套归一化实现。
+
+    **同名列不还原**：一个标签名对应多个列时（NCR 进度的 11 组「办理时间/执行人」），
+    标签字典里只剩后写入的那一个值；把它复制到每一列会把执行人姓名写进办理时间列，
+    而按标签解析阶段日期命中的正是第一列（办理时间）。这类列一律留空，让缺失显式
+    暴露为"未判定"，而不是静默变成错误日期。带位置视图的行不走这条路径。
+    """
+    header_rows = definition.get("headerRows", [])
+    header_index = int(definition.get("dataHeaderRow", 0))
+    if (
+        not isinstance(header_rows, Sequence)
+        or isinstance(header_rows, (str, bytes))
+        or not 0 <= header_index < len(header_rows)
+    ):
+        return None
+    headers = header_rows[header_index]
+    if not isinstance(headers, Sequence) or isinstance(headers, (str, bytes)):
+        return None
+    header_names = [str(header or "").strip() for header in headers]
+    if not any(name and name in row for name in header_names):
+        return None
+    ambiguous = {str(label) for label in ambiguous_labels}
+    return [
+        None if not name or name in ambiguous else row.get(name)
+        for name in header_names
+    ]
+
+
 @observed("forms.normalize_form_rows")
 def normalize_form_rows(
     form_key: str,
@@ -992,6 +1101,10 @@ def normalize_form_rows(
     """Normalize source dictionaries or positional workbook rows safely."""
     report = _report_type(form_key)
     definition = form_definition(form_key)
+    # 数据表头存在同名标签时，只带标签键的历史行无法无损还原位置视图
+    # （NCR 进度的 11 组「办理时间/执行人」即为此类），需要披露而不是静默降级。
+    ambiguous_labels = _duplicate_data_header_labels(definition)
+    legacy_ambiguous_rows = 0
     normalized: list[dict[str, Any]] = []
     for index, raw in enumerate(rows, 1):
         if not isinstance(raw, Mapping):
@@ -1002,7 +1115,11 @@ def normalize_form_rows(
         header_mapping_values = (
             _tdc_header_mapping_values(source, definition)
             if report in {"tdc_data_model", "tdc_sor"}
-            else None
+            else (
+                _ncr_header_mapping_values(source, definition, ambiguous_labels)
+                if report in {"ncr_progress", "ncr_detail"}
+                else None
+            )
         )
         if isinstance(positional, Sequence) and not isinstance(positional, (str, bytes)):
             values = _safe_values(report, list(positional))
@@ -1013,26 +1130,40 @@ def normalize_form_rows(
             else:
                 dimensions, dates = _dimensions_from_ncr(report, values, definition)
             cost = _cost_from_values(values, definition) if report == "ncr_detail" else {}
-            identity = "|".join(str(value or "") for value in values[:10])
+            identity = (
+                _ncr_row_identity(source, values)
+                if report in {"ncr_progress", "ncr_detail"}
+                else "|".join(str(value or "") for value in values[:10])
+            )
         elif header_mapping_values is not None:
             values = _safe_values(report, header_mapping_values)
-            dimensions, dates = (
-                _dimensions_from_sor(values, definition)
-                if report == "tdc_sor"
-                else _dimensions_from_tdc(values, definition)
-            )
-            cost = {}
-            identity = str(
-                _source_value(
-                    source,
-                    "流水单号" if report == "tdc_sor" else "实例号",
-                    "processNo",
-                    "incident",
-                    "formId",
-                    "documentNo",
+            if report in {"ncr_progress", "ncr_detail"}:
+                # 官方 NCR 工作簿的命名行（sync 与 archive 同形）：按已批准
+                # 表头标签还原位置视图，复用同一套 NCR 维度/成本口径。
+                dimensions, dates = _dimensions_from_ncr(report, values, definition)
+                cost = _cost_from_values(values, definition) if report == "ncr_detail" else {}
+                # 只带标签键的历史行：同名标签的列全部取到同一个值，无法无损还原。
+                if ambiguous_labels:
+                    legacy_ambiguous_rows += 1
+                identity = _ncr_row_identity(source, values)
+            else:
+                dimensions, dates = (
+                    _dimensions_from_sor(values, definition)
+                    if report == "tdc_sor"
+                    else _dimensions_from_tdc(values, definition)
                 )
-                or "|".join(str(value or "") for value in values[:5])
-            )
+                cost = {}
+                identity = str(
+                    _source_value(
+                        source,
+                        "流水单号" if report == "tdc_sor" else "实例号",
+                        "processNo",
+                        "incident",
+                        "formId",
+                        "documentNo",
+                    )
+                    or "|".join(str(value or "") for value in values[:5])
+                )
         else:
             table = table_payload(report, [source])
             raw_rows = table["rows"]
@@ -1111,6 +1242,20 @@ def normalize_form_rows(
                 "contact": dates.get("contact", ""),
             }
         )
+    if legacy_ambiguous_rows:
+        # 只带标签键的历史命名行：同名标签对应列的值已不可逆合并，无法在此还原，
+        # 只能有界披露并提示从归档官方工作簿重新投影——不得被当成修复后的正确数据。
+        emit(
+            "forms.ambiguous_header_labels",
+            {
+                # 键必须落在 core/diagnostic_recording 的白名单内、文本值必须落在
+                # 闭集词表内，否则录制产物里的 data 会变成 {}（披露等于没披露）。
+                "report_type": report,
+                "row_count": legacy_ambiguous_rows,
+                "remedy": "reproject_from_archived_workbook",
+            },
+            name="forms.normalize_form_rows",
+        )
     return normalized
 
 
@@ -1157,7 +1302,11 @@ def _metric_rows(
         completed = bool(row.get("isCompleted"))
         if status in terminal_statuses:
             completed = False
-        elif completed or _normalize_stage(status) == "CLOSE":
+        elif (
+            completed
+            or (report == "tdc_data_model" and str(status or "").strip() in _TDC_DATA_MODEL_COMPLETED_STATUSES)
+            or _normalize_stage(status) == "CLOSE"
+        ):
             completed = True
         if report == "ncr_progress" and completed:
             dimensions["stage"] = "CLOSE"
@@ -1282,6 +1431,123 @@ def _section_status_summary(
     ]
 
 
+# 科室归集适用的报表；tdc 两张报表的 section 语义不同（部门/车型项目），不参与。
+_ROLLUP_REPORTS = frozenset({"ewo", "paa", "ncr_progress", "ncr_detail"})
+
+# 归集规则编辑器与「未归集」口径适用的表单键（web 层据此下发规则与传参）。
+SECTION_ROLLUP_FORM_KEYS = frozenset(
+    form_key
+    for form_key, report in _REPORT_BY_FORM_KEY.items()
+    if report in _ROLLUP_REPORTS
+)
+
+
+def _section_stage_matrix(
+    report: str,
+    rows: Sequence[Mapping[str, Any]],
+    rollup: Mapping[str, str],
+) -> dict[str, Any]:
+    """科室 × 节点（状态）计数矩阵；「按科室」「按状态」两个分页共用。
+
+    覆盖口径与既有阶段看板一致：只统计 stage 非空的行。官方节点按
+    ``_STAGES_BY_REPORT`` 顺序全量保留（含零计数），非正式节点并入
+    「其他状态」；科室行 = 规则目标顺序 + 固定兜底「未归集」。
+    cells 与对侧维度数组的顺序严格对齐，前端可直接渲染两种透视。
+    """
+    stage_labels = list(_STAGES_BY_REPORT[report])
+    stage_labels.append("其他状态")
+    section_labels = rollup_targets_in_order(rollup) + [unassigned_label()]
+    counts: dict[tuple[str, str], int] = {}
+    for row in rows:
+        dimensions = row.get("dimensions")
+        if not isinstance(dimensions, Mapping):
+            continue
+        stage = str(dimensions.get("stage") or "").strip()
+        if not stage:
+            continue
+        if stage not in stage_labels:
+            stage = "其他状态"
+        section = resolve_section(dimensions.get("section"), rollup) or unassigned_label()
+        counts[(section, stage)] = counts.get((section, stage), 0) + 1
+    sections = []
+    for section in section_labels:
+        cells = [
+            {"label": stage, "count": counts.get((section, stage), 0)}
+            for stage in stage_labels
+        ]
+        sections.append(
+            {"label": section, "total": sum(cell["count"] for cell in cells), "cells": cells}
+        )
+    stages = []
+    for stage in stage_labels:
+        cells = [
+            {"label": section, "count": counts.get((section, stage), 0)}
+            for section in section_labels
+        ]
+        stages.append(
+            {"label": stage, "total": sum(cell["count"] for cell in cells), "cells": cells}
+        )
+    return {"sections": sections, "stages": stages}
+
+
+def _section_counts(
+    rows: Sequence[Mapping[str, Any]],
+    rollup: Mapping[str, str],
+) -> list[dict[str, Any]]:
+    """NCR明细（无状态维度）的归集后科室计数。"""
+    counts: dict[str, int] = {}
+    for row in rows:
+        dimensions = row.get("dimensions")
+        raw = dimensions.get("section") if isinstance(dimensions, Mapping) else None
+        section = resolve_section(raw, rollup) or unassigned_label()
+        counts[section] = counts.get(section, 0) + 1
+    labels = rollup_targets_in_order(rollup) + [unassigned_label()]
+    return [{"label": label, "total": counts.get(label, 0)} for label in labels]
+
+
+def _selected_sections(section_filter: object) -> frozenset[str] | None:
+    """normalize 后的 section 筛选值集合；``None`` 表示未启用该筛选。"""
+    if section_filter in (None, "", ()):
+        return None
+    values = section_filter if isinstance(section_filter, list) else [section_filter]
+    return frozenset(str(value) for value in values)
+
+
+def _filter_rows_by_section_rollup(
+    rows: Sequence[Mapping[str, Any]],
+    section_filter: object,
+    rollup: Mapping[str, str],
+) -> list[Mapping[str, Any]]:
+    """行级归集筛选：逐行经 ``resolve_section`` 判定后再匹配所选目标。
+
+    「未归集」是逐行分类（未命中任何规则的行），不存在值列表展开，
+    因此没有任何截断上限或静默漏数路径。
+    """
+    selected = _selected_sections(section_filter)
+    if selected is None:
+        return list(rows)
+    unassigned = unassigned_label()
+    filtered = []
+    for row in rows:
+        dimensions = row.get("dimensions")
+        raw = dimensions.get("section") if isinstance(dimensions, Mapping) else None
+        if (resolve_section(raw, rollup) or unassigned) in selected:
+            filtered.append(row)
+    return filtered
+
+
+def _attach_section_rollup_target(
+    row: Mapping[str, Any],
+    rollup: Mapping[str, str],
+) -> dict[str, Any]:
+    """为明细行附加归集后科室派生字段（不改 ``values[]`` 位置语义）。"""
+    updated = dict(row)
+    dimensions = updated.get("dimensions")
+    raw = dimensions.get("section") if isinstance(dimensions, Mapping) else None
+    updated["sectionRollupTarget"] = resolve_section(raw, rollup) or unassigned_label()
+    return updated
+
+
 def _cost_summary(
     rows: Sequence[Mapping[str, Any]],
     *,
@@ -1319,6 +1585,7 @@ def summarize_form_rows(
     rows: Sequence[Mapping[str, Any]],
     *,
     snapshot_at: str,
+    section_rollup: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     report = _report_type(form_key)
     metric_rows = _metric_rows(
@@ -1359,6 +1626,15 @@ def summarize_form_rows(
         "departmentStatus": {"stages": _stage_status_summary(report, metric_rows)},
         "sectionStatus": _section_status_summary(metric_rows),
     }
+    if section_rollup is not None and report in _ROLLUP_REPORTS:
+        if report == "ncr_detail":
+            result["sectionCounts"] = _section_counts(metric_rows, section_rollup)
+        else:
+            result["sectionStageMatrix"] = _section_stage_matrix(
+                report,
+                metric_rows,
+                section_rollup,
+            )
     if report == "ncr_detail":
         result["departmentCost"] = _cost_summary(rows, dimension="department")
         result["sectionCost"] = _cost_summary(rows, dimension="section")
@@ -1575,13 +1851,23 @@ def _chart_payload(
         "sectionStatus": summary.get("sectionStatus", []),
         "quantityTrend": [dict(item) for item in trend],
     }
+    if report in _ROLLUP_REPORTS:
+        matrix = summary.get("sectionStageMatrix")
+        if isinstance(matrix, Mapping):
+            charts["sectionStageMatrix"] = matrix
+        counts = summary.get("sectionCounts")
+        if isinstance(counts, list):
+            charts["sectionCounts"] = counts
     if report == "ncr_detail":
         charts["departmentCost"] = list(summary.get("departmentCost", []))
         charts["sectionCost"] = list(summary.get("sectionCost", []))
     return charts
 
 
-def _filter_options(rows: Sequence[Mapping[str, Any]]) -> dict[str, list[str]]:
+def _filter_options(
+    rows: Sequence[Mapping[str, Any]],
+    section_rollup: Mapping[str, str] | None = None,
+) -> dict[str, list[str]]:
     options: dict[str, set[str]] = {
         "status": set(),
         "department": set(),
@@ -1593,14 +1879,36 @@ def _filter_options(rows: Sequence[Mapping[str, Any]]) -> dict[str, list[str]]:
     for row in rows:
         dimensions = row.get("dimensions")
         if isinstance(dimensions, Mapping):
-            for key in ("status", "department", "section", "model", "stage"):
+            for key in ("status", "department", "model", "stage"):
                 value = str(dimensions.get(key) or "").strip()
                 if value:
                     options[key].add(value)
+            if section_rollup is None:
+                section_value = str(dimensions.get("section") or "").strip()
+                if section_value:
+                    options["section"].add(section_value)
+            else:
+                options["section"].add(
+                    resolve_section(dimensions.get("section"), section_rollup)
+                    or unassigned_label()
+                )
         overdue = str(row.get("overdueState") or "").strip()
         if overdue:
             options["overdueState"].add(overdue)
-    return {key: sorted(values)[:500] for key, values in options.items()}
+    result: dict[str, list[str]] = {}
+    for key, values in options.items():
+        if key == "section" and section_rollup is not None:
+            # 归集口径：目标按规则顺序，未归集固定最后。
+            ordered = [
+                target for target in rollup_targets_in_order(section_rollup) if target in values
+            ]
+            unassigned = unassigned_label()
+            if unassigned in values:
+                ordered.append(unassigned)
+            result[key] = ordered
+        else:
+            result[key] = sorted(values)[:500]
+    return result
 
 
 def _recomputed_overdue_state(
@@ -1719,17 +2027,26 @@ class DeliverableFormAnalysisService:
         offset: int = 0,
         limit: int = 200,
         overdue_thresholds: Mapping[str, object] | None = None,
+        section_rollup: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
         key = self._validate_key(form_key)
+        rollup = section_rollup if _report_type(key) in _ROLLUP_REPORTS else None
         normalized = normalize_form_filters(filters)
         thresholds = normalize_overdue_thresholds(overdue_thresholds)
-        if thresholds is None:
+        section_selected = (
+            _selected_sections(normalized.get("section")) if rollup is not None else None
+        )
+        if thresholds is None and section_selected is None:
             result = self.db.list_deliverable_form_rows(
                 key,
                 normalized,
                 offset=offset,
                 limit=limit,
             )
+            if rollup is not None:
+                result["items"] = [
+                    _attach_section_rollup_target(item, rollup) for item in result["items"]
+                ]
             return dict(result)
         latest = self.db.get_latest_deliverable_form_snapshot(key)
         bounded_offset = max(0, int(offset))
@@ -1741,35 +2058,53 @@ class DeliverableFormAnalysisService:
                 "offset": bounded_offset,
                 "limit": bounded_limit,
             }
-        effective_filters = {
-            name: value
-            for name, value in normalized.items()
-            if name != "overdueState"
-        }
+        # 归集筛选（或阈值重算）要求分页发生在 Python 层过滤之后。
+        sql_filters = dict(normalized)
+        if thresholds:
+            sql_filters.pop("overdueState", None)
+        if rollup is not None:
+            sql_filters.pop("section", None)
         snapshot_at = str(latest.get("snapshot_at") or "")
         all_rows = self.db.list_deliverable_form_snapshot_rows(
             int(latest["id"]),
-            effective_filters,
+            sql_filters,
         )
-        all_rows = self._apply_overdue_thresholds(
-            key,
-            all_rows,
-            snapshot_at=snapshot_at,
-            thresholds=thresholds,
-        )
-        all_rows = self._filter_overdue_states(
-            all_rows,
-            normalized.get("overdueState"),
-        )
+        if thresholds:
+            all_rows = self._apply_overdue_thresholds(
+                key,
+                all_rows,
+                snapshot_at=snapshot_at,
+                thresholds=thresholds,
+            )
+            all_rows = self._filter_overdue_states(
+                all_rows,
+                normalized.get("overdueState"),
+            )
+        if section_selected is not None:
+            all_rows = _filter_rows_by_section_rollup(
+                all_rows,
+                normalized.get("section"),
+                rollup,
+            )
+        page = all_rows[bounded_offset:bounded_offset + bounded_limit]
+        if rollup is not None:
+            page = [_attach_section_rollup_target(row, rollup) for row in page]
         return {
-            "items": all_rows[bounded_offset:bounded_offset + bounded_limit],
+            "items": page,
             "total": len(all_rows),
             "offset": bounded_offset,
             "limit": bounded_limit,
         }
 
     def _sync_status(self, form_key: str) -> dict[str, Any]:
-        job_key = "aras_ewo" if form_key == "VPI-T2-D3" else form_key
+        # form_key → 归档任务 job_key 由单一关联注册表派生（取代
+        # `"aras_ewo" if form_key == "VPI-T2-D3"` 的硬编码）。
+        deliverable_id = find_deliverable_id_by_form_key(form_key)
+        job_key = (
+            find_job_key_by_deliverable_id(deliverable_id)
+            if deliverable_id
+            else None
+        ) or form_key
         jobs = self.db.list_archive_jobs()
         job = next(
             (item for item in jobs if str(item.get("job_key") or "") == job_key),
@@ -1804,8 +2139,10 @@ class DeliverableFormAnalysisService:
         filters: Mapping[str, object] | None = None,
         trend_limit: int = 30,
         overdue_thresholds: Mapping[str, object] | None = None,
+        section_rollup: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
         key = self._validate_key(form_key)
+        rollup = section_rollup if _report_type(key) in _ROLLUP_REPORTS else None
         normalized_filters = normalize_form_filters(filters)
         thresholds = normalize_overdue_thresholds(overdue_thresholds)
         if isinstance(trend_limit, bool) or not 1 <= int(trend_limit) <= 365:
@@ -1818,7 +2155,14 @@ class DeliverableFormAnalysisService:
         # day instead of the last 30 runs.
         snapshots = self.db.list_deliverable_form_snapshots(key, limit=365)
         latest_rows: list[dict[str, Any]] = []
-        effective_filters = dict(normalized_filters)
+        # 归集激活时 section 不下推 SQL：读取行后按归集口径在 Python 层逐行过滤，
+        # 「未归集」因此是逐行分类而不是值列表展开，不存在截断漏数路径。
+        sql_filters = {
+            name: value
+            for name, value in normalized_filters.items()
+            if not (rollup is not None and name == "section")
+        }
+        effective_filters = dict(sql_filters)
         if thresholds:
             # 阈值覆盖时逾期状态在读取侧重算，SQL 层不再按存储口径过滤。
             effective_filters.pop("overdueState", None)
@@ -1839,10 +2183,17 @@ class DeliverableFormAnalysisService:
                     latest_rows,
                     normalized_filters.get("overdueState"),
                 )
+            if rollup is not None:
+                latest_rows = _filter_rows_by_section_rollup(
+                    latest_rows,
+                    normalized_filters.get("section"),
+                    rollup,
+                )
             summary = summarize_form_rows(
                 key,
                 latest_rows,
                 snapshot_at=snapshot_at,
+                section_rollup=rollup,
             )
             # Stored schema metadata is historical. The view endpoint must
             # expose the current allowlisted contract after additive schema
@@ -1859,7 +2210,12 @@ class DeliverableFormAnalysisService:
         else:
             snapshot_at = ""
             latest_rows = []
-            summary = summarize_form_rows(key, [], snapshot_at=snapshot_at)
+            summary = summarize_form_rows(
+                key,
+                [],
+                snapshot_at=snapshot_at,
+                section_rollup=rollup,
+            )
             schema = definition
             artifacts = []
             snapshot = None
@@ -1869,8 +2225,14 @@ class DeliverableFormAnalysisService:
             for item in snapshots:
                 item_rows = self.db.list_deliverable_form_snapshot_rows(
                     int(item["id"]),
-                    normalized_filters,
+                    sql_filters,
                 )
+                if rollup is not None:
+                    item_rows = _filter_rows_by_section_rollup(
+                        item_rows,
+                        normalized_filters.get("section"),
+                        rollup,
+                    )
                 item_summary = summarize_form_rows(
                     key,
                     item_rows,
@@ -1945,7 +2307,7 @@ class DeliverableFormAnalysisService:
                     "isCompleted",
                 ],
                 "applied": normalized_filters,
-                "options": _filter_options(option_rows),
+                "options": _filter_options(option_rows, rollup),
             },
         }
 

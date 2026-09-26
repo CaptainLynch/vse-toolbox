@@ -1,5 +1,466 @@
 # Current State
 
+## 2026-09-26 审计闭环：双分页看板+科室归集 审计 4 项发现全部修复，顾问复审认可（任务闭环）
+
+- **审计→修复→顾问复审全流程完成**：code-reviewer 审计（1 Major+2 Minor+1 Nit，A-F 清单）→ 逐条
+  核实成立并全部修复（两趟校验 + 保留名「未归集」拦截 + 手册 6.16 深链说明 + debug bundle 注入
+  sectionRollup + 补 5 项测试）→ Codex 顾问复审（sol-high live，TASK-20260926-AUDIT-REVIEW，
+  包 `.runtime/consult-20260926-audit-review.md`，意见
+  `~/.dsh/expert-advisor/runs/codex-readonly-20260926-032757-51f90048.advice.md`）认可四项定级与
+  修复方向；三项「修改/核实」要求已逐项落实：① `all_targets` 只收合法目标（代码核实无误拒路径）；
+  ② 全项目无独立备份导出功能（唯一诊断导出即 debug bundle，已覆盖）；③ 科室名进调试包不构成新
+  披露类别（本机操作者 + 包内既有更细数据）。顾问建议不引入 Unicode 等价合并，维持 trim+精确匹配。
+- **最终门禁**：全量 **2429 passed, 3 skipped**（`.runtime/pytest-full-auditfix.log`）；flake8 改动文件
+  零告警；`node --check` 通过；项目地图 verified；冒烟 22/22（修复后复跑）。
+- **待用户**：① 完整「历史科室 → 现行科室」对照清单在 WebUI 归集面板录入；② 决定是否重新打包
+  EXE 与源码提交时机（改动未提交）。产品执行前沿其余条目（生产 D6/D7/D8 复测、NCR 样例、
+  TDC 分页 Phase 1 授权等）不变。
+
+## 2026-09-26 审计轮：双分页看板+科室归集 代码审计 4 项发现全部修复；顾问复审待额度窗口
+
+- **代码审计（code-reviewer，只读，用户要求）**：A-F 清单审计结论「有条件合入」——1 Major（校验单趟
+  遍历漏拦截 alias==自身 target、前序 alias 撞后序 target；后者会让 build_rollup_index 的 setdefault
+  抢占后序目标自绑定 → 看板丢行且归属错乱）+ 2 Minor（保留名「未归集」未拦截；手册缺旧深链说明）
+  + 1 Nit（debug bundle 未含 sectionRollup）。**逐条核实全部成立、全部修复**：
+  `validate_section_rollup` 改两趟校验（全量目标名收集 → 别名全量查重，含保留名拦截、恢复同目标内
+  重复别名检查）；手册 6.16 补深链说明；debug bundle context 注入 `sectionRollupStore.get()`。
+  测试缺口补齐：4 项校验回归 + rows()「section 筛选+阈值重算」组合路径端到端。
+- **审计后门禁**：聚焦 100 passed；全量 **2429 passed, 3 skipped**（基线 2425 → +4，
+  `.runtime/pytest-full-auditfix.log`）；flake8 零告警。
+- **待办（用户可见）**：① 审计结果的 Codex 顾问复审——**已完成，见上节**；② 用户生产侧：历史科室对照
+  清单录入、打包/提交决策。其余同下节实施记录。
+
+## 2026-09-26 部门总状态双分页看板 + 科室归集（WebUI 可编辑）已实施完成（全量 2425 pass）
+
+- **实施内容（方案 `docs/PLAN_20260926_DEPT_STATUS_TABS_SECTION_ROLLUP.md`，第 10 节为实施记录）**：
+  ① 新增 `core/section_rollup.py`：规则校验（目标/别名唯一性、上限）、`SectionRollupStore`
+  （`app_settings` 独立键 `sectionRollup`，不入通用设置白名单）、统一归集原语 `resolve_section`；
+  ② `services/deliverable_form_analysis.py`：`summarize_form_rows` 新增 `section_rollup` 参数，
+  产出 `sectionStageMatrix`（sections/stages 嵌套对齐 cells、显式零计数）与 ncr_detail 的
+  `sectionCounts`；**行级归集筛选**——view()/rows() 携带 section 筛选时剥离 SQL 下推、
+  读取行后逐行 `resolve_section` 过滤（分页在筛选后；rows 附带 `sectionRollupTarget` 派生字段），
+  `_filter_options` 的 section 选项按规则顺序 + 未归集；发布/趋势路径不传 rollup（存储保持原始口径）；
+  ③ `web/app.py`：GET/PUT `/api/project-status/section-rollup`（PUT 走本地 mutation 守卫、
+  422 带 fields），view/rows 接线，view 对归集表单下发 `sectionRollup` 规则；
+  ④ 前端：D3/D6/D7「部门状态」页签改为双分页看板（按科室/按状态，`state.boardTab` 记忆），
+  D8 新增「按科室」计数页签；通用 `renderFormMatrixBars`（段内计数、悬停明细、行点击筛选、
+  其他状态行不可点击）+ `renderSectionRollupPanel`（只读规则表 + 编辑态 chips/新增目标/保存，
+  全 Safe DOM）；tdc 两表单维持旧板；逾期判定控制条不变。
+- **门禁（最终轮实测）**：全量 `pytest -q -p no:cacheprovider` → **2425 passed, 3 skipped（exit 0，219.98s；
+  基线 2403 → +22）**（`.runtime/pytest-full-rollup2.log`）；flake8 改动文件零告警；
+  `node --check` 通过；项目地图 `--write && --check` verified；冒烟 `.runtime/smoke_section_rollup.py`
+  **22/22 PASS**（含 PUT 规则后 view 立即生效）。实施中发现并修复：view() 无快照分支漏传
+  `section_rollup`（冒烟发现）。
+- **语义要点（用户手册 6.16 已写）**：筛选/图表按归集口径，明细表显示原始科室值；未登记历史值进
+  「未归集」；旧原始值筛选链接不再命中（需登记为别名）；D2/D5 不参与归集。
+- **待用户**：提供完整「历史科室 → 现行科室」对照清单并在 WebUI 录入；生产 PyInstaller 打包按需另行执行
+  （源码树未提交，等用户确认后一并处理提交/构建）。产品执行前沿其余条目（生产 D6/D7/D8 复测、
+  NCR 样例、TDC 分页 Phase 1 授权等）不变。
+
+## 2026-09-26 部门总状态双分页看板 + 科室归集：方案定稿并经 Codex 顾问审计（已进入实施，见上节）
+
+- **用户需求（已按预览图确认口径）**：把交付物详情页「部门总状态」看板拆两个分页——分页1 按归集后科室（柱内=各业务状态占比）、分页2 按状态（柱内=各科室占比）；「状态」口径：EWO=DRAFT1/DRAFT2/EDIT1/EDIT2/PROC/IMPL/CLOSE、PAA 无 EDIT1/EDIT2、NCR进度=13 审批节点、NCR明细无状态仅按科室；科室归集（历史值→现行五科 车身科/车体科/内饰科/外饰科/车体架构集成科 + 「未归集」兜底）且规则须 WebUI 可编辑、保存即生效。预览图：`.runtime/preview-dept-status-tabs-v2/preview-*.png`（含规则编辑态）。
+- **方案文档**：`docs/PLAN_20260926_DEPT_STATUS_TABS_SECTION_ROLLUP.md`（设计、代码证据、测试计划、裁决记录全在文档内）。范围：D3/D6/D7 双分页、D8 单页科室统计板、归集规则存储+GET/PUT `/api/project-status/section-rollup`+前端编辑器；D2/D5 不动；不动原始数据、无迁移、无快照回填。
+- **关键架构事实（本轮核实）**：`view()` 对筛选后行**读时现算** summary/charts（`deliverable_form_analysis.py:1993,2088`）→ 归集放读取层即保存即生效；`rows()` 常规路径 SQL `COUNT+LIMIT/OFFSET`（`db_manager.py:2481`）、thresholds 路径 Python 过滤；`app_settings` 为自由 KV（:822,1896）新键免迁移。
+- **Codex 顾问审计（sol-high，live 1 次成功）**：核心意见=「未归集」按原始值列表展开（500 截断）会静默漏数，应读路径统一归集函数后筛选。**裁决=意见成立**：放弃值列表展开，改**行级归集 + Python 层科室筛选**（`resolve_section` 单一原语；`view()` 剥离 section 的 SQL 下推；`rows()` 带 section 时走既有整读路径模式、筛选后切片）；分页保证在筛选后；旧载荷键保留（tdc 消费+回滚兜底）；明细显示原始值但行附带 `sectionRollupTarget` 派生字段（「归集后科室」辅助列列为可选项待用户拍板）。咨询包 `.runtime/consult-20260926-dept-status-rollup.md`，意见 `~/.dsh/expert-advisor/runs/codex-readonly-20260926-003019-c8968d80.advice.md`。
+- **下一步（等用户）**：用户批准后按方案第 8 节顺序实施（core → analysis → service → web → 前端 → 全量门禁 → 用户手册补节）；实施时需用户提供完整「历史科室 → 现行科室」对照清单作为默认规则。产品执行前沿其余条目（生产 D6/D7/D8 复测、NCR 样例、TDC 分页 Phase 1 授权等）不变。
+
+## 2026-09-25 Expert Advisor：ZCode 交互式 GLM 路由说明已修正
+
+- 统一 DSH 技能、ZCode 技能和项目 AGENTS.md 已将顾问触发主体明确为「ZCode 当前所选模型的交互主代理」，包括交互式 GLM-5.3-Flash；worker 禁令只限顾问咨询，有界实现、测试、文档和聚焦取证仍可委派。
+- 运行入口按 caller=zcode 授权并检查 worker 标记，不检查 ZCode 主代理的模型。codex-readonly --status 显示 enabled=true、HOLD=false、7 日上限 30；使用 zcode-synthetic.md 的 sol-high --dry-run 返回 ok=true、退出码 0，映射 Codex gpt-6-sol/high。本轮未发起 live 调用，未证明 GLM 交互主会话实际自动触发；后续可在 GLM 交互主会话遇到符合触发条件的真实任务时验证一次。
+- 产品执行前沿仍按下方最新产品记录；本次未改产品代码或额度。
+
+## 2026-09-25 Expert Advisor 共享 7 日上限已改为 30 次
+
+- 用户在顾问参与范围评估后明确要求把本地上限设为 30 次。按前一轮讨论中的“近 7 日本地 8 次上限”解释，已把 codex-readonly 的 weekly_cap 从 8 改为 30；所有 Sol/Astra 档位共用。5 小时 2、自然日 10、每任务 2 和 Astra 专属自然日 1/7 日 2 均未改，Plus 服务端额度及历史账本未重置。
+- 本机 advisor_policy.json、统一 SKILL.md/CONTRACT.md 和滚动上限边界测试已同步；新旧顾问离线测试 115 passed，--status 显示 weekly_cap=30、HOLD=false，broker 健康。没有发起 live 模型调用。上一轮关于增加实施后/发布前顾问参与点仍是建议，尚未改触发规则。
+- 产品执行前沿仍按下方最新产品记录；本次未改产品代码。
+
+## 2026-09-25 Expert Advisor 参与范围评估（建议，未改路由）
+
+- 现有 DSH/ZCode 顾问技能已覆盖非琐碎架构/方案定案和两轮排障后证据冲突，但没有明确的实施后关键不变量复核、发布前证据/回退检查触发点。近期 P0-P3 多模块变更及 NCR 重复标签修复显示这两类复核有价值；建议以设计一次、集成/发布一次为每项高影响任务的优先上限，疑难事故按风险另行触发。此处只是待用户决定的评估，未修改顾问技能、配额或模型档位。
+- 本轮按 AGENTS.md 发现 PROJECT_MAP.md 漂移，已使用生成器刷新并复查通过。产品执行前沿仍由下节最新工作记录定义。
+
+## 2026-09-25 ZCode 审计报告处置：NCR 重复表头标签静默覆盖缺陷已修（r2 包已构建并冒烟通过）
+
+- **审计输入**：ZCode 只读审查（5 域分域审阅 + 逐项复核）结论「有条件通过」：1 Major + 4 Minor + 3 Nit；
+  报告中另提的「分页 95% 阈值 Blocker」经核实属 2026-09-23 轮既有待授权项，非本轮回归。
+- **Major（已在代码上独立复现）**：`core/report_headers.json` 的 `ncr_progress.headerRows[1]` 中
+  11 个角色标签各出现两次（列 `37..47` 为办理时间、列 `52..62` 为执行人；父表头 `[36]="办理时间"`、
+  `[52]="执行人"`）；解析器 `{label: values[index]}` 后写覆盖先写 → 标签字典只留执行人姓名，
+  而 `named_row()` 只发布该字典 → 读取侧按标签还原位置视图时 11 个办理时间全部被覆盖。
+  **实测影响比审计描述更严重**：不是「未判定」，而是所有节点 `stageStart` 退回 PE填写 日期、
+  `stageEnd` 丢失 → **每个节点都被误判为 overdue**（复算脚本 `.runtime/compare_ncr_legacy_vs_fixed.py`）。
+- **顾问裁决**：Codex `sol-high` 一次咨询（`TASK-20260925-NCR-LABEL-COLLISION`，包
+  `.runtime/consult-20260925-ncr-label-collision.md`）采纳方案 A，附四条约束：确认命名行约定允许增量键、
+  行身份保持修复前语义、历史行保留原读取边界并有界披露（不得标为已修复）、把重复标签做成守护测试。
+  四条全部落地。
+- **修复**：`NcrWorkbookRow.named_row()` 增带契约顺序的位置视图 `values`（标签字典继续保留）；
+  读取侧既有的位置优先分支自然生效；NCR 行身份统一为 `_ncr_row_identity()`（优先 `NCR编号` 标签）
+  → 带不带位置视图的同一行 rowKey 不变；只带标签键的历史行触发
+  `emit("forms.ambiguous_header_labels", {report_type, row_count, remedy})`。
+- **对抗式复核（针对本轮修复）发现并已闭环的缺口**：
+  ① **披露载荷被录制层丢弃**（Major）：`core/diagnostic_recording.safe_metadata` 只白名单转发固定键，
+  原 `{reportType, formKey, rows, ambiguousLabels, remedy}` 与上一轮的 `{kept, dropped, departmentScoped}`
+  实测都投影成 `{}`。已修：白名单新增 `kept_count`/`dropped_count`/`report_type`/`remedy` 与闭集词条
+  `reproject_from_archived_workbook`，两处 emit 改用可转发键，并新增"经 Recorder 录制导出后 data 可读"的端到端回归测试。
+  ② **"读旧快照会产生诊断"是错误表述**（Major/表述）：`normalize_form_rows` 的生产唯一调用点是发布路径
+  `build_form_snapshot`，读取路径不重新归一化 → **旧快照读时永远不产生诊断，也不会回填**，只能重新同步。
+  文档与说明文件已统一改正。
+  ③ **同名列仍被还原**（Minor）：标签分支对重复标签取最后一次出现（执行人），而阶段日期按标签命中第一列（办理时间），
+  历史行会把执行人姓名写进办理时间列（列渲染按位置取值，用户可见）。已修：`_ncr_header_mapping_values()` 对同名列一律留空
+  （宁可"未判定"也不给错误日期），测试锁定 11 组两列全空。
+  ④ 复核认为 `ncr_detail` 行身份变化 → **经 diff 核实为误判**（`_no/id/keyed_name` 属未触碰的映射分支；标签分支修复前即 `NCR编号` 优先）。
+- **Minor / Nit 处置**：EWO 分析缓存来源标签改 `aras_ewo`（裸 `"aras"` 仅保留历史读兼容）；
+  `decide_workbook_outcome` 五个计数整组纳入负数守卫；`overviewDetailsRow` 在渲染行带下标标记时不再按 DOM 回退；
+  `blank_rows += 0` 改为 `unclassified_rows += 1`（账目等式仍成立）；测试 docstring 修正。
+  **`VSE-WebUI-compact.spec` 未改动**（2026-09-23 就在工作区的未跟踪用户文件，按「保留无关改动」不擅自改删）——
+  它与 tracked 的 `VSE-WebUI.spec` 输出同名 `VSE-WebUI.exe`，存在互相覆盖风险，建议用户择一处理
+  （纳入 git + 改独立输出名，或删除）。生产构建实际使用 tracked 的 `VSE-WebUI.spec`。
+- **门禁（本轮实测）**：全量 `pytest -q` → **2403 passed, 3 skipped（exit 0，230.17s；基线 2398 → +5）**
+  （日志 `.runtime/full-suite-audit-fix-r3.txt`）；flake8 对本轮改动文件零告警
+  （`tests/test_diagnostic_recording.py` 的 5 处 E128/E306 是该文件既有告警，非本轮引入）；
+  `node --check web/static/app.js` 通过；项目地图 `--check` → verified。
+- **r3 交付物（最终包）**：`dist/hci-20260925-r3/VSE-WebUI.exe`（21,427,466 B，
+  SHA-256 `95c36af72520bd30ed236b677a29ddeaeeb9c73290cfc646923f84c45ecc92df`）；
+  分发包 `dist/hci-20260925-r3/VSE-WebUI-0.3.0-production-test-20260925-r3.zip`（21,089,326 B，
+  SHA-256 `5ca5e6f35649ab52d555ce41a06c5850f1878a64089a37f933c463211059c0ea`）；
+  版本元数据 `rawVersion=0.3.0-production-test-20260925-r3`、`buildId=20260925-r3-review-gap-fixes`。
+  `dist/hci-20260925/`（原始）与 `dist/hci-20260925-r2/` 均已放入 `SUPERSEDED-请勿使用-见-hci-20260925-r3.txt` 作废标记。
+- **r3 出厂冒烟**：全新空目录 + 独立端口 5122 + `--no-browser` → **30/30 通过**
+  （首启自建 `data\vse_toolbox.db`、端口释放、无残留进程）；脚本 `.runtime/smoke_exe_20260925_r3.ps1`、
+  结果 `.runtime/smoke-exe-20260925-r3-result.txt`、构建日志 `.runtime/build-webui-20260925-r3.log`；
+  构建后未再改任何源码（已用 mtime 核对），工件与被测代码树一致。
+- **执行前沿（原四项不变，另加两条）**：① 生产端对 D6/D7/D8 各做一次「配置 → 立即同步 → 看明细/图表」
+  并观察一次定时同步，回传 `run_state/error_type/行数/stop_reason`；② 需 1 份生产 NCR 导出样例
+  （或脱敏行键/行数清单）校准准入边界与是否做身份级拒绝；③ 归档任务与交付物绑定的查询口径差异仍延后；
+  ④ TDC 分页 95% 阈值 Phase 1 仍等用户单独授权；⑤ **历史快照的 11 列不可回填**——生产复测时先让 D7
+  重新同步一次以重建正确快照；**读取旧快照不会重新归一化、也不会产生任何诊断**（读取路径直接用已存行字段），
+  所以不要指望读时提醒；
+  ⑥ `VSE-WebUI-compact.spec` 的去留待用户决定。
+
+## 2026-09-25 单文件测试包已构建并通过出厂冒烟（dist/hci-20260925）
+
+- **工件**（含本轮全部改动；PyInstaller 6.21.0 单文件，Python 3.12.10，Windows x64）：
+  - `dist/hci-20260925/VSE-WebUI.exe`：21,425,756 字节，
+    SHA-256 `433b54e4d2eb1252b16108a9490bff59091c0f626f9f2348897abac2562fe1ba`；
+  - 分发包 `dist/hci-20260925/VSE-WebUI-0.3.0-production-test-20260925.zip`：21,086,913 字节，
+    SHA-256 `740f4feb37acb106dc8994d9cd2490f42b5ecb05603e654c7da77f1602544225`
+    （内含 EXE + `README-测试说明.txt`，含运行方式、校验与重点复测清单）；
+  - 版本元数据：`rawVersion=0.3.0-production-test-20260925`、`channel=production-test`、
+    `buildId=20260925-board-trim-aras-unify`、`isFrozen=true`（由 spec 经 `VSE_TOOLBOX_*` 注入）。
+- **出厂冒烟（全新空目录 + 独立端口 5120 + `--no-browser`，共 29 项检查全通过）**：
+  首启在 EXE 同级自建 `data\vse_toolbox.db`（证明无外部依赖）；
+  `/`（首页/明细容器）、`/api/version`、`/api/project-status`（8 项交付物、
+  D1/D4 `boardVisible=false`、D3 `supportsRecordSet=true`、D7 `completenessPolicy=workbook_admission`、
+  D6 `defaultDepartment` 来自注册表、D6 仍不计入分母）、`/static/app.js` 与 `/static/style.css`
+  （已删面板/徽标/死卡均不存在、保留 `deliverableBoardVisible` 与 payload 下标语义）、
+  `/api/scheduled-archive/jobs`、`/api/deliverable-forms/aras_ncr_progress/view` 全部 200；
+  进程树退出后端口释放、无残留进程。
+  证据：`.runtime/smoke-exe-20260925-result.txt`、`.runtime/build-webui-20260925.log`、
+  冒烟脚本 `.runtime/smoke_exe_20260925.ps1`。
+- **打包契约测试**：`tests/test_excel_worker_packaging.py`、`tests/test_webui_winhttp_packaging.py`、
+  `tests/test_version_and_usability.py`、`tests/test_excel_bundle_build_script.py` → 29 passed（spec 未改动）。
+- **踩坑记录**（已写入 `memory/RECOVERY_NOTES.md`）：本机 PowerShell 5.1 读无 BOM 的中文脚本会解析失败；
+  onefile 子进程需 `taskkill /F /T` 否则端口不释放且管道读阻塞；`Start-Process` 因 `no_proxy/NO_PROXY`
+  冲突不可用；`/api/version` 字段是 `rawVersion` 而非 `version`。
+- **待用户执行**：把该 ZIP/EXE 拷到测试机复测（重点见 `README-测试说明.txt`）；
+  需要时可用既有微信 clawbot 通道代为投递（本轮未投递）。
+
+## 2026-09-25 交付物看板精简 + ARAS PAA/NCR 按 EWO 结构统一（P0+P1+P2+P3 已实施，全量门禁待复跑确认）
+
+- **用户决策**：对 `docs/PLAN_20260925_BOARD_TRIM_AND_ARAS_UNIFY.md` 的 5 项决策全部同意（原话「全部同意实施」）：
+  ① P0 与 P1+P2+P3 一并实施；② D1/D4 仅从两块看板移除（详情/接口/审计/统计参与不变）；
+  ③ NCR 完备性取「工作簿准入 + 逐行归类核对」；④ PAA/NCR 保持不计入完成分母、只删参考徽标；
+  ⑤ 定时同步端到端验收 = 本地合成数据 + 生产复测一次。
+- **P0（展示层，已完成）**：注册表新增 `boardVisible`（D1/D4=False）+ `project_status_board_visible()`；
+  `/api/project-status` 每项下发 `boardVisible`（**不改动** `deliverables` 全量字段）；
+  前端 `deliverableBoardVisible()` 过滤卡片与明细行（自动隐藏计数同步排除）；
+  删除首页「外部业务快照 / PAA·NCR 外部源进度（参考）」面板（渲染/状态机/定义/缓存/加载器/调用点/CSS）
+  与「外部快照·参考」徽标（卡片+明细行+CSS）。`overviewArchiveJobs`、`/api/deliverable-forms/{key}/view`
+  等共享依赖保留。
+- **P1（契约层，已完成）**：注册表新增 `supportsRecordSet`/`completenessPolicy`/`defaultDepartment`/`filterKeys`
+  与 `project_status_sync_contract()` / `project_status_supports_record_set()` /
+  `project_status_completeness_policy()` / `project_status_default_department()`；
+  **清除 5 处以上 `VPI-T2-D3` 行为硬编码**（连接器 v2 守卫、sync_runner form_key 回退、
+  discovery 版本化守卫、updates 两处、web 规则构建与报表分派、前端绑定模式选择、
+  分析 `_is_ewo_deliverable`），改由注册表派生；`sourceInfo` 追加
+  `supportsRecordSet`/`completenessPolicy`/`defaultDepartment` 供前端消费。
+- **P2（NCR 链路，已完成）**：新增 `services/aras_ncr_workbook.py` 作为**唯一**解析口径
+  （消除连接器对归档模块私有函数的跨模块调用）；归档路径由位置行改为**与同步路径同形**的
+  「按已批准表头标签命名」行；`core/report_contracts.py` 为 NCR 派生标签键源字段映射
+  （`_LABEL_KEYED_REPORTS` + `_label_source_fields()`），`services/deliverable_form_analysis.py`
+  新增 `_ncr_header_mapping_values()` 让命名行复用同一套 NCR 维度/成本口径；
+  `services/pagination_integrity.py` 新增 `WorkbookBookkeeping` / `decide_workbook_outcome()`，
+  `COMPLETE_STOP_REASONS` 增加唯一的工作簿通过原因 `workbook_rows`；同步路径
+  `require_complete_workbook()` fail-closed，归档路径以 `form_projection_error` +
+  manifest 簿记事实（`bookkeeping`/`stopReason`/`projectionError`）披露。
+- **P3（语义隔离与清理，已完成）**：新增 `analysis_source_type()`，分析缓存写入侧使用限定标签
+  （`aras_ewo`/`aras_paa`/`aras_ncr`），EWO 阶段机与逾期语义不再外溢到 PAA/NCR
+  （裸 `"aras"` 仅保留为历史缓存读兼容）；删除不可达的第二套「快照同步卡」
+  （`renderSnapshotSyncCard`/remedy 词表/加载分支/CSS，共 182 行 JS + 2 个 Node VM 测试），
+  同步入口只按 `syncCapable` 判定。
+- **实施中发现并修复的两个既有缺陷**：
+  ① `core/report_headers.json` 的 `ncr_detail.dataHeaderRow` 4 → 0（原值指向车型矩阵带，
+      使列标签全部落空、按标签取值必然失败；官方工作簿解析一直用 `headerRows[0]`）；
+  ② `matchKeys` 与连接器实际消费漂移（D6 声明了从不消费的 `sectionCode`，缺 `rspDepartment`；
+      D7/D8 缺 `sectionCode`/`section_code`/`rspDepartment`/`changeType`）——由新增的
+      `filterKeys` 一致性测试发现并按连接器实际消费修正。
+- **与方案的偏差（更保守，已写入方案文档）**：未实现"与上次快照行数对比报警"（EWO/PAA 亦无，
+  保持结构一致；行数事实已随 manifest/快照披露）；未按业务身份拒绝 NCR 行（无生产样例前不做，
+  避免把 NCR 明细判成永不完整）；准入语义如实声明为"满足准入策略"而非"证明源端零丢失"；
+  未新增数据库迁移（契约版本与簿记写在既有 JSON 字段）。
+- **本轮改动文件**：`core/project_status_contracts.py`、`core/report_contracts.py`、
+  `core/report_headers.json`、`services/pagination_integrity.py`（新语义）、
+  `services/aras_ncr_workbook.py`（新）、`services/scheduled_archive_connectors.py`、
+  `services/project_status_connectors.py`、`services/project_status_sync_runner.py`、
+  `services/project_status_discovery.py`、`services/project_status_updates.py`、
+  `services/project_status_deliverable_analysis.py`、`services/deliverable_form_analysis.py`、
+  `web/app.py`、`web/static/app.js`、`web/static/style.css`、方案文档与 8 个测试文件
+  （含新增 `tests/test_aras_ncr_workbook.py`）。
+- **验收证据（本轮实测）**：
+  - 聚焦与宽范围批次：`tests/ -k "project_status or deliverable or overview or report_contract or archive or pagination or aras"`
+    → **1362 passed, 2 skipped**（163.76s）；
+  - 新契约测试：`tests/test_aras_ncr_workbook.py` 9 passed；`tests/test_pagination_integrity.py` 32 passed；
+    `tests/test_project_status_contracts.py` 55 passed（含 filterKeys 一致性）；
+    `tests/test_ewo_department_stage_feature.py` 9 passed（EWO 语义不外溢）；
+    `tests/test_deliverable_form_analysis.py` 46 passed（含命名行与位置行归一化等价）；
+    `tests/test_scheduled_archive_connectors.py` 56 passed（含准入失败分支与已知差异钉住）；
+    `tests/test_project_status_connectors.py` 25 passed（含同步路径 fail-closed 与丢弃数核对）；
+  - **全量**：`pytest -q -p no:cacheprovider` → **2398 passed, 3 skipped（exit 0，219.85s）**
+    （基线 2,360 → +38，日志 `.runtime/full-suite-final4.txt`）；
+  - 静态：`flake8 -j 1` 覆盖全部本轮改动文件 **零告警**；`node --check web/static/app.js` 通过；
+  - 项目地图：`python tools/generate_project_map.py --write && --check` → **verified**；
+  - 冒烟：`.runtime/smoke_board_trim.py`（临时库 + Flask test client）**28/28 PASS**：
+    首页/明细容器、`/api/version`、`/api/project-status`（8 项全在、
+    D1/D4 `boardVisible=false`、D3 `supportsRecordSet=true`、D6 `defaultDepartment` 来自注册表、
+    D7 `completenessPolicy=workbook_admission`、D6 仍不计入分母）、静态资源已无被删面板/徽标/死卡、
+    表单视图接口仍可用。
+  - 说明：`flake8` 对**整个 tests/** 仍有既存告警（`test_aras_cli_web.py`、`test_deliverable_analysis_paging.py`、
+    `test_diagnostic_recording.py`），非本轮引入、按"保留无关改动"未处理。
+- **独立对抗式复核（另一 agent，只读）**：**0 Blocker**；1 Major + 2 Minor + 1 Nit，其余（看板投影一致性、payload 下标、注册表取代硬编码、工作簿簿记等式、两写者形状与旧位置行兼容、`dataHeaderRow` 无其他消费者、来源标签与发布修订守卫）逐项核实通过。处置：
+  ① Major（NCR 同步路径内存部门收窄 vs 归档路径不做 → 行集合仍可能不同；空科室行静默丢弃）→ 抽出
+     `_filter_ncr_rows_by_department()` 返回丢弃数并经 `core.diagnostic_recording.emit("ncr_department_filter", …)`
+     进入诊断渠道（不再静默）+ 测试核对 kept/dropped；**行集合口径统一仍按计划延后**（归档用
+     sectionCode/sectionCodes 上游查询、绑定用 department 再收窄，语义不同；无生产样本前删除内存收窄
+     会静默放宽范围）→ 见执行前沿 ④。
+  ② Minor（前端仍按 D1/D4 字面量兜底同步能力）→ 改为 `capabilities.syncCapable === true`（缺失即不支持）。
+  ③ Minor（`defaultDepartment`/`completenessPolicy` 下发未消费）→ 向导责任部门预填/文案改用
+     `sourceInfo.defaultDepartment`（保留非 TDC 历史预填值，**不改 EWO 查询范围**）；同步摘要卡在
+     `completenessPolicy === "workbook_admission"` 时披露准入语义。
+  ④ Nit（连接器内 `_PAA_DELIVERABLE_ID` id 字面量）→ 保留（注册表查询键，非行为分支）。
+- **本轮收尾补充（用户「继续」后）**：
+  ① 用户手册同步更新（`docs/USER_GUIDE_STANDALONE_EXE.md` 6.2 / 6.12 / 6.14）：D1/D4 不看板但接口/统计不变、
+     PAA/NCR 与 EWO 同构、NCR 官方工作簿准入语义（"满足准入"≠"源端零丢失"）、归档 manifest 簿记可核对；
+  ② 补两条闭环测试：同步路径工作簿准入失败必须整体报错（`test_ncr_collect_rows_fails_closed_when_workbook_admission_fails`）；
+     两写者行集合差异的**显式钉住**（`test_ncr_archive_path_has_no_binding_department_narrowing`，含延后说明与文档指针）；
+  ③ 历史任务档案（`docs/CODE_AUDIT_20260918.md`、`docs/DELIVERABLE_CONSOLE_AUDIT_20260916.md`、
+     `docs/PROD_TEST_20260922_*.md`）按"历史记录不追改"原则保留原样。
+- **执行前沿（下一步）**：
+  ① 用户在生产环境对 D6/D7/D8 各做一次「配置 → 立即同步 → 看明细/图表」，并观察一次定时同步，
+     回传 `run_state/error_type/行数/stop_reason`（准入是否放行的一手证据）；
+  ② **需要 1 份生产 NCR 导出样例（或脱敏的行键/行数清单）**：用于校准 `workbook_rows_unclassified`
+     的判定边界与是否需要身份级拒绝（当前只做结构性判定）；
+  ③ 若生产出现 `workbook_rows_unclassified`/`workbook_accounting_mismatch`，按 manifest 的
+     `bookkeeping`/`stopReason` 取证后决定是否把该形状显式声明为可跳过类；
+  ④ 归档任务与交付物绑定的查询口径差异（NCR 归档键集更宽、归档无默认部门）仍未收窄——
+     待生产数据确认后再评估是否统一（本轮未动，避免静默缩小范围）。
+
+## 2026-09-25 Expert Advisor 本地额度获授权重置，Sol/high 与 Astra/medium 合成 live 通过
+
+- 用户明确允许重置本地配额。统一入口新增 local_quota_reset_at；重置前的启动、结果仍保存在同一账本，之后不计入本地自然日、每任务及滚动上限。未重置 ChatGPT Plus 账户额度或增加上限。用户授权的第二次计数起点为 2026-09-25 16:34:16 +08:00，账本保留此前 11 次受控只读启动；状态检查显示重置后本地 5 小时/7 日/今日计数均为 0，HOLD=false。
+- 本机 broker 协议 4 已重启；DSH sol-high 与 ZCode astra-medium 合成 check 均 ready=true/model_call=false。离线顾问新旧测试 115 passed。
+- 真实合成链路：DSH sol-high live 一次成功，账本 gpt-6-sol/high、10703 input/447 output，归档六节和空工作目录通过；顾问选租户隔离缓存 B，主代理独立判断也选 B。ZCode astra-medium live 一次成功，账本 gpt-6-astra/medium、11159 input/530 output，同样通过账本/归档/空目录；顾问选兼容并行迁移 B，主代理独立判断也选 B。无工具/未知事件。
+- 这些命令由当前 Codex 任务以 dsh/zcode caller 模拟执行；证明统一入口、broker、官方 CLI 与两档模型真实调用链可用。两端交互主代理的新自主触发行为尚未在各自真实项目会话中重新演练；此前旧 Sol/medium 的 DSH/ZCode 主代理链路已有成功记录。Sol/xhigh 与 Astra/high 已通过 argv 与白名单离线测试，未分别发起 live。
+- 验证后再次本地重置以保留真实项目咨询额度。检查时 Plus 账户 5 小时用量 48%、周用量 29%，无额外信用额度；本地重置不影响它。产品执行前沿不变，TDC 分页 Phase 1 仍待单独授权。
+
+## 2026-09-25 Expert Advisor Sol/Astra 风险档位已落地（新档位 live 待单次复核）
+
+- 用户批准的自动路由已写入项目 AGENTS 与 DSH/ZCode 主代理技能：架构设计和实施方案定案前，非琐碎问题由主代理自主咨询；常规 sol-high，复杂多模块契约/并发/回滚 sol-xhigh，难回退安全/静默丢数/破坏性迁移 astra-medium 或 astra-high。无需用户指名，也无需先列出两个方案；worker 禁止调用。
+- 本机统一入口的四档白名单固定映射到官方 Codex CLI，客户端和本机 broker 双重校验；所有档位共享 codex-readonly 账本/锁。每自然日 10、每任务 2 的旧额度未重置；新增滚动 5 小时 2、7 日 8，Astra 另有日 1/7 日 2。新滚动上限自 2026-09-25 16:22 +08:00 前向生效；旧 9 次搭建/诊断启动仍记在账本并计入原自然日和每任务上限。
+- 新 broker 协议版本 3 已重启并通过健康检查；Sol/high 的 DSH 合成包和 Astra/medium 的 ZCode 合成包 dry-run 均通过。DSH 与 ZCode 的 check 均 ready=true、model_call=false。离线新旧顾问测试共 115 passed；项目地图 check 通过。
+- 一次 Astra/medium 合成 live 在旧 broker 尚驻内存时被旧额度算法拒绝（退出 7），账本核实 launch_count=0，无模型请求；冒烟脚本原误报 model_call=true 已改为依据账本判定。随后重启 broker，check 恢复 ready=true。遵守失败即停约定，本轮未重试 live；新 Sol/Astra 档位尚无 live 成功记录。既有 Sol/medium 的 DSH 与 ZCode live 成功记录仍有效，但不等于新档位 live 通过。
+- 产品执行前沿不变：TDC 分页方案 Phase 1 与最小生产证据仍待用户授权；本次未改产品代码。
+
+## 2026-09-25 DSH/ZCode 专家顾问自主路由已配置
+
+- DSH 主代理与 ZCode 交互主代理自行判断是否需要 Codex 第二意见；用户无需指定“架构/疑难”等场景。项目 `AGENTS.md`、两端 user skill 和 ZCode 全局 AGENTS 已写入同一阈值：高影响、至少两个可信方案且选错代价显著；或高影响故障两轮聚焦排查后仍有冲突证据。日常工作、已有定案和无新证据重复咨询跳过。
+- 命中时才做状态预检、脱敏自包含包和一次 live；worker 禁止咨询，主代理独立裁决；禁用或额度不足时继续主任务，不切换提供方。
+- 无顾问调用的路由分类演练已通过：DSH 与 ZCode 主代理均判定“旧客户端在线的数据库字段迁移取舍”为 route=true，“文档错字”为 route=false。此前两端合成 live 已分别通过。
+- 产品执行前沿仍是下节 TDC 分页方案 Phase 1 等待用户授权与最小生产证据；本次未改产品代码。
+
+## 2026-09-25 分页完整性方案 1-A 外部顾问裁决返回：方向定为有界放行+显式披露（B），95% 阈值不得定案（等用户授权实施）
+
+- **咨询闭环**：按 expert-advisor 咨询包模板制备脱敏咨询包（目标=方案 1-A 安全边界定案），用户带回外部顾问裁决（仅依据包内容判断）。
+- **裁决要点（lead 已在代码上核验成立）**：
+  1. 95% 相对阈值只约束 `declared_total − unique_count`，不约束实际折叠条数（809 行可少 40 条、10 万行可少 5,000 条仍判 complete）→ 方案 A 不宜定案；
+  2. `max(3, 2%×total)` 不是绝对上限（10 万行=2,000），绝对上限必须用 `min` 形态；
+  3. 行号+内容哈希后缀不能证明"两条内容全同的合法记录"可区分，行号跨页稳定性未证实；
+  4. 长期方向 = B：独立 stop_reason（`reported_pages_with_duplicates`）+ 折叠数/声明值诊断披露 + 容忍度为调用方显式传入策略（默认严格；TDC 两报表显式选有界容忍，Aras 保持严格）。
+- **临时护栏（Phase 1，待授权）**：`allowance = 0（declared_total<20）；否则 min(1, floor(0.01×declared_total))`，折叠数与 `max(0, final_total − unique_count)` 均须 ≤ allowance；簿记一致性核对（原始读取数 = 去重数 + 折叠数）须对 `overflowed` 豁免（`tdc_crawler.py` 去重循环在 `len(rows) >= max_records` 时 break，溢出行既不计 duplicates 也不 append）。809 行/1 条重复案例仍放行；`1%+1 条`是保守临时护栏，非统计阈值。
+- **实施分期**：Phase 1 收紧 + 过渡诊断字段（不动 `COMPLETE_STOP_REASONS`）→ Phase 2 消费方审计后纳入新 stop_reason（词表直接消费者已锁定：`services/project_status_records.py:23` 别名再导出、`services/project_status_connectors.py:41,81` 门控、`web/app.py:96,1310` 准入门控、`services/aras_crawler.py:22,478,572` is_complete、`services/tdc_crawler.py` decide_page_outcome 调用点；逐点查字符串直比）+ UI/HTTP 门控/归档任务三态披露 + `complete=True` 语义改述为"满足准入策略"（非"证明零丢失"）→ Phase 3 生产证据校准上限（是否提至 3 条）并闭环行键 MAJOR。
+- **定案前缺失证据**：每类 TDC 报表 ≥1 次完整抓取的逐页行数、首末 `total/pages`、最终原始/去重/折叠数、`stop_reason`、元数据是否变化；真实响应字段名与候选身份键缺失率、行号跨页稳定性；折叠组脱敏页位 + 所用身份键类别 + 人工核对（区分"重复抓到同一记录"与"两条合法记录被误合并"）。若元数据中途变化或证据不能证明行键可靠 → 重试或保持非完整，不得仅凭比例放行。
+- **补充事实（lead 核验）**：元数据中途变化当前已 fail-closed（`result.total != reported_total` → `metadata_inconsistent` → `inconsistent_metadata`），不会经 95% 门禁被放行；P3（容忍 total 增长）须与本放宽解耦评估。
+- **置信度**：A 边界不足与 B 方向 = 高；具体数值上限 = 低，须生产证据校准。
+- **下一步（等用户）**：① 授权实施 Phase 1（收紧 + 过渡诊断，契约不变）；② 内网回传上述最小证据集。
+
+## 2026-09-23 SOR 映射容错、数模状态全链路闭环与 PAA/NCR 白名单修复闭环（全量 2,360 pass，EXE 独立构建并冒烟通过）
+
+- **任务背景**：用户在内网真实环境测试中反馈了 3 处问题：
+  1. SOR (D2) 聚合向导配置启用失败：`enabled: 自动字段映射必须来自最新的脱敏字段报告并由用户确认`（现场真实数据缺少 `latestCompletedNode` 列触发子集强校验打回）；
+  2. 数模 (D5) 报表同步成功但图表显示 0%（完成态枚举未命中业务状态“审批通过/已归档”等导致 isCompleted=False），且搜索项需增加“状态”栏；
+  3. PAA (D6) / NCR (D7/D8) 详情页向导点击报错：`mapping discovery is not available for this deliverable（HTTP 400）`（白名单缺少对应元组）。
+- **经 code-reviewer 架构审计确认的实施内容**：
+  1. **SOR 聚合 note 映射动态交集与容错清洗**：
+     - 前端向导 `web/static/app.js` 废除硬编码映射，改与取证报告 `fieldReport.fields` 取动态交集；无交集时优先尝试拾取状态列，仍无则 Fail-Closed 引导至高级设置；
+     - 后端 `services/project_status_updates.py` 校验放宽列表型 `note`：只要候选列与 `observed_fields` 交集非空即可放行，并将清洗后的有效列写入库中，严格保持 `mapping ⊆ observed_fields`。
+  2. **数模“状态”筛选 8 处契约闭环与完成态严格全等判定**：
+     - `services/tdc_crawler.py`（TDCDataModelFilters）、`project_status_records.py`、`project_status_updates.py`、`project_status_contracts.py`、`web/app.py`、`scheduled_archive_connectors.py`、`project_status_connectors.py`、`web/static/app.js` 完整 8 处闭环支持 `status` 筛选参数；
+     - `services/deliverable_form_analysis.py` 扩充数模完成态词表（`4`, `已完成`, `完成`, `审批完成`, `审批通过`, `已归档`, `归档`, `已发布`, `流程结束`, `已生效`），严格全等匹配（防“审核不通过”误判），支持 `status`/`flowStatus`/`流程状态` 取值；维持 Field Authority 隔离，严禁向数据库反写 `actual_date`。
+  3. **PAA / NCR 白名单完整性补齐**：
+     - 在 `web/app.py` 的 `_MAPPING_DISCOVERY_RULE_FIELDS` 中补齐 `("aras", "paa")`, `("aras", "ncr_progress")`, `("aras", "ncr_detail")`，完整包含 `department` 与单号别名（`serial_number` 与 `ncr_no` / `paa_no`）。
+- **验证证据与构建结果**：
+  - 全量回归测试：`python -m pytest -q` → **2,360 passed, 3 skipped in 235.31s (100% Pass，Exit 0)**；
+  - 静态检查：`flake8 -j 1` 针对全部改动 Python 模块 **零告警**，`node --check web/static/app.js` 语法通过；
+  - 项目地图核验：`python tools/generate_project_map.py --check` → **Project map verified (Exit 0)**；
+  - 单文件构建：`dist/hci-20260923-r2/VSE-WebUI.exe`（21,416,306 字节，SHA-256 `99ea5ecd851c227efdccfbbe01195dab26916b2db49d29861710e41e83189b72`），分发包 `dist/hci-20260923-r2/VSE-WebUI-0.3.0-production-test-20260923-r2.zip`（21,074,080 字节，SHA-256 `eb10f92eb9c281c946155d51fb73ae63d9e2f756f0bd9a7b9f63e86ed93fab8b`）；
+  - 独立端口 5112 冒烟测试：`/`, `/api/version`, `/api/overview`, `/api/project-status`, `/api/project-status/scheduler`, `/api/tasks` 全部返回 HTTP 200 OK。
+
+## 2026-09-23 数模 duplicate_records 熔断放宽 (方案 1-A) 与 PAA/NCR 向导同构化解耦 (方案 2-A) 闭环整改（全量 2,351 pass 通过，EXE 重新打包并微信交付）
+
+- **任务背景**：针对用户生产测试反馈的两个痛点进行彻底治理：
+  1. 数模 (D5) 报表单页包含 1 条业务重复记录即触发 `duplicate_records` 熔断中断（返回 49 条 / 声明 809 条 / 17 页中的第 1 页退出，HTTP 422）；
+  2. PAA (D6) / NCR (D7/D8) 同步方案与后台自动归档任务强耦合，必须离开交付物页面去自动归档配置凭据，与 EWO 单独同步向导诉求脱节。
+- **实施内容**：
+  1. **[方案 1-A：数模行身份强化与分页完整性放宽]**（`services/tdc_crawler.py`、`services/pagination_integrity.py`、`tests/test_pagination_integrity.py`、`tests/test_tdc_crawler.py`）：
+     - 修复 `_row_identity` 提取 `rowNo` 时的变量错位问题，增加非空属性排序后的 SHA-256 内容散列后缀（`h:<16位>`），最大化区分同一单号内的不同零件记录；
+     - 重构 `decide_page_outcome`：翻页中途单页出现轻微重复时不提前熔断，爬虫顺畅翻页爬取后续全部 16 页；在翻满声明页数（`page >= reported_pages`）且去重记录数覆盖主体（>= 95%）时，判定为 `"reported_pages"` 抓取完整（`complete=True`）；严重身份坍缩（< 95%）保持 fail-closed 拦截。
+  2. **[方案 2-A：PAA/NCR 交付物同步向导全量同构化解耦]**（`core/project_status_contracts.py`、`services/project_status_connectors.py`、`services/project_status_sync_runner.py`、`web/app.py`、`web/static/app.js`）：
+     - **契约重构**：将 D6 (PAA)、D7 (NCR进度)、D8 (NCR明细) 从“外部快照卡驱动”全面升级为 `syncCapable=True`，注册各自的标准字段映射（`defaultMapping`）、字段别名推导词表（`fieldAliases`）与语义提示词；
+     - **后端连接器扩展**：`ArasProjectStatusConnector` 解除 EWO 限制，全面支持 PAA 抓取与 NCR 报表提取；`project_status_sync_runner` 在同步完成后自动为 D6-D8 构造并持久化表单快照（`publish_deliverable_form_snapshot`），无缝保证表单分析视图更新；
+     - **前端同构向导**：彻底废除 D6-D8 的“去自动归档页面”跳转卡片，直接在详情页呈现统一轻量向导（凭据默认统一域账号、车型项目输入、责任部门预填 `技术中心_车体工程`、定时周期选择）；点击【开始配置并启用】自动取证 1/2 -> 2/2、保存并触发首次同步；卡片常驻展示【立即同步】与【修改同步配置】按钮。
+- **全套验证证据**：
+  - 聚焦专项测试：`pytest tests/test_pagination_integrity.py tests/test_crawler_pagination_integrity.py tests/test_tdc_crawler.py tests/test_project_status_*.py tests/test_deliverable_*.py` → **670 passed**；
+  - 全量 pytest 套件：`pytest -q -p no:cacheprovider` → **2,351 passed, 3 skipped in 253.54s，EXIT 0**；
+  - 静态检查：`flake8 -j 1` 针对全部改动 Python 模块 **零告警**，`node --check web/static/*.js` 全部通过；
+  - 项目地图核验：`python tools/generate_project_map.py --write && --check` → **Project map verified (Exit 0)**；
+  - 单文件构建：`dist/hci-20260923-final/VSE-WebUI.exe`（21,413,415 字节，SHA-256 `903739014758f4f4ce401455668ada1116b4c4454d239c39831bd504505625fc`），分发包 `dist/hci-20260923-final/VSE-WebUI-0.3.0-production-test-20260923-final.zip`（21,070,983 字节，SHA-256 `092a69ac22b419fa38369ace2829c67452a519cb06f13585200bc185c8ec014f`）；
+  - 独立端口 5110 纯净冒烟测试 6 个核心端点（`/`, `/api/version`, `/api/overview`, `/api/project-status`, `/api/project-status/scheduler`, `/api/tasks`）全部返回 HTTP 200 OK；
+  - 微信 ClawBot 投递：ZIP 文件本体、EXE 文件本体与详细校验说明文本均已送达用户微信（Message IDs: `7508466111856682504`, `7508466204630580488`, `7508466303607750792`）。
+
+## 2026-09-23 生产测试单文件 EXE 构建并经微信 clawbot 投递成功（工件与校验码已交付）
+
+- **交付物**：`dist/hci-20260923/VSE-WebUI.exe`（21,410,942 字节，SHA-256 `b5ee7c97a9cc16040b37bad029fcf1d32426af64b22114d0378f903b750f1632`），分发压缩包 `dist/hci-20260923/VSE-WebUI-0.3.0-production-test-20260923.zip`（21,068,393 字节，SHA-256 `1dca112506e88bba0c695cc6ebd184685e7cc8f6e90686f612944e2360978b22`）。
+- **纯净冒烟复核**：在独立纯净目录（`.runtime/smoke-test-20260923`）以独立端口 5108 和 `--no-browser` 启动构建生成的 `VSE-WebUI.exe`，验证 6 处关键端点全部返回 HTTP 200 通过：
+  1. `/` 200（50,981 字节，完整渲染前端页面结构）；
+  2. `/api/version` 200（`v0.3.0`，buildId `20260923-diag-remedy`，channel `production-test`，isFrozen=true）；
+  3. `/api/overview` 200；
+  4. `/api/project-status` 200（20,917 字节完整状态数据）；
+  5. `/api/project-status/scheduler` 200；
+  6. `/api/tasks` 200。
+  测试完成后进程干净退出，端口正常释放。
+- **微信投递结果**：通过 `C:/Users/Lynch/.zcode/tools/weixin_bot_send.py` 成功完成投递至用户微信：
+  1. 发送构建开始通知（`message_id=7508439481109056136`）；
+  2. 上传腾讯 CDN 并发送 21MB ZIP 文件本体（`message_id=7508440144023061896`）；
+  3. 上传腾讯 CDN 并发送单文件 EXE 本体（`message_id=7508440228999626632`）；
+  4. 发送详细版本说明、变更概要与 SHA-256 校验摘要（`message_id=7508440296070722184`）。
+- **当前状态与下一步**：工件已安全送达用户微信，构建与测试产生的 `.runtime` 临时文件符合工程隔离规则。用户可直接在目标测试机解压或直接运行验证。
+
+## 2026-09-22 P0 + P1-A + P2 实施完成（诊断可观测性 / 归档未就绪指引 / 分页完整性契约收敛）
+
+- **本轮范围**：只做**不依赖用户输入**的三块（架构评估见
+  `docs/ARCH_REVIEW_20260922_SYNC_FIX_FEASIBILITY.md` 第六节的 P0/P1/P2）；
+  **P3（completeness 语义放宽）与 P4（向导对称收窄）仍未动**，等用户决策与 stop_reason 证据。
+- **P2 契约归属收敛（纯重构，行为等价）**：
+  - 新增叶子模块 `services/pagination_integrity.py`，成为 `stop_reason` 词表与
+    「元数据驱动分页」终局判定的**唯一拥有者**：`COMPLETE_STOP_REASONS` /
+    `is_complete()` / `PageBookkeeping` / `decide_page_outcome()`（分支顺序即契约：
+    page_mismatch → size_mismatch → metadata_inconsistent → duplicates → 声明已齐 →
+    空页 → 短页 → max_records → max_pages → continue）。
+  - `services/tdc_crawler.py` 的判定链改为调用 `decide_page_outcome()`，`complete=is_complete(stop_reason)`；
+    `services/aras_crawler.py` 删除局部 `complete` 变量、改用同一 `is_complete()`；
+    `services/project_status_records.COMPLETE_RESULT_STOP_REASONS` 改为别名再导出（单一对象）。
+  - 该模块**不 import 上层、不消费业务字段语义**，业务身份仍只属 `project_status_records`。
+- **P0 诊断可观测性（问题 B 定案的前置）**：
+  - `web/app.py:_json_error` 新增 `diagnostic` 参数成为**唯一错误出口**；顺手把
+    `_tdc_error_response` 里手搓的 TDCCrawlerError 响应体收敛进来（响应形状不变）。
+  - `_require_complete_mapping_result` 失败时下发
+    `error.diagnostic = {stopReason,rowCount,uniqueCount,duplicateCount,declaredTotal,declaredPages,fetchedPages}`
+    （有界、非敏感；Aras 无这些字段时取 None 不报错）。
+  - `_TDCRequestError` / `_ArasRequestError` 支持 `diagnostic` 并透传。
+  - `web/static/app.js`：`overviewRequestError` 捕获 `err.diagnostic`；
+    `ewoPolicyPaginationDiagnosticText()` 渲染为可读尾注（停止原因/行数/页数）。
+- **P1-A 归档未就绪的可操作指引**：
+  - `ArchiveJobNotReadyError` 增**闭集** `reason`（credential_not_configured / job_disabled /
+    contract_mismatch / filters_invalid / retry_policy_invalid / unknown，非法值退化 unknown），
+    DB 六处 raise 全部带上原因；
+  - `services/scheduled_archive_runner` 新增 `remedy_for_error_type()` / `remedy_for()` 闭集映射
+    （原因码与失败类别 → 指引码），`ArchiveJobRunResult` 增 `remedy` 字段并在
+    `run_job`/`_finalize_attention`/`_finalize_exception`/`run_once(missing_job)` 全部填充；
+  - `web/app.py:_deliverable_associations` 增补 `credentialConfigured`（取既有 raw row，
+    **不做 vault I/O**，避免污染 `/api/project-status` 热路径）；
+  - `web/static/app.js` 快照卡：任务状态**三态**（已启用 / 未启用·凭据已就绪 /
+    未配置·缺统一域账号凭据）+ 常驻指引 + 【去配置该同步任务】（预选 `selectedArchiveJobKey`
+    并跳 `#scheduled-archive`）+ 失败按闭集 remedy 给中文指引；
+    **注意 actions 内前三位（同步按钮/查看任务/状态文本）是既有 DOM 契约，新增控件只能追加在末尾**；
+  - `web/static/style.css` 增 `.policy-sync-configure-btn` / `.policy-sync-remedy-hint`（含 `[hidden]`）。
+- **新增/扩展测试（+29，全量 2317 → 2346）**：
+  `tests/test_pagination_integrity.py`（新，20 例：单一来源 + 分支矩阵 + fail-closed）；
+  `tests/test_crawler_pagination_integrity.py`（+3：诊断内容、无元数据的容错、`_json_error` 落盘形状）；
+  `tests/test_scheduled_archive_admin.py`（+4：生产复现 remedy、闭集原因码、映射覆盖、payload 形状）；
+  `tests/test_project_status_api.py`（+4 断言 credentialConfigured）；
+  `tests/test_deliverable_sync_wizard_enhanced.py`（+1 Node VM：三态 + remedy 指引 + 预选跳转）。
+- **门禁（本轮实测）**：全量 `pytest -q -p no:cacheprovider` → **2346 passed, 3 skipped（EXIT 0）**；
+  `flake8 -j 1`（全部改动文件）零告警；`node --check web/static/app.js` 通过；
+  `python tools/generate_project_map.py --write/--check` → verified（Scoped 80 / Modules 71）；
+  `git diff --check` EXIT 0。
+- **下一步（等用户）**：① 回传 D5 全量抓取的 `stop_reason/unique/dup/total/pages`（决定 P3 分派）；
+  ② 三个决策（P3 语义放宽、P4 是否允许静默收窄、discovery 是否异步化）；
+  ③ 生产运维：给 `aras_paa`/`aras_ncr_progress`/`aras_ncr_detail` 绑定统一域账号（可保持停用），
+  并在系统设置保存到凭据保护库，才能验收「点一下就成功」。
+- **未改动**：`services/tdc_crawler.py` 的 `_row_identity`（P3 才动）、所有 completeness 语义、
+  向导降级策略（P4）。因此**问题 B 在语义层仍未修复**，但已具备一轮定案的可观测性。
+
+## 2026-09-22 第二轮：两项问题仍未解决的原因分析（问题 A 根因已复现确认 / 问题 B 缺证据）
+
+- **对象**：`23e1fcf feat: complete deliverable snapshot sync, TDC pagination repair, and audit closure`
+  （ZCode + Gemini 3 Flash 一轮，已提交，工作区干净）。报告：
+  `docs/PROD_TEST_20260922_ROUND2_REMAINING_ISSUES.md`。
+- **上一轮真正生效的部分**（须保留）：假成功已根除（卡片现在显示「同步失败：…」）；
+  TDC 部门命名空间已修好（不再「未找到」）；快照同步卡 + `archiveJobKey` 后端下发已上线。
+- **问题 A（D6/D7/D8 立即同步快照仍失败）—— 根因已复现确认**（`.runtime/repro2_out.txt`）：
+  A-1 停用放行**实现正确**（`run_once` 的 `enabled_only = trigger_type == "scheduled"`、
+  `acquire_archive_job_lease` 的 `if trigger_type != "sync_now" and not job["enabled"]`），
+  但 `core/db_manager.py:4508-4511` 还有一道**凭据门控**：
+  `credential_ref` 为空 → `ArchiveJobNotReadyError("archive job credential reference is not configured")`
+  → `_safe_exception_message` 统一抹成 `"archive job configuration is not ready"`（`:109`），
+  **具体原因（缺凭据/停用/filters 非法/契约不符）在映射层丢失** → 前端只能原样现英文串。
+  复现：停用+无凭据 → `job_not_ready`（与截图一致）；仅绑定 `credential_ref='domain'`（保持停用）
+  → 门控通过并进入执行，报 `credential_unavailable`（证明放行有效、缺的是凭据）。
+  另：卡片文案「未启用（支持直接立即同步）」（`app.js:2895`）误导——仍必须先绑定统一域账号。
+  **立即可用运维动作**：在「自动归档」给 `aras_paa`/`aras_ncr_progress`/`aras_ncr_detail`
+  各绑定统一域账号并保存（**可保持停用**），且系统设置已把该账号存入凭据保护库。
+- **问题 B（D5 数模仍 HTTP 422 incomplete）—— 根因未定，因证据被丢弃**：
+  `web/app.py:1243-1252` 丢弃了 `stop_reason/unique_count/duplicate_count/total/pages/fetched_pages`，
+  只回「mapping discovery query was incomplete」；而这些事实**已在**
+  `services/tdc_crawler.py:816-836` 以 `stage="pagination"` 的 `TDCHttpDiagnosticEvent` emit，
+  但只进诊断记录器（需先 `/api/diagnostics/start`）。
+  两大嫌疑：① `duplicate_records`（身份键 `detailId/partId/subId/rowId/recordId/id/rowNo…`
+  **仍无任何真实响应字段佐证**——我上一轮的 Major 至今未闭环）；② `inconsistent_metadata`
+  （`tdc_crawler.py:714-718` 要求 `total` 完全相等，活报表抓取期间新增一条即整体判不完整）。
+  放大因素：用户**把责任部门留空**（截图确认），走车型-only 最宽口径（≈22 页/1100 行）。
+- **方案要点**：问题 A = 后端细分 `job_not_ready` 为白名单枚举 + payload 增 `remedy`；
+  associations 增补 `credentialConfigured/credentialAvailable`；前端三态状态与中文指引 +
+  【去配置该同步任务】跳转。问题 B = **P0 先把 `stop_reason` 等完整性事实放进 422 响应/向导文案**
+  （否则继续猜），P1 按 stop_reason 分派：`duplicate_records` → 重复降级为诊断元数据、
+  完成条件改为 `page>=reported_pages 且 len(unique)>=reported_total`（身份过粗仍 fail-closed）；
+  `inconsistent_metadata` → 容忍 total 增长；向导补「过宽时自动收窄为部门=车体工程重试」。
+- **下一步（等用户回传）**：① 开诊断后复现一次 D5，回传 `stage=pagination` 末条的
+  `stopReason/duplicate_count/unique_count/total/pages`；② 把 D5 部门填 `车体工程` 再跑一次看是否成功；
+  ③ 用「系统查询 → TDC 数模」做一次**全量抓取**看是否同样 incomplete；
+  ④ 一页真实字段名清单；⑤ 三个归档任务的 `credentialConfigured/credentialAvailable`。
+
 ## 2026-09-22 交付物同步审计缺陷闭环整改（Blocker 假成功彻底根除、A-1 放开落地、行身份防流程碰撞加固、7 项 Minor 全部闭环）
 
 - **整改背景**：独立深度代码审查（见下节）指出 1 Blocker（快照同步默认假成功且停用任务被拒）、1 Major（数模行身份未隔离流程级 ID 且无真实上游字段佐证）、7 Minor。本轮针对全部发现项执行系统化修复与全套验证。

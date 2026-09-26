@@ -58,11 +58,17 @@ from core.project_status_contracts import (
     find_job_key_by_deliverable_id,
     find_registry_entry_by_deliverable_id,
     milestone_display_status,
+    project_status_board_visible,
     project_status_manual_editability,
 )
 from core.report_contracts import matrix_payload, report_contracts, table_payload
 from core.runtime_paths import app_root
 from core.settings_store import SettingsStore, SettingsValidationError, validate_local_directory
+from core.section_rollup import (
+    SectionRollupError,
+    SectionRollupStore,
+    build_rollup_index,
+)
 from core.db_manager import (
     ArchiveJobNotReadyError,
     ArchiveLeaseBusyError,
@@ -101,7 +107,10 @@ from services.project_status_deliverable_analysis import (
     EWO_DEFAULT_RSP_DEPARTMENT_EXPRESSION,
     ProjectStatusDeliverableAnalysisService,
 )
-from services.deliverable_form_analysis import DeliverableFormAnalysisService
+from services.deliverable_form_analysis import (
+    SECTION_ROLLUP_FORM_KEYS,
+    DeliverableFormAnalysisService,
+)
 from services.deliverable_statistics import (
     STATISTICS_HISTORY_SNAPSHOT_LIMIT,
     compute_form_statistics,
@@ -216,6 +225,7 @@ _TDC_DATA_MODEL_FIELDS = [
     {"name": "project_model", "label": "项目车型", "type": "text"},
     {"name": "part_number", "label": "零件号", "type": "text"},
     {"name": "model_number", "label": "模型编号", "type": "text"},
+    {"name": "status", "label": "状态", "type": "text"},
 ]
 
 _TDC_SOR_FIELDS = [
@@ -325,11 +335,13 @@ class _ArasRequestError(ValueError):
         error_type: str = "ValidationError",
         status_code: int = 400,
         diagnostic_path: Path | None = None,
+        diagnostic: Mapping[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.error_type = error_type
         self.status_code = status_code
         self.diagnostic_path = diagnostic_path
+        self.diagnostic = dict(diagnostic) if diagnostic is not None else None
 
 
 class _TDCRequestError(ValueError):
@@ -341,11 +353,13 @@ class _TDCRequestError(ValueError):
         error_type: str = "ValidationError",
         status_code: int = 400,
         diagnostic_path: Path | None = None,
+        diagnostic: Mapping[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.error_type = error_type
         self.status_code = status_code
         self.diagnostic_path = diagnostic_path
+        self.diagnostic = dict(diagnostic) if diagnostic is not None else None
 
 
 def _query_overview(db: DatabaseManager) -> dict[str, Any]:
@@ -380,12 +394,20 @@ def _json_error(
     diagnostic_path: Path | None = None,
     *,
     code: str | None = None,
+    diagnostic: Mapping[str, Any] | None = None,
 ):
+    """统一错误出口。
+
+    `diagnostic` 只承载有界、非敏感的元数据（枚举值与计数），是完整性/抓取
+    类失败可自诊断的唯一通道；禁止放入上游原文、凭据或业务行内容。
+    """
     error: dict[str, Any] = {"type": error_type, "message": message}
     if code is not None:
         error["code"] = code
     if diagnostic_path is not None:
         error["diagnosticPath"] = str(diagnostic_path)
+    if diagnostic is not None:
+        error["diagnostic"] = dict(diagnostic)
     response = jsonify({"ok": False, "error": error})
     response.headers["Cache-Control"] = "no-store"
     return response, status
@@ -1054,6 +1076,7 @@ def _tdc_data_model_filters(values: dict[str, str | None]) -> TDCDataModelFilter
         project_model=values.get("project_model"),
         part_number=values.get("part_number"),
         model_number=values.get("model_number"),
+        status=values.get("status"),
     )
 
 
@@ -1105,6 +1128,7 @@ _MAPPING_DISCOVERY_RULE_FIELDS: dict[tuple[str, str], dict[str, str]] = {
         "project_model": "projectModel",
         "part_number": "partNumber",
         "model_number": "modelNumber",
+        "status": "status",
     },
     ("tdc", "sor"): {
         "serial_number": "processNo",
@@ -1137,6 +1161,26 @@ _MAPPING_DISCOVERY_RULE_FIELDS: dict[tuple[str, str], dict[str, str]] = {
         "submit_start": "submitStart",
         "submit_end": "submitEnd",
         "model_info": "modelInfo",
+    },
+    ("aras", "paa"): {
+        "serial_number": "paaNo",
+        "paa_no": "paaNo",
+        "project_model": "projectModel",
+        "department": "department",
+        "section_code": "sectionCode",
+        "ewo_no": "ewoNo",
+    },
+    ("aras", "ncr_progress"): {
+        "serial_number": "ncrNo",
+        "ncr_no": "ncrNo",
+        "project_model": "projectModel",
+        "department": "department",
+    },
+    ("aras", "ncr_detail"): {
+        "serial_number": "ncrNo",
+        "ncr_no": "ncrNo",
+        "project_model": "projectModel",
+        "department": "department",
     },
 }
 
@@ -1171,8 +1215,8 @@ def _mapping_discovery_query_identity(
     rule["aggregate"] = aggregate
     versioned_ewo = any(key in payload for key in ('contractVersion', 'bindingMode', 'sourceItemId'))
     if versioned_ewo:
-        if source_type != 'aras' or report_type != 'ewo':
-            raise error_type('Versioned EWO source mismatch')
+        if source_type != 'aras' or capability.get("supportsRecordSet") is not True:
+            raise error_type('Versioned record-set source mismatch')
         for key in ('contractVersion', 'bindingMode', 'sourceItemId'):
             if key in payload:
                 rule[key] = payload[key]
@@ -1202,6 +1246,9 @@ def _mapping_discovery_query_identity(
             "tdc/data_model": "incident",
             "tdc/sor": "processNo",
             "aras/ewo": "ewoNo",
+            "aras/paa": "paaNo",
+            "aras/ncr_progress": "ncrNo",
+            "aras/ncr_detail": "ncrNo",
         }.get(f"{source_type}/{report_type}")
         if stable_filter_name:
             existing = rule.get(stable_filter_name)
@@ -1229,8 +1276,34 @@ def _mapping_discovery_query_identity(
     return rule, values
 
 
+def _pagination_diagnostic(result: Any, row_count: int) -> dict[str, Any]:
+    """有界、非敏感的抓取完整性事实，供前端与用户自诊断。
+
+    只允许枚举值（stop_reason）与计数；不含任何上游原文或业务行内容。
+    """
+    def _bounded_int(name: str) -> int | None:
+        value = getattr(result, name, None)
+        if isinstance(value, bool) or not isinstance(value, int):
+            return None
+        return value
+
+    return {
+        "stopReason": str(getattr(result, "stop_reason", "") or "unknown")[:64],
+        "rowCount": row_count,
+        "uniqueCount": _bounded_int("unique_count"),
+        "duplicateCount": _bounded_int("duplicate_count"),
+        "declaredTotal": _bounded_int("total"),
+        "declaredPages": _bounded_int("pages"),
+        "fetchedPages": _bounded_int("fetched_pages"),
+    }
+
+
 def _require_complete_mapping_result(result: Any, error_type: type[ValueError]) -> list[dict[str, Any]]:
-    """Accept only a crawler result with explicit end-of-data evidence."""
+    """Accept only a crawler result with explicit end-of-data evidence.
+
+    失败时把完整性事实放进 `error.diagnostic`：此前只回一句「不完整」，
+    导致线上问题无法定位（两轮修复都只能靠猜）。
+    """
     rows = getattr(result, "rows", None)
     if not isinstance(rows, list) or any(not isinstance(row, Mapping) for row in rows):
         raise error_type("mapping discovery result must contain a list of objects")
@@ -1249,6 +1322,8 @@ def _require_complete_mapping_result(result: Any, error_type: type[ValueError]) 
             "mapping discovery query was incomplete; narrow the filters or retry",
             "IncompleteDiscovery",
             422,
+            None,
+            _pagination_diagnostic(result, len(rows)),
         )
     return [dict(row) for row in rows]
 
@@ -1803,6 +1878,11 @@ def _deliverable_associations(
                 else catalog_name
             ),
             "enabled": bool(job_row["enabled"]) if job_row is not None else False,
+            # 只透出「是否已绑定凭据引用」这一布尔事实（来自既有 raw row，无 vault I/O）；
+            # 凭据是否真的可用留给点击时的 sync-now 结果，避免污染 /api/project-status 热路径。
+            "credentialConfigured": (
+                bool(job_row["credential_configured"]) if job_row is not None else False
+            ),
             "lastSuccessAt": job_row.get("last_success_at") if job_row is not None else None,
             "href": f"#archive-deliverable/{job_key}",
         }
@@ -2083,6 +2163,10 @@ def _project_status_payload(
                 "readOnlyReason": editability["readOnlyReason"],
                 "formSnapshotDriven": form_snapshot_driven,
                 "countsTowardCompletion": counts_toward_completion,
+                # 看板可见性由能力注册表单一来源派生（D1/D4 不进两块看板）。
+                # 该字段只影响看板渲染：deliverables 全量字段、
+                # 详情页、分析接口、审计与统计分母一律不变。
+                "boardVisible": project_status_board_visible(str(row["id"])),
                 "tone": _PROJECT_STATUS_TONES[row["status"]],
                 "effectiveStatus": effective_status,
                 "syncDisplay": {
@@ -2101,6 +2185,13 @@ def _project_status_payload(
                     "displayName": capabilities.get("displayName"),
                     "syncCapable": bool(capabilities.get("syncCapable")),
                     "manualOnly": bool(capabilities.get("manualOnly")),
+                    # 版本化绑定契约与完备性策略由能力注册表下发：前端不再按
+                    # reportType/交付物 id 自行判断能力（单一来源）。
+                    "supportsRecordSet": capabilities.get("supportsRecordSet") is True,
+                    "completenessPolicy": str(
+                        capabilities.get("completenessPolicy") or "paged_result"
+                    ),
+                    "defaultDepartment": capabilities.get("defaultDepartment"),
                     "syncNote": capabilities.get("syncNote"),
                     "matchFields": [list(field) for field in capabilities.get("matchFields", ())],
                     "evidenceFields": [dict(field) for field in capabilities.get("evidenceFields", ())],
@@ -2543,6 +2634,7 @@ def _aras_error_response(
             _sanitize_error_message(exc),
             exc.diagnostic_path,
             code=code,
+            diagnostic=getattr(exc, "diagnostic", None),
         )
     diagnostic_path = _save_aras_client_diagnostic(client, exc)
     if isinstance(exc, ArasAuthenticationError):
@@ -2594,7 +2686,13 @@ def _aras_error_response(
 
 def _tdc_error_response(exc: Exception, report_type: str, operation: str):
     if isinstance(exc, _TDCRequestError):
-        return _json_error(exc.status_code, exc.error_type, _sanitize_error_message(exc), exc.diagnostic_path)
+        return _json_error(
+            exc.status_code,
+            exc.error_type,
+            _sanitize_error_message(exc),
+            exc.diagnostic_path,
+            diagnostic=getattr(exc, "diagnostic", None),
+        )
     if isinstance(exc, TDCAuthError):
         return _json_error(401, "AuthenticationError", _sanitize_error_message(exc), getattr(exc, "diagnostic_path", None))
     if isinstance(exc, XLSXPreviewError):
@@ -2603,13 +2701,12 @@ def _tdc_error_response(exc: Exception, report_type: str, operation: str):
         return _json_error(400, "ValidationError", _sanitize_error_message(exc))
     if isinstance(exc, TDCCrawlerError):
         status = 400 if exc.stage == "contract-validation" else 502
-        response = jsonify({"ok": False, "error": {
-            "type": "TDCCrawlerError",
-            "message": f"{_sanitize_error_message(exc)}; {exc.safe_diagnostic_message()}",
-            "diagnostic": exc.safe_diagnostic(),
-        }})
-        response.headers["Cache-Control"] = "no-store"
-        return response, status
+        return _json_error(
+            status,
+            "TDCCrawlerError",
+            f"{_sanitize_error_message(exc)}; {exc.safe_diagnostic_message()}",
+            diagnostic=exc.safe_diagnostic(),
+        )
     logger.warning("TDC %s %s API failed: %s", report_type, operation, type(exc).__name__)
     return _json_error(500, type(exc).__name__, "Unexpected server error")
 
@@ -2903,6 +3000,7 @@ def create_app(
         clock=project_status_clock,
     )
     deliverable_form_service = DeliverableFormAnalysisService(db)
+    section_rollup_store = SectionRollupStore(db)
     app.extensions["deliverable_analysis"] = deliverable_analysis_service
 
     def current_project_status(phase_id: str) -> dict[str, Any] | None:
@@ -4366,16 +4464,27 @@ def create_app(
                 thresholds[name] = parsed
         return filters, strict_int("trendLimit", 30, 1, 365), thresholds or None
 
+    def _form_section_rollup(form_key: str):
+        """读取归集规则并构建扁平索引；非归集表单返回 None（保持原始口径）。"""
+        if form_key not in SECTION_ROLLUP_FORM_KEYS:
+            return None
+        rules = section_rollup_store.get()
+        return build_rollup_index(rules), rules
+
     @app.get("/api/deliverable-forms/<form_key>/view")
     def api_deliverable_form_view(form_key: str):
         try:
             filters, trend_limit, overdue_thresholds = _deliverable_form_query()
+            rollup = _form_section_rollup(form_key)
             data = deliverable_form_service.view(
                 form_key,
                 filters=filters,
                 trend_limit=trend_limit,
                 overdue_thresholds=overdue_thresholds,
+                section_rollup=rollup[0] if rollup else None,
             )
+            if rollup is not None:
+                data["sectionRollup"] = rollup[1]
             response = jsonify({"ok": True, "data": data})
             response.headers["Cache-Control"] = "no-store"
             return response
@@ -4402,12 +4511,14 @@ def create_app(
                 raise ValueError("offset must be between 0 and 100000")
             if not 1 <= parsed_limit <= 500:
                 raise ValueError("limit must be between 1 and 500")
+            rollup = _form_section_rollup(form_key)
             data = deliverable_form_service.rows(
                 form_key,
                 filters,
                 offset=parsed_offset,
                 limit=parsed_limit,
                 overdue_thresholds=overdue_thresholds,
+                section_rollup=rollup[0] if rollup else None,
             )
             response = jsonify({"ok": True, "data": data})
             response.headers["Cache-Control"] = "no-store"
@@ -4419,6 +4530,28 @@ def create_app(
         except Exception as exc:
             logger.exception("deliverable form rows failed")
             return _json_error(500, "ServerError", _sanitize_error_message(exc))
+
+    @app.get("/api/project-status/section-rollup")
+    def api_section_rollup_get():
+        response = jsonify({"ok": True, "data": section_rollup_store.get()})
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.put("/api/project-status/section-rollup")
+    def api_section_rollup_put():
+        local_error = _local_web_mutation_error()
+        if local_error is not None:
+            return local_error
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return _json_error(400, "ValidationError", "JSON object body is required")
+        try:
+            data = section_rollup_store.save(payload)
+        except SectionRollupError as exc:
+            return _project_status_validation_error(exc.fields)
+        response = jsonify({"ok": True, "data": data})
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.get("/api/deliverable-forms/<form_key>/statistics")
     def api_deliverable_form_statistics(form_key: str):
@@ -4608,18 +4741,36 @@ def create_app(
                     deliverable_id, "tdc", rows, selected,
                     aggregate=bool(match_rule["aggregate"]), match_rule=match_rule,
                 )
-            elif deliverable_id == "VPI-T2-D3":
+            elif deliverable_id in {"VPI-T2-D3", "VPI-T2-D6", "VPI-T2-D7", "VPI-T2-D8"}:
                 aras_client = _build_aras_client_from_payload(
                     payload, app.config["ARAS_ALLOWED_HOSTS"]
                 )
-                crawl_result = aras_client.crawl_ewo_report_all(
-                    build_project_status_ewo_filters(match_rule),
-                    max_records=MAX_AGGREGATE_RECORDS,
+                # 报表分派来自能力注册表（取代 deliverable_id 硬编码）。
+                aras_report = str(
+                    PROJECT_STATUS_SOURCE_CAPABILITIES.get(deliverable_id, {}).get("reportType")
+                    or ""
                 )
-                rows = _require_complete_mapping_result(crawl_result, _ArasRequestError)
-                if match_rule.get('contractVersion') == '2':
-                    from services.ewo_binding_records import attach_ewo_source_ids
-                    rows = attach_ewo_source_ids(crawl_result)
+                if aras_report == "ewo":
+                    crawl_result = aras_client.crawl_ewo_report_all(
+                        build_project_status_ewo_filters(match_rule),
+                        max_records=MAX_AGGREGATE_RECORDS,
+                    )
+                    rows = _require_complete_mapping_result(crawl_result, _ArasRequestError)
+                    if match_rule.get('contractVersion') == '2':
+                        from services.ewo_binding_records import attach_ewo_source_ids
+                        rows = attach_ewo_source_ids(crawl_result)
+                elif aras_report == "paa":
+                    from services.project_status_connectors import ArasProjectStatusConnector
+                    paa_filters = ArasProjectStatusConnector._paa_filters(match_rule)
+                    crawl_result = aras_client.crawl_paa_report_all(
+                        paa_filters, max_records=MAX_AGGREGATE_RECORDS
+                    )
+                    rows = _require_complete_mapping_result(crawl_result, _ArasRequestError)
+                else:
+                    from services.project_status_connectors import ArasProjectStatusConnector
+                    rows = ArasProjectStatusConnector._collect_ncr_rows(
+                        aras_client, aras_report, match_rule
+                    )
                 result = discovery_service.observe(
                     deliverable_id, "aras", rows, selected,
                     aggregate=bool(match_rule["aggregate"]), match_rule=match_rule,
@@ -4825,6 +4976,7 @@ def create_app(
                 "policy": policy,
                 "analytics": analytics,
                 "mapping": mapping,
+                "sectionRollup": section_rollup_store.get(),
                 "version": app.config.get("APP_VERSION", "unknown"),
                 "timestamp": datetime.now().astimezone().isoformat(),
             }

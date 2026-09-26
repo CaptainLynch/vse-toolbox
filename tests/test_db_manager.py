@@ -849,8 +849,8 @@ def test_manual_only_and_contract_blocked_deliverables_stay_manual(
 
 
 def test_fresh_seed_sync_capable_bindings_are_automatic(tmp_db: DatabaseManager) -> None:
-    """新库种子不受迁移影响：syncCapable 本就 automatic；D1/D4 manual；
-    D6-D8（外部快照驱动，非 syncCapable）保持 manual 绑定。"""
+    """新库种子不受迁移影响：syncCapable 本就 automatic（D2/D3/D5 及同构后的 D6-D8）；
+    无自动化连接器的 D1/D4 保持 manual 绑定。"""
     with tmp_db.get_connection() as conn:
         modes = dict(
             conn.execute(
@@ -864,9 +864,9 @@ def test_fresh_seed_sync_capable_bindings_are_automatic(tmp_db: DatabaseManager)
         "VPI-T2-D3": "automatic",
         "VPI-T2-D4": "manual",
         "VPI-T2-D5": "automatic",
-        "VPI-T2-D6": "manual",
-        "VPI-T2-D7": "manual",
-        "VPI-T2-D8": "manual",
+        "VPI-T2-D6": "automatic",
+        "VPI-T2-D7": "automatic",
+        "VPI-T2-D8": "automatic",
     }
 
 

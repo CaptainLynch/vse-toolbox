@@ -1,5 +1,131 @@
 # Recovery Notes
 
+## 2026-09-25 — 诊断披露：`emit` 事件名留存不等于载荷可读
+
+- **症状**：`emit("ncr_department_filter", {"kept": 2, "dropped": 4, ...})` 调用成功、事件名在
+  `events.jsonl` 里也在，但事件 `data` 是 `{}` —— 运维读不到任何数字，等同于没有披露。
+- **根因**：`core/diagnostic_recording.safe_metadata()` 只做**白名单投影**：
+  - 数字键必须在 `_NUMBER_FIELDS`；
+  - 文本键必须在 `_TEXT_FIELDS` **且**取值在闭集 `_VALUES` 内（否则退化成 `ref:<hash>` 指纹，不可读）；
+  - 布尔只允许 `ok/hit/reasonAvailable/cancelled`；其余键一律丢弃。
+  验证一行：`python -c "from core.diagnostic_recording import safe_metadata as s; print(s({'kept':2},'x'))"` → `{}`。
+- **正确做法**：新增诊断时先用 `safe_metadata(payload, 'salt')` 自测非空；键用白名单名
+  （数字：`kept_count`/`dropped_count`/`row_count`/`record_count`…；文本：`report_type`/`remedy`…），
+  文本值若是产品词条，按既有做法加入 `_VALUES`。并配一个经 `Recorder` 录制 → 导出 → 读 `events.jsonl`
+  的端到端测试（`tests/test_diagnostic_recording.py::test_product_disclosure_payloads_survive_recording`）。
+- **另一条同轮教训**：**"读旧数据时告警"不可用**——`normalize_form_rows` 只在发布路径被调用，
+  快照读取路径不重新归一化。凡是想靠"读时诊断"提示历史数据问题的设计都要先确认那条读取链真的会重新归一化。
+
+## 2026-09-25 — 审计修复轮：行形状变更的连带面与记忆文件读取
+
+- **给快照行加键会打破 exact-equality 断言**：本轮 `named_row()` 增带 `values` 后，命中两处硬断言
+  （`tests/test_scheduled_archive_connectors.py` 的 `collection.form_rows == (...)`、
+  `tests/test_project_status_connectors.py` 用合成 `NcrWorkbookRow(values=())` 构造的夹具）。
+  下次改行形状前先 `rg -n "form_rows ==|named_row\(\)" tests services`，并注意合成夹具的
+  `values` 长度不等于契约宽度（不能断言 `len(row["values"]) == 64`）。
+- **用 `Get-Content` 看 `memory/*.md` 会显示乱码**：本机 PS 5.1 默认按 ANSI 读 UTF-8 无 BOM 文件，
+  中文全成 `鈥?` 之类。判读记忆文档必须用文件读取工具；`Get-Content -Encoding UTF8` 或
+  `-Raw -Encoding UTF8` 也可，但不要据此判断文件是否损坏。
+- **重建单文件包用新目录**：`--workpath .runtime/pyinstaller-webui-<新标签>` +
+  `--distpath dist/<新标签>`，避免覆盖上一个已交付工件；版本靠 `VSE_TOOLBOX_VERSION/CHANNEL/BUILD_ID`
+  环境变量注入 spec，冒烟脚本里的 `rawVersion`/`buildId` 断言必须同步改（否则误报失败）。
+- **中文 smoke 脚本**：写完后用 `python -c "...write(b'\xef\xbb\xbf'+...)"` 补 BOM，
+  否则 PS 5.1 解析中文 here-string/字符串会崩（同 2026-09-25 首轮记录）。
+
+## 2026-09-25 — 单文件 EXE 构建与出厂冒烟：三个 Windows 侧坑
+
+- **本机 PowerShell 是 5.1（不是 pwsh 7）**：`.ps1` 脚本含中文且**无 BOM** 时按 ANSI 解码，
+  会出现莫名其妙的语法错（本轮报 `The Try statement is missing its Catch or Finally block`）。
+  写含中文的脚本后必须转成 UTF-8 **with BOM**：
+  `[IO.File]::WriteAllText($p, (Get-Content $p -Raw), (New-Object Text.UTF8Encoding $true))`
+  或 `Path.write_text(text, encoding='utf-8-sig')`。
+- **PyInstaller onefile 会派生真正的子进程**：`$proc.Kill()` 只杀引导进程，应用子进程继续占用端口，
+  并且因为子进程仍持有 stdout 管道，`StandardOutput.ReadToEnd()` 会**永久阻塞**（本轮工具调用因此超时）。
+  正确做法：用 `taskkill /F /T /PID <pid>` 杀整棵树，再轮询 `Get-NetTCPConnection -LocalPort <p> -State Listen`
+  确认释放；冒烟脚本不要重定向 stdout（继承控制台即可）。
+- **`Start-Process` 在本机会直接抛异常**：环境里同时存在 `no_proxy` 与 `NO_PROXY`，
+  5.1 重建环境块时大小写不敏感字典冲突（`Item has already been added. Key in dictionary: 'no_proxy'`）。
+  改用 `System.Diagnostics.ProcessStartInfo`（`UseShellExecute=$false`）启动。
+- **`/api/version` 的字段名是 `rawVersion` / `displayVersion`**，没有 `version` 键；
+  冒烟断言写成 `data.version` 会得到空串并误判为"版本丢失"（本轮踩过，EXE 本身没问题）。
+
+## 2026-09-25 — 看板过滤不能改变「payload 下标」语义（本轮已修，勿再退化）
+
+- **症状**：把交付物明细表改成 `rows.filter(deliverableBoardVisible)` 后，
+  `renderDeliverableDetails` 的 `forEach((rawRow, index))` 收到的是**过滤后下标**，
+  而 `toggleDeliverableDetail` / `expandOverviewDetail` / `startDeliverableEdit`
+  全都用 `overviewSavedState.deliverables[index]` 回查交付物 →
+  点「查看明细」会打开**错误的交付物**（D1/D4 被隐藏后整体错位一格）。
+- **正确做法**：过滤只跳过渲染，**下标必须保持 payload 下标**：
+  `rows.forEach((rawRow, index) => { if (!deliverableBoardVisible(rawRow)) return; ... })`，
+  同时把下标写进 DOM（`row.dataset.deliverableIndex = String(index)`），
+  `overviewDetailsRow(index)` 优先按该属性定位（`querySelectorAll("tr")[index]` 在过滤后不再等价）。
+- **回归护栏**：`tests/test_overview_web.py::test_board_visibility_contract_hides_d1_d4_and_removes_snapshot_panel`
+  已 pin 上述四点；改动看板渲染时先跑它。
+- **同类风险**：任何"为了隐藏某些项"而 `.filter()` 数组后仍用位置下标的地方
+  （卡片区用 `deliverables.forEach` + `shouldShowDeliverable` 早退，因此天然安全）。
+
+## 2026-09-25 — NCR/ARAS 结构统一轮：四个已踩过的坑
+
+- **`core/report_headers.json` 的 `ncr_detail.dataHeaderRow` 曾是 4（错位）**：`headerRows[0]`
+  才是稳定的 17 个命名列（状态/提交日期/项目/区域/NCR编号/当前节点…）+ 车型矩阵列；
+  `headerRows[4]` 是矩阵带（TBD/车型号）。`_column_specs` 用 `dataHeaderRow` 取标签，
+  于是按标签取值（`_positional_value` / `dimension` 归一化）全部落空。官方工作簿解析
+  （`_official_form_rows` → 现 `parse_ncr_workbook`）一直用 `headerRows[0]`。
+  **改动前先确认 `dataHeaderRow` 与解析用的表头行是同一行**；`ncr_progress` 是 1，`ncr_detail` 现为 0。
+- **`_WorkbookPreviewTruncatedError` 不是 NCR 专属**：TDC 官方工作簿投影
+  （`_official_workbook_rows`）与 TDC collector 仍在用它。删 NCR 旧解析时若连类一起删，
+  会得到 `F821 undefined name`。NCR 已迁移到「簿记事实 + 准入停机原因」，TDC 保留原类。
+- **`_official_form_rows` 曾被同步路径跨模块调用**（`project_status_connectors` → `scheduled_archive_connectors`）。
+  重构时必须新建共享模块（`services/aras_ncr_workbook.py`）而不是在其中一侧保留私有函数，
+  否则又出现两套解析。`parse_ncr_workbook` 在同步路径是**函数内 import**，
+  因此测试打桩要 patch `services.aras_ncr_workbook.parse_ncr_workbook`，
+  归档路径是模块级 import，打桩要 patch `services.scheduled_archive_connectors.parse_ncr_workbook`。
+- **大块 JS 删除会让行号整体漂移**：本轮 `web/static/app.js` 删了首页快照面板与死快照卡共约 340 行，
+  所有用行号/切片标记的测试（`_js_slice(js)`）会一起失效。删除顺序建议：先用 python 按
+  「起始函数签名 + 下一个函数签名」定位整块删除，再全域 grep 残留符号，最后修
+  `tests/**` 中以被删函数为切片端点的用例（本轮改了 `test_overview_web.py`、
+  `test_deliverable_statistics.py`、`test_overview_external_deliverables_ui.py`、
+  `test_deliverable_sync_wizard_enhanced.py`）。
+
+## 2026-09-25 — 声明式契约要通过"单键探针"测试才能算一致
+
+- 只断言「filterKeys ⊆ matchKeys」不足以发现漂移。本轮有效的判定法是：
+  ① 每个声明键**单独**出现时必须让过滤器结果发生变化（证明真的进入查询）；
+  ② 未声明的探针键不得改变过滤器（证明连接器不偷读未声明键）。
+  该测试当场暴露了 D6 声明了从不消费的 `sectionCode`、D7/D8 缺 4 个实际消费的键。
+- 同理，命名行归一化要断言「按已批准表头标签取值」而不是「字典位置」：
+  `table_payload('ncr_progress'|'ncr_detail', [命名行])` 现在通过
+  `_LABEL_KEYED_REPORTS` + `_label_source_fields()` 派生 index→标签 映射，
+  新增报表只需加进 `_LABEL_KEYED_REPORTS`（如仍按列序号维护字段表，就留在
+  `_SOURCE_FIELDS_BY_REPORT` 显式声明）。
+
+## 2026-09-22 — 「不完整」类失败必须自带完整性事实（本轮已修，勿再退化）
+
+- **症状**：D5 数模一键启用报 HTTP 422 `mapping discovery query was incomplete`，
+  但原因（`stop_reason`、去重后条数、重复数、声明总数/页数）**在错误响应里被丢弃**，
+  两轮修复都只能靠猜（ZCode 归因 `duplicate_records`、我归因待证）。
+- **修法**：`web/app.py:_require_complete_mapping_result` 失败时下发
+  `error.diagnostic = {stopReason,rowCount,uniqueCount,duplicateCount,declaredTotal,declaredPages,fetchedPages}`；
+  `_json_error` 是唯一错误出口；前端 `ewoPolicyPaginationDiagnosticText()` 渲染为可读尾注。
+- **更省事的取证路径（无需开诊断记录器）**：`POST /api/tdc/data-model/crawl-all` 是异步任务，
+  其结果工件由 `_tdc_result_data()` 生成（`web/app.py:1456-1478` + `:2767`），
+  **本身就含 `stop_reason/unique_count/duplicate_count/total/pages/fetched_pages`**，
+  经 `GET /api/tasks/<task_id>/result` 可取；与 mapping discovery 同爬虫、同
+  `page_size=50`、同 `max_pages=100`，因此 stop_reason 等价。
+- **另一个坑**：`GET /api/diagnostics/bundles/<identity>` 的诊断包只有先
+  `POST /api/diagnostics/start`（或开页面右下角诊断浮窗）才会记录；
+  `TDCHttpDiagnosticEvent(stage="pagination")` 里有同样的字段。
+
+## 2026-09-22 — Node VM 行为测试按「源码切片 + 固定子节点索引」断言，改动布局即假红
+
+- `tests/test_deliverable_sync_wizard_enhanced.py` 从 `function renderSnapshotSyncCard`
+  切到 `async function loadDeliverablePolicy` 求值，并按
+  `card.children[3]`（actions）、`actions.children[0|2]`（同步按钮/状态文本）取值。
+- **因此**：① 与卡片配套的新函数/常量必须放在这两个函数**之间**，否则沙箱里 undefined；
+  ② actions 内前三位的顺序是契约，新增控件只能 `append` 到末尾；
+  ③ 沙箱里要用 `globalThis.xxx` 暴露状态，`let/const` 声明的变量从外部不可见（`sandbox.xxx` 为 undefined）。
+
 ## 2026-09-22 — 归档 sync-now 的「假成功」链路（已验证根因，勿再踩）
 
 - **现象**：交付物详情页点【立即同步快照】提示「快照同步成功，已刷新最新明细与图表。」，
@@ -482,3 +608,11 @@ repo are the authoritative record.
 - **flake8 同名边界**：受限模式下 `python -m flake8`（默认多进程 Pool 需要命名管道）直接 `PermissionError [WinError 5] _winapi.CreateFile`；改用 `python -m flake8 -j 1` 可得可信结果，不需要放权。
 - **`.runtime/` 写入**：同一受限模式下 `Tee-Object`/写文件到 `.runtime/` 会被拒（Access denied），只能用 `-j 1` 之外的替代方式或先取到完整文件权限；恢复权限后按 AGENTS.md 约定把日志写回 `.runtime/`。
 
+
+## 2026-09-25 Expert Advisor broker 热更新与冒烟误报
+
+修改 advisor_core.py 或 advisor_broker.py 后，运行中的 Windows 计划任务 broker 不会自动重载 Python 模块。曾出现 CLI 新进程 check 通过、broker 旧进程 live 在额度检查返回 7 的状态；该次任务的账本 launch_count=0，未调用模型。部署修改后应核对 broker 协议版本并重启已核实命令行身份的进程，再做无模型 check。脚本 scripts/smoke_workflow.py 的失败结果曾固定 model_call=true；现改为按匹配的 launch 行判定，防止配额拒绝误报实际调用。失败即停，不用换任务 ID 或档位重试。
+
+## 2026-09-25 Expert Advisor 本地配额重置边界
+
+重置本地顾问额度时不要删除 ledger-*.jsonl，也不要调用 Plus 账户重置。策略 local_quota_reset_at 只过滤该时间之前的 codex-readonly 启动用于本地自然日、任务和滚动上限；--status 的 prior_launches_preserved 显示历史启动数。修改 advisor_core.py 后必须升级 broker 健康协议并重启已核实身份的本机进程；仅改策略字段则服务每次请求会重新读取。用户授权重置后，115 项离线测试及两次合成 live 已通过。

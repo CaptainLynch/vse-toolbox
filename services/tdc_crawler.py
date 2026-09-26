@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from core.diagnostic_recording import observed, record_http
 
+import hashlib
 import json
 import logging
 import math
@@ -19,6 +20,11 @@ from urllib.parse import unquote, urljoin, urlsplit
 
 from core.redaction import redact_sensitive_text
 from core.runtime_paths import app_root
+from services.pagination_integrity import (
+    PageBookkeeping,
+    decide_page_outcome,
+    is_complete,
+)
 
 try:
     import requests
@@ -192,6 +198,7 @@ class TDCDataModelFilters:
     project_model: str | None = None
     part_number: str | None = None
     model_number: str | None = None
+    status: str | None = None
 
     def to_params(self) -> dict[str, str]:
         _validate_date_range(self.application_start, self.application_end, "application date")
@@ -206,6 +213,7 @@ class TDCDataModelFilters:
                 "projectModel": self.project_model,
                 "partNumber": self.part_number,
                 "modelNumber": self.model_number,
+                "status": self.status,
             }
         )
 
@@ -736,82 +744,32 @@ class TDCCrawlerClient:
                 and reported_total <= max_records
                 and accumulated_count >= reported_total
             )
-            pages_reached = reported_pages is not None and page >= reported_pages
             if total_reached and reported_pages is not None and page < reported_pages:
                 # A server cannot simultaneously say that all records have
                 # been returned and that a later page still exists.  Do not
                 # choose total over pages as the authoritative source.
                 metadata_inconsistent = True
 
-            total_proven = (
-                reported_total is None
-                or (
-                    reported_total <= max_records
-                    and accumulated_count >= reported_total
-                    and len(rows) >= reported_total
+            # 终局判定由 services/pagination_integrity 单一拥有（与 Aras 共用
+            # 同一 stop_reason 词表），本函数只负责观测事实的采集。
+            stop_reason = decide_page_outcome(
+                PageBookkeeping(
+                    page=page,
+                    page_size=page_size,
+                    rows_on_page=len(result.rows),
+                    accumulated_count=accumulated_count,
+                    unique_count=len(rows),
+                    duplicate_count=duplicates,
+                    reported_total=reported_total,
+                    reported_pages=reported_pages,
+                    max_records=max_records,
+                    max_pages=max_pages,
+                    overflowed=overflowed,
+                    page_mismatch=page_mismatch,
+                    size_mismatch=size_mismatch,
+                    metadata_inconsistent=metadata_inconsistent,
                 )
             )
-            reported_end = (
-                pages_reached
-                and total_proven
-            )
-            total_end = (
-                reported_total is not None
-                and reported_total <= max_records
-                and reported_pages is None
-                and accumulated_count >= reported_total
-                and len(rows) >= reported_total
-            )
-            if page_mismatch:
-                # The response is not for the page we requested.  Its rows
-                # are deliberately excluded from the result and cannot
-                # contribute to an end-of-data proof.
-                stop_reason = "inconsistent_page"
-            elif size_mismatch:
-                # The requested size cannot prove a short final page when
-                # the server uses a different size/offset contract.
-                stop_reason = "inconsistent_page_size"
-            elif metadata_inconsistent:
-                # Contradictory page metadata is not an end-of-data proof.
-                # Stop immediately and require a fresh, narrower query.
-                stop_reason = "inconsistent_metadata"
-            elif duplicates:
-                # A duplicate row means raw accumulated_count can no longer
-                # prove that the deduplicated result contains the declared
-                # record set. Reject the result instead of authorizing a
-                # partial aggregate snapshot.
-                stop_reason = "duplicate_records"
-            elif not overflowed and (reported_end or total_end):
-                stop_reason = "reported_pages" if reported_end else "reported_total"
-            elif not overflowed and not result.rows:
-                # An empty page proves end-of-data only when it does not
-                # contradict the server's declared total.  A premature
-                # empty page is an incomplete result and must never be
-                # accepted by mapping discovery or sync execution.
-                stop_reason = (
-                    "incomplete_page"
-                    if (
-                        reported_total is not None
-                        and accumulated_count < reported_total
-                    )
-                    or (reported_pages is not None and page < reported_pages)
-                    else "empty_page"
-                )
-            elif not overflowed and len(result.rows) < page_size:
-                stop_reason = (
-                    "short_page"
-                    if (
-                        (reported_total is None or accumulated_count >= reported_total)
-                        and (reported_pages is None or page >= reported_pages)
-                    )
-                    else "incomplete_page"
-                )
-            elif len(rows) >= max_records:
-                stop_reason = "max_records"
-            elif page >= max_pages:
-                stop_reason = "max_pages"
-            else:
-                stop_reason = "continue"
 
             self._emit(
                 TDCHttpDiagnosticEvent(
@@ -851,7 +809,7 @@ class TDCCrawlerClient:
             duplicate_count=duplicates,
             stop_reason=stop_reason,
             record_granularity=record_granularity,
-            complete=stop_reason in {"reported_pages", "reported_total", "empty_page", "short_page"},
+            complete=is_complete(stop_reason),
         )
 
     @observed("tdc.TDCCrawlerClient._request_json")
@@ -1583,6 +1541,16 @@ def _row_identity(report_type: str, row: Mapping[str, Any]) -> str:
             parts.append(f"row:{row_num}")
         if extra:
             parts.append("\x1f".join(extra))
+        content_items = sorted(
+            (str(k), str(v).strip())
+            for k, v in row.items()
+            if v is not None and str(v).strip()
+        )
+        if content_items:
+            content_hash = hashlib.sha256(
+                json.dumps(content_items, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()[:16]
+            parts.append(f"h:{content_hash}")
         if len(parts) > 2:
             return ":".join(parts)
         return "data_model:" + workflow_key

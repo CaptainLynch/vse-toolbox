@@ -102,6 +102,17 @@ def find_job_key_by_deliverable_id(deliverable_id: str) -> str | None:
     return None
 
 
+def find_deliverable_id_by_form_key(form_key: str) -> str | None:
+    """按表单 key 反查项目状态交付物 id；查不到返回 None。"""
+    target = str(form_key or "").strip()
+    if not target:
+        return None
+    for entry in DELIVERABLE_LINK_REGISTRY.values():
+        if entry.get("form_key") == target or entry.get("deliverable_id") == target:
+            return entry["deliverable_id"]
+    return None
+
+
 def deliverable_display_state(
     binding_mode: str,
     binding_enabled: bool,
@@ -404,6 +415,9 @@ def project_status_manual_editability(
 #: - countsTowardCompletion: 是否计入阶段完成统计价值态汇总（分母）。
 #:   外部快照驱动的交付物（D6-D8）仅展示参考，不进入节点分母。
 #: - syncNote: 静态「更新方式」区域的解释文案。
+#: - boardVisible: 是否进入两块看板（首页「全项目交付物完成状态」卡片区与
+#:   「交付物明细」表）。缺省 True；显式 False 仅表示"不在看板展示"，
+#:   不改变交付物本身的存在性、详情页、分析接口、审计与统计参与。
 DELIVERABLE_DEFAULT_MAPPINGS: dict[str, dict[str, object]] = {
     "VPI-T2-D2": {
         "owner": "startUserName",
@@ -417,6 +431,19 @@ DELIVERABLE_DEFAULT_MAPPINGS: dict[str, dict[str, object]] = {
     "VPI-T2-D5": {
         "owner": "applicant",
         "note": ["latestApproveLog", "status"],
+    },
+    "VPI-T2-D6": {
+        "owner": "_pe_tdc",
+        "plannedDate": "_est_cmpl_date",
+        "note": ["_exted_reason", "state", "_change_description"],
+    },
+    "VPI-T2-D7": {
+        "owner": "当前审批人",
+        "note": ["状态", "更改主题"],
+    },
+    "VPI-T2-D8": {
+        "owner": "PE提交",
+        "note": ["状态", "更改主题", "更改类别"],
     },
 }
 
@@ -433,6 +460,19 @@ DELIVERABLE_FIELD_ALIASES: dict[str, dict[str, tuple[str, ...]]] = {
     "VPI-T2-D5": {
         "owner": ("applicant", "申请人", "owner", "_owner"),
         "note": ("latestApproveLog", "status", "待审批人员", "pendingApprover", "待审批人", "flowStatus", "流程状态"),
+    },
+    "VPI-T2-D6": {
+        "owner": ("_pe_tdc", "_pe_tdc_name", "created_by_id", "created_by_id__keyed_name", "申请者", "applicant", "PE TDC工程师", "owner"),
+        "plannedDate": ("_est_cmpl_date", "_mtl_rq_date", "planned_date", "要求完成时间"),
+        "note": ("_exted_reason", "原因", "state", "状态", "_change_description", "更改描述", "论证说明"),
+    },
+    "VPI-T2-D7": {
+        "owner": ("当前审批人", "采购员", "applicant", "owner"),
+        "note": ("状态", "更改主题", "更改类别", "当前审批人滞留天数", "备注", "status"),
+    },
+    "VPI-T2-D8": {
+        "owner": ("PE提交", "采购员", "applicant", "owner"),
+        "note": ("状态", "更改主题", "更改类别", "零件更改类型", "零件名称", "责任科室", "备注", "status"),
     },
 }
 
@@ -456,6 +496,8 @@ PROJECT_STATUS_SOURCE_CAPABILITIES: dict[str, dict[str, object]] = {
         "displayName": "内网",
         "syncCapable": False,
         "manualOnly": True,
+        # 内部手工交付物，按产品口径不进入两块看板（用户 2026-09-25 确认）。
+        "boardVisible": False,
         "syncNote": "该交付物暂无来源连接器，仅支持手工维护。",
         "syncBlockType": "ManualOnly",
         "blockReason": "该交付物仅允许手工维护",
@@ -471,6 +513,15 @@ PROJECT_STATUS_SOURCE_CAPABILITIES: dict[str, dict[str, object]] = {
         "displayName": "TDC SOR",
         "syncCapable": True,
         "manualOnly": False,
+        "completenessPolicy": "paged_result",
+        "defaultDepartment": None,
+        "supportsRecordSet": False,
+        "filterKeys": (
+            "processNo", "processType", "carTypeProject", "carTypeProjectId",
+            "applicant", "title", "department", "section", "applicationStart",
+            "applicationEnd", "partNumber", "partName", "version", "sorNumber",
+            "latestCompletedNode", "approvalStatus",
+        ),
         "aggregate": True,
         "plannedDateSupported": False,
         "defaultMapping": DELIVERABLE_DEFAULT_MAPPINGS["VPI-T2-D2"],
@@ -509,6 +560,16 @@ PROJECT_STATUS_SOURCE_CAPABILITIES: dict[str, dict[str, object]] = {
         "displayName": "ARAS EWO",
         "syncCapable": True,
         "manualOnly": False,
+        "completenessPolicy": "paged_result",
+        # EWO 的隐式部门范围由共享身份构造器（包含式关键词表达式）拥有，
+        # 这里不重复声明。
+        "defaultDepartment": None,
+        "supportsRecordSet": True,
+        "filterKeys": (
+            "ewoNo", "projectCode", "subjectKeyword", "changeType",
+            "changeSubType", "area", "state", "rspDepartment", "rspSmt",
+            "submitStart", "submitEnd", "modelInfo",
+        ),
         "aggregate": True,
         "plannedDateSupported": True,
         "defaultMapping": DELIVERABLE_DEFAULT_MAPPINGS["VPI-T2-D3"],
@@ -541,6 +602,9 @@ PROJECT_STATUS_SOURCE_CAPABILITIES: dict[str, dict[str, object]] = {
         "displayName": "TDC A 面",
         "syncCapable": False,
         "manualOnly": True,
+        # A 面契约未验证，按产品口径不进入两块看板（用户 2026-09-25 确认）；
+        # 交付物本身与详情页/分析接口保持可访问。
+        "boardVisible": False,
         "syncNote": "TDC A 面契约验证后将开放自动同步，当前仅支持手工维护。",
         "syncBlockType": "ContractBlocked",
         "blockReason": None,
@@ -556,6 +620,14 @@ PROJECT_STATUS_SOURCE_CAPABILITIES: dict[str, dict[str, object]] = {
         "displayName": "数模设计审核流程报表",
         "syncCapable": True,
         "manualOnly": False,
+        "completenessPolicy": "paged_result",
+        "defaultDepartment": None,
+        "supportsRecordSet": False,
+        "filterKeys": (
+            "incident", "applicant", "department", "section",
+            "applicationStart", "applicationEnd", "projectModel",
+            "partNumber", "modelNumber", "status",
+        ),
         "aggregate": True,
         "plannedDateSupported": False,
         "defaultMapping": DELIVERABLE_DEFAULT_MAPPINGS["VPI-T2-D5"],
@@ -568,7 +640,7 @@ PROJECT_STATUS_SOURCE_CAPABILITIES: dict[str, dict[str, object]] = {
         "matchKeys": (
             "incident", "applicant", "department", "section",
             "applicationStart", "applicationEnd", "projectModel",
-            "partNumber", "modelNumber", "aggregate", "reportType",
+            "partNumber", "modelNumber", "status", "aggregate", "reportType",
         ),
         "matchFields": (
             ("incident", "流程编号", "serial_number", "建议优先填写流程编号"),
@@ -580,6 +652,7 @@ PROJECT_STATUS_SOURCE_CAPABILITIES: dict[str, dict[str, object]] = {
             ("projectModel", "项目车型", "project_model", "可选"),
             ("partNumber", "零件号", "part_number", "可选"),
             ("modelNumber", "模型编号", "model_number", "可选"),
+            ("status", "状态", "status", "可选，如：审批中、已完成"),
         ),
         "evidenceFields": (
             {"name": "base_url", "label": "TDC 地址（仅用于抓取映射证据）", "type": "url", "placeholder": "https://tdc.example.com/"},
@@ -587,54 +660,124 @@ PROJECT_STATUS_SOURCE_CAPABILITIES: dict[str, dict[str, object]] = {
             {"name": "headers", "label": "认证请求头（如 Cookie；仅用于本次抓取，不保存）", "type": "textarea", "placeholder": "Cookie: sid=..."},
         ),
     },
-    # D6-D8：外部快照驱动（PAA 报告 / NCR 审批进度 / NCR 审批明细）。
-    # 无状态同步连接器（syncCapable=False，不进同步调度），状态由定时归档
-    # 写入的表单快照自动映射（formSnapshotDriven=True）；仅作展示参考，
-    # 不计入阶段完成统计分母（countsTowardCompletion=False）。
+    # D6-D8：ARAS 独立状态同步交付物（PAA 报告 / NCR 审批进度 / NCR 审批明细）。
+    # 全面对齐 EWO/SOR/数模轻量向导同步模式（syncCapable=True，进同步调度与向导配置）；
+    # 同步时全自动更新底层表单快照；仅作展示参考，不计入阶段完成统计分母（countsTowardCompletion=False）。
     "VPI-T2-D6": {
         "sourceType": "aras",
         "reportType": "paa",
         "displayName": "PAA 报告",
-        "syncCapable": False,
+        "syncCapable": True,
         "manualOnly": False,
+        "completenessPolicy": "paged_result",
+        # 连接器原先把该默认值硬编码在函数体里；现移至能力注册表单一来源。
+        "defaultDepartment": "技术中心_车体工程",
+        "supportsRecordSet": False,
+        "filterKeys": (
+            "paaNo", "ewoNo", "projectModel", "projectCode",
+            "department", "rspDepartment",
+        ),
+        "aggregate": True,
         "formSnapshotDriven": True,
         "countsTowardCompletion": False,
-        "syncNote": "该交付物由定时归档的表单快照驱动，状态自动映射，暂无独立状态同步。",
-        "matchKeys": (),
-        "matchFields": (),
-        "evidenceFields": (),
-        "defaultMapping": {},
-        "fieldAliases": {},
+        "plannedDateSupported": True,
+        "defaultMapping": DELIVERABLE_DEFAULT_MAPPINGS["VPI-T2-D6"],
+        "fieldAliases": DELIVERABLE_FIELD_ALIASES["VPI-T2-D6"],
+        "fieldSemantics": {
+            "owner": "责任工程师/申请者（「_pe_tdc」「created_by_id」「PE TDC工程师」「申请者」列）",
+            "plannedDate": "计划完成时间（「_est_cmpl_date」「要求完成时间」列）",
+            "note": "风险备注（「_exted_reason」「state」「_change_description」列）",
+        },
+        "syncNote": None,
+        "matchKeys": (
+            "paaNo", "ewoNo", "projectModel", "projectCode", "department", "rspDepartment", "aggregate", "reportType",
+        ),
+        "matchFields": (
+            ("paaNo", "PAA 编号", "paa_no", "建议优先填写 PAA 编号"),
+            ("projectModel", "车型项目", "project_model", "可选（如 F610S）"),
+            ("department", "责任部门", "department", "默认：技术中心_车体工程"),
+            ("ewoNo", "关联 EWO 编号", "ewo_no", "可选"),
+        ),
+        "evidenceFields": (
+            {"name": "base_url", "label": "ECM 地址（仅用于抓取映射证据）", "type": "url", "placeholder": "http://ecm.sgmw.com.cn/innovatorserver"},
+        ),
     },
     "VPI-T2-D7": {
         "sourceType": "aras",
         "reportType": "ncr_progress",
         "displayName": "NCR 审批进度",
-        "syncCapable": False,
+        "syncCapable": True,
         "manualOnly": False,
+        # 官方工作簿导出没有声明总数/页数：完备性由「表头契约 + 逐行归类核对」
+        # 的工作簿准入门判定（services.aras_ncr_workbook +
+        # services.pagination_integrity.decide_workbook_outcome）。
+        "completenessPolicy": "workbook_admission",
+        "defaultDepartment": None,
+        "supportsRecordSet": False,
+        "filterKeys": (
+            "ncrNo", "projectModel", "projectNames", "sectionCode",
+            "section_code", "department", "rspDepartment", "changeType",
+        ),
+        "aggregate": True,
         "formSnapshotDriven": True,
         "countsTowardCompletion": False,
-        "syncNote": "该交付物由定时归档的表单快照驱动，状态自动映射，暂无独立状态同步。",
-        "matchKeys": (),
-        "matchFields": (),
-        "evidenceFields": (),
-        "defaultMapping": {},
-        "fieldAliases": {},
+        "plannedDateSupported": False,
+        "defaultMapping": DELIVERABLE_DEFAULT_MAPPINGS["VPI-T2-D7"],
+        "fieldAliases": DELIVERABLE_FIELD_ALIASES["VPI-T2-D7"],
+        "fieldSemantics": {
+            "owner": "当前审批人（「当前审批人」「采购员」列）",
+            "note": "风险备注（「状态」「更改主题」「更改类别」「当前审批人滞留天数」「备注」列）",
+        },
+        "syncNote": None,
+        "matchKeys": (
+            "ncrNo", "projectModel", "projectNames", "sectionCode", "section_code",
+            "department", "rspDepartment", "changeType", "aggregate", "reportType",
+        ),
+        "matchFields": (
+            ("ncrNo", "NCR 编号", "ncr_no", "建议优先填写 NCR 编号"),
+            ("projectModel", "车型项目", "project_model", "可选（如 F610S）"),
+            ("department", "责任部门", "department", "默认：技术中心_车体工程"),
+        ),
+        "evidenceFields": (
+            {"name": "base_url", "label": "ECM 地址（仅用于抓取映射证据）", "type": "url", "placeholder": "http://ecm.sgmw.com.cn/innovatorserver"},
+        ),
     },
     "VPI-T2-D8": {
         "sourceType": "aras",
         "reportType": "ncr_detail",
         "displayName": "NCR 审批明细",
-        "syncCapable": False,
+        "syncCapable": True,
         "manualOnly": False,
+        "completenessPolicy": "workbook_admission",
+        "defaultDepartment": None,
+        "supportsRecordSet": False,
+        "filterKeys": (
+            "ncrNo", "projectModel", "projectNames", "sectionCode",
+            "section_code", "department", "rspDepartment", "changeType",
+        ),
+        "aggregate": True,
         "formSnapshotDriven": True,
         "countsTowardCompletion": False,
-        "syncNote": "该交付物由定时归档的表单快照驱动，状态自动映射，暂无独立状态同步。",
-        "matchKeys": (),
-        "matchFields": (),
-        "evidenceFields": (),
-        "defaultMapping": {},
-        "fieldAliases": {},
+        "plannedDateSupported": False,
+        "defaultMapping": DELIVERABLE_DEFAULT_MAPPINGS["VPI-T2-D8"],
+        "fieldAliases": DELIVERABLE_FIELD_ALIASES["VPI-T2-D8"],
+        "fieldSemantics": {
+            "owner": "PE提交/采购员（「PE提交」「采购员」列）",
+            "note": "风险备注（「状态」「更改主题」「更改类别」「零件更改类型」「备注」列）",
+        },
+        "syncNote": None,
+        "matchKeys": (
+            "ncrNo", "projectModel", "projectNames", "sectionCode", "section_code",
+            "department", "rspDepartment", "changeType", "aggregate", "reportType",
+        ),
+        "matchFields": (
+            ("ncrNo", "NCR 编号", "ncr_no", "建议优先填写 NCR 编号"),
+            ("projectModel", "车型项目", "project_model", "可选（如 F610S）"),
+            ("department", "责任部门", "department", "默认：技术中心_车体工程"),
+        ),
+        "evidenceFields": (
+            {"name": "base_url", "label": "ECM 地址（仅用于抓取映射证据）", "type": "url", "placeholder": "http://ecm.sgmw.com.cn/innovatorserver"},
+        ),
     },
 }
 
@@ -667,6 +810,57 @@ def project_status_default_policy_mode(deliverable_id: str) -> str:
     """新库策略默认模式：契约内交付物默认自动同步，其余手工。"""
     capabilities = project_status_source_capabilities(deliverable_id)
     return "automatic" if capabilities.get("syncCapable") else "manual"
+
+
+def project_status_board_visible(deliverable_id: str) -> bool:
+    """交付物是否进入两块看板（首页卡片区与交付物明细表）。
+
+    单一来源：能力注册表 ``boardVisible``。缺省可见；只有显式 ``False``
+    才不展示。该判定只影响看板渲染，不影响交付物的存在性、详情页、
+    分析接口、审计记录与完成度统计参与。
+    """
+    capabilities = PROJECT_STATUS_SOURCE_CAPABILITIES.get(str(deliverable_id or ""), {})
+    return capabilities.get("boardVisible") is not False
+
+
+def project_status_sync_contract(deliverable_id: str) -> dict[str, object]:
+    """返回交付物的同步契约扩展元数据（缺省为最保守的非版本化契约）。
+
+    - ``supportsRecordSet``：是否支持版本化「记录集合 / 固定单条」绑定契约；
+    - ``completenessPolicy``：``paged_result``（分页元数据门）或
+      ``workbook_admission``（官方工作簿准入门）；
+    - ``defaultDepartment``：未显式配置责任部门时的默认值，``None`` 表示无隐式默认；
+    - ``filterKeys``：允许被连接器消费的绑定规则查询键（camelCase）。
+    """
+    capabilities = PROJECT_STATUS_SOURCE_CAPABILITIES.get(str(deliverable_id or ""), {})
+    filter_keys = capabilities.get("filterKeys")
+    return {
+        "supportsRecordSet": capabilities.get("supportsRecordSet") is True,
+        "completenessPolicy": str(capabilities.get("completenessPolicy") or "paged_result"),
+        "defaultDepartment": capabilities.get("defaultDepartment"),
+        "filterKeys": tuple(filter_keys) if isinstance(filter_keys, (list, tuple)) else (),
+    }
+
+
+def project_status_supports_record_set(deliverable_id: str) -> bool:
+    """该交付物是否支持版本化记录集合/固定单条绑定契约（当前仅 EWO）。
+
+    取代历史上散落各处的 ``deliverable_id == "VPI-T2-D3"`` 硬编码：新增
+    交付物只需在能力注册表声明 ``supportsRecordSet``。
+    """
+    return bool(project_status_sync_contract(deliverable_id)["supportsRecordSet"])
+
+
+def project_status_completeness_policy(deliverable_id: str) -> str:
+    """交付物的取数完备性策略（``paged_result`` / ``workbook_admission``）。"""
+    return str(project_status_sync_contract(deliverable_id)["completenessPolicy"])
+
+
+def project_status_default_department(deliverable_id: str) -> str | None:
+    """交付物未显式配置责任部门时的默认值（``None`` = 无隐式默认）。"""
+    value = project_status_sync_contract(deliverable_id)["defaultDepartment"]
+    text = str(value or "").strip()
+    return text or None
 
 
 def milestone_display_status(status: object, milestone_date: object, today: date) -> str:

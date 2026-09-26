@@ -678,3 +678,60 @@ def test_sync_now_rejects_unknown_job_key(service: ScheduledArchiveAdminService)
     """sync_now with non-existent job key raises KeyError."""
     with pytest.raises(KeyError):
         service.sync_now("unknown_job_key")
+
+
+# ── 4b. 未就绪必须给出闭集指引码（生产复现回归）──────────────────────────────
+
+
+def test_sync_now_on_unconfigured_disabled_job_reports_bind_credential_remedy(
+    db: DatabaseManager,
+) -> None:
+    """生产复现：新库的 6 个内置任务 enabled=0 且未绑定凭据。
+
+    直接点【立即同步快照】必须：① 不是假成功；② errorType 保持稳定的
+    job_not_ready；③ 给出可操作的闭集 remedy（绑定统一域账号）。
+    """
+    from services.scheduled_archive_runner import create_production_archive_runner
+
+    service = ScheduledArchiveAdminService(
+        db=db,
+        runner_factory=create_production_archive_runner,
+    )
+    data = service.sync_now("aras_paa")
+    first = data["results"][0]
+    assert data["exitCode"] != 0
+    assert first["outcome"] == "not_ready"
+    assert first["errorType"] == "job_not_ready"
+    assert first["remedy"] == "bind_domain_credential"
+
+
+def test_not_ready_reason_is_a_closed_set() -> None:
+    """原因码必须收敛到闭集：未知值退化为 unknown，不反射自由文本。"""
+    assert ArchiveJobNotReadyError("x", reason="credential_not_configured").reason == (
+        "credential_not_configured"
+    )
+    assert ArchiveJobNotReadyError("x", reason="free_form_text").reason == "unknown"
+    assert ArchiveJobNotReadyError("x").reason == "unknown"
+
+
+def test_remedy_mapping_covers_closed_error_types() -> None:
+    from services.scheduled_archive_runner import (
+        remedy_for,
+        remedy_for_error_type,
+    )
+
+    assert remedy_for(ArchiveJobNotReadyError("x", reason="job_disabled")) == "enable_job"
+    assert remedy_for_error_type("credential_unavailable") == "save_domain_credential"
+    assert remedy_for_error_type("credential_invalid") == "refresh_domain_credential"
+    # 未登记类别宁缺勿猜
+    assert remedy_for_error_type("some_unregistered_type") is None
+    assert remedy_for_error_type(None) is None
+
+
+def test_sync_now_payload_always_carries_remedy_key(
+    service: ScheduledArchiveAdminService,
+) -> None:
+    """成功路径也必须带 remedy 键（值为 None），保证前端读取形状稳定。"""
+    result = service.sync_now("aras_ewo")
+    assert "remedy" in result["results"][0]
+    assert result["results"][0]["remedy"] is None

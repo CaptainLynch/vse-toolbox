@@ -19,6 +19,7 @@ from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import quote, urlencode, urljoin, urlsplit
 
 from core.redaction import redact_sensitive_text
+from services.pagination_integrity import is_complete
 from services.windows_http import WinHTTPTimeoutError
 
 try:
@@ -287,6 +288,10 @@ class PAAReportPage:
     item_ids: list[str]
     raw_xml: str
     request_xml: str = ""
+    fetched_pages: int = 1
+    stop_reason: str = "single_page"
+    complete: bool = False
+    truncated: bool = False
 
 
 @dataclass(frozen=True)
@@ -390,7 +395,6 @@ class ArasCrawlerClient:
         page = 1
         fetched_pages = 0
         stop_reason = "max_pages"
-        complete = False
         seen_item_ids: set[str] = set()
         seen_content: set[str] = set()
         unidentified_content: set[str] = set()
@@ -442,7 +446,6 @@ class ArasCrawlerClient:
                 break
             if not current.rows:
                 stop_reason = "empty_page"
-                complete = True
                 break
             seen_item_ids.update(current_ids)
             seen_content.update(row_content)
@@ -457,7 +460,6 @@ class ArasCrawlerClient:
                 break
             if len(current.rows) < page_size:
                 stop_reason = "short_page"
-                complete = True
                 break
             if len(rows) >= max_records:
                 stop_reason = "max_records"
@@ -473,7 +475,7 @@ class ArasCrawlerClient:
             request_xml="\n".join(request_pages),
             fetched_pages=fetched_pages,
             stop_reason=stop_reason,
-            complete=complete,
+            complete=is_complete(stop_reason),
         )
 
     @observed("aras.ArasCrawlerClient.query_paa_report")
@@ -489,12 +491,17 @@ class ArasCrawlerClient:
         payload = self._build_paa_payload(filters or PAAReportFilters(), page, page_size, max_records, select_fields)
         response = self._post_soap("ApplyItem", payload)
         result = self.parse_paa_report_response(response.text)
+        limit = min(page_size, max_records)
         return PAAReportPage(
-            rows=result.rows,
+            rows=result.rows[:limit],
             page=result.page,
-            item_ids=result.item_ids,
+            item_ids=result.item_ids[:limit],
             raw_xml=result.raw_xml,
             request_xml=payload,
+            fetched_pages=1,
+            stop_reason="single_page",
+            complete=False,
+            truncated=len(result.rows) > limit,
         )
 
     @observed("aras.ArasCrawlerClient.crawl_paa_report_all")
@@ -516,6 +523,8 @@ class ArasCrawlerClient:
         request_pages: list[str] = []
         last_page: int | None = None
         page = 1
+        fetched_pages = 0
+        stop_reason = "max_pages"
         while page <= max_pages and len(rows) < max_records:
             if should_stop is not None and should_stop():
                 raise CrawlCancelled(
@@ -530,14 +539,24 @@ class ArasCrawlerClient:
             )
             raw_pages.append(current.raw_xml)
             request_pages.append(current.request_xml)
+            fetched_pages += 1
             if current.page is not None:
                 last_page = current.page
             if not current.rows:
+                stop_reason = "empty_page"
                 break
             remaining = max_records - len(rows)
+            overflowed = len(current.rows) > remaining
             rows.extend(current.rows[:remaining])
             item_ids.extend(current.item_ids[:remaining])
-            if len(current.rows) < page_size or len(rows) >= max_records:
+            if current.truncated or overflowed:
+                stop_reason = "max_records"
+                break
+            if len(current.rows) < page_size:
+                stop_reason = "short_page"
+                break
+            if len(rows) >= max_records:
+                stop_reason = "max_records"
                 break
             if on_page is not None:
                 on_page(page, len(rows))
@@ -548,6 +567,9 @@ class ArasCrawlerClient:
             item_ids=item_ids,
             raw_xml="\n".join(raw_pages),
             request_xml="\n".join(request_pages),
+            fetched_pages=fetched_pages,
+            stop_reason=stop_reason,
+            complete=is_complete(stop_reason),
         )
 
     @observed("aras.ArasCrawlerClient.query_ncr_approval_progress")

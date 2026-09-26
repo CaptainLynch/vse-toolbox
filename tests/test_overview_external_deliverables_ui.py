@@ -7,7 +7,12 @@ def test_overview_details_include_split_paa_and_ncr_rows() -> None:
     assert "NCR 审批进度" in source
     assert "NCR 审批明细" in source
     assert "overviewArchiveJobs" in source
-    assert "renderOverviewBusinessSnapshots" in source
+    # 首页「外部业务快照 / PAA · NCR 外部源进度（参考）」面板已按用户
+    # 2026-09-25 口径移除；归档任务状态仍由 overviewArchiveJobs 驱动
+    # 归档明细页，能力与接口保持。
+    assert "renderOverviewBusinessSnapshots" not in source
+    assert "OVERVIEW_BUSINESS_SNAPSHOT_DEFINITIONS" not in source
+    assert "snapshot-driven-badge" not in source
 
 
 def test_external_rows_preserve_success_time_and_selected_archive_job() -> None:

@@ -429,6 +429,7 @@ class ScheduledArchiveAdminService:
                     "finalState": item.final_state,
                     "errorType": item.error_type,
                     "errorMessage": item.error_message,
+                    "remedy": getattr(item, "remedy", None),
                 }
                 for item in result.results
             ],
