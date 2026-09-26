@@ -13,7 +13,10 @@
 - **最终门禁**：全量 **2429 passed, 3 skipped**（`.runtime/pytest-full-auditfix.log`）；flake8 改动文件
   零告警；`node --check` 通过；项目地图 verified；冒烟 22/22（修复后复跑）。
 - **待用户**：① 完整「历史科室 → 现行科室」对照清单在 WebUI 归集面板录入；② 决定是否重新打包
-  EXE 与源码提交时机（改动未提交）。产品执行前沿其余条目（生产 D6/D7/D8 复测、NCR 样例、
+  EXE。**已提交并推送**：`32f2303`（feat: complete board trim, NCR audit fixes, and department
+  status rollup boards）→ `origin/feature/scheduled-deliverables-overview-excel`（2026-09-26，
+  含此前未提交的看板精简/ARAS 统一/NCR 审计修复轮改动，整树 2429 passed；`VSE-WebUI-compact.spec`
+  保持未跟踪，去留待用户决定）。产品执行前沿其余条目（生产 D6/D7/D8 复测、NCR 样例、
   TDC 分页 Phase 1 授权等）不变。
 
 ## 2026-09-26 审计轮：双分页看板+科室归集 代码审计 4 项发现全部修复；顾问复审待额度窗口
