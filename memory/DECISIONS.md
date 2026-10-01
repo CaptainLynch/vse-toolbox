@@ -12,6 +12,9 @@ short: decision, why, cost if violated, source pointer.
 3. **基线**：重构前代码点为分支 `checkpoint/pre-plugin-refactor-20261001`（d15d0f2）；重构分支 `refactor/plugin-host`。
 4. **表单定义单一来源暂放 `core/form_registry.py`**：onedir 包里插件以源码放在 exe 旁、不进 PYZ，旧 services/core 在冻结运行时无法 import 插件目录；旧调用方迁完后再移入插件。
 5. **S1 门槛演练（Claude 执行，2026-10-01）**：用 `tools/new_plugin.py` 新建只读“归档任务看板”插件，只改了插件自己的 `backend.py`（约 30 行）和 `static/pages/jobs.json`，宿主与旧文件改动为 0；浏览器验证通过后删除（只是演练，不上线）。演练暴露的 UI Kit 缺口（图例文字写死）已补上 `labels`。容器时钟不能当真实耗时，“新增展示页 ≤45 分钟”仍需开发者本人实测一次。
+6. **签名插件包（S2）**：`.vsepkg` 用 Ed25519 签名（`cryptography`），私钥只在打包机，用 `tools/plugin_keys.py init` 生成并把公钥写入 `host/trusted_keys.json`；导入只暂存，重启时生效，新版本加载失败自动回滚到上一版或随包内置版本。用户在“设置 → 插件更新”页操作，不会强制更新。
+7. **表单 form_key 不再用 SQL CHECK（S2）**：合法性由写入前按 `core/form_registry.py` 校验；旧库检测到 CHECK 时整表重建一次。`CURRENT_SCHEMA_VERSION` 保持 14，这样回退旧版 exe 仍能打开数据库。
+8. **数据库按域拆分（S3）**：`DatabaseManager` 变成门面，方法按领域放在 `core/repos/`（项目状态、表单快照、自动同步、定时归档、crawl 任务、插件迁移），共用常量和辅助函数在 `core/db_common.py`；对外接口不变。插件自己的表用 `p_<id>_` 前缀，由 `host.migrate([(版本, fn)])` 做只加不减的迁移，版本记在 `plugin_schema_versions`，数据库版本高于插件时跳过不报错（保证插件包可回滚）。
 Cost if violated: 新功能继续散落到共享巨型文件，增量发布无法实现。
 Source: `docs/PLUGIN_REFACTOR_PROPOSAL_20261001.md`、`docs/PLUGIN_REFACTOR_PLAN_20261001.md`。
 

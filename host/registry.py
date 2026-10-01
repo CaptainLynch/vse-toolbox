@@ -24,6 +24,8 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from flask import Blueprint, Flask
 
+from core.repos.plugin_schema import plugin_table_prefix
+
 from host.context import HostContext
 from host.plugin import (
     HOST_API_VERSION,
@@ -87,6 +89,19 @@ class PluginHost:
         if self._data_dir is None:
             self._data_dir = self.context.plugin_data_dir(self.manifest.id)
         return self._data_dir
+
+    @property
+    def table_prefix(self) -> str:
+        """Table-name prefix this plugin's own tables must use (``p_<id>_``)."""
+        return plugin_table_prefix(self.manifest.id)
+
+    def migrate(self, steps: Sequence[tuple[int, Any]]) -> int:
+        """Apply this plugin's additive schema steps ``[(version, fn(conn)), ...]``.
+
+        Call it from ``register(host)``; a failing step fails the plugin load
+        (and, for an installed package, triggers the automatic rollback).
+        """
+        return self.context.db.apply_plugin_migrations(self.manifest.id, steps)
 
 
 class PluginRegistry:
