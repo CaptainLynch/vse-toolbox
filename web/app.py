@@ -5742,6 +5742,7 @@ def _install_plugin_host(
     from types import MappingProxyType
 
     from host import HostContext, PluginRegistry
+    from host.updates import PackageError, PluginUpdates
 
     # Windows 注册表可能把 .js 映射成 text/plain，浏览器会拒绝执行 ES Module。
     mimetypes.add_type("text/javascript", ".js")
@@ -5758,13 +5759,99 @@ def _install_plugin_host(
         local_guard=_local_web_mutation_error,
         services=MappingProxyType(app.extensions),
     )
-    registry = PluginRegistry(plugin_dirs, only=plugin_only)
+    updates = PluginUpdates(context.data_dir / "plugin-updates")
+    try:
+        applied = updates.apply_pending()
+    except OSError:
+        logger.exception("applying staged plugin packages failed")
+        applied = []
+    for item in applied:
+        logger.info("Plugin package %s %s activated", item["id"], item["version"])
+    registry = PluginRegistry(plugin_dirs, only=plugin_only, overrides=updates.active_dirs())
     registry.load_all(app, context)
+    # 已安装的新版本启动失败：切回上一版本（或随包内置版本）并当场重新加载。
+    for record in list(registry.records):
+        if record.source != "installed" or record.status == "loaded" or record.id is None:
+            continue
+        previous = updates.rollback(record.id, reason=record.error or record.status)
+        fallback = updates.active_dirs().get(record.id) if previous else registry.bundled_dirs.get(record.id)
+        logger.warning("Plugin %s rolled back to %s", record.id, previous or "bundled")
+        if fallback is not None:
+            registry.load_dir(app, context, fallback, source="installed" if previous else "bundled")
     app.extensions["plugin_registry"] = registry
+    app.extensions["plugin_updates"] = updates
 
     @app.get("/api/host/manifest")
     def api_host_manifest():
         return _json_ok(registry.manifest_payload())
+
+    def _updates_payload() -> dict[str, Any]:
+        payload = updates.status()
+        payload["plugins"] = [
+            {
+                "id": r.id,
+                "name": r.manifest.name if r.manifest else r.path.name,
+                "version": r.manifest.version if r.manifest else None,
+                "status": r.status,
+                "source": r.source,
+            }
+            for r in registry.records
+        ]
+        return payload
+
+    @app.get("/api/host/updates")
+    def api_host_updates():
+        return _json_ok(_updates_payload())
+
+    @app.post("/api/host/updates/import")
+    def api_host_updates_import():
+        local_error = _local_web_mutation_error()
+        if local_error is not None:
+            return local_error
+        upload = request.files.get("file")
+        if upload is None or not upload.filename:
+            return _json_error(400, "ValidationError", "请选择 .vsepkg 插件包")
+        data = upload.read()
+        try:
+            from host.updates import verify_package
+
+            package = verify_package(data, updates.trusted_keys)
+            record = registry.record_for(package.id)
+            current = record.manifest.version if record and record.manifest and record.status == "loaded" else None
+            updates.stage(data, current_version=current)
+        except PackageError as exc:
+            return _json_error(422, "PackageRejected", str(exc))
+        except OSError as exc:
+            logger.exception("staging plugin package failed")
+            return _json_error(500, "ServerError", _sanitize_error_message(exc))
+        return _json_ok({
+            "id": package.id,
+            "version": package.version,
+            "previous": current,
+            "message": "插件包已校验通过，重启 VSE Toolbox 后生效",
+            "updates": _updates_payload(),
+        })
+
+    @app.post("/api/host/updates/<plugin_id>/discard")
+    def api_host_updates_discard(plugin_id: str):
+        local_error = _local_web_mutation_error()
+        if local_error is not None:
+            return local_error
+        if not updates.discard_pending(plugin_id):
+            return _json_error(404, "NotFound", "没有待生效的插件包")
+        return _json_ok(_updates_payload())
+
+    @app.post("/api/host/updates/<plugin_id>/rollback")
+    def api_host_updates_rollback(plugin_id: str):
+        local_error = _local_web_mutation_error()
+        if local_error is not None:
+            return local_error
+        if plugin_id not in updates.read_state()["plugins"]:
+            return _json_error(404, "NotFound", "该插件没有通过插件包安装的版本")
+        previous = updates.rollback(plugin_id, reason="用户手动回滚")
+        data = _updates_payload()
+        data["message"] = f"已切回 {previous or '随包内置版本'}，重启后生效"
+        return _json_ok(data)
 
 
 if __name__ == "__main__":

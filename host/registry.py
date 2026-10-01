@@ -20,7 +20,7 @@ import sys
 import types
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from flask import Blueprint, Flask
 
@@ -57,13 +57,14 @@ class PluginRecord:
     status: str
     manifest: PluginManifest | None = None
     error: str | None = None
+    source: str = "bundled"
 
     @property
     def id(self) -> str | None:
         return self.manifest.id if self.manifest is not None else None
 
     def to_payload(self) -> dict[str, Any]:
-        payload: dict[str, Any] = {"status": self.status, "directory": self.path.name}
+        payload: dict[str, Any] = {"status": self.status, "directory": self.path.name, "source": self.source}
         if self.manifest is not None:
             payload.update(self.manifest.to_payload())
         if self.error is not None:
@@ -95,10 +96,14 @@ class PluginRegistry:
         *,
         host_api_version: str = HOST_API_VERSION,
         only: Iterable[str] | None = None,
+        overrides: Mapping[str, Path] | None = None,
     ) -> None:
         self.search_paths = [Path(p) for p in (search_paths if search_paths is not None else default_plugin_dirs())]
         self.host_api_version = host_api_version
         self.only = frozenset(only) if only is not None else None
+        # 已通过签名包安装并激活的版本：{插件 id: 目录}，优先于随包内置的同 id 插件。
+        self.overrides = {key: Path(value) for key, value in (overrides or {}).items()}
+        self.bundled_dirs: dict[str, Path] = {}
         self.records: list[PluginRecord] = []
 
     def discover(self) -> list[Path]:
@@ -114,14 +119,54 @@ class PluginRegistry:
     def load_all(self, app: Flask, context: HostContext) -> list[PluginRecord]:
         _ensure_namespace_package()
         loaded_ids: set[str] = set()
+        planned: list[tuple[Path, str]] = []
+        overridden: set[str] = set()
         for plugin_dir in self.discover():
-            record = self._load_one(app, context, plugin_dir, loaded_ids)
-            if record is None:
+            try:
+                plugin_id = load_manifest(plugin_dir).id
+            except PluginManifestError:
+                planned.append((plugin_dir, "bundled"))
                 continue
-            self.records.append(record)
-            if record.status == "loaded" and record.id is not None:
-                loaded_ids.add(record.id)
+            self.bundled_dirs.setdefault(plugin_id, plugin_dir)
+            if plugin_id in self.overrides:
+                overridden.add(plugin_id)
+                planned.append((self.overrides[plugin_id], "installed"))
+            else:
+                planned.append((plugin_dir, "bundled"))
+        for plugin_id in sorted(set(self.overrides) - overridden):
+            planned.append((self.overrides[plugin_id], "installed"))
+        for plugin_dir, source in planned:
+            self.load_dir(app, context, plugin_dir, source=source, loaded_ids=loaded_ids)
         return self.records
+
+    def load_dir(
+        self,
+        app: Flask,
+        context: HostContext,
+        plugin_dir: Path,
+        *,
+        source: str = "bundled",
+        loaded_ids: set[str] | None = None,
+    ) -> PluginRecord | None:
+        """Load one plugin directory and record the outcome (used for rollback reloads too)."""
+        _ensure_namespace_package()
+        if loaded_ids is None:
+            loaded_ids = {r.id for r in self.records if r.status == "loaded" and r.id is not None}
+        record = self._load_one(app, context, plugin_dir, loaded_ids)
+        if record is None:
+            return None
+        record.source = source
+        self.records = [
+            r for r in self.records
+            if not (record.id is not None and r.id == record.id and r.status != "loaded")
+        ]
+        self.records.append(record)
+        if record.status == "loaded" and record.id is not None:
+            loaded_ids.add(record.id)
+        return record
+
+    def record_for(self, plugin_id: str) -> PluginRecord | None:
+        return next((r for r in self.records if r.id == plugin_id), None)
 
     def manifest_payload(self) -> dict[str, Any]:
         nav = []

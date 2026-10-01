@@ -125,6 +125,7 @@ ROLE_OVERRIDES = {
     "host/context.py": "HostContext: shared services handed to plugins",
     "host/plugin.py": "plugin.json manifest contract and host API compatibility",
     "host/registry.py": "Plugin discovery, isolated loading and blueprint registration",
+    "host/updates.py": "Signed .vsepkg verification, staging, activation and rollback",
     "core/form_registry.py": "Deliverable form definitions (single source for legacy form dicts)",
     "plugins/deliverable_forms/backend.py": "deliverable-forms plugin: read-only form snapshot rows",
     "main.py": "Rich CLI adapter, menu routing and legacy operations",

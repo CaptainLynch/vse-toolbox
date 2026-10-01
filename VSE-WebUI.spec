@@ -63,6 +63,7 @@ a = Analysis(
         ('web/templates', 'web/templates'),
         ('web/static', 'web/static'),
         ('core/report_headers.json', 'core'),
+        ('host/trusted_keys.json', 'host'),
         *version_datas,
     ],
     hiddenimports=hiddenimports,
