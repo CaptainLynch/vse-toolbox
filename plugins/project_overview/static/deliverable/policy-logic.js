@@ -550,23 +550,6 @@ export function buildEvidencePayload(capabilities, values, payload) {
   return evidence;
 }
 
-/** Fill empty/default mapping inputs from a fresh field report (setDiscoveredFields autoFill). */
-export function autoFillMapping(values, capabilities, fieldNames, defaultMap) {
-  if (!fieldNames || !fieldNames.length) return values;
-  const derived = wizardDeriveMappingFromFieldReport(capabilities, { fields: fieldNames });
-  if (!derived) return values;
-  const next = { ...values, authority: { ...values.authority }, mapping: { ...values.mapping } };
-  EWO_POLICY_AUTOMATIC_FIELDS.forEach(([key]) => {
-    const current = next.mapping[key] || "";
-    const isDefault = defaultMap[key] && current === mappingText(defaultMap[key]);
-    if ((!current || isDefault) && derived[key]) {
-      next.mapping[key] = mappingText(derived[key]);
-      next.authority[key] = true;
-    }
-  });
-  return next;
-}
-
 // ---- interactive ARAS query -------------------------------------------------
 
 export const INTERACTIVE_MODES = {
