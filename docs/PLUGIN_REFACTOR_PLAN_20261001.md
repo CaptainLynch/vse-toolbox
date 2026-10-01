@@ -32,13 +32,13 @@
 
 目标：实测"一个页面 = 一个目录"是否成立，并且不改旧 `app.js` 的业务代码。
 
-- [ ] **宿主包 `host/`**
+- [x] **宿主包 `host/`**
   - `host/plugin.py`：定义 `PluginManifest`（id、version、host_api、nav、pages），用 `plugin.json` 加载并校验。
   - `host/context.py`：定义 `HostContext`，包装现有的 `DatabaseManager`、凭据 provider、`ArchiveStore`、任务执行器和脱敏函数，不重写它们。
   - `host/registry.py`：扫描源码目录和 `app_root()/plugins`，用 `importlib` 加载并调用 `register(host)`，把 Blueprint 挂到 `/api/p/<id>/`。
   - `create_app()` 末尾调用注册表，并新增 `GET /api/host/manifest`，返回导航与页面列表。原有 86 个路由保持不动。
-- [ ] **前端 Shell 与 UI Kit v0**（`web/static/host/`）
-  - 随包内置 Preact + htm（`vendor/preact-htm.mjs`）。
+- [x] **前端 Shell 与 UI Kit v0**（`web/static/host/`）
+  - 随包内置 Preact + htm（`vendor/preact-htm.js`；用 `.js` 并由宿主强制 `text/javascript`，避开 Windows 注册表把扩展名映射成 text/plain）。
   - `shell.js` 读取 manifest 生成导航。`#p/...` 路由由插件页面接管，其余路由交还给旧 `handleHashChange`。`dashboard.html` 只增加一个挂载点和一行 module script。
   - `api.js` 提供信封解析与错误映射；`useResource` 自带请求序号防竞态，以及 loading/error/空态。
   - 组件：`DataTable`、`FilterBar`、`ChartTabs`。图表从旧的 `renderDepartmentDoneChart`（手写 DOM，不依赖图表库）移植。

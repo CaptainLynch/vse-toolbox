@@ -11996,6 +11996,9 @@ function handleHashChange() {
   const [hashPath, queryString] = rawHash.split("?");
   const searchParams = new URLSearchParams(queryString || "");
 
+  // `#p/<plugin>/<page>` 由插件 Shell（/static/host/shell.js）接管，旧路由不处理。
+  if (/^p\//.test(hashPath)) return;
+
   const archiveDeliverableMatch = rawHash.match(/^archive-deliverable\/([^/?#]+)/);
   const deliverableMatch = rawHash.match(/^(?:overview\/)?deliverables?\/([^/?#]+)/)
     || rawHash.match(/^deliverable-detail\/([^/?#]+)/);

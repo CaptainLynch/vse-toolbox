@@ -5738,9 +5738,14 @@ def _install_plugin_host(
     plugin_only: Sequence[str] | None,
 ) -> None:
     """加载 `plugins/` 下的功能插件；旧路由全部注册完成后再加载，插件不能覆盖它们。"""
+    import mimetypes
     from types import MappingProxyType
 
     from host import HostContext, PluginRegistry
+
+    # Windows 注册表可能把 .js 映射成 text/plain，浏览器会拒绝执行 ES Module。
+    mimetypes.add_type("text/javascript", ".js")
+    mimetypes.add_type("text/javascript", ".mjs")
 
     if plugin_only is None:
         env_only = os.environ.get("VSE_TOOLBOX_PLUGIN_ONLY", "").strip()
