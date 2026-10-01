@@ -60,7 +60,10 @@ def test_runner_job_form_keys_align_with_archives_and_forms() -> None:
 
 def test_registry_form_keys_are_valid_and_frontend_has_no_fallback_map() -> None:
     """后端注册表 form_key 均为合法白名单值；前端不再持有回退映射。"""
-    for path in Path("plugins").glob("*/static/**/*.js"):
+    plugins_dir = Path(__file__).resolve().parent.parent / "plugins"
+    scripts = list(plugins_dir.glob("*/static/**/*.js"))
+    assert scripts, plugins_dir
+    for path in scripts:
         assert "DELIVERABLE_FORM_KEY_BY_ITEM" not in path.read_text(encoding="utf-8-sig"), path
 
     registry_form_keys = {
