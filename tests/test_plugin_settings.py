@@ -13,7 +13,7 @@ import web.app as web_app
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PLUGIN_DIR = REPO_ROOT / "plugins" / "settings"
-MODULES = ("general.js", "client.js", "error-card.js", "settings-form.js", "sessions.js", "service-status.js")
+MODULES = ("general.js", "client.js", "error-card.js", "settings-form.js", "sessions.js", "service-status.js", "updates.js")
 
 
 @pytest.fixture()
@@ -92,3 +92,15 @@ def test_domain_login_requires_credentials_without_echoing_them(client) -> None:
     response = client.post("/api/settings/domain-login", json={"username": "", "password": "s3cret-value"})
     assert response.status_code == 422
     assert "s3cret-value" not in response.get_data(as_text=True)
+
+
+def test_updates_page_declared_and_uses_host_update_routes(client) -> None:
+    data = client.get("/api/host/manifest").get_json()["data"]
+    record = next(p for p in data["plugins"] if p["id"] == "settings")
+    assert {"id": "updates", "kind": "module", "module": "updates.js"}.items() <= record["pages"][1].items()
+    source = (PLUGIN_DIR / "static" / "updates.js").read_text(encoding="utf-8")
+    routes = {rule.rule for rule in client.application.url_map.iter_rules()}
+    assert "/api/host/updates" in routes and "/api/host/updates/import" in routes
+    assert "/api/host/updates/" in source and "/api/host/updates/import" in source
+    payload = client.get("/api/host/updates").get_json()["data"]
+    assert {"active", "pending", "events", "trustedKeys", "plugins"} <= set(payload)

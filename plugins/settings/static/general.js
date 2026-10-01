@@ -54,6 +54,7 @@ export default function SettingsGeneralPage({ plugin }) {
       </div>
       <div class="vk-page-actions">
         <span class="vk-muted" aria-live="polite">${loading ? "正在读取系统设置…" : ""}</span>
+        <a class="vk-btn" href="#p/settings/updates">插件更新</a>
         <button type="button" class="vk-btn" disabled=${loading} onClick=${reloadAll}>刷新设置</button>
       </div>
     </header>
