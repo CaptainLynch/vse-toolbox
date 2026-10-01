@@ -223,3 +223,22 @@ def test_import_rejections_and_local_guard(host_env) -> None:
     assert client.get("/api/host/updates").get_json()["data"]["pending"] == []
 
     assert client.post("/api/host/updates/demo/discard").status_code == 404
+
+
+def test_host_upgrade_with_newer_bundled_plugin_supersedes_installed_package(host_env) -> None:
+    start, pem, tmp_path = host_env
+    client = start()
+    _upload(client, build_package(_plugin(tmp_path / "v2", "1.1.0", greeting="v2"), pem)[1])
+    client = start()
+    assert client.get("/api/p/demo/hello").get_json()["data"]["greeting"] == "v2"
+
+    # 宿主整包升级：新的随包插件 1.1.0（不低于已安装版本）应优先于旧插件包。
+    __import__("shutil").rmtree(tmp_path / "bundled" / "demo-1.0.0")
+    _plugin(tmp_path / "bundled", "1.1.0", greeting="bundled-new")
+    client = start()
+    assert client.get("/api/p/demo/hello").get_json()["data"]["greeting"] == "bundled-new"
+    status = client.get("/api/host/updates").get_json()["data"]
+    assert "demo" not in status["active"]
+    assert status["events"][0]["kind"] == "superseded"
+    plugins = {p["id"]: p for p in status["plugins"]}
+    assert plugins["demo"]["source"] == "bundled"

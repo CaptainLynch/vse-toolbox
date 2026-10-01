@@ -11,6 +11,7 @@ const EVENT_LABELS = {
   discarded: "已撤销导入",
   activated: "已生效",
   rolled_back: "已回滚",
+  superseded: "程序升级后改用随包版本",
 };
 const SOURCE_LABELS = { bundled: "随包内置", installed: "插件包安装" };
 
@@ -46,6 +47,7 @@ function eventText(event) {
   const parts = [label];
   if (event.version) parts.push(event.version);
   if (event.kind === "rolled_back") parts.push(`→ ${event.to === "bundled" ? "随包内置版本" : event.to}`);
+  if (event.kind === "superseded") parts.push(`→ 随包 ${event.to}`);
   if (event.reason) parts.push(`原因：${event.reason}`);
   return parts.join("  ");
 }

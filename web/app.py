@@ -5769,6 +5769,9 @@ def _install_plugin_host(
         logger.info("Plugin package %s %s activated", item["id"], item["version"])
     registry = PluginRegistry(plugin_dirs, only=plugin_only, overrides=updates.active_dirs())
     registry.load_all(app, context)
+    for plugin_id, bundled_version in registry.superseded.items():
+        logger.info("Plugin %s: bundled %s supersedes installed package", plugin_id, bundled_version)
+        updates.supersede(plugin_id, bundled_version=bundled_version)
     # 已安装的新版本启动失败：切回上一版本（或随包内置版本）并当场重新加载。
     for record in list(registry.records):
         if record.source != "installed" or record.status == "loaded" or record.id is None:

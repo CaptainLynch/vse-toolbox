@@ -119,6 +119,8 @@ class PluginRegistry:
         # 已通过签名包安装并激活的版本：{插件 id: 目录}，优先于随包内置的同 id 插件。
         self.overrides = {key: Path(value) for key, value in (overrides or {}).items()}
         self.bundled_dirs: dict[str, Path] = {}
+        # 宿主升级后随包版本不低于已安装插件包时，改用随包版本：{id: 随包版本}。
+        self.superseded: dict[str, str] = {}
         self.records: list[PluginRecord] = []
 
     def discover(self) -> list[Path]:
@@ -143,7 +145,11 @@ class PluginRegistry:
                 planned.append((plugin_dir, "bundled"))
                 continue
             self.bundled_dirs.setdefault(plugin_id, plugin_dir)
-            if plugin_id in self.overrides:
+            if plugin_id in self.overrides and self._bundled_is_current(plugin_dir, self.overrides[plugin_id]):
+                self.superseded[plugin_id] = load_manifest(plugin_dir).version
+                overridden.add(plugin_id)
+                planned.append((plugin_dir, "bundled"))
+            elif plugin_id in self.overrides:
                 overridden.add(plugin_id)
                 planned.append((self.overrides[plugin_id], "installed"))
             else:
@@ -153,6 +159,16 @@ class PluginRegistry:
         for plugin_dir, source in planned:
             self.load_dir(app, context, plugin_dir, source=source, loaded_ids=loaded_ids)
         return self.records
+
+    @staticmethod
+    def _bundled_is_current(bundled_dir: Path, installed_dir: Path) -> bool:
+        """True when the bundled copy is at least as new as the installed package."""
+        try:
+            installed = load_manifest(installed_dir).version
+        except PluginManifestError:
+            return False  # 交给 load_dir 记录失败，并由启动回滚处理
+        bundled = load_manifest(bundled_dir).version
+        return tuple(int(x) for x in bundled.split(".")) >= tuple(int(x) for x in installed.split("."))
 
     def load_dir(
         self,

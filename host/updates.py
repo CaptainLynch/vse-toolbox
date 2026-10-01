@@ -402,6 +402,15 @@ class PluginUpdates:
         self._write_state(state)
         return previous
 
+    def supersede(self, plugin_id: str, *, bundled_version: str) -> None:
+        """Drop an installed package that the (upgraded) host's bundled copy has caught up with."""
+        state = self.read_state()
+        entry = state["plugins"].pop(plugin_id, None)
+        if entry is None:
+            return
+        self._event(state, "superseded", plugin_id, version=entry.get("version"), to=bundled_version)
+        self._write_state(state)
+
     def status(self) -> dict[str, Any]:
         state = self.read_state()
         return {

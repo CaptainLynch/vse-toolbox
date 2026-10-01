@@ -58,18 +58,18 @@
 
 目标：改动最频繁的区域先完成插件化，并把增量发布流程完整跑通一次。
 
-- [ ] **6 个表单迁入 `deliverable_forms`**
+- [x] **6 个表单迁入 `deliverable_forms`**（2026-10-01：表单总览页 + 6 个分析页，表单 UI 元数据进 registry，`GET /api/p/deliverable-forms/registry`；旧 app.js 未改为读取 registry，因其将随概览一起替换）
   - 把剩下 5 个表单加进 `registry.py`。
   - `app.js` 里的 `DELIVERABLE_FORM_TABS`、`DELIVERABLE_FORM_FILTER_LABELS`、`DELIVERABLE_FORM_CHART_TITLES` 等字典，改为由 `GET /api/p/deliverable-forms/registry` 下发。
   - `/api/deliverable-forms/*` 保留为旧路径别名。
-- [ ] **去掉表单白名单的 SQL CHECK**：做最后一次重建表迁移移除 `form_key` 的 `CHECK`，改由 registry 在写入前校验。之后新增表单不再需要重建表。
+- [x] **去掉表单白名单的 SQL CHECK**：做最后一次重建表迁移移除 `form_key` 的 `CHECK`，改由 registry 在写入前校验。之后新增表单不再需要重建表。（2026-10-01：检测式重建，schema 版本保持 14）
 - [ ] **页面切换与回退**：旧深链 `#overview/deliverables/<id>` 重定向到新页面；设置里提供"使用旧版表单页"开关，保留一个版本周期。
 - [ ] **改写相关测试**：把 `test_deliverable_form_ui.py` 和 `test_overview_web.py` 里与表单相关的文本断言，改成 API 契约测试和 Schema 快照测试。
-- [ ] **插件包打包与签名**
+- [x] **插件包打包与签名**
   - `tools/build_plugin_pkg.py`：生成 `.vsepkg`，内含 `manifest.json`、文件本身和每个文件的 sha256。
   - 用 Ed25519 私钥签名，私钥只存放在外部构建机。
   - 宿主依赖增加 `cryptography`；当前 `requirements.txt` 里没有签名库。
-- [ ] **导入、生效与回滚**
+- [x] **导入、生效与回滚**（另加：宿主升级后随包版本不低于已装插件包时自动改用随包版本）
   - "设置 → 更新"页面支持选择文件导入。宿主依次验签、检查 `host_api` 兼容性，然后解压到 `updates/staging/`，并提示"重启后生效"。
   - 重启时原子切换 `plugins/active.json`，并保留上一版本。若插件在启动时自检失败，自动切回上一版。
   - 用一次真实的表单改动通过飞书发给同事，走完整个流程。
@@ -78,10 +78,10 @@
 
 目标：迁移第二大块页面，并让各插件拥有自己的数据。
 
-- [ ] **`plugins/system_query/`**：把 Aras 的 EWO、PAA、NCR 进度/明细以及 TDC 查询迁为 L2 页面。`ARAS_MODES` 字典改写为 Schema，约 19 个路由搬入 Blueprint，导出、下载和原位登录复用 Shell 提供的能力。
-- [ ] **穿透链接兼容**：从概览跳转到系统查询的旧深链（`#aras-panel?mode=...&from=overview`）继续可用。
-- [ ] **`db_manager` 按领域拆分**：拆出 `ProjectStatusRepo`、`ArchiveRepo`、`ExcelTaskRepo`、`FormSnapshotRepo` 等薄层，表名不变、数据不搬。`DatabaseManager` 保留为兼容入口，内部委托给各 repo。
-- [ ] **插件迁移版本**：新增 `plugin_schema_versions` 表，把现有的全局 schema v14 冻结为基线，之后的结构变更走各插件自己的 `migrations/`。
+- [x] **`plugins/system_query/`**：把 Aras 的 EWO、PAA、NCR 进度/明细以及 TDC 查询迁为 L2 页面。`ARAS_MODES` 字典改写为 Schema，约 19 个路由搬入 Blueprint，导出、下载和原位登录复用 Shell 提供的能力。（2026-10-01：页面已迁；路由仍在 web/app.py，Blueprint 搬迁留到概览迁完后统一做）
+- [x] **穿透链接兼容**：从概览跳转到系统查询的旧深链（`#aras-panel?mode=...&from=overview`）继续可用。（旧哈希由 app.js 统一转到 `#p/...`，保留查询参数）
+- [x] **`db_manager` 按领域拆分**：拆出 `ProjectStatusRepo`、`ArchiveRepo`、`ExcelTaskRepo`、`FormSnapshotRepo` 等薄层，表名不变、数据不搬。`DatabaseManager` 保留为兼容入口，内部委托给各 repo。（2026-10-01：`core/repos/` 六个分片 + `core/db_common.py`，DatabaseManager 为门面；Excel 任务表的访问原本就在 `core/excel_tasks.py` 等独立模块，未再拆）
+- [x] **插件迁移版本**：新增 `plugin_schema_versions` 表，把现有的全局 schema v14 冻结为基线，之后的结构变更走各插件自己的 `migrations/`。（`plugin_schema_versions` + `host.migrate()`，只加不减）
 - [ ] **改写相关测试**：把 `test_aras_cli_web.py` 等文件中的源码文本断言改成 API 契约测试。
 
 ## Sprint 4：剩余页面迁移与删除 legacy

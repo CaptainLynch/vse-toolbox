@@ -66,6 +66,20 @@ navigation index, not a replacement for reading the target implementation.
   map gap and the paths already checked, then request or justify a scope
   expansion. Never silently widen the search.
 
+## Plugin Architecture (since 2026-10)
+
+- New features are new plugins: `python tools/new_plugin.py <id> --name 名称`
+  creates `plugins/<id>/` (`plugin.json`, `backend.py` with `register(host)`,
+  `static/pages/*.json`). Do not add new code to legacy `web/static/app.js`,
+  route bodies in `web/app.py`, or `core/db_manager.py`.
+- Plugins reach shared services only through `host.context` (db, data dir,
+  JSON envelope, `local_guard` for every write route) and must not import
+  `web.*` or other plugins. Plugin tables use `host.table_prefix` and
+  additive `host.migrate([(version, fn)])` steps.
+- Ship a plugin change as a signed `.vsepkg` (`tools/build_plugin_pkg.py`);
+  host changes ship as a new onedir zip. See
+  `docs/PRODUCTION_OPERATION_GUIDE.md` section 7.
+
 ## Runtime Selection
 
 Use one lead per task. The user's current choice takes precedence over defaults.

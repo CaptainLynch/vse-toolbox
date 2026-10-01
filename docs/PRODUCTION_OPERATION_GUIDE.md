@@ -165,3 +165,51 @@ Get-FileHash -Algorithm SHA256 dist\*.exe
 ### Q3: 提示 `Approved root directory not found`？
 - **原因**：安全白名单机制要求任务文件必须位于预先批准的根目录映射下。
 - **解决**：启动 Worker 时通过 `--root ID=PATH` 传入正确的目录映射，且确保路径在物理磁盘上真实存在。
+
+---
+
+## 7. 插件更新与宿主升级（2026-10 插件化之后）
+
+自插件化重构起，WebUI 以 **onedir 文件夹** 交付（`VSE-WebUI/` 内含 `VSE-WebUI.exe`、`_internal/`、`plugins/`），同时打包成 `VSE-WebUI.zip`，经飞书分发。数据目录 `data/` 位于 exe 旁边（数据库、`plugin-updates/` 都在里面）。
+
+更新分两种：
+
+| 场景 | 交付物 | 谁来做 | 生效方式 |
+|---|---|---|---|
+| 只改了某个功能插件 | `<插件id>-<版本>.vsepkg`（已签名） | 同事在「设置 → 插件更新」导入 | 下次重启生效，失败自动回滚 |
+| 宿主（`host/`、`core/`、`services/`、依赖）有变化 | 整个 `VSE-WebUI.zip` | 同事手工替换文件夹 | 替换后启动即生效 |
+
+### 7.1 打包机：一次性准备签名密钥
+
+```powershell
+python tools/plugin_keys.py init D:\keys\vse-plugin-signing.pem --label "打包机 2026"
+```
+
+- 私钥只留在打包机（命令拒绝写到仓库内），**不得** 提交、不得通过飞书发送。
+- 命令会把公钥追加到 `host/trusted_keys.json`；提交这个文件并重新构建一次宿主，此后的宿主才信任该密钥。
+- 换密钥：先用新私钥 `init` 追加新公钥并发一版宿主，等所有同事升级后，再从 `trusted_keys.json` 删掉旧公钥。
+
+### 7.2 发布插件包
+
+1. 修改插件代码，并把 `plugins/<目录>/plugin.json` 的 `version` 调高（必须高于同事当前版本，否则导入会被拒绝）。
+2. 打包：`python tools/build_plugin_pkg.py plugins/<目录> --key D:\keys\vse-plugin-signing.pem`，产物在 `dist/plugins/<id>-<version>.vsepkg`。
+3. 把 `.vsepkg` 发到飞书群，并说明改了什么。
+
+同事侧：打开「设置 → 插件更新」，选择文件，点「校验并导入」。导入时会校验签名、文件哈希、宿主接口版本；通过后显示“重启后生效”。重启 VSE Toolbox 后生效；不想要可以在重启前点「撤销」。若新版本启动失败，程序会自动切回上一版本（或随包版本），并在「最近操作」里记录原因。也可以随时点「回滚」，重启后切回。
+
+### 7.3 宿主升级（手工替换 onedir）
+
+1. 退出 VSE Toolbox（关闭浏览器页面和 `VSE-WebUI.exe` 窗口），确认任务管理器里没有 `VSE-WebUI.exe` / `VSE-ExcelWorker.exe`。
+2. 把旧文件夹改名为 `VSE-WebUI.old`（不要删）。
+3. 解压新的 `VSE-WebUI.zip`，得到新的 `VSE-WebUI/`。
+4. 把 `VSE-WebUI.old\data` 整个移动到新的 `VSE-WebUI\data`。
+5. 启动新的 `VSE-WebUI.exe`，检查：顶栏版本号已变；「设置 → 插件更新」里各插件为“运行中”；概览数据与升级前一致。
+6. 运行一周无问题后再删除 `VSE-WebUI.old`。
+
+说明：
+- 若新宿主自带的某插件版本 **不低于** 之前通过插件包安装的版本，启动时自动改用随包版本，并在「最近操作」记录“程序升级后改用随包版本”。
+- 数据库 schema 版本保持 14，新增的表与列都是增量的；回退到旧宿主不会因版本号被拒绝。
+
+**回退**：退出程序，把新文件夹改名为 `VSE-WebUI.bad`，把 `VSE-WebUI.old` 改回 `VSE-WebUI`，再把 `data` 移回去，然后启动。
+
+> 演练状态：上述流程尚未在公司电脑上实测。首次正式升级前请按 7.3 完整演练一次，并在此处记录日期和结果。是否引入 tufup 做自动更新，等演练后再决定。
