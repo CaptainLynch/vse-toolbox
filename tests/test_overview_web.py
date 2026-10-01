@@ -1491,7 +1491,7 @@ def test_top_bar_navigation_six_main_domains() -> None:
     for manifest_path in sorted(Path("plugins").glob("*/plugin.json")):
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         nav += [(entry.get("order", 100), entry["title"], manifest["id"]) for entry in manifest.get("nav", [])]
-    assert [title for _, title, _ in sorted(nav)] == ["系统查询", "表单", "Excel", "自动归档", "设置"]
+    assert [title for _, title, _ in sorted(nav)] == ["概览（新）", "系统查询", "表单", "Excel", "自动归档", "设置"]
 
     js = Path("web/static/app.js").read_text(encoding="utf-8-sig")
     for legacy, target in [
