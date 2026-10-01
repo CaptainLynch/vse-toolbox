@@ -1,0 +1,13 @@
+{
+  "id": "excel-tasks",
+  "name": "Excel 文件处理",
+  "version": "0.1.0",
+  "hostApi": ">=1,<2",
+  "description": "Excel 文件处理工作台（插件化迁移；调用既有 /api/excel-* 接口，旧页面并存）",
+  "pages": [
+    {"id": "workspace", "title": "Excel 文件处理", "kind": "module", "module": "workspace.js"}
+  ],
+  "nav": [
+    {"title": "Excel（新）", "page": "workspace", "order": 40}
+  ]
+}
