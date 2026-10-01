@@ -14,6 +14,7 @@ core/db_manager.py — SQLite 数据库连接管理与 ORM 表结构初始化
 """
 
 import json
+import re
 import secrets
 import sqlite3
 from core import form_registry as _form_registry
@@ -210,7 +211,7 @@ def _sanitize_json(value: Any) -> str:
     return _json_dumps_local(sanitized)
 
 
-# 由 core/form_registry.py 推导；表的 form_key CHECK 白名单仍需迁移同步（Sprint 2 移除）。
+# 由 core/form_registry.py 推导；写入前据此校验 form_key（表上已无 SQL CHECK）。
 _FORM_SNAPSHOT_KEYS = _form_registry.FORM_KEYS
 _FORM_SNAPSHOT_REPORTS = {spec.form_key: spec.report for spec in _form_registry.FORMS}
 _FORM_SNAPSHOT_FORBIDDEN_KEY_PARTS = (
@@ -413,17 +414,14 @@ def _form_row_filter_sql(
 # ── 建表 DDL ───────────────────────────────────────────────────
 # 每张表均包含 created_at / updated_at 以便追踪
 
-# 统一外部交付物表单快照表 DDL 模板。SQLite 无法修改 CHECK 约束，
-# form_key 白名单扩展时由 _migrate_schema 用该模板重建表，
-# 因此 DDL 只保留一份，避免建表与迁移两份定义漂移。
+# 统一外部交付物表单快照表 DDL 模板。form_key 不再用 SQL CHECK 白名单
+# （新增表单不必再重建表），合法性由写入前的 core/form_registry.py 校验保证。
+# 旧库仍带 CHECK 时由 _migrate_schema 用该模板重建一次，DDL 只保留一份。
 _DELIVERABLE_FORM_SNAPSHOTS_DDL = """
     CREATE TABLE IF NOT EXISTS {table} (
         id                 INTEGER PRIMARY KEY AUTOINCREMENT,
         snapshot_key       TEXT NOT NULL UNIQUE,
-        form_key           TEXT NOT NULL CHECK (form_key IN (
-            'VPI-T2-D3', 'aras_paa', 'aras_ncr_progress', 'aras_ncr_detail',
-            'tdc_data_model', 'tdc_sor'
-        )),
+        form_key           TEXT NOT NULL,
         report_type        TEXT NOT NULL,
         source_run_id      INTEGER,
         source             TEXT NOT NULL DEFAULT '',
@@ -1175,8 +1173,9 @@ class DatabaseManager:
         - 对旧库通过 PRAGMA table_info 检测缺失列，逐列 ALTER TABLE ADD COLUMN。
         - 迁移失败由外层 get_connection 回滚，不会留下半迁移状态。
         """
-        # deliverable_form_snapshots 的 form_key CHECK 白名单扩展无法通过
-        # ALTER 完成，需要整表重建。必须在任何 DML 隐式开启事务之前于事务外
+        # deliverable_form_snapshots 旧库带 form_key CHECK 白名单，SQLite 无法
+        # ALTER 掉约束，需要整表重建。回退到旧版 exe 时旧版会再按它的白名单
+        # 重建一次（数据只含已注册的键，无损），再升级时这里又会去掉 CHECK。必须在任何 DML 隐式开启事务之前于事务外
         # 关闭外键，重建并提交后再恢复，随后继续的迁移/种子写入仍受外键约束。
         # 中途失败时原表保持完整；残留的重建表会在下次初始化时清除。
         conn.execute("PRAGMA foreign_keys=OFF")
@@ -1212,9 +1211,8 @@ class DatabaseManager:
                 "SELECT sql FROM sqlite_master "
                 "WHERE type = 'table' AND name = 'deliverable_form_snapshots'"
             ).fetchone()
-            if row is not None and (
-                "tdc_data_model" not in str(row["sql"] or "")
-                or "tdc_sor" not in str(row["sql"] or "")
+            if row is not None and re.search(
+                r"CHECK\s*\(\s*form_key\s+IN", str(row["sql"] or "")
             ):
                 conn.execute(
                     "DROP TABLE IF EXISTS deliverable_form_snapshots_rebuild"

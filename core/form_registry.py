@@ -15,7 +15,7 @@ import 插件目录。等旧调用方全部迁入插件（Sprint 2/3）后再把
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Mapping
 
@@ -28,6 +28,9 @@ class FormSpec:
     ``contact_indexes`` / ``overdue_rule`` 为 ``None`` 表示该表单不适用。
     ``dwell_overdue`` 为真时走 TDC“审批中滞留”逾期口径，不依赖阶段词表。
     ``terminal_statuses`` 是终态：计入总数，但既不算完成也不算未完成，不参与逾期判定。
+    ``dimension_labels`` 是归一化维度（status/department/section/model/stage）在该表单
+    下的显示名，未列出的用 ``DEFAULT_DIMENSION_LABELS``。
+    ``page_column_labels`` 是插件页明细表的列；为空时用 ``key_column_labels``。
     """
 
     form_key: str
@@ -41,6 +44,25 @@ class FormSpec:
     dwell_overdue: bool = False
     key_column_labels: tuple[str, ...] = ()
     terminal_statuses: frozenset[str] = frozenset()
+    dimension_labels: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
+    page_column_labels: tuple[str, ...] = ()
+
+    def dimension_label(self, dimension: str) -> str:
+        return self.dimension_labels.get(dimension) or DEFAULT_DIMENSION_LABELS.get(dimension, dimension)
+
+    @property
+    def page_columns(self) -> tuple[str, ...]:
+        return self.page_column_labels or self.key_column_labels
+
+
+#: 与旧页面 FORM_FILTER_LABELS 同口径。
+DEFAULT_DIMENSION_LABELS: Mapping[str, str] = MappingProxyType({
+    "status": "状态",
+    "department": "部门",
+    "section": "科室 / 区域",
+    "model": "车型 / 项目",
+    "stage": "阶段 / 节点",
+})
 
 
 # 数模设计审核流程与 SOR 定点流程：审批中且申请日期滞留超过 7 天记为逾期。
@@ -60,6 +82,7 @@ FORMS: tuple[FormSpec, ...] = (
             "EWO编号", "状态", "部门", "责任工程师专业科室", "车型信息",
             "主题", "提交日期", "要求完成时间",
         ),
+        dimension_labels=MappingProxyType({"section": "责任科室", "model": "车型", "stage": "审批阶段"}),
     ),
     FormSpec(
         form_key="aras_paa",
@@ -74,6 +97,7 @@ FORMS: tuple[FormSpec, ...] = (
             "PAA编号", "状态", "部门", "专业科室", "车型",
             "零件或总成名称", "提交日期", "估计完成日期", "EWO编号",
         ),
+        dimension_labels=MappingProxyType({"section": "专业科室", "model": "车型", "stage": "审批阶段"}),
     ),
     FormSpec(
         form_key="aras_ncr_progress",
@@ -103,6 +127,7 @@ FORMS: tuple[FormSpec, ...] = (
             "NCR编号", "状态", "当前节点及通知时间", "区域", "项目",
             "提交日期", "是否审批完成", "当前审批人滞留天数", "EWO号",
         ),
+        dimension_labels=MappingProxyType({"section": "区域", "model": "项目", "stage": "当前节点"}),
     ),
     FormSpec(
         form_key="aras_ncr_detail",
@@ -116,6 +141,7 @@ FORMS: tuple[FormSpec, ...] = (
             "实际工程工装费用(万元)", "测算单件成本变化（元）",
             "批准单件成本变化（元）", "实际单件成本变化（元）", "EWO号",
         ),
+        dimension_labels=MappingProxyType({"section": "区域", "model": "项目", "stage": "当前节点"}),
     ),
     FormSpec(
         form_key="tdc_data_model",
@@ -128,6 +154,12 @@ FORMS: tuple[FormSpec, ...] = (
             {"stageDays": TDC_OVERDUE_DWELL_DAYS, "lateDays": TDC_OVERDUE_DWELL_DAYS}
         ),
         dwell_overdue=True,
+        # 旧页面数模表默认显示全部列；插件页只展平这些列（旧页面不受影响）。
+        page_column_labels=(
+            "流水单号", "状态", "项目/车型", "发布属性", "部门", "申请人", "零件号",
+            "零件名称", "申请日期", "最新审批记录", "签署率", "待审批人员",
+        ),
+        dimension_labels=MappingProxyType({"section": "部门", "model": "发布属性", "stage": "项目 / 车型"}),
     ),
     FormSpec(
         form_key="tdc_sor",
@@ -147,6 +179,7 @@ FORMS: tuple[FormSpec, ...] = (
             "流水单号", "审批状态", "车型项目", "类型", "科室", "部门",
             "零件号", "零件名称", "申请日期", "最新完成节点", "SOR号",
         ),
+        dimension_labels=MappingProxyType({"section": "科室", "model": "类型", "stage": "车型项目"}),
     ),
 )
 

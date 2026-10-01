@@ -59,8 +59,9 @@ def test_plugin_loads_with_sor_page(client) -> None:
     data = http.get("/api/host/manifest").get_json()["data"]
     record = next(p for p in data["plugins"] if p["id"] == "deliverable-forms")
     assert record["status"] == "loaded", record.get("error")
-    assert {"plugin": "deliverable-forms", "page": "tdc_sor"}.items() <= data["nav"][0].items()
+    assert {"plugin": "deliverable-forms", "page": "index"}.items() <= data["nav"][0].items()
     assert http.get("/plugins/deliverable-forms/static/pages/tdc_sor.json").status_code == 200
+    assert http.get("/plugins/deliverable-forms/static/index.js").status_code == 200
 
 
 def test_forms_endpoint_lists_registry(client) -> None:
@@ -125,13 +126,9 @@ def test_legacy_form_dicts_are_derived_from_registry() -> None:
     assert form_analysis._SHEET_NAMES_BY_FORM_KEY["aras_ncr_detail"] == ["整车", "发动机"]
 
 
-def test_snapshot_table_check_matches_registry_until_removed() -> None:
-    # Sprint 2 会移除 form_key 的 SQL CHECK；在那之前它必须与 registry 一致。
-    ddl = db_manager._DELIVERABLE_FORM_SNAPSHOTS_DDL
-    match = re.search(r"form_key\s+TEXT NOT NULL CHECK \(form_key IN \(([^)]*)\)\)", ddl)
-    assert match is not None
-    check_keys = set(re.findall(r"'([^']+)'", match.group(1)))
-    assert check_keys == set(form_registry.FORM_KEYS)
+def test_snapshot_table_has_no_form_key_check() -> None:
+    # Sprint 2 移除了 form_key 的 SQL CHECK：新增表单只改 core/form_registry.py。
+    assert re.search(r"form_key\s+IN", db_manager._DELIVERABLE_FORM_SNAPSHOTS_DDL) is None
 
 
 def test_plugin_counts_match_legacy_view_summary(client) -> None:
@@ -143,3 +140,49 @@ def test_plugin_counts_match_legacy_view_summary(client) -> None:
     assert len(rows) == legacy["total"]
     assert sum(row["_completed"] is True for row in rows) == legacy["completed"]
     assert sum(row["_completed"] is False for row in rows) == legacy["incomplete"]
+
+
+def test_every_form_has_a_schema_page_using_flattened_fields(client) -> None:
+    """每张注册表单都有分析页，且页面引用的字段都在展平行里出现。"""
+    http, _ = client
+    manifest = json.loads((PLUGIN_DIR / "plugin.json").read_text(encoding="utf-8"))
+    page_ids = {page["id"] for page in manifest["pages"]}
+    forms = http.get("/api/p/deliverable-forms/forms").get_json()["data"]
+    meta_fields = {"id", "_status", "_completed", "_overdue", "_submitted"} | {
+        "_" + dimension for dimension in ("department", "section", "model", "stage")
+    }
+    for form in forms:
+        spec = form_registry.get_form(form["formKey"])
+        assert form["page"] in page_ids
+        schema = json.loads((PLUGIN_DIR / "static" / "pages" / f"{form['page']}.json").read_text(encoding="utf-8"))
+        assert schema["source"] == f"forms/{spec.form_key}/rows"
+        allowed = meta_fields | set(spec.page_columns)
+        used = {f["key"] for f in schema["filters"]} | {c["key"] for c in schema["columns"]}
+        used |= {chart["groupBy"] for chart in schema["charts"]}
+        assert used <= allowed, (spec.form_key, used - allowed)
+        definition = form_definition(spec.form_key)
+        labels = {str(column.get("label") or "") for column in definition["columns"]}
+        assert set(spec.page_columns) <= labels, spec.form_key
+
+
+def test_registry_endpoint_carries_ui_metadata(client) -> None:
+    http, _ = client
+    entries = {e["formKey"]: e for e in http.get("/api/p/deliverable-forms/registry").get_json()["data"]}
+    assert set(entries) == set(form_registry.FORM_KEYS)
+    assert entries["tdc_sor"]["dimensionLabels"]["stage"] == "车型项目"
+    assert entries["tdc_sor"]["terminalStatuses"] == sorted(form_registry.get_form("tdc_sor").terminal_statuses)
+    assert entries["VPI-T2-D3"]["dimensionLabels"]["status"] == "状态"
+
+
+def test_rows_carry_dimensions_and_forms_list_snapshot_info(client) -> None:
+    http, db = client
+    db.publish_deliverable_form_snapshot(_sor_snapshot("2026-09-06T10:00:00Z"))
+    rows = http.get("/api/p/deliverable-forms/forms/tdc_sor/rows").get_json()["data"]["rows"]
+    by_no = {row["流水单号"]: row for row in rows}
+    assert by_no["F999X-SOR-001"]["_stage"] == "F999X"
+    assert by_no["F999X-SOR-001"]["_section"] == "车身科"
+    assert by_no["F999X-SOR-001"]["_submitted"] == "2026-08-20"
+    forms = {f["formKey"]: f for f in http.get("/api/p/deliverable-forms/forms").get_json()["data"]}
+    assert forms["tdc_sor"]["rowCount"] == 3
+    assert forms["tdc_sor"]["updatedAt"] == "2026-09-06T10:00:00Z"
+    assert forms["aras_paa"]["updatedAt"] is None

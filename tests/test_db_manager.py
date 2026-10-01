@@ -407,8 +407,7 @@ def test_form_snapshot_check_constraint_rebuild_allows_tdc_data_model(
             "SELECT sql FROM sqlite_master "
             "WHERE type = 'table' AND name = 'deliverable_form_snapshots'"
         ).fetchone()["sql"] or ""
-        assert "tdc_data_model" in ddl
-        assert "tdc_sor" in ddl
+        assert "form_key IN" not in ddl
         assert "deliverable_form_snapshots_rebuild" not in ddl
         assert not db.table_exists("deliverable_form_snapshots_rebuild")
         assert c.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -443,16 +442,13 @@ def test_form_snapshot_check_constraint_rebuild_allows_tdc_data_model(
         ).fetchone()[0]
         assert stored == 1
 
-    # 未知键仍被 CHECK 约束拒绝。
-    with db.get_connection() as c:
-        with pytest.raises(sqlite3.IntegrityError):
-            c.execute(
-                "INSERT INTO deliverable_form_snapshots "
-                "(snapshot_key, form_key, report_type, snapshot_at, row_count, "
-                "schema_json, summary_json, charts_json) "
-                "VALUES ('bad-key', 'unknown_form', 'ewo', "
-                "'2026-09-02T00:00:00Z', 0, '{}', '{}', '{}')"
-            )
+    # 表上已无 CHECK；未知键由写入前的注册表校验拒绝。
+    with pytest.raises(ValueError):
+        db.publish_deliverable_form_snapshot({
+            "formKey": "unknown_form", "reportType": "ewo",
+            "snapshotAt": "2026-09-02T00:00:00Z",
+            "schema": {}, "summary": {}, "charts": {}, "rows": [],
+        })
 
 
 def test_excel_task_artifact_schema_contract(tmp_db: DatabaseManager) -> None:
@@ -699,7 +695,7 @@ def test_form_snapshot_check_constraint_rebuild_allows_tdc_sor(
             "SELECT sql FROM sqlite_master "
             "WHERE type = 'table' AND name = 'deliverable_form_snapshots'"
         ).fetchone()["sql"] or ""
-        assert "tdc_sor" in ddl
+        assert "form_key IN" not in ddl
         assert "deliverable_form_snapshots_rebuild" not in ddl
         assert c.execute("PRAGMA foreign_key_check").fetchall() == []
 
