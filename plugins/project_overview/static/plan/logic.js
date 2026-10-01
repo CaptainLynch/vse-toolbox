@@ -232,6 +232,12 @@ export function mapServerFieldErrors(fields, rows) {
   const errors = {};
   Object.keys(fields || {}).forEach((key) => {
     const message = text(fields[key]);
+    // Only `milestones...` keys belong to a row; e.g. `updatedAt` / `request`
+    // go to the form message (legacy mapped `updatedAt` onto row 1's date).
+    if (!/^milestones\b/.test(String(key))) {
+      errors.draft = message;
+      return;
+    }
     const match = String(key).match(/\[(\d+)\]|\.(\d+)\b/);
     const index = match ? Number(match[1] ?? match[2]) : -1;
     const row = list[index] || list[0];

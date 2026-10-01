@@ -33,7 +33,9 @@ export function MilestoneReadonlyList({ milestones, saving, restoreNotice, onEdi
         <span class=${`milestone-type-dot is-${item.type || "planned"}`}></span>
         <span class="milestone-main-copy">
           <strong class="milestone-main-name">${redactText(item.name)}</strong>
-          <time class="milestone-main-date">${item.date || ""}</time>
+          ${item.date
+            ? html`<time class="milestone-main-date" dateTime=${item.date}>${item.date}</time>`
+            : html`<span class="milestone-main-date is-unscheduled">待排期</span>`}
           <span class="milestone-main-status">${item.status || ""}</span>
         </span>
         <span class="milestone-main-order">${index + 1}</span>
