@@ -1,0 +1,909 @@
+/* Host chrome: top bar, version / login dialogs and the task center drawer.
+   Self-contained: relies only on the theme tokens (--canvas, --ink, ...) and
+   never on legacy style.css component rules. Everything is scoped to
+   #host-chrome and hc-* classes. */
+
+#host-chrome,
+#host-chrome *,
+#host-chrome *::before,
+#host-chrome *::after {
+  box-sizing: border-box;
+}
+
+#host-chrome button,
+#host-chrome input {
+  font: inherit;
+}
+
+#host-chrome p {
+  margin-top: 0;
+}
+
+#host-chrome h1,
+#host-chrome h3,
+#host-chrome h4 {
+  color: var(--ink);
+  letter-spacing: 0;
+}
+
+.hc-eyebrow {
+  margin: 0 0 5px;
+  color: var(--muted-soft);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.hc-field-note {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* ── Top bar ───────────────────────────────────────────────────────── */
+
+.hc-top-bar {
+  min-height: 88px;
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) auto auto;
+  align-items: center;
+  gap: 18px;
+  padding: 18px;
+  background: var(--surface-soft);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  box-shadow: var(--shadow-soft);
+}
+
+/* Plugin entries make the single-row bar too narrow: nav gets its own row. */
+.hc-top-bar.has-plugin-nav {
+  grid-template-columns: minmax(260px, 1fr) auto;
+}
+
+.hc-top-bar.has-plugin-nav .hc-nav {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  justify-self: start;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.hc-top-bar.has-plugin-nav .hc-nav a {
+  white-space: nowrap;
+}
+
+.hc-brand {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.hc-brand-mark {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  color: #fff;
+  background: var(--primary);
+  border-radius: 12px;
+  font-family: var(--font-display);
+  font-size: 28px;
+}
+
+#host-chrome .hc-brand-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: 500;
+  line-height: 1.05;
+}
+
+.hc-version-chip,
+.hc-theme-toggle {
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 12px;
+  color: var(--muted);
+  background: var(--canvas);
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.hc-version-chip {
+  cursor: pointer;
+  user-select: none;
+  transition: transform 0.1s ease, border-color 0.15s ease;
+}
+
+.hc-version-chip:hover {
+  border-color: var(--primary);
+  transform: translateY(-1px);
+}
+
+.hc-version-chip:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.hc-theme-toggle {
+  min-width: 78px;
+  cursor: pointer;
+}
+
+.hc-theme-toggle:hover,
+.hc-nav a:hover {
+  color: var(--ink);
+  border-color: var(--hairline-strong);
+}
+
+.hc-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  background: var(--canvas);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+}
+
+.hc-nav a {
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 14px;
+  color: var(--muted);
+  text-decoration: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.hc-nav a.active {
+  color: #fff;
+  background: var(--primary);
+}
+
+.hc-nav a.active:hover {
+  color: #fff;
+  background: var(--primary-active);
+}
+
+.hc-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
+/* ── Session badges ────────────────────────────────────────────────── */
+
+.hc-session-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 8px;
+  background: var(--surface-soft);
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.hc-badge-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hc-session-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: var(--surface-card);
+  color: var(--muted);
+  border: 1px solid var(--hairline);
+  transition: all 0.2s ease;
+}
+
+.hc-badge-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted-soft);
+}
+
+.hc-session-badge.is-authenticated {
+  color: var(--ink);
+  border-color: color-mix(in srgb, var(--success) 40%, var(--hairline));
+}
+
+.hc-session-badge.is-authenticated .hc-badge-dot {
+  background: var(--success);
+  box-shadow: 0 0 4px var(--success);
+}
+
+.hc-session-badge.is-expired {
+  color: var(--ink);
+  border-color: color-mix(in srgb, var(--warning) 50%, var(--hairline));
+}
+
+.hc-session-badge.is-expired .hc-badge-dot {
+  background: var(--warning);
+}
+
+.hc-login-btn {
+  background: var(--surface-card);
+  color: var(--ink);
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  cursor: pointer;
+  border: 1px solid var(--hairline-strong);
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.hc-login-btn:hover {
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
+}
+
+/* ── Task center button ────────────────────────────────────────────── */
+
+.hc-task-center-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  position: relative;
+  background: var(--surface-soft, #f0f4f9);
+  border: 1px solid var(--hairline, #d0d7de);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text, #1f2328);
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.hc-task-center-btn:hover {
+  background: var(--surface-sunken, #e4e9f0);
+  border-color: var(--muted, #8c959f);
+}
+
+.hc-task-center-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--primary, #0969da);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* author display rules beat the UA [hidden] style; restore it explicitly */
+.hc-task-center-badge[hidden] {
+  display: none;
+}
+
+/* ── Modal dialogs (login, version) ────────────────────────────────── */
+
+.hc-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.hc-modal[hidden] {
+  display: none !important;
+}
+
+.hc-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(18, 16, 14, 0.6);
+  backdrop-filter: blur(2px);
+}
+
+.hc-modal-card {
+  position: relative;
+  z-index: 1;
+  width: min(100%, 540px);
+  background: var(--canvas);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 8px;
+  box-shadow: var(--shadow-soft);
+  padding: 24px;
+  overflow-y: auto;
+  max-height: 90vh;
+}
+
+.hc-modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--hairline);
+  margin-bottom: 16px;
+}
+
+#host-chrome .hc-modal-head h3 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 500;
+  line-height: 1.15;
+}
+
+.hc-modal-close {
+  background: transparent;
+  border: none;
+  font-size: 24px;
+  line-height: 1;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0 4px;
+  border-radius: 4px;
+}
+
+.hc-modal-close:hover {
+  color: var(--ink);
+}
+
+.hc-version-dl {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 8px 14px;
+  margin: 0 0 16px;
+  font-size: 13px;
+}
+
+.hc-version-dl dt {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.hc-version-dl dd {
+  margin: 0;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+/* ── Login form ────────────────────────────────────────────────────── */
+
+.hc-login-notice {
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin-bottom: 14px;
+  font-size: 13px;
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--primary) 40%, transparent);
+  color: var(--ink);
+}
+
+.hc-login-form {
+  margin-top: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--hairline);
+  display: grid;
+  gap: 10px;
+}
+
+.hc-login-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.hc-field {
+  display: grid;
+  gap: 4px;
+}
+
+.hc-field > span {
+  display: block;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.hc-field input {
+  width: 100%;
+  min-height: 38px;
+  padding: 8px 10px;
+  color: var(--body);
+  background: var(--canvas);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 8px;
+  outline: none;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.hc-field input:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 18%, transparent);
+}
+
+.hc-scope-card {
+  margin-top: 6px;
+  padding: 12px;
+  background: var(--surface-soft);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.hc-scope-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.hc-scope-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--success) 20%, transparent);
+  color: var(--success);
+  font-weight: bold;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.hc-scope-desc {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.hc-scope-desc strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.hc-scope-desc span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.hc-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.hc-checkbox-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  flex: 0 0 auto;
+  cursor: pointer;
+}
+
+.hc-checkbox-row span {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.hc-scope-checkbox {
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--hairline);
+  font-size: 12px;
+}
+
+.hc-login-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.hc-segment,
+.hc-primary-btn {
+  min-height: 40px;
+  padding: 0 13px;
+  color: var(--muted);
+  background: var(--canvas);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.hc-segment:hover {
+  color: #fff;
+  border-color: var(--primary);
+  background: var(--primary);
+}
+
+.hc-primary-btn {
+  min-width: 132px;
+  color: #fff;
+  background: var(--primary);
+  border-color: var(--primary);
+  font-weight: 700;
+}
+
+.hc-primary-btn:hover {
+  background: var(--primary-active);
+  border-color: var(--primary-active);
+}
+
+.hc-primary-btn:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+.hc-status-msg {
+  min-height: 18px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.hc-status-msg.is-ok { color: var(--success); }
+.hc-status-msg.is-warn { color: var(--warning); }
+.hc-status-msg.is-error { color: var(--error); }
+
+/* ── Task center drawer ────────────────────────────────────────────── */
+
+.hc-drawer-container {
+  position: fixed;
+  inset: 0;
+  z-index: 1050;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.hc-drawer-container[hidden] {
+  display: none;
+}
+
+.hc-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+
+.hc-drawer-container.is-open .hc-drawer-backdrop {
+  opacity: 1;
+}
+
+.hc-drawer {
+  position: relative;
+  width: 440px;
+  max-width: 100vw;
+  height: 100%;
+  background: var(--surface, #ffffff);
+  box-shadow: -4px 0 20px rgba(0, 0, 0, 0.15);
+  display: flex;
+  flex-direction: column;
+  transform: translateX(100%);
+  transition: transform 0.25s ease-in-out;
+  z-index: 1051;
+}
+
+.hc-drawer-container.is-open .hc-drawer {
+  transform: translateX(0);
+}
+
+.hc-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--hairline, #d0d7de);
+  background: var(--surface-soft, #f6f8fa);
+}
+
+.hc-drawer-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+#host-chrome .hc-drawer-title-wrap h3 {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text, #1f2328);
+}
+
+.hc-drawer-active-chip {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: #ddf4ff;
+  color: #0969da;
+  font-weight: 500;
+}
+
+.hc-drawer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hc-icon-btn {
+  background: transparent;
+  border: 1px solid var(--hairline, #d0d7de);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 4px 8px;
+  color: var(--text, #1f2328);
+}
+
+.hc-icon-btn:hover {
+  background: var(--surface-sunken, #e4e9f0);
+}
+
+.hc-drawer-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--hairline, #d0d7de);
+  background: var(--surface, #ffffff);
+  padding: 0 16px;
+  gap: 16px;
+}
+
+.hc-task-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 10px 4px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted, #57606a);
+  cursor: pointer;
+}
+
+.hc-task-tab.active {
+  color: var(--primary, #0969da);
+  border-bottom-color: var(--primary, #0969da);
+  font-weight: 600;
+}
+
+.hc-drawer-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.hc-drawer-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  color: var(--muted, #57606a);
+  font-size: 14px;
+}
+
+.hc-loading {
+  margin: 0;
+  color: var(--muted-soft);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.hc-task-items {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.hc-task-card {
+  border: 1px solid var(--hairline, #d0d7de);
+  border-radius: 8px;
+  padding: 14px;
+  background: var(--surface, #ffffff);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: box-shadow 0.15s ease;
+}
+
+.hc-task-card:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.hc-task-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.hc-task-card-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+#host-chrome .hc-task-card-title {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--text, #1f2328);
+  margin: 0;
+}
+
+.hc-task-card-meta {
+  font-size: 11px;
+  color: var(--muted, #57606a);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.hc-task-status {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.hc-task-status.is-queued { background: #f6f8fa; color: #57606a; border: 1px solid #d0d7de; }
+.hc-task-status.is-running { background: #ddf4ff; color: #0969da; }
+.hc-task-status.is-succeeded { background: #dafbe1; color: #1a7f37; }
+.hc-task-status.is-failed { background: #ffebe9; color: #cf222e; }
+.hc-task-status.is-cancelled { background: #f6f8fa; color: #8c959f; }
+
+.hc-task-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.hc-task-progress-bg {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface-sunken, #e4e9f0);
+  overflow: hidden;
+}
+
+.hc-task-progress-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--primary, #0969da);
+  transition: width 0.3s ease;
+}
+
+.hc-task-progress-text {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--muted, #57606a);
+}
+
+.hc-task-error {
+  background: #fff8f8;
+  border: 1px solid #ffdcd7;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: #cf222e;
+  word-break: break-all;
+}
+
+.hc-task-manual-check {
+  background: #fff8ef;
+  border-color: #ffdf9e;
+  color: #9a6700;
+}
+
+.hc-task-card-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.hc-task-action {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid var(--hairline, #d0d7de);
+  background: var(--surface-soft, #f6f8fa);
+  color: var(--text, #1f2328);
+  font-weight: 500;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.hc-task-action:hover { background: var(--surface-sunken, #e4e9f0); }
+.hc-task-action.is-cancel { color: #cf222e; border-color: #ffdcd7; }
+.hc-task-action.is-cancel:hover { background: #ffebe9; }
+.hc-task-action.is-download { color: #1a7f37; border-color: #b4f0c2; }
+.hc-task-action.is-download:hover { background: #dafbe1; }
+.hc-task-action.is-retry { color: #0969da; border-color: #b6e3ff; }
+.hc-task-action.is-retry:hover { background: #ddf4ff; }
+
+/* ── Responsive ────────────────────────────────────────────────────── */
+
+@media (max-width: 900px) {
+  .hc-top-bar,
+  .hc-top-bar.has-plugin-nav {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .hc-top-bar.has-plugin-nav .hc-nav {
+    grid-row: auto;
+  }
+
+  .hc-nav,
+  .hc-theme-toggle {
+    width: 100%;
+  }
+
+  .hc-actions {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 560px) {
+  .hc-brand { flex-wrap: wrap; }
+  #host-chrome .hc-brand-title { font-size: 25px; }
+
+  .hc-nav {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .hc-top-bar.has-plugin-nav .hc-nav a {
+    white-space: normal;
+  }
+
+  .hc-nav a {
+    padding: 0 8px;
+  }
+
+  .hc-primary-btn { width: 100%; }
+}
