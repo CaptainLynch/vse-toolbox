@@ -338,7 +338,7 @@ def _manual_sections() -> str:
         | 插件宿主/新功能插件 | `host/registry.py` | `host/plugin.py`, `host/context.py`, `tools/new_plugin.py`, `docs/PLUGIN_REFACTOR_PLAN_20261001.md` | `tests/test_plugin_host.py` |
         | 插件前端 Shell/UI Kit | `web/static/host/shell.js` | `web/static/host/kit.js`, `web/static/host/pages.js`, `web/static/host/api.js` | `tests/test_host_frontend.py` |
         | 交付物表单插件/表单定义 | `core/form_registry.py` | `plugins/deliverable_forms/backend.py`, `services/deliverable_form_analysis.py` | `tests/test_plugin_deliverable_forms.py` |
-        | Web/API/UI | `web/app.py` | `web/static/app.js`, `web/templates/dashboard.html` | `tests/*web*.py` |
+        | Web/API/UI | `web/app.py` | `web/static/host/shell.js`, `web/templates/dashboard.html` | `tests/*web*.py` |
         | Aras EWO/PAA/NCR | `web/app.py` | `services/aras_auth.py`, `services/aras_crawler.py`, `services/aras_export.py` | `tests/*aras*.py` |
         | TDC/SOR/数模/A 面 | `web/app.py` | `services/tdc_auth.py`, `services/tdc_crawler.py`, `services/tdc_export_cache.py` | `tests/*tdc*.py` |
         | 项目状态/交付物 | `services/project_status_sync_runner.py` | `services/project_status_*.py`, `core/db_manager.py` | `tests/*project_status*.py` |

@@ -10,44 +10,18 @@ import { VersionDialog, loadAppVersion, versionStore } from "./VersionDialog.js"
 
 export const CHROME_MOUNT_ID = "host-chrome";
 
-// Legacy template blocks the host chrome replaces. Removing them before the
-// legacy DOMContentLoaded setup runs leaves its setup functions nothing to
-// bind to, so there is never a second top bar or dialog.
-export const LEGACY_CHROME_SELECTORS = [
-  "header.top-bar",
-  "#in-place-login-modal",
-  "#version-detail-modal",
-  "#task-center-drawer-container",
-];
-
-function removeLegacyChrome() {
-  const legacyBar = document.querySelector("header.top-bar");
-  const anchor = legacyBar ? { parent: legacyBar.parentNode, next: legacyBar } : null;
-  const chip = document.getElementById("app-version-chip");
-  const versionText = chip && chip.textContent.trim();
-  return { anchor, versionText, remove() {
-    LEGACY_CHROME_SELECTORS.forEach((selector) => {
-      document.querySelectorAll(selector).forEach((node) => node.remove());
-    });
-  } };
-}
-
-function ensureMount(anchor) {
+function ensureMount() {
   let mount = document.getElementById(CHROME_MOUNT_ID);
   if (mount) return mount;
   mount = document.createElement("div");
   mount.id = CHROME_MOUNT_ID;
-  if (anchor && anchor.parent) {
-    anchor.parent.insertBefore(mount, anchor.next);
-  } else {
-    const shell = document.querySelector(".app-shell") || document.body;
-    shell.insertBefore(mount, shell.firstChild);
-  }
+  const shell = document.querySelector(".app-shell") || document.body;
+  shell.insertBefore(mount, shell.firstChild);
   return mount;
 }
 
-function Chrome({ legacyNav }) {
-  return html`<${TopBar} legacyNav=${legacyNav} />
+function Chrome() {
+  return html`<${TopBar} />
     <${VersionDialog} />
     <${LoginDialog} />
     <${TaskCenterDrawer} />`;
@@ -56,17 +30,16 @@ function Chrome({ legacyNav }) {
 let handle = null;
 
 /** Mount once; later calls return the same handle ({setNav, mount}). */
-export function mountChrome({ legacyNav = [] } = {}) {
+export function mountChrome() {
   if (handle) return handle;
   applyTheme(preferredTheme());
   installSessionGlobals();
 
-  const legacy = removeLegacyChrome();
-  if (legacy.versionText) versionStore.set((prev) => ({ ...prev, initialText: legacy.versionText }));
-  const mount = ensureMount(legacy.anchor);
-  legacy.remove();
+  const mount = ensureMount();
+  const initialText = mount.dataset.version;
+  if (initialText) versionStore.set((prev) => ({ ...prev, initialText }));
 
-  render(html`<${Chrome} legacyNav=${legacyNav} />`, mount);
+  render(html`<${Chrome} />`, mount);
   installTaskCenterKick();
 
   loadAppVersion();

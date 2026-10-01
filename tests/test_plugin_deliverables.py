@@ -36,7 +36,7 @@ def test_plugin_loads_with_module_page(app) -> None:
     assert record["status"] == "loaded", record.get("error")
     assert record["name"] == "交付物"
     assert record["pages"] == [{"id": "catalog", "title": "交付物工作台", "kind": "module", "module": "catalog.js"}]
-    assert data["nav"] == [{"plugin": "deliverables", "title": "交付物（新）", "page": "catalog", "order": 15}]
+    assert data["nav"] == [{"plugin": "deliverables", "title": "交付物", "page": "catalog", "order": 15}]
 
 
 @pytest.mark.parametrize("name", MODULES)

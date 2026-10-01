@@ -1,26 +1,16 @@
 // Plugin shell: mounts the host chrome (top bar, global dialogs), reads
 // /api/host/manifest for the navigation and owns every `#p/<plugin>/<page>`
-// route. All other hashes stay with the legacy handleHashChange in app.js
-// until their page is migrated.
+// route. Hashes from before the plugin refactor are redirected through
+// legacyRedirect(); anything else falls back to the first nav entry.
 import { api, pluginApi } from "./api.js";
 import { mountChrome } from "./chrome/index.js";
+import { sortNav } from "./chrome/TopBar.js";
+import { legacyRedirect } from "./legacy-routes.js";
 import * as kit from "./kit.js";
 import { SCHEMA_RENDERERS } from "./pages.js";
 import { html, render, useEffect, useErrorBoundary, useState } from "./vendor/preact-htm.js";
 
-// LEGACY_NAV ─ TEMPORARY. Static links to panels still rendered by the
-// legacy app.js. Empty this list when the overview / deliverables plugins
-// replace those panels; everything else in the nav comes from the manifest.
-// `match` tests the hash path (without "#" and "?query").
-export const LEGACY_NAV = [
-  {
-    key: "overview",
-    title: "概览",
-    href: "#overview",
-    match: /^(?:|dashboard|overview(?:[-/].*)?|archive-deliverable\/.*|deliverables?\/.+|deliverable-detail\/.*)$/,
-  },
-  { key: "deliverables", title: "交付物", href: "#deliverables", match: /^deliverables$/ },
-];
+export const DEFAULT_ROUTE = "#p/project-overview/status";
 
 const ROUTE = /^#p\/([a-z][a-z0-9_-]{1,39})\/([a-z][a-z0-9_-]{1,39})(?:\?.*)?$/;
 
@@ -94,26 +84,33 @@ function pageTitle(manifest, route) {
   return (page && page.title) || "插件";
 }
 
+/** Where an unroutable hash goes: its legacy target, else the first nav entry. */
+export function fallbackRoute(hash, nav = []) {
+  const legacy = legacyRedirect(hash);
+  if (legacy) return legacy;
+  const first = sortNav(nav)[0];
+  return first ? `#p/${first.plugin}/${first.page}` : DEFAULT_ROUTE;
+}
+
 function syncRoute(manifest, mount) {
   // Nav active state is owned by the host TopBar (it follows the hash).
   const route = parsePluginRoute(window.location.hash);
   if (!route) {
+    const target = fallbackRoute(window.location.hash, manifest.nav);
+    if (target !== window.location.hash) {
+      window.location.replace(target);  // fires hashchange → syncRoute again
+      return;
+    }
     render(null, mount);
-    mount.hidden = true;
     return;
   }
-  document.querySelectorAll(".panel-section").forEach((panel) => {
-    panel.hidden = panel !== mount;
-  });
-  document.body.dataset.sessionView = "plugin";
   const title = document.getElementById("session-title");
   if (title) title.textContent = pageTitle(manifest, route);
   render(html`<${PluginPage} manifest=${manifest} route=${route} />`, mount);
 }
 
 export async function startShell(mount = document.getElementById("plugin-host")) {
-  // The chrome mounts synchronously, before the legacy DOMContentLoaded setup.
-  const chrome = mountChrome({ legacyNav: LEGACY_NAV });
+  const chrome = mountChrome();
   if (!mount) return null;
   let manifest;
   try {

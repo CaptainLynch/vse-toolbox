@@ -64,15 +64,13 @@ def test_plugin_frontend_respects_boundaries() -> None:
 # ── modes.js 与旧页面 / 服务端契约的一致性（node）─────────────────────
 
 _NODE_SCRIPT = r"""
-const [staticUri, appJsPath] = process.argv.slice(1);
+const [staticUri, legacyPath] = process.argv.slice(1);
 const fs = await import("node:fs");
 const modes = await import(staticUri + "/modes.js");
 const lib = await import(staticUri + "/lib.js");
 
-const source = fs.readFileSync(appJsPath, "utf-8");
-const start = source.indexOf("const ARAS_MODES = {");
-const end = source.indexOf("\n};\n", start);
-const legacy = Function("return (" + source.slice(start + "const ARAS_MODES = ".length, end + 2) + ")")();
+// ARAS_MODES as the legacy app.js defined it, frozen when app.js was deleted.
+const legacy = JSON.parse(fs.readFileSync(legacyPath, "utf-8"));
 
 const values = {
   ewo: {ewo_no: " EWO-1 ", page: "2", page_size: "", max_records: "100", submit_start: "2026-02-01", submit_end: "2026-01-01"},
@@ -149,7 +147,7 @@ def node_data() -> dict:
     if _node_major() < 22:
         pytest.skip("needs Node 22+ to import ES modules without a package.json")
     result = subprocess.run(
-        ["node", "--input-type=module", "-e", _NODE_SCRIPT, STATIC_DIR.as_uri(), str(REPO_ROOT / "web" / "static" / "app.js")],
+        ["node", "--input-type=module", "-e", _NODE_SCRIPT, STATIC_DIR.as_uri(), str(REPO_ROOT / "tests" / "fixtures" / "legacy_aras_modes.json")],
         capture_output=True,
         text=True,
         encoding="utf-8",

@@ -12,6 +12,6 @@
     {"id": "archive-deliverable", "title": "归档交付物详情", "kind": "module", "module": "archive-deliverable.js"}
   ],
   "nav": [
-    {"title": "概览（新）", "page": "status", "order": 10}
+    {"title": "概览", "page": "status", "order": 10}
   ]
 }
