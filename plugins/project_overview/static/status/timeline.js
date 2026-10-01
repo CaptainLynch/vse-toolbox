@@ -11,7 +11,7 @@ export function PencilIcon() {
 
 /** 编辑主计划 now navigates to the plan page (legacy switched to the 主计划维护 tab). */
 export function EditPlanLink({ withIcon = true }) {
-  return html`<a class="timeline-edit-btn" href=${pageHash("plan")} title="编辑主计划" aria-label="编辑主计划">
+  return html`<a class="timeline-edit-btn" href=${pageHash("plan", { edit: "milestones" })} title="编辑主计划" aria-label="编辑主计划">
     ${withIcon ? html`<${PencilIcon} />` : null}<span>编辑主计划</span>
   </a>`;
 }
