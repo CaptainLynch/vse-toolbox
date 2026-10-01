@@ -160,17 +160,19 @@ def test_every_api_path_exists_in_url_map(app) -> None:
         "/api/deliverable-forms/X1/view", "/api/deliverable-forms/X1/rows", "/api/project-status/section-rollup",
     }
     assert expected <= paths, expected - paths
-    # The legacy evidence panel also calls this artifact-metadata route, which the
-    # backend never registered; the page keeps the call (parity) and shows its
-    # "读取产物失败" error. Reported as a backend gap rather than added here.
-    known_missing = {"/api/project-status/runs/X1/artifacts"}
     missing = []
-    for path in sorted(paths - known_missing):
-        try:
-            adapter.match(path, method="GET")
-        except MethodNotAllowed:
-            pass
-        except NotFound:
+    for path in sorted(paths):
+        # Placeholders stand in for ids; run ids are integer-typed routes.
+        candidates = (path, path.replace("X1", "1"))
+        for candidate in candidates:
+            try:
+                adapter.match(candidate, method="GET")
+                break
+            except MethodNotAllowed:
+                break
+            except NotFound:
+                continue
+        else:
             missing.append(path)
     assert not missing, missing
 

@@ -1,5 +1,27 @@
 # Current State
 
+## 2026-10-01 插件化重构 S1–S4 代码完成（PR #2，分支 refactor/plugin-host）
+
+- **完成**：宿主 + 插件架构全部落地，旧前端整体退役。
+  - 页面全部是插件：`project_overview`（状态、明细、主计划、交付物详情、归档交付物详情）、
+    `deliverables`（目录）、`system_query`、`deliverable_forms`、`excel_tasks`、
+    `scheduled_archive`、`settings`（含插件更新页）。
+  - 顶栏、登录、任务中心、版本弹窗在 `web/static/host/chrome/`；`dashboard.html` 只剩宿主外壳。
+  - `web/static/app.js`、`style.css`、`node-overview.*` 已删除；主题变量与基础样式在
+    `web/static/host/base.css`。旧书签由 `web/static/host/legacy-routes.js` 转到 `#p/...`，
+    未知哈希回到第一个导航项。
+  - 签名插件包（`.vsepkg`）导入、重启生效、失败自动回退、手动回滚；宿主随包插件版本不低于
+    已安装包时优先（superseded）。DatabaseManager 按领域拆为 `core/repos/`，schema 仍为 v14。
+- **门禁**：全量 2504 passed，失败只有 4 个已知 Windows 专属用例（agent_supervisor relay
+  missing key、excel_worker source command、tdc_probe_standalone ×2）；项目地图 verified；
+  Playwright 在 1400px / 420px 走遍所有插件页与旧哈希，无 pageerror、无横向滚动
+  （Excel 页在 Linux 上因无 Excel 进程返回 503，属环境）。
+- **已知遗留**：交付物详情的编辑表单与 `shared/status-edit.js` 各有一份实现（行为一致，
+  后续可合并）；系统查询等后端路由仍在 `web/app.py`，尚未搬进插件 Blueprint。
+- **待 Lynch（只能由人完成）**：Windows 上构建 onedir；公司电脑核对概览与表单数字；
+  手工计时"新增展示页 ≤45 分钟"门槛；onedir 宿主升级演练；构建机上运行
+  `tools/plugin_keys.py init` 生成签名密钥（私钥不进仓库、不经飞书）。
+
 ## 2026-09-26 审计闭环：双分页看板+科室归集 审计 4 项发现全部修复，顾问复审认可（任务闭环）
 
 - **审计→修复→顾问复审全流程完成**：code-reviewer 审计（1 Major+2 Minor+1 Nit，A-F 清单）→ 逐条

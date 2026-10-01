@@ -63,8 +63,8 @@
   - `app.js` 里的 `DELIVERABLE_FORM_TABS`、`DELIVERABLE_FORM_FILTER_LABELS`、`DELIVERABLE_FORM_CHART_TITLES` 等字典，改为由 `GET /api/p/deliverable-forms/registry` 下发。
   - `/api/deliverable-forms/*` 保留为旧路径别名。
 - [x] **去掉表单白名单的 SQL CHECK**：做最后一次重建表迁移移除 `form_key` 的 `CHECK`，改由 registry 在写入前校验。之后新增表单不再需要重建表。（2026-10-01：检测式重建，schema 版本保持 14）
-- [ ] **页面切换与回退**：旧深链 `#overview/deliverables/<id>` 重定向到新页面；设置里提供"使用旧版表单页"开关，保留一个版本周期。
-- [ ] **改写相关测试**：把 `test_deliverable_form_ui.py` 和 `test_overview_web.py` 里与表单相关的文本断言，改成 API 契约测试和 Schema 快照测试。
+- [x] **页面切换与回退**：旧深链 `#overview/deliverables/<id>` 重定向到新页面；设置里提供"使用旧版表单页"开关，保留一个版本周期。（2026-10-01：重定向已做；Lynch 选择本 PR 内整体重写并删除旧前端，因此不再提供旧版开关，回退方式是装回上一版宿主包，或回到 `checkpoint/pre-plugin-refactor-20261001`）
+- [x] **改写相关测试**：把 `test_deliverable_form_ui.py` 和 `test_overview_web.py` 里与表单相关的文本断言，改成 API 契约测试和 Schema 快照测试。（`test_deliverable_form_ui.py` 已删除，覆盖改由各插件测试承担）
 - [x] **插件包打包与签名**
   - `tools/build_plugin_pkg.py`：生成 `.vsepkg`，内含 `manifest.json`、文件本身和每个文件的 sha256。
   - 用 Ed25519 私钥签名，私钥只存放在外部构建机。
@@ -79,19 +79,19 @@
 目标：迁移第二大块页面，并让各插件拥有自己的数据。
 
 - [x] **`plugins/system_query/`**：把 Aras 的 EWO、PAA、NCR 进度/明细以及 TDC 查询迁为 L2 页面。`ARAS_MODES` 字典改写为 Schema，约 19 个路由搬入 Blueprint，导出、下载和原位登录复用 Shell 提供的能力。（2026-10-01：页面已迁；路由仍在 web/app.py，Blueprint 搬迁留到概览迁完后统一做）
-- [x] **穿透链接兼容**：从概览跳转到系统查询的旧深链（`#aras-panel?mode=...&from=overview`）继续可用。（旧哈希由 app.js 统一转到 `#p/...`，保留查询参数）
+- [x] **穿透链接兼容**：从概览跳转到系统查询的旧深链（`#aras-panel?mode=...&from=overview`）继续可用。（旧哈希由宿主 `web/static/host/legacy-routes.js` 统一转到 `#p/...`，保留查询参数）
 - [x] **`db_manager` 按领域拆分**：拆出 `ProjectStatusRepo`、`ArchiveRepo`、`ExcelTaskRepo`、`FormSnapshotRepo` 等薄层，表名不变、数据不搬。`DatabaseManager` 保留为兼容入口，内部委托给各 repo。（2026-10-01：`core/repos/` 六个分片 + `core/db_common.py`，DatabaseManager 为门面；Excel 任务表的访问原本就在 `core/excel_tasks.py` 等独立模块，未再拆）
 - [x] **插件迁移版本**：新增 `plugin_schema_versions` 表，把现有的全局 schema v14 冻结为基线，之后的结构变更走各插件自己的 `migrations/`。（`plugin_schema_versions` + `host.migrate()`，只加不减）
-- [ ] **改写相关测试**：把 `test_aras_cli_web.py` 等文件中的源码文本断言改成 API 契约测试。
+- [x] **改写相关测试**：把 `test_aras_cli_web.py` 等文件中的源码文本断言改成 API 契约测试。（2026-10-01：随 app.js 删除一并完成；旧 ARAS_MODES 冻结为 `tests/fixtures/legacy_aras_modes.json` 做对照）
 
 ## Sprint 4：剩余页面迁移与删除 legacy
 
 目标：旧前端整体退役。
 
-- [ ] **迁移剩余 4 个页面**：`excel_tasks`（L3，Excel 路由 13 个）、`scheduled_archive`（L2，10 个）、`settings`（5 个，并合并 S2 做的更新页）、`overview`（项目概览与主计划，L3）。顶栏导航全部由 manifest 生成。
-- [ ] **删除 legacy**：删掉旧 `app.js`，以及 `style.css` 中的旧规则和 `dashboard.html` 中的旧 section。旧 API 别名只保留 CLI 仍在使用的部分。
-- [ ] **清理测试与文档**：源码文本断言归零。更新 `PROJECT_MAP.md` 和 `AGENTS.md`，写明"新功能 = 新插件"的入口。
-- [ ] **宿主升级演练**：宿主包先用手工替换 onedir 的方式演练一次，并写进 `PRODUCTION_OPERATION_GUIDE.md`。是否引入 tufup，等这次演练后再决定。
+- [x] **迁移剩余 4 个页面**：`excel_tasks`（L3，Excel 路由 13 个）、`scheduled_archive`（L2，10 个）、`settings`（5 个，并合并 S2 做的更新页）、`overview`（项目概览与主计划，L3）。顶栏导航全部由 manifest 生成。（2026-10-01：概览拆为 `project_overview`（状态、明细、主计划、交付物详情、归档交付物详情）与 `deliverables`（目录）两个插件，按 Lynch 选择在本 PR 内整体重写）
+- [x] **删除 legacy**：删掉旧 `app.js`，以及 `style.css` 中的旧规则和 `dashboard.html` 中的旧 section。旧 API 别名只保留 CLI 仍在使用的部分。（2026-10-01：`app.js`、`style.css`、`node-overview.*` 已删；主题变量与基础样式移入 `host/base.css`；模板只剩宿主外壳。后端 `/api/...` 路由未删，插件页仍在调用）
+- [x] **清理测试与文档**：源码文本断言归零。更新 `PROJECT_MAP.md` 和 `AGENTS.md`，写明"新功能 = 新插件"的入口。（只检查旧 app.js 源码的测试已删除或改为检查插件源码/接口；接口与安全检查保留）
+- [ ] **宿主升级演练**：宿主包先用手工替换 onedir 的方式演练一次，并写进 `PRODUCTION_OPERATION_GUIDE.md`。是否引入 tufup，等这次演练后再决定。（步骤已写入第 7 节；实际演练需在 Windows 上由人完成）
 
 ## 风险与应对
 

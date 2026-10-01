@@ -70,8 +70,10 @@ navigation index, not a replacement for reading the target implementation.
 
 - New features are new plugins: `python tools/new_plugin.py <id> --name 名称`
   creates `plugins/<id>/` (`plugin.json`, `backend.py` with `register(host)`,
-  `static/pages/*.json`). Do not add new code to legacy `web/static/app.js`,
-  route bodies in `web/app.py`, or `core/db_manager.py`.
+  `static/pages/*.json`). The legacy `web/static/app.js` / `style.css` are
+  gone: the page is the host shell (`web/static/host/`) plus plugin pages, and
+  old bookmarks redirect via `web/static/host/legacy-routes.js`. Do not add
+  route bodies to `web/app.py` or code to `core/db_manager.py`.
 - Plugins reach shared services only through `host.context` (db, data dir,
   JSON envelope, `local_guard` for every write route) and must not import
   `web.*` or other plugins. Plugin tables use `host.table_prefix` and

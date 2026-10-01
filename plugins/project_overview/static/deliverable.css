@@ -578,3 +578,217 @@
  * pushed the page into horizontal scroll; keep them 1px and anchored. */
 .overview-deliverable-detail-view .policy-segmented { position: relative; }
 .overview-deliverable-detail-view .policy-segmented input { width: 1px; height: 1px; margin: 0; left: 0; top: 0; }
+
+/* Status, chart and editor rules the first copy missed (legacy style.css, scoped). */
+.overview-deliverable-detail-view .detail-edit {
+  min-width: 40px;
+  min-height: 40px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.overview-deliverable-detail-view .detail-edit:hover {
+  color: var(--primary-active);
+  border-color: var(--primary);
+}
+.overview-deliverable-detail-view .detail-edit svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+.overview-deliverable-detail-view .policy-sync-wizard-status {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+.overview-deliverable-detail-view .policy-sync-wizard-status.is-error {
+  color: var(--danger, #b45f5f);
+}
+.overview-deliverable-detail-view .policy-binding-state.is-ready { border-left-color: var(--success);
+}
+.overview-deliverable-detail-view .evidence-sync-status {
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+.overview-deliverable-detail-view .evidence-sync-status.is-busy {
+  color: var(--muted);
+}
+.overview-deliverable-detail-view .evidence-sync-status.is-success {
+  color: var(--success);
+}
+.overview-deliverable-detail-view .evidence-sync-status.is-warning {
+  color: var(--warning);
+}
+.overview-deliverable-detail-view .evidence-sync-status.is-error {
+  color: var(--error);
+}
+.overview-deliverable-detail-view .analysis-action-bar .analysis-sync-status {
+  flex: 1;
+  min-width: 240px;
+}
+.overview-deliverable-detail-view .analysis-chart-fill {
+  height: 100%;
+  min-width: 0;
+  border-radius: inherit;
+  background: var(--primary-active);
+  transition: width 180ms ease;
+}
+.overview-deliverable-detail-view .analysis-chart-fill.is-completed {
+  background: var(--success);
+}
+.overview-deliverable-detail-view .analysis-chart-fill.is-department {
+  background: var(--primary);
+}
+.overview-deliverable-detail-view .deliverable-current-status-chart {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  background: var(--canvas);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+}
+.overview-deliverable-detail-view .ewo-sync-summary-status {
+  color: var(--muted);
+  font-size: 12px;
+}
+.overview-deliverable-detail-view .ewo-sync-summary-status.is-busy {
+  color: var(--primary);
+}
+.overview-deliverable-detail-view .ewo-sync-summary-status.is-success {
+  color: var(--success);
+}
+.overview-deliverable-detail-view .ewo-sync-summary-status.is-warning {
+  color: var(--warning);
+}
+.overview-deliverable-detail-view .ewo-sync-summary-status.is-error {
+  color: var(--error);
+}
+.overview-deliverable-detail-view .analysis-model-match-btn {
+  padding: 4px 8px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.overview-deliverable-detail-view .analysis-model-match-btn.is-active {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+  color: var(--primary-active);
+}
+.overview-deliverable-detail-view .chart-labels-status {
+  margin: 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+.overview-deliverable-detail-view .chart-labels-status.is-error {
+  color: var(--error);
+}
+.overview-deliverable-detail-view .policy-ewo-readiness {
+  margin: 8px 0 0;
+  font-size: 12px;
+}
+.overview-deliverable-detail-view .policy-ewo-readiness.is-ready {
+  color: var(--success);
+}
+.overview-deliverable-detail-view .policy-ewo-readiness.is-disabled {
+  color: var(--error);
+}
+.overview-deliverable-detail-view .policy-discovery-status {
+  color: var(--muted);
+  font-size: 11px;
+}
+.overview-deliverable-detail-view .policy-discovery-status.is-success, .overview-deliverable-detail-view .policy-ewo-readiness.is-ready {
+  color: var(--success);
+}
+.overview-deliverable-detail-view .policy-discovery-status.is-warning {
+  color: var(--warning);
+}
+.overview-deliverable-detail-view .policy-discovery-status.is-error {
+  color: var(--error);
+}
+.overview-deliverable-detail-view .analysis-filter-apply, .overview-deliverable-detail-view .analysis-filter-clear {
+  padding: 5px 10px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.overview-deliverable-detail-view .analysis-filter-apply.is-attention {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 22%, transparent);
+}
+.overview-deliverable-detail-view .analysis-status-chip {
+  display: inline-block;
+  padding: 2px 6px;
+  font-size: 11px;
+  border-radius: 4px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.overview-deliverable-detail-view .analysis-status-chip.is-completed {
+  background: color-mix(in srgb, var(--success) 18%, transparent);
+  color: var(--success);
+}
+.overview-deliverable-detail-view .analysis-status-chip.is-abandoned {
+  background: color-mix(in srgb, var(--muted) 18%, transparent);
+  color: var(--muted);
+}
+.overview-deliverable-detail-view .analysis-status-chip.is-incomplete {
+  background: color-mix(in srgb, var(--error) 15%, transparent);
+  color: var(--error);
+}
+.overview-deliverable-detail-view .analysis-status-chip.is-overdue {
+  background: color-mix(in srgb, var(--error) 18%, transparent);
+  color: var(--error);
+}
+.overview-deliverable-detail-view .analysis-status-chip.is-normal {
+  background: color-mix(in srgb, var(--muted) 14%, transparent);
+  color: var(--muted);
+}
+.overview-deliverable-detail-view .interactive-query-state {
+  justify-self: end;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.overview-deliverable-detail-view .interactive-query-state.is-success {
+  color: var(--success-strong, var(--success));
+  background: var(--success-soft, rgba(34, 128, 82, 0.12));
+}
+.overview-deliverable-detail-view .interactive-query-state.is-warning {
+  color: var(--warning-strong, var(--warning));
+  background: var(--warning-soft, rgba(181, 112, 0, 0.12));
+}
+.overview-deliverable-detail-view .form-snapshot-sync-state {
+  color: var(--muted);
+  font-size: 12px;
+}
+.overview-deliverable-detail-view .form-snapshot-sync-state.is-success { color: var(--success);
+}
+.overview-deliverable-detail-view .form-snapshot-sync-state.is-failed { color: var(--error);
+}
+.overview-deliverable-detail-view .form-snapshot-sync-state.is-needs_attention { color: var(--warning);
+}
+.overview-deliverable-detail-view .form-chart-tabs {
+  display: grid;
+  gap: 10px;
+}
+.overview-deliverable-detail-view .form-trend-point { cursor: pointer; stroke: var(--canvas); stroke-width: 2;
+}
+.overview-deliverable-detail-view .form-trend-point:focus { outline: none;
+}
+.overview-deliverable-detail-view .form-filter-draft-state {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11px;
+}
+.overview-deliverable-detail-view .form-filter-draft-state.is-dirty {
+  color: var(--warning);
+  font-weight: 700;
+}

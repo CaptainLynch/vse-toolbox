@@ -36,19 +36,14 @@ def test_shell_modules_are_served_as_javascript(client, name: str) -> None:
     assert response.mimetype == "text/javascript"
 
 
-def test_dashboard_mounts_shell_after_legacy_script(client) -> None:
+def test_dashboard_is_only_the_plugin_shell(client) -> None:
     html = client.get("/").get_data(as_text=True)
-    assert '<section id="plugin-host" class="panel-section plugin-host" hidden' in html
-    legacy = html.index('src="/static/app.js')
-    shell = html.index('<script type="module" src="/static/host/shell.js')
-    assert legacy < shell
-
-
-def test_legacy_router_yields_plugin_routes() -> None:
-    source = (REPO_ROOT / "web" / "static" / "app.js").read_text(encoding="utf-8")
-    body = source[source.index("function handleHashChange()"):]
-    yield_at = body.index('if (/^p\\//.test(hashPath)) return;')
-    assert yield_at < body.index("archiveDeliverableMatch")
+    assert '<div id="host-chrome" data-version=' in html
+    assert '<section id="plugin-host" class="panel-section plugin-host"' in html
+    assert html.index("/static/host/base.css") < html.index("/static/host/host.css")
+    assert '<script type="module" src="/static/host/shell.js' in html
+    for legacy in ("/static/app.js", "/static/style.css", "node-overview", 'class="top-bar"', "in-place-login-modal"):
+        assert legacy not in html
 
 
 def test_vendored_runtime_matches_recorded_checksum() -> None:

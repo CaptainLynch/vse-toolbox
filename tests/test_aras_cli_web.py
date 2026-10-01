@@ -1,7 +1,6 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import re
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -1956,14 +1955,14 @@ def test_static_guards_for_boundaries_and_credentials() -> None:
     service_text = Path("services/aras_crawler.py").read_text(encoding="utf-8-sig")
     assert not re.search(r"\b(rich|flask|render_template|jsonify|document\.|window\.)\b", service_text)
 
+    frontend = sorted(Path("web/static/host").glob("**/*.js")) + sorted(Path("plugins").glob("*/static/**/*.js"))
     cli_web_text = "\n".join(
         Path(path).read_text(encoding="utf-8-sig")
         for path in [
             "main.py",
             "web/app.py",
             "web/templates/dashboard.html",
-            "web/static/app.js",
-            "web/static/style.css",
+            *(path for path in frontend if "vendor" not in path.parts),
         ]
     )
     assert not re.search(
@@ -1976,59 +1975,6 @@ def test_static_guards_for_boundaries_and_credentials() -> None:
     assert not re.search(
         r"requests\.(?:get|post|head|request)\(",
         Path("tests/test_aras_cli_web.py").read_text(encoding="utf-8-sig"),
-    )
-
-
-def test_static_aras_export_download_markers_and_department_fields() -> None:
-    # 系统查询页面已迁为插件页（plugins/system_query，见 tests/test_plugin_*.py）；
-    # 这里只保留旧页仍在使用的 ARAS_MODES 配置、blob 下载 helper 与共享样式。
-    html_text = Path("web/templates/dashboard.html").read_text(encoding="utf-8-sig")
-    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
-    css_text = Path("web/static/style.css").read_text(encoding="utf-8-sig")
-
-    assert 'style.css?v=' in html_text
-    assert 'app.js?v=' in html_text
-
-    # 导出 / 下载端点在前端配置中
-    assert "/api/aras/ewo/export" in js_text
-    assert "/api/aras/paa/export" in js_text
-    assert "/api/aras/ncr/detail/download" in js_text
-
-    actions_rule = re.search(r"\.actions-block\s*\{([^}]*)\}", css_text)
-    assert actions_rule is not None
-    assert "flex-wrap: wrap" in actions_rule.group(1)
-    xml_actions_rule = re.search(r"\.xml-capture-actions\s*\{([^}]*)\}", css_text)
-    assert xml_actions_rule is not None
-    assert "flex: 1 1 100%" in xml_actions_rule.group(1)
-    secondary_rule = re.search(r"\.xml-capture-actions \.secondary-btn\s*\{([^}]*)\}", css_text)
-    assert secondary_rule is not None
-    assert "white-space: nowrap" in secondary_rule.group(1)
-
-    # XML 取证只挂在用户批准的 EWO/PAA 查询上，不应误出现在 NCR
-    paa_block = js_text[js_text.index("paa: ") : js_text.index('"ncr-progress"')]
-    assert "xmlCapture: true" in paa_block
-
-    # NCR 进度通过后端 Vault 链路生成并下载，同时保留业务部门筛选
-    progress_block = js_text[js_text.index('"ncr-progress"') : js_text.index('"ncr-detail"')]
-    assert 'downloadEndpoint: "/api/aras/ncr/progress/download"' in progress_block
-    assert "exportEndpoint" not in progress_block
-    assert 'exportLabel: "生成并下载"' in progress_block
-    assert "department" in progress_block
-    assert "xmlCapture: true" not in progress_block
-
-    # blob 下载 helper 读取导出状态头并解析 Content-Disposition 文件名
-    assert "X-Export-Row-Count" in js_text
-    assert "X-Export-Truncated" in js_text
-    assert "Content-Disposition" in js_text
-    assert "URL.revokeObjectURL" in js_text
-
-    # 凭据不进 localStorage / sessionStorage（只随 POST body 发送）
-    assert "sessionStorage" not in html_text
-    assert "sessionStorage" not in js_text
-    assert not re.search(
-        r"(?:cookie|token|authorization|sessionid|csrf|password).{0,80}localStorage",
-        html_text + js_text,
-        re.IGNORECASE,
     )
 
 

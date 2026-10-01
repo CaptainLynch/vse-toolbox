@@ -15,7 +15,6 @@ import web.app as web_app
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 HOST_STATIC = REPO_ROOT / "web" / "static" / "host"
-LEGACY_APP_JS = REPO_ROOT / "web" / "static" / "app.js"
 CHROME_MODULES = sorted(p.relative_to(HOST_STATIC).as_posix() for p in (HOST_STATIC / "chrome").glob("*.js"))
 OWN_MODULES = ["session.js", "shell.js", *CHROME_MODULES]
 
@@ -109,12 +108,6 @@ def test_chrome_sources_avoid_unsafe_patterns() -> None:
     assert "localStorage" not in login and "sessionStorage" not in login
 
 
-def test_shell_declares_temporary_legacy_nav() -> None:
-    source = (HOST_STATIC / "shell.js").read_text(encoding="utf-8")
-    assert "export const LEGACY_NAV = [" in source
-    assert "mountChrome({ legacyNav: LEGACY_NAV })" in source
-
-
 def _node_major() -> int:
     node = shutil.which("node")
     if node is None:
@@ -164,31 +157,21 @@ REDACTION_GOLDEN = {
 }
 
 _NODE_SCRIPT = r"""
-import fs from "node:fs";
-const [base, legacyPath, fixturesJson] = process.argv.slice(1);
+const [base, fixturesJson] = process.argv.slice(1);
 const fixtures = JSON.parse(fixturesJson);
 const session = await import(base + "/session.js");
 const tasks = await import(base + "/chrome/TaskCenter.js");
 const topbar = await import(base + "/chrome/TopBar.js");
 const theme = await import(base + "/chrome/ThemeToggle.js");
 const shell = await import(base + "/shell.js");
-
-let legacy = null;
-if (legacyPath && fs.existsSync(legacyPath)) {
-  const src = fs.readFileSync(legacyPath, "utf8");
-  const a = src.indexOf("const SENSITIVE_VALUE_PATTERNS");
-  const b = src.indexOf("];", a) + 2;
-  const c = src.indexOf("function redactSensitiveText(");
-  const d = src.indexOf("\n}\n", c) + 3;
-  legacy = new Function(src.slice(a, b) + "\n" + src.slice(c, d) + "\nreturn redactSensitiveText;")();
-}
+const navEntries = [{plugin: "project-overview", page: "status"}, {plugin: "settings", page: "general"},
+                    {plugin: "settings", page: "updates"}];
 
 const [aras, tdc] = session.SESSION_SYSTEMS;
 const now = Date.parse("2026-10-01T00:10:00Z");
 const pw = "Pa55word!";
 console.log(JSON.stringify({
   host: fixtures.map((f) => session.redactSensitiveText(f)),
-  legacy: legacy ? fixtures.map((f) => legacy(f)) : null,
   secret: session.redactWithSecret(`login ${pw} failed token=abc`, pw),
   badges: {
     initial: session.badgeState(aras, undefined),
@@ -227,9 +210,11 @@ console.log(JSON.stringify({
   },
   nav: {
     sorted: topbar.sortNav([{title: "b", order: 50}, {title: "a"}, {title: "c", order: 10}, {title: "d", order: 50}]).map((e) => e.title),
-    keys: ["", "#overview", "#overview?tab=plan", "#overview-plan-panel", "#deliverables", "#deliverables/X1",
-      "#archive-deliverable/k", "#p/settings/general", "#p/../etc", "#unknown"].map((h) => topbar.activeNavKey(h, shell.LEGACY_NAV)),
-    emptied: topbar.activeNavKey("#overview", []),
+    keys: ["#p/project-overview/status", "#p/project-overview/deliverable?id=X1", "#p/settings/updates",
+      "#p/settings/general?x=1", "#p/excel-tasks/workspace", "#overview", "#p/../etc", ""].map((h) => topbar.activeNavKey(h, navEntries)),
+    emptied: topbar.activeNavKey("#p/settings/general", []),
+    fallback: [shell.fallbackRoute("#overview/deliverables/D3", navEntries), shell.fallbackRoute("#nope", [{plugin: "b", page: "x", order: 50}, {plugin: "a", page: "y", order: 10}]),
+      shell.fallbackRoute("", []), shell.fallbackRoute("#p/../etc", navEntries)],
   },
   theme: [theme.resolveTheme("dark", false), theme.resolveTheme(null, true), theme.resolveTheme("junk", false), theme.themeLabel("dark")],
 }));
@@ -239,7 +224,7 @@ console.log(JSON.stringify({
 @needs_node
 def test_chrome_pure_logic_under_node() -> None:
     result = subprocess.run(
-        ["node", "--input-type=module", "-e", _NODE_SCRIPT, HOST_STATIC.as_uri(), str(LEGACY_APP_JS), json.dumps(REDACTION_FIXTURES)],
+        ["node", "--input-type=module", "-e", _NODE_SCRIPT, HOST_STATIC.as_uri(), json.dumps(REDACTION_FIXTURES)],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -247,9 +232,7 @@ def test_chrome_pure_logic_under_node() -> None:
     )
     data = json.loads(result.stdout.strip().splitlines()[-1])
 
-    # Redaction: identical to legacy while app.js exists; pinned outputs always.
-    if data["legacy"] is not None:
-        assert data["host"] == data["legacy"]
+    # Redaction: pinned to the outputs of the legacy app.js implementation.
     for fixture, expected in REDACTION_GOLDEN.items():
         assert data["host"][REDACTION_FIXTURES.index(fixture)] == expected
     assert "Pa55word!" not in data["secret"] and "abc" not in data["secret"]
@@ -288,8 +271,11 @@ def test_chrome_pure_logic_under_node() -> None:
     nav = data["nav"]
     assert nav["sorted"] == ["c", "b", "d", "a"]
     assert nav["keys"] == [
-        "overview", "overview", "overview", "overview", "deliverables", "overview",
-        "overview", "p:settings/general", None, None,
+        "project-overview/status", "project-overview/status", "settings/updates",
+        "settings/general", None, None, None, None,
     ]
     assert nav["emptied"] is None
+    assert nav["fallback"] == [
+        "#p/project-overview/deliverable?id=D3", "#p/a/y", "#p/project-overview/status", "#p/project-overview/status",
+    ]
     assert data["theme"] == ["dark", "dark", "light", "深色"]

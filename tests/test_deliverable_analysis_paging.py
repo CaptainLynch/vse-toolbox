@@ -10,7 +10,6 @@ import pytest
 from core.db_manager import DatabaseManager
 from services.project_status_deliverable_analysis import (
     ProjectStatusDeliverableAnalysisService,
-    normalize_analysis_rows,
     summarize_analysis_items,
 )
 import web.app as web_app
@@ -284,29 +283,3 @@ def test_api_deliverable_analysis_overview_and_items_routing(client) -> None:
     assert client.get("/api/project-status/deliverables/VPI-T2-D1/analysis/items?alert=overdue&state=completed").status_code == 422
     assert client.get("/api/project-status/deliverables/VPI-T2-D1/analysis/items?alert=overdue&offset=5").status_code == 422
     assert client.get("/api/project-status/deliverables/non-existent/analysis/items").status_code == 404
-
-
-def test_static_regression_analysis_view_elements() -> None:
-    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
-    css_text = Path("web/static/style.css").read_text(encoding="utf-8-sig")
-
-    # App.js markers
-    assert "analysis-dept-bar-row" in js_text
-    assert "analysis-dept-bar-fill is-completed" in js_text
-    assert "analysis-items-pager" in js_text
-    assert "aria-pressed" in js_text
-
-    # Verify analysis code contains no innerHTML
-    analysis_block_start = js_text.index("function renderDepartmentDoneChart")
-    analysis_block_end = js_text.index("function renderTrendSvgChart")
-    analysis_code = js_text[analysis_block_start:analysis_block_end]
-    assert "innerHTML" not in analysis_code
-    assert "insertAdjacentHTML" not in analysis_code
-
-    # Style.css markers
-    assert ".analysis-dept-bar-row" in css_text
-    assert ".analysis-dept-bar-track" in css_text
-    assert ".analysis-dept-bar-fill" in css_text
-    assert ".analysis-items-toolbar" in css_text
-    assert ".analysis-status-chip" in css_text
-    assert "@media (max-width: 560px)" in css_text

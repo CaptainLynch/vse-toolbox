@@ -76,31 +76,6 @@ def client(monkeypatch, test_db: DatabaseManager, fake_runner: MagicMock):
 # ── 1. Navigation & Static HTML Structure ────────────────────────────────────
 
 
-def test_index_renders_legacy_panels_and_plugin_host(client) -> None:
-    """Index keeps the legacy overview/deliverables panels; migrated panels live in the plugin host."""
-    resp = client.get("/")
-    assert resp.status_code == 200
-    html_text = resp.get_data(as_text=True)
-
-    # Top-level workspace navigation
-    assert 'data-panel-link="overview"' in html_text
-    assert 'data-panel-link="deliverables"' in html_text
-
-    # Main sections exist
-    assert 'id="overview"' in html_text
-    assert 'id="deliverables"' in html_text
-    assert 'id="plugin-host"' in html_text
-    # 定时任务面板已迁为插件页（#p/scheduled-archive/jobs），旧标记不再渲染。
-    assert 'id="scheduled-archive"' not in html_text
-
-
-def test_dashboard_html_cache_buster_updated() -> None:
-    """Verify that cache buster query string in dashboard.html is updated."""
-    html_text = Path("web/templates/dashboard.html").read_text(encoding="utf-8-sig")
-    assert '<link rel="stylesheet" href="/static/style.css?v=deliverable-console-20260916" />' in html_text
-    assert '<script src="/static/app.js?v=deliverable-console-20260916"></script>' in html_text
-
-
 def test_dashboard_static_ids_are_unique() -> None:
     """Verify static DOM element IDs in dashboard.html are unique."""
     html_text = Path("web/templates/dashboard.html").read_text(encoding="utf-8-sig")
