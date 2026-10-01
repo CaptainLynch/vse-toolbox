@@ -10,7 +10,8 @@
 //   "filters": [{"key", "label", "type": "text|select|date", "options"?: [...], "optionsFromRows"?: true,
 //                "match"?: "contains|eq|gte|lte"}],
 //   "charts": [{"type": "doneBars", "id", "title", "groupBy": "<row key>",
-//               "doneField": "<row key: true 完成 / false 未完成 / null 终态>"}],
+//               "doneField": "<row key: true 完成 / false 未完成 / null 终态>",
+//               "labels"?: ["已完成", "未完成"]}],
 //   "columns": [{"key", "title", "width"?}],
 //   "rowKey": "id"
 // }
@@ -93,7 +94,7 @@ export function AnalysisPage({ pluginId, schema }) {
     render: () => {
       const { summary, groups } = summarizeDone(filtered, chart.groupBy, chart.doneField);
       return html`<${DoneBars}
-        title=${chart.title} summary=${summary} groups=${groups}
+        title=${chart.title} summary=${summary} groups=${groups} labels=${chart.labels}
         selected=${selection[chart.id] ?? null}
         onSelect=${(name) => setSelection((prev) => ({ ...prev, [chart.id]: name }))}
       />`;

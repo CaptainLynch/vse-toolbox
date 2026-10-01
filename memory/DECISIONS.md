@@ -10,6 +10,8 @@ short: decision, why, cost if violated, source pointer.
 1. **方向**：保留 `services/` 能力层，把 Web 层、数据归属和打包分发重建为 CTFd 式 Flask 插件目录（`register(host)`）+ `plugin.json` 声明式清单 + calibre 式签名 `.vsepkg` 导入；前端为无构建的 Preact + htm（用户确认）。
 2. **迁移纪律**：绞杀者方式分 4 个 Sprint；重构期间新需求一律写成插件，不再往 `app.js`、`web/app.py`、`core/db_manager.py` 加代码；插件不得互相 import 或直接写公共表。
 3. **基线**：重构前代码点为分支 `checkpoint/pre-plugin-refactor-20261001`（d15d0f2）；重构分支 `refactor/plugin-host`。
+4. **表单定义单一来源暂放 `core/form_registry.py`**：onedir 包里插件以源码放在 exe 旁、不进 PYZ，旧 services/core 在冻结运行时无法 import 插件目录；旧调用方迁完后再移入插件。
+5. **S1 门槛演练（Claude 执行，2026-10-01）**：用 `tools/new_plugin.py` 新建只读“归档任务看板”插件，只改了插件自己的 `backend.py`（约 30 行）和 `static/pages/jobs.json`，宿主与旧文件改动为 0；浏览器验证通过后删除（只是演练，不上线）。演练暴露的 UI Kit 缺口（图例文字写死）已补上 `labels`。容器时钟不能当真实耗时，“新增展示页 ≤45 分钟”仍需开发者本人实测一次。
 Cost if violated: 新功能继续散落到共享巨型文件，增量发布无法实现。
 Source: `docs/PLUGIN_REFACTOR_PROPOSAL_20261001.md`、`docs/PLUGIN_REFACTOR_PLAN_20261001.md`。
 

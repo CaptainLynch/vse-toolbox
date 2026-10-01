@@ -131,7 +131,8 @@ export function FilterBar({ fields, value, onChange }) {
  * groups: {name: {total, completed, incomplete}}; clicking a row selects it,
  * clicking "整体" or the selected row clears the selection.
  */
-export function DoneBars({ summary, groups, selected, onSelect, title }) {
+export function DoneBars({ summary, groups, selected, onSelect, title, labels }) {
+  const [doneText, undoneText] = labels && labels.length === 2 ? labels : ["已完成", "未完成"];
   const entries = Object.entries(groups || {})
     .filter(([, value]) => value && typeof value === "object")
     .sort(([, a], [, b]) => (Number(b.total) || 0) - (Number(a.total) || 0));
@@ -151,7 +152,7 @@ export function DoneBars({ summary, groups, selected, onSelect, title }) {
       key=${isOverall ? "__overall" : name}
       class=${`analysis-dept-bar-row${isOverall ? " is-overall" : ""}${active && !isOverall ? " is-selected" : ""}`}
       role="button" tabindex="0" aria-pressed=${active ? "true" : "false"}
-      aria-label=${`${name}: 已完成 ${done}, 未完成 ${undone}, 共 ${all}`}
+      aria-label=${`${name}: ${doneText} ${done}, ${undoneText} ${undone}, 共 ${all}`}
       onClick=${choose}
       onKeyDown=${(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); choose(); } }}
     >
@@ -161,8 +162,8 @@ export function DoneBars({ summary, groups, selected, onSelect, title }) {
         <div class="analysis-dept-bar-fill is-incomplete" style=${{ width: pct(undone) }}></div>
       </div>
       <span class="analysis-dept-bar-nums">
-        <span class="analysis-dept-bar-num is-completed">已完成 ${done}</span>
-        <span class="analysis-dept-bar-num is-incomplete">未完成 ${undone}</span>
+        <span class="analysis-dept-bar-num is-completed">${doneText} ${done}</span>
+        <span class="analysis-dept-bar-num is-incomplete">${undoneText} ${undone}</span>
         <span class="analysis-dept-bar-num is-total">共 ${all}</span>
       </span>
     </div>`;
@@ -170,10 +171,10 @@ export function DoneBars({ summary, groups, selected, onSelect, title }) {
 
   return html`<div class="analysis-sub-section">
     <div class="analysis-dept-chart-header">
-      <h6 class="analysis-sub-title">${title || "完成情况（已完成 / 未完成）"}</h6>
+      <h6 class="analysis-sub-title">${title || `完成情况（${doneText} / ${undoneText}）`}</h6>
       <div class="analysis-chart-legend">
-        <span class="analysis-chart-legend-item is-completed">已完成</span>
-        <span class="analysis-chart-legend-item is-incomplete">未完成</span>
+        <span class="analysis-chart-legend-item is-completed">${doneText}</span>
+        <span class="analysis-chart-legend-item is-incomplete">${undoneText}</span>
       </div>
     </div>
     <div class="analysis-dept-bars-box">
