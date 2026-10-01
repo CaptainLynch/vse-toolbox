@@ -25,7 +25,7 @@ export default function DetailsPage({ plugin }) {
   const ready = !state.loading && !state.error && !overviewIsEmpty(state.data);
   return html`<section class="project-overview" aria-label="交付物明细">
     <${OverviewTabs} current="details" />
-    <div class="overview-deliverables-list-view">
+    <div class="overview-tabpanel overview-deliverables-list-view" role="tabpanel" aria-label="交付物明细">
       <section class="overview-band details-summary-band" aria-label="交付物明细摘要">
         ${ready
           ? html`<div class="overview-details-summary">

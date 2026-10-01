@@ -26,13 +26,13 @@ function DetailRow({ row }) {
     title=${row.editable ? undefined : `手工字段只读：${row.readOnlyReason}`}
     onClick=${(event) => { if (!event.target.closest("button")) open(row); }}
   >
-    ${row.values.map((value, cellIndex) => html`<td key=${cellIndex} data-label=${OVERVIEW_DETAIL_COLUMNS[cellIndex]}>
+    ${row.values.map((value, cellIndex) => html`<td key=${cellIndex} data-label=${OVERVIEW_DETAIL_COLUMNS[cellIndex]}><span class="detail-cell-value">
       ${cellIndex === 1
         ? html`<span class=${`status-text is-${row.statusTone}`}>${safeDisplayValue(value)}</span>
           ${row.riskNote ? html`<span class="badge-risk-note" title=${row.riskNote.title}>${row.riskNote.text}</span>` : null}`
         : safeDisplayValue(value)}
       ${cellIndex === 0 && !row.editable ? html`<small class="detail-readonly-note">${readOnlyText}</small>` : null}
-    </td>`)}
+    </span></td>`)}
     <td class="detail-expand-cell">
       <button
         type="button"

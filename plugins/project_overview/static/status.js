@@ -17,6 +17,7 @@ export default function StatusPage({ plugin }) {
   const placeholder = html`<${BandState} ...${state} onRetry=${state.retry} />`;
   return html`<section class="project-overview" aria-label="项目状态概览">
     <${OverviewTabs} current="status" />
+    <div class="overview-tabpanel" role="tabpanel" aria-label="项目状态">
     <section class="milestone-timeline overview-band" aria-label="主计划时间轴">
       ${ready ? html`<${MilestoneTimeline} data=${state.data} />` : placeholder}
     </section>
@@ -24,5 +25,6 @@ export default function StatusPage({ plugin }) {
       ${ready ? html`<${NodeFocus} data=${state.data} />` : placeholder}
     </section>
     <${DeliverableProgressBand} state=${state} />
+    </div>
   </section>`;
 }

@@ -194,6 +194,8 @@ export function InlineNoteEdit({ item, getLatestItem, onSaved, onCancel }) {
       settled.current = false;
       setSaving(false);
       setError(redactText(overviewErrorText(err)));
+      // Keep the input for a retry (disabling it while saving dropped focus).
+      setTimeout(() => { if (alive.current && inputRef.current) inputRef.current.focus(); }, 0);
     }
   };
 

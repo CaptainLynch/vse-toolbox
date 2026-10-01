@@ -239,7 +239,6 @@ a.overview-tab, a.timeline-edit-btn { text-decoration: none; }
 .ov-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 .details-sync-msg.is-error { color: var(--error); }
 .detail-readonly-note { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; }
-.overview-deliverables-list-view { display: grid; gap: 14px; }
 .external-deliverables-note { color: var(--muted); font-family: var(--font-mono); font-size: 11px; }
 .external-deliverables-list { margin: 0; padding-left: 18px; display: grid; gap: 6px; font-size: 13px; }
 .external-deliverables-item { overflow-wrap: anywhere; }
@@ -249,3 +248,4 @@ a.overview-tab, a.timeline-edit-btn { text-decoration: none; }
 .external-deliverables-error { color: var(--error); }
 .overview-phase-summary { display: grid; gap: 12px; }
 .overview-details-summary { display: grid; }
+.detail-cell-value { min-width: 0; }
