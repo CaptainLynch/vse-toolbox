@@ -255,3 +255,27 @@ a.overview-tab, a.timeline-edit-btn { text-decoration: none; }
 @media (max-width: 560px) {
   .details-phase-cell + .details-phase-cell { padding-left: 0; }
 }
+
+/* Moved from the retired style.css. */
+.panel-section[hidden],
+.aras-fields[hidden],
+
+.overview-tabpanel[hidden] { display: none;
+}
+
+.note-inline-edit {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 4px;
+  background: var(--surface-card);
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.note-inline-edit:hover,
+.note-inline-edit:focus-visible {
+  color: var(--primary);
+  border-color: var(--primary);
+}

@@ -179,3 +179,128 @@
   min-height: 30px;
   padding: 4px 8px;
 }
+
+/* Legacy Aras form, XML capture and deep-link rules this page reuses (moved from the retired style.css). */
+.panel-section[hidden],
+.aras-fields[hidden],
+
+.overview-tabpanel[hidden] { display: none;
+}
+
+.aras-workbench {
+  background: var(--surface-card);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  padding: 18px;
+}
+
+.aras-form {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.9fr) minmax(0, 1.35fr);
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.form-grid,
+.aras-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.xml-capture-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.xml-capture-toggle input {
+  width: auto;
+  min-height: auto;
+  margin: 0;
+}
+
+.xml-capture-toggle span {
+  margin: 0;
+}
+
+.xml-capture-actions {
+  flex: 1 1 100%;
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  min-width: 0;
+  width: 100%;
+  gap: 7px;
+}
+
+.xml-capture-label {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.xml-capture-actions .secondary-btn {
+  flex: 0 0 auto;
+  min-width: 132px;
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .aras-form,
+    .deliverables-layout {
+      grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 560px) {
+  .top-bar,
+    .aras-workbench,
+    .form-block,
+    .result-panel { border-radius: 8px;
+  }
+  .form-grid,
+    .aras-fields,
+    .dyna-form-grid,
+    .operation-controls {
+      grid-template-columns: 1fr;
+  }
+}
+
+.deep-link-back-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  margin-bottom: 14px;
+  background: var(--surface-soft, #f0f4f9);
+  border: 1px solid var(--hairline, #d0d7de);
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.deep-link-back-bar .back-link-btn {
+  background: transparent;
+  border: none;
+  color: var(--primary, #0969da);
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.deep-link-back-bar .back-link-btn:hover {
+  text-decoration: underline;
+}
+
+.deep-link-back-bar .deep-link-hint {
+  color: var(--muted, #57606a);
+  font-size: 12px;
+}
+.in-place-modal-body .field-note {
+  margin-bottom: 14px;
+}

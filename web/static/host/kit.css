@@ -1,0 +1,203 @@
+/* UI Kit component rules (DoneBars / ChartTabs), moved from the legacy style.css. */
+.analysis-sub-section {
+  display: grid;
+  gap: 8px;
+}
+
+.analysis-sub-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.analysis-chart-tabs {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.analysis-chart-tab {
+  padding: 4px 12px;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.analysis-chart-tab.is-active {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  color: var(--primary-active);
+  font-weight: 500;
+}
+
+.analysis-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.analysis-chart-legend-item::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 4px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.analysis-chart-legend-item.is-completed::before {
+  background: var(--success);
+}
+
+.analysis-chart-legend-item.is-incomplete::before {
+  background: color-mix(in srgb, var(--error) 75%, var(--canvas));
+}
+
+.analysis-dept-chart-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.analysis-dept-chart-header .analysis-sub-title {
+  margin: 0;
+}
+
+.analysis-dept-bars-box {
+  display: grid;
+  gap: 6px;
+}
+
+.analysis-dept-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--surface-soft);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background 150ms ease, border-color 150ms ease;
+}
+
+.analysis-dept-bar-row:hover,
+.analysis-dept-bar-row:focus-visible {
+  background: var(--surface-card);
+  outline: none;
+  border-color: var(--hairline-strong);
+}
+
+.analysis-dept-bar-row.is-selected,
+.analysis-dept-bar-row[aria-pressed="true"] {
+  background: var(--surface-card);
+  border-color: var(--primary);
+  box-shadow: inset 3px 0 0 var(--primary);
+}
+
+.analysis-dept-bar-row.is-overall {
+  background: var(--canvas);
+  border: 1px dashed var(--hairline-strong);
+  cursor: pointer;
+}
+
+.analysis-dept-bar-row.is-overall:hover {
+  background: var(--surface-soft);
+}
+
+.analysis-dept-bar-name {
+  min-width: 72px;
+  max-width: 140px;
+  font-size: 12px;
+  color: var(--body);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.analysis-dept-bar-track {
+  flex: 1;
+  min-width: 80px;
+  height: 18px;
+  display: flex;
+  background: var(--canvas);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.analysis-dept-bar-fill {
+  height: 100%;
+  min-width: 0;
+  flex-shrink: 0;
+  transition: width 180ms ease;
+}
+
+.analysis-dept-bar-fill.is-completed {
+  background: var(--success);
+}
+
+.analysis-dept-bar-fill.is-incomplete {
+  background: color-mix(in srgb, var(--error) 75%, var(--canvas));
+}
+
+.analysis-dept-bar-nums {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.analysis-dept-bar-num.is-completed {
+  color: var(--success);
+  font-weight: 500;
+}
+
+.analysis-dept-bar-num.is-incomplete {
+  color: var(--error);
+  font-weight: 500;
+}
+
+.analysis-dept-bar-num.is-total {
+  color: var(--muted);
+}
+
+.analysis-empty-note {
+  margin: 0;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+@media (max-width: 560px) {
+  .analysis-dept-bar-row {
+      flex-wrap: wrap;
+      gap: 6px;
+  }
+  .analysis-dept-bar-name {
+      min-width: 100%;
+      max-width: 100%;
+  }
+  .analysis-dept-bar-track {
+      min-width: 100%;
+      flex: 1 1 100%;
+  }
+  .analysis-dept-bar-nums {
+      width: 100%;
+      justify-content: flex-end;
+  }
+}

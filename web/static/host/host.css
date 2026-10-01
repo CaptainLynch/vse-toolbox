@@ -1,6 +1,7 @@
 @import url("chrome.css?v=20261001");
+@import url("kit.css?v=20261001");
 
-/* UI Kit v0 styles. Reuses the legacy theme tokens from style.css so plugin
+/* UI Kit v0 styles. Reuses the theme tokens from base.css so plugin
    pages follow light/dark themes; chart rows reuse .analysis-dept-* classes. */
 
 #plugin-host {

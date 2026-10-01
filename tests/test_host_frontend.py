@@ -124,3 +124,34 @@ def test_ui_kit_pure_logic_under_node() -> None:
     assert data["route"] == {"pluginId": "deliverable_forms", "pageId": "sor"}
     assert data["legacy"] is None
     assert data["traversal"] is None
+
+
+_LEGACY_SCRIPT = r"""
+const { legacyRedirect } = await import(process.argv[1] + "/legacy-routes.js");
+const hashes = ["", "#overview", "#overview?tab=plan", "#overview/deliverables/VPI-T2-D3",
+  "#deliverable/A%20B", "#deliverable-detail/X", "#archive-deliverable/J1", "#deliverables",
+  "#aras-panel?mode=ewo&from=overview", "#excel", "#archive", "#settings-panel", "#p/settings/general", "#nope"];
+console.log(JSON.stringify(Object.fromEntries(hashes.map(h => [h, legacyRedirect(h)]))));
+"""
+
+
+@pytest.mark.skipif(_node_major() < 22, reason="needs Node 22+ to import ES modules without a package.json")
+def test_legacy_hashes_redirect_to_plugin_routes() -> None:
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", _LEGACY_SCRIPT, HOST_STATIC.as_uri()],
+        capture_output=True, text=True, encoding="utf-8", check=True,
+    )
+    data = json.loads(result.stdout.strip().splitlines()[-1])
+    assert data[""] == data["#overview"] == "#p/project-overview/status"
+    assert data["#overview?tab=plan"] == "#p/project-overview/plan"
+    assert data["#overview/deliverables/VPI-T2-D3"] == "#p/project-overview/deliverable?id=VPI-T2-D3"
+    assert data["#deliverable/A%20B"] == "#p/project-overview/deliverable?id=A+B"
+    assert data["#deliverable-detail/X"] == "#p/project-overview/deliverable?id=X"
+    assert data["#archive-deliverable/J1"] == "#p/project-overview/archive-deliverable?job=J1"
+    assert data["#deliverables"] == "#p/deliverables/catalog"
+    assert data["#aras-panel?mode=ewo&from=overview"] == "#p/system-query/query?mode=ewo&from=overview"
+    assert data["#excel"] == "#p/excel-tasks/workspace"
+    assert data["#archive"] == "#p/scheduled-archive/jobs"
+    assert data["#settings-panel"] == "#p/settings/general"
+    assert data["#p/settings/general"] is None
+    assert data["#nope"] is None
