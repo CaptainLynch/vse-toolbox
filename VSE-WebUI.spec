@@ -107,19 +107,22 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
+# onedir（2026-10-01 插件化重构）：启动不再每次解压到临时目录，插件和后续
+# 增量更新包可以直接放在 exe 旁边。布局：
+#   VSE-WebUI/VSE-WebUI.exe
+#   VSE-WebUI/_internal/      PyInstaller 运行时与 web/ 静态资源
+#   VSE-WebUI/plugins/        功能插件（源码形式，不进 _internal）
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,
     name='VSE-WebUI',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
     upx_exclude=[],
-    runtime_tmpdir=None,
     console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -127,3 +130,30 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
 )
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name='VSE-WebUI',
+)
+
+
+def _copy_plugins(dist_dir):
+    """Copy repo plugins/ next to the exe; skip caches so the bundle is reproducible."""
+    source = Path(SPECPATH) / "plugins"
+    target = Path(dist_dir) / "VSE-WebUI" / "plugins"
+    if target.exists():
+        shutil.rmtree(target)
+    if source.is_dir():
+        shutil.copytree(source, target, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache"))
+    else:
+        target.mkdir(parents=True)
+
+
+# DISTPATH/SPECPATH 由 PyInstaller 注入；单元测试以假的全局变量执行 spec 时跳过复制。
+if "DISTPATH" in globals() and "SPECPATH" in globals():
+    _copy_plugins(DISTPATH)

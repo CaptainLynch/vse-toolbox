@@ -39,6 +39,13 @@ TDC 报表导出、交付物目录、Excel 文件批处理与定时自动下载�
 **部署要求**：两个 exe 必须放在**同一个目录**（例如 `D:\VSE-Toolbox\`），主进程按
 “同目录查找”规则拉起 Worker。把文件复制到任意可写目录即可，不需要安装步骤。
 
+> **插件化版本起改为文件夹包（onedir）**：`tools/build_excel_bundle.ps1` 产出
+> `dist/VSE-WebUI/` 文件夹和传输包 `dist/VSE-WebUI.zip`。文件夹内有 `VSE-WebUI.exe`、
+> `VSE-ExcelWorker.exe`、`_internal/`（运行时，勿改动）、`plugins/`（功能插件）和
+> `SHA256SUMS.txt`（覆盖文件夹内全部文件）。解压后整个文件夹一起使用，不要单独拷出 exe。
+> 从单文件版升级时，把旧 exe 旁边的 `data/` 文件夹整体移到新的 `VSE-WebUI/` 文件夹里，
+> 本地数据库、归档和设置即可沿用。
+
 **完整性校验**（可选，PowerShell）：
 
 ```powershell

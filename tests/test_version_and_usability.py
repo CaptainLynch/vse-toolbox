@@ -194,6 +194,7 @@ def test_webui_spec_behavior_without_version_env(monkeypatch: pytest.MonkeyPatch
         "Analysis": FakeAnalysis,
         "PYZ": lambda *args, **kwargs: None,
         "EXE": lambda *args, **kwargs: None,
+        "COLLECT": lambda *args, **kwargs: None,
     }
     exec(compile(spec_code, str(spec_path), "exec"), fake_globals)
 
@@ -223,6 +224,7 @@ def test_webui_spec_behavior_with_version_env(monkeypatch: pytest.MonkeyPatch, t
         "Analysis": FakeAnalysis,
         "PYZ": lambda *args, **kwargs: None,
         "EXE": lambda *args, **kwargs: None,
+        "COLLECT": lambda *args, **kwargs: None,
     }
     exec(compile(spec_code, str(spec_path), "exec"), fake_globals)
 

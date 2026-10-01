@@ -43,11 +43,11 @@
   - `api.js` 提供信封解析与错误映射；`useResource` 自带请求序号防竞态，以及 loading/error/空态。
   - 组件：`DataTable`、`FilterBar`、`ChartTabs`。图表从旧的 `renderDepartmentDoneChart`（手写 DOM，不依赖图表库）移植。
   - `AnalysisPage`：第一个 Schema 渲染器（筛选 + 图表页签 + 明细表）。
-- [ ] **开发工具**
+- [x] **开发工具**
   - `tools/new_plugin.py`：生成标准插件目录。
   - `webui.py --only <id>`：只加载一个插件的沙箱模式。
   - `tests/host/`：注册表测试、契约测试、插件边界测试。
-- [ ] **onedir 构建**：`VSE-WebUI.spec` 增加 `COLLECT`，`plugins/` 放在 `_internal/` 外面；同步修改 `build-windows-exe.yml` 的产物打包步骤。
+- [x] **onedir 构建**：`VSE-WebUI.spec` 增加 `COLLECT`，`plugins/` 放在 `_internal/` 外面；`tools/build_excel_bundle.ps1` 把 Worker 放进同一文件夹，校验清单覆盖全部文件并产出 zip。（`build-windows-exe.yml` 只构建 CLI 的 `VSE-Toolbox.exe`，不涉及 WebUI，无需修改。）
 - [ ] **SOR 试点页**（`plugins/deliverable_forms/`，先只含 `tdc_sor`）
   - 新建 `registry.py` 作为表单定义的唯一来源。`deliverable_form_analysis.py` 里的各个字典改为从 registry 推导，保留原变量名，避免影响旧代码。
   - 新页面地址为 `#p/deliverable-forms/tdc_sor`，与旧页面并存。
