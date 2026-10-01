@@ -574,3 +574,7 @@
 .overview-deliverable-detail-view a.primary-action:hover { background: var(--primary-active); }
 .overview-deliverable-detail-view .deliverable-detail-not-found-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .overview-deliverable-detail-view .external-run-table-wrap { max-width: 100%; overflow-x: auto; }
+/* Legacy fix: the hidden radio inputs inherited the base 100% input width and
+ * pushed the page into horizontal scroll; keep them 1px and anchored. */
+.overview-deliverable-detail-view .policy-segmented { position: relative; }
+.overview-deliverable-detail-view .policy-segmented input { width: 1px; height: 1px; margin: 0; left: 0; top: 0; }
