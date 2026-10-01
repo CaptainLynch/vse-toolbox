@@ -249,3 +249,9 @@ a.overview-tab, a.timeline-edit-btn { text-decoration: none; }
 .overview-phase-summary { display: grid; gap: 12px; }
 .overview-details-summary { display: grid; }
 .detail-cell-value { min-width: 0; }
+@media (max-width: 900px) {
+  .details-phase-cell + .details-phase-cell:nth-child(odd) { padding-left: 0; }
+}
+@media (max-width: 560px) {
+  .details-phase-cell + .details-phase-cell { padding-left: 0; }
+}
