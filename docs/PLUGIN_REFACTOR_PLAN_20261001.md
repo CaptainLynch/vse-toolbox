@@ -22,7 +22,7 @@
 
 ### 全程规则
 
-- 在 `feature/scheduled-deliverables-overview-excel` 的最新代码上开 `refactor/plugin-host` 分支；每个任务一个 PR。重构前的代码点打了标签 `checkpoint-pre-plugin-refactor-20261001`。
+- 在 `feature/scheduled-deliverables-overview-excel` 的最新代码上开 `refactor/plugin-host` 分支；每个任务一个 PR。重构前的代码点保存为分支 `checkpoint/pre-plugin-refactor-20261001`。
 - 迁移期间的新需求一律写成插件，不再往 `app.js`、`app.py`、`db_manager.py` 里加代码。
 - 插件之间不能互相 import，也不能直接写公共表，由一条边界测试拦住。
 - 旧测试只在对应页面迁移时改写，其余时间保持不动，充当回归护栏。

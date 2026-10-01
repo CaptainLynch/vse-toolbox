@@ -9,7 +9,7 @@ short: decision, why, cost if violated, source pointer.
 
 1. **方向**：保留 `services/` 能力层，把 Web 层、数据归属和打包分发重建为 CTFd 式 Flask 插件目录（`register(host)`）+ `plugin.json` 声明式清单 + calibre 式签名 `.vsepkg` 导入；前端为无构建的 Preact + htm（用户确认）。
 2. **迁移纪律**：绞杀者方式分 4 个 Sprint；重构期间新需求一律写成插件，不再往 `app.js`、`web/app.py`、`core/db_manager.py` 加代码；插件不得互相 import 或直接写公共表。
-3. **基线**：重构前代码点为标签 `checkpoint-pre-plugin-refactor-20261001`；重构分支 `refactor/plugin-host`。
+3. **基线**：重构前代码点为分支 `checkpoint/pre-plugin-refactor-20261001`（d15d0f2）；重构分支 `refactor/plugin-host`。
 Cost if violated: 新功能继续散落到共享巨型文件，增量发布无法实现。
 Source: `docs/PLUGIN_REFACTOR_PROPOSAL_20261001.md`、`docs/PLUGIN_REFACTOR_PLAN_20261001.md`。
 
