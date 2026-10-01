@@ -30,8 +30,8 @@ def client(monkeypatch, tmp_path):  # type: ignore[no-untyped-def]
 def _overview_html(html_text: str) -> str:
     start = html_text.find('id="overview"')
     assert start != -1, "Start marker 'id=\"overview\"' not found"
-    end = html_text.find('id="aras-panel"', start)
-    assert end != -1, "End marker 'id=\"aras-panel\"' not found after 'id=\"overview\"'"
+    end = html_text.find('id="deliverables"', start)
+    assert end != -1, "End marker 'id=\"deliverables\"' not found after 'id=\"overview\"'"
     return html_text[start:end]
 
 
@@ -49,7 +49,7 @@ def test_index_loads_new_overview_and_preserves_navigation(client) -> None:  # t
     # 系统查询 / Excel / 自动归档 / 设置 已迁成插件，导航由插件清单生成。
     assert 'id="plugin-host"' in html_text
     assert 'id="deliverables"' in html_text
-    assert 'id="excel-tasks"' in html_text
+    assert 'id="excel-tasks"' not in html_text
     assert "deliverables-workbench" in html_text
 
     for marker in ("projects-body", "deliverables-body", "feishu-body", "metric-card", "overview-grid"):
@@ -114,7 +114,8 @@ def test_overview_server_loader_contract() -> None:
 
     assert "const OVERVIEW_MOCK_DATA" not in js_text
     assert "function loadProjectOverview" in js_text
-    assert 'fetch("/api/project-status?phase=VPI-T2"' in js_text
+    assert 'const PROJECT_PHASE_ID = "VPI-T2";' in js_text
+    assert "fetch(`/api/project-status?phase=${PROJECT_PHASE_ID}`" in js_text
     assert "overviewSavedState" in js_text
     assert "overviewLoadError" in js_text
     assert "overview-retry-btn" in js_text
@@ -1050,34 +1051,8 @@ def test_phase_name_inline_edit_contract() -> None:
         "phase-name-inline-btn",
         "startPhaseNameInlineEdit",
         "编辑主计划名称",
-        "invalidateArchivePlanNameCache()",
     ):
         assert marker in js_text, marker
-
-
-def test_archive_project_filter_unified_label_and_placeholder_contract() -> None:
-    """需求 2026-09-06：车型项目字段统一命名，占位符跟随主计划名称。"""
-    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
-
-    for marker in (
-        '{ name: "projectModel", label: "车型项目" }',
-        '{ name: "carTypeProject", label: "车型项目" }',
-        '{ name: "projectCode", label: "车型项目" }',
-        '{ name: "vehicleKeyword", label: "车型项目" }',
-        '["projectCode", "车型项目", "project_code"]',
-        "ARCHIVE_PROJECT_FILTER_KEYS",
-        "applyArchivePlanNameSync(controls, job)",
-        "默认与主计划名称同步；支持 * 模糊和 | 并集",
-    ):
-        assert marker in js_text, marker
-
-    # 占位符方案已被默认值同步取代（2026-09-07）。
-    assert "例如 ${archivePlanNameCache}（支持 * 模糊和 | 并集）" not in js_text
-
-    # 旧称呼必须已移除。
-    assert 'label: "项目代码"' not in js_text
-    assert 'label: "车辆关键词"' not in js_text
-    assert 'label: "项目/车型"' not in js_text
 
 
 def test_filter_dims_multi_select_overflow_fix_contract() -> None:
@@ -1100,18 +1075,12 @@ def test_milestone_delete_all_restore_notice_contract() -> None:
     assert ".edit-request-info" in css_text
 
 
-def test_owner_header_removed_and_project_filter_value_sync_contract() -> None:
-    """需求 2026-09-06：明细表负责人表头移除；车型项目默认值同步主计划名称。"""
+def test_owner_header_removed_contract() -> None:
+    """需求 2026-09-06：明细表负责人表头移除。"""
     html_text = Path("web/templates/dashboard.html").read_text(encoding="utf-8-sig")
-    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
 
     # 表头与数据列一致：静态表头不再包含负责人。
     assert '<th scope="col">负责人</th>' not in html_text
-
-    # 车型项目默认值同步：applyArchivePlanNameSync 替代占位符方案。
-    assert "applyArchivePlanNameSync(controls, job)" in js_text
-    assert "默认与主计划名称同步；支持 * 模糊和 | 并集" in js_text
-    assert "例如 ${archivePlanNameCache}" not in js_text
 
 
 def test_details_table_header_matches_column_constant() -> None:
@@ -1142,16 +1111,10 @@ def test_details_table_header_matches_column_constant() -> None:
     assert data_headers == columns, (data_headers, columns)
 
 
-def test_archive_plan_sync_explicit_empty_and_colspan_contract() -> None:
-    """代码审计修复：显式空串配置不被覆盖；表格状态列 colspan 与列数一致。"""
+def test_details_table_status_colspan_contract() -> None:
+    """代码审计修复：表格状态列 colspan 与列数一致。"""
     html_text = Path("web/templates/dashboard.html").read_text(encoding="utf-8-sig")
     js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
-
-    # 显式配置以键存在为准（含空串），缺键才预填主计划名称。
-    sync_block = _js_slice(js_text, "async function applyArchivePlanNameSync", "function archiveFilterDisplayValue")
-    assert "const hasExplicitValue =" in sync_block
-    assert "key in filters && filters[key] !== null && filters[key] !== undefined" in sync_block
-    assert 'String(saved).trim() !== ""' not in sync_block
 
     # 明细表状态行 colspan 与列数一致（7 列：6 数据列 + 展开控制列）。
     assert 'colspan="7"' in html_text
@@ -1302,7 +1265,7 @@ process.stdout.write(context.result.join("\n"));
 
 def test_deliverable_detail_page_unified_display_contract() -> None:
     """CODEX 审计修复：详情页标题/状态图/属性网格与概览环图同口径，
-    同步成功后刷新概览数据，保存失败恢复用户提交的凭据引用。"""
+    同步成功后刷新概览数据。"""
     js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
 
     # 状态图使用统一换算入口（含 tone 归零），不再保留手工 tone。
@@ -1330,9 +1293,6 @@ def test_deliverable_detail_page_unified_display_contract() -> None:
 
     # 四条同步/归档下载成功路径都刷新概览数据（环图 analysisLink 不停留旧快照）。
     assert js_text.count("await loadProjectOverview();") >= 4
-
-    # 保存失败（无重渲染）恢复用户本次提交的凭据引用，而非强制回填 domain。
-    assert "aliasInput.value = aliasVal" in js_text
 
 
 def test_ring_date_label_percent_fallback() -> None:
@@ -1366,20 +1326,6 @@ process.stdout.write(context.result.join("\n"));
     assert lines[0] == "完成度 100%"
     assert lines[1] == "实际完成 08-30"
     assert lines[2] == "计划完成 08-08"
-
-
-def test_archive_credential_ref_prefills_domain_when_vault_ready_contract() -> None:
-    """需求 2026-09-12：未配置凭据且凭据保护库可用时，定时登录信息默认预选统一域账号。"""
-    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
-
-    block = _js_slice(js_text, 'aliasInput.name = "credentialRef"', "aliasLabel.appendChild(aliasSpan)")
-    assert "settingsData.credentialVaultConfigured === true" in block
-    assert 'aliasInput.value = "domain"' in block
-    assert "!job.credentialConfigured" in block
-
-    # 凭据库状态在任务列表加载时已就绪（编辑器渲染是同步路径）。
-    loader_block = _js_slice(js_text, "async function loadArchiveJobs", "async function handleArchiveJobArchive")
-    assert "await ensureSettingsData()" in loader_block
 
 
 def test_sync_binding_editor_is_capability_driven_contract() -> None:
@@ -1558,54 +1504,37 @@ def test_top_bar_navigation_six_main_domains() -> None:
 
 
 def test_hash_deep_linking_routing_contracts() -> None:
-    """W1-2: app.js handleHashChange 支持 Query 参数深链解析、穿透返回条与参数自动带入。"""
+    """W1-2: app.js handleHashChange 支持 Query 参数深链解析；已迁插件的旧哈希（含别名）转到插件页。"""
     js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
-    html_text = Path("web/templates/dashboard.html").read_text(encoding="utf-8-sig")
 
     # 1. 查询参数与路径分离解析
     assert "const [hashPath, queryString] = rawHash.split(\"?\");" in js_text
     assert "const searchParams = new URLSearchParams(queryString || \"\");" in js_text
 
-    # 2. 路由别名归一化（支持 dashboard、aras/system-query、archive、settings、excel）
+    # 2. 路由别名：dashboard 归一到概览；aras/system-query、archive、settings、excel 转到插件页
     assert 'panelId === "dashboard"' in js_text
-    assert 'panelId === "aras"' in js_text or 'panelId === "system-query"' in js_text
-    assert 'panelId === "archive"' in js_text
-    assert 'panelId === "settings"' in js_text
-    assert 'panelId === "excel"' in js_text
+    routes = _js_slice(js_text, "const LEGACY_PANEL_PLUGIN_ROUTES = {", "};")
+    for alias, target in (
+        ('"aras-panel"', "#p/system-query/query"),
+        ("aras", "#p/system-query/query"),
+        ('"system-query"', "#p/system-query/query"),
+        ("archive", "#p/scheduled-archive/jobs"),
+        ('"settings-panel"', "#p/settings/general"),
+        ("settings", "#p/settings/general"),
+        ("excel", "#p/excel-tasks/workspace"),
+    ):
+        assert f'  {alias}: "{target}",' in routes, alias
+    assert "window.location.replace(pluginTarget)" in js_text
 
     # 3. 概览子页签深链（tab=plan / tab=details）
     assert 'searchParams.get("tab")' in js_text
     assert 'isPlan = reqTab === "plan"' in js_text
 
-    # 4. 系统查询穿透参数带入与单号填写，严格对齐 HTML 真实 DOM input name
-    assert 'name="ewo_no"' in html_text
-    assert 'name="paa_no"' in html_text
-    assert 'name="ncr_no"' in html_text
-    assert 'searchParams.get("mode")' in js_text
-    assert 'input[name="ewo_no"]' in js_text
-    assert 'input[name="paa_no"]' in js_text
-    assert 'input[name="ncr_no"]' in js_text
-
-    # 5. TDC 模式深链路由支持（tdc-sor、tdc-data-model 穿透直达对应交付物）
-    assert 'reqMode === "tdc-sor"' in js_text or 'tdc_sor' in js_text
-    assert 'VPI-T2-D2' in js_text
-    assert 'VPI-T2-D5' in js_text
-
-    # 6. 穿透返回条与确定性回退（Safe DOM 实现，禁止 innerHTML，禁止 history.back）
-    assert "aras-deep-link-back-bar" in js_text
-    assert "← 返回项目看板" in js_text
-    assert 'window.location.hash = "#overview"' in js_text
-    back_bar_code = _js_slice(js_text, 'const fromOrigin = searchParams.get("from");', 'if (isDeliverables)')
-    assert "innerHTML" not in back_bar_code
-    assert "replaceChildren" in back_bar_code
-    assert "history.back" not in back_bar_code
-    assert "textContent" in back_bar_code
-    assert 'input[name="ncrNo"]' not in js_text
-
-    # 7. 交付物详情直达系统查询（openDeliverableInAras 采用深链路由）
+    # 4. 交付物详情直达系统查询（openDeliverableInAras 采用深链路由，mode 由插件页解析）
     assert "#aras-panel?mode=" in js_text
     assert "from=overview" in js_text
     assert "在系统查询中打开" in js_text
+    assert "aras-deep-link-back-bar" not in js_text
 
 
 def test_board_visibility_contract_hides_d1_d4_and_removes_snapshot_panel() -> None:

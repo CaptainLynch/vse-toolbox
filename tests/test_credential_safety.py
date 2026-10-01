@@ -162,10 +162,10 @@ def test_web_frontend_redacts_sensitive_result_values_before_rendering():
 
     assert "function redactSensitiveText(value)" in source
     assert "function safeDisplayValue(value)" in source
-    assert "valueCell.textContent = safeDisplayValue(value)" in source
     # Phase 4 网格：单元格渲染必须仍经过 safeDisplayValue 再进入高亮装配
     assert "appendHighlightedText(td, safeDisplayValue(value), state.filterText)" in source
-    assert "showArasError(redactSensitiveText(err.message))" in source
+    # 旧系统查询面板已迁为插件页；交付物工作台的错误展示仍须先脱敏。
+    assert "showDeliverableError(redactSensitiveText(err.message))" in source
     assert "raw_xml" in source
 
     script = r"""
