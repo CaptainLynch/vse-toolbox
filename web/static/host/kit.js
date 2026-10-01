@@ -205,3 +205,14 @@ export function ChartTabs({ tabs }) {
     <div role="tabpanel">${current.render()}</div>
   </div>`;
 }
+
+/** Load a plugin stylesheet once (e.g. useStylesheet(`/plugins/${plugin.id}/static/page.css`)). */
+export function useStylesheet(href) {
+  if (typeof document === "undefined" || !href) return;
+  if (document.querySelector(`link[data-plugin-css="${href}"]`)) return;
+  const link = document.createElement("link");
+  link.rel = "stylesheet";
+  link.href = href;
+  link.dataset.pluginCss = href;
+  document.head.appendChild(link);
+}
