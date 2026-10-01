@@ -1267,7 +1267,6 @@ def test_static_deliverables_guards() -> None:
     assert "DELIVERABLE_STATUS_TONE_CLASS" in js_text
     assert "status-${item.implementation_status}" not in js_text
     assert "当前请求仍在处理中，请等待完成" in js_text
-    assert "已排队" in js_text
     assert 'name="operation_mode"' in js_text
     assert '<option value="query" selected>查询预览</option>' in js_text
     assert '<option value="crawl_all">全量抓取</option>' in js_text

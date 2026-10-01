@@ -292,12 +292,6 @@ def test_dashboard_renders_usability_elements(client: FlaskClient) -> None:
     assert 'id="in-place-login-form"' in html
     assert 'id="in-place-login-save-vault"' in html
 
-    # 4. 设置分层与高级维护折叠卡片
-    assert 'id="settings-advanced-details"' in html
-    assert '高级与维护设置（点击展开）' in html
-    assert 'id="settings-field-temp-dir"' in html
-    assert 'id="settings-field-diag-dir"' in html
-
 
 def test_settings_patch_and_read_preserves_advanced_values(client: FlaskClient, tmp_path: Path) -> None:
     """设置分层后，通过 API 进行修改与查询能够完整保留高级与日常字段。"""

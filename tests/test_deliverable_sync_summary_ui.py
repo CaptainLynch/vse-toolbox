@@ -159,13 +159,6 @@ def test_summary_card_styles_present() -> None:
         assert marker in css, marker
 
 
-def test_archive_page_states_scope_vs_project_status_sync() -> None:
-    """A5：定时任务页头补定位说明，不改该页功能。"""
-    html = HTML_PATH.read_text(encoding="utf-8-sig")
-    assert "本页负责原始报表的自动下载归档；项目状态的自动同步在交付物明细页配置。" in html
-    assert "archive-purpose-note" in html
-
-
 def test_wizard_note_mapping_uses_normalized_equality() -> None:
     """行为断言（node 执行推导函数）：note 来源列归一化全等命中；全等
     无命中时 note 来源为空（不写 note 键），绝不回退子串包含；owner

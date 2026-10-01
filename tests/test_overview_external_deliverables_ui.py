@@ -15,17 +15,19 @@ def test_overview_details_include_split_paa_and_ncr_rows() -> None:
     assert "snapshot-driven-badge" not in source
 
 
-def test_external_rows_preserve_success_time_and_selected_archive_job() -> None:
+def test_external_rows_preserve_success_time_and_archive_job_navigation() -> None:
     source = Path("web/static/app.js").read_text(encoding="utf-8-sig")
     assert "job.lastSuccessAt" in source
-    assert "selectedArchiveJobKey = definition.archiveJobKey" in source or "selectedArchiveJobKey = item.externalJobKey" in source
-    assert "overviewArchiveJobs = archiveJobs.slice()" in source
+    # 旧定时任务面板已迁为插件页：外部行改由哈希 ?job= 定位任务，
+    # 后台同步后由概览自身刷新 overviewArchiveJobs。
+    assert 'location.hash = `#archive-deliverable/${encodeURIComponent(item.externalJobKey)}`' in source
+    assert "overviewArchiveJobs = body.data.slice()" in source
     assert "archiveSyncStateLabel(job.syncState)" in source
 
 
 def test_archive_failure_does_not_clear_project_overview() -> None:
     source = Path("web/static/app.js").read_text(encoding="utf-8-sig")
-    assert "const response = await fetch(\"/api/project-status?phase=VPI-T2\"" in source
+    assert "const response = await fetch(`/api/project-status?phase=${PROJECT_PHASE_ID}`" in source
     assert "overviewArchiveJobs = [];" in source
 
 

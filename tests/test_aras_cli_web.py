@@ -1980,38 +1980,12 @@ def test_static_guards_for_boundaries_and_credentials() -> None:
 
 
 def test_static_aras_export_download_markers_and_department_fields() -> None:
+    # 系统查询页面已迁为插件页（plugins/system_query，见 tests/test_plugin_*.py）；
+    # 这里只保留旧页仍在使用的 ARAS_MODES 配置、blob 下载 helper 与共享样式。
     html_text = Path("web/templates/dashboard.html").read_text(encoding="utf-8-sig")
     js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
     css_text = Path("web/static/style.css").read_text(encoding="utf-8-sig")
 
-    # 业务部门字段：PAA（分页与全量共用字段组）与 NCR 进度/明细都要有
-    assert html_text.count('name="department"') >= 2
-    assert html_text.count('placeholder="技术中心-车体工程"') >= 2
-    assert 'name="section_code"' in html_text  # NCR 高级字段保留
-    assert "BA/BE/BI/EXT/INT/SES/VE" in html_text
-    assert 'placeholder="*310S*|*730S*"' in html_text
-    assert html_text.count('title="支持 * 模糊和 | 并集"') >= 10
-    assert 'title="搜索符号将原样传给 NCR 服务"' in html_text
-
-    # 统一域账号登录后，连接区不再保留账号密码/Cookie 备用模式，
-    # 凭据统一来自「设置 → 统一域账号登录」（该表单是全页唯一账号输入）。
-    assert 'id="aras-auth-mode"' not in html_text
-    assert '<option value="password" selected>' not in html_text
-    assert 'id="aras-username"' not in html_text
-    assert 'id="aras-password"' not in html_text
-    assert html_text.count('name="username"') == 1
-    assert html_text.count('name="password"') == 1
-    assert "统一域账号登录" in html_text
-
-    # 按钮 action 标识（预览 / 全量导出 / 生成并下载）
-    assert 'data-aras-action="preview"' in html_text
-    assert 'data-aras-action="export"' in html_text
-    assert 'data-aras-action="download"' in html_text
-    assert 'type="button"' in html_text
-    assert 'id="aras-include-xml"' in html_text
-    assert 'id="aras-xml-actions"' in html_text
-    assert 'id="aras-download-request-xml"' in html_text
-    assert 'id="aras-download-response-xml"' in html_text
     assert 'style.css?v=' in html_text
     assert 'app.js?v=' in html_text
 
@@ -2019,13 +1993,6 @@ def test_static_aras_export_download_markers_and_department_fields() -> None:
     assert "/api/aras/ewo/export" in js_text
     assert "/api/aras/paa/export" in js_text
     assert "/api/aras/ncr/detail/download" in js_text
-    assert "include_xml" in js_text
-    assert "downloadArasXml" in js_text
-    assert "requestXml" in js_text
-    assert "responseXml" in js_text
-    download_block = js_text[js_text.index("function downloadArasXml") : js_text.index("function showArasError")]
-    assert "setTimeout" in download_block
-    assert "showArasError" in download_block
 
     actions_rule = re.search(r"\.actions-block\s*\{([^}]*)\}", css_text)
     assert actions_rule is not None
