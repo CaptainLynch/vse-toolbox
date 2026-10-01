@@ -1,10 +1,26 @@
-// Plugin shell: reads /api/host/manifest, adds plugin entries to the top
-// navigation and owns every `#p/<plugin>/<page>` route. All other hashes stay
-// with the legacy handleHashChange in app.js until their page is migrated.
+// Plugin shell: mounts the host chrome (top bar, global dialogs), reads
+// /api/host/manifest for the navigation and owns every `#p/<plugin>/<page>`
+// route. All other hashes stay with the legacy handleHashChange in app.js
+// until their page is migrated.
 import { api, pluginApi } from "./api.js";
+import { mountChrome } from "./chrome/index.js";
 import * as kit from "./kit.js";
 import { SCHEMA_RENDERERS } from "./pages.js";
 import { html, render, useEffect, useErrorBoundary, useState } from "./vendor/preact-htm.js";
+
+// LEGACY_NAV ─ TEMPORARY. Static links to panels still rendered by the
+// legacy app.js. Empty this list when the overview / deliverables plugins
+// replace those panels; everything else in the nav comes from the manifest.
+// `match` tests the hash path (without "#" and "?query").
+export const LEGACY_NAV = [
+  {
+    key: "overview",
+    title: "概览",
+    href: "#overview",
+    match: /^(?:|dashboard|overview(?:[-/].*)?|archive-deliverable\/.*|deliverables?\/.+|deliverable-detail\/.*)$/,
+  },
+  { key: "deliverables", title: "交付物", href: "#deliverables", match: /^deliverables$/ },
+];
 
 const ROUTE = /^#p\/([a-z][a-z0-9_-]{1,39})\/([a-z][a-z0-9_-]{1,39})(?:\?.*)?$/;
 
@@ -72,21 +88,6 @@ function PluginPage({ manifest, route }) {
   return html`<${ErrorFrame} key=${`${plugin.id}/${page.id}`}><${Page} plugin=${plugin} page=${page} /></${ErrorFrame}>`;
 }
 
-function renderNav(manifest) {
-  const nav = document.querySelector(".workspace-tabs");
-  if (!nav) return;
-  nav.querySelectorAll("[data-plugin-link]").forEach((link) => link.remove());
-  manifest.nav.forEach((entry) => {
-    const link = document.createElement("a");
-    link.href = `#p/${entry.plugin}/${entry.page}`;
-    link.textContent = entry.title;
-    link.dataset.pluginLink = `${entry.plugin}/${entry.page}`;
-    nav.appendChild(link);
-  });
-  const topBar = nav.closest(".top-bar");
-  if (topBar) topBar.classList.toggle("has-plugin-nav", manifest.nav.length > 0);
-}
-
 function pageTitle(manifest, route) {
   const plugin = manifest.plugins.find((item) => item.id === route.pluginId);
   const page = plugin && (plugin.pages || []).find((item) => item.id === route.pageId);
@@ -94,16 +95,13 @@ function pageTitle(manifest, route) {
 }
 
 function syncRoute(manifest, mount) {
+  // Nav active state is owned by the host TopBar (it follows the hash).
   const route = parsePluginRoute(window.location.hash);
-  document.querySelectorAll("[data-plugin-link]").forEach((link) => {
-    link.classList.toggle("active", Boolean(route) && link.dataset.pluginLink === `${route.pluginId}/${route.pageId}`);
-  });
   if (!route) {
     render(null, mount);
     mount.hidden = true;
     return;
   }
-  document.querySelectorAll("[data-panel-link]").forEach((link) => link.classList.remove("active"));
   document.querySelectorAll(".panel-section").forEach((panel) => {
     panel.hidden = panel !== mount;
   });
@@ -114,6 +112,8 @@ function syncRoute(manifest, mount) {
 }
 
 export async function startShell(mount = document.getElementById("plugin-host")) {
+  // The chrome mounts synchronously, before the legacy DOMContentLoaded setup.
+  const chrome = mountChrome({ legacyNav: LEGACY_NAV });
   if (!mount) return null;
   let manifest;
   try {
@@ -122,7 +122,7 @@ export async function startShell(mount = document.getElementById("plugin-host"))
     console.warn("[plugin shell] manifest unavailable:", error.message);
     manifest = { hostApi: null, plugins: [], nav: [] };
   }
-  renderNav(manifest);
+  chrome.setNav(manifest.nav || []);
   window.addEventListener("hashchange", () => syncRoute(manifest, mount));
   syncRoute(manifest, mount);
   return manifest;

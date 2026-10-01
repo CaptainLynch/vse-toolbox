@@ -1,3 +1,5 @@
+@import url("chrome.css?v=20261001");
+
 /* UI Kit v0 styles. Reuses the legacy theme tokens from style.css so plugin
    pages follow light/dark themes; chart rows reuse .analysis-dept-* classes. */
 
@@ -170,23 +172,4 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-}
-
-
-/* Plugin entries make the legacy single-row top bar too narrow; the shell adds
-   .has-plugin-nav and the navigation moves to its own row. */
-.top-bar.has-plugin-nav {
-  grid-template-columns: minmax(260px, 1fr) auto;
-}
-
-.top-bar.has-plugin-nav .workspace-tabs {
-  grid-column: 1 / -1;
-  grid-row: 2;
-  justify-self: start;
-  max-width: 100%;
-  overflow-x: auto;
-}
-
-.top-bar.has-plugin-nav .workspace-tabs a {
-  white-space: nowrap;
 }
