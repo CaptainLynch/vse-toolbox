@@ -48,8 +48,9 @@
   - `webui.py --only <id>`：只加载一个插件的沙箱模式。
   - `tests/host/`：注册表测试、契约测试、插件边界测试。
 - [x] **onedir 构建**：`VSE-WebUI.spec` 增加 `COLLECT`，`plugins/` 放在 `_internal/` 外面；`tools/build_excel_bundle.ps1` 把 Worker 放进同一文件夹，校验清单覆盖全部文件并产出 zip。（`build-windows-exe.yml` 只构建 CLI 的 `VSE-Toolbox.exe`，不涉及 WebUI，无需修改。）
-- [ ] **SOR 试点页**（`plugins/deliverable_forms/`，先只含 `tdc_sor`）
+- [x] **SOR 试点页**（`plugins/deliverable_forms/`，先只含 `tdc_sor`）
   - 新建 `registry.py` 作为表单定义的唯一来源。`deliverable_form_analysis.py` 里的各个字典改为从 registry 推导，保留原变量名，避免影响旧代码。
+    - 实施调整（2026-10-01）：registry 放在 `core/form_registry.py` 而不是插件目录。onedir 包里插件以源码放在 exe 旁、不进 PYZ，旧的 services/core 在冻结运行时无法 import 插件目录；旧调用方迁完（S3）后再移入插件。
   - 新页面地址为 `#p/deliverable-forms/tdc_sor`，与旧页面并存。
   - 按同样的 Vibe Coding 流程再新增一个展示页并计时，记录在 `memory/DECISIONS.md`。
 

@@ -22,75 +22,27 @@ from core.section_rollup import (
     rollup_targets_in_order,
     unassigned_label,
 )
+from core import form_registry as _form_registry
 from core.project_status_contracts import (
     find_deliverable_id_by_form_key,
     find_job_key_by_deliverable_id,
 )
 
-FORM_KEYS = frozenset(
-    {
-        "VPI-T2-D3",
-        "aras_paa",
-        "aras_ncr_progress",
-        "aras_ncr_detail",
-        "tdc_data_model",
-        "tdc_sor",
-    }
-)
+# 表单静态定义的唯一来源是 core/form_registry.py；以下旧变量名由它推导，
+# 保持对既有调用方与测试的兼容。新增或调整表单只改 registry。
+FORM_KEYS = _form_registry.FORM_KEYS
 
-_REPORT_BY_FORM_KEY = {
-    "VPI-T2-D3": "ewo",
-    "aras_paa": "paa",
-    "aras_ncr_progress": "ncr_progress",
-    "aras_ncr_detail": "ncr_detail",
-    "tdc_data_model": "tdc_data_model",
-    "tdc_sor": "tdc_sor",
-}
-_SOURCE_BY_FORM_KEY = {
-    "VPI-T2-D3": "aras",
-    "aras_paa": "aras",
-    "aras_ncr_progress": "aras",
-    "aras_ncr_detail": "aras",
-    "tdc_data_model": "tdc",
-    "tdc_sor": "tdc",
-}
-_SHEET_NAMES_BY_FORM_KEY = {
-    "VPI-T2-D3": ["Innovator"],
-    "aras_paa": ["Innovator"],
-    "aras_ncr_progress": ["Sheet1", "Sheet2"],
-    "aras_ncr_detail": ["整车", "发动机"],
-    "tdc_data_model": ["Sheet1"],
-    "tdc_sor": ["Sheet1"],
-}
-_STAGES_BY_REPORT = {
-    "ewo": ("DRAFT1", "DRAFT2", "EDIT1", "EDIT2", "PROC", "IMPL", "CLOSE"),
-    "paa": ("DRAFT1", "DRAFT2", "EDIT", "PROC", "IMPL", "CLOSE"),
-    # 真实表单完整审批节点（用户 2026-09-02 确认）；非正式阶段由
-    # _stage_status_summary 聚合为“其他状态”。
-    "ncr_progress": (
-        "PE提交",
-        "NCR管理员",
-        "PE科室经理",
-        "价值工程师",
-        "价值工程经理",
-        "PE部门总监",
-        "财务工程师",
-        "平台项目管理专家",
-        "海外项目总监",
-        "平台首席",
-        "动力平台首席",
-        "财务部总监",
-        "CLOSE",
-    ),
-    "ncr_detail": (),
-    # 数模设计审核流程没有固定审批阶段列表；阶段图按观察到的
-    # 项目/车型值聚合（见 _stage_status_summary）。
-    "tdc_data_model": (),
-    # SOR 定点流程同理：阶段图按观察到的车型项目值聚合。
-    "tdc_sor": (),
-}
+_REPORT_BY_FORM_KEY = {spec.form_key: spec.report for spec in _form_registry.FORMS}
+_SOURCE_BY_FORM_KEY = {spec.form_key: spec.source for spec in _form_registry.FORMS}
+_SHEET_NAMES_BY_FORM_KEY = {spec.form_key: list(spec.sheet_names) for spec in _form_registry.FORMS}
+_STAGES_BY_REPORT = {spec.report: spec.stages for spec in _form_registry.FORMS}
+
 _TEXT_LIMIT = 600
-_CONTACT_INDEXES = {"ewo": (13,), "paa": (5, 15), "tdc_sor": (14,)}
+_CONTACT_INDEXES = {
+    spec.report: spec.contact_indexes
+    for spec in _form_registry.FORMS
+    if spec.contact_indexes is not None
+}
 _NCR_COST_LABELS = {
     "investment": {
         "estimate": "测算工程工装费用(万元)",
@@ -124,47 +76,20 @@ _NCR_PROGRESS_STAGE_DATE_LABELS = {
 # - NCR 审批进度：前两个节点（NCR管理员、PE科室经理）3 天，其余节点 7 天。
 # - 数模设计审核流程：审批中且申请日期滞留超过 7 天记为逾期。
 # - SOR 定点流程：同口径，审批中且申请日期滞留超过 7 天记为逾期。
-_TDC_OVERDUE_DWELL_DAYS = 7
+_TDC_OVERDUE_DWELL_DAYS = _form_registry.TDC_OVERDUE_DWELL_DAYS
 _OVERDUE_RULES = {
-    "ewo": {"stageDays": 7, "lateDays": 30},
-    "paa": {"stageDays": 3, "lateDays": 7},
-    "ncr_progress": {"stageDays": 3, "lateDays": 7},
-    # 数模设计审核流程：审批中且申请日期滞留超过 7 天记为逾期。
-    "tdc_data_model": {"stageDays": _TDC_OVERDUE_DWELL_DAYS, "lateDays": _TDC_OVERDUE_DWELL_DAYS},
-    "tdc_sor": {"stageDays": _TDC_OVERDUE_DWELL_DAYS, "lateDays": _TDC_OVERDUE_DWELL_DAYS},
+    spec.report: dict(spec.overdue_rule)
+    for spec in _form_registry.FORMS
+    if spec.overdue_rule is not None
 }
 # 走"审批中滞留"逾期口径的 TDC 表单（不依赖阶段词表，见 classify_overdue）。
-_TDC_DWELL_REPORTS = frozenset({"tdc_data_model", "tdc_sor"})
+_TDC_DWELL_REPORTS = frozenset(spec.report for spec in _form_registry.FORMS if spec.dwell_overdue)
 _NCR_STAGE_FIRST_TWO = frozenset({"NCR管理员", "PE科室经理"})
 _OVERDUE_THRESHOLD_MIN = 0
 _OVERDUE_THRESHOLD_MAX = 999
 # 明细表默认展示的关键中文字段（与当前图表相关）。按表头标签解析为列
 # 索引，缺失的标签自动跳过；NCR 明细必须默认可见六个成本字段与 EWO号。
-_KEY_COLUMN_LABELS = {
-    "ewo": (
-        "EWO编号", "状态", "部门", "责任工程师专业科室", "车型信息",
-        "主题", "提交日期", "要求完成时间",
-    ),
-    "paa": (
-        "PAA编号", "状态", "部门", "专业科室", "车型",
-        "零件或总成名称", "提交日期", "估计完成日期", "EWO编号",
-    ),
-    "ncr_progress": (
-        "NCR编号", "状态", "当前节点及通知时间", "区域", "项目",
-        "提交日期", "是否审批完成", "当前审批人滞留天数", "EWO号",
-    ),
-    "ncr_detail": (
-        "NCR编号", "状态", "区域", "项目", "零件名称", "零件号",
-        "测算工程工装费用(万元)", "批准工程工装费用（万元）",
-        "实际工程工装费用(万元)", "测算单件成本变化（元）",
-        "批准单件成本变化（元）", "实际单件成本变化（元）", "EWO号",
-    ),
-    "tdc_data_model": (),
-    "tdc_sor": (
-        "流水单号", "审批状态", "车型项目", "类型", "科室", "部门",
-        "零件号", "零件名称", "申请日期", "最新完成节点", "SOR号",
-    ),
-}
+_KEY_COLUMN_LABELS = {spec.report: spec.key_column_labels for spec in _form_registry.FORMS}
 # 数模设计审核流程（TDC 47 列导出）的展示口径：
 # - “重量（单件）”“零件合计”不在明细视图体现（列索引 12/13）；
 # - 默认可见列以“EWO/SOR号”收尾；
@@ -181,7 +106,7 @@ TDC_DATA_MODEL_COMPLETED_STATUSES = _TDC_DATA_MODEL_COMPLETED_STATUSES
 # 统一归一化为中文；已完成/Completed 计为完成；已终止/已作废为终态，
 # 不计入未完成，也不参与逾期判定。
 _SOR_COMPLETED_STATUSES = frozenset({"已完成", "Completed"})
-_SOR_TERMINAL_STATUSES = frozenset({"已终止", "已作废", "Terminated", "Cancelled"})
+_SOR_TERMINAL_STATUSES = _form_registry.get_form("tdc_sor").terminal_statuses
 
 
 def _normalize_sor_status(value: object) -> str:

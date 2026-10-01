@@ -1,0 +1,34 @@
+{
+  "renderer": "analysis",
+  "title": "SOR 定点流程",
+  "description": "数据来自最近一次自动归档快照；逾期口径：审批中且申请日期滞留超过 7 天。",
+  "source": "forms/tdc_sor/rows",
+  "filters": [
+    {"key": "流水单号", "label": "流水单号", "type": "text"},
+    {"key": "零件名称", "label": "零件名称", "type": "text"},
+    {"key": "_status", "label": "审批状态", "optionsFromRows": true},
+    {"key": "车型项目", "label": "车型项目", "optionsFromRows": true},
+    {"key": "科室", "label": "科室", "optionsFromRows": true},
+    {"key": "_overdue", "label": "逾期状态", "optionsFromRows": true},
+    {"key": "申请日期", "label": "申请日期（起）", "type": "date", "match": "gte"}
+  ],
+  "charts": [
+    {"type": "doneBars", "id": "model", "title": "车型项目状态", "groupBy": "车型项目", "doneField": "_completed"},
+    {"type": "doneBars", "id": "section", "title": "科室状态", "groupBy": "科室", "doneField": "_completed"}
+  ],
+  "columns": [
+    {"key": "流水单号", "title": "流水单号"},
+    {"key": "_status", "title": "审批状态"},
+    {"key": "_overdue", "title": "逾期状态"},
+    {"key": "车型项目", "title": "车型项目"},
+    {"key": "类型", "title": "类型"},
+    {"key": "科室", "title": "科室"},
+    {"key": "部门", "title": "部门"},
+    {"key": "零件号", "title": "零件号"},
+    {"key": "零件名称", "title": "零件名称"},
+    {"key": "申请日期", "title": "申请日期"},
+    {"key": "最新完成节点", "title": "最新完成节点"},
+    {"key": "SOR号", "title": "SOR号"}
+  ],
+  "rowKey": "id"
+}

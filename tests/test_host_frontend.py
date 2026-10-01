@@ -74,6 +74,7 @@ const rows = [
   {id: 1, code: "SOR-001", dept: "车身科", done: true, due: "2026-10-01"},
   {id: 2, code: "SOR-002", dept: "车身科", done: false, due: "2026-10-05"},
   {id: 3, code: "sor-003", dept: "", done: false, due: "2026-09-30"},
+  {id: 4, code: "X-4", dept: "车身科", done: null, due: "2026-08-01"},
 ];
 const fields = [
   {key: "code", type: "text"},
@@ -113,11 +114,12 @@ def test_ui_kit_pure_logic_under_node() -> None:
     )
     data = json.loads(result.stdout.strip().splitlines()[-1])
     assert data["contains"] == [1, 2, 3]
-    assert data["eq"] == [1, 2]
+    assert data["eq"] == [1, 2, 4]
     assert data["gte"] == [1, 2]
-    assert data["empty"] == 3
-    assert data["done"]["summary"] == {"total": 3, "completed": 1, "incomplete": 2}
-    assert data["done"]["groups"]["车身科"] == {"total": 2, "completed": 1, "incomplete": 1}
+    assert data["empty"] == 4
+    # null 是终态：计入总数，不算完成也不算未完成
+    assert data["done"]["summary"] == {"total": 4, "completed": 1, "incomplete": 2}
+    assert data["done"]["groups"]["车身科"] == {"total": 3, "completed": 1, "incomplete": 1}
     assert data["done"]["groups"]["未填写"] == {"total": 1, "completed": 0, "incomplete": 1}
     assert data["route"] == {"pluginId": "deliverable_forms", "pageId": "sor"}
     assert data["legacy"] is None

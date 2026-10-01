@@ -16,6 +16,7 @@ core/db_manager.py — SQLite 数据库连接管理与 ORM 表结构初始化
 import json
 import secrets
 import sqlite3
+from core import form_registry as _form_registry
 from core.diagnostic_recording import operation, observed
 from core.project_status_contracts import (
     DELIVERABLE_LINK_REGISTRY,
@@ -209,24 +210,9 @@ def _sanitize_json(value: Any) -> str:
     return _json_dumps_local(sanitized)
 
 
-_FORM_SNAPSHOT_KEYS = frozenset(
-    {
-        "VPI-T2-D3",
-        "aras_paa",
-        "aras_ncr_progress",
-        "aras_ncr_detail",
-        "tdc_data_model",
-        "tdc_sor",
-    }
-)
-_FORM_SNAPSHOT_REPORTS = {
-    "VPI-T2-D3": "ewo",
-    "aras_paa": "paa",
-    "aras_ncr_progress": "ncr_progress",
-    "aras_ncr_detail": "ncr_detail",
-    "tdc_data_model": "tdc_data_model",
-    "tdc_sor": "tdc_sor",
-}
+# 由 core/form_registry.py 推导；表的 form_key CHECK 白名单仍需迁移同步（Sprint 2 移除）。
+_FORM_SNAPSHOT_KEYS = _form_registry.FORM_KEYS
+_FORM_SNAPSHOT_REPORTS = {spec.form_key: spec.report for spec in _form_registry.FORMS}
 _FORM_SNAPSHOT_FORBIDDEN_KEY_PARTS = (
     "password",
     "token",

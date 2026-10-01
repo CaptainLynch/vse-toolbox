@@ -9,7 +9,8 @@
 //   "filterMode": "client",           // or "server": filter values are sent as query params
 //   "filters": [{"key", "label", "type": "text|select|date", "options"?: [...], "optionsFromRows"?: true,
 //                "match"?: "contains|eq|gte|lte"}],
-//   "charts": [{"type": "doneBars", "id", "title", "groupBy": "<row key>", "doneField": "<boolean row key>"}],
+//   "charts": [{"type": "doneBars", "id", "title", "groupBy": "<row key>",
+//               "doneField": "<row key: true 完成 / false 未完成 / null 终态>"}],
 //   "columns": [{"key", "title", "width"?}],
 //   "rowKey": "id"
 // }
@@ -43,10 +44,12 @@ export function summarizeDone(rows, groupBy, doneField) {
   rows.forEach((row) => {
     const name = groupName(row, groupBy);
     const group = groups[name] || (groups[name] = { total: 0, completed: 0, incomplete: 0 });
-    const done = Boolean(row[doneField]);
+    // doneField 三态：true 完成；null 终态（只计入总数）；其他值算未完成。
+    const done = row[doneField];
     [summary, group].forEach((bucket) => {
       bucket.total += 1;
-      bucket[done ? "completed" : "incomplete"] += 1;
+      if (done === true) bucket.completed += 1;
+      else if (done !== null) bucket.incomplete += 1;
     });
   });
   return { summary, groups };
