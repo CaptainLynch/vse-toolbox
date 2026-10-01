@@ -274,13 +274,13 @@
   padding: 6px 12px;
   font-size: 13px;
   font-weight: 500;
-  color: var(--text, #1f2328);
+  color: var(--ink);
   cursor: pointer;
   transition: background-color 0.15s ease, border-color 0.15s ease;
 }
 
 .hc-task-center-btn:hover {
-  background: var(--surface-sunken, #e4e9f0);
+  background: var(--surface-card);
   border-color: var(--muted, #8c959f);
 }
 
@@ -611,7 +611,7 @@
   width: 440px;
   max-width: 100vw;
   height: 100%;
-  background: var(--surface, #ffffff);
+  background: var(--canvas);
   box-shadow: -4px 0 20px rgba(0, 0, 0, 0.15);
   display: flex;
   flex-direction: column;
@@ -644,7 +644,7 @@
   font-family: var(--font-sans);
   font-size: 16px;
   font-weight: 600;
-  color: var(--text, #1f2328);
+  color: var(--ink);
 }
 
 .hc-drawer-active-chip {
@@ -669,17 +669,17 @@
   cursor: pointer;
   font-size: 14px;
   padding: 4px 8px;
-  color: var(--text, #1f2328);
+  color: var(--ink);
 }
 
 .hc-icon-btn:hover {
-  background: var(--surface-sunken, #e4e9f0);
+  background: var(--surface-card);
 }
 
 .hc-drawer-tabs {
   display: flex;
   border-bottom: 1px solid var(--hairline, #d0d7de);
-  background: var(--surface, #ffffff);
+  background: var(--canvas);
   padding: 0 16px;
   gap: 16px;
 }
@@ -736,7 +736,7 @@
   border: 1px solid var(--hairline, #d0d7de);
   border-radius: 8px;
   padding: 14px;
-  background: var(--surface, #ffffff);
+  background: var(--canvas);
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -764,7 +764,7 @@
   font-size: 13px;
   font-weight: 600;
   line-height: 1.25;
-  color: var(--text, #1f2328);
+  color: var(--ink);
   margin: 0;
 }
 
@@ -800,7 +800,7 @@
 .hc-task-progress-bg {
   height: 6px;
   border-radius: 3px;
-  background: var(--surface-sunken, #e4e9f0);
+  background: var(--surface-card);
   overflow: hidden;
 }
 
@@ -849,7 +849,7 @@
   cursor: pointer;
   border: 1px solid var(--hairline, #d0d7de);
   background: var(--surface-soft, #f6f8fa);
-  color: var(--text, #1f2328);
+  color: var(--ink);
   font-weight: 500;
   text-decoration: none;
   display: inline-flex;
@@ -857,7 +857,7 @@
   gap: 4px;
 }
 
-.hc-task-action:hover { background: var(--surface-sunken, #e4e9f0); }
+.hc-task-action:hover { background: var(--surface-card); }
 .hc-task-action.is-cancel { color: #cf222e; border-color: #ffdcd7; }
 .hc-task-action.is-cancel:hover { background: #ffebe9; }
 .hc-task-action.is-download { color: #1a7f37; border-color: #b4f0c2; }
