@@ -87,9 +87,7 @@ def test_index_renders_archive_nav_and_preserves_panels(client) -> None:
 
     # Top-level workspace navigation
     assert 'data-panel-link="overview"' in html_text
-    assert 'data-panel-link="aras-panel"' in html_text
     assert 'data-panel-link="deliverables"' in html_text
-    assert 'data-panel-link="scheduled-archive"' in html_text
     assert "自动下载与留存" in html_text
 
     # Main sections exist

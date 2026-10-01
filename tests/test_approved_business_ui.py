@@ -292,7 +292,6 @@ def test_settings_workbench_and_unified_domain_sessions(client) -> None:
     js = Path("web/static/app.js").read_text(encoding="utf-8-sig")
 
     # 1. Navigation link enabled
-    assert 'href="#settings-panel" data-panel-link="settings-panel">设置</a>' in html
 
     # 2. Settings form elements in HTML
     assert 'id="settings-panel"' in html

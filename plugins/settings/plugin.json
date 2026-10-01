@@ -9,6 +9,6 @@
     {"id": "updates", "title": "插件更新", "kind": "module", "module": "updates.js"}
   ],
   "nav": [
-    {"title": "设置（新）", "page": "general", "order": 90}
+    {"title": "设置", "page": "general", "order": 90}
   ]
 }

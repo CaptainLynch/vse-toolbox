@@ -39,7 +39,7 @@ def test_plugin_loads_with_jobs_module_page(client) -> None:
     assert record["status"] == "loaded", record.get("error")
     assert record["pages"] == [{"id": "jobs", "title": "自动下载与留存", "kind": "module", "module": "jobs.js"}]
     nav = next(item for item in data["nav"] if item["plugin"] == "scheduled-archive")
-    assert {"page": "jobs", "title": "自动归档（新）", "order": 50}.items() <= nav.items()
+    assert {"page": "jobs", "title": "自动归档", "order": 50}.items() <= nav.items()
 
 
 @pytest.mark.parametrize("name", ["jobs.js", "archive_data.js"])

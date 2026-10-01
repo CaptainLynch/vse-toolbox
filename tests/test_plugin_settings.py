@@ -33,7 +33,7 @@ def test_plugin_loads_with_general_module_page(client) -> None:
     assert {"id": "general", "kind": "module", "module": "general.js"}.items() <= record["pages"][0].items()
     nav = next(item for item in data["nav"] if item["plugin"] == "settings")
     assert nav["page"] == "general"
-    assert nav["title"] == "设置（新）"
+    assert nav["title"] == "设置"
     assert nav["order"] == 90
 
 

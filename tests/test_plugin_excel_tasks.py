@@ -42,7 +42,7 @@ def test_plugin_loads_with_workspace_module_page(client) -> None:
     ]
     nav = [entry for entry in data["nav"] if entry["plugin"] == "excel-tasks"]
     assert len(nav) == 1
-    assert {"title": "Excel（新）", "page": "workspace", "order": 40}.items() <= nav[0].items()
+    assert {"title": "Excel", "page": "workspace", "order": 40}.items() <= nav[0].items()
 
 
 @pytest.mark.parametrize("name", MODULES)

@@ -12,7 +12,6 @@ CSS_PATH = ROOT / "web" / "static" / "style.css"
 def test_excel_workspace_markup_is_present() -> None:
     html = HTML_PATH.read_text(encoding="utf-8")
 
-    assert 'data-panel-link="excel-tasks"' in html
     assert 'id="excel-tasks"' in html
     assert 'id="excel-worker-state"' in html
     assert 'id="excel-task-create-form"' in html

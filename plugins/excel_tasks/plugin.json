@@ -8,6 +8,6 @@
     {"id": "workspace", "title": "Excel 文件处理", "kind": "module", "module": "workspace.js"}
   ],
   "nav": [
-    {"title": "Excel（新）", "page": "workspace", "order": 40}
+    {"title": "Excel", "page": "workspace", "order": 40}
   ]
 }

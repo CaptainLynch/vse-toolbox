@@ -45,11 +45,9 @@ def test_index_loads_new_overview_and_preserves_navigation(client) -> None:  # t
     assert 'class="panel-section project-overview"' in html_text
     # 6 main top bar navigation domains
     assert 'data-panel-link="overview"' in html_text
-    assert 'data-panel-link="aras-panel"' in html_text
     assert 'data-panel-link="deliverables"' in html_text
-    assert 'data-panel-link="excel-tasks"' in html_text
-    assert 'data-panel-link="scheduled-archive"' in html_text
-    assert 'data-panel-link="settings-panel"' in html_text
+    # 系统查询 / Excel / 自动归档 / 设置 已迁成插件，导航由插件清单生成。
+    assert 'id="plugin-host"' in html_text
     assert 'id="deliverables"' in html_text
     assert 'id="excel-tasks"' in html_text
     assert "deliverables-workbench" in html_text
@@ -1532,34 +1530,31 @@ process.stdout.write(context.result.join("\n"));
 
 
 def test_top_bar_navigation_six_main_domains() -> None:
-    """W1-1: 顶栏导航结构保留六大核心域，未建任务抽屉前禁止移除 Excel 与交付物顶栏入口。"""
-    html_text = Path("web/templates/dashboard.html").read_text(encoding="utf-8-sig")
+    """顶栏仍是概览、交付物 + 插件清单生成的系统查询/表单/Excel/自动归档/设置。
 
-    # 提取顶栏 primary nav 的 links
+    S4 切换后，已迁成插件的四个面板不再写死在模板里，由插件 plugin.json 的
+    nav 生成；旧哈希由 app.js 转到插件页。
+    """
+    html_text = Path("web/templates/dashboard.html").read_text(encoding="utf-8-sig")
     nav_match = re.search(r'<nav[^>]*class="workspace-tabs"[^>]*>([\s\S]*?)</nav>', html_text)
     assert nav_match is not None
-    nav_content = nav_match.group(1)
+    nav_links = re.findall(r'<a[^>]*href="#([^"]+)"[^>]*>([^<]+)</a>', nav_match.group(1))
+    assert [(panel, label.strip()) for panel, label in nav_links] == [("overview", "概览"), ("deliverables", "交付物")]
 
-    # 主导航严格保持 6 个一级入口
-    nav_links = re.findall(r'<a[^>]*href="#([^"]+)"[^>]*>([^<]+)</a>', nav_content)
-    assert len(nav_links) == 6
-    link_map = {panel_id: label.strip() for panel_id, label in nav_links}
-    assert "overview" in link_map and "概览" in link_map["overview"]
-    assert "aras-panel" in link_map and "系统查询" in link_map["aras-panel"]
-    assert "deliverables" in link_map and "交付物" in link_map["deliverables"]
-    assert "excel-tasks" in link_map and "Excel" in link_map["excel-tasks"]
-    assert "scheduled-archive" in link_map and "自动归档" in link_map["scheduled-archive"]
-    assert "settings-panel" in link_map and "设置" in link_map["settings-panel"]
+    nav = []
+    for manifest_path in sorted(Path("plugins").glob("*/plugin.json")):
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        nav += [(entry.get("order", 100), entry["title"], manifest["id"]) for entry in manifest.get("nav", [])]
+    assert [title for _, title, _ in sorted(nav)] == ["系统查询", "表单", "Excel", "自动归档", "设置"]
 
-    # 业务系统查询面板标头回归 Aras 系统查询
-    assert '<h3>Aras 系统查询</h3>' in html_text
-    assert 'aria-label="系统查询"' in html_text
-
-    # 工作区在页面 DOM 中完整定义
-    assert 'data-panel-link="deliverables"' in html_text
-    assert 'data-panel-link="excel-tasks"' in html_text
-    assert 'id="deliverables"' in html_text
-    assert 'id="excel-tasks"' in html_text
+    js = Path("web/static/app.js").read_text(encoding="utf-8-sig")
+    for legacy, target in [
+        ("aras-panel", "#p/system-query/query"),
+        ("excel-tasks", "#p/excel-tasks/workspace"),
+        ("scheduled-archive", "#p/scheduled-archive/jobs"),
+        ("settings-panel", "#p/settings/general"),
+    ]:
+        assert re.search(rf'"?{re.escape(legacy)}"?: "{re.escape(target)}"', js), legacy
 
 
 def test_hash_deep_linking_routing_contracts() -> None:

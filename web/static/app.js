@@ -8075,7 +8075,7 @@ function renderArchiveDeliverableDetailPage(jobKey) {
   meta.appendChild(grid);
   const action = overviewEl("button", "primary-action", "进入任务配置/重试");
   action.type = "button";
-  action.addEventListener("click", () => { selectedArchiveJobKey = job.jobKey; location.hash = "#scheduled-archive"; });
+  action.addEventListener("click", () => { location.hash = `#p/scheduled-archive/jobs?job=${encodeURIComponent(job.jobKey)}`; });
   meta.appendChild(action);
   page.appendChild(meta);
   container.appendChild(page);
@@ -11990,6 +11990,22 @@ function setupDeliverables() {
   });
 }
 
+// 旧面板哈希 → 插件页。只保留查询参数，系统查询的深链参数（mode/from/单号）由插件页解析。
+const LEGACY_PANEL_PLUGIN_ROUTES = {
+  "aras-panel": "#p/system-query/query",
+  "excel-tasks": "#p/excel-tasks/workspace",
+  "scheduled-archive": "#p/scheduled-archive/jobs",
+  archive: "#p/scheduled-archive/jobs",
+  scheduled: "#p/scheduled-archive/jobs",
+  "settings-panel": "#p/settings/general",
+};
+
+function legacyPanelPluginHash(hashPath, queryString) {
+  const target = LEGACY_PANEL_PLUGIN_ROUTES[hashPath];
+  if (!target) return null;
+  return queryString ? `${target}?${queryString}` : target;
+}
+
 function handleHashChange() {
   const fullHash = window.location.hash || "";
   const rawHash = fullHash.replace(/^#/, "");
@@ -11998,6 +12014,13 @@ function handleHashChange() {
 
   // `#p/<plugin>/<page>` 由插件 Shell（/static/host/shell.js）接管，旧路由不处理。
   if (/^p\//.test(hashPath)) return;
+
+  // 已迁成插件的面板：旧哈希（含书签和旧页面内的链接）一律转到插件页。
+  const pluginTarget = legacyPanelPluginHash(hashPath, queryString);
+  if (pluginTarget) {
+    window.location.replace(pluginTarget);
+    return;
+  }
 
   const archiveDeliverableMatch = rawHash.match(/^archive-deliverable\/([^/?#]+)/);
   const deliverableMatch = rawHash.match(/^(?:overview\/)?deliverables?\/([^/?#]+)/)

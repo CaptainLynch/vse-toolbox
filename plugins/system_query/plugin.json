@@ -8,6 +8,6 @@
     {"id": "query", "title": "系统查询", "kind": "module", "module": "query.js"}
   ],
   "nav": [
-    {"title": "系统查询（新）", "page": "query", "order": 20}
+    {"title": "系统查询", "page": "query", "order": 20}
   ]
 }

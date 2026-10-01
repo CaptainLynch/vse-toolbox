@@ -34,7 +34,7 @@ def test_plugin_loads_with_module_page(app) -> None:
     record = next(p for p in data["plugins"] if p["id"] == "system-query")
     assert record["status"] == "loaded", record.get("error")
     assert record["pages"] == [{"id": "query", "title": "系统查询", "kind": "module", "module": "query.js"}]
-    assert data["nav"] == [{"plugin": "system-query", "title": "系统查询（新）", "page": "query", "order": 20}]
+    assert data["nav"] == [{"plugin": "system-query", "title": "系统查询", "page": "query", "order": 20}]
 
 
 @pytest.mark.parametrize("name", MODULES)
