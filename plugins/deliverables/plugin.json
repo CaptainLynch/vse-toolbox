@@ -1,0 +1,13 @@
+{
+  "id": "deliverables",
+  "name": "交付物",
+  "version": "0.1.0",
+  "hostApi": ">=1,<2",
+  "description": "交付物工作台（旧 #deliverables 的插件版）：目录筛选、条目详情、TDC 查询 / 全量抓取 / 导出与最近运行；调用既有 /api/deliverables、/api/tdc、/api/tasks 接口",
+  "pages": [
+    {"id": "catalog", "title": "交付物工作台", "kind": "module", "module": "catalog.js"}
+  ],
+  "nav": [
+    {"title": "交付物（新）", "page": "catalog", "order": 15}
+  ]
+}
