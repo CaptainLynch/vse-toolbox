@@ -6,6 +6,7 @@
     python webui.py --no-browser        # 不自动打开浏览器（无头测试/计划任务）
     python webui.py --host 0.0.0.0      # 允许局域网访问（写操作仅限本机回环）
     python webui.py --port 8000
+    python webui.py --only deliverable-forms   # 只加载一个插件（单插件沙箱）
 
 冻结构建: pyinstaller --noconfirm webui.spec
 """
@@ -48,6 +49,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="服务启动后不自动打开浏览器（用于无头测试与后台计划任务）",
     )
     parser.add_argument("--diagnostics", action="store_true", help="开启30分钟安全诊断录制（不启用Flask调试器）")
+    parser.add_argument(
+        "--only",
+        default=None,
+        metavar="PLUGIN_ID[,PLUGIN_ID]",
+        help="只加载指定插件（单插件沙箱，逗号分隔多个 id）；旧页面不受影响",
+    )
     parser.add_argument(
         "--no-sync-scheduler",
         action="store_true",
@@ -141,7 +148,8 @@ def main(argv: list[str] | None = None) -> int:
     from core.runtime_paths import app_root
     from web.app import create_app
 
-    app = create_app()
+    plugin_only = [item.strip() for item in (args.only or "").split(",") if item.strip()] or None
+    app = create_app(plugin_only=plugin_only)
     if args.diagnostics:
         try:
             app.extensions["diagnostic_recorder"].start()

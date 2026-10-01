@@ -26,7 +26,7 @@ MAP_SCHEMA_VERSION = 1
 # These are the only source roots the map generator traverses.  Do not replace
 # this with a repository-root glob: tracked HAR/HTML/XLSX evidence is not
 # production code and is intentionally outside the map.
-SOURCE_DIRS = ("core", "services", "web")
+SOURCE_DIRS = ("core", "host", "services", "web")
 SOURCE_FILES = (
     "main.py",
     "webui.py",
@@ -121,6 +121,10 @@ ROLE_OVERRIDES = {
     "services/windows_http.py": "WinHTTP/Schannel transport boundary",
     "services/xlsx_preview.py": "Dependency-free bounded XLSX preview",
     "web/app.py": "Flask composition adapter and Web API routes",
+    "host/__init__.py": "Plugin host package exports",
+    "host/context.py": "HostContext: shared services handed to plugins",
+    "host/plugin.py": "plugin.json manifest contract and host API compatibility",
+    "host/registry.py": "Plugin discovery, isolated loading and blueprint registration",
     "main.py": "Rich CLI adapter, menu routing and legacy operations",
     "webui.py": "WebUI source/frozen launcher",
     "excel_worker_entry.py": "Frozen Excel Worker launcher",
@@ -219,7 +223,7 @@ def _internal_imports(tree: ast.Module) -> tuple[str, ...]:
         else:
             continue
         for name in candidates:
-            if name.startswith(("core", "services", "web", "tools", "main", "tdc_probe")):
+            if name.startswith(("core", "host", "services", "web", "tools", "main", "tdc_probe")):
                 names.add(name)
     return tuple(sorted(names)[:6])
 
@@ -295,7 +299,7 @@ def _manual_sections() -> str:
         repository and tests remain the authority; this map is navigation,
         not a substitute for reading the target implementation.
 
-        **Approved production scope:** `core/`, `services/`, `web/`,
+        **Approved production scope:** `core/`, `host/`, `services/`, `web/`,
         `main.py`, `webui.py`, `excel_worker_entry.py`,
         `tools/excel_worker_cli.py`, `tdc_probe_main.py`, and
         `tdc_probe_cli.py`.
@@ -321,6 +325,7 @@ def _manual_sections() -> str:
 
         | Task cue | Start here | Continue with | Focused tests |
         | --- | --- | --- | --- |
+        | 插件宿主/新功能插件 | `host/registry.py` | `host/plugin.py`, `host/context.py`, `docs/PLUGIN_REFACTOR_PLAN_20261001.md` | `tests/test_plugin_host.py` |
         | Web/API/UI | `web/app.py` | `web/static/app.js`, `web/templates/dashboard.html` | `tests/*web*.py` |
         | Aras EWO/PAA/NCR | `web/app.py` | `services/aras_auth.py`, `services/aras_crawler.py`, `services/aras_export.py` | `tests/*aras*.py` |
         | TDC/SOR/数模/A 面 | `web/app.py` | `services/tdc_auth.py`, `services/tdc_crawler.py`, `services/tdc_export_cache.py` | `tests/*tdc*.py` |

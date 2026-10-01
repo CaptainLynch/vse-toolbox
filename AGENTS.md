@@ -34,7 +34,7 @@ navigation index, not a replacement for reading the target implementation.
 - At the start of every non-trivial task, read `PROJECT_MAP.md` after restoring
   the required memory state and before searching for code. Use its Task Router
   to choose a domain and an initial file set.
-- The default production scope is `core/`, `services/`, `web/`, `main.py`,
+- The default production scope is `core/`, `host/`, `services/`, `web/`, `main.py`,
   `webui.py`, `excel_worker_entry.py`, `tools/excel_worker_cli.py`,
   `tdc_probe_main.py`, and `tdc_probe_cli.py`.
 - Enter `tests/`, `*.spec`, `setup.cfg`, `requirements.txt`,

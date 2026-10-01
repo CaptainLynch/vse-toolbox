@@ -2954,12 +2954,16 @@ def create_app(
     excel_clock: Callable[[], datetime] | None = None,
     project_status_clock: Callable[[], date] | None = None,
     archive_store: ArchiveStore | None = None,
+    plugin_dirs: Sequence[Path] | None = None,
+    plugin_only: Sequence[str] | None = None,
 ) -> Flask:
     """Flask 应用工厂。
 
     `allowed_hosts` 覆盖 Aras 路由的主机 allowlist（默认仅 ecm.sgmw.com.cn）；
     `tdc_allowed_hosts` 覆盖 TDC 路由的主机 allowlist（默认仅 tdc.sgmw.com.cn）；
     localhost/测试 host 也可在创建后通过对应 app.config 键注入。
+    `plugin_dirs` 覆盖插件搜索目录（默认源码 `plugins/`、冻结包 exe 同级 `plugins/`）；
+    `plugin_only` 只加载指定 id 的插件（单插件沙箱）。
     """
     if getattr(sys, "frozen", False):
         base_dir = Path(str(getattr(sys, "_MEIPASS"))) / "web"
@@ -5716,7 +5720,46 @@ def create_app(
 
     from web.diagnostics import install_diagnostics
     install_diagnostics(app, local_guard=_local_web_mutation_error)
+    _install_plugin_host(app, db, plugin_dirs=plugin_dirs, plugin_only=plugin_only)
     return app
+
+
+def _json_ok(data: Any = None, status: int = 200):
+    response = jsonify({"ok": True, "data": data})
+    response.headers["Cache-Control"] = "no-store"
+    return response, status
+
+
+def _install_plugin_host(
+    app: Flask,
+    db: DatabaseManager,
+    *,
+    plugin_dirs: Sequence[Path] | None,
+    plugin_only: Sequence[str] | None,
+) -> None:
+    """加载 `plugins/` 下的功能插件；旧路由全部注册完成后再加载，插件不能覆盖它们。"""
+    from types import MappingProxyType
+
+    from host import HostContext, PluginRegistry
+
+    if plugin_only is None:
+        env_only = os.environ.get("VSE_TOOLBOX_PLUGIN_ONLY", "").strip()
+        plugin_only = [item.strip() for item in env_only.split(",") if item.strip()] or None
+    context = HostContext(
+        db=db,
+        data_dir=Path(db.db_path).parent,
+        json_ok=_json_ok,
+        json_error=_json_error,
+        local_guard=_local_web_mutation_error,
+        services=MappingProxyType(app.extensions),
+    )
+    registry = PluginRegistry(plugin_dirs, only=plugin_only)
+    registry.load_all(app, context)
+    app.extensions["plugin_registry"] = registry
+
+    @app.get("/api/host/manifest")
+    def api_host_manifest():
+        return _json_ok(registry.manifest_payload())
 
 
 if __name__ == "__main__":
