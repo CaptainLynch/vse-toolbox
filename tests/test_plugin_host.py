@@ -325,3 +325,39 @@ def test_repository_plugins_respect_boundaries() -> None:
                 if module == "web" or module.startswith("web.") or module.startswith("vse_plugins"):
                     violations.append(f"{source.relative_to(REPO_ROOT)} imports {module}")
     assert violations == []
+
+
+# ── tools/new_plugin.py scaffold ─────────────────────────────────────
+
+
+@pytest.mark.parametrize("kind", ["schema", "module"])
+def test_scaffolded_plugin_loads_and_serves_its_page(make_app, tmp_path: Path, kind: str) -> None:
+    from tools.new_plugin import scaffold
+
+    plugins_root = tmp_path / "plugins"
+    written = scaffold("my-report", "我的报表", page="summary", kind=kind,
+                       plugins_root=plugins_root, tests_root=tmp_path / "tests")
+    generated_test = tmp_path / "tests" / "test_plugin_my_report.py"
+    assert generated_test in written
+    compile(generated_test.read_text(encoding="utf-8"), str(generated_test), "exec")
+
+    client = make_app(plugin_dirs=[plugins_root]).test_client()
+    data = client.get("/api/host/manifest").get_json()["data"]
+    assert [(p["id"], p["status"]) for p in data["plugins"]] == [("my-report", "loaded")]
+    assert data["nav"][0]["page"] == "summary"
+    assert client.get("/api/p/my-report/rows").get_json()["data"]["rows"]
+    page_url = (
+        "/plugins/my-report/static/summary.js" if kind == "module"
+        else "/plugins/my-report/static/pages/summary.json"
+    )
+    assert client.get(page_url).status_code == 200
+
+
+def test_scaffold_rejects_invalid_id_and_existing_dir(tmp_path: Path) -> None:
+    from tools.new_plugin import scaffold
+
+    with pytest.raises(PluginManifestError):
+        scaffold("Bad Id", "x", plugins_root=tmp_path / "p", tests_root=tmp_path / "t")
+    scaffold("ok-one", "x", plugins_root=tmp_path / "p", tests_root=tmp_path / "t")
+    with pytest.raises(FileExistsError):
+        scaffold("ok-one", "x", plugins_root=tmp_path / "p", tests_root=tmp_path / "t")
