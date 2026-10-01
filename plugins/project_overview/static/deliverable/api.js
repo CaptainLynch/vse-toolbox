@@ -38,6 +38,11 @@ export function requestError(body, status) {
   });
 }
 
+/** True for the local-only guard (403 LocalAccessRequired / CrossSiteRequest). */
+export function isLocalOnlyError(err) {
+  return Boolean(err && err.status === 403 && LOCAL_ONLY_TYPES.has(err.type));
+}
+
 /** Raw error body (no HTTP suffix) for endpoints whose legacy code showed error.message verbatim. */
 export function plainErrorMessage(err, fallback) {
   if (err && err.status === 403 && LOCAL_ONLY_TYPES.has(err.type)) return LOCAL_ONLY_MESSAGE;

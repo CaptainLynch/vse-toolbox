@@ -3,7 +3,7 @@
 // objects: sync readiness (evidence -> analysis action bar), status-chart
 // feedback/busy, EWO summary data and the interactive query result.
 import { html, useEffect, useRef, useState } from "/static/host/vendor/preact-htm.js";
-import { apiRequest, enc } from "./api.js";
+import { LOCAL_ONLY_MESSAGE, apiRequest, enc, isLocalOnlyError } from "./api.js";
 import { AnalysisActionBar, AnalysisPanel } from "./analysis.js";
 import {
   deliverableDisplayItem,
@@ -272,9 +272,10 @@ export function DeliverableDetail({ item, overview, version, reloadOverview, rep
       const state = formatInteractiveArasResult(data, spec.targetKey, "ewo");
       setChartFeedback({ text: `交互式查询完成：${state.text}`, tone: state.tone });
     } catch (err) {
-      const code = interactiveQueryErrorCode(err, err && err.status);
+      const localOnly = isLocalOnlyError(err);
+      const code = localOnly ? "" : interactiveQueryErrorCode(err, err && err.status);
       setChartFeedback({
-        text: formatInteractiveArasError(err, err && err.status),
+        text: localOnly ? LOCAL_ONLY_MESSAGE : formatInteractiveArasError(err, err && err.status),
         tone: err && err.code === "unauthenticated" ? "warning" : "error",
         login: code === "unauthenticated",
       });
