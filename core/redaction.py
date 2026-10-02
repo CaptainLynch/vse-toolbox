@@ -26,6 +26,10 @@ _HEADER_RE = re.compile(
     r"(?i)\b(token|api_key|sid|sessionid|csrf|secret|password)\b"
     r"(\s*[:=]\s*)(?:Bearer\s+)?([^,\s;'\"}\]\[]+)"
 )
+# 口令可能含空格：整段取到分隔符/行尾，宁可多遮也不留尾巴。
+_PASSWORD_RE = re.compile(
+    r"(?i)\b(password|passwd|passphrase|pwd)\b(\s*[:=]\s*)([^,;\r\n'\"}\]\[]+)"
+)
 _BEARER_RE = re.compile(r"(?i)\bBearer\s+([^,\s;'\"}\]\[]+)")
 _JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]+)?\b")
 _PEM_RE = re.compile(
@@ -50,6 +54,7 @@ def redact_sensitive_text(
     text = _JSON_RE.sub(r"\1\2\1\3\4[redacted]\4", text)
     text = _AUTH_HEADER_RE.sub(r"\1\2[redacted]", text)
     text = _COOKIE_HEADER_RE.sub(r"\1\2[redacted]", text)
+    text = _PASSWORD_RE.sub(r"\1\2[redacted]", text)
     text = _HEADER_RE.sub(r"\1\2[redacted]", text)
     text = _XML_RE.sub(r"<\1>[redacted]</\1>", text)
     text = _PARAM_RE.sub(r"\1=[redacted]", text)

@@ -4,7 +4,7 @@
 用法:
     python webui.py                     # 127.0.0.1:5000，服务就绪后自动打开浏览器
     python webui.py --no-browser        # 不自动打开浏览器（无头测试/计划任务）
-    python webui.py --host 0.0.0.0      # 允许局域网访问（写操作仅限本机回环）
+    python webui.py --host 0.0.0.0      # 仅改监听地址；所有请求仍只接受本机回环来源（局域网访问会被拒绝）
     python webui.py --port 8000
     python webui.py --only deliverable-forms   # 只加载一个插件（单插件沙箱）
 
@@ -30,12 +30,12 @@ _READINESS_PROBE_INTERVAL_SECONDS = 0.25
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="webui",
-        description="VSE Toolbox WebUI（本地 Web 控制台；写操作仅接受本机回环地址）",
+        description="VSE Toolbox WebUI（本地 Web 控制台；只接受本机回环来源的请求）",
     )
     parser.add_argument(
         "--host",
         default="127.0.0.1",
-        help="监听地址，默认 127.0.0.1（0.0.0.0 允许局域网访问，写接口仍仅限本机）",
+        help="监听地址，默认 127.0.0.1（改为 0.0.0.0 只改变监听范围；非本机回环来源的请求仍一律被拒绝，不能用于局域网访问）",
     )
     parser.add_argument(
         "--port",

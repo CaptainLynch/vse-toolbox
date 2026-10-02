@@ -13,12 +13,14 @@ from dataclasses import dataclass
 from email.parser import Parser
 from http.cookiejar import Cookie, CookieJar
 from typing import Any, Mapping
-from urllib.parse import urlencode, urlsplit, urlunsplit
+from urllib.parse import urlencode, urljoin, urlsplit, urlunsplit
 from urllib.request import Request
 
 
 _PROGID = "WinHttp.WinHttpRequest.5.1"
 _OPTION_ENABLE_REDIRECTS = 6
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+_MAX_REDIRECTS = 5
 _DEFAULT_TIMEOUT = 30.0
 _MAX_DECOMPRESSED_BYTES = 64 * 1024 * 1024
 _DECOMPRESSION_CHUNK_BYTES = 64 * 1024
@@ -195,11 +197,45 @@ class WinHTTPSession:
         method: str,
         url: str,
         *,
+        allow_redirects: bool = True,
+        **kwargs: Any,
+    ) -> WinHTTPResponse:
+        """Send a request; redirects are followed here, same-origin only.
+
+        WinHTTP's own redirect handling can replay custom Cookie/Authorization
+        headers to another host, so it stays disabled. A cross-origin (or
+        over-long) redirect chain is returned as the 3xx response unfollowed and
+        callers fail closed on the unexpected status.
+        """
+        current_method, current_url = method, url
+        for _ in range(_MAX_REDIRECTS + 1):
+            response = self._send_once(current_method, current_url, **kwargs)
+            location = str(response.headers.get("Location", "") or "").strip()
+            if not (allow_redirects and response.status_code in _REDIRECT_STATUSES and location):
+                return response
+            target = urljoin(_with_params(current_url, kwargs.get("params")), location)
+            if _origin(target) != _origin(_with_params(current_url, kwargs.get("params"))):
+                return response
+            if response.status_code in (301, 302, 303) and current_method != "GET":
+                current_method = "GET"
+                kwargs = {**kwargs, "data": None}
+                kwargs["headers"] = {
+                    k: v for k, v in (kwargs.get("headers") or {}).items()
+                    if k.lower() not in {"content-type", "content-length"}
+                }
+            current_url = target
+            kwargs = {**kwargs, "params": None}
+        return response
+
+    def _send_once(
+        self,
+        method: str,
+        url: str,
+        *,
         params: Mapping[str, Any] | None = None,
         data: Any = None,
         headers: Mapping[str, str] | None = None,
         timeout: float | tuple[float, float] | None = None,
-        allow_redirects: bool = True,
     ) -> WinHTTPResponse:
         request_id = uuid.uuid4().hex[:8]
         connect_timeout, receive_timeout = _timeout_pair(self.timeout if timeout is None else timeout)
@@ -231,7 +267,7 @@ class WinHTTPSession:
                 connect_timeout_ms,
                 receive_timeout_ms,
             )
-            handle.SetOption(_OPTION_ENABLE_REDIRECTS, bool(allow_redirects))
+            handle.SetOption(_OPTION_ENABLE_REDIRECTS, False)
             handle.Open(method, final_url, False)
             for name, value in request_headers.items():
                 handle.SetRequestHeader(str(name), str(value))
@@ -290,6 +326,13 @@ def _clone_cookie(cookie: Cookie) -> Cookie:
         rest=dict(getattr(cookie, "_rest", {})),
         rfc2109=cookie.rfc2109,
     )
+
+
+def _origin(url: str) -> tuple[str, str, int | None]:
+    parts = urlsplit(url)
+    scheme = parts.scheme.lower()
+    port = parts.port or {"http": 80, "https": 443}.get(scheme)
+    return scheme, (parts.hostname or "").lower(), port
 
 
 def _with_params(url: str, params: Mapping[str, Any] | None) -> str:

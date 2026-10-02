@@ -305,8 +305,13 @@ class PluginUpdates:
     def stage(self, data: bytes, *, current_version: str | None = None) -> VerifiedPackage:
         """Verify a package and stage it for the next start. Never touches running code."""
         package = verify_package(data, self.trusted_keys)
-        if current_version and version_tuple(package.version) <= version_tuple(current_version):
+        incoming = version_tuple(package.version)
+        if current_version and incoming <= version_tuple(current_version):
             raise PackageError(f"已是 {current_version}，插件包版本 {package.version} 不高于当前版本")
+        # 防降级/重放：即使插件当前未加载，也不得低于已暂存或已安装过的最高版本。
+        known = self._known_versions(package.id)
+        if known and incoming < max(version_tuple(v) for v in known):
+            raise PackageError(f"插件包版本 {package.version} 低于已暂存/已安装的 {max(known, key=version_tuple)}")
         target = self._dir("staging", package.id, package.version)
         staging_root = self.root / "staging" / package.id
         if staging_root.exists():
@@ -327,6 +332,18 @@ class PluginUpdates:
         self._event(state, "staged", package.id, version=package.version, keyId=package.key_id)
         self._write_state(state)
         return package
+
+    def _known_versions(self, plugin_id: str) -> list[str]:
+        """Versions of one plugin already staged, installed or recorded as active."""
+        versions = []
+        for area in ("staging", "installed"):
+            base = self.root / area / plugin_id
+            if base.is_dir():
+                versions += [p.name for p in base.iterdir() if p.is_dir() and _VERSION_PATTERN.match(p.name)]
+        active = str(((self.read_state()["plugins"].get(plugin_id)) or {}).get("version") or "")
+        if _VERSION_PATTERN.match(active):
+            versions.append(active)
+        return versions
 
     @staticmethod
     def _ensure(path: Path) -> Path:

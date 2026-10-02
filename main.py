@@ -75,7 +75,6 @@ from services.tdc_auth import TDCAuthError, TDCPasswordAuthClient
 from services.project_status_updates import ProjectStatusUpdateService
 from services.project_status_sync_runner import (
     BindingRunResult,
-    EXIT_ATTENTION,
     EXIT_FAILED,
     EXIT_INTERRUPTED,
     EXIT_OK,
@@ -90,13 +89,6 @@ from services.scheduled_archive_runner import (
 )
 from services.tdc_contract_probe import (
     REPORT_DIR_NAME,
-    TDCContractProbeOptions,
-    build_report,
-    get_filter_field_labels,
-    save_report,
-    validate_categorical_fields,
-    validate_filters_non_empty,
-    validate_options,
 )
 import tdc_probe_cli as _probe_cli
 
@@ -142,7 +134,6 @@ console = Console(
 
 # ── 暂缓（置灰）模块键集合（D1：P1/P3/P4 短路占位）──────────────
 DEFERRED: set[str] = {"2", "3"}
-
 
 
 def handle_update_deliverables(db: DatabaseManager) -> None:
@@ -246,7 +237,6 @@ def handle_scan_feishu(db: DatabaseManager) -> None:
     except Exception as e:
         console.print(f"[red]错误: 飞书邮件解析失败 — {e}[/]")
         logger.exception("扫描飞书待办时发生异常")
-
 
 
 def _blank_to_none(value: str) -> str | None:
@@ -563,7 +553,6 @@ def _ask_ncr_filters() -> NCRApprovalFilters:
         change_type=_blank_to_none(Prompt.ask("变更类型", default="")),
         othercondition=Prompt.ask("othercondition", default="0").strip() or "0",
     )
-
 
 
 _SENSITIVE_DISPLAY_KEYS = {
@@ -1009,7 +998,7 @@ def _run_tdc_contract_probe(debug_enabled: bool) -> int:
 
 def _profile_rows_for_display(rows):
     """复用 tdc_contract_probe 的 profile_rows 供 CLI 显示。"""
-    from services.tdc_contract_probe import FieldProfile, profile_rows
+    from services.tdc_contract_probe import profile_rows
     profiles, _, _ = profile_rows(rows)
     return list(profiles.values()), {}, {}
 
@@ -1678,4 +1667,3 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -461,3 +461,51 @@ def test_import_cookies_accepts_cookiejar_iterable(fake_com) -> None:
 
     assert count == 1
     assert target._cookie_header("https://tdc.sgmw.com.cn/tpc") == "shared=two"
+
+
+def _script_redirects(handle: FakeHandle, steps: list[tuple[int, str]]) -> list[str]:
+    """Make each Send() answer with the next (status, Location) step; return opened URLs."""
+    opened: list[str] = []
+    original_open, remaining = handle.Open, list(steps)
+
+    def open_(method: str, url: str, asynchronous: bool) -> None:
+        opened.append(f"{method} {url}")
+        original_open(method, url, asynchronous)
+        status, location = remaining.pop(0) if remaining else (200, "")
+        handle.Status = status
+        handle.response_headers_text = (
+            "Content-Type: application/json\r\n" + (f"Location: {location}\r\n" if location else "")
+        )
+
+    handle.Open = open_  # type: ignore[method-assign]
+    return opened
+
+
+def test_same_origin_redirect_is_followed_and_winhttp_redirects_stay_off(fake_com) -> None:
+    handle, _ = fake_com
+    opened = _script_redirects(handle, [(302, "/next"), (200, "")])
+    response = WinHTTPSession().post(
+        "https://ecm.sgmw.com.cn/a", data={"q": "1"}, headers={"Content-Type": "application/json"}
+    )
+    assert response.status_code == 200
+    assert opened == ["POST https://ecm.sgmw.com.cn/a", "GET https://ecm.sgmw.com.cn/next"]
+    assert handle.options == {6: False}
+    # 只有第一跳（POST）带 Content-Type；改为 GET 的第二跳不再带正文头。
+    assert handle.request_headers == [("Content-Type", "application/json")]
+
+
+def test_cross_origin_redirect_is_not_followed_so_credentials_stay_put(fake_com) -> None:
+    handle, _ = fake_com
+    opened = _script_redirects(handle, [(302, "https://evil.example/steal"), (200, "")])
+    session = WinHTTPSession()
+    session.headers["Authorization"] = "Bearer fictional-token"
+    response = session.get("https://ecm.sgmw.com.cn/a")
+    assert response.status_code == 302
+    assert opened == ["GET https://ecm.sgmw.com.cn/a"]
+
+
+def test_redirect_loop_is_bounded(fake_com) -> None:
+    handle, _ = fake_com
+    opened = _script_redirects(handle, [(302, "/loop")] * 20)
+    assert WinHTTPSession().get("https://ecm.sgmw.com.cn/a").status_code == 302
+    assert len(opened) == 6

@@ -1,5 +1,14 @@
 # Current State
 
+## 2026-10-02 代码审计修复（分支 claude/compassionate-hawking-uogg5j）
+
+- 审计 5 项全部修复：①`host/updates.py` 暂存拒绝低于已暂存/已安装/active 最高版本的签名包（插件未加载也生效）；
+  ②`services/windows_http.py` 关闭 WinHTTP 自动重定向，改为手动跟随且仅限同源，跨源/超过 5 跳原样返回 3xx（fail-closed）；
+  ③`core/redaction.py` 新增 `_PASSWORD_RE`，含空格的口令整段遮蔽；④`webui.py` 帮助文本改正（`--host 0.0.0.0` 不能用于局域网访问）；
+  ⑤`main.py` 清理 flake8 告警。新增测试：`test_plugin_updates`、`test_windows_http`、`test_credential_safety`。
+- 门禁：`pytest -n 4 tests` 2689 passed / 4 failed（同基线 4 个 Windows 专属）；flake8 生产范围零告警。
+- 待 Lynch：Windows 实机核对数据请求（Aras/TDC 导出、NCR 下载）在手动同源重定向下行为不变。
+
 ## 2026-10-02 插件重构遗漏行为恢复完成（分支 claude/restore-plugin-parity，基线 refactor/plugin-host@d0dd01d）
 
 - **完成**：旧业务分支（e2c58a3）9 批生产修复在插件架构下补回，逐条状态/位置/断言见

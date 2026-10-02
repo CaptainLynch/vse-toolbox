@@ -266,3 +266,12 @@ def test_tdc_console_log_error_and_diagnostic_report_share_redaction(monkeypatch
     for secret in ("fictional-cookie-secret", "fictional-auth-secret", "fictional-query-secret"):
         assert secret not in combined
     assert "[redacted]" in combined
+
+
+def test_password_with_spaces_is_fully_redacted() -> None:
+    from core.redaction import redact_sensitive_text
+
+    text = redact_sensitive_text("login failed password: my secret phrase, user=bob")
+    assert "secret" not in text and "phrase" not in text and "my" not in text.split("password")[1]
+    assert "user=bob" in text
+    assert "[redacted]" in text

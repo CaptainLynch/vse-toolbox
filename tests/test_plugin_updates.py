@@ -242,3 +242,18 @@ def test_host_upgrade_with_newer_bundled_plugin_supersedes_installed_package(hos
     assert status["events"][0]["kind"] == "superseded"
     plugins = {p["id"]: p for p in status["plugins"]}
     assert plugins["demo"]["source"] == "bundled"
+
+
+def test_stage_rejects_downgrade_even_when_plugin_not_loaded(tmp_path: Path, signer) -> None:
+    pem, keys = signer
+    updates = PluginUpdates(tmp_path / "updates", trusted_keys=keys)
+    updates.stage(build_package(_plugin(tmp_path, "1.2.0"), pem)[1])
+    # 已暂存 1.2.0：未传 current_version（插件未加载）时旧版签名包也必须被拒绝。
+    with pytest.raises(PackageError, match="低于已暂存/已安装"):
+        updates.stage(build_package(_plugin(tmp_path / "old", "1.1.0"), pem)[1])
+    updates.apply_pending()
+    updates.rollback("demo", reason="test")  # 回滚后 installed/ 仍留有 1.2.0
+    with pytest.raises(PackageError, match="低于已暂存/已安装"):
+        updates.stage(build_package(_plugin(tmp_path / "old2", "1.1.0"), pem)[1])
+    updates.stage(build_package(_plugin(tmp_path / "new", "1.3.0"), pem)[1])
+    assert updates.pending() == [{"id": "demo", "version": "1.3.0"}]
