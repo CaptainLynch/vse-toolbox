@@ -78,10 +78,9 @@ async function readJson(response) {
   }
 }
 
-async function waitForTask(taskId, timeoutMs, signal) {
-  const deadline = Date.now() + timeoutMs;
+async function waitForTask(taskId, deadline, signal) {
   while (Date.now() < deadline) {
-    if (signal && signal.aborted) return null;
+    if (signal.aborted) return null;
     try {
       const response = await fetch(`/api/tasks/${enc(taskId)}`, { cache: "no-store", signal });
       if (response.ok) {
@@ -89,16 +88,16 @@ async function waitForTask(taskId, timeoutMs, signal) {
         if (task && task.is_active === false) return task;
       }
     } catch (err) {
-      if (err && err.name === "AbortError") return null;
-      // 瞬态网络错误继续轮询，由超时兜底
+      if (signal.aborted) return null;
+      // 瞬态网络错误继续轮询，由总截止兜底
     }
     await sleep(discoveryLimits.taskPollIntervalMs);
   }
   return null;
 }
 
-async function fetchTaskResult(taskId) {
-  const response = await fetch(`/api/tasks/${enc(taskId)}/result`, { cache: "no-store" });
+async function fetchTaskResult(taskId, signal) {
+  const response = await fetch(`/api/tasks/${enc(taskId)}/result`, { cache: "no-store", signal });
   const body = await readJson(response);
   if (!response.ok || !body || body.ok !== true) throw requestError(body, response.status);
   return body.data;
@@ -145,25 +144,37 @@ export async function postMappingDiscovery(deliverableId, payload, options = {})
       }
       activeTask = body.data || {};
       kickTaskCenter();
+      // 后台阶段的独立总截止：覆盖状态轮询、响应体与结果读取（任一次请求挂起都不能越过它）。
       const pollMs = discoveryLimits.taskPollTimeoutMs;
-      const task = await waitForTask(activeTask.taskId, pollMs);
-      if (!task) {
-        throw retryableError(`映射取证后台任务超过 ${Math.max(1, Math.round(pollMs / 60000))} 分钟未完成，可在任务中心查看或取消后重试。`);
+      const stage = new AbortController();
+      const stageTimer = setTimeout(() => stage.abort(), pollMs);
+      const stageExpired = () => retryableError(`映射取证后台任务超过 ${Math.max(1, Math.round(pollMs / 60000))} 分钟未完成，可在任务中心查看或取消后重试。`);
+      try {
+        const task = await waitForTask(activeTask.taskId, Date.now() + pollMs, stage.signal);
+        if (!task) throw stageExpired();
+        if (task.status === "cancelled") throw new Error("映射取证已取消；可重新点击「开始配置并启用」。");
+        if (task.status !== "succeeded") {
+          const detail = task.error_message ? String(task.error_message) : "原因未记录";
+          throw new Error(`映射取证后台任务失败：${detail}`);
+        }
+        let resultBody;
+        try {
+          resultBody = await fetchTaskResult(activeTask.taskId, stage.signal);
+        } catch (err) {
+          if (stage.signal.aborted) throw stageExpired();
+          throw err;
+        }
+        // 参数哈希绑定：结果必须属于本次提交的查询身份，否则显式丢弃。
+        if (
+          !resultBody || typeof resultBody !== "object" || !resultBody.result
+          || (activeTask.paramsHash && resultBody.paramsHash !== activeTask.paramsHash)
+        ) {
+          throw new Error("映射取证结果与请求参数不一致，已丢弃；请重新点击「开始配置并启用」。");
+        }
+        return resultBody.result;
+      } finally {
+        clearTimeout(stageTimer);
       }
-      if (task.status === "cancelled") throw new Error("映射取证已取消；可重新点击「开始配置并启用」。");
-      if (task.status !== "succeeded") {
-        const detail = task.error_message ? String(task.error_message) : "原因未记录";
-        throw new Error(`映射取证后台任务失败：${detail}`);
-      }
-      const resultBody = await fetchTaskResult(activeTask.taskId);
-      // 参数哈希绑定：结果必须属于本次提交的查询身份，否则显式丢弃。
-      if (
-        !resultBody || typeof resultBody !== "object" || !resultBody.result
-        || (activeTask.paramsHash && resultBody.paramsHash !== activeTask.paramsHash)
-      ) {
-        throw new Error("映射取证结果与请求参数不一致，已丢弃；请重新点击「开始配置并启用」。");
-      }
-      return resultBody.result;
     }
     // 同步回落：密码/显式 Cookie 模式、引擎不可用或会话缓存命中，契约不变。
     if (!response.ok || !body || body.ok !== true) throw requestError(body, response.status);

@@ -218,7 +218,7 @@ _WIZARD_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 # 重复提交（相同参数哈希）返回原任务（向导重开后经 statusUrl 重新挂接）；
 # 参数不同的在途任务期间再提交返回 409，避免新旧取证结果互相污染
 # （与 C1 的「过期请求」问题同构，绑定的是查询身份而非请求时序）。
-_MAPPING_DISCOVERY_TASKS: dict[str, dict[str, str]] = {}
+_MAPPING_DISCOVERY_TASKS: dict[str, dict[str, Any]] = {}
 _MAPPING_DISCOVERY_TASKS_LOCK = threading.Lock()
 _MAPPING_DISCOVERY_TERMINAL_STATUSES = {"succeeded", "failed", "cancelled", "interrupted"}
 
@@ -5041,6 +5041,9 @@ def create_app(
                         # （worker finally 弹出）；cancel_task 会提前把 DB 行写成
                         # 终态，不得以 DB 状态判占用，否则同交付物会出现双 worker。
                         if entry.get("params_hash") == params_hash:
+                            # 重新挂接：本次请求的令牌同样属于该任务（令牌→任务关联持续到 worker 退出）。
+                            if cancel_token:
+                                entry.setdefault("tokens", []).append(cancel_token)
                             existing = runner.get_task(entry.get("task_id", ""))
                             return _mapping_discovery_accepted_response(
                                 entry["task_id"],
@@ -5056,6 +5059,7 @@ def create_app(
                     _MAPPING_DISCOVERY_TASKS[deliverable_id] = {
                         "task_id": tid,
                         "params_hash": params_hash,
+                        "tokens": [cancel_token] if cancel_token else [],
                     }
                 return _mapping_discovery_accepted_response(tid, "queued", params_hash)
 
@@ -5182,7 +5186,8 @@ def create_app(
         if runner is not None:
             with _MAPPING_DISCOVERY_TASKS_LOCK:
                 entry = _MAPPING_DISCOVERY_TASKS.get(deliverable_id)
-            if entry is not None:
+            # 只取消该令牌所属的任务：过期/未知令牌（例如旧请求的延迟取消）不得取消后来启动的新任务。
+            if entry is not None and token in entry.get("tokens", ()):
                 existing = runner.get_task(entry.get("task_id", ""))
                 if (
                     existing is not None

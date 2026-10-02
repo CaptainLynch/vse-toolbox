@@ -637,4 +637,6 @@ repo are the authoritative record.
 - **Playwright 注意**：`page.unroute` 会把挂起的路由自动放行（再 `continue_()` 报 already handled）；`page.goto` 会清空页面内状态
   （`window.*` 探针要在 goto 之后注入）；挂起路由在用例结束 `unroute_all(behavior="ignoreErrors")`。
 - 全量并行：`python -m pytest -q -p no:cacheprovider -n 4`（约 70s，需 `pip install pytest-xdist imapclient selenium xlwings`）。
-
+- **独立审查（Windows，PR#3）后续修复**：取证后台阶段需独立总截止（状态 fetch/body/结果 fetch 都带 signal）；取消令牌必须与任务关联
+  （`_MAPPING_DISCOVERY_TASKS[...]["tokens"]`），不可按交付物兜底；页签切换失败要回退 activeTab；交互守卫用 `useLayoutEffect`
+  同提交安装；地图指纹/vendor 校验对 CRLF 敏感，已归一/加 `.gitattributes`。

@@ -2,7 +2,7 @@
 // renderDeliverableFormAnalysis): snapshot actions, summary, chart tabs
 // with per-tab filter bar, department board + section rollup rules, trend
 // and cost charts, paged rows table and the statistics disclosure.
-import { html, useEffect, useRef, useState } from "/static/host/vendor/preact-htm.js";
+import { html, useEffect, useLayoutEffect, useRef, useState } from "/static/host/vendor/preact-htm.js";
 import { apiRequest, enc, plainErrorMessage } from "./api.js";
 import {
   departmentBoardRows,
@@ -761,7 +761,9 @@ const GUARDED_EVENTS = ["beforeinput", "change", "click", "compositionend", "com
 
 /** While a tab switch is loading, block the stale controls (tab buttons and Tab key stay usable). */
 function useInteractionGuard(ref, locked) {
-  useEffect(() => {
+  // 布局阶段安装：与 data-form-interaction-locked 属性同一次提交内生效，
+  // 不存在「属性已锁定、监听器尚未安装」的窗口。
+  useLayoutEffect(() => {
     const root = ref.current;
     if (!root || !locked) return undefined;
     const guard = (event) => {
@@ -802,6 +804,7 @@ export function FormAnalysisPanel({ item, version, ctl, onViewData, archive }) {
   const bump = () => setTick((value) => value + 1);
   const [view, setView] = useState({ data: null, rowsData: null, tab: "", error: null });
   const [bgBusy, setBgBusy] = useState(false);
+  const lastGoodTab = useRef("");
   const chartsRef = useRef(null);
   const rowsRef = useRef(null);
   const alive = useRef(true);
@@ -830,6 +833,7 @@ export function FormAnalysisPanel({ item, version, ctl, onViewData, archive }) {
       ]);
       if (!alive.current || sequence !== state.requestSeq) return false;
       state.viewStatus = "success";
+      lastGoodTab.current = tab;
       markFormFilterStateDisplayed(state, filters, tab);
       const viewData = data || {};
       if (onViewData) onViewData(viewData);
@@ -839,6 +843,9 @@ export function FormAnalysisPanel({ item, version, ctl, onViewData, archive }) {
       if (!alive.current || sequence !== state.requestSeq) return false;
       const error = timedOut ? formViewLoadTimeoutError(timeoutMs) : rawError;
       state.viewStatus = "error";
+      // 页签切换失败：回到最后一次成功的页签，使界面显示/编辑的筛选状态与之后
+      // 「应用筛选」「刷新」所读取的页签一致（否则条件会被写进未显示的页签）。
+      if (lastGoodTab.current && lastGoodTab.current !== state.activeTab) state.activeTab = lastGoodTab.current;
       setView((prev) => ({ ...prev, error }));
       return false;
     } finally {

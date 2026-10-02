@@ -1253,16 +1253,18 @@ def test_mapping_discovery_cancel_endpoint_cancels_background_task(client, monke
     web_app._MAPPING_DISCOVERY_TASKS.clear()
     try:
         resp = client.post(
-            "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery", json=payload
+            "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery",
+            json={**payload, "cancelToken": "disc-own-token"},
         )
         assert resp.status_code == 202
         task_id = resp.get_json()["data"]["taskId"]
         assert started.wait(2.0)
 
-        # 旧令牌已随 202 释放：取消走注册表兜底（F1）。
+        # 令牌已随 202 释放（握手未被前端读到）：取消按「令牌→任务」关联兜底（F1），
+        # 且只认本任务的令牌——过期/未知令牌不得取消它（见 test_stale_cancel_token_…）。
         cancel = client.post(
             "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery/cancel",
-            json={"base_url": "https://tdc.example", "cancelToken": "disc-legacy-unregistered"},
+            json={"base_url": "https://tdc.example", "cancelToken": "disc-own-token"},
         )
         assert cancel.status_code == 200
         cancel_data = cancel.get_json()["data"]
@@ -1381,3 +1383,28 @@ def test_mapping_discovery_cancel_endpoint_does_not_require_base_url(client) -> 
         ).status_code == 400
     finally:
         web_app._release_discovery_cancel(token, event)
+
+
+def test_stale_cancel_token_cannot_cancel_a_later_task(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """旧请求 A 的延迟取消（令牌已释放、不属于当前任务）不得取消后来启动的任务 B。"""
+    cancelled: list[str] = []
+
+    class FakeRunner:
+        def get_task(self, task_id):  # type: ignore[no-untyped-def]
+            return {"status": "running"}
+
+        def cancel_task(self, task_id):  # type: ignore[no-untyped-def]
+            cancelled.append(task_id)
+
+    monkeypatch.setattr(web_app, "_crawl_runner_from_request", lambda: FakeRunner())
+    web_app._MAPPING_DISCOVERY_TASKS.clear()
+    web_app._MAPPING_DISCOVERY_TASKS["VPI-T2-D5"] = {"task_id": "NEW-TASK-B", "params_hash": "NEW-QUERY-B", "tokens": ["disc-token-b"]}
+    url = "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery/cancel"
+    try:
+        stale = client.post(url, json={"cancelToken": "old-request-A"})
+        assert stale.status_code == 200 and stale.get_json()["data"] == {"cancelled": False, "reason": "not_running"}
+        assert cancelled == []
+        own = client.post(url, json={"cancelToken": "disc-token-b"})
+        assert own.get_json()["data"]["cancelled"] is True and cancelled == ["NEW-TASK-B"]
+    finally:
+        web_app._MAPPING_DISCOVERY_TASKS.clear()

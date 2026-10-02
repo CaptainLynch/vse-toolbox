@@ -414,7 +414,11 @@ def test_view_timeout_unlocks_interaction_and_offers_retry(session: Session) -> 
     hold["on"] = False
     page.unroute("**/api/deliverable-forms/tdc_data_model/view*")
     page.unroute("**/api/deliverable-forms/tdc_data_model/rows*")
+    # the failed switch fell back to the last good tab (filters shown == filters applied)
+    assert "is-active" in (_tab(page, "项目状态").get_attribute("class") or "")
     page.get_by_role("button", name="刷新表单数据").first.click()
+    page.wait_for_selector(".form-chart-title:has-text('项目状态')")
+    _tab(page, "数量趋势").click()
     page.wait_for_selector(".form-trend-chart")
     assert page.locator(".form-view-load-error").count() == 0
 
@@ -1253,3 +1257,40 @@ def test_data_model_section_board_and_filter_use_the_rollup_target(session: Sess
     assert any("BE 结构工程科" in text for text in sections)              # the table keeps the original value
     chips = page.locator(".form-filter-chip:not(.is-draft) .form-filter-chip-label").all_inner_texts()
     assert chips == ["部门：车身科"] or any("车身科" in chip for chip in chips)
+
+
+@pytest.mark.parametrize("hung", ["status", "result"])
+def test_background_stage_deadline_covers_hung_status_and_result_requests(session: Session, hung: str) -> None:
+    wiz = Wizard(session, "VPI-T2-D5")
+    wiz.on_discovery = lambda route, body, count: _accepted(route)
+    page = session.page
+    if hung == "status":
+        page.route("**/api/tasks/task-1", lambda r: None)                      # never answered
+    else:
+        page.route("**/api/tasks/task-1", lambda r: _json_response(r, {"ok": True, "data": {"is_active": False, "status": "succeeded"}}))
+        page.route("**/api/tasks/task-1/result", lambda r: None)
+    wiz.open()
+    wiz.limits(taskPollTimeoutMs=500, taskPollIntervalMs=100)
+    wiz.start()
+    text = wiz.wait_status("任务中心")
+    assert "未完成" in text and not text.startswith("配置启用失败"), (hung, text)
+    page.wait_for_function("document.querySelector('.policy-wizard-start-btn').disabled === false")
+    assert page.evaluate("window.__vseWizardBusy") is False
+
+
+def test_filter_apply_after_failed_tab_switch_keeps_the_typed_condition(session: Session) -> None:
+    page = session.page
+    session.open_deliverable("VPI-T2-D5")
+    page.wait_for_selector(".form-chart-tabs")
+    page.route("**/api/deliverable-forms/tdc_data_model/view*",
+               lambda r: _json_response(r, {"ok": False, "error": {"type": "ServerError", "message": "boom"}}, status=500))
+    _tab(page, "数量趋势").click()
+    page.wait_for_selector(".form-view-load-error")
+    page.unroute_all(behavior="ignoreErrors")
+    requests: list[str] = []
+    page.on("request", lambda req: requests.append(req.url) if "/deliverable-forms/tdc_data_model/view" in req.url else None)
+    page.locator(".form-filter-keyword").first.fill("REVIEW-KEYWORD")
+    page.get_by_role("button", name="应用筛选").first.click()
+    page.wait_for_function("document.querySelector('.form-filter-draft-state').innerText.includes('已应用')")
+    assert any("REVIEW-KEYWORD" in url for url in requests), requests
+    assert "is-active" in (_tab(page, "项目状态").get_attribute("class") or "")

@@ -282,7 +282,8 @@ def source_fingerprint(root: Path = ROOT) -> str:
         relative = _relative(path, root).encode("utf-8")
         digest.update(relative)
         digest.update(b"\0")
-        digest.update(path.read_bytes())
+        # 统一换行后再哈希：Windows(CRLF) 与 Linux(LF) checkout 得到同一指纹。
+        digest.update(path.read_bytes().replace(b"\r\n", b"\n"))
         digest.update(b"\0")
     return digest.hexdigest()
 
