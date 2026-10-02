@@ -1,0 +1,573 @@
+﻿/* disable default outline for focused element in Chrome */
+@supports (-webkit-appearance: none) {
+	*:focus {
+		outline: none;
+	}
+}
+
+body {
+	font-size: 12px;
+	line-height: 1.4;
+	background-color: #ffffff;
+	color: #444444;
+}
+
+.ArasToolbar {
+	font-size: 8pt;
+}
+
+img,
+object {
+	display: block;
+}
+th {
+	font-size: 8pt;
+}
+td {
+	font-size: 8pt;
+}
+a:hover {
+	text-decoration: underline;
+}
+a {
+	font-size: 8pt;
+	color: #000000;
+	text-decoration: none;
+}
+fieldset {
+	border-width: 2px;
+	border-style: groove;
+	padding: 0 7px;
+	margin-left: 0;
+	margin-right: 0;
+}
+table {
+	border-width: 0;
+}
+legend {
+	white-space: nowrap;
+	font-size: 8pt;
+	text-transform: capitalize;
+	color: #000000;
+	margin-left: 0;
+	margin-right: 0;
+}
+li {
+	font-size: 8pt;
+}
+
+input,
+textarea,
+select {
+	font-size: 8pt;
+	padding: 2px 1px 1px 1px;
+}
+
+textarea {
+	padding: 1px;
+}
+
+select {
+	color: #444444;
+}
+
+p {
+	font-size: 8pt;
+}
+
+.body_edit,
+.body_print,
+.body_search,
+.body_view,
+.body_add {
+	margin: 0;
+	padding: 0;
+}
+
+.prompt {
+	font-weight: bold;
+	font-size: 8pt;
+	text-align: right;
+}
+.tiny {
+	font-size: 6pt;
+}
+.small {
+	font-size: 8pt;
+}
+.medium {
+	font-size: 9pt;
+}
+.big {
+	font-size: 10pt;
+}
+.vbig {
+	font-size: 12pt;
+}
+.vvbig {
+	font-weight: bold;
+	font-size: 14pt;
+}
+
+.plain-link {
+	color: #3668b1;
+	text-decoration: underline;
+	font-size: 13px;
+}
+
+:-ms-input-placeholder {
+	/* Internet Explorer 10+ */
+	color: #808080;
+	font-style: italic;
+	font-size: 12px;
+}
+::-moz-placeholder {
+	/* Mozilla Firefox 19+ */
+	color: #808080;
+	font-style: italic;
+	opacity: 1;
+	font-size: 12px;
+}
+::-webkit-input-placeholder {
+	/* Chrome */
+	font-style: italic;
+	color: #808080;
+	font-size: 12px;
+}
+
+/* ******************* Form fields ******************* */
+.sys_f_container {
+	display: inline;
+	position: absolute;
+}
+
+.sys_f_border {
+	border: groove 0;
+	display: inline;
+	left: 0;
+	vertical-align: top;
+}
+
+.sys_f_table {
+	border-spacing: 0;
+}
+
+.sys_f_label_container {
+	font-weight: bold;
+	vertical-align: middle;
+	white-space: nowrap;
+	padding: 0;
+}
+
+.sys_f_value_container {
+	white-space: nowrap;
+	padding: 0;
+}
+
+.sys_f_label,
+.sys_f_legend {
+	font-size: 8pt;
+	text-transform: capitalize;
+	direction: inherit;
+}
+
+.sys_f_legend {
+	display: block;
+}
+
+.sys_f_label {
+	display: inline;
+}
+
+.sys_f_label_bottom {
+	vertical-align: top;
+}
+
+.sys_f_label_left {
+	padding-right: 0.3em;
+	vertical-align: middle;
+}
+
+.sys_f_label_right {
+	vertical-align: middle;
+}
+
+.sys_f_label_top {
+	vertical-align: top;
+}
+
+.sys_f_value {
+	display: inline;
+	direction: inherit;
+}
+
+.sys_f_value_bottom {
+	vertical-align: top;
+}
+
+.sys_f_value_left {
+	vertical-align: middle;
+}
+
+.sys_f_value_right {
+	vertical-align: middle;
+}
+
+.sys_f_value_top {
+	vertical-align: top;
+}
+
+.sys_f_restricted_msg {
+	overflow: hidden;
+	cursor: pointer;
+	display: none;
+	color: red;
+}
+
+.sys_f_empty_label_container {
+	display: none;
+}
+
+/* +++ field type specific rules */
+.sys_ft_checkbox_list span {
+	padding-right: 4px;
+}
+
+.sys_ft_listbox_multi_select {
+	min-height: 40px;
+}
+
+.sys_ft_textarea textarea {
+	white-space: pre-wrap;
+}
+
+.sys_ft_button .sys_f_label_container {
+	display: none;
+}
+
+.sys_ft_label .sys_f_label_container {
+	display: none;
+}
+
+.sys_groupbox_content_horizontal {
+	display: inline;
+}
+
+.sys_groupbox_content_vertical {
+	display: inline;
+}
+
+.sys_f_container_in_horizontal_groupbox {
+	vertical-align: top;
+}
+
+.sys_f_container_in_vertical_groupbox {
+	display: table;
+	*display: block;
+}
+/* --- field type specific rules */
+
+/* +++ rules specific to different attributes of property */
+.sys_ft_checkbox.sys_p_is_required input,
+.sys_ft_checkbox_list.sys_p_is_required input,
+.sys_ft_date.sys_p_is_required input,
+.sys_ft_dropdown.sys_p_is_required select,
+.sys_ft_file_item.sys_p_is_required input,
+.sys_ft_item.sys_p_is_required input,
+.sys_ft_listbox_multi_select.sys_p_is_required select,
+.sys_ft_listbox_single_select.sys_p_is_required select,
+.sys_ft_ml_string.sys_p_is_required input,
+.sys_ft_password.sys_p_is_required input,
+.sys_ft_radio_button_list.sys_p_is_required input,
+.sys_ft_text.sys_p_is_required input,
+.sys_ft_textarea.sys_p_is_required textarea {
+	background-color: #dde7f5;
+}
+/* --- rules specific to different attributes of property */
+
+.tr_IE_fix_bug_with_height {
+	width: 100%;
+}
+.sys_label_lang_direction_rtl .sys_f_table {
+	direction: rtl;
+}
+
+.sys_label_lang_direction_ltr .sys_f_table {
+	direction: ltr;
+}
+
+.sys_session_lang_direction_rtl .sys_f_value_container {
+	direction: rtl;
+}
+
+.text_rtl_container input,
+.text_rtl_container textarea {
+	direction: rtl;
+}
+
+.sys_session_lang_direction_ltr .sys_f_value_container {
+	direction: ltr;
+}
+
+.sys_item_link {
+	text-decoration: underline;
+	cursor: pointer;
+	color: #3668b1;
+}
+.sys_view_file_link {
+	text-decoration: underline;
+	cursor: pointer;
+	color: #3668b1;
+}
+/* **************** @media print **************** */
+@media print {
+	.body_print {
+		border: none;
+		overflow: hidden;
+	}
+
+	.html_print {
+		border: none;
+		overflow: hidden;
+	}
+
+	#relationships {
+		display: block;
+		border-top: groove 2px;
+	}
+
+	.sys_ft_groupbox .sys_f_value_container {
+		white-space: nowrap;
+	}
+}
+/* **************** @media print **************** */
+
+.sys_f_input_image {
+	width: auto;
+	height: auto;
+	border: 0 none;
+}
+
+.sys_f_input_image_ie {
+	max-height: 18px;
+	max-width: 19px;
+	margin: -1px 0 0 -4px;
+	padding: 0;
+}
+
+.sys_f_input_image_ff,
+.sys_f_input_image_ch,
+.sys_f_input_image_ed {
+	max-width: 19px;
+	max-height: 19px;
+	padding: 0;
+	margin-left: -4px;
+	margin-top: -4px;
+}
+
+.sys_f_input_image_ff {
+	margin-top: -3.5px;
+}
+
+.sys_f_input_image_ch,
+.sys_f_input_image_ed {
+	max-height: 18px;
+}
+
+.sys_f_input_image_ed {
+	margin-top: -1px;
+}
+
+.sys_f_value input.sys_f_input_calendar {
+	border-right: 0 none;
+}
+
+.sys_f_input_image_calendar_ff,
+.sys_f_input_image_calendar_ch,
+.sys_f_input_image_calendar_ed {
+	padding: 0;
+	margin-left: 0;
+}
+
+.sys_f_input_image_calendar_ie {
+	margin: 0;
+	margin-top: -1px;
+}
+
+input.sys_f_input_image_calendar_ff[disabled],
+input.sys_f_input_image_calendar_ie[disabled] {
+	cursor: default;
+	margin-left: -1px !important;
+}
+
+.sys_f_value input.sys_f_input_calendar[disabled] {
+	cursor: default;
+}
+
+/* ======================== 'Select' styles================================ */
+
+.sys_f_div_select {
+	background: url('../images/dropdown-arrow.svg') no-repeat scroll right top /
+		17px 17px #fff;
+	border: 1px solid #505050;
+	height: 17px;
+	position: relative;
+	top: 0;
+	display: inline-block;
+	text-align: left;
+}
+
+.sys_f_div_select_required {
+	background-color: #dde7f5;
+}
+
+.sys_f_div_select:hover {
+	background-image: url('../images/dropdown-hover.svg');
+}
+
+.sys_f_div_select_disabled,
+.sys_f_div_select_disabled:hover {
+	background-image: url('../images/dropdown-disabled.svg');
+	color: #808080;
+	background-color: #fff;
+	border-color: #b3b3b3;
+}
+
+.sys_f_div_select .sys_f_select {
+	background: none repeat scroll 0 0 rgba(0, 0, 0, 0);
+	border-radius: 0 0 0 0;
+	font-size: 8pt;
+	opacity: 0;
+	z-index: 10;
+	position: relative;
+	border: 0 none;
+	display: block;
+	margin-left: -1px;
+}
+.sys_f_div_select .sys_f_span_select {
+	left: 3px;
+	position: absolute;
+	top: 0;
+	z-index: 1;
+	white-space: nowrap;
+	overflow: hidden;
+	width: calc(100% - 20px);
+	font-size: 8pt;
+	color: #444444;
+	height: 100%;
+}
+
+.sys_f_div_select ul.ul_select {
+	background: none repeat scroll 0 0 #ffffff;
+	z-index: 10;
+	margin: 17px 0 0 -1px;
+	padding: 0;
+	list-style: none;
+	border: 1px solid #505050;
+	position: absolute;
+	width: inherit;
+}
+.sys_f_div_select ul.ul_select li.li_select {
+	padding: 0 3px;
+}
+
+.sys_f_div_select ul.ul_select li.li_select.hover,
+.sys_f_div_select ul.ul_select li.li_select.selected.hover {
+	background-color: #3399ff;
+	color: white;
+}
+
+.sys_f_div_select_disabled .sys_f_span_select,
+.sys_f_div_select_disabled:hover .sys_f_span_select {
+	color: #444444;
+}
+
+.dijitInputInner {
+	color: #444444;
+}
+/* ======================== 'Select' styles================================ */
+
+/* ======================== 'File Item' field styles================================ */
+.sys_dt_item .filePropertyContainer {
+	display: inline-block;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	vertical-align: middle;
+	line-height: 22px;
+}
+
+.sys_dt_item .imageButton {
+	display: inline-block;
+	cursor: pointer;
+	width: 20px;
+	height: 20px;
+	max-width: 20px;
+	max-height: 20px;
+	vertical-align: middle;
+	margin-left: 2px;
+	background-size: 20px 20px;
+	background-position: 0 0;
+	background-repeat: no-repeat;
+}
+
+.sys_dt_item .selectButton {
+	background-image: url('../../images/Upload.svg');
+}
+
+.sys_dt_item .selectButton.selectButtonDisabled,
+.sys_dt_item .selectButton.selectButtonDisabled:hover {
+	background-image: url('../../images/UploadDisabled.svg');
+}
+
+.sys_dt_item .sys_item_link.selectButtonDisabled {
+	color: #cccccc;
+}
+
+.sys_dt_item .selectButton.selectButtonReadonly,
+.sys_dt_item .selectButton.selectButtonReadonly:hover {
+	background-image: url('../../images/UploadDisabled.svg');
+}
+
+.sys_dt_item .sys_item_link.selectButtonReadonly {
+	color: #cccccc;
+}
+
+.sys_dt_item .selectButton:hover {
+	background-image: url('../../images/UploadHover.svg');
+}
+
+.sys_dt_item .manageButton {
+	background-image: url('../../images/FileProperty.svg');
+}
+
+.sys_dt_item .manageButtonUnsaved {
+	margin-left: 2px;
+	background-image: url('../../images/FilePropertyUnsaved.svg');
+}
+
+.sys_dt_item .manageButton:hover {
+	background-image: url('../../images/FilePropertyHover.svg');
+}
+/* ======================== end of 'File Item'================================ */
+
+/* Self-Service Report Settings */
+div.ssr_add {
+	background: url(../images/EditItem.svg) no-repeat center;
+	background-size: 26px;
+	width: 22px;
+	height: 22px;
+	display: inline-block;
+	margin-left: 2px;
+	cursor: pointer;
+}
+
+div.settings_list {
+	padding-left: 15px;
+	color: #444444;
+	font-size: 12px;
+	line-height: 1.4;
+	height: 350px;
+	width: 250px;
+	overflow: auto;
+}
+/* End of Self-Service Report Settings */

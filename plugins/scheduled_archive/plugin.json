@@ -1,0 +1,13 @@
+{
+  "id": "scheduled-archive",
+  "name": "自动归档",
+  "version": "0.1.0",
+  "hostApi": ">=1,<2",
+  "description": "自动下载与留存（定时归档任务管理）的插件化页面；调用旧的 /api/scheduled-archive/* 接口，旧页面并存",
+  "pages": [
+    {"id": "jobs", "title": "自动下载与留存", "kind": "module", "module": "jobs.js"}
+  ],
+  "nav": [
+    {"title": "自动归档", "page": "jobs", "order": 50}
+  ]
+}

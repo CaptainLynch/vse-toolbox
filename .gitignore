@@ -1,20 +1,24 @@
-﻿# Python
+# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
 dist/
 build/
+production*/
+.build_production*/
 
 # 数据库文件
 data/*.db
 data/*.db-wal
 data/*.db-shm
+data/*.dpapi
 
 # 日志
 data/*.log
 
 # 输出文件
 data/output/
+data/diagnostics/
 
 # IDE
 .vscode/
@@ -26,3 +30,44 @@ Thumbs.db
 
 # chromedriver
 chromedriver.exe
+
+# 本地爬虫取证材料（可能包含明文凭据）
+/爬虫源文件/
+
+# 本地测试及工具临时文件
+/.pytest_cache/
+/.tmp_pytest*/
+/.claude/settings.local.json
+/design-previews/
+
+# Local dual-agent harness task state (may include code diffs and diagnostics)
+/.agents/tasks/
+/.agents/runs/
+/.agents/logs/
+/.agents/worktrees/
+
+# 本地运行时 / 构建产物 / 工作区缓存（不入库）
+.runtime/
+artifacts/
+.zcode/
+.agents/
+.excel_workbench/
+dist-probe/
+tmp/
+
+# 本地 Python 虚拟环境（机器本地产物，不入库）
+.venv/
+
+# Local test/error dumps
+error data/
+.preflight-*
+
+# Build injected version metadata
+/version.json
+
+# Local temp artifacts and stray files
+/nul
+/smoke.pid
+/pelican_*
+
+

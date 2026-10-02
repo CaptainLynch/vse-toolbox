@@ -1,0 +1,19 @@
+{
+  "id": "deliverable-forms",
+  "name": "交付物表单",
+  "version": "0.2.0",
+  "hostApi": ">=1,<2",
+  "description": "六张交付物表单的分析页（表单定义来自 core/form_registry.py；旧页面并存）",
+  "pages": [
+    {"id": "index", "title": "交付物表单", "kind": "module", "module": "index.js"},
+    {"id": "ewo", "title": "EWO 进度"},
+    {"id": "paa", "title": "PAA 进度"},
+    {"id": "ncr_progress", "title": "NCR 审批进度"},
+    {"id": "ncr_detail", "title": "NCR 审批明细"},
+    {"id": "tdc_data_model", "title": "数模设计审核流程"},
+    {"id": "tdc_sor", "title": "SOR 定点流程"}
+  ],
+  "nav": [
+    {"title": "表单", "page": "index", "order": 30}
+  ]
+}

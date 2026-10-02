@@ -1,0 +1,448 @@
+/* Excel 文件处理插件样式。复用旧主题 token，类名统一 xt- 前缀。 */
+
+.xt-page { gap: 12px; }
+
+.xt-header { flex-wrap: wrap; align-items: center; }
+
+.xt-intro { margin: 0; }
+
+.xt-field span, .xt-worker-label { white-space: nowrap; }
+
+.xt-eyebrow {
+  margin: 0 0 2px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.xt-worker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.xt-worker-label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+a.vk-btn {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+
+.xt-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 999px;
+  font-size: 11px;
+  white-space: nowrap;
+  color: var(--muted);
+  background: var(--surface-soft);
+}
+
+.xt-chip.is-success { color: var(--success); border-color: var(--success); }
+.xt-chip.is-running { color: var(--primary); border-color: var(--primary); }
+.xt-chip.is-failed { color: var(--error); border-color: var(--error); }
+
+.xt-error {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--error);
+  border-radius: 8px;
+  color: var(--error);
+  font-size: 13px;
+  background: var(--surface-card);
+}
+
+.xt-error-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; word-break: break-word; }
+.xt-error-meta { color: var(--muted); font-size: 11px; }
+.xt-error-fields { margin: 0; padding-left: 18px; font-size: 12px; }
+.xt-error-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+.xt-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  min-height: 16px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.xt-warn { color: var(--warning); }
+.xt-poll { color: var(--primary); }
+
+.xt-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--surface-card);
+}
+
+.xt-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+
+.xt-card-head h4 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.xt-count {
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 12px;
+}
+
+.xt-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.xt-create-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 10px 14px;
+}
+
+.xt-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.xt-field.is-wide { grid-column: 1 / -1; }
+
+.xt-field.is-inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+
+.xt-field input,
+.xt-field select,
+.xt-field textarea {
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 6px;
+  background: var(--surface-card);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+}
+
+.xt-field textarea { resize: vertical; font-family: var(--font-mono, monospace); }
+.xt-field.is-inline input[type="number"] { width: 80px; }
+
+.xt-inline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.xt-inline input { flex: 1; }
+
+.xt-advanced summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.xt-advanced[open] summary { margin-bottom: 8px; }
+
+.xt-layout {
+  display: grid;
+  grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.xt-list-pane {
+  position: sticky;
+  top: 8px;
+  max-height: calc(100vh - 120px);
+}
+
+.xt-task-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.xt-task-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--surface-card);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.xt-task-item:hover { background: var(--surface-soft); }
+
+.xt-task-item.is-active {
+  border-color: var(--primary);
+  box-shadow: inset 3px 0 0 var(--primary);
+}
+
+.xt-task-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.xt-task-item-title { font-size: 13px; font-weight: 600; }
+
+.xt-task-item-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.xt-detail-pane,
+.xt-detail-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.xt-op-code {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.xt-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 8px;
+}
+
+.xt-detail-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--surface-soft);
+  font-size: 12px;
+  min-width: 0;
+}
+
+.xt-detail-cell span { color: var(--muted); font-size: 11px; }
+.xt-detail-cell strong { color: var(--ink); font-weight: 500; word-break: break-word; }
+
+.xt-file-refs {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--ink);
+}
+
+.xt-role {
+  display: inline-block;
+  min-width: 56px;
+  color: var(--muted);
+}
+
+.xt-hash {
+  display: inline-block;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  font-size: 11px;
+}
+
+.xt-actions { display: flex; gap: 6px; }
+
+.xt-audit-row td { background: var(--surface-soft); white-space: normal; }
+
+.xt-audit { padding: 4px 0; }
+.xt-audit.is-empty { color: var(--muted); font-size: 12px; }
+.xt-audit.is-error { color: var(--error); }
+
+@media (max-width: 900px) {
+  .xt-layout { grid-template-columns: 1fr; }
+  .xt-list-pane { position: static; max-height: 360px; }
+}
+
+/* ── 操作示例弹窗（移植自旧 .excel-examples-*）── */
+
+.xt-examples-dialog {
+  width: min(90vw, 860px);
+  max-height: 85vh;
+  padding: 20px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 8px;
+  background: var(--surface-card);
+  color: var(--ink);
+  overflow-y: auto;
+}
+
+.xt-examples-dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
+
+.xt-examples-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.xt-examples-head h4 { margin: 0; }
+
+.xt-examples { display: grid; gap: 20px; }
+
+.xt-example-card {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--canvas, var(--surface-card));
+}
+
+.xt-example-card-head { display: flex; align-items: center; gap: 8px; }
+.xt-example-card-head h5 { margin: 0; font-size: 14px; color: var(--ink); }
+
+.xt-example-tag {
+  padding: 2px 8px;
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  background: var(--surface-soft);
+  color: var(--primary);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.xt-example-desc { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+
+.xt-anim-stage {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--surface-soft);
+  overflow-x: auto;
+}
+
+.xt-anim-file {
+  display: grid;
+  flex: 1;
+  gap: 4px;
+  min-width: 120px;
+  padding: 8px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--canvas, var(--surface-card));
+  font-size: 11px;
+}
+
+.xt-anim-file-header {
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--hairline);
+  color: var(--ink);
+  font-weight: 600;
+  text-align: center;
+}
+
+.xt-anim-row {
+  padding: 4px 6px;
+  border-radius: 4px;
+  background: var(--surface-soft);
+  text-align: center;
+  font-family: var(--font-mono, monospace);
+}
+
+.xt-anim-arrow { color: var(--muted); font-size: 16px; font-weight: bold; }
+
+.xt-anim-cells { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px; }
+
+.xt-anim-cell {
+  padding: 4px;
+  border-radius: 3px;
+  font-size: 10px;
+  text-align: center;
+  font-family: var(--font-mono, monospace);
+}
+
+.xt-anim-cell.is-ph { border: 1px dashed var(--hairline); background: var(--surface-card); color: var(--muted); }
+.xt-anim-cell.is-val { background: rgba(204, 120, 92, 0.15); color: var(--primary); font-weight: 600; }
+.xt-anim-cell.is-filled { background: rgba(93, 184, 114, 0.18); color: var(--success); font-weight: 600; }
+
+.xt-anim-diff-row {
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-family: var(--font-mono, monospace);
+}
+
+.xt-anim-diff-row.is-modified { background: rgba(212, 160, 23, 0.18); color: var(--warning); font-weight: 600; }
+.xt-anim-diff-row.is-unchanged { background: var(--surface-soft); color: var(--muted); }
+
+@keyframes xtRowAppend {
+  0%, 100% { transform: translateY(0); opacity: 0.8; }
+  50% { transform: translateY(-2px); opacity: 1; }
+}
+
+@keyframes xtOverlayPulse {
+  0%, 100% { opacity: 0.6; transform: scale(0.98); }
+  50% { opacity: 1; transform: scale(1.02); }
+}
+
+@keyframes xtDiffHighlight {
+  0%, 100% { background: rgba(212, 160, 23, 0.1); }
+  50% { background: rgba(212, 160, 23, 0.3); }
+}
+
+.xt-anim-append .xt-anim-row { animation: xtRowAppend 2.4s ease-in-out infinite; }
+.xt-anim-overlay .xt-anim-cell.is-filled { animation: xtOverlayPulse 2.4s ease-in-out infinite; }
+.xt-anim-diff .xt-anim-diff-row.is-modified { animation: xtDiffHighlight 2.4s ease-in-out infinite; }
+.xt-examples.is-paused * { animation-play-state: paused !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  .xt-examples * { animation: none !important; }
+}
+
+@media (max-width: 720px) {
+  .xt-anim-stage { flex-direction: column; align-items: stretch; }
+  .xt-anim-arrow { text-align: center; }
+}

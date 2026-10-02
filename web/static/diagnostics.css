@@ -1,0 +1,8 @@
+.diagnostic-widget {position:fixed;right:18px;bottom:18px;z-index:90;max-width:min(400px,calc(100vw - 36px));padding:12px 16px;border:1px solid #c9beb3;border-radius:12px;background:#fffaf4;color:#302c28;box-shadow:0 5px 20px #0002;font:14px/1.5 system-ui,sans-serif}
+.diagnostic-widget summary {cursor:pointer;font-weight:600}
+.diagnostic-widget p {margin:10px 0}
+.diagnostic-widget button,.diagnostic-widget select {font:inherit;padding:6px 10px;margin:4px 6px 4px 0;border:1px solid #b8aca1;border-radius:6px;background:#fff;color:inherit}
+.diagnostic-widget button:disabled {opacity:.45;cursor:default}
+.diagnostic-widget select {display:block;max-width:100%;width:100%}
+.diagnostic-widget a {display:inline-block;margin-top:8px;color:#9c3a2e}
+.diagnostic-widget a[hidden] {display:none}

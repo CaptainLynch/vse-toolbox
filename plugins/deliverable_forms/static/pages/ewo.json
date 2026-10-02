@@ -1,0 +1,99 @@
+{
+  "renderer": "analysis",
+  "title": "EWO 进度",
+  "description": "数据来自最近一次自动归档快照；逾期口径与旧表单页一致（按阶段停留天数与计划日期判定）。",
+  "source": "forms/VPI-T2-D3/rows",
+  "filters": [
+    {
+      "key": "EWO编号",
+      "label": "EWO编号",
+      "type": "text"
+    },
+    {
+      "key": "_status",
+      "label": "状态",
+      "optionsFromRows": true
+    },
+    {
+      "key": "_stage",
+      "label": "审批阶段",
+      "optionsFromRows": true
+    },
+    {
+      "key": "_section",
+      "label": "责任科室",
+      "optionsFromRows": true
+    },
+    {
+      "key": "_model",
+      "label": "车型",
+      "optionsFromRows": true
+    },
+    {
+      "key": "_overdue",
+      "label": "逾期状态",
+      "optionsFromRows": true
+    },
+    {
+      "key": "_submitted",
+      "label": "提交日期（起）",
+      "type": "date",
+      "match": "gte"
+    }
+  ],
+  "charts": [
+    {
+      "type": "doneBars",
+      "id": "stage",
+      "title": "审批阶段状态",
+      "groupBy": "_stage",
+      "doneField": "_completed"
+    },
+    {
+      "type": "doneBars",
+      "id": "section",
+      "title": "责任科室状态",
+      "groupBy": "_section",
+      "doneField": "_completed"
+    }
+  ],
+  "columns": [
+    {
+      "key": "EWO编号",
+      "title": "EWO编号"
+    },
+    {
+      "key": "_status",
+      "title": "状态"
+    },
+    {
+      "key": "_overdue",
+      "title": "逾期状态"
+    },
+    {
+      "key": "部门",
+      "title": "部门"
+    },
+    {
+      "key": "责任工程师专业科室",
+      "title": "责任工程师专业科室"
+    },
+    {
+      "key": "车型信息",
+      "title": "车型信息"
+    },
+    {
+      "key": "主题",
+      "title": "主题"
+    },
+    {
+      "key": "提交日期",
+      "title": "提交日期"
+    },
+    {
+      "key": "要求完成时间",
+      "title": "要求完成时间"
+    }
+  ],
+  "rowKey": "id"
+}

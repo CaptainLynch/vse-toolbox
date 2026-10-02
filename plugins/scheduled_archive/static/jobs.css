@@ -1,0 +1,551 @@
+/* 自动下载与留存（scheduled-archive 插件）。复用旧主题变量，类名统一 sa- 前缀。 */
+
+.sa-page h2,
+.sa-page h3,
+.sa-page h4 {
+  margin: 0;
+  color: var(--ink);
+}
+
+.sa-page h3 {
+  font-size: 16px;
+}
+
+.sa-page h4 {
+  font-size: 14px;
+}
+
+.sa-eyebrow {
+  margin: 0 0 2px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.sa-purpose {
+  max-width: 760px;
+}
+
+.sa-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .sa-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.sa-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.sa-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  background: var(--surface-card);
+  min-width: 0;
+}
+
+.sa-card-head,
+.sa-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.sa-toolbar {
+  align-items: center;
+}
+
+.sa-label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  margin: 0;
+}
+
+.sa-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.sa-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+  color: var(--muted);
+  background: var(--surface-soft);
+}
+
+.sa-chip.is-success {
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 45%, transparent);
+}
+
+.sa-chip.is-warning {
+  color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 45%, transparent);
+}
+
+.sa-chip.is-error {
+  color: var(--error);
+  border-color: color-mix(in srgb, var(--error) 45%, transparent);
+}
+
+.sa-chip.is-running {
+  color: var(--primary);
+  border-color: color-mix(in srgb, var(--primary) 45%, transparent);
+}
+
+/* Job list */
+.sa-job-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sa-job {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--surface-card);
+}
+
+.sa-job.is-active {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary) inset;
+}
+
+.sa-job.is-disabled .sa-job-title {
+  color: var(--muted);
+}
+
+.sa-job-select {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px 6px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.sa-job-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sa-job-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.sa-job-meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.sa-job-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 12px 8px;
+}
+
+.sa-link-danger {
+  border: 0;
+  background: transparent;
+  color: var(--error);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+.sa-link-danger:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.vk-btn.sa-danger {
+  color: var(--error);
+}
+
+/* Create panel */
+.sa-create {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.sa-create-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sa-create-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sa-seg {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* Status banner */
+.sa-banner {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.sa-banner > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.sa-banner .is-wide {
+  grid-column: 1 / -1;
+}
+
+.sa-banner dt {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.sa-banner dd {
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+/* Config form */
+.sa-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px 16px;
+  align-items: start;
+}
+
+.sa-form .is-wide {
+  grid-column: 1 / -1;
+}
+
+.sa-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 0;
+}
+
+.sa-field input,
+.sa-field select,
+.sa-field textarea {
+  padding: 5px 8px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 6px;
+  background: var(--surface-card);
+  color: var(--ink);
+  font-size: 13px;
+  font-family: inherit;
+  min-width: 0;
+}
+
+.sa-field textarea {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  resize: vertical;
+}
+
+.sa-check {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--ink);
+  padding-top: 4px;
+}
+
+/* 旧 style.css 给全局 input 设了 width:100% / min-height:38px，复选框需复位。 */
+.sa-check input[type="checkbox"] {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.sa-check span {
+  margin: 0;
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.sa-field > span {
+  margin-bottom: 0;
+}
+
+.sa-field input,
+.sa-field select {
+  min-height: 34px;
+}
+
+.sa-dir {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.sa-dir input {
+  flex: 1 1 260px;
+}
+
+.sa-details {
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sa-details > summary {
+  cursor: pointer;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.sa-details[open] > summary {
+  margin-bottom: 8px;
+}
+
+.sa-details.is-nested {
+  margin-top: 10px;
+  background: var(--surface-soft);
+}
+
+.sa-allowed {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.sa-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.sa-tag {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+}
+
+.sa-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 8px 12px;
+  margin-top: 6px;
+}
+
+.sa-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.sa-status {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.sa-global-status {
+  color: var(--success);
+}
+
+/* Notices */
+.sa-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--ink);
+  background: var(--surface-soft);
+}
+
+.sa-notice ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.sa-notice.is-error {
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.sa-notice.is-warning {
+  border-color: var(--warning);
+}
+
+.sa-notice.is-success {
+  border-color: var(--success);
+  color: var(--success);
+}
+
+.sa-remedy {
+  display: block;
+  margin-top: 2px;
+  color: var(--ink);
+}
+
+/* History */
+.sa-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.sa-tab {
+  padding: 6px 12px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.sa-tab.is-active {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+}
+
+.sa-history-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sa-runs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 520px;
+  overflow-y: auto;
+}
+
+.sa-run {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.sa-run.is-active {
+  border-color: var(--primary);
+}
+
+.sa-run-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--ink);
+}
+
+.sa-run-line {
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.sa-run-line.is-error {
+  color: var(--error);
+}
+
+.sa-run-btn {
+  align-self: flex-start;
+  margin-top: 4px;
+}
+
+.sa-pre {
+  margin: 6px 0 0;
+  padding: 8px;
+  border-radius: 4px;
+  background: var(--surface-soft);
+  color: var(--ink);
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  overflow-x: auto;
+}
+
+.sa-artifacts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.sa-page .vk-btn {
+  white-space: nowrap;
+}

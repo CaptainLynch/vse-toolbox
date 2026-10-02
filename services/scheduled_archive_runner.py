@@ -1,0 +1,854 @@
+# -*- coding: utf-8 -*-
+"""One-shot orchestration for fixed scheduled archive jobs.
+
+This module is framework-independent.  Windows Task Scheduler invokes a CLI
+entry point; no permanent scheduler is hosted in Flask.
+"""
+
+from __future__ import annotations
+
+from core.diagnostic_recording import observed
+
+import time
+import threading
+from contextvars import copy_context
+import logging
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Callable, Mapping, Protocol
+
+from core.archive_store import ArchiveArtifact
+from core.credential_provider import (
+    CredentialProvider,
+    CredentialProviderError,
+    ResolvedCredential,
+)
+from core.db_manager import (
+    ARCHIVE_JOB_CONTRACTS,
+    ArchiveJobNotReadyError,
+    ArchiveLeaseBusyError,
+    ArchiveLeaseLostError,
+    DatabaseManager,
+)
+from core.project_status_contracts import DELIVERABLE_LINK_REGISTRY
+from core.redaction import redact_sensitive_text
+from services.deliverable_form_analysis import build_form_snapshot
+from services.aras_auth import ArasAuthError
+from services.aras_crawler import ArasAuthenticationError, ArasCrawlerError
+from services.tdc_auth import TDCAuthError
+from services.tdc_crawler import TDCCrawlerError
+from services.windows_http import WinHTTPError, WinHTTPTimeoutError
+
+EXIT_OK = 0
+EXIT_FAILED = 1
+EXIT_ATTENTION = 2
+EXIT_INTERRUPTED = 130
+#: 归档任务 job_key → 统一表单 form_key 映射（从
+#: core.project_status_contracts.DELIVERABLE_LINK_REGISTRY 单一注册表派生，
+#: 与 core.db_manager ARCHIVE_JOB_CONTRACTS、deliverable_form_analysis.FORM_KEYS
+#: 对齐，一致性由 tests/test_deliverable_registry.py 锁定）。
+JOB_FORM_KEYS = {
+    job_key: entry["form_key"]
+    for job_key, entry in DELIVERABLE_LINK_REGISTRY.items()
+}
+_TEXT_LIMIT = 1000
+_TRANSIENT_ERRORS = (ConnectionError, TimeoutError, OSError, WinHTTPError)
+logger = logging.getLogger(__name__)
+
+
+def _safe_text(value: object, *, limit: int = _TEXT_LIMIT) -> str:
+    return str(
+        redact_sensitive_text(
+            value,
+            limit=limit,
+            collapse_newlines=True,
+        )
+    )
+
+
+def _error_type(exc: BaseException) -> str:
+    if isinstance(exc, ArchiveLeaseBusyError):
+        return "lease_busy"
+    if isinstance(exc, ArchiveLeaseLostError):
+        return "lease_lost"
+    if isinstance(exc, ArchiveJobNotReadyError):
+        return "job_not_ready"
+    if isinstance(exc, CredentialProviderError):
+        return "credential_unavailable"
+    if isinstance(exc, (ArasAuthError, TDCAuthError)):
+        return "credential_invalid"
+    if isinstance(exc, ArasAuthenticationError):
+        return "authentication_error"
+    if isinstance(exc, WinHTTPTimeoutError):
+        return "timeout"
+    if isinstance(exc, TimeoutError):
+        return "timeout"
+    if isinstance(exc, WinHTTPError):
+        return "service_unavailable"
+    if isinstance(exc, ConnectionError):
+        return "connection_error"
+    if isinstance(exc, OSError):
+        return "io_error"
+    if isinstance(exc, (ArasCrawlerError, TDCCrawlerError)):
+        return "query_failed"
+    if isinstance(exc, ValueError):
+        return "invalid_data"
+    if isinstance(exc, KeyError):
+        return "missing_job"
+    return "connector_error"
+
+
+#: 未就绪原因码 → 可操作指引码（闭集，前端据此给出「去哪里配什么」）。
+#: 只允许闭集映射：绝不把 DB/上游的自由文本透出到响应。
+_REMEDY_BY_REASON: dict[str, str] = {
+    "credential_not_configured": "bind_domain_credential",
+    "job_disabled": "enable_job",
+    "contract_mismatch": "restore_job_contract",
+    "filters_invalid": "repair_job_filters",
+    "retry_policy_invalid": "repair_retry_policy",
+    "unknown": "inspect_job_configuration",
+}
+
+#: 失败类别（`_error_type` 的闭集返回值）→ 可操作指引码。
+_REMEDY_BY_ERROR_TYPE: dict[str, str] = {
+    "job_not_ready": "inspect_job_configuration",
+    "missing_job": "inspect_job_configuration",
+    "credential_unavailable": "save_domain_credential",
+    "credential_invalid": "refresh_domain_credential",
+    "authentication_error": "refresh_domain_credential",
+    "lease_busy": "wait_and_retry",
+    "query_failed": "retry_or_narrow_filters",
+    "timeout": "retry_or_narrow_filters",
+    "connector_unavailable": "restore_job_contract",
+    "internal_data": "inspect_job_configuration",
+    "invalid_data": "inspect_job_configuration",
+}
+
+
+def remedy_for_error_type(error_type: str | None) -> str | None:
+    """按失败类别返回闭集指引码；未登记类别返回 None（宁缺勿猜）。"""
+    if not error_type:
+        return None
+    return _REMEDY_BY_ERROR_TYPE.get(str(error_type))
+
+
+def remedy_for(exc: BaseException) -> str | None:
+    """返回异常对应的闭集指引码；优先使用更具体的未就绪原因码。"""
+    if isinstance(exc, ArchiveJobNotReadyError):
+        reason = str(getattr(exc, "reason", "unknown"))
+        return _REMEDY_BY_REASON.get(reason, "inspect_job_configuration")
+    return remedy_for_error_type(_error_type(exc))
+
+
+def _safe_exception_message(exc: BaseException) -> str:
+    """Return a stable diagnostic without reflecting external exception text."""
+    if isinstance(exc, TDCCrawlerError):
+        return exc.safe_diagnostic_message()
+    messages = {
+        "lease_busy": "archive job already has an active lease",
+        "lease_lost": "archive job lease was lost",
+        "job_not_ready": "archive job configuration is not ready",
+        "credential_unavailable": "credential reference is unavailable",
+        "credential_invalid": "archive credential was rejected",
+        "authentication_error": "external archive authentication failed",
+        "timeout": "external archive request timed out",
+        "service_unavailable": "external archive service is unavailable",
+        "connection_error": "external archive connection failed",
+        "io_error": "archive input/output operation failed",
+        "query_failed": "external archive query failed",
+        "invalid_data": "archive connector returned invalid data",
+        "missing_job": "archive job was not found",
+        "connector_error": "archive connector failed",
+    }
+    return messages[_error_type(exc)]
+
+
+def _required_int(values: Mapping[str, object], key: str) -> int:
+    value = values[key]
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f"archive {key} is invalid")
+    return value
+
+
+def _required_mapping(
+    values: Mapping[str, object],
+    key: str,
+) -> Mapping[str, object]:
+    value = values[key]
+    if not isinstance(value, Mapping):
+        raise ValueError(f"archive {key} is invalid")
+    return value
+
+
+@dataclass(frozen=True)
+class ArchiveJobContext:
+    """Secret-free, fixed-contract input visible to one connector."""
+
+    job_id: int
+    job_key: str
+    source_type: str
+    report_type: str
+    filters: Mapping[str, object]
+    output_subdir: str
+    run_id: int
+    output_directory: str = ""
+
+
+@dataclass(frozen=True)
+class ArchiveCollection:
+    """A completed collection ready for atomic database finalization."""
+
+    record_count: int
+    artifacts: tuple[ArchiveArtifact, ...]
+    form_rows: tuple[Mapping[str, object], ...] | None = None
+    form_projection_error: str | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.record_count, int)
+            or isinstance(self.record_count, bool)
+            or self.record_count < 0
+        ):
+            raise ValueError("record_count must be a non-negative int")
+        if not self.artifacts or any(
+            not isinstance(item, ArchiveArtifact) for item in self.artifacts
+        ):
+            raise ValueError("archive collection requires artifacts")
+        if self.form_rows is not None:
+            if not isinstance(self.form_rows, tuple):
+                raise ValueError("form_rows must be a tuple or None")
+            if any(not isinstance(item, Mapping) for item in self.form_rows):
+                raise ValueError("form_rows must contain mappings")
+        if self.form_projection_error is not None and (
+            not isinstance(self.form_projection_error, str)
+            or not self.form_projection_error.strip()
+        ):
+            raise ValueError("form_projection_error must be a non-empty string or None")
+
+
+class ArchiveConnector(Protocol):
+    """Read-only external collector; it cannot receive a database handle."""
+
+    def collect(
+        self,
+        context: ArchiveJobContext,
+        credential: ResolvedCredential,
+    ) -> ArchiveCollection:
+        ...
+
+
+class ArchiveConnectorRegistry:
+    """Explicit registry restricted to the six approved stable job keys."""
+
+    def __init__(self) -> None:
+        self._connectors: dict[str, ArchiveConnector] = {}
+
+    def register(self, job_key: str, connector: ArchiveConnector) -> None:
+        if job_key not in ARCHIVE_JOB_CONTRACTS:
+            raise ValueError("archive connector job key is not approved")
+        self._connectors[job_key] = connector
+
+    def get(self, job_key: str) -> ArchiveConnector | None:
+        if job_key not in ARCHIVE_JOB_CONTRACTS:
+            return None
+        return self._connectors.get(job_key)
+
+    @property
+    def registered_job_keys(self) -> tuple[str, ...]:
+        return tuple(sorted(self._connectors))
+
+
+@dataclass(frozen=True)
+class ArchiveJobRunResult:
+    job_id: int | None
+    job_key: str
+    outcome: str
+    run_id: int | None = None
+    final_state: str | None = None
+    error_type: str | None = None
+    error_message: str | None = None
+    #: 闭集指引码（见 remedy_for）；仅用于让调用方给出可操作下一步。
+    remedy: str | None = None
+
+
+@dataclass(frozen=True)
+class ArchiveRunOnceResult:
+    results: tuple[ArchiveJobRunResult, ...]
+    dry_run: bool = False
+
+    @property
+    def exit_code(self) -> int:
+        if any(item.outcome == "failed" for item in self.results):
+            return EXIT_FAILED
+        if any(
+            item.outcome in {"needs_attention", "not_ready"}
+            for item in self.results
+        ):
+            return EXIT_ATTENTION
+        return EXIT_OK
+
+
+# 内置 EWO/PAA 任务的默认业务部门（真实业务值）。用户在任务筛选中显式
+# 设置的其他部门值优先；缺失时由运行时兜底注入，保证默认筛选真实生效。
+DEFAULT_BUSINESS_DEPARTMENT = "技术中心_车体工程"
+_DEFAULT_DEPARTMENT_FILTER_KEYS = {
+    "aras_ewo": "responsibleDepartment",
+    "aras_paa": "department",
+}
+_FORM_PROJECTION_ERROR_MESSAGES = {
+    "official_workbook_unreadable": "official workbook could not be verified for form projection",
+    "official_workbook_truncated": "official workbook preview was truncated before form projection",
+    "official_workbook_contract_invalid": "official workbook did not match the form contract",
+    "api_result_truncated": "fallback API result reached its record limit before form projection",
+    "form_projection_failed": "form snapshot projection failed",
+}
+
+
+def _effective_builtin_filters(
+    job_key: str,
+    filters: Mapping[str, object],
+) -> dict[str, object]:
+    merged = dict(filters)
+    filter_key = _DEFAULT_DEPARTMENT_FILTER_KEYS.get(job_key)
+    if filter_key is None:
+        return merged
+    # 清理阶段 B 早期版本为 EWO 写入的错误默认键；该值不是用户可配置
+    # 的合法 EWO 字段，只在精确匹配内置默认值时移除。
+    if (
+        job_key == "aras_ewo"
+        and merged.get("department") == DEFAULT_BUSINESS_DEPARTMENT
+    ):
+        merged.pop("department", None)
+    if not str(merged.get(filter_key) or "").strip():
+        merged[filter_key] = DEFAULT_BUSINESS_DEPARTMENT
+    return merged
+
+
+class ArchiveSyncRunner:
+    """Execute fixed archive jobs once, with lease and retry enforcement."""
+
+    def __init__(
+        self,
+        db: DatabaseManager,
+        credentials: CredentialProvider,
+        registry: ArchiveConnectorRegistry,
+        *,
+        max_attempts: int = 2,
+        backoff_seconds: float = 1.0,
+        lease_seconds: int = 900,
+        sleeper: Callable[[float], None] = time.sleep,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        if max_attempts < 1 or max_attempts > 2:
+            raise ValueError("max_attempts must be between 1 and 2")
+        if backoff_seconds < 0:
+            raise ValueError("backoff_seconds must be non-negative")
+        self._db = db
+        self._credentials = credentials
+        self._registry = registry
+        self._max_attempts = max_attempts
+        self._backoff_seconds = float(backoff_seconds)
+        self._lease_seconds = lease_seconds
+        self._sleeper = sleeper
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
+
+    @observed("scheduler.ArchiveSyncRunner.run_job", background=True)
+    def run_job(
+        self,
+        job_id: int,
+        *,
+        job_key: str = "",
+        trigger_type: str = "scheduled",
+        validate_runtime_prerequisites: bool = True,
+    ) -> ArchiveJobRunResult:
+        lease: dict[str, object] | None = None
+        try:
+            lease = self._db.acquire_archive_job_lease(
+                job_id,
+                trigger_type,
+                lease_seconds=self._lease_seconds,
+                validate_runtime_prerequisites=validate_runtime_prerequisites,
+            )
+            run_id = _required_int(lease, "run_id")
+            lease_token = str(lease["lease_token"])
+            job_key = str(lease["job_key"])
+            self._db.start_archive_run(job_id, run_id, lease_token)
+
+            connector = self._registry.get(job_key)
+            if connector is None:
+                return self._finalize_attention(
+                    job_id,
+                    job_key,
+                    run_id,
+                    lease_token,
+                    "connector_unavailable",
+                    "approved archive connector is unavailable",
+                )
+
+            context = ArchiveJobContext(
+                job_id=job_id,
+                job_key=job_key,
+                source_type=str(lease["source_type"]),
+                report_type=str(lease["report_type"]),
+                filters=_effective_builtin_filters(
+                    str(lease["job_key"]),
+                    _required_mapping(lease, "filters"),
+                ),
+                output_subdir=str(lease["output_subdir"]),
+                run_id=run_id,
+                output_directory=str(lease.get("output_directory") or ""),
+            )
+            credential_ref = self._db.get_archive_job_credential_ref(
+                job_id,
+                require_configured=validate_runtime_prerequisites,
+            )
+            retry_policy = _required_mapping(lease, "retry_policy")
+            retry_attempts = _required_int(retry_policy, "max_attempts")
+            retry_backoff_value = retry_policy.get(
+                "backoff_seconds", self._backoff_seconds
+            )
+            if (
+                isinstance(retry_backoff_value, bool)
+                or not isinstance(retry_backoff_value, (int, float))
+                or retry_backoff_value < 0
+            ):
+                raise ValueError("backoff_seconds must be non-negative")
+            retry_backoff = float(retry_backoff_value)
+            with self._lease_heartbeat(job_id, run_id, lease_token):
+                collection = self._collect_with_retry(
+                    connector,
+                    context,
+                    credential_ref,
+                    max_attempts=retry_attempts,
+                    backoff_seconds=retry_backoff,
+                )
+            if collection.form_projection_error:
+                return self._finalize_collection_attention(
+                    context,
+                    collection,
+                    collection.form_projection_error,
+                    lease_token,
+                )
+            if collection.form_rows is not None:
+                try:
+                    self._publish_form_snapshot(context, collection)
+                except Exception:
+                    logger.warning(
+                        "form snapshot projection failed for %s",
+                        context.job_key,
+                    )
+                    return self._finalize_collection_attention(
+                        context,
+                        collection,
+                        "form_projection_failed",
+                        lease_token,
+                    )
+            self._db.finalize_archive_run(
+                job_id,
+                run_id,
+                lease_token,
+                "success",
+                record_count=collection.record_count,
+                artifacts=tuple(
+                    item.as_metadata() for item in collection.artifacts
+                ),
+                result_summary=(
+                    f"archived {collection.record_count} records in "
+                    f"{len(collection.artifacts)} artifacts"
+                ),
+            )
+            return ArchiveJobRunResult(
+                job_id,
+                job_key,
+                "completed",
+                run_id,
+                "success",
+            )
+        except KeyboardInterrupt:
+            if lease is not None:
+                self._safe_finalize_failure(lease, "interrupted", "run interrupted")
+            raise
+        except ArchiveLeaseBusyError as exc:
+            return ArchiveJobRunResult(
+                job_id,
+                job_key or (str(lease.get("job_key")) if lease else ""),
+                "skipped",
+                error_type=_error_type(exc),
+                error_message=_safe_exception_message(exc),
+            )
+        except ArchiveJobNotReadyError as exc:
+            return ArchiveJobRunResult(
+                job_id,
+                job_key or (str(lease.get("job_key")) if lease else ""),
+                "not_ready",
+                error_type=_error_type(exc),
+                error_message=_safe_exception_message(exc),
+                remedy=remedy_for(exc),
+            )
+        except Exception as exc:
+            if lease is None:
+                return ArchiveJobRunResult(
+                    job_id,
+                    job_key or "",
+                    "failed",
+                    error_type=_error_type(exc),
+                    error_message=_safe_exception_message(exc),
+                )
+            return self._finalize_exception(lease, exc)
+
+    @observed("scheduler.ArchiveSyncRunner._publish_form_snapshot")
+    def _publish_form_snapshot(
+        self,
+        context: ArchiveJobContext,
+        collection: ArchiveCollection,
+    ) -> None:
+        """Publish connector rows without crossing the credential boundary."""
+        if collection.form_rows is None:
+            return
+        form_key = JOB_FORM_KEYS.get(context.job_key)
+        if form_key is None:
+            return
+        snapshot_time = self._clock()
+        if snapshot_time.tzinfo is None:
+            snapshot_time = snapshot_time.replace(tzinfo=timezone.utc)
+        snapshot_at = snapshot_time.astimezone(timezone.utc).isoformat().replace(
+            "+00:00", "Z"
+        )
+        snapshot = build_form_snapshot(
+            form_key,
+            collection.form_rows,
+            snapshot_at=snapshot_at,
+            source_run_id=context.run_id,
+            source="scheduled_archive",
+            artifacts=tuple(item.as_metadata() for item in collection.artifacts),
+        )
+        self._db.publish_deliverable_form_snapshot(snapshot)
+
+    def _finalize_collection_attention(
+        self,
+        context: ArchiveJobContext,
+        collection: ArchiveCollection,
+        error_type: str,
+        lease_token: str,
+    ) -> ArchiveJobRunResult:
+        """Persist collected artifacts while making projection failure visible."""
+        safe_error_type = (
+            error_type
+            if error_type in _FORM_PROJECTION_ERROR_MESSAGES
+            else "form_projection_failed"
+        )
+        message = _FORM_PROJECTION_ERROR_MESSAGES[safe_error_type]
+        artifact_metadata = tuple(
+            item.as_metadata() for item in collection.artifacts
+        )
+        self._db.finalize_archive_run(
+            context.job_id,
+            context.run_id,
+            lease_token,
+            "needs_attention",
+            record_count=collection.record_count,
+            artifacts=artifact_metadata,
+            result_summary=(
+                f"archived {collection.record_count} records in "
+                f"{len(collection.artifacts)} artifacts; {message}"
+            ),
+            error_type=safe_error_type,
+            error_message=message,
+        )
+        return ArchiveJobRunResult(
+            context.job_id,
+            context.job_key,
+            "needs_attention",
+            context.run_id,
+            "needs_attention",
+            safe_error_type,
+            message,
+        )
+
+    @observed("scheduler.ArchiveSyncRunner.run_once", background=True)
+    def run_once(
+        self,
+        *,
+        trigger_type: str = "scheduled",
+        job_key: str | None = None,
+        dry_run: bool = False,
+    ) -> ArchiveRunOnceResult:
+        if trigger_type not in {"scheduled", "sync_now"}:
+            raise ValueError("unsupported archive trigger_type")
+        enabled_only = trigger_type == "scheduled"
+        jobs = self._db.list_archive_jobs(enabled_only=enabled_only)
+        if job_key is not None:
+            jobs = [item for item in jobs if item["job_key"] == job_key]
+            if not jobs:
+                error_msg = (
+                    "enabled archive job was not found"
+                    if enabled_only
+                    else "archive job was not found"
+                )
+                return ArchiveRunOnceResult(
+                    (
+                        ArchiveJobRunResult(
+                            None,
+                            job_key,
+                            "not_ready",
+                            error_type="missing_job",
+                            error_message=error_msg,
+                            remedy=remedy_for_error_type("missing_job"),
+                        ),
+                    ),
+                    dry_run,
+                )
+
+        results: list[ArchiveJobRunResult] = []
+        for job in jobs:
+            key = str(job["job_key"])
+            job_id = _required_int(job, "id")
+            if trigger_type == "scheduled" and not self._is_due(job):
+                results.append(ArchiveJobRunResult(job_id, key, "not_due"))
+                continue
+            if dry_run:
+                ready = bool(job["credential_configured"]) and (
+                    self._registry.get(key) is not None
+                )
+                results.append(
+                    ArchiveJobRunResult(
+                        job_id,
+                        key,
+                        "ready" if ready else "not_ready",
+                        error_type=None if ready else "job_not_ready",
+                    )
+                )
+                continue
+            results.append(
+                self.run_job(
+                    job_id,
+                    job_key=key,
+                    trigger_type=trigger_type,
+                    validate_runtime_prerequisites=trigger_type != "scheduled",
+                )
+            )
+        return ArchiveRunOnceResult(tuple(results), dry_run)
+
+    @observed("scheduler.ArchiveSyncRunner._collect_with_retry")
+    def _collect_with_retry(
+        self,
+        connector: ArchiveConnector,
+        context: ArchiveJobContext,
+        credential_ref: str,
+        *,
+        max_attempts: int | None = None,
+        backoff_seconds: float | None = None,
+    ) -> ArchiveCollection:
+        attempts = self._max_attempts if max_attempts is None else max_attempts
+        backoff = self._backoff_seconds if backoff_seconds is None else backoff_seconds
+        if isinstance(attempts, bool) or not isinstance(attempts, int) or not 1 <= attempts <= 2:
+            raise ValueError("max_attempts must be between 1 and 2")
+        if isinstance(backoff, bool) or not isinstance(backoff, (int, float)) or backoff < 0:
+            raise ValueError("backoff_seconds must be non-negative")
+        for attempt in range(1, attempts + 1):
+            try:
+                with self._credentials.resolve(credential_ref) as credential:
+                    return connector.collect(context, credential)
+            except _TRANSIENT_ERRORS:
+                if attempt >= attempts:
+                    raise
+                self._sleeper(
+                    float(backoff) * (2 ** (attempt - 1))
+                )
+        raise AssertionError("unreachable")
+
+    @contextmanager
+    def _lease_heartbeat(
+        self,
+        job_id: int,
+        run_id: int,
+        lease_token: str,
+    ):
+        """Keep a long-running external collection from outliving its lease."""
+        stop_event = threading.Event()
+        lease_lost = threading.Event()
+        interval = max(1.0, float(self._lease_seconds) / 3.0)
+
+        def beat() -> None:
+            while not stop_event.wait(interval):
+                try:
+                    self._db.renew_archive_job_lease(
+                        job_id,
+                        run_id,
+                        lease_token,
+                        lease_seconds=self._lease_seconds,
+                    )
+                except ArchiveLeaseLostError:
+                    lease_lost.set()
+                    return
+                except Exception:
+                    # The final lease check remains authoritative. A transient
+                    # database failure must not interrupt the external request.
+                    continue
+
+        thread = threading.Thread(
+            target=copy_context().run,
+            args=(beat,),
+            name=f"archive-lease-{run_id}",
+            daemon=True,
+        )
+        thread.start()
+        try:
+            yield
+        finally:
+            stop_event.set()
+            thread.join(timeout=min(interval + 1.0, 10.0))
+        if lease_lost.is_set():
+            raise ArchiveLeaseLostError("archive job lease was lost")
+
+    def _finalize_attention(
+        self,
+        job_id: int,
+        job_key: str,
+        run_id: int,
+        lease_token: str,
+        error_type: str,
+        message: str,
+    ) -> ArchiveJobRunResult:
+        safe_message = _safe_text(message)
+        self._db.finalize_archive_run(
+            job_id,
+            run_id,
+            lease_token,
+            "needs_attention",
+            error_type=error_type,
+            error_message=safe_message,
+            result_summary=safe_message,
+        )
+        return ArchiveJobRunResult(
+            job_id,
+            job_key,
+            "needs_attention",
+            run_id,
+            "needs_attention",
+            error_type,
+            safe_message,
+            remedy_for_error_type(error_type),
+        )
+
+    def _finalize_exception(
+        self,
+        lease: Mapping[str, object],
+        exc: BaseException,
+    ) -> ArchiveJobRunResult:
+        job_id = _required_int(lease, "job_id")
+        job_key = str(lease["job_key"])
+        run_id = _required_int(lease, "run_id")
+        lease_token = str(lease["lease_token"])
+        category = _error_type(exc)
+        message = _safe_exception_message(exc)
+        final_state = (
+            "needs_attention"
+            if isinstance(exc, (
+                CredentialProviderError,
+                ArchiveJobNotReadyError,
+                ArasAuthError,
+                TDCAuthError,
+                ArasAuthenticationError,
+            ))
+            else "failed"
+        )
+        try:
+            self._db.finalize_archive_run(
+                job_id,
+                run_id,
+                lease_token,
+                final_state,
+                error_type=category,
+                error_message=message,
+                result_summary=message,
+            )
+        except ArchiveLeaseLostError as lost:
+            return ArchiveJobRunResult(
+                job_id,
+                job_key,
+                "failed",
+                run_id,
+                error_type="lease_lost",
+                error_message=_safe_exception_message(lost),
+                remedy=remedy_for_error_type("lease_lost"),
+            )
+        return ArchiveJobRunResult(
+            job_id,
+            job_key,
+            "needs_attention" if final_state == "needs_attention" else "failed",
+            run_id,
+            final_state,
+            category,
+            message,
+            remedy_for(exc),
+        )
+
+    def _safe_finalize_failure(
+        self,
+        lease: Mapping[str, object],
+        category: str,
+        message: str,
+    ) -> None:
+        try:
+            self._db.finalize_archive_run(
+                _required_int(lease, "job_id"),
+                _required_int(lease, "run_id"),
+                str(lease["lease_token"]),
+                "failed",
+                error_type=category,
+                error_message=_safe_text(message),
+                result_summary=_safe_text(message),
+            )
+        except Exception as exc:
+            logger.exception("未能将归档运行标记为失败: %s", exc)
+
+    def _is_due(self, job: Mapping[str, object]) -> bool:
+        value = job.get("last_attempt_at")
+        if not value:
+            return True
+        try:
+            text = str(value).strip()
+            parsed = datetime.fromisoformat(
+                text[:-1] + "+00:00" if text.endswith("Z") else text
+            )
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            now = self._clock()
+            if now.tzinfo is None:
+                now = now.replace(tzinfo=timezone.utc)
+            interval = _required_int(job, "interval_minutes")
+            elapsed = (
+                now.astimezone(timezone.utc)
+                - parsed.astimezone(timezone.utc)
+            ).total_seconds()
+            return elapsed >= interval * 60
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return True
+
+
+def create_production_archive_runner(
+    db: DatabaseManager,
+) -> ArchiveSyncRunner:
+    """Construct the one-shot production runner with the fixed registry."""
+    from core.archive_store import ArchiveStore
+    from core.domain_identity import DPAPICredentialProvider, WindowsDPAPICredentialVault
+    from core.runtime_paths import app_root
+    from services.scheduled_archive_connectors import (
+        create_production_archive_registry,
+    )
+
+    configured_root = db.get_app_settings().get("archiveDirectory")
+    archive = (
+        ArchiveStore({"default": configured_root.strip()})
+        if isinstance(configured_root, str) and configured_root.strip()
+        else ArchiveStore()
+    )
+    return ArchiveSyncRunner(
+        db,
+        DPAPICredentialProvider(
+            WindowsDPAPICredentialVault(app_root() / "data" / "domain-credential.dpapi")
+        ),
+        create_production_archive_registry(archive),
+    )

@@ -1,0 +1,110 @@
+{
+  "renderer": "analysis",
+  "title": "NCR 审批明细",
+  "description": "数据来自最近一次自动归档快照；该表单不做逾期判定。",
+  "source": "forms/aras_ncr_detail/rows",
+  "filters": [
+    {
+      "key": "NCR编号",
+      "label": "NCR编号",
+      "type": "text"
+    },
+    {
+      "key": "_status",
+      "label": "状态",
+      "optionsFromRows": true
+    },
+    {
+      "key": "_stage",
+      "label": "当前节点",
+      "optionsFromRows": true
+    },
+    {
+      "key": "_section",
+      "label": "区域",
+      "optionsFromRows": true
+    },
+    {
+      "key": "_model",
+      "label": "项目",
+      "optionsFromRows": true
+    },
+    {
+      "key": "_submitted",
+      "label": "提交日期（起）",
+      "type": "date",
+      "match": "gte"
+    }
+  ],
+  "charts": [
+    {
+      "type": "doneBars",
+      "id": "stage",
+      "title": "当前节点状态",
+      "groupBy": "_stage",
+      "doneField": "_completed"
+    },
+    {
+      "type": "doneBars",
+      "id": "section",
+      "title": "区域状态",
+      "groupBy": "_section",
+      "doneField": "_completed"
+    }
+  ],
+  "columns": [
+    {
+      "key": "NCR编号",
+      "title": "NCR编号"
+    },
+    {
+      "key": "_status",
+      "title": "状态"
+    },
+    {
+      "key": "区域",
+      "title": "区域"
+    },
+    {
+      "key": "项目",
+      "title": "项目"
+    },
+    {
+      "key": "零件名称",
+      "title": "零件名称"
+    },
+    {
+      "key": "零件号",
+      "title": "零件号"
+    },
+    {
+      "key": "测算工程工装费用(万元)",
+      "title": "测算工程工装费用(万元)"
+    },
+    {
+      "key": "批准工程工装费用（万元）",
+      "title": "批准工程工装费用（万元）"
+    },
+    {
+      "key": "实际工程工装费用(万元)",
+      "title": "实际工程工装费用(万元)"
+    },
+    {
+      "key": "测算单件成本变化（元）",
+      "title": "测算单件成本变化（元）"
+    },
+    {
+      "key": "批准单件成本变化（元）",
+      "title": "批准单件成本变化（元）"
+    },
+    {
+      "key": "实际单件成本变化（元）",
+      "title": "实际单件成本变化（元）"
+    },
+    {
+      "key": "EWO号",
+      "title": "EWO号"
+    }
+  ],
+  "rowKey": "id"
+}

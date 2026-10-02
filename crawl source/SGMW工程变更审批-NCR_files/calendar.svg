@@ -1,0 +1,15 @@
+<svg width="22" xmlns="http://www.w3.org/2000/svg" height="22" viewBox="0 0 22 22" xmlns:xlink="http://www.w3.org/1999/xlink" enable-background="new 0 0 22 22">
+<g transform="matrix(1.04784 0 0 1.04784 4.26668 -50.08072)">
+<path fill="#3869b2" d="m-4.072,47.794h20.996v6.68h-20.996v-6.68z"/>
+</g>
+<g fill="#3869b2">
+<path d="m0,4h1v18h-1z"/>
+<path d="m21,4h1v18h-1z"/>
+<path d="m11,4h1v18h-1z"/>
+<path d="m5,4h1v18h-1z"/>
+<path d="m16,4h1v18h-1z"/>
+<path d="m0,11h22v1h-22z"/>
+<path d="m0,16h22v1h-22z"/>
+<path d="m0,21h22v1h-22z"/>
+</g>
+</svg>

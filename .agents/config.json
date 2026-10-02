@@ -1,0 +1,166 @@
+{
+  "lead_agent": "codex",
+  "worker_agent": "zcode-app-server",
+  "codex": {
+    "profile": "official",
+    "allowed_profiles": [
+      "official",
+      "relay"
+    ],
+    "profiles": {
+      "official": {
+        "cli_profile": null,
+        "required_env": null
+      },
+      "relay": {
+        "cli_profile": "vse-relay",
+        "required_env": "CODEX_RELAY_API_KEY"
+      }
+    }
+  },
+  "agy": {
+    "executable": "agy",
+    "model": "gemini-3.7-flash-high",
+    "effort": "high",
+    "mode": "accept-edits",
+    "sandbox": true,
+    "disable_slash_commands": true,
+    "new_project": true,
+    "timeout_seconds": 2400,
+    "allowed_models": [
+      "gemini-3.7-flash-high",
+      "gemini-3.7-flash-low"
+    ],
+    "model_policy": {
+      "default": "gemini-3.7-flash-high",
+      "categories": {
+        "mechanical": "gemini-3.7-flash-low",
+        "test-only": "gemini-3.7-flash-low",
+        "ui": "gemini-3.7-flash-high",
+        "ordinary-implementation": "gemini-3.7-flash-high"
+      }
+    }
+  },
+  "max_agy_rounds": 3,
+  "max_codex_review_rounds": 2,
+  "max_total_agent_runs": 6,
+  "auto_merge": false,
+  "auto_commit_worker": false,
+  "run_tests": true,
+  "run_lint": true,
+  "run_build": true,
+  "worktree_root": ".agents/worktrees",
+  "checks": [
+    "python -m flake8",
+    "python -m mypy core services web",
+    "python -m pytest"
+  ],
+  "profile": "agy-heavy",
+  "routing_profile": "gemini-flash-only",
+  "route_policy": {
+    "default": "flash",
+    "task_kinds": {
+      "exploration": "flash",
+      "mechanical": "flash",
+      "test-only": "flash",
+      "ui": "flash",
+      "ordinary-implementation": "flash",
+      "complex-implementation": "pro",
+      "root-cause": "pro",
+      "deep-review": "pro"
+    }
+  },
+  "main_context_policy": {
+    "soft_waterline_tokens": 150000,
+    "handoff_trigger_tokens": 180000,
+    "hard_guard_tokens": 200000,
+    "uncached_increment_trigger_tokens": 20000,
+    "large_tool_output_chars": 8192
+  },
+  "glm_probe": {
+    "enabled": false,
+    "explicit_opt_in": true,
+    "failure_policy": "skip"
+  },
+  "max_agy_repair_attempts": 2,
+  "zcode": {
+    "node_executable": "D:\\node.js\\node.EXE",
+    "cli_entry": "D:\\zcode\\resources\\glm\\zcode.cjs",
+    "provider_id": "b9816175-b7b6-4375-85bb-42c9a593555a",
+    "provider_config": "C:\\Users\\Lynch\\.zcode\\v2\\config.json",
+    "model": "gemini-3.8-flash-high",
+    "allowed_models": [
+      "gemini-3.8-flash-high"
+    ],
+    "timeout_seconds": 900,
+    "context_window_tokens": 1000000,
+    "safety_reserve_tokens": 16384,
+    "max_output_tokens": 32768,
+    "max_model_turns": 64,
+    "max_tool_calls": 256,
+    "max_tool_output_chars": 32768,
+    "model_slots": {
+      "flash": {
+        "model": "gemini-3.8-flash-high",
+        "official_model": "gemini-3.8-flash",
+        "thinking_level": "high"
+      },
+      "pro": {
+        "model": "gemini-3.8-flash-high",
+        "official_model": "gemini-3.8-flash",
+        "thinking_level": "high"
+      }
+    },
+    "cache_policy": {
+      "mode": "implicit-prefix",
+      "explicit_cache": false,
+      "ttl_seconds": 900,
+      "allow_production_data": false
+    },
+    "preflight": {
+      "required": true,
+      "network_probe": true
+    },
+    "preflight_timeout_seconds": 60,
+    "preflight_retries": 2
+  },
+  "worker_profiles": {
+    "weekend-5.3flash": {
+      "description": "Explicit opt-in weekend GLM-5.3-Flash route; normal Gemini slots remain unchanged.",
+      "execution_mode": "interactive-only",
+      "route_policy": {
+        "default": "flash",
+        "task_kinds": {
+          "exploration": "flash",
+          "mechanical": "flash",
+          "test-only": "flash",
+          "ui": "flash",
+          "ordinary-implementation": "flash",
+          "complex-implementation": "flash",
+          "root-cause": "flash",
+          "deep-review": "flash"
+        }
+      },
+      "zcode": {
+        "provider_id": "builtin:zai-start-plan",
+        "provider_config": "C:\\Users\\Lynch\\.zcode\\v2\\config.json",
+        "model": "GLM-5.3-Flash",
+        "allowed_models": [
+          "GLM-5.3-Flash"
+        ],
+        "model_slots": {
+          "flash": {
+            "model": "GLM-5.3-Flash",
+            "official_model": "GLM-5.3-Flash",
+            "thinking_level": "high"
+          },
+          "pro": {
+            "model": "GLM-5.3-Flash",
+            "official_model": "GLM-5.3-Flash",
+            "thinking_level": "high"
+          }
+        }
+      }
+    }
+  }
+}

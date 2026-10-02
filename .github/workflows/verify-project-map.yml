@@ -1,0 +1,55 @@
+name: Verify project map
+
+on:
+  # No path filter: every pull request gets the map consistency check.
+  pull_request:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - "codex/**"
+    paths:
+      - "PROJECT_MAP.md"
+      - "tools/generate_project_map.py"
+      - "tests/test_project_map.py"
+      - "core/**"
+      - "services/**"
+      - "web/**"
+      - "main.py"
+      - "webui.py"
+      - "excel_worker_entry.py"
+      - "tdc_probe_main.py"
+      - "tdc_probe_cli.py"
+      - "tools/excel_worker_cli.py"
+      - ".github/workflows/verify-project-map.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: project-map-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-project-map:
+    name: Project map
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install map test runner
+        run: python -m pip install --disable-pip-version-check pytest
+
+      - name: Verify generated map is current
+        run: python tools/generate_project_map.py --check
+
+      - name: Run project map tests
+        run: python -m pytest tests/test_project_map.py -q

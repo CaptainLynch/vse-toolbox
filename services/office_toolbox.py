@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 services/office_toolbox.py — Office 文档操作工具箱 (COM 自动化版)
 
@@ -22,20 +22,18 @@ services/office_toolbox.py — Office 文档操作工具箱 (COM 自动化版)
 
 import logging
 import shutil
-import time
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Any
 
-from rich.console import Console
 
 from core.db_manager import DatabaseManager
+from core.runtime_paths import app_root
 
 logger = logging.getLogger("vse_toolbox.office_toolbox")
-console = Console()
 
 # ── 默认路径配置 ────────────────────────────────────────────────
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = app_root()
 TEMPLATE_DIR = PROJECT_ROOT / "data" / "templates"
 OUTPUT_DIR = PROJECT_ROOT / "data" / "output"
 
@@ -53,10 +51,9 @@ def _get_win32com() -> Any:
         try:
             import win32com.client as wc
             _win32com = wc
-        except ImportError:
-            console.print("[red]错误: 未安装 pywin32，请执行:[/]")
-            console.print("[red]  pip install pywin32[/]")
-            raise
+        except ImportError as exc:
+            logger.error("未安装 pywin32，请执行 pip install pywin32")
+            raise ImportError("pywin32 未安装") from exc
     return _win32com
 
 
@@ -100,7 +97,7 @@ class OfficeToolbox:
         if not file_path.exists():
             return True
         try:
-            with open(file_path, "r+b") as f:
+            with open(file_path, "r+b"):
                 pass
             return True
         except (PermissionError, IOError):
@@ -129,27 +126,10 @@ class OfficeToolbox:
             交付物字典列表
         """
         try:
-            with self._db.get_connection() as conn:
-                rows = conn.execute(
-                    """
-                    SELECT
-                        p.name    AS project_name,
-                        p.manager AS project_manager,
-                        d.name    AS deliverable_name,
-                        d.owner,
-                        d.due_date,
-                        d.status,
-                        d.remark,
-                        d.updated_at
-                    FROM deliverables d
-                    JOIN projects p ON d.project_id = p.id
-                    ORDER BY d.due_date ASC
-                    """
-                ).fetchall()
+            rows = self._db.get_deliverables_for_export()
             return [dict(row) for row in rows]
         except Exception as e:
-            console.print(f"[red]错误: 查询交付物数据失败 — {e}[/]")
-            logger.exception("查询交付物数据失败")
+            logger.exception("查询交付物数据失败: %s", e)
             raise
 
     def _fetch_feishu_summary(self) -> list[dict]:
@@ -160,17 +140,10 @@ class OfficeToolbox:
             待办字典列表
         """
         try:
-            with self._db.get_connection() as conn:
-                rows = conn.execute(
-                    """
-                    SELECT title, assignee, deadline, synced
-                    FROM feishu_tasks
-                    ORDER BY deadline ASC
-                    """
-                ).fetchall()
+            rows = self._db.get_feishu_tasks_summary()
             return [dict(row) for row in rows]
         except Exception as e:
-            logger.exception("查询飞书待办失败")
+            logger.exception("查询飞书待办失败: %s", e)
             return []
 
     # ── Excel 操作 (COM) ───────────────────────────────────────
@@ -201,19 +174,27 @@ class OfficeToolbox:
         # 检查文件是否被占用
         if not self._check_file_not_locked(output_path):
             error_msg = f"文件 {output_path} 正在被其他程序使用，请关闭后重试"
-            console.print(f"[red]错误: {error_msg}[/]")
+            logger.error(error_msg)
             raise PermissionError(error_msg)
 
         # 查询数据
         data = self._fetch_deliverables()
         if not data:
-            console.print("[yellow]警告: 无交付物数据可导出[/]")
+            logger.warning("无交付物数据可导出")
 
         # ── COM 自动化: 启动 Excel ──────────────────────────
         excel = None
         workbook = None
+        co_init = False
         try:
-            console.print("[dim]正在启动 Excel 进程...[/]")
+            try:
+                import pythoncom
+                pythoncom.CoInitialize()
+                co_init = True
+            except Exception:
+                pass
+
+            logger.info("正在启动 Excel 进程...")
             excel = wc.Dispatch("Excel.Application")
             excel.Visible = False       # 后台运行
             excel.DisplayAlerts = False  # 抑制弹窗
@@ -223,33 +204,36 @@ class OfficeToolbox:
             sheet = workbook.ActiveSheet
             sheet.Name = "交付物清单"
 
-            # 写入表头
+            # 写入表头与批量矩阵写入
             headers = [
                 "项目名称", "项目经理", "交付物名称",
                 "负责人", "截止日期", "状态", "备注", "更新时间",
             ]
-            for col_idx, header in enumerate(headers, start=1):
-                sheet.Cells(1, col_idx).Value = header
-                # 表头加粗
-                sheet.Cells(1, col_idx).Font.Bold = True
-
-            # 写入数据行
             status_map = {
                 "pending": "待开始",
                 "in_progress": "进行中",
                 "done": "已完成",
                 "blocked": "阻塞",
             }
-            for row_idx, item in enumerate(data, start=2):
-                sheet.Cells(row_idx, 1).Value = item.get("project_name", "")
-                sheet.Cells(row_idx, 2).Value = item.get("project_manager", "")
-                sheet.Cells(row_idx, 3).Value = item.get("deliverable_name", "")
-                sheet.Cells(row_idx, 4).Value = item.get("owner", "")
-                sheet.Cells(row_idx, 5).Value = item.get("due_date", "")
+            matrix: list[list[Any]] = [headers]
+            for item in data:
                 raw_status = item.get("status", "")
-                sheet.Cells(row_idx, 6).Value = status_map.get(raw_status, raw_status)
-                sheet.Cells(row_idx, 7).Value = item.get("remark", "")
-                sheet.Cells(row_idx, 8).Value = item.get("updated_at", "")
+                matrix.append([
+                    item.get("project_name", ""),
+                    item.get("project_manager", ""),
+                    item.get("deliverable_name", ""),
+                    item.get("owner", ""),
+                    item.get("due_date", ""),
+                    status_map.get(raw_status, raw_status),
+                    item.get("remark", ""),
+                    item.get("updated_at", ""),
+                ])
+
+            # 一次性批量写入矩阵，替代低效的按单元格循环赋值
+            num_rows = len(matrix)
+            num_cols = len(headers)
+            sheet.Range(sheet.Cells(1, 1), sheet.Cells(num_rows, num_cols)).Value = matrix
+            sheet.Range(sheet.Cells(1, 1), sheet.Cells(1, num_cols)).Font.Bold = True
 
             # 自动调整列宽
             sheet.Columns("A:H").AutoFit()
@@ -258,13 +242,11 @@ class OfficeToolbox:
             abs_path = self._to_absolute(output_path)
             workbook.SaveAs(abs_path, FileFormat=51)
 
-            console.print(f"[green]✓ Excel 已导出: {output_path}[/]")
             logger.info("Excel 导出完成: %s", output_path)
             return output_path
 
         except Exception as e:
-            console.print(f"[red]错误: Excel 导出失败 — {e}[/]")
-            logger.exception("Excel 导出失败")
+            logger.exception("Excel 导出失败: %s", e)
             raise
 
         finally:
@@ -279,10 +261,15 @@ class OfficeToolbox:
                     excel.Quit()
                 except Exception:
                     pass
-            # 释放 COM 对象引用
             del workbook
             del excel
-            console.print("[dim]Excel 进程已释放[/]")
+            if co_init:
+                try:
+                    import pythoncom
+                    pythoncom.CoUninitialize()
+                except Exception:
+                    pass
+            logger.debug("Excel 进程已释放")
 
     # ── PPT 操作 (COM) ─────────────────────────────────────────
 
@@ -322,9 +309,7 @@ class OfficeToolbox:
         # 检查模板是否存在
         if not template_path.exists():
             error_msg = f"PPT 模板文件不存在: {template_path}"
-            console.print(f"[red]错误: {error_msg}[/]")
-            console.print("[yellow]请将周报 PPT 模板放置到以下目录:[/]")
-            console.print(f"[yellow]  {TEMPLATE_DIR}[/]")
+            logger.error(error_msg)
             raise FileNotFoundError(error_msg)
 
         if output_path is None:
@@ -336,14 +321,14 @@ class OfficeToolbox:
         # 检查输出文件是否被占用
         if not self._check_file_not_locked(output_path):
             error_msg = f"文件 {output_path} 正在被其他程序使用，请关闭后重试"
-            console.print(f"[red]错误: {error_msg}[/]")
+            logger.error(error_msg)
             raise PermissionError(error_msg)
 
         # 复制模板到输出路径
         try:
             shutil.copy2(str(template_path), str(output_path))
         except (shutil.Error, IOError) as e:
-            console.print(f"[red]错误: 模板复制失败 — {e}[/]")
+            logger.error("模板复制失败: %s", e)
             raise
 
         # 查询最新数据
@@ -364,8 +349,16 @@ class OfficeToolbox:
         # ── COM 自动化: 启动 PowerPoint ─────────────────────
         ppt_app = None
         presentation = None
+        co_init = False
         try:
-            console.print("[dim]正在启动 PowerPoint 进程...[/]")
+            try:
+                import pythoncom
+                pythoncom.CoInitialize()
+                co_init = True
+            except Exception:
+                pass
+
+            logger.info("正在启动 PowerPoint 进程...")
             ppt_app = wc.Dispatch("PowerPoint.Application")
             ppt_app.Visible = True  # PowerPoint COM 要求 Visible=True
 
@@ -404,7 +397,7 @@ class OfficeToolbox:
                             # 填充实际数据
                             for item in deliverables:
                                 # 添加新行
-                                new_row = table.Rows.Add()
+                                table.Rows.Add()
                                 row_idx = table.Rows.Count
                                 table.Cell(row_idx, 1).Shape.TextFrame.TextRange.Text = (
                                     item.get("deliverable_name", "")
@@ -422,12 +415,11 @@ class OfficeToolbox:
             # 保存
             presentation.Save()
 
-            console.print(f"[green]✓ 周报 PPT 已生成: {output_path}[/]")
             logger.info("周报 PPT 生成完成: %s", output_path)
             return output_path
 
         except Exception as e:
-            console.print(f"[red]错误: PPT 生成失败 — {e}[/]")
+            logger.error("PPT 生成失败: %s", e)
             logger.exception("PPT 生成失败")
             raise
 
@@ -445,12 +437,17 @@ class OfficeToolbox:
                     pass
             del presentation
             del ppt_app
-            console.print("[dim]PowerPoint 进程已释放[/]")
+            if co_init:
+                try:
+                    import pythoncom
+                    pythoncom.CoUninitialize()
+                except Exception:
+                    pass
 
 
 # ── 独立运行测试入口 ────────────────────────────────────────────
 if __name__ == "__main__":
-    console.print("[bold cyan]OfficeToolbox (COM) 独立测试[/]\n")
+    print("OfficeToolbox (COM) 独立测试\n")
 
     test_db = DatabaseManager()
     test_db.init_database()
@@ -460,17 +457,17 @@ if __name__ == "__main__":
     # 测试 Excel 导出
     try:
         xlsx_path = toolbox.export_deliverables_excel()
-        console.print(f"[green]Excel 测试通过: {xlsx_path}[/]")
+        print(f"Excel 测试通过: {xlsx_path}")
     except Exception as e:
-        console.print(f"[yellow]Excel 测试跳过: {e}[/]")
+        print(f"Excel 测试跳过: {e}")
 
     # 测试 PPT 生成
     try:
         ppt_path = toolbox.refresh_weekly_ppt()
-        console.print(f"[green]PPT 测试通过: {ppt_path}[/]")
+        print(f"PPT 测试通过: {ppt_path}")
     except FileNotFoundError:
-        console.print("[yellow]PPT 测试跳过: 模板文件不存在[/]")
+        print("PPT 测试跳过: 模板文件不存在")
     except Exception as e:
-        console.print(f"[yellow]PPT 测试跳过: {e}[/]")
+        print(f"PPT 测试跳过: {e}")
 
-    console.print("\n[green]测试完成[/]")
+    print("\n测试完成")

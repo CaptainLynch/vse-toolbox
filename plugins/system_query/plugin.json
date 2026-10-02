@@ -1,0 +1,13 @@
+{
+  "id": "system-query",
+  "name": "系统查询",
+  "version": "0.1.0",
+  "hostApi": ">=1,<2",
+  "description": "Aras EWO / PAA / NCR 与 TDC 数模 / SOR / A 面查询（插件化迁移；调用既有 /api/aras、/api/tdc、/api/tasks 接口，旧页面并存）",
+  "pages": [
+    {"id": "query", "title": "系统查询", "kind": "module", "module": "query.js"}
+  ],
+  "nav": [
+    {"title": "系统查询", "page": "query", "order": 20}
+  ]
+}

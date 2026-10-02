@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "task_id", "status", "runtime", "changed_files", "diff_stat", "verification", "risks", "unresolved", "next_action"],
+  "properties": {
+    "schema_version": {"const": "handoff.v1"},
+    "task_id": {"type": "string", "pattern": "^TASK-[A-Za-z0-9_-]+$"},
+    "status": {"enum": ["completed", "partial", "failed", "blocked"]},
+    "summary": {"type": "string", "maxLength": 800},
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["worker", "model_id", "context_limit_tokens"],
+      "properties": {
+        "worker": {"type": "string"},
+        "model_id": {"type": "string", "maxLength": 160},
+        "context_limit_tokens": {"const": 1000000},
+        "context_waterline": {"enum": ["green", "yellow", "red", "hard-stop"]}
+      }
+    },
+    "base_commit": {"type": ["string", "null"]},
+    "changed_files": {"type": "array", "maxItems": 50, "items": {"type": "string", "maxLength": 512}},
+    "diff_stat": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["files", "insertions", "deletions"],
+      "properties": {
+        "files": {"type": "integer", "minimum": 0},
+        "insertions": {"type": "integer", "minimum": 0},
+        "deletions": {"type": "integer", "minimum": 0}
+      }
+    },
+    "verification": {"type": "array", "maxItems": 10, "items": {"type": "object"}},
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "input_tokens": {"type": "integer", "minimum": 0},
+        "cached_input_tokens": {"type": "integer", "minimum": 0},
+        "output_tokens": {"type": "integer", "minimum": 0},
+        "reasoning_tokens": {"type": "integer", "minimum": 0}
+      }
+    },
+    "risks": {"type": "array", "maxItems": 5, "items": {"type": "string", "maxLength": 400}},
+    "unresolved": {"type": "array", "maxItems": 5, "items": {"type": "string", "maxLength": 400}},
+    "next_action": {"type": "string", "maxLength": 400}
+  }
+}

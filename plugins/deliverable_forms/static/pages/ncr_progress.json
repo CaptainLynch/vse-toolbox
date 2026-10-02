@@ -1,0 +1,103 @@
+{
+  "renderer": "analysis",
+  "title": "NCR 审批进度",
+  "description": "数据来自最近一次自动归档快照；逾期口径与旧表单页一致（按阶段停留天数与计划日期判定）。",
+  "source": "forms/aras_ncr_progress/rows",
+  "filters": [
+    {
+      "key": "NCR编号",
+      "label": "NCR编号",
+      "type": "text"
+    },
+    {
+      "key": "_status",
+      "label": "状态",
+      "optionsFromRows": true
+    },
+    {
+      "key": "_stage",
+      "label": "当前节点",
+      "optionsFromRows": true
+    },
+    {
+      "key": "_section",
+      "label": "区域",
+      "optionsFromRows": true
+    },
+    {
+      "key": "_model",
+      "label": "项目",
+      "optionsFromRows": true
+    },
+    {
+      "key": "_overdue",
+      "label": "逾期状态",
+      "optionsFromRows": true
+    },
+    {
+      "key": "_submitted",
+      "label": "提交日期（起）",
+      "type": "date",
+      "match": "gte"
+    }
+  ],
+  "charts": [
+    {
+      "type": "doneBars",
+      "id": "stage",
+      "title": "当前节点状态",
+      "groupBy": "_stage",
+      "doneField": "_completed"
+    },
+    {
+      "type": "doneBars",
+      "id": "section",
+      "title": "区域状态",
+      "groupBy": "_section",
+      "doneField": "_completed"
+    }
+  ],
+  "columns": [
+    {
+      "key": "NCR编号",
+      "title": "NCR编号"
+    },
+    {
+      "key": "_status",
+      "title": "状态"
+    },
+    {
+      "key": "_overdue",
+      "title": "逾期状态"
+    },
+    {
+      "key": "当前节点及通知时间",
+      "title": "当前节点及通知时间"
+    },
+    {
+      "key": "区域",
+      "title": "区域"
+    },
+    {
+      "key": "项目",
+      "title": "项目"
+    },
+    {
+      "key": "提交日期",
+      "title": "提交日期"
+    },
+    {
+      "key": "是否审批完成",
+      "title": "是否审批完成"
+    },
+    {
+      "key": "当前审批人滞留天数",
+      "title": "当前审批人滞留天数"
+    },
+    {
+      "key": "EWO号",
+      "title": "EWO号"
+    }
+  ],
+  "rowKey": "id"
+}

@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<!-- saved from url=(0157)http://ecm.sgmw.com.cn/innovatorserver/Client/X-salt=160_12.0.0.13341-X/scripts/itemsGrid.html?itemtypeID=FC4635EBAC8F4EB19F83DD88B40A4056&itemtypeName=EWO_A -->
+<html class="dj_webkit dj_chrome dj_contentbox"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+	<title></title>
+	
+	<link rel="stylesheet" type="text/css" href="./common.css">
+	<link rel="stylesheet" type="text/css" href="./fontsNotoJp.css">
+	<link rel="stylesheet" type="text/css" href="./fontsRobotoLt.css">
+	<style type="text/css">
+		@import "../javascript/dojo/resources/dojo.css";
+		@import "../javascript/dijit/themes/claro/claro.css";
+		@import "../javascript/dojox/grid/resources/claroGrid.css";
+		@import "../javascript/dojox/form/resources/CheckedMultiSelect.css";
+		@import "../javascript/include.aspx?classes=common.css";
+		@import "../javascript/include.aspx?classes=ExtendedClassification.css";
+
+		html, body{
+			height: 100%;
+			overflow: hidden;
+		}
+
+		#searchview-toolbars, #searchPlaceholder, #xClassBarPlaceholder {
+			margin-bottom: 12px;
+		}
+
+		.prop-value {
+			overflow: hidden;
+			display: inline-block;
+			text-overflow: ellipsis;
+			width: calc(100% - 80px);
+		}
+
+		#grid_table{
+			box-sizing: border-box;
+			display: flex;
+			flex-direction: column;
+			height: 100%;
+			padding: 12px;
+			position:relative;
+		}
+
+		.grid-section {
+			flex-grow: 1;
+			display: flex;
+			flex-direction: column;
+			height: calc(100% - 42px);
+			overflow: hidden;
+		}
+
+		#grid_container {
+			overflow: hidden;
+		}
+
+		#gridTD{
+			height: calc(100% - 46px);
+		}
+
+		#gridTD>.dojoxGrid{
+			height: 100% !important;
+		}
+
+		#formpreview_container{
+			height: 0;
+			flex-grow: 1;
+		}
+
+		#formpreview_container iframe{
+			width: 100%;
+			height: 100%;
+		}
+
+		.hideImportant {
+			display: none !important;
+		}
+
+		#searchbar_toolbar .aras-compat-toolbar {
+			border-width: 0;
+		}
+		.claro .dijitMenuBar {
+			border: none;
+		}
+	</style>
+
+	<script>
+		var topWnd = parent.parent;
+		//note, that aras is used in search_container.js and SearchGridObject.js. Do not rename it.
+		var aras = arasObj = topWnd.aras;
+		var activeToolbar = topWnd.activeToolbar;
+	</script>
+	<script type="text/javascript" src="./include(6).aspx"></script>
+	<script type="text/javascript" src="./cui.js.下载"></script>
+	<script type="text/javascript" charset="utf-8" src="./_i18nMixin.js.下载"></script><script type="text/javascript" charset="utf-8" src="./GridContainer.js.下载"></script><script type="text/javascript" charset="utf-8" src="./ready.js.下载"></script><script type="text/javascript" charset="utf-8" src="./searchGrid_zh-cn.js.下载"></script><script type="text/javascript" charset="utf-8" src="./DataGrid.js.下载"></script><script type="text/javascript" charset="utf-8" src="./GridModules.js.下载"></script><script type="text/javascript" charset="utf-8" src="./TypeEditCell.js.下载"></script><script type="text/javascript" charset="utf-8" src="./acme.js.下载"></script><script type="text/javascript" charset="utf-8" src="./ContextMenu.js.下载"></script><script type="text/javascript" charset="utf-8" src="./Cell.js.下载"></script><script type="text/javascript" charset="utf-8" src="./CheckedMultiSelect.js.下载"></script><script type="text/javascript" charset="utf-8" src="./PopupMenuItem.js.下载"></script><script type="text/javascript" charset="utf-8" src="./MenuSeparator.js.下载"></script><script type="text/javascript" charset="utf-8" src="./MenuItem(1).js.下载"></script><script type="text/javascript" charset="utf-8" src="./dijit.js.下载"></script><script type="text/javascript" charset="utf-8" src="./_base.js.下载"></script><script type="text/javascript" charset="utf-8" src="./WidgetSet.js.下载"></script><script type="text/javascript" charset="utf-8" src="./place.js.下载"></script><script type="text/javascript" charset="utf-8" src="./popup(1).js.下载"></script><script type="text/javascript" charset="utf-8" src="./scroll.js.下载"></script><script type="text/javascript" charset="utf-8" src="./sniff.js.下载"></script><script type="text/javascript" charset="utf-8" src="./typematic.js.下载"></script><script type="text/javascript" charset="utf-8" src="./wai.js.下载"></script><script type="text/javascript" charset="utf-8" src="./window.js.下载"></script><script type="text/javascript" charset="utf-8" src="./FilePropertyManager.js.下载"></script><script type="text/javascript" charset="utf-8" src="./GridContainerWrapper.js.下载"></script><script type="text/javascript" charset="utf-8" src="./GridModulesWrapper.js.下载"></script><script type="text/javascript" charset="utf-8" src="./CellWrapper.js.下载"></script><script type="text/javascript" charset="utf-8" src="./ContextMenuWrapper.js.下载"></script><script type="text/javascript" src="./include(7).aspx" data-dojo-config="isDebug: false, async: true,  parseOnLoad: false, baseUrl:&#39;../javascript/dojo&#39;"></script>
+	<script type="text/javascript" src="./searchGrid.js.下载"></script>
+	<script type="text/javascript" src="./include(8).aspx"></script>
+	<script type="text/javascript" src="./include(9).aspx"></script>
+	<script type="text/javascript" src="./include(10).aspx"></script>
+	<script type="text/javascript" src="./include(11).aspx"></script>
+	<script type="text/javascript">
+		window.addEventListener('DOMContentLoaded', function() {
+			ArasModules.soap(null, {async: true, method: 'ApplyItem', url: aras.getServerURL(), headers: aras.getHttpHeadersForSoapMessage('ApplyItem')});
+		});
+
+		function loadIconsUsingSvgManager() {
+			const lockImgPath = ['../images/ClaimOn.svg', '../images/ClaimOther.svg', '../images/ClaimAnyone.svg', '../images/ClaimColumn.svg', '../images/LockedAndModified.svg', '../images/LockItem.svg', '../images/FileProperty.svg',
+						'../images/ClaimedByMe.svg', '../images/ClaimedByOthers.svg', '../images/ClaimedByAnyone.svg', '../images/FilePropertyUnsaved.svg', '../images/More.svg', '../images/PageSize.svg', '../images/MaxResults.svg',
+						'../images/InputCalendar.svg', '../images/Edit.svg'];
+			ArasModules.SvgManager.load(lockImgPath);
+		}
+
+		function createCuiLayout() {
+			const containerNode = document.getElementById('searchview-toolbars');
+			const cuiLayout = new SearchViewCuiLayout(containerNode, '', { itemTypeName: window.itemTypeName });
+
+			window.layout = cuiLayout
+			return cuiLayout.init();
+		}
+
+		function createFilePropertyManager(controlName, controlOptions) {
+			return new Promise(function(resolve) {
+				return clientControlsFactory.createControl("Aras.Client.Controls.Experimental.ExternalCellWidget.FilePropertyManager", { aras: topWnd.aras }, function(control) {
+					FilePropertyManager = control;
+
+					clientControlsFactory.on(FilePropertyManager, {
+						"onCellEnabledCheck": onFileEnabledCheck
+					});
+					resolve();
+				});
+			});
+		}
+
+		function onFileEnabledCheck (rowId, columnName) {
+			var rootItem = currQryItem.getResult(),
+				itemNode = rootItem.selectSingleNode("Item[@id=\"" + rowId + "\"]") || aras.getFromCache(rowId);
+
+			if (itemNode) {
+				return itemNode.getAttribute("discover_only") != "1";
+			}
+		}
+
+		function initializePagination(){
+			window.pagination = document.querySelector('aras-pagination');
+			pagination.getTotalResults = getAndUpdatePageSizeAndMaxRecords;
+			pagination.updateControlsState = updatePagination;
+		}
+
+		function createGridContainer() {
+			return new Promise(function(resolve){
+				clientControlsFactory.createControl("Aras.Client.Controls.Public.GridContainerWrapper", { onStartSearch_Experimental: doSearch, freezableColumns: true }, function(control) {
+					grid = gridApplet = control;
+					grid.setColumnTypeManager_Experimental("File", FilePropertyManager);
+
+					clientControlsFactory.on(grid.grid_Experimental, {
+						"onHeaderCellContextMenu": onHeaderCellContextMenu,
+						"onHeaderContextMenu": onHeaderContextMenu
+					});
+					clientControlsFactory.on(grid, {
+						"gridHeaderMenuClick_Experimental": ItemTypeGrid.onHeaderMenuClicked,
+						"gridDoubleClick": onDoubleClick,
+						"gridXmlLoaded": onXmlLoaded,
+						"gridRowSelect": updateInfoTableWithItem,
+						"gridMenuClick": onMenuClicked,
+						"onStartEdit_Experimental": startCellEditIG,
+						"onApplyEdit_Experimental": applyCellEditIG,
+						"onInputHelperShow_Experimental": showInputHelperDialog,
+						"InitXML_Experimental": setFrozenColumns,
+						"gridClick": function(rowId, col) {
+					onSelectItem(rowId, col, undefined, true);
+						},
+						"gridLinkClick": function(linkVal, altMode) {
+							if (linkVal.length) {
+								linkVal = linkVal.replace(/'/g, "");
+								var typeName = linkVal.split(",")[0];
+								var id = linkVal.split(",")[1];
+								onLink(typeName, id, altMode);
+							}
+						},
+						"gridMenuInit": function(rowId, col) {
+							if (rowId !== 'header_row') {
+								fillPopupMenu(rowId, col);
+							}
+						}
+					});
+
+					topWnd.cui.initPopupMenu(grid.contexMenu_Experimental);
+					topWnd.cui.initPopupMenu(grid.headerContexMenu_Experimental);
+
+					InitPropertiesContainer();
+					initSearch();
+					setMenuState();
+
+					resolve();
+				});
+			});
+		}
+
+		require(["Aras/Client/Controls/Public/GridContainer"]);
+		require(["dojo/ready"], function(ready) {
+			ready(function() {
+				function createControls() {
+					initColumnSelectionBlock();
+					loadIconsUsingSvgManager();
+					aras.browserHelper.toggleSpinner(document, true);
+					return Promise.resolve()
+					.then(createFilePropertyManager)
+					.then(initializePagination)
+					.then(createGridContainer)
+					.then(createCuiLayout)
+					.then(function() {
+						aras.browserHelper.toggleSpinner(document, false);
+						const searchToolbar = document.querySelector('#searchview-toolbars .aras-commandbar');
+						currentSearchMode.searchToolbar = searchToolbar;
+						searchContainer.searchToolbar = searchToolbar;
+					})
+					.catch(function(e) {
+						aras.AlertError(e);
+					});
+				}
+				window.loadControls = createControls();
+			});
+		});
+	</script>
+
+	<script type="text/javascript">
+		searchLocation = "Main Grid";
+		isMainGrid = true; //this variable is defined in SearchGridObject.js and search_container.js
+
+		// ===== variables section ============
+		var isItemsGrid = true; //flag to identify itemsGrid.html
+		var searchReady = false; //flag to identify that SearchContainer and search controls initialized
+		const autoSearch = QueryString("autoSearch").toString();
+		var itemTypeID = QueryString("itemtypeID").toString();
+		var itemTypeName = QueryString("itemtypeName").toString();
+		const itemType = aras.getItemTypeForClient(itemTypeName);
+		var ItemTypeGrid = MainGridFactory.Create(itemTypeName);
+		var savedSearchId = QueryString("savedSearchId").toString();
+		var visiblePropNds; //array of properties nodes which are visible in grid
+		const headerToolbar = topWnd.document.getElementById('headerCommandsBar');
+		var itemMenuInitialized;
+		var interval = 0;
+		var addRowInProgress_Number = 0;
+		var callbackF_afterAddRow = null;
+		var varName_queryDate;
+		var userID = aras.getUserID();
+		var isVersionableIT, isDependentIT, isRelationshipIT, can_addFlg, isManualyVersionableIT;
+		var use_src_accessIT;
+		var Today = aras.getResource("", "itemsgrid.today");
+		var asyncController = new ItemsGridAsyncController(aras, window);
+		var grid = null;
+		var FilePropertyManager = null;
+		var tmp_qry2item_cssValue = "";
+		var contentOfPrintWindow = "";
+		var itemGridResizeHelper = {
+			tmpOffSetTopGrid: 0,
+			diff: 0,
+			repeatTimer: null,
+			OldPlaceHolderDisplay: null
+		};
+		let columnSelectionMediator;
+		//Global cache item files
+		var FilesCache = new Object();
+		var propertiesContainer;
+		var popupMenuState;
+		// ===== end of variables section ============
+
+		if (!onInitialize()) {
+			onload = "";
+			onresize = "";
+			onbeforeunload = "";
+			document.write(
+				'	<\/script>\n' +
+				'	<body>\n' +
+				'		<center>' + aras.getResource("", "itemsgrid.item_type_with_id_not_found", itemTypeID) + '<\/center>' +
+				'	<\/body>' +
+				'<\/html>');
+		}
+
+		// disable drop file (chrome reload page ar download the file)
+		window.addEventListener("drop",function(e){
+			e.preventDefault();
+		},false);
+		window.addEventListener("dragover",function(e){
+			e.preventDefault();
+		},false);
+
+		window.addEventListener("load",function(e){
+			ArasModules.splitter(document.getElementById('formpreview_splitter'));
+			var propsBar = document.getElementById('itemProperties');
+			propsBar.querySelector('h3').textContent = aras.getResource("", "common.properties");
+		});
+	</script>
+</head>
+<body class="claro">
+	<div id="itemProperties" class="table-col properties-block hideImportant" style="float: left;">
+		<div class="side-header">
+			<h3>Properties</h3>
+		</div>
+		<div><div class="properties-block" style="width: 170px !important;"><div class="prop-header"><h2><span id="label_span">1.1 EWO</span></h2><img id="large_icon_img" name="large_icon_img" hspace="20" vspace="20" src="./ScribbleMedium.svg" style="display: block; visibility:visible; height: auto; width: auto; max-width: 45px; max-height: 45px"></div><div id="itemInfoTable" class="prop-body"><div id="created_by_id_row" class="prop-field"><span class="prop-label">Created By:</span><span id="itemProps$created_by_id" class="prop-value"><b></b></span></div><div id="created_on_row" class="prop-field"><span class="prop-label">Created On:</span><span id="itemProps$created_on" class="prop-value"><b></b></span></div><div id="modified_by_id_row" class="prop-field"><span class="prop-label">Modified By:</span><span id="itemProps$modified_by_id" class="prop-value"><b></b></span></div><div id="modified_on_row" class="prop-field"><span class="prop-label">Modified On:</span><span id="itemProps$modified_on" class="prop-value"><b></b></span></div><div id="locked_by_id_row" class="prop-field"><span class="prop-label">Locked By:</span><span id="itemProps$locked_by_id" class="prop-value"><b></b></span></div><div id="major_rev_row" class="prop-field"><span class="prop-label">Major Rev:</span><span id="itemProps$major_rev" class="prop-value"><b></b></span></div><div id="release_date_row" class="prop-field"><span class="prop-label">Release Date:</span><span id="itemProps$release_date" class="prop-value"><b></b></span></div><div id="effective_date_row" class="prop-field"><span class="prop-label">Effective Date:</span><span id="itemProps$effective_date" class="prop-value"><b></b></span></div><div id="generation_row" class="prop-field"><span class="prop-label">Generation:</span><span id="itemProps$generation" class="prop-value"><b></b></span></div><div id="state_row" class="prop-field"><span class="prop-label">State:</span><span id="itemProps$state" class="prop-value"><b></b></span></div></div></div></div>
+	</div>
+	<div id="grid_table">
+		<div class="menu-block" id="menulayout"></div>
+		<div id="searchview-toolbars" style="flex-shrink:0;"><aras-toolbar class="aras-titlebar" style=""><!---0.466931%--><div class="aras-toolbar"><span class="aras-toolbar__image aras-toolbar__icon"><svg><use xlink:href="http://ecm.sgmw.com.cn/innovatorserver/Client/X-salt=160_12.0.0.13341-X/scripts/itemsGrid.html?itemtypeID=FC4635EBAC8F4EB19F83DD88B40A4056&amp;itemtypeName=EWO_A#svg-scribblemedium"></use></svg></span><span class="aras-toolbar__text aras-toolbar__title" data-id="searchview.titlebar.default.title">1.1 EWO</span><aras-dropdown class="aras-dropdown-container" data-id="searchview.titlebar.default.savedsearches" closeonclick=""><button class="aras-button saved-search__button" dropdown-button="" disabled=""><span class="aras-button__menu-arrow"></span></button><div class="aras-dropdown"></div></aras-dropdown><button class="aras-button aras-button_d" title="Add to Favorite" data-id="commonitems.titlebar.default.favorite"><svg class="aras-button__icon"><use xlink:href="http://ecm.sgmw.com.cn/innovatorserver/Client/X-salt=160_12.0.0.13341-X/scripts/itemsGrid.html?itemtypeID=FC4635EBAC8F4EB19F83DD88B40A4056&amp;itemtypeName=EWO_A#svg-favoriteoff"></use></svg></button><div class="aras-toolbar__divider"></div></div></aras-toolbar><aras-toolbar class="aras-commandbar aras-commandbar_bordered" style=""><!---0.466931%--><div class="aras-toolbar"><button class="aras-button" title="Create新增" data-id="sgmw_createnew" disabled=""><svg class="aras-button__icon"><use xlink:href="http://ecm.sgmw.com.cn/innovatorserver/Client/X-salt=160_12.0.0.13341-X/scripts/itemsGrid.html?itemtypeID=FC4635EBAC8F4EB19F83DD88B40A4056&amp;itemtypeName=EWO_A#svg-createitem"></use></svg><span class="aras-button__text">Create新增</span></button><button class="aras-button aras-button_primary" title="Run Search" data-id="searchview.commandbar.default.runsearch"><svg class="aras-button__icon"><use xlink:href="http://ecm.sgmw.com.cn/innovatorserver/Client/X-salt=160_12.0.0.13341-X/scripts/itemsGrid.html?itemtypeID=FC4635EBAC8F4EB19F83DD88B40A4056&amp;itemtypeName=EWO_A#svg-searchwhite"></use></svg><span class="aras-button__text">Search搜索</span></button><button class="aras-button aras-button_secondary" title="Clear Search Criteria" data-id="searchview.commandbar.default.clearsearch"><svg class="aras-button__icon"><use xlink:href="http://ecm.sgmw.com.cn/innovatorserver/Client/X-salt=160_12.0.0.13341-X/scripts/itemsGrid.html?itemtypeID=FC4635EBAC8F4EB19F83DD88B40A4056&amp;itemtypeName=EWO_A#svg-clearsearchcriteriawhite"></use></svg><span class="aras-button__text">Clear清除</span></button><button class="aras-button" data-id="sgmw_deleteItem"><svg class="aras-button__icon"><use xlink:href="http://ecm.sgmw.com.cn/innovatorserver/Client/X-salt=160_12.0.0.13341-X/scripts/itemsGrid.html?itemtypeID=FC4635EBAC8F4EB19F83DD88B40A4056&amp;itemtypeName=EWO_A#svg-deleteitem"></use></svg><span class="aras-button__text">Delete删除</span></button><span class="aras-select" data-id="commonitems.commandbar.searchmode"><span class="aras-select__container"><select title="Search modes"><option value="BD84BCA3EC064D77BF3772A9D93308B6">Simple</option><option value="B15D4F9EAEF24C8F8CB9A4CA89402B1F">Advanced</option><option value="BEF4CDA54AA74362A2C40BD530D4D9DD">AML</option><option value="95A2002E5AD84B9D8B2FA50B742C5973">Hidden</option></select><span class="aras-select__button"></span></span></span><span class="aras-toolbar__separator"></span><aras-dropdown class="column-select-dropdown aras-dropdown-container"><button class="aras-button" title="Refine" dropdown-button=""><svg class="aras-button__icon"><use xlink:href="http://ecm.sgmw.com.cn/innovatorserver/Client/X-salt=160_12.0.0.13341-X/scripts/itemsGrid.html?itemtypeID=FC4635EBAC8F4EB19F83DD88B40A4056&amp;itemtypeName=EWO_A#svg-columnselection"></use></svg><span class="aras-button__menu-arrow"></span></button><div class="aras-dropdown"><div class="column-select-block hidden" id="column_select_block"><div class="column-select-block-flex"><div class="column-selection"><div class="side-header"><span>Properties</span></div><div class="properties-selector-block aras-form"><div class="properties-selector-block-upper"><div><label class="aras-form-boolean select-all"><input type="checkbox"><span><span></span></span></label><div class="property-types"></div></div></div></div><div class="filtered hidden"><span>Filtered by Classifications</span><span onclick="columnSelectionControl.showAll()">Show All</span></div><div class="tree aras-hide aras-grid"></div><div class="no-properties">No properties to display</div></div><div class="xclass-search-block hidden"><div class="side-header"><span>Classifications</span></div><div class="search-panel"><span class="xClassBar-toggle-btn"></span><div class="search"><input name="search" oninput="xClassSearchWrapper.search(event)"><span class="loupe-icon"></span><div class="dropdown-filter"><div class="dropdown-btn"><span></span></div><ul class="search-filter aras-hide" tabindex="0"><li data-value="ALL">Everything</li><li data-value="ACTIVE_FILTERS">Active Filters</li><li data-value="ACTIVE_SEARCHES">Active Searches</li><li data-value="ALL_ACTIVE">All Active</li></ul></div></div><span class="logic-filter"></span></div><div class="filtered hidden"><span>Class Filtered</span><span onclick="xClassSearchWrapper.setFilter(&#39;ALL&#39;)">Show All</span></div><div class="no-result hidden">xClass not Found</div><div class="tree aras-grid"></div><div class="aras-contextMenu" tabindex="-1"></div></div></div></div></div></aras-dropdown><aras-dropdown class="aras-dropdown-container" data-id="searchview.commandbar.default.display" closeonclick=""><button class="aras-button" title="Display" dropdown-button=""><svg class=" aras-button__icon"><use xlink:href="http://ecm.sgmw.com.cn/innovatorserver/Client/X-salt=160_12.0.0.13341-X/scripts/itemsGrid.html?itemtypeID=FC4635EBAC8F4EB19F83DD88B40A4056&amp;itemtypeName=EWO_A#svg-displayoptions"></use></svg><span class="aras-button__menu-arrow"></span></button><div class="aras-dropdown"><ul class="aras-list"><li class="aras-list-item aras-list__parent aras-list-item_arrowed" data-index="searchview.commandbar.default.display.preview"><span class="aras-list-item__label">Preview</span><ul class="aras-list"><li class="aras-list-item aras-list-item_iconed" data-index="searchview.commandbar.default.display.preview.form"><span class="aras-list-item__icon"></span><span class="aras-list-item__label">Form</span></li><li class="aras-list-item aras-list-item_iconed" data-index="searchview.commandbar.default.display.preview.properties"><span class="aras-list-item__icon"></span><span class="aras-list-item__label">Properties</span></li><li class="aras-list-item aras-list-item_iconed" data-index="searchview.commandbar.default.display.preview.hide"><span class="aras-list-item__icon aras-icon-checked"></span><span class="aras-list-item__label">Hide</span></li></ul><span class="aras-list-item__arrow"></span></li></ul></div></aras-dropdown><aras-dropdown class="aras-dropdown-container" data-id="commonitems.commandbar.sharemenu" closeonclick=""><button class="aras-button" title="Share" dropdown-button=""><svg class=" aras-button__icon"><use xlink:href="http://ecm.sgmw.com.cn/innovatorserver/Client/X-salt=160_12.0.0.13341-X/scripts/itemsGrid.html?itemtypeID=FC4635EBAC8F4EB19F83DD88B40A4056&amp;itemtypeName=EWO_A#svg-share"></use></svg><span class="aras-button__menu-arrow"></span></button><div class="aras-dropdown"><ul class="aras-list"><li class="aras-list-item" data-index="commonitems.commandbar.sharemenu.export_to_excel"><span class="aras-list-item__label">Export to Excel</span></li><li class="aras-list-item" data-index="searchview.commandbar.default.sharemenu.export_to_pdf"><span class="aras-list-item__label">Export to PDF</span></li><li class="aras-list-item" data-index="commonitems.commandbar.sharemenu.export_to_word"><span class="aras-list-item__label">Export to Word</span></li></ul></div></aras-dropdown><div class="aras-toolbar__divider"></div></div></aras-toolbar><!---0.466931%--></div>
+		<div class="grid-section">
+			<div id="searchPlaceholder" style="display: none;"><div id="searchPlaceholderCell"></div></div>
+			<div id="xClassBarPlaceholder" class="hidden"><div id="xClassCriteriaContainer" class="xclass-bar__container"><div class="xclass-criteria-panel"><div class="criteria-text"></div><span class="clear-xclass-criteria"></span></div></div><div id="toolbarXClassBarContainer" class="xclass-bar__container"></div></div>
+			<div id="grid_container" style="height: 100%;">
+				<div id="gridTD" class="aras-grid" style="height: calc(100% - 46px);"><div class="aras-grid-header"><div class="aras-grid-header-boundary aras-grid-header-boundary_frozen"><table class="aras-grid-head" style="width: 32px; transform: translate3d(0px, 0px, 0px);"><tr><td class="aras-grid-head-cell" data-index="0" style="width: 32px;"><div class="aras-grid-head-cell-resize"></div><span class="aras-grid-head-cell-label"><span class="aras-grid-head-cell-label-text"></span><svg><use xlink:href="http://ecm.sgmw.com.cn/innovatorserver/Client/X-salt=160_12.0.0.13341-X/scripts/itemsGrid.html?itemtypeID=FC4635EBAC8F4EB19F83DD88B40A4056&amp;itemtypeName=EWO_A#svg-claimcolumn"></use></svg><span class="aras-grid-head-cell-sort aras-icon-long-arrow aras-icon-long-arrow_up"></span></span></td></tr><tr><td class="aras-grid-search-row-cell " data-index="0"><div class="aras-grid-dropdown-icon"><span class="aras-grid-dropdown-icon__button aras-icon-arrow aras-icon-arrow_down" tabindex="0"></span><div class="aras-dropdown"><ul class="aras-list"><li class="aras-list-item aras-list-item_iconed" data-value=""><span class="aras-list-item__icon"><svg><use xlink:href="http://ecm.sgmw.com.cn/innovatorserver/Client/X-salt=160_12.0.0.13341-X/scripts/itemsGrid.html?itemtypeID=FC4635EBAC8F4EB19F83DD88B40A4056&amp;itemtypeName=EWO_A#"></use></svg></span><span class="aras-list-item__value">Clear Criteria</span></li><li class="aras-list-item aras-list-item_iconed" data-value="&lt;img src=&#39;../images/ClaimOn.svg&#39; style=&#39;margin-right: 4px; height: auto; width: auto; max-width: 20px; max-height: 20px;&#39; /&gt;"><span class="aras-list-item__icon"><svg><use xlink:href="http://ecm.sgmw.com.cn/innovatorserver/Client/X-salt=160_12.0.0.13341-X/scripts/itemsGrid.html?itemtypeID=FC4635EBAC8F4EB19F83DD88B40A4056&amp;itemtypeName=EWO_A#svg-claimon"></use></svg></span><span class="aras-list-item__value">Claimed By Me</span></li><li class="aras-list-item aras-list-item_iconed" data-value="&lt;img src=&#39;../images/ClaimOther.svg&#39; style=&#39;margin-right: 4px; height: auto; width: auto; max-width: 20px; max-height: 20px;&#39; /&gt;"><span class="aras-list-item__icon"><svg><use xlink:href="http://ecm.sgmw.com.cn/innovatorserver/Client/X-salt=160_12.0.0.13341-X/scripts/itemsGrid.html?itemtypeID=FC4635EBAC8F4EB19F83DD88B40A4056&amp;itemtypeName=EWO_A#svg-claimother"></use></svg></span><span class="aras-list-item__value">Claimed By Others</span></li><li class="aras-list-item aras-list-item_iconed" data-value="&lt;img src=&#39;../images/ClaimAnyone.svg&#39; style=&#39;margin-right: 4px; height: auto; width: auto; max-width: 20px; max-height: 20px;&#39; /&gt;"><span class="aras-list-item__icon"><svg><use xlink:href="http://ecm.sgmw.com.cn/innovatorserver/Client/X-salt=160_12.0.0.13341-X/scripts/itemsGrid.html?itemtypeID=FC4635EBAC8F4EB19F83DD88B40A4056&amp;itemtypeName=EWO_A#svg-claimanyone"></use></svg></span><span class="aras-list-item__value">Claimed By Anyone</span></li></ul></div></div></td></tr></table></div><div class="aras-grid-header-boundary"><table class="aras-grid-head" style="width: 2200px; transform: translate3d(0px, 0px, 0px);"><tr><td class="aras-grid-head-cell" data-index="1" style="width: 100px;"><div class="aras-grid-head-cell-resize"></div><span class="aras-grid-head-cell-label"><span class="aras-grid-head-cell-label-text">EWO编号 EWO No.</span><span class="aras-grid-head-cell-sort aras-icon-long-arrow aras-icon-long-arrow_up"></span></span></td><td class="aras-grid-head-cell" data-index="2" style="width: 100px;"><div class="aras-grid-head-cell-resize"></div><span class="aras-grid-head-cell-label"><span class="aras-grid-head-cell-label-text">二级WO类别 Sub Sort</span><span class="aras-grid-head-cell-sort aras-icon-long-arrow aras-icon-long-arrow_up"></span></span></td><td class="aras-grid-head-cell" data-index="3" style="width: 100px;"><div class="aras-grid-head-cell-resize"></div><span class="aras-grid-head-cell-label"><span class="aras-grid-head-cell-label-text">责任工程师名称 Rsp. Engineer Name</span><span class="aras-grid-head-cell-sort aras-icon-long-arrow aras-icon-long-arrow_up"></span></span></td><td class="aras-grid-head-cell" data-index="4" style="width: 100px;"><div class="aras-grid-head-cell-resize"></div><span class="aras-grid-head-cell-label"><span class="aras-grid-head-cell-label-text">TDC 专业科室 Prof. Sec.</span><span class="aras-grid-head-cell-sort aras-icon-long-arrow aras-icon-long-arrow_up"></span></span></td><td class="aras-grid-head-cell" data-index="5" style="width: 500px;"><div class="aras-grid-head-cell-resize"></div><span class="aras-grid-head-cell-label"><span class="aras-grid-head-cell-label-text">主题 Subject [...]</span><span class="aras-grid-head-cell-sort aras-icon-long-arrow aras-icon-long-arrow_up"></span></span></td><td class="aras-grid-head-cell" data-index="6" style="width: 100px;"><div class="aras-grid-head-cell-resize"></div><span class="aras-grid-head-cell-label"><span class="aras-grid-head-cell-label-text">车型信息 Vehicle/Engine Platform</span><span class="aras-grid-head-cell-sort aras-icon-long-arrow aras-icon-long-arrow_up"></span></span></td><td class="aras-grid-head-cell" data-index="7" style="width: 100px;"><div class="aras-grid-head-cell-resize"></div><span class="aras-grid-head-cell-label"><span class="aras-grid-head-cell-label-text">创建时间 Created_On [...]</span><span class="aras-grid-head-cell-sort aras-icon-long-arrow aras-icon-long-arrow_up"></span></span></td><td class="aras-grid-head-cell" data-index="8" style="width: 100px;"><div class="aras-grid-head-cell-resize"></div><span class="aras-grid-head-cell-label"><span class="aras-grid-head-cell-label-text">阶段 State</span><span class="aras-grid-head-cell-sort aras-icon-long-arrow aras-icon-long-arrow_up"></span></span></td><td class="aras-grid-head-cell" data-index="9" style="width: 100px;"><div class="aras-grid-head-cell-resize"></div><span class="aras-grid-head-cell-label"><span class="aras-grid-head-cell-label-text">阶段滞留天数</span><span class="aras-grid-head-cell-sort aras-icon-long-arrow aras-icon-long-arrow_up"></span></span></td><td class="aras-grid-head-cell" data-index="10" style="width: 100px;"><div class="aras-grid-head-cell-resize"></div><span class="aras-grid-head-cell-label"><span class="aras-grid-head-cell-label-text">已反写EPLM [...]</span><span class="aras-grid-head-cell-sort aras-icon-long-arrow aras-icon-long-arrow_up"></span></span></td><td class="aras-grid-head-cell" data-index="11" style="width: 100px;"><div class="aras-grid-head-cell-resize"></div><span class="aras-grid-head-cell-label"><span class="aras-grid-head-cell-label-text">提交日期 Submit Time [...]</span><span class="aras-grid-head-cell-sort aras-icon-long-arrow aras-icon-long-arrow_up"></span></span></td><td class="aras-grid-head-cell" data-index="12" style="width: 100px;"><div class="aras-grid-head-cell-resize"></div><span class="aras-grid-head-cell-label"><span class="aras-grid-head-cell-label-text">电话 Telephone</span><span class="aras-grid-head-cell-sort aras-icon-long-arrow aras-icon-long-arrow_up"></span></span></td><td class="aras-grid-head-cell" data-index="13" style="width: 100px;"><div class="aras-grid-head-cell-resize"></div><span class="aras-grid-head-cell-label"><span class="aras-grid-head-cell-label-text">部门 Department</span><span class="aras-grid-head-cell-sort aras-icon-long-arrow aras-icon-long-arrow_up"></span></span></td><td class="aras-grid-head-cell" data-index="14" style="width: 100px;"><div class="aras-grid-head-cell-resize"></div><span class="aras-grid-head-cell-label"><span class="aras-grid-head-cell-label-text">责任工程师 Rsp. Engineer [...]</span><span class="aras-grid-head-cell-sort aras-icon-long-arrow aras-icon-long-arrow_up"></span></span></td><td class="aras-grid-head-cell" data-index="15" style="width: 100px;"><div class="aras-grid-head-cell-resize"></div><span class="aras-grid-head-cell-label"><span class="aras-grid-head-cell-label-text">国内设计分区代码 Division</span><span class="aras-grid-head-cell-sort aras-icon-long-arrow aras-icon-long-arrow_up"></span></span></td><td class="aras-grid-head-cell" data-index="16" style="width: 100px;"><div class="aras-grid-head-cell-resize"></div><span class="aras-grid-head-cell-label"><span class="aras-grid-head-cell-label-text">要求完成时间 Req. Complete Date [...]</span><span class="aras-grid-head-cell-sort aras-icon-long-arrow aras-icon-long-arrow_up"></span></span></td><td class="aras-grid-head-cell" data-index="17" style="width: 100px;"><div class="aras-grid-head-cell-resize"></div><span class="aras-grid-head-cell-label"><span class="aras-grid-head-cell-label-text">工作指令类型 WO Type</span><span class="aras-grid-head-cell-sort aras-icon-long-arrow aras-icon-long-arrow_up"></span></span></td><td class="aras-grid-head-cell" data-index="18" style="width: 100px;"><div class="aras-grid-head-cell-resize"></div><span class="aras-grid-head-cell-label"><span class="aras-grid-head-cell-label-text">WO类别 Sort</span><span class="aras-grid-head-cell-sort aras-icon-long-arrow aras-icon-long-arrow_up"></span></span></td></tr><tr><td class="aras-grid-search-row-cell " data-index="1"><input class="aras-form-input" type="text"></td><td class="aras-grid-search-row-cell " data-index="2"><aras-filter-list value="" label=""><div class="aras-filter-list aras-dropdown-container"><input class="aras-filter-list__input aras-form-input" autocomplete="off"><div class="aras-filter-list__icon-container"><span class="aras-filter-list-icon aras-icon-error" style="display: none;"></span></div><button class="aras-filter-list__button aras-btn aras-icon-arrow aras-icon-arrow_down" tabindex="-1"></button><div class="aras-filter-list__dropdown aras-dropdown" tabindex="1" style="display: none; top: 0px;"><ul class="aras-list"><li class="aras-list-item aras-list-item_shown" data-value=""><mark></mark></li><li class="aras-list-item aras-list-item_shown" data-value="STO-EPL搭建(全新EPL)"><mark></mark>EPL搭建</li><li class="aras-list-item aras-list-item_shown" data-value="VWO-品种代码发布"><mark></mark>品种代码发布</li><li class="aras-list-item aras-list-item_shown" data-value="VWO-配置BOM发布"><mark></mark>配置BOM发布</li><li class="aras-list-item aras-list-item_shown" data-value="PWO-T2A数据发布"><mark></mark>T2A数据发布</li><li class="aras-list-item aras-list-item_shown" data-value="PWO-EWO定点"><mark></mark>EWO定点</li><li class="aras-list-item aras-list-item_shown" data-value="PWO-设计变更"><mark></mark>设计变更</li><li class="aras-list-item aras-list-item_shown" data-value="PWO-设计发布"><mark></mark>设计发布</li><li class="aras-list-item aras-list-item_shown" data-value="PWO-设计纠错"><mark></mark>设计纠错</li><li class="aras-list-item aras-list-item_shown" data-value="ASO-售后配件发布"><mark></mark>售后配件发布</li><li class="aras-list-item aras-list-item_shown" data-value="NTO-EPL搭建"><mark></mark>架构EPL搭建</li><li class="aras-list-item aras-list-item_shown" data-value="NWO-EWO定点"><mark></mark>EWO定点</li><li class="aras-list-item aras-list-item_shown" data-value="NWO-设计变更"><mark></mark>设计变更</li><li class="aras-list-item aras-list-item_shown" data-value="NWO-设计发布"><mark></mark>设计发布</li><li class="aras-list-item aras-list-item_shown" data-value="NWO-设计纠错"><mark></mark>设计纠错</li></ul></div></div></aras-filter-list></td><td class="aras-grid-search-row-cell " data-index="3"><input class="aras-form-input" type="text"></td><td class="aras-grid-search-row-cell " data-index="4"><input class="aras-form-input" type="text"></td><td class="aras-grid-search-row-cell " data-index="5"><input class="aras-form-input" type="text"></td><td class="aras-grid-search-row-cell " data-index="6"><input class="aras-form-input" type="text"></td><td class="aras-grid-search-row-cell aras-form" data-index="7"><div class="aras-form-date"><input class="aras-form-calendar" type="text"><span class="aras-filter-list-icon aras-icon-error"></span><span></span></div></td><td class="aras-grid-search-row-cell " data-index="8"><input class="aras-form-input" type="text"></td><td class="aras-grid-search-row-cell " data-index="9"><input class="aras-form-input" type="text"></td><td class="aras-grid-search-row-cell " data-index="10"><input class="aras-form-input" type="text"></td><td class="aras-grid-search-row-cell aras-form" data-index="11"><div class="aras-form-date"><input class="aras-form-calendar" type="text"><span class="aras-filter-list-icon aras-icon-error"></span><span></span></div></td><td class="aras-grid-search-row-cell " data-index="12"><input class="aras-form-input" type="text"></td><td class="aras-grid-search-row-cell " data-index="13"><input class="aras-form-input" type="text"></td><td class="aras-grid-search-row-cell " data-index="14"><aras-item-property value=""><div class="aras-filter-list aras-dropdown-container"><input class="aras-filter-list__input aras-form-input" autocomplete="off"><div class="aras-filter-list__icon-container"><span class="aras-filter-list-icon aras-icon-error" style="display: none;"></span><span class="aras-filter-list-icon aras-icon-spinner" style="display: none;"></span></div><button class="aras-filter-list__button aras-btn aras-filter-list__button_ellipsis" tabindex="-1"></button><div class="aras-filter-list__dropdown aras-dropdown" tabindex="1" style="display: none; top: 0px;"><ul class="aras-list"></ul></div></div></aras-item-property></td><td class="aras-grid-search-row-cell " data-index="15"><aras-filter-list value="" label=""><div class="aras-filter-list aras-dropdown-container"><input class="aras-filter-list__input aras-form-input" autocomplete="off"><div class="aras-filter-list__icon-container"><span class="aras-filter-list-icon aras-icon-error" style="display: none;"></span></div><button class="aras-filter-list__button aras-btn aras-icon-arrow aras-icon-arrow_down" tabindex="-1"></button><div class="aras-filter-list__dropdown aras-dropdown" tabindex="1" style="display: none; top: 0px;"><ul class="aras-list"><li class="aras-list-item aras-list-item_shown" data-value=""><mark></mark></li><li class="aras-list-item aras-list-item_shown" data-value="1"><mark></mark>SGMW</li></ul></div></div></aras-filter-list></td><td class="aras-grid-search-row-cell aras-form" data-index="16"><div class="aras-form-date"><input class="aras-form-calendar" type="text"><span class="aras-filter-list-icon aras-icon-error"></span><span></span></div></td><td class="aras-grid-search-row-cell " data-index="17"><aras-filter-list value="" label=""><div class="aras-filter-list aras-dropdown-container"><input class="aras-filter-list__input aras-form-input" autocomplete="off"><div class="aras-filter-list__icon-container"><span class="aras-filter-list-icon aras-icon-error" style="display: none;"></span></div><button class="aras-filter-list__button aras-btn aras-icon-arrow aras-icon-arrow_down" tabindex="-1"></button><div class="aras-filter-list__dropdown aras-dropdown" tabindex="1" style="display: none; top: 0px;"><ul class="aras-list"><li class="aras-list-item aras-list-item_shown" data-value=""><mark></mark></li><li class="aras-list-item aras-list-item_shown" data-value="1"><mark></mark>批量生产 PRODUCTION TYPE</li><li class="aras-list-item aras-list-item_shown" data-value="2"><mark></mark>研究 STUDY TYPE</li></ul></div></div></aras-filter-list></td><td class="aras-grid-search-row-cell " data-index="18"><aras-filter-list value="" label=""><div class="aras-filter-list aras-dropdown-container"><input class="aras-filter-list__input aras-form-input" autocomplete="off"><div class="aras-filter-list__icon-container"><span class="aras-filter-list-icon aras-icon-error" style="display: none;"></span></div><button class="aras-filter-list__button aras-btn aras-icon-arrow aras-icon-arrow_down" tabindex="-1"></button><div class="aras-filter-list__dropdown aras-dropdown" tabindex="1" style="display: none; top: 0px;"><ul class="aras-list"><li class="aras-list-item aras-list-item_shown" data-value=""><mark></mark></li><li class="aras-list-item aras-list-item_shown" data-value="STO"><mark></mark>STO</li><li class="aras-list-item aras-list-item_shown" data-value="VWO"><mark></mark>VWO</li><li class="aras-list-item aras-list-item_shown" data-value="PWO"><mark></mark>PWO</li><li class="aras-list-item aras-list-item_shown" data-value="ASO"><mark></mark>ASO</li><li class="aras-list-item aras-list-item_shown" data-value="NTO"><mark></mark>NTO</li><li class="aras-list-item aras-list-item_shown" data-value="NWO"><mark></mark>NWO</li></ul></div></div></aras-filter-list></td></tr></table></div></div><div class="aras-grid-body" tabindex="1"><div class="aras-grid-body-boundary aras-grid-body-boundary_frozen" style="height: 896px;"><div class="aras-grid-scroller" style="height: 1px; width: 33px;"><table class="aras-grid-viewport" style="width: 32px; transform: translate3d(0px, 0px, 0px);"><colgroup><col width="32"></colgroup></table><div class="aras-grid-active-cell"></div></div></div><div class="aras-grid-body-boundary"><div class="aras-grid-scroller" style="height: 1px; width: 5900px;"><table class="aras-grid-viewport" style="width: 2200px; transform: translate3d(0px, 0px, 0px);"><colgroup><col width="100"><col width="100"><col width="100"><col width="100"><col width="500"><col width="100"><col width="100"><col width="100"><col width="100"><col width="100"><col width="100"><col width="100"><col width="100"><col width="100"><col width="100"><col width="100"><col width="100"><col width="100"></colgroup></table><div class="aras-grid-active-cell"></div></div></div></div><div class="aras-grid-resize-line"></div><div class="aras-grid-ddcontainer"></div><div class="aras-grid-ddline"></div><div class="aras-grid-freezer" style="transform: translate3d(32px, 0px, 0px);"></div></div>
+				<aras-pagination class="aras-pagination"><div class="aras-toolbar"><button class="aras-button aras-pagination__prev-button" title="Previous Page" data-id="pagination_prev_button" disabled=""><span class="aras-button__text">Prev</span></button><button class="aras-button aras-pagination__next-button" title="Next Page" data-id="pagination_next_button" disabled=""><span class="aras-button__text">Next</span></button><span class="aras-pagination__status aras-pagination__status_disabled" data-id="pagination_status_node">Page: 1<span class="aras-pagination__total-pages">/ 0</span><span class="aras-pagination__total-results">0 Results</span></span><span class="aras-toolbar__separator"></span><span class="aras-toolbar__textbox " data-id="pagination_page_size"><span class="aras-input-icon-wrapper"><input class="aras-input" type="text" autocomplete="off" title="Results per Page" value="50" style="width: 6.667rem;"><svg class="aras-input-icon"><use xlink:href="http://ecm.sgmw.com.cn/innovatorserver/Client/X-salt=160_12.0.0.13341-X/scripts/itemsGrid.html?itemtypeID=FC4635EBAC8F4EB19F83DD88B40A4056&amp;itemtypeName=EWO_A#svg-pagesize"></use></svg></span></span><span class="aras-toolbar__textbox " data-id="pagination_max_results"><span class="aras-input-icon-wrapper"><input class="aras-input" type="text" autocomplete="off" title="Maximum Results" value="2000" style="width: 6.667rem;"><svg class="aras-input-icon"><use xlink:href="http://ecm.sgmw.com.cn/innovatorserver/Client/X-salt=160_12.0.0.13341-X/scripts/itemsGrid.html?itemtypeID=FC4635EBAC8F4EB19F83DD88B40A4056&amp;itemtypeName=EWO_A#svg-maxresults"></use></svg></span></span><div class="aras-toolbar__divider"></div></div></aras-pagination>
+			</div>
+			<div id="formpreview_splitter" style="display: none;" class="aras-splitter aras-splitter_horizontal"><div class="aras-splitter-ghost"></div></div>
+			<div id="formpreview_container" style="height: 0; display: none;">
+				<iframe frameborder="0" src="./saved_resource(3).html"></iframe>
+			</div>
+		</div>
+	</div>
+	<iframe id="dimmer_spinner" src="./Spinner(2).html" class="aras-hide"></iframe>
+
+
+<svg id="svg-symbols" style="display:none"><def><filter id="GrayFilter"><fecolormatrix type="saturate" values="0"></fecolormatrix></filter></def><head></head><body><svg><symbol id="svg-claimon" viewBox="0 0 48 48"><path d="m24 6c-6 0-10 4-10 8s0 6 0 6h4v-6c0-1.6 2.1-4 6-4s6 2.4 6 4v6h4s0-2 0-6-4-8-10-8z" fill="#ffa726" xmlns="http://www.w3.org/2000/svg"></path><path d="m24 38v-2h14v-4h-14v-2h14v-4h-14v-2h14v-2c0-1.1-.9-2-2-2h-24c-1.1 0-2 .9-2 2v18c0 1.1.9 2 2 2h24c1.1 0 2-.9 2-2v-2z" fill="#ffcc80" xmlns="http://www.w3.org/2000/svg"></path><g fill="#ffa726" xmlns="http://www.w3.org/2000/svg"><path d="m24 26 4 4h10v-4z"></path><path d="m24 32 4 4h10v-4z"></path><path d="m24 38 4 4h8c1.1 0 2-.9 2-2v-2z"></path></g></symbol><symbol id="svg-claimother" viewBox="0 0 48 48"><path d="m24 6c-6 0-10 4-10 8s0 6 0 6h4v-6c0-1.6 2.1-4 6-4s6 2.4 6 4v6h4s0-2 0-6-4-8-10-8z" fill="#d32f2f" xmlns="http://www.w3.org/2000/svg"></path><path d="m24 38v-2h14v-4h-14v-2h14v-4h-14v-2h14v-2c0-1.1-.9-2-2-2h-24c-1.1 0-2 .9-2 2v18c0 1.1.9 2 2 2h24c1.1 0 2-.9 2-2v-2z" fill="#ef5350" xmlns="http://www.w3.org/2000/svg"></path><g fill="#d32f2f" xmlns="http://www.w3.org/2000/svg"><path d="m24 26 4 4h10v-4z"></path><path d="m24 32 4 4h10v-4z"></path><path d="m24 38 4 4h8c1.1 0 2-.9 2-2v-2z"></path></g></symbol><symbol id="svg-claimanyone" viewBox="0 0 48 48"><path d="m30 12c-5 0-8 4-8 8s0 4 0 4h4v-4c0-1.6 1-4 4-4s4 2.4 4 4v4h4s0 0 0-4-3-8-8-8z" fill="#00796b" xmlns="http://www.w3.org/2000/svg"></path><path d="m30 38v-2h12v-2h-12v-2h12v-2h-12v-2h12v-2c0-1.1-.9-2-2-2h-20c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h20c1.1 0 2-.9 2-2v-2z" fill="#26a69a" xmlns="http://www.w3.org/2000/svg"></path><g fill="#00796b" xmlns="http://www.w3.org/2000/svg"><path d="m30 30 2 2h10v-2z"></path><path d="m30 34 2 2h10v-2z"></path><path d="m30 38 4 4h6c1.1 0 2-.9 2-2v-2z"></path></g><path d="m16 26c0-2.2 1.8-4 4-4v-2c0-.7.1-1.3.2-2h-12.2c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8z" fill="#ef5350" xmlns="http://www.w3.org/2000/svg"></path><path d="m22 14c.9-1.2 2-2.2 3.5-2.9-1.1-2.9-3.8-5.1-7.5-5.1-5 0-8 4-8 8s0 4 0 4h4v-4c0-1.6 1-4 4-4s4 2.4 4 4z" fill="#d32f2f" xmlns="http://www.w3.org/2000/svg"></path></symbol><symbol id="svg-claimcolumn" viewBox="0 0 48 48"><g fill="#777" xmlns="http://www.w3.org/2000/svg"><path d="m6 6h2v36h-2z"></path><path d="m42 6h-32v24h32l-6-12z"></path></g></symbol><symbol id="svg-lockedandmodified" viewBox="0 0 48 48"><path d="m24 6c-6 0-10 4-10 8s0 6 0 6h4v-6c0-1.6 2.1-4 6-4s6 2.4 6 4v6h4s0-2 0-6-4-8-10-8z" fill="#ffa726" xmlns="http://www.w3.org/2000/svg"></path><path d="m24 38v-2h14v-4h-14v-2h14v-4h-14v-2h14v-2c0-1.1-.9-2-2-2h-24c-1.1 0-2 .9-2 2v18c0 1.1.9 2 2 2h24c1.1 0 2-.9 2-2v-2z" fill="#ffcc80" xmlns="http://www.w3.org/2000/svg"></path><g fill="#ffa726" xmlns="http://www.w3.org/2000/svg"><path d="m24 26 4 4h10v-4z"></path><path d="m24 32 4 4h10v-4z"></path><path d="m24 38 4 4h8c1.1 0 2-.9 2-2v-2z"></path></g></symbol><symbol id="svg-lockitem" viewBox="0 0 48 48"><path d="m24 6c-6 0-10 4-10 8s0 6 0 6h4v-6c0-1.6 2.1-4 6-4s6 2.4 6 4v6h4s0-2 0-6-4-8-10-8z" fill="#e65100" xmlns="http://www.w3.org/2000/svg"></path><path d="m24 38v-2h14v-4h-14v-2h14v-4h-14v-2h14v-2c0-1.1-.9-2-2-2h-24c-1.1 0-2 .9-2 2v18c0 1.1.9 2 2 2h24c1.1 0 2-.9 2-2v-2z" fill="#f57c00" xmlns="http://www.w3.org/2000/svg"></path><g fill="#e65100" xmlns="http://www.w3.org/2000/svg"><path d="m24 26 4 4h10v-4z"></path><path d="m24 32 4 4h10v-4z"></path><path d="m24 38 4 4h8c1.1 0 2-.9 2-2v-2z"></path></g></symbol><symbol id="svg-fileproperty" viewBox="0 0 22 22"><path d="m2 0h18c1.1 0 2 .9 2 2v18c0 1.1-.9 2-2 2h-18c-1.1 0-2-.9-2-2v-18c0-1.1.9-2 2-2z" fill="#aaa" xmlns="http://www.w3.org/2000/svg"></path><path d="m20 21h-18c-.6 0-1-.4-1-1v-18c0-.6.4-1 1-1h18c.6 0 1 .4 1 1v18c0 .6-.4 1-1 1z" fill="#f7f7f7" xmlns="http://www.w3.org/2000/svg"></path><path d="m15 18h-8c-1.1 0-2-.9-2-2v-10c0-1.1.9-2 2-2h6l4 4v8c0 1.1-.9 2-2 2z" fill="#555" xmlns="http://www.w3.org/2000/svg"></path><g fill="#fff" xmlns="http://www.w3.org/2000/svg"><path d="m14 9c-1.1 0-2-.9-2-2v-2h-5c-.6 0-1 .4-1 1v10c0 .6.4 1 1 1h8c.6 0 1-.4 1-1v-7z"></path><path d="m14 8h1.6l-2.6-2.6v1.6c0 .6.4 1 1 1z"></path></g></symbol><symbol id="svg-claimedbyme" viewBox="0 0 48 48"><g fill="#26a69a" xmlns="http://www.w3.org/2000/svg"><circle cx="26" cy="9" r="5"></circle><path d="m34 15h-1-1-3l-3 4-3-4h-3.6l-1.4-10-4-1 2 15h3.6l3.4 25h6l1.9-13.4 3.1-1.6z"></path></g></symbol><symbol id="svg-claimedbyothers" viewBox="0 0 48 48"><g fill="#ef5350" xmlns="http://www.w3.org/2000/svg"><circle cx="26" cy="9" r="5"></circle><path d="m34 15h-1-1-3l-3 4-3-4h-3.6l-1.4-10-4-1 2 15h3.6l3.4 25h6l1.9-13.4 3.1-1.6z"></path></g></symbol><symbol id="svg-claimedbyanyone" viewBox="0 0 48 48"><circle cx="32" cy="9" fill="#26a69a" r="5" xmlns="http://www.w3.org/2000/svg"></circle><path d="m40 15h-1-1-3l-3 4-3-4h-3.6l-1.4-10-4-1 2 15h3.6l3.4 25h6l1.9-13.4 3.1-1.6z" fill="#26a69a" xmlns="http://www.w3.org/2000/svg"></path><g fill="#ef5350" xmlns="http://www.w3.org/2000/svg"><path d="m18 4.4c-1.8.8-3 2.5-3 4.6 0 2.5 1.9 4.6 4.3 4.9z"></path><path d="m23.9 21h-1.9-1.8l-.2-1.7v-.3l-3-4h-3.6l-1.4-10-4-1 2 15h3.6l3.4 25h6l1.9-13.4.2-.1z"></path></g></symbol><symbol id="svg-filepropertyunsaved" viewBox="0 0 22 22"><path d="m2 0h18c1.1 0 2 .9 2 2v18c0 1.1-.9 2-2 2h-18c-1.1 0-2-.9-2-2v-18c0-1.1.9-2 2-2z" fill="#aaa" xmlns="http://www.w3.org/2000/svg"></path><path d="m20 21h-18c-.6 0-1-.4-1-1v-18c0-.6.4-1 1-1h18c.6 0 1 .4 1 1v18c0 .6-.4 1-1 1z" fill="#f7f7f7" xmlns="http://www.w3.org/2000/svg"></path><path d="m15 18h-8c-1.1 0-2-.9-2-2v-10c0-1.1.9-2 2-2h6l4 4v8c0 1.1-.9 2-2 2z" fill="#f57c00" xmlns="http://www.w3.org/2000/svg"></path><g fill="#ffcc80" xmlns="http://www.w3.org/2000/svg"><path d="m14 9c-1.1 0-2-.9-2-2v-2h-5c-.6 0-1 .4-1 1v10c0 .6.4 1 1 1h8c.6 0 1-.4 1-1v-7z"></path><path d="m14 8h1.6l-2.6-2.6v1.6c0 .6.4 1 1 1z"></path></g></symbol><symbol id="svg-more" viewBox="0 0 48 48"><g fill="#303f9f" xmlns="http://www.w3.org/2000/svg"><circle cx="24" cy="24" r="5"></circle><circle cx="9" cy="24" r="5"></circle><circle cx="39" cy="24" r="5"></circle></g></symbol><symbol id="svg-pagesize" viewBox="0 0 48 48"><g fill="#777" xmlns="http://www.w3.org/2000/svg"><path d="m21 6v36h21v-36zm18 33h-15v-30h15z"></path><path d="m13.5 36.5v-25l2.5 2.5 2-2-6-6-6 6 2 2 2.5-2.5v25l-2.5-2.5-2 2 6 6 6-6-2-2z"></path></g></symbol><symbol id="svg-maxresults" viewBox="0 0 48 48"><g fill="#777" xmlns="http://www.w3.org/2000/svg"><path d="m22 36h4v4h-4z"></path><path d="m33 19-7 7v-18h-4v18l-7-7-3 3 12 12 12-12z"></path><path d="m16 36h4v4h-4z"></path><path d="m10 36h4v4h-4z"></path><path d="m4 36h4v4h-4z"></path><path d="m40 36h4v4h-4z"></path><path d="m34 36h4v4h-4z"></path><path d="m28 36h4v4h-4z"></path></g></symbol><symbol id="svg-inputcalendar" viewBox="0 0 48 48"><g fill="#1a237e" xmlns="http://www.w3.org/2000/svg"><path d="m9.6 9.6v28.8h28.8v-28.8zm26.4 26.4h-24v-16.8h24z"></path><path d="m14.4 28.8h4.8v4.8h-4.8z"></path><path d="m21.6 28.8h4.8v4.8h-4.8z"></path><path d="m28.8 28.8h4.8v4.8h-4.8z"></path><path d="m14.4 21.6h4.8v4.8h-4.8z"></path><path d="m21.6 21.6h4.8v4.8h-4.8z"></path><path d="m28.8 21.6h4.8v4.8h-4.8z"></path></g></symbol><symbol id="svg-edit" viewBox="0 0 48 48"><path d="m6 42v-8l2-2 8 8-2 2z" fill="#424242" xmlns="http://www.w3.org/2000/svg"></path><path d="m32 8 4-4 8 8-4 4z" fill="#ef5350" xmlns="http://www.w3.org/2000/svg"></path><path d="m10 29.9 20-20 8 8-20 20z" fill="#f57c00" xmlns="http://www.w3.org/2000/svg"></path></symbol></svg></body><head></head><body><svg><symbol id="svg-scribblemedium" viewBox="0 0 48 48"><path d="m32 24a8 8 0 1 1 -8-8 8 8 0 0 1 8 8z" fill="#555" xmlns="http://www.w3.org/2000/svg"></path></symbol><symbol id="svg-favoriteoff" viewBox="0 0 48 48"><path d="m24 8.5 4.1 8.3.5.9 1 .2 9.1 1.3-6.6 6.4-.8.7.2 1 1.6 9.1-8.2-4.3-.9-.4-.9.5-8.2 4.3 1.6-9.1.2-1-.8-.7-6.6-6.4 9.1-1.3 1-.2.5-.9zm0-4.5-5.9 11.9-13.1 1.9 9.5 9.3-2.2 13.1 11.7-6.2 11.8 6.2-2.2-13.1 9.5-9.3-13.1-1.9z" fill="#777" xmlns="http://www.w3.org/2000/svg"></path></symbol></svg></body><head></head><body><svg><symbol id="svg-createitem" viewBox="0 0 48 48"><path d="m39 11.9-12-6.9c-.9-.5-2-.8-3-.8s-2.1.2-3 .8l-12 6.9c-1.8 1-3 3-3 5.2v13.8c0 2.2 1.2 4.2 3 5.2l12 6.9c.9.5 2 .8 3 .8s2.1-.2 3-.8l12-6.9c1.8-1 3-3 3-5.2v-13.8c0-2.2-1.2-4.2-3-5.2zm-3 14.1h-10v10h-4v-10h-10v-4h10v-10h4v10h10z" fill="#388e3c" xmlns="http://www.w3.org/2000/svg"></path></symbol><symbol id="svg-searchwhite" viewBox="0 0 48 48"><g fill="#fff" xmlns="http://www.w3.org/2000/svg"><path d="m21 6c-8.3 0-15 6.7-15 15s6.7 15 15 15 15-6.7 15-15-6.7-15-15-15zm0 25c-5.5 0-10-4.5-10-10s4.5-10 10-10 10 4.5 10 10-4.5 10-10 10z"></path><path d="m28.5 33.5 5-5 8.5 8.5-5 5z"></path></g></symbol><symbol id="svg-stopsearchwhite" viewBox="0 0 48 48"><path d="m24 4c-11 0-20 9-20 20s9 20 20 20 20-9 20-20-9-20-20-20zm0 6c2.8 0 5.4.8 7.5 2.2l-19.3 19.3c-1.4-2.1-2.2-4.7-2.2-7.5 0-7.7 6.3-14 14-14zm0 28c-2.8 0-5.4-.8-7.5-2.2l19.3-19.3c1.4 2.2 2.2 4.8 2.2 7.5 0 7.7-6.3 14-14 14z" fill="#fff" xmlns="http://www.w3.org/2000/svg"></path></symbol><symbol id="svg-clearsearchcriteriawhite" viewBox="0 0 48 48"><path d="m40 12h-21.2c-2.1 0-4.2.8-5.7 2.3l-9.6 9.7 9.7 9.7c1.5 1.5 3.6 2.3 5.7 2.3h21.1c2.2 0 4-1.8 4-4v-16c0-2.2-1.8-4-4-4zm-3.5 17.7-2.8 2.8-5.7-5.7-5.7 5.7-2.8-2.8 5.7-5.7-5.7-5.7 2.8-2.8 5.7 5.7 5.7-5.7 2.8 2.8-5.7 5.7z" fill="#fff" xmlns="http://www.w3.org/2000/svg"></path></symbol><symbol id="svg-deleteitem" viewBox="0 0 48 48"><path d="m30 34-6-6-6 6-4-4 6-6-6-6 4-4 6 6 6-6 4 4-6 6 6 6zm9-22.1-12-6.9c-.9-.5-2-.8-3-.8s-2.1.2-3 .8l-12 6.9c-1.8 1-3 3-3 5.2v13.8c0 2.2 1.2 4.2 3 5.2l12 6.9c.9.5 2 .8 3 .8s2.1-.2 3-.8l12-6.9c1.8-1 3-3 3-5.2v-13.8c0-2.2-1.2-4.2-3-5.2z" fill="#d32f2f" xmlns="http://www.w3.org/2000/svg"></path></symbol><symbol id="svg-addsearchcriteria" viewBox="0 0 48 48"><g fill="#455a64" xmlns="http://www.w3.org/2000/svg"><path d="m34 26h-8v8h-4v-8h-8v-4h8v-8h4v8h8z"></path><path d="m24 8c8.8 0 16 7.2 16 16s-7.2 16-16 16-16-7.2-16-16 7.2-16 16-16m0-4c-11 0-20 9-20 20s9 20 20 20 20-9 20-20-9-20-20-20z"></path></g></symbol><symbol id="svg-columnselection" viewBox="0 0 48 48"><circle cx="24" cy="24" fill="#303f9f" r="8" xmlns="http://www.w3.org/2000/svg"></circle><g fill="#455a64" xmlns="http://www.w3.org/2000/svg"><path d="m27 10h7c2.2 0 4 1.8 4 4v7h4v-7c0-4.4-3.6-8-8-8h-7z"></path><path d="m10 21v-7c0-2.2 1.8-4 4-4h7v-4h-7c-4.4 0-8 3.6-8 8v7z"></path><path d="m21 38h-7c-2.2 0-4-1.8-4-4v-7h-4v7c0 4.4 3.6 8 8 8h7z"></path><path d="m38 27v7c0 2.2-1.8 4-4 4h-7v4h7c4.4 0 8-3.6 8-8v-7z"></path></g></symbol><symbol id="svg-displayoptions" viewBox="0 0 48 48"><path d="m42 34v-28h-36v28h14v4h-8v4h24v-4h-8v-4zm-34-26h32v24h-32z" fill="#455a64" xmlns="http://www.w3.org/2000/svg"></path><path d="m10 10h8v20h-8z" fill="#303f9f" xmlns="http://www.w3.org/2000/svg"></path><path d="m20 10h18v10h-18z" fill="#5c6bc0" xmlns="http://www.w3.org/2000/svg"></path><path d="m30 22h8v8h-8z" fill="#78909c" xmlns="http://www.w3.org/2000/svg"></path><path d="m20 22h8v8h-8z" fill="#5c6bc0" xmlns="http://www.w3.org/2000/svg"></path></symbol><symbol id="svg-share" viewBox="0 0 48 48"><path d="m30.5 37.9-19.5-10.9 22.5-13.9 1 1.8-19.5 12.1 16.5 9.1z" fill="#5c6bc0" xmlns="http://www.w3.org/2000/svg"></path><g fill="#303f9f" xmlns="http://www.w3.org/2000/svg"><circle cx="34" cy="14" r="8"></circle><circle cx="13" cy="27" r="7"></circle><circle cx="31" cy="37" r="5"></circle></g></symbol><symbol id="svg-refresh" viewBox="0 0 48 48"><g fill="#455a64" xmlns="http://www.w3.org/2000/svg"><path d="m24 8c-8.8 0-16 7.2-16 16h-4l6.5 8.5 6.5-8.5h-4c0-6.1 4.9-11 11-11 2 0 3.9.5 5.5 1.5l3.1-4c-2.5-1.6-5.5-2.5-8.6-2.5z"></path><path d="m37.5 15.5-6.5 8.5h4c0 6.1-4.9 11-11 11-2 0-3.9-.5-5.5-1.5l-3.1 4c2.5 1.6 5.4 2.5 8.5 2.5 8.8 0 16-7.2 16-16h4z"></path></g></symbol></svg></body></svg><iframe src="javascript:&#39;&lt;html&gt;&lt;head&gt;&lt;script&gt;if(&quot;loadFirebugConsole&quot; in window){window.loadFirebugConsole();}&lt;/script&gt;&lt;/head&gt;&lt;body&gt;&lt;/body&gt;&lt;/html&gt;&#39;" style="position: absolute; width: 5em; height: 10em; top: -10000px; display: none;" src="./saved_resource(4).html"></iframe><div class="aras-contextMenu" tabindex="-1"></div><div class="aras-contextMenu" tabindex="-1"></div></body></html>

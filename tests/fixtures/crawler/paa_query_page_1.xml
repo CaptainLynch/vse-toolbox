@@ -1,0 +1,86 @@
+<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/">
+  <SOAP-ENV:Body>
+    <Result>
+      <Item type="PAA_O" typeId="TYPE_ID_PLACEHOLDER" id="ID_PLACEHOLDER_001" page="1">
+        <_affect_certificate>0</_affect_certificate>
+        <_affect_vehicle_photo>0</_affect_vehicle_photo>
+        <_area>AREA_SAMPLE</_area>
+        <_auth_type>1</_auth_type>
+        <_base>BASE_SAMPLE</_base>
+        <_change_description>sample change description</_change_description>
+        <_charge_to>N/A</_charge_to>
+        <_days>90</_days>
+        <_days_or_qty>0</_days_or_qty>
+        <_effect_consistency>0</_effect_consistency>
+        <_emis_related>0</_emis_related>
+        <_est_cmpl_date is_null="1" />
+        <_est_cost>N/A</_est_cost>
+        <_ewo_no>EWO000001</_ewo_no>
+        <_exted_reason is_null="1" />
+        <_gacsn is_null="1" />
+        <_idle_days>2</_idle_days>
+        <_issue_date is_null="1" />
+        <_key_part>1</_key_part>
+        <_license_tag>0</_license_tag>
+        <_mass_impact>0</_mass_impact>
+        <_model_year>2026</_model_year>
+        <_mtl_rq_date>2026-06-30T00:00:00</_mtl_rq_date>
+        <_pe_tdc keyed_name="USER_SAMPLE" type="User">USER_ID_PLACEHOLDER</_pe_tdc>
+        <_pe_tdc_department>DEPARTMENT_SAMPLE</_pe_tdc_department>
+        <_pe_tdc_name>USER_SAMPLE</_pe_tdc_name>
+        <_pe_tdc_phone>PHONE_PLACEHOLDER</_pe_tdc_phone>
+        <_pe_tdc_smt>SMT_SAMPLE</_pe_tdc_smt>
+        <_pp_comments is_null="1" />
+        <_project_type>1</_project_type>
+        <_quantity is_null="1" />
+        <_reason>sample reason</_reason>
+        <_requester_department>DEPARTMENT_SAMPLE</_requester_department>
+        <_requester_phone>PHONE_PLACEHOLDER</_requester_phone>
+        <_requester_smt>SMT_SAMPLE</_requester_smt>
+        <_resp_unit>N/A</_resp_unit>
+        <_rework_place>N/A</_rework_place>
+        <_spcl_instr>sample special instruction</_spcl_instr>
+        <_stakeholder_buy_in>N/A</_stakeholder_buy_in>
+        <_stock_disp>3</_stock_disp>
+        <_submit_date>2026-06-19T10:36:05</_submit_date>
+        <_support_ewo_concession>1</_support_ewo_concession>
+        <_validation_statement>sample validation statement</_validation_statement>
+        <_vehicles>VEHICLE_SAMPLE</_vehicles>
+        <created_by_id keyed_name="USER_SAMPLE" type="User">USER_ID_PLACEHOLDER</created_by_id>
+        <created_on>2026-06-19T10:17:55</created_on>
+        <css is_null="1" />
+        <current_state name="DRAFT1" keyed_name="DRAFT1" type="Life Cycle State">STATE_ID_PLACEHOLDER</current_state>
+        <effective_date is_null="1" />
+        <generation>1</generation>
+        <id keyed_name="PAA000001" type="PAA_O">ID_PLACEHOLDER_001</id>
+        <is_current>1</is_current>
+        <keyed_name>PAA000001</keyed_name>
+        <locked_by_id is_null="1" />
+        <major_rev>A</major_rev>
+        <modified_by_id keyed_name="USER_SAMPLE" type="User">USER_ID_PLACEHOLDER</modified_by_id>
+        <modified_on>2026-06-19T10:36:07</modified_on>
+        <new_version>1</new_version>
+        <release_date is_null="1" />
+        <state>DRAFT1</state>
+        <_no>PAA000001</_no>
+      </Item>
+      <Item type="PAA_O" typeId="TYPE_ID_PLACEHOLDER" id="ID_PLACEHOLDER_002" page="1">
+        <_area>AREA_SAMPLE_2</_area>
+        <_base>BASE_SAMPLE_2</_base>
+        <_change_description>N/A</_change_description>
+        <_ewo_no>EWO000002</_ewo_no>
+        <_mtl_rq_date>2026-07-01T00:00:00</_mtl_rq_date>
+        <_reason>sample reason 2</_reason>
+        <_submit_date>2026-06-20T10:36:05</_submit_date>
+        <_vehicles>VEHICLE_SAMPLE_2</_vehicles>
+        <created_on>2026-06-20T10:17:55</created_on>
+        <current_state name="DRAFT1" keyed_name="DRAFT1" type="Life Cycle State">STATE_ID_PLACEHOLDER</current_state>
+        <id keyed_name="PAA000002" type="PAA_O">ID_PLACEHOLDER_002</id>
+        <keyed_name>PAA000002</keyed_name>
+        <modified_on>2026-06-20T10:36:07</modified_on>
+        <state>DRAFT1</state>
+        <_no>PAA000002</_no>
+      </Item>
+    </Result>
+  </SOAP-ENV:Body>
+</SOAP-ENV:Envelope>

@@ -1,0 +1,127 @@
+{
+  "ewo": {
+    "endpoint": "/api/aras/ewo/query",
+    "exportEndpoint": "/api/aras/ewo/export",
+    "exportNumberNames": [
+      "max_records",
+      "max_pages"
+    ],
+    "exportLabel": "全量导出 CSV",
+    "defaultFileName": "aras-ewo-export.csv",
+    "submitLabel": "查询预览",
+    "fieldGroup": "ewo",
+    "filterNames": [
+      "ewo_no",
+      "project_code",
+      "subject_keyword",
+      "change_type",
+      "change_sub_type",
+      "area",
+      "state",
+      "rsp_department",
+      "submit_start",
+      "submit_end"
+    ],
+    "numberNames": [
+      "page",
+      "page_size",
+      "max_records"
+    ],
+    "preferredColumns": [
+      "_no",
+      "_eplmwriteneplcode",
+      "_subject",
+      "_area",
+      "_sort_type",
+      "_rsp_department",
+      "_submit_time",
+      "state"
+    ],
+    "resultKind": "rows",
+    "xmlCapture": true
+  },
+  "paa": {
+    "endpoint": "/api/aras/paa/query",
+    "crawlAllEndpoint": "/api/aras/paa/crawl-all",
+    "exportEndpoint": "/api/aras/paa/export",
+    "exportNumberNames": [
+      "max_records",
+      "max_pages"
+    ],
+    "exportLabel": "全量导出 CSV",
+    "crawlAllLabel": "获取全部结果",
+    "defaultFileName": "aras-paa-export.csv",
+    "submitLabel": "查询预览",
+    "fieldGroup": "paa",
+    "filterNames": [
+      "paa_no",
+      "ewo_no",
+      "state",
+      "area",
+      "base",
+      "department",
+      "vehicle_keyword",
+      "submit_start",
+      "submit_end",
+      "mtl_rq_start",
+      "mtl_rq_end"
+    ],
+    "numberNames": [
+      "page",
+      "page_size",
+      "max_records",
+      "max_pages"
+    ],
+    "preferredColumns": [],
+    "resultKind": "rows",
+    "xmlCapture": true
+  },
+  "ncr-progress": {
+    "endpoint": "/api/aras/ncr/progress",
+    "downloadEndpoint": "/api/aras/ncr/progress/download",
+    "exportLabel": "生成并下载",
+    "defaultFileName": "aras-ncr-progress.xlsx",
+    "submitLabel": "执行查询",
+    "fieldGroup": "ncr",
+    "filterNames": [
+      "buy_start",
+      "buy_end",
+      "pe_start",
+      "pe_end",
+      "ncr_no",
+      "project_names",
+      "department",
+      "section_code",
+      "change_type",
+      "othercondition"
+    ],
+    "numberNames": [],
+    "preferredColumns": [],
+    "resultKind": "rows",
+    "preview": true
+  },
+  "ncr-detail": {
+    "endpoint": "/api/aras/ncr/detail",
+    "downloadEndpoint": "/api/aras/ncr/detail/download",
+    "exportLabel": "生成并下载",
+    "defaultFileName": "aras-ncr-detail.xlsx",
+    "submitLabel": "执行查询",
+    "fieldGroup": "ncr",
+    "filterNames": [
+      "buy_start",
+      "buy_end",
+      "pe_start",
+      "pe_end",
+      "ncr_no",
+      "project_names",
+      "department",
+      "section_code",
+      "change_type",
+      "othercondition"
+    ],
+    "numberNames": [],
+    "preferredColumns": [],
+    "resultKind": "rows",
+    "preview": true
+  }
+}
