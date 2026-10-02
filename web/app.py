@@ -19,6 +19,8 @@ import re
 import shutil
 import sys
 import tempfile
+import threading
+import time
 from dataclasses import asdict
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -62,12 +64,14 @@ from core.project_status_contracts import (
     project_status_manual_editability,
 )
 from core.report_contracts import matrix_payload, report_contracts, table_payload
+from core.diagnostic_recording import emit
 from core.runtime_paths import app_root
 from core.settings_store import SettingsStore, SettingsValidationError, validate_local_directory
 from core.section_rollup import (
     SectionRollupError,
     SectionRollupStore,
     build_rollup_index,
+    rollup_targets_in_order,
 )
 from core.db_manager import (
     ArchiveJobNotReadyError,
@@ -139,25 +143,160 @@ from services.aras_crawler import (
     ArasAuthenticationError,
     ArasCrawlerClient,
     ArasCrawlerError,
+    ArasNcrExportContractError,
     EWOReportFilters,
     NCRApprovalFilters,
     PAAReportFilters,
 )
 from services.aras_auth import ArasAuthError, ArasECMAuthClient, DEFAULT_ARAS_BASE_URL
-from services.aras_department_mapping import normalize_departments, resolve_ncr_section_codes
+from services.aras_department_mapping import (
+    NCR_SECTION_CODES,
+    normalize_departments,
+    parse_ncr_section_codes_input,
+    resolve_ncr_section_codes,
+)
 from services.aras_export import export_report_contract_csv
 from services.tdc_auth import TDCAuthError, TDCPasswordAuthClient
 from services.tdc_crawler import (
     AFACE_CONTRACT_BLOCKER,
+    CrawlCancelled,
     TDCCrawlerClient,
     TDCCrawlerError,
     TDCDataModelFilters,
     TDCSORFilters,
+    flatten_sor_rows,
+    flatten_sor_value,
 )
 from services.tdc_export_cache import TDCExportCache
 from services.windows_http import WinHTTPError, WinHTTPTimeoutError
 
 logger = logging.getLogger("vse_toolbox.web")
+
+# 映射取证的取消登记：前端 abort 之后服务端必须真的停下来，否则"可取消"只是表面
+# 文章（顾问 2026-09-28 提醒），而且重复点击会叠加多个后台全量抓取。
+# TDC 的分页抓取支持协作式停止（should_stop 在每个分页边界被探测）；
+# Aras 的整本工作簿导出是**单次** SOAP 调用，没有取消钩子，登记对它只是尽力而为。
+_DISCOVERY_CANCEL_TOKENS: dict[str, threading.Event] = {}
+_DISCOVERY_CANCEL_LOCK = threading.Lock()
+_DISCOVERY_CANCEL_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_DISCOVERY_CANCEL_MAX_TOKENS = 64
+
+
+def _register_discovery_cancel(token: Any) -> tuple[str | None, threading.Event | None]:
+    """登记本次取证的取消令牌；非法/缺省令牌返回 (None, None)（不取消，行为不变）。"""
+    if not isinstance(token, str) or not _DISCOVERY_CANCEL_TOKEN_RE.match(token):
+        return None, None
+    event = threading.Event()
+    with _DISCOVERY_CANCEL_LOCK:
+        _DISCOVERY_CANCEL_TOKENS[token] = event
+        while len(_DISCOVERY_CANCEL_TOKENS) > _DISCOVERY_CANCEL_MAX_TOKENS:
+            _DISCOVERY_CANCEL_TOKENS.pop(next(iter(_DISCOVERY_CANCEL_TOKENS)))
+    return token, event
+
+
+def _release_discovery_cancel(token: str | None, event: threading.Event | None) -> None:
+    if token is None or event is None:
+        return
+    with _DISCOVERY_CANCEL_LOCK:
+        if _DISCOVERY_CANCEL_TOKENS.get(token) is event:
+            _DISCOVERY_CANCEL_TOKENS.pop(token, None)
+
+
+# F9a: 向导会话内映射取证去重与复用。
+# 作用域限定在单一向导会话（wizardSessionId）与相同的上游查询参数组合，TTL 180s，最多 32 个。
+# 仅用于向导内部候选重选、指定部门重试等中间交互，sync-now 绝不复用此缓存。
+# 缓存连带保存首次抓取时的上游声明总数：候选重选等缓存命中路径再次落观测时，
+# 必须沿用同源声明总数（F10 稳定性基线），不能用去重后行数充当——否则上游存在
+# 重复行时，采样端的声明总数会与基线假性失配。
+_DISCOVERY_SESSION_CACHE: dict[str, tuple[float, list[dict[str, Any]], int | None]] = {}
+_DISCOVERY_SESSION_LOCK = threading.Lock()
+_DISCOVERY_SESSION_TTL_SECONDS = 180.0
+_DISCOVERY_SESSION_MAX_ENTRIES = 32
+_WIZARD_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+# G5（2026-09-30）映射取证后台化：同一交付物同一时刻只允许一个在途取证任务。
+# 重复提交（相同参数哈希）返回原任务（向导重开后经 statusUrl 重新挂接）；
+# 参数不同的在途任务期间再提交返回 409，避免新旧取证结果互相污染
+# （与 C1 的「过期请求」问题同构，绑定的是查询身份而非请求时序）。
+_MAPPING_DISCOVERY_TASKS: dict[str, dict[str, Any]] = {}
+_MAPPING_DISCOVERY_TASKS_LOCK = threading.Lock()
+_MAPPING_DISCOVERY_TERMINAL_STATUSES = {"succeeded", "failed", "cancelled", "interrupted"}
+
+
+def _mapping_discovery_params_hash(
+    match_rule: Mapping[str, Any], values: Mapping[str, Any], selected: str | None
+) -> str:
+    """把取证的查询身份（匹配规则+过滤值+选中候选）压成 16 位哈希。
+
+    该哈希随 202 响应下发并写入任务结果：前端应用结果前先比对，向导参数
+    变化后旧任务结果不得应用（G5 参数哈希绑定）。
+    """
+    identity = {"match_rule": match_rule, "values": values, "selected": selected}
+    canonical = json.dumps(identity, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+
+def _mapping_discovery_accepted_response(task_id: str, status: str, params_hash: str):
+    """映射取证后台任务的 202 Accepted 契约响应（与 _submit_background_task 同形 + paramsHash）。"""
+    response = jsonify(
+        {
+            "ok": True,
+            "data": {
+                "taskId": task_id,
+                "status": status,
+                "category": "crawl",
+                "statusUrl": f"/api/tasks/{task_id}",
+                "resultUrl": f"/api/tasks/{task_id}/result",
+                "paramsHash": params_hash,
+            },
+        }
+    )
+    response.status_code = 202
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def _get_discovery_session_cache(key: str) -> list[dict[str, Any]] | None:
+    now = time.monotonic()
+    with _DISCOVERY_SESSION_LOCK:
+        entry = _DISCOVERY_SESSION_CACHE.get(key)
+        if entry is None:
+            return None
+        created_at, rows, _upstream_total = entry
+        if now - created_at > _DISCOVERY_SESSION_TTL_SECONDS:
+            _DISCOVERY_SESSION_CACHE.pop(key, None)
+            return None
+        return list(rows)
+
+
+def _get_discovery_session_cache_total(key: str) -> int | None:
+    with _DISCOVERY_SESSION_LOCK:
+        entry = _DISCOVERY_SESSION_CACHE.get(key)
+        if entry is None:
+            return None
+        total = entry[2]
+    if isinstance(total, int) and not isinstance(total, bool) and total >= 0:
+        return total
+    return None
+
+
+def _set_discovery_session_cache(
+    key: str,
+    rows: Sequence[Mapping[str, Any]],
+    upstream_total: int | None = None,
+) -> None:
+    now = time.monotonic()
+    with _DISCOVERY_SESSION_LOCK:
+        expired = [
+            k for k, (t, _r, _n) in _DISCOVERY_SESSION_CACHE.items()
+            if now - t > _DISCOVERY_SESSION_TTL_SECONDS
+        ]
+        for k in expired:
+            _DISCOVERY_SESSION_CACHE.pop(k, None)
+        while len(_DISCOVERY_SESSION_CACHE) >= _DISCOVERY_SESSION_MAX_ENTRIES:
+            _DISCOVERY_SESSION_CACHE.pop(next(iter(_DISCOVERY_SESSION_CACHE)), None)
+        _DISCOVERY_SESSION_CACHE[key] = (now, [dict(r) for r in rows], upstream_total)
+
 
 _SENSITIVE_JSON_RE = re.compile(
     r"(?i)(['\"])(authorization|cookie|token|api_key|sid|sessionid|csrf|secret)\1(\s*:\s*)(['\"])(.*?)\4"
@@ -262,12 +401,12 @@ _DELIVERABLES_CATALOG = [
     },
     {
         "id": "aras-paa",
-        "name": "PAA 报告",
+        "name": "PAA流程",
         "category": "aras",
         "source": "services/aras_crawler.py",
         "availability": "available",
         "implementation_status": "已完整实现",
-        "description": "在 Aras 工作区执行 PAA 报告分页查询、全量抓取与 CSV 导出。",
+        "description": "在 Aras 工作区执行 PAA流程分页查询、全量抓取与 CSV 导出。",
         "output_formats": ["JSON", "CSV"],
         "operations": ["query", "crawl_all", "export"],
         "fields": [],
@@ -544,66 +683,13 @@ def _safe_rows(rows: list[dict[str, Any]]) -> list[dict[str, str | None]]:
     return safe
 
 
-def _safe_tdc_sor_value(
-    value: Any,
-    *,
-    preferred_keys: tuple[str, ...] = (),
-) -> str | None:
-    """Flatten known TDC SOR objects without serializing raw JSON into cells."""
-    if value is None:
-        return None
-    if isinstance(value, Mapping):
-        fallback_keys = (
-            "projectNo",
-            "projectName",
-            "name",
-            "userName",
-            "keyed_name",
-            "label",
-            "code",
-            "value",
-        )
-        for key in (*preferred_keys, *fallback_keys):
-            if key not in value:
-                continue
-            candidate = _safe_tdc_sor_value(value[key], preferred_keys=preferred_keys)
-            if candidate:
-                return candidate
-        return None
-    if isinstance(value, (list, tuple)):
-        parts = [
-            part
-            for item in value
-            if (part := _safe_tdc_sor_value(item, preferred_keys=preferred_keys))
-        ]
-        return "、".join(parts) if parts else None
-    text = redact_sensitive_text(value).strip()
-    return text or None
-
-
 def _safe_tdc_sor_rows(rows: list[dict[str, Any]]) -> list[dict[str, str | None]]:
-    """Return SOR rows with production display fields and no nested raw values."""
-    safe: list[dict[str, str | None]] = []
-    for row in rows:
-        clean: dict[str, str | None] = {}
-        for key, value in row.items():
-            key_text = str(key)
-            if key_text.lower() in _SENSITIVE_RESPONSE_KEYS:
-                continue
-            if key_text == "carTypeProject":
-                clean[key_text] = _safe_tdc_sor_value(
-                    value,
-                    preferred_keys=("projectNo", "projectName"),
-                )
-            elif key_text == "currentAssigneeNameList":
-                clean[key_text] = _safe_tdc_sor_value(
-                    value,
-                    preferred_keys=("name", "userName", "keyed_name"),
-                )
-            else:
-                clean[key_text] = _safe_tdc_sor_value(value)
-        safe.append(clean)
-    return safe
+    """SOR 行扁平化（共享实现见 services.tdc_crawler.flatten_sor_rows）。"""
+    return flatten_sor_rows(rows)
+
+
+#: 单值扁平化别名（项目选项等展示场景沿用既有调用点）。
+_safe_tdc_sor_value = flatten_sor_value
 
 
 def _safe_scalar(value: Any) -> str:
@@ -1175,12 +1261,14 @@ _MAPPING_DISCOVERY_RULE_FIELDS: dict[tuple[str, str], dict[str, str]] = {
         "ncr_no": "ncrNo",
         "project_model": "projectModel",
         "department": "department",
+        "section_code": "sectionCode",
     },
     ("aras", "ncr_detail"): {
         "serial_number": "ncrNo",
         "ncr_no": "ncrNo",
         "project_model": "projectModel",
         "department": "department",
+        "section_code": "sectionCode",
     },
 }
 
@@ -1231,6 +1319,15 @@ def _mapping_discovery_query_identity(
         values[name] = clean
         if clean is not None:
             rule[rule_name] = clean
+    if source_type == "aras" and report_type in {"ncr_progress", "ncr_detail"}:
+        # NCR 科室代码：配置保存/探测与同步 collect 共用同一解析器（fail-closed，
+        # 非法输入 422 并列出合法代码；空 = 不限科室）。
+        raw_section = rule.get("sectionCode")
+        if raw_section:
+            try:
+                parse_ncr_section_codes_input(str(raw_section))
+            except ValueError as exc:
+                raise _ArasRequestError(str(exc)) from None
     if (
         source_type == "aras"
         and report_type == "ewo"
@@ -2027,6 +2124,11 @@ def _project_status_payload(
         for row in db.list_archive_jobs(include_archived=True)
     }
     deliverables = []
+    # NCR 向导的「科室」预设与看板归集口径同源：取科室归集规则的目标清单
+    # （默认五科室，用户可编辑），其他科室值由归集层计入「未归集」。
+    section_scope_presets = rollup_targets_in_order(
+        build_rollup_index(SectionRollupStore(db).get())
+    )
     policy_summaries = db.get_project_status_update_policy_summaries(phase_id)
     for row in deliverable_rows:
         actual_date = row["actual_date"]
@@ -2192,6 +2294,20 @@ def _project_status_payload(
                         capabilities.get("completenessPolicy") or "paged_result"
                     ),
                     "defaultDepartment": capabilities.get("defaultDepartment"),
+                    # NCR 官方导出接受的科室代码表（单一来源
+                    # services.aras_department_mapping.NCR_SECTION_CODES）；
+                    # 非 NCR 交付物为 null。
+                    "ncrSectionCodes": (
+                        list(NCR_SECTION_CODES)
+                        if capabilities.get("reportType") in {"ncr_progress", "ncr_detail"}
+                        else None
+                    ),
+                    # 科室预设（与归集规则同源，用户可编辑）；非 NCR 为 null。
+                    "sectionScopePresets": (
+                        list(section_scope_presets)
+                        if capabilities.get("reportType") in {"ncr_progress", "ncr_detail"}
+                        else None
+                    ),
                     "syncNote": capabilities.get("syncNote"),
                     "matchFields": [list(field) for field in capabilities.get("matchFields", ())],
                     "evidenceFields": [dict(field) for field in capabilities.get("evidenceFields", ())],
@@ -2653,6 +2769,20 @@ def _aras_error_response(
             diagnostic_path,
             code="service_unavailable",
         )
+    if isinstance(exc, ArasNcrExportContractError):
+        # 官方 NCR 导出方法返回 200 但没有文件引用：不是网关/网络问题，也不宜
+        # 归为通用 query_failed。消息带无泄漏结构签名；正文只经既有诊断管道落盘。
+        return _json_error(
+            502,
+            "ArasNcrExportContractError",
+            (
+                "官方 NCR 导出方法未返回文件引用（可能无匹配数据、导出参数不被接受"
+                f"或响应结构不符）；响应结构签名：{exc.signature}。诊断文件已生成，"
+                "若持续失败请回传该诊断文件（含脱敏的上游原始响应）以便进一步定位。"
+            ),
+            diagnostic_path,
+            code="ncr_export_no_file",
+        )
     if isinstance(exc, ArasCrawlerError):
         service_unavailable = bool(re.search(r"\bAras HTTP 5\d{2}\b", str(exc)))
         return _json_error(
@@ -2701,11 +2831,22 @@ def _tdc_error_response(exc: Exception, report_type: str, operation: str):
         return _json_error(400, "ValidationError", _sanitize_error_message(exc))
     if isinstance(exc, TDCCrawlerError):
         status = 400 if exc.stage == "contract-validation" else 502
+        diagnostic = exc.safe_diagnostic()
+        # 有界重试后仍失败的上游 5xx/429 是"暂时不可用"，不是配置错误：
+        # 主文案给出可重试语义并保留 request_id（现场与诊断关联的唯一抓手）；
+        # 上游路径等运维细节在下发的 diagnostic 与诊断录制里，不再塞进用户文案。
+        if diagnostic.get("retryable") is True:
+            message = (
+                f"TDC 暂时不可用（{diagnostic.get('upstreamHttpStatus')}），请稍后重试；"
+                f"request_id={diagnostic.get('requestId', '')}"
+            )
+        else:
+            message = f"{_sanitize_error_message(exc)}; {exc.safe_diagnostic_message()}"
         return _json_error(
             status,
             "TDCCrawlerError",
-            f"{_sanitize_error_message(exc)}; {exc.safe_diagnostic_message()}",
-            diagnostic=exc.safe_diagnostic(),
+            message,
+            diagnostic=diagnostic,
         )
     logger.warning("TDC %s %s API failed: %s", report_type, operation, type(exc).__name__)
     return _json_error(500, type(exc).__name__, "Unexpected server error")
@@ -2954,12 +3095,16 @@ def create_app(
     excel_clock: Callable[[], datetime] | None = None,
     project_status_clock: Callable[[], date] | None = None,
     archive_store: ArchiveStore | None = None,
+    plugin_dirs: Sequence[Path] | None = None,
+    plugin_only: Sequence[str] | None = None,
 ) -> Flask:
     """Flask 应用工厂。
 
     `allowed_hosts` 覆盖 Aras 路由的主机 allowlist（默认仅 ecm.sgmw.com.cn）；
     `tdc_allowed_hosts` 覆盖 TDC 路由的主机 allowlist（默认仅 tdc.sgmw.com.cn）；
     localhost/测试 host 也可在创建后通过对应 app.config 键注入。
+    `plugin_dirs` 覆盖插件搜索目录（默认源码 `plugins/`、冻结包 exe 同级 `plugins/`）；
+    `plugin_only` 只加载指定 id 的插件（单插件沙箱）。
     """
     if getattr(sys, "frozen", False):
         base_dir = Path(str(getattr(sys, "_MEIPASS"))) / "web"
@@ -4716,7 +4861,13 @@ def create_app(
             )
         if isinstance(selected, str):
             selected = selected.strip() or None
+        wizard_session_id = payload.get("wizardSessionId")
+        if wizard_session_id is not None:
+            if not isinstance(wizard_session_id, str) or not _WIZARD_SESSION_ID_RE.match(wizard_session_id):
+                return _project_status_validation_error({"wizardSessionId": "非法的向导会话ID"})
+        is_stability_check = payload.get("stabilityCheck") is True
         aras_client: ArasCrawlerClient | None = None
+        cancel_token, cancel_event = _register_discovery_cancel(payload.get("cancelToken"))
         try:
             # Freeze the exact query identity before any external call. The
             # binding may be rebound while the request is in flight; the old
@@ -4724,60 +4875,273 @@ def create_app(
             match_rule, values = _mapping_discovery_query_identity(
                 payload, deliverable_id, selected
             )
-            if deliverable_id in {"VPI-T2-D2", "VPI-T2-D5"}:
-                client = _build_tdc_client_from_payload(
-                    payload, app.config["TDC_ALLOWED_HOSTS"]
-                )
-                if deliverable_id == "VPI-T2-D2":
-                    result = client.crawl_sor_all(
-                        _tdc_sor_filters(values), max_records=MAX_AGGREGATE_RECORDS
+            source_type = "tdc" if deliverable_id in {"VPI-T2-D2", "VPI-T2-D5"} else "aras"
+            cache_key = None
+            if wizard_session_id and not is_stability_check:
+                base_query_params = {
+                    k: v for k, v in values.items()
+                    if k not in {"serial_number", "incident", "processNo", "ewo_no", "paa_no", "ncr_no"}
+                }
+                base_query_params["aggregate"] = match_rule.get("aggregate")
+                if "contractVersion" in match_rule:
+                    base_query_params["contractVersion"] = match_rule["contractVersion"]
+                base_query_json = json.dumps(base_query_params, sort_keys=True, ensure_ascii=False)
+                base_query_hash = hashlib.sha256(base_query_json.encode()).hexdigest()[:16]
+                cache_key = f"{wizard_session_id}:{deliverable_id}:{source_type}:{base_query_hash}"
+
+            def run_observation(build_client, should_stop=None):
+                """非 stability 的完整观测：会话缓存 → 全量抓取 → 落观测（G5 单源）。
+
+                同步路径与后台 worker 共用：build_client 延迟构建（命中会话
+                缓存时不构建客户端）；should_stop 为协作式取消探测，在 TDC
+                分页边界被探测（Aras 单次 SOAP 导出无取消钩子，保持原状）。
+                """
+                nonlocal aras_client
+                cached_rows = _get_discovery_session_cache(cache_key) if cache_key else None
+                if source_type == "tdc":
+                    upstream_declared_total: int | None = None
+                    if cached_rows is not None:
+                        rows = cached_rows
+                        # 缓存命中（候选重选等）：沿用首次抓取时的上游声明总数，
+                        # 保持与采样端同源（去重后行数不能充当声明总数）。
+                        cached_total = (
+                            _get_discovery_session_cache_total(cache_key) if cache_key else None
+                        )
+                        if cached_total is not None:
+                            upstream_declared_total = cached_total
+                    else:
+                        client = build_client()
+                        # 协作式取消：前端 abort 后会调 cancel 端点置位，分页边界即停止，
+                        # 不再把整轮全量抓取跑完（否则取消只省了浏览器等待）。
+                        if deliverable_id == "VPI-T2-D2":
+                            crawl_result = client.crawl_sor_all(
+                                _tdc_sor_filters(values),
+                                max_records=MAX_AGGREGATE_RECORDS,
+                                should_stop=should_stop,
+                            )
+                        else:
+                            crawl_result = client.crawl_data_model_all(
+                                _tdc_data_model_filters(values),
+                                max_records=MAX_AGGREGATE_RECORDS,
+                                should_stop=should_stop,
+                            )
+                        rows = _require_complete_mapping_result(crawl_result, _TDCRequestError)
+                        crawl_total = getattr(crawl_result, "total", None)
+                        if (
+                            isinstance(crawl_total, int)
+                            and not isinstance(crawl_total, bool)
+                            and crawl_total >= 0
+                        ):
+                            upstream_declared_total = crawl_total
+                        if cache_key:
+                            _set_discovery_session_cache(cache_key, rows, upstream_declared_total)
+                    return discovery_service.observe(
+                        deliverable_id, "tdc", rows, selected,
+                        aggregate=bool(match_rule["aggregate"]), match_rule=match_rule,
+                        upstream_total=upstream_declared_total,
                     )
+                if cached_rows is not None:
+                    rows = cached_rows
                 else:
-                    result = client.crawl_data_model_all(
-                        _tdc_data_model_filters(values), max_records=MAX_AGGREGATE_RECORDS
+                    aras_client = build_client()
+                    # 报表分派来自能力注册表（取代 deliverable_id 硬编码）。
+                    aras_report = str(
+                        PROJECT_STATUS_SOURCE_CAPABILITIES.get(deliverable_id, {}).get("reportType")
+                        or ""
                     )
-                rows = _require_complete_mapping_result(result, _TDCRequestError)
-                result = discovery_service.observe(
-                    deliverable_id, "tdc", rows, selected,
-                    aggregate=bool(match_rule["aggregate"]), match_rule=match_rule,
-                )
-            elif deliverable_id in {"VPI-T2-D3", "VPI-T2-D6", "VPI-T2-D7", "VPI-T2-D8"}:
-                aras_client = _build_aras_client_from_payload(
-                    payload, app.config["ARAS_ALLOWED_HOSTS"]
-                )
-                # 报表分派来自能力注册表（取代 deliverable_id 硬编码）。
-                aras_report = str(
-                    PROJECT_STATUS_SOURCE_CAPABILITIES.get(deliverable_id, {}).get("reportType")
-                    or ""
-                )
-                if aras_report == "ewo":
-                    crawl_result = aras_client.crawl_ewo_report_all(
-                        build_project_status_ewo_filters(match_rule),
-                        max_records=MAX_AGGREGATE_RECORDS,
-                    )
-                    rows = _require_complete_mapping_result(crawl_result, _ArasRequestError)
-                    if match_rule.get('contractVersion') == '2':
-                        from services.ewo_binding_records import attach_ewo_source_ids
-                        rows = attach_ewo_source_ids(crawl_result)
-                elif aras_report == "paa":
-                    from services.project_status_connectors import ArasProjectStatusConnector
-                    paa_filters = ArasProjectStatusConnector._paa_filters(match_rule)
-                    crawl_result = aras_client.crawl_paa_report_all(
-                        paa_filters, max_records=MAX_AGGREGATE_RECORDS
-                    )
-                    rows = _require_complete_mapping_result(crawl_result, _ArasRequestError)
-                else:
-                    from services.project_status_connectors import ArasProjectStatusConnector
-                    rows = ArasProjectStatusConnector._collect_ncr_rows(
-                        aras_client, aras_report, match_rule
-                    )
-                result = discovery_service.observe(
+                    if aras_report == "ewo":
+                        crawl_result = aras_client.crawl_ewo_report_all(
+                            build_project_status_ewo_filters(match_rule),
+                            max_records=MAX_AGGREGATE_RECORDS,
+                        )
+                        rows = _require_complete_mapping_result(crawl_result, _ArasRequestError)
+                        if match_rule.get('contractVersion') == '2':
+                            from services.ewo_binding_records import attach_ewo_source_ids
+                            rows = attach_ewo_source_ids(crawl_result)
+                    elif aras_report == "paa":
+                        from services.project_status_connectors import ArasProjectStatusConnector
+                        paa_filters = ArasProjectStatusConnector._paa_filters(match_rule)
+                        crawl_result = aras_client.crawl_paa_report_all(
+                            paa_filters, max_records=MAX_AGGREGATE_RECORDS
+                        )
+                        rows = _require_complete_mapping_result(crawl_result, _ArasRequestError)
+                    else:
+                        from services.project_status_connectors import ArasProjectStatusConnector
+                        rows = ArasProjectStatusConnector._collect_ncr_rows(
+                            aras_client, aras_report, match_rule
+                        )
+                    if cache_key:
+                        _set_discovery_session_cache(cache_key, rows)
+                return discovery_service.observe(
                     deliverable_id, "aras", rows, selected,
                     aggregate=bool(match_rule["aggregate"]), match_rule=match_rule,
                 )
+
+            def submit_discovery_task(system):
+                """统一域会话在位时把全量取证转后台任务（G5/C3 异步化）。
+
+                返回 202（新任务或同参数重挂）或 409（不同参数的在途任务冲突）；
+                引擎不可用或凭据准入不通过（密码/显式 Cookie 模式，凭据红线禁止
+                入库）时返回 None，调用方回落到既有同步路径，行为零回归。
+                """
+                runner = _crawl_runner_from_request()
+                session, _gate_error = _async_session_gate(system, payload)
+                if runner is None or session is None:
+                    return None
+                params_hash = _mapping_discovery_params_hash(match_rule, values, selected)
+
+                def worker(ctx):
+                    # 统一域会话是应用内存对象（凭据红线：任务参数不落库任何凭据）；
+                    # app_context 内重建客户端以复用共享会话，worker 线程禁止关闭它。
+                    try:
+                        with app.app_context():
+                            observation = run_observation(
+                                lambda: (
+                                    _build_tdc_client_from_payload(
+                                        payload, app.config["TDC_ALLOWED_HOSTS"]
+                                    )
+                                    if source_type == "tdc"
+                                    else _build_aras_client_from_payload(
+                                        payload, app.config["ARAS_ALLOWED_HOSTS"]
+                                    )
+                                ),
+                                should_stop=lambda: ctx.is_cancelled,
+                            )
+                            ctx.update_progress(percent=95, stage="取证完成，落盘结果")
+                            artifact = ctx.downloads_dir / f"{ctx.task_id}.result.json"
+                            artifact.write_text(
+                                json.dumps(
+                                    {"result": observation, "paramsHash": params_hash},
+                                    ensure_ascii=False,
+                                ),
+                                encoding="utf-8",
+                            )
+                            ctx.set_artifact(artifact)
+                            ctx.update_progress(percent=100, stage="映射取证完成")
+                    finally:
+                        # G5（顾问复审 F2）：cancel_task 会在 worker 仍运行时就把 DB
+                        # 行写为 cancelled（Aras 单次导出不可中断），注册表若以 DB
+                        # 终态为准会提前放行新任务，造成同交付物双 worker。键的释放
+                        # 以 worker 实际退出为准。
+                        with _MAPPING_DISCOVERY_TASKS_LOCK:
+                            entry = _MAPPING_DISCOVERY_TASKS.get(deliverable_id)
+                            if entry is not None and entry.get("task_id") == ctx.task_id:
+                                _MAPPING_DISCOVERY_TASKS.pop(deliverable_id, None)
+
+                task_params = {
+                    "deliverable_id": deliverable_id,
+                    "wizard_session_id": wizard_session_id,
+                    "aggregate": bool(match_rule.get("aggregate")),
+                    "params_hash": params_hash,
+                }
+                with _MAPPING_DISCOVERY_TASKS_LOCK:
+                    entry = _MAPPING_DISCOVERY_TASKS.get(deliverable_id)
+                    if entry is not None:
+                        # G5（顾问复审 F2）：注册键以 worker 实际退出为准释放
+                        # （worker finally 弹出）；cancel_task 会提前把 DB 行写成
+                        # 终态，不得以 DB 状态判占用，否则同交付物会出现双 worker。
+                        if entry.get("params_hash") == params_hash:
+                            # 重新挂接：本次请求的令牌同样属于该任务（令牌→任务关联持续到 worker 退出）。
+                            if cancel_token:
+                                entry.setdefault("tokens", []).append(cancel_token)
+                            existing = runner.get_task(entry.get("task_id", ""))
+                            return _mapping_discovery_accepted_response(
+                                entry["task_id"],
+                                str((existing or {}).get("status") or "queued"),
+                                params_hash,
+                            )
+                        return _json_error(
+                            409,
+                            "DiscoveryInProgress",
+                            "该交付物已有不同的映射取证任务在后台进行，请等待其完成或取消后再试",
+                        )
+                    tid = runner.submit_task("mapping_discovery", system, task_params, worker)
+                    _MAPPING_DISCOVERY_TASKS[deliverable_id] = {
+                        "task_id": tid,
+                        "params_hash": params_hash,
+                        "tokens": [cancel_token] if cancel_token else [],
+                    }
+                return _mapping_discovery_accepted_response(tid, "queued", params_hash)
+
+            def inline_conflict_response():
+                """G5（顾问复审 F6）：后台任务在途期间，密码/Cookie 模式的同步回落
+                也要受单在途约束，否则两条路径会对同一交付物并发取证。
+                占用以注册键为准（worker finally 弹出），不看 DB 终态（F2）。"""
+                runner = _crawl_runner_from_request()
+                if runner is None:
+                    return None
+                with _MAPPING_DISCOVERY_TASKS_LOCK:
+                    entry = _MAPPING_DISCOVERY_TASKS.get(deliverable_id)
+                if entry is None:
+                    return None
+                return _json_error(
+                    409,
+                    "DiscoveryInProgress",
+                    "该交付物已有映射取证任务在后台进行，请等待其完成或取消后再试",
+                )
+
+            if deliverable_id in {"VPI-T2-D2", "VPI-T2-D5"}:
+                if is_stability_check:
+                    # F10: 独立轻量签名采样核验（只拉取第 1 页 50 条，秒级完成，保持同步）
+                    client = _build_tdc_client_from_payload(
+                        payload, app.config["TDC_ALLOWED_HOSTS"]
+                    )
+                    if deliverable_id == "VPI-T2-D2":
+                        paged_result = client.query_sor_page(
+                            _tdc_sor_filters(values), page=1, page_size=50
+                        )
+                    else:
+                        paged_result = client.query_data_model_page(
+                            _tdc_data_model_filters(values), page=1, page_size=50
+                        )
+                    if paged_result.total is None or paged_result.total < 0:
+                        raise _TDCRequestError("TDC 返回的总记录数无效")
+                    result = discovery_service.observe_stability_sample(
+                        deliverable_id, "tdc", paged_result.rows, paged_result.total,
+                        aggregate=bool(match_rule["aggregate"]), match_rule=match_rule,
+                    )
+                    mismatch = result.get("mismatch") if isinstance(result, dict) else None
+                    if mismatch:
+                        emit(
+                            "mapping_stability_mismatch",
+                            {
+                                "stability_reason": str(mismatch.get("reason") or ""),
+                                "expected_count": mismatch.get("expected"),
+                                "actual_count": mismatch.get("actual"),
+                            },
+                        )
+                    return jsonify({"ok": True, "data": result})
+
+                async_response = submit_discovery_task("tdc")
+                if async_response is not None:
+                    return async_response
+                inline_conflict = inline_conflict_response()
+                if inline_conflict is not None:
+                    return inline_conflict
+                client = _build_tdc_client_from_payload(
+                    payload, app.config["TDC_ALLOWED_HOSTS"]
+                )
+                result = run_observation(
+                    lambda: client,
+                    should_stop=cancel_event.is_set if cancel_event is not None else None,
+                )
+            elif deliverable_id in {"VPI-T2-D3", "VPI-T2-D6", "VPI-T2-D7", "VPI-T2-D8"}:
+                async_response = submit_discovery_task("aras")
+                if async_response is not None:
+                    return async_response
+                inline_conflict = inline_conflict_response()
+                if inline_conflict is not None:
+                    return inline_conflict
+                aras_client = _build_aras_client_from_payload(
+                    payload, app.config["ARAS_ALLOWED_HOSTS"]
+                )
+                result = run_observation(lambda: aras_client)
             else:
                 return _json_error(404, "NotFound", "未找到交付物")
             return jsonify({"ok": True, "data": result})
+        except CrawlCancelled:
+            # 前端已 abort，不会读到这个响应；返回明确语义便于诊断录制与人工重放。
+            return _json_error(409, "Cancelled", "映射取证已取消")
         except (_TDCRequestError, TDCCrawlerError, TDCAuthError) as exc:
             return _tdc_error_response(exc, "mapping-discovery", "query")
         except (_ArasRequestError, ArasCrawlerError, ArasAuthError) as exc:
@@ -4789,6 +5153,59 @@ def create_app(
         except Exception as exc:
             logger.exception("mapping discovery failed")
             return _json_error(500, "ServerError", _sanitize_error_message(exc))
+        finally:
+            _release_discovery_cancel(cancel_token, cancel_event)
+
+    @app.post("/api/project-status/deliverables/<deliverable_id>/mapping-discovery/cancel")
+    def api_project_status_mapping_discovery_cancel(deliverable_id: str):
+        """请求停止正在进行的映射取证（前端 abort 后调用）。
+
+        只置位协作式取消标志：TDC 分页抓取会在下一个分页边界停止；
+        Aras 整本工作簿导出是单次调用，登记对它只是尽力而为。
+        """
+        local_error = _local_web_mutation_error()
+        if local_error is not None:
+            return local_error
+        # 取消不触达上游，因此不要求 base_url（_request_payload 的上游查询校验在此不适用）；
+        # 前端 abort 后只带 cancelToken 调用本端点。
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return _json_error(400, "ValidationError", "JSON object body is required")
+        token = payload.get("cancelToken")
+        if not isinstance(token, str) or not _DISCOVERY_CANCEL_TOKEN_RE.match(token):
+            return _json_error(400, "ValidationError", "cancelToken 非法")
+        with _DISCOVERY_CANCEL_LOCK:
+            event = _DISCOVERY_CANCEL_TOKENS.get(token)
+        if event is not None:
+            event.set()
+            return jsonify({"ok": True, "data": {"cancelled": True, "deliverableId": deliverable_id}})
+        # G5（顾问复审 F1）：后台任务路径下，握手响应未被前端读到前 abort 时
+        # 手里没有 taskId，旧令牌也已在 202 落定后释放——按交付物查注册表
+        # 兜底协作取消，避免"服务端照跑、前端已放弃"（F7 禁止路线）。
+        runner = _crawl_runner_from_request()
+        if runner is not None:
+            with _MAPPING_DISCOVERY_TASKS_LOCK:
+                entry = _MAPPING_DISCOVERY_TASKS.get(deliverable_id)
+            # 只取消该令牌所属的任务：过期/未知令牌（例如旧请求的延迟取消）不得取消后来启动的新任务。
+            if entry is not None and token in entry.get("tokens", ()):
+                existing = runner.get_task(entry.get("task_id", ""))
+                if (
+                    existing is not None
+                    and existing.get("status") not in _MAPPING_DISCOVERY_TERMINAL_STATUSES
+                ):
+                    runner.cancel_task(entry["task_id"])
+                    return jsonify(
+                        {
+                            "ok": True,
+                            "data": {
+                                "cancelled": True,
+                                "deliverableId": deliverable_id,
+                                "taskId": entry["task_id"],
+                                "status": "cancelled",
+                            },
+                        }
+                    )
+        return jsonify({"ok": True, "data": {"cancelled": False, "reason": "not_running"}})
 
     @app.get("/api/project-status/analytics")
     def api_project_status_analytics():
@@ -5716,7 +6133,141 @@ def create_app(
 
     from web.diagnostics import install_diagnostics
     install_diagnostics(app, local_guard=_local_web_mutation_error)
+    _install_plugin_host(app, db, plugin_dirs=plugin_dirs, plugin_only=plugin_only)
     return app
+
+
+def _json_ok(data: Any = None, status: int = 200):
+    response = jsonify({"ok": True, "data": data})
+    response.headers["Cache-Control"] = "no-store"
+    return response, status
+
+
+def _install_plugin_host(
+    app: Flask,
+    db: DatabaseManager,
+    *,
+    plugin_dirs: Sequence[Path] | None,
+    plugin_only: Sequence[str] | None,
+) -> None:
+    """加载 `plugins/` 下的功能插件；旧路由全部注册完成后再加载，插件不能覆盖它们。"""
+    import mimetypes
+    from types import MappingProxyType
+
+    from host import HostContext, PluginRegistry
+    from host.updates import PackageError, PluginUpdates
+
+    # Windows 注册表可能把 .js 映射成 text/plain，浏览器会拒绝执行 ES Module。
+    mimetypes.add_type("text/javascript", ".js")
+    mimetypes.add_type("text/javascript", ".mjs")
+
+    if plugin_only is None:
+        env_only = os.environ.get("VSE_TOOLBOX_PLUGIN_ONLY", "").strip()
+        plugin_only = [item.strip() for item in env_only.split(",") if item.strip()] or None
+    context = HostContext(
+        db=db,
+        data_dir=Path(db.db_path).parent,
+        json_ok=_json_ok,
+        json_error=_json_error,
+        local_guard=_local_web_mutation_error,
+        services=MappingProxyType(app.extensions),
+    )
+    updates = PluginUpdates(context.data_dir / "plugin-updates")
+    try:
+        applied = updates.apply_pending()
+    except OSError:
+        logger.exception("applying staged plugin packages failed")
+        applied = []
+    for item in applied:
+        logger.info("Plugin package %s %s activated", item["id"], item["version"])
+    registry = PluginRegistry(plugin_dirs, only=plugin_only, overrides=updates.active_dirs())
+    registry.load_all(app, context)
+    for plugin_id, bundled_version in registry.superseded.items():
+        logger.info("Plugin %s: bundled %s supersedes installed package", plugin_id, bundled_version)
+        updates.supersede(plugin_id, bundled_version=bundled_version)
+    # 已安装的新版本启动失败：切回上一版本（或随包内置版本）并当场重新加载。
+    for record in list(registry.records):
+        if record.source != "installed" or record.status == "loaded" or record.id is None:
+            continue
+        previous = updates.rollback(record.id, reason=record.error or record.status)
+        fallback = updates.active_dirs().get(record.id) if previous else registry.bundled_dirs.get(record.id)
+        logger.warning("Plugin %s rolled back to %s", record.id, previous or "bundled")
+        if fallback is not None:
+            registry.load_dir(app, context, fallback, source="installed" if previous else "bundled")
+    app.extensions["plugin_registry"] = registry
+    app.extensions["plugin_updates"] = updates
+
+    @app.get("/api/host/manifest")
+    def api_host_manifest():
+        return _json_ok(registry.manifest_payload())
+
+    def _updates_payload() -> dict[str, Any]:
+        payload = updates.status()
+        payload["plugins"] = [
+            {
+                "id": r.id,
+                "name": r.manifest.name if r.manifest else r.path.name,
+                "version": r.manifest.version if r.manifest else None,
+                "status": r.status,
+                "source": r.source,
+            }
+            for r in registry.records
+        ]
+        return payload
+
+    @app.get("/api/host/updates")
+    def api_host_updates():
+        return _json_ok(_updates_payload())
+
+    @app.post("/api/host/updates/import")
+    def api_host_updates_import():
+        local_error = _local_web_mutation_error()
+        if local_error is not None:
+            return local_error
+        upload = request.files.get("file")
+        if upload is None or not upload.filename:
+            return _json_error(400, "ValidationError", "请选择 .vsepkg 插件包")
+        data = upload.read()
+        try:
+            from host.updates import verify_package
+
+            package = verify_package(data, updates.trusted_keys)
+            record = registry.record_for(package.id)
+            current = record.manifest.version if record and record.manifest and record.status == "loaded" else None
+            updates.stage(data, current_version=current)
+        except PackageError as exc:
+            return _json_error(422, "PackageRejected", str(exc))
+        except OSError as exc:
+            logger.exception("staging plugin package failed")
+            return _json_error(500, "ServerError", _sanitize_error_message(exc))
+        return _json_ok({
+            "id": package.id,
+            "version": package.version,
+            "previous": current,
+            "message": "插件包已校验通过，重启 VSE Toolbox 后生效",
+            "updates": _updates_payload(),
+        })
+
+    @app.post("/api/host/updates/<plugin_id>/discard")
+    def api_host_updates_discard(plugin_id: str):
+        local_error = _local_web_mutation_error()
+        if local_error is not None:
+            return local_error
+        if not updates.discard_pending(plugin_id):
+            return _json_error(404, "NotFound", "没有待生效的插件包")
+        return _json_ok(_updates_payload())
+
+    @app.post("/api/host/updates/<plugin_id>/rollback")
+    def api_host_updates_rollback(plugin_id: str):
+        local_error = _local_web_mutation_error()
+        if local_error is not None:
+            return local_error
+        if plugin_id not in updates.read_state()["plugins"]:
+            return _json_error(404, "NotFound", "该插件没有通过插件包安装的版本")
+        previous = updates.rollback(plugin_id, reason="用户手动回滚")
+        data = _updates_payload()
+        data["message"] = f"已切回 {previous or '随包内置版本'}，重启后生效"
+        return _json_ok(data)
 
 
 if __name__ == "__main__":

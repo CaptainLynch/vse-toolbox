@@ -158,42 +158,32 @@ def test_redact_sensitive_text_jwt_and_bearer():
 
 
 def test_web_frontend_redacts_sensitive_result_values_before_rendering():
-    source = (ROOT / "web" / "static" / "app.js").read_text(encoding="utf-8")
-
-    assert "function redactSensitiveText(value)" in source
-    assert "function safeDisplayValue(value)" in source
-    assert "valueCell.textContent = safeDisplayValue(value)" in source
-    # Phase 4 网格：单元格渲染必须仍经过 safeDisplayValue 再进入高亮装配
-    assert "appendHighlightedText(td, safeDisplayValue(value), state.filterText)" in source
-    assert "showArasError(redactSensitiveText(err.message))" in source
-    assert "raw_xml" in source
+    # The host publishes redactSensitiveText (window.redactSensitiveText) for every plugin page.
+    source = (ROOT / "web" / "static" / "host" / "session.js").read_text(encoding="utf-8")
+    assert "export function redactSensitiveText(value)" in source
+    assert "target.redactSensitiveText = redactSensitiveText" in source
 
     script = r"""
-const fs = require("fs");
-const vm = require("vm");
-const source = fs.readFileSync("web/static/app.js", "utf8");
-const prefix = source.slice(0, source.indexOf("const ARAS_MODES"));
-const redact = source.match(/function redactSensitiveText\(value\) \{[\s\S]*?\n\}/)[0];
-const context = {};
-vm.runInNewContext(prefix + "\n" + redact + `
-result = [
-  redactSensitiveText('Authorization: Basic dXNlcjpwYXNz\\nNext: ok'),
-  redactSensitiveText('Authorization: Digest username="u", response="secret-response"\\nNext: ok'),
-  redactSensitiveText('Authorization: CustomScheme secret-value\\nNext: ok'),
+const { redactSensitiveText } = await import(process.argv[1]);
+const result = [
+  redactSensitiveText('Authorization: Basic dXNlcjpwYXNz\nNext: ok'),
+  redactSensitiveText('Authorization: Digest username="u", response="secret-response"\nNext: ok'),
+  redactSensitiveText('Authorization: CustomScheme secret-value\nNext: ok'),
   redactSensitiveText('{"Authorization":"Basic dXNlcjpwYXNz","next":"ok"}'),
-  redactSensitiveText('{"Authorization":"Digest username=\\\\"u\\\\", response=\\\\"secret-response\\\\"","next":"ok"}'),
+  redactSensitiveText('{"Authorization":"Digest username=\\"u\\", response=\\"secret-response\\"","next":"ok"}'),
   redactSensitiveText('Cookie: sid=abc123; ArasAuth=secret2; JSESSIONID=secret3 Authorization: Bearer xyz789 Set-Cookie: sid=abc123; ArasAuth=secret2; JSESSIONID=secret3'),
-  redactSensitiveText('Set-Cookie: sid=abc123; ArasAuth=secret2; JSESSIONID=secret3\\nNext: ok'),
-  redactSensitiveText('Set-Cookie: sid="abc,def"; Path=/\\nNext: ok'),
+  redactSensitiveText('Set-Cookie: sid=abc123; ArasAuth=secret2; JSESSIONID=secret3\nNext: ok'),
+  redactSensitiveText('Set-Cookie: sid="abc,def"; Path=/\nNext: ok'),
   redactSensitiveText('{"Set-Cookie":"sid=abc123; ArasAuth=secret2; JSESSIONID=secret3","Next":"ok"}'),
-  redactSensitiveText('{"Set-Cookie":"sid=\\\\"abc,def\\\\"; Path=/","Next":"ok"}'),
-  redactSensitiveText('Cookie: sid=abc123; ArasAuth=secret2; JSESSIONID=secret3\\nNext: ok'),
+  redactSensitiveText('{"Set-Cookie":"sid=\\"abc,def\\"; Path=/","Next":"ok"}'),
+  redactSensitiveText('Cookie: sid=abc123; ArasAuth=secret2; JSESSIONID=secret3\nNext: ok'),
   redactSensitiveText('{"Cookie":"sid=abc123; ArasAuth=secret2; JSESSIONID=secret3","Next":"ok"}')
-].join("\\n");
-`, context);
-process.stdout.write(context.result);
+].join("\n");
+process.stdout.write(result);
 """
-    result = subprocess.run(["node", "-e", script], cwd=ROOT, check=True, capture_output=True, text=True)
+    session_uri = (ROOT / "web" / "static" / "host" / "session.js").as_uri()
+    result = subprocess.run(["node", "--input-type=module", "-e", script, session_uri],
+                            cwd=ROOT, check=True, capture_output=True, text=True)
     assert "abc123" not in result.stdout
     assert "secret2" not in result.stdout
     assert "secret3" not in result.stdout

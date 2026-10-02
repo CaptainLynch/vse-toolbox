@@ -108,12 +108,17 @@ if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller failed for VSE-WebUI.spec with exit code $LASTEXITCODE"
 }
 
+# VSE-WebUI is a onedir bundle (exe + _internal/ + plugins/). The Excel Worker
+# stays single-file and must sit beside VSE-WebUI.exe, where the process
+# controller looks for it.
+$bundleDir = Join-Path $resolvedOutputDir "VSE-WebUI"
+
 # 2. Build VSE-ExcelWorker
 Write-Host "==> Building VSE-ExcelWorker executable..."
 & $PythonExecutable -m PyInstaller `
     --clean `
     --noconfirm `
-    --distpath $resolvedOutputDir `
+    --distpath $bundleDir `
     --workpath $workerWork `
     $workerSpec
 
@@ -122,8 +127,8 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # 3. Verify sibling executables exist and are regular files
-$webuiExe = Join-Path $resolvedOutputDir "VSE-WebUI.exe"
-$workerExe = Join-Path $resolvedOutputDir "VSE-ExcelWorker.exe"
+$webuiExe = Join-Path $bundleDir "VSE-WebUI.exe"
+$workerExe = Join-Path $bundleDir "VSE-ExcelWorker.exe"
 
 if (-not (Test-Path -LiteralPath $webuiExe -PathType Leaf)) {
     throw "Verification failed: '$webuiExe' does not exist or is not a regular file."
@@ -136,14 +141,26 @@ Write-Host "Verification succeeded:"
 Write-Host "  - $webuiExe"
 Write-Host "  - $workerExe"
 
-$checksumFile = Join-Path $resolvedOutputDir "SHA256SUMS.txt"
-@($webuiExe, $workerExe) |
+$checksumFile = Join-Path $bundleDir "SHA256SUMS.txt"
+$bundlePrefix = $bundleDir.TrimEnd('\', '/').Length + 1
+Get-ChildItem -LiteralPath $bundleDir -Recurse -File |
+    Where-Object { $_.FullName -ne $checksumFile } |
+    Sort-Object FullName |
     ForEach-Object {
-        $hash = Get-FileHash -LiteralPath $_ -Algorithm SHA256
-        "$($hash.Hash.ToLowerInvariant())  $([System.IO.Path]::GetFileName($hash.Path))"
+        $hash = Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256
+        $relative = $_.FullName.Substring($bundlePrefix).Replace('\', '/')
+        "$($hash.Hash.ToLowerInvariant())  $relative"
     } |
     Set-Content -LiteralPath $checksumFile -Encoding ascii
 Write-Host "  - $checksumFile"
+
+# Colleagues receive one zip of the whole folder (shared via Feishu).
+$zipFile = Join-Path $resolvedOutputDir "VSE-WebUI.zip"
+if (Test-Path -LiteralPath $zipFile) {
+    Remove-Item -LiteralPath $zipFile -Force
+}
+Compress-Archive -LiteralPath $bundleDir -DestinationPath $zipFile
+Write-Host "  - $zipFile"
 
 # 4. Confined cleanup of temporary work directory beneath .runtime
 if ($Clean -or (-not $NoCleanup)) {

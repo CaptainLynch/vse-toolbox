@@ -10,18 +10,24 @@ from zipfile import ZipFile
 
 import pytest
 
+from core.db_manager import DatabaseManager
 from core.section_rollup import build_rollup_index
 from services.aras_ncr_workbook import NcrWorkbookRow
 from services.deliverable_form_analysis import (
     FORM_KEYS,
+    SECTION_ROLLUP_FORM_KEYS,
+    DeliverableFormAnalysisService,
     FormSnapshotInput,
     aggregate_daily_trend,
     build_form_snapshot,
     classify_overdue,
     form_definition,
     normalize_form_rows,
+    source_absent_indexes,
     summarize_form_rows,
 )
+from services.deliverable_form_analysis import _filter_rows_by_section_rollup
+from core.report_cost_values import sum_cost_metrics
 from services.xlsx_preview import read_xlsx_workbook_preview
 
 
@@ -888,7 +894,8 @@ def test_tdc_data_model_is_registered_with_hidden_columns_contract() -> None:
     assert len(definition["headerRows"][0]) == 47
     assert len(definition["columns"]) == 45
     assert all(column["index"] not in {12, 13} for column in definition["columns"])
-    assert definition["defaultVisibleCount"] == 15
+    # 2026-09-29 有意契约变更：默认可见列补「最新审批记录」（15→16）。
+    assert definition["defaultVisibleCount"] == 16
     assert definition["chartFields"] == []
     assert definition["filterFields"] == [
         "keyword",
@@ -1370,10 +1377,12 @@ def test_section_stage_matrix_pivots_share_rollup_cells() -> None:
     # 科室行 = 规则目标顺序 + 「未归集」；空 stage 行不计入矩阵。
     assert [entry["label"] for entry in matrix["sections"]] == ["车身科", "内饰科", "未归集"]
     assert [entry["total"] for entry in matrix["sections"]] == [3, 1, 1]
-    # 节点列 = EWO 官方全量（含零计数）+「其他状态」收尾。
+    # 节点列 = EWO 官方全量（含零计数）+「其他状态」收尾（EWO 桶必须保持）。
     assert [entry["label"] for entry in matrix["stages"]] == [
         "DRAFT1", "DRAFT2", "EDIT1", "EDIT2", "PROC", "IMPL", "CLOSE", "其他状态",
     ]
+    # 未注册阶段行（OPEN）既并入「其他状态」，也计入新的统一披露计数。
+    assert matrix["unrecognizedStageCount"] == 1
     proc_stage = matrix["stages"][4]
     assert proc_stage["total"] == 3
     assert [cell["count"] for cell in proc_stage["cells"]] == [2, 0, 1]
@@ -1422,3 +1431,458 @@ def test_ncr_detail_section_counts_with_unassigned_bucket() -> None:
         {"label": "内饰科", "total": 0},
         {"label": "未归集", "total": 1},
     ]
+
+
+# ===== SOR 列「上游完全未提供」的判定与展示口径（2026-09-28 生产取证） =====
+
+# 生产 SOR 列表接口实测返回的 17 个顶层键（值可空）。位置契约要的
+# deptName/sectionName/sorPartName/processType|bizName|type/latestCompletedNode
+# 都不在其中；sorPartNo 返回但值为空；申请人实际叫 startUser。
+_PRODUCTION_SOR_KEYS = (
+    "carTypeProject",
+    "currentAssigneeNameList",
+    "id",
+    "isCurrentUserInvolved",
+    "processInstanceId",
+    "sorProcessStatus",
+    "source",
+    "startTime",
+    "title",
+    "startUser",
+    "version",
+    "processInstanceStatus",
+    "processNo",
+    "pushResult",
+    "sorNo",
+    "sorPartList",
+    "sorPartNo",
+)
+
+
+def _production_sor_rows() -> list[dict[str, object]]:
+    return [{key: "" for key in _PRODUCTION_SOR_KEYS}]
+
+
+def test_sor_applicant_alias_fills_from_production_key() -> None:
+    """位置 8「申请人」在生产接口里的键是 startUser，不是契约历史的 startUserName。"""
+    rows = normalize_form_rows(
+        "tdc_sor",
+        [{"processNo": "S-1", "startUser": "张三", "startUserName": ""}],
+        snapshot_at="2026-09-28T10:00:00Z",
+    )
+    assert rows[0]["values"][8] == "张三"
+
+
+def test_source_absent_indexes_matches_production_sor_keys() -> None:
+    """只有「键全缺失」的位置才算源端不提供；sorProcessStatus 对接后位置 12 不再算缺失。"""
+    assert source_absent_indexes("tdc_sor", _production_sor_rows()) == (2, 7, 9, 10)
+
+
+def test_source_absent_indexes_follows_key_presence() -> None:
+    """判据随实际键变化：补回 deptName 后位置 9 不再算缺失。"""
+    rows = _production_sor_rows()
+    rows[0]["deptName"] = "车体工程"
+    assert source_absent_indexes("tdc_sor", rows) == (2, 7, 10)
+
+
+def test_source_absent_indexes_with_f6c_flattened_real_packet() -> None:
+    """2026-09-29 F6c 现场抓包解包后，缺失列自动收缩至仅 (2,)（类型）。"""
+    from services.tdc_crawler import flatten_sor_rows
+
+    raw_packet = [
+        {
+            "processNo": "SOR202609280008",
+            "sorNo": "SGMW-E262S-SOR0002",
+            "version": "A",
+            "title": "上安装板装饰盖",
+            "startTime": "2026-09-28 10:00:00",
+            "currentAssigneeNameList": [{"name": "处理人"}],
+            "carTypeProject": {"projectNo": "E262S", "projectName": "E262S"},
+            "processInstanceStatus": {"value": 2, "name": "审批中"},
+            "sorPartList": [
+                {"partNo": "27246864", "partName": "上安装板装饰组件"},
+                {"partNo": "27246868", "partName": "上安装板左装饰盖"},
+            ],
+            "sorPartNo": None,
+            "sorProcessStatus": "三审通过",
+            "startUser": {
+                "trueName": "韦大方",
+                "deptInfo": {
+                    "name": "外饰科",
+                    "parentDept": {"name": "车体工程"},
+                },
+            },
+        }
+    ]
+    flattened = flatten_sor_rows(raw_packet)
+    assert source_absent_indexes("tdc_sor", flattened) == (2,)
+
+
+def test_source_absent_indexes_empty_without_source_key_vocabulary() -> None:
+    """位置行、空行、中文标签行、非 TDC 报表都不得触发降级。"""
+    assert source_absent_indexes("tdc_sor", [{"values": ["a", "b"]}]) == ()
+    assert source_absent_indexes("tdc_sor", []) == ()
+    assert source_absent_indexes("tdc_sor", [{"流水单号": "S-1", "部门": ""}]) == ()
+    assert source_absent_indexes("aras_paa", _production_sor_rows()) == ()
+
+
+def test_view_payload_exposes_source_absent_indexes(tmp_path: Path) -> None:
+    """快照级事实随快照持久化，并由 /view 载荷下发（列数、列序、schema 均不变）。"""
+    db = DatabaseManager(tmp_path / "forms.db")
+    db.init_database()
+    service = DeliverableFormAnalysisService(db)
+    db.publish_deliverable_form_snapshot(
+        build_form_snapshot(
+            "tdc_sor",
+            _production_sor_rows(),
+            snapshot_at="2026-09-28T10:00:00Z",
+            source_run_id=1,
+            source="test",
+        )
+    )
+
+    payload = service.view("tdc_sor")
+
+    assert payload["sourceAbsentIndexes"] == [2, 7, 9, 10]
+    # schema 仍是现行契约：列数与列序不得被该展示口径改变。
+    assert "sourceAbsentIndexes" not in payload["schema"]
+    assert [column["index"] for column in payload["schema"]["columns"]] == list(
+        range(len(payload["schema"]["columns"]))
+    )
+
+
+def test_view_payload_source_absent_indexes_empty_without_snapshot(tmp_path: Path) -> None:
+    db = DatabaseManager(tmp_path / "empty-forms.db")
+    db.init_database()
+    service = DeliverableFormAnalysisService(db)
+    assert service.view("tdc_sor")["sourceAbsentIndexes"] == []
+
+
+def test_tdc_in_flight_status_code_two_shows_text_and_not_completed() -> None:
+    """数模在审行状态码 "2" 归一化为「审批中」且不算完成（2026-09-29 生产反馈 1/3）。
+
+    现场 HAR 实锤：在审行 `"status":"2"`、终审行 `"status":"4"`；r5 之前
+    "2" 原样透传 → 明细显示裸码。
+    """
+    rows = normalize_form_rows(
+        "tdc_data_model",
+        [
+            {
+                "incident": "90000301",
+                "requestDate": "2026-09-01",
+                "projectModel": "F610S",
+                "status": "2",
+            },
+            {
+                "incident": "90000302",
+                "requestDate": "2026-09-01",
+                "projectModel": "F610S",
+                "status": "9",
+            },
+        ],
+        snapshot_at="2026-09-29T00:00:00Z",
+    )
+    assert rows[0]["dimensions"]["status"] == "审批中"
+    assert rows[0]["isCompleted"] is False
+    # 未映射码原样透传（诚实渲染），完成语义不变。
+    assert rows[1]["dimensions"]["status"] == "9"
+    assert rows[1]["isCompleted"] is False
+
+
+def test_ncr_detail_section_costs_with_rollup_and_signed_values() -> None:
+    """NCR 明细按归集科室的四项成本聚合（F8）：符号直加、有值件数、None≠0。"""
+    rows = [
+        {
+            "dimensions": {"section": "车身科", "ncrNumber": "N1"},
+            "overdueState": "on_time",
+            "isCompleted": False,
+            "cost": {
+                "investment": {"estimate": 10.5, "approved": 8.0, "actual": None},
+                "vehicleChange": {"estimate": 200.0, "approved": 150.0, "actual": None},
+            },
+        },
+        {
+            "dimensions": {"section": "结构工程科", "ncrNumber": "N2"},
+            "overdueState": "on_time",
+            "isCompleted": False,
+            "cost": {
+                "investment": {"estimate": 1.5, "approved": None, "actual": None},
+                "vehicleChange": {"estimate": -50.0, "approved": None, "actual": None},
+            },
+        },
+        {
+            "dimensions": {"section": "未知科室", "ncrNumber": "N3"},
+            "overdueState": "on_time",
+            "isCompleted": False,
+            "cost": {
+                "investment": {"estimate": None, "approved": 0.0, "actual": None},
+                "vehicleChange": {"estimate": -300.0, "approved": None, "actual": None},
+            },
+        },
+    ]
+
+    summary = summarize_form_rows(
+        "aras_ncr_detail",
+        rows,
+        snapshot_at="2026-09-29T10:00:00Z",
+        section_rollup=_rollup_index(),
+    )
+
+    costs = summary["sectionCosts"]
+    assert [entry["label"] for entry in costs] == ["车身科", "内饰科", "未归集"]
+    body = costs[0]
+    assert body["total"] == 2
+    assert body["costs"]["investmentEstimate"] == {"sum": 12.0, "count": 2}
+    assert body["costs"]["investmentApproved"] == {"sum": 8.0, "count": 1}
+    assert body["costs"]["vehicleChangeApproved"] == {"sum": 150.0, "count": 1}
+    unassigned = costs[2]
+    assert unassigned["total"] == 1
+    # 负值（成本下降）按符号直加；0 与 无值 区分（count 0 vs sum 0.0 + count 1）。
+    assert unassigned["costs"]["vehicleChangeEstimate"] == {"sum": -300.0, "count": 1}
+    assert unassigned["costs"]["investmentApproved"] == {"sum": 0.0, "count": 1}
+    assert unassigned["costs"]["investmentEstimate"] == {"sum": 0.0, "count": 0}
+
+
+def test_section_filter_by_target_name_matches_alias_rows() -> None:
+    """顾问终审条件 (c)：成本表/计数条行点击筛选传的是**归集后目标名**，
+    后端筛选必须经同一 resolve_section 命中全部别名行（口径不缩水）。"""
+    rows = [
+        {"dimensions": {"section": "车身科", "ncrNumber": "N1"}, "overdueState": "on_time", "isCompleted": False},
+        {"dimensions": {"section": "结构工程科", "ncrNumber": "N2"}, "overdueState": "on_time", "isCompleted": False},
+        {"dimensions": {"section": "内饰科", "ncrNumber": "N3"}, "overdueState": "on_time", "isCompleted": False},
+    ]
+    filtered = _filter_rows_by_section_rollup(rows, "车身科", _rollup_index())
+    assert [row["dimensions"]["ncrNumber"] for row in filtered] == ["N1", "N2"]
+
+
+# ===== G34：PAA「其他状态」桶移除 / 数模归集 / 费用解析单源 =====
+
+
+def test_paa_matrix_drops_other_status_bucket_and_reports_unrecognized() -> None:
+    """PAA 不再产出「其他状态」桶：不在阶段词表的行只进 unrecognizedStageCount。"""
+    rows = [
+        {"dimensions": {"section": "车身科", "stage": "PROC"}, "overdueState": "on_time", "isCompleted": False},
+        {"dimensions": {"section": "结构工程科", "stage": "PROC"}, "overdueState": "overdue", "isCompleted": False},
+        {"dimensions": {"section": "内饰科", "stage": "CLOSE"}, "overdueState": "on_time", "isCompleted": True},
+        {"dimensions": {"section": "车身科", "stage": "OPEN"}, "overdueState": "on_time", "isCompleted": False},
+        {"dimensions": {"section": "神秘历史科室", "stage": "EDIT"}, "overdueState": "unknown", "isCompleted": False},
+        {"dimensions": {"section": "车门附件科", "stage": ""}, "overdueState": "on_time", "isCompleted": False},
+    ]
+
+    summary = summarize_form_rows(
+        "aras_paa",
+        rows,
+        snapshot_at="2026-09-01T10:00:00Z",
+        section_rollup=_rollup_index(),
+    )
+
+    matrix = summary["sectionStageMatrix"]
+    # 阶段列 = PAA 官方全量（含零计数），没有「其他状态」收尾列。
+    assert [entry["label"] for entry in matrix["stages"]] == [
+        "DRAFT1", "DRAFT2", "EDIT", "PROC", "IMPL", "CLOSE",
+    ]
+    # OPEN 行不再落入任何桶，只经统一计数披露；EDIT 属官方词表照常计数。
+    assert matrix["unrecognizedStageCount"] == 1
+    assert [entry["total"] for entry in matrix["sections"]] == [2, 1, 1]
+
+    department_status = summary["departmentStatus"]
+    assert [entry["label"] for entry in department_status["stages"]] == [
+        "DRAFT1", "DRAFT2", "EDIT", "PROC", "IMPL", "CLOSE",
+    ]
+    assert department_status["unrecognizedStageCount"] == 1
+    proc_row = department_status["stages"][3]
+    assert proc_row == {"label": "PROC", "onTime": 1, "overdue": 1, "unknown": 0}
+
+
+def test_ncr_progress_and_ewo_keep_other_status_bucket() -> None:
+    """「其他状态」桶仅对 PAA 移除；EWO/NCR进度保持旧行为（含未知阶段折入）。"""
+    rows = [
+        {"dimensions": {"section": "内饰科", "stage": "挂起"}, "overdueState": "unknown", "isCompleted": False},
+    ]
+
+    progress = summarize_form_rows(
+        "aras_ncr_progress",
+        rows,
+        snapshot_at="2026-09-01T10:00:00Z",
+        section_rollup=_rollup_index(),
+    )
+    progress_labels = [
+        entry["label"] for entry in progress["departmentStatus"]["stages"]
+    ]
+    assert progress_labels[-1] == "其他状态"
+    assert progress["departmentStatus"]["unrecognizedStageCount"] == 1
+    matrix_labels = [
+        entry["label"] for entry in progress["sectionStageMatrix"]["stages"]
+    ]
+    assert matrix_labels[-1] == "其他状态"
+    assert progress["sectionStageMatrix"]["unrecognizedStageCount"] == 1
+
+    ewo = summarize_form_rows(
+        "VPI-T2-D3",
+        rows,
+        snapshot_at="2026-09-01T10:00:00Z",
+        section_rollup=_rollup_index(),
+    )
+    assert [entry["label"] for entry in ewo["departmentStatus"]["stages"]][-1] == "其他状态"
+    assert ewo["departmentStatus"]["unrecognizedStageCount"] == 1
+
+
+def _tdc_model_rows() -> list[dict[str, object]]:
+    """数模字典行：section 取自「部门」列（值即科级），状态为数字码。"""
+    return normalize_form_rows(
+        "tdc_data_model",
+        [
+            {
+                "incident": "90000301",
+                "requestDate": "2026-08-30",
+                "projectModel": "F999X",
+                "department": "结构工程科",
+                "status": "4",
+            },
+            {
+                "incident": "90000302",
+                "requestDate": "2026-08-30",
+                "projectModel": "F999X",
+                "department": "内饰科",
+                "status": "2",
+            },
+            {
+                "incident": "90000303",
+                "requestDate": "2026-08-30",
+                "projectModel": "F999X",
+                "department": "未知科室",
+                "status": "2",
+            },
+        ],
+        snapshot_at="2026-09-02T00:00:00Z",
+    )
+
+
+def test_tdc_data_model_joins_section_rollup_with_counts_only() -> None:
+    """数模归集启用后只产出 sectionCounts（阶段词表为空，不出矩阵）。"""
+    rows = _tdc_model_rows()
+
+    summary = summarize_form_rows(
+        "tdc_data_model",
+        rows,
+        snapshot_at="2026-09-02T00:00:00Z",
+        section_rollup=_rollup_index(),
+    )
+
+    assert summary["sectionCounts"] == [
+        {"label": "车身科", "total": 1},
+        {"label": "内饰科", "total": 1},
+        {"label": "未归集", "total": 1},
+    ]
+    assert "sectionStageMatrix" not in summary
+    assert "sectionCosts" not in summary
+    # 规则顺序还原：目标在前、未归集收尾。
+    assert "tdc_data_model" in SECTION_ROLLUP_FORM_KEYS
+
+
+def test_tdc_data_model_without_rollup_omits_section_counts() -> None:
+    summary = summarize_form_rows(
+        "tdc_data_model",
+        _tdc_model_rows(),
+        snapshot_at="2026-09-02T00:00:00Z",
+    )
+    assert "sectionCounts" not in summary
+    assert "sectionStageMatrix" not in summary
+
+
+def test_tdc_data_model_section_filter_matches_alias_rows() -> None:
+    """数模行级筛选与看板同口径：按归集后目标名命中全部别名行（镜像 r6）。"""
+    rows = _tdc_model_rows()
+
+    filtered = _filter_rows_by_section_rollup(rows, "车身科", _rollup_index())
+    assert [row["dimensions"]["section"] for row in filtered] == ["结构工程科"]
+
+    unassigned = _filter_rows_by_section_rollup(rows, "未归集", _rollup_index())
+    assert [row["dimensions"]["section"] for row in unassigned] == ["未知科室"]
+
+
+def test_tdc_sor_stays_out_of_section_rollup() -> None:
+    """钉住：SOR 的 section 是车型项目语义，不参与归集（即使传入规则）。"""
+    assert "tdc_sor" not in SECTION_ROLLUP_FORM_KEYS
+    summary = summarize_form_rows(
+        "tdc_sor",
+        [],
+        snapshot_at="2026-09-06T10:00:00Z",
+        section_rollup=_rollup_index(),
+    )
+    assert "sectionCounts" not in summary
+    assert "sectionStageMatrix" not in summary
+    assert "sectionCosts" not in summary
+
+
+def test_core_cost_sum_matches_section_costs_aggregate() -> None:
+    """费用单源一致性：core.sum_cost_metrics 对标签键原始行的四指标合计
+    == 看板 _section_costs 各科室（含未归集）之和。"""
+    label_rows = [
+        {
+            "状态": "审批中",
+            "项目": "F610S",
+            "区域": "车身科",
+            "NCR编号": "N1",
+            "测算工程工装费用(万元)": "1,234.5",
+            "批准工程工装费用（万元）": "800",
+            "测算单件成本变化（元）": "-50.5",
+        },
+        {
+            "状态": "审批中",
+            "项目": "F610S",
+            "区域": "结构工程科",
+            "NCR编号": "N2",
+            "测算工程工装费用(万元)": "10.5",
+            "批准工程工装费用（万元）": "0",
+            "测算单件成本变化（元）": "60",
+        },
+        {
+            "状态": "审批中",
+            "项目": "F610S",
+            "区域": "未知科室",
+            "NCR编号": "N3",
+            "测算单件成本变化（元）": "actual 无值也无所谓",
+        },
+    ]
+    rows = normalize_form_rows(
+        "aras_ncr_detail",
+        [
+            {
+                "values": _ncr_values("aras_ncr_detail", dict(row)),
+                "sheet_name": "整车",
+            }
+            for row in label_rows
+        ],
+        snapshot_at="2026-09-29T10:00:00Z",
+    )
+
+    summary = summarize_form_rows(
+        "aras_ncr_detail",
+        rows,
+        snapshot_at="2026-09-29T10:00:00Z",
+        section_rollup=_rollup_index(),
+    )
+
+    core_totals = sum_cost_metrics(label_rows)
+    for costs in summary["sectionCosts"]:
+        for metric, entry in costs["costs"].items():
+            core_entry = core_totals[metric]
+            if entry["count"] == 0:
+                continue
+            assert entry["sum"] == pytest.approx(core_entry["sum"]), metric
+    for metric, core_entry in core_totals.items():
+        parts = [
+            costs["costs"][metric]["sum"]
+            for costs in summary["sectionCosts"]
+            if costs["costs"][metric]["count"]
+        ]
+        # 全体无值时两侧同为 None（sum(空)==0 不能代表「无值」）。
+        summed = sum(parts) if parts else None
+        assert summed == pytest.approx(core_entry["sum"]), metric
+        assert (
+            sum(costs["costs"][metric]["count"] for costs in summary["sectionCosts"])
+            == core_entry["count"]
+        ), metric
+    # 有值/无值口径逐位一致：批准单件成本变化 全体无值 → core 侧 sum=None。
+    assert core_totals["vehicleChangeApproved"] == {"sum": None, "count": 0}

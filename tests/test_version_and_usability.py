@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -194,6 +195,7 @@ def test_webui_spec_behavior_without_version_env(monkeypatch: pytest.MonkeyPatch
         "Analysis": FakeAnalysis,
         "PYZ": lambda *args, **kwargs: None,
         "EXE": lambda *args, **kwargs: None,
+        "COLLECT": lambda *args, **kwargs: None,
     }
     exec(compile(spec_code, str(spec_path), "exec"), fake_globals)
 
@@ -223,6 +225,7 @@ def test_webui_spec_behavior_with_version_env(monkeypatch: pytest.MonkeyPatch, t
         "Analysis": FakeAnalysis,
         "PYZ": lambda *args, **kwargs: None,
         "EXE": lambda *args, **kwargs: None,
+        "COLLECT": lambda *args, **kwargs: None,
     }
     exec(compile(spec_code, str(spec_path), "exec"), fake_globals)
 
@@ -270,31 +273,20 @@ def test_api_version_endpoint(client: FlaskClient) -> None:
 
 
 def test_dashboard_renders_usability_elements(client: FlaskClient) -> None:
-    """首页 dashboard.html 正确渲染顶栏会话徽章、版本展示及原位登录对话框。"""
+    """首页把版本号交给宿主顶栏；会话徽章、版本详情与原位登录由宿主 chrome 渲染。"""
     resp = client.get("/")
     assert resp.status_code == 200
     html = resp.get_data(as_text=True)
+    assert re.search(r'<div id="host-chrome" data-version="[^"]+">', html)
 
-    # 1. 顶栏企业会话指示器
-    assert 'class="global-session-status"' in html
-    assert 'id="global-badge-aras"' in html
-    assert 'id="global-badge-tdc"' in html
-    assert 'id="global-login-btn"' in html
-
-    # 2. 版本展示与维护详情入口
-    assert 'id="app-version-chip"' in html
-    assert 'id="version-detail-modal"' in html
-
-    # 3. 原位登录对话框
-    assert 'id="in-place-login-modal"' in html
-    assert 'id="in-place-login-form"' in html
-    assert 'id="in-place-login-save-vault"' in html
-
-    # 4. 设置分层与高级维护折叠卡片
-    assert 'id="settings-advanced-details"' in html
-    assert '高级与维护设置（点击展开）' in html
-    assert 'id="settings-field-temp-dir"' in html
-    assert 'id="settings-field-diag-dir"' in html
+    chrome = "\n".join(
+        path.read_text(encoding="utf-8") for path in Path("web/static/host/chrome").glob("*.js")
+    )
+    # 1. 顶栏企业会话指示器；2. 版本展示与维护详情入口；3. 原位登录对话框
+    for marker in ("hc-session-status", "hc-badge-${system.key}", 'id="hc-login-btn"',
+                   'id="hc-version-chip"', 'id="hc-version-dialog"',
+                   'id="hc-login-dialog"', 'id="hc-login-save-vault"'):
+        assert marker in chrome, marker
 
 
 def test_settings_patch_and_read_preserves_advanced_values(client: FlaskClient, tmp_path: Path) -> None:

@@ -18,6 +18,7 @@ from typing import Any, Mapping, Sequence
 from core.db_manager import DatabaseManager
 from core.project_status_contracts import project_status_source_capabilities
 from core.redaction import redact_sensitive_text
+from services.deliverable_form_analysis import TDC_DATA_MODEL_COMPLETED_STATUSES
 
 # EWO 的业务范围由来源系统的 `_rsp_smt` 字段决定。这里的常量同时供
 # Aras 连接器和交付物分析使用，避免查询范围与展示范围出现两套口径。
@@ -141,7 +142,7 @@ _FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     ),
     "owner": (
         "owner", "responsiblePerson", "assignee", "handler", "负责人", "责任人", "处理人",
-        "申请人", "申请者", "责任工程师名称", "applicant", "startUserName",
+        "申请人", "申请者", "责任工程师名称", "applicant", "startUser", "startUserName",
         "currentApprover", "currentApproverName", "rsp_name", "_rsp_name",
     ),
     "pending_signers": (
@@ -151,6 +152,8 @@ _FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     ),
     "status": (
         "status", "state", "workflowState", "approvalStatus", "状态", "审批状态", "流程状态",
+        # TDC SOR 行的状态键（应用行已扁平化为纯文本；生产缺陷 2026-09-26）。
+        "processInstanceStatus",
     ),
     "source_department": (
         "_rsp_department", "部门", "责任部门", "所属部门",
@@ -196,6 +199,13 @@ _ARAS_REPORT_SOURCE_TAGS: dict[str, str] = {
 }
 
 
+#: TDC 报表 → 限定来源标签（与 Aras 同一先例：报表语义不得共用地挂在 "tdc" 下）。
+_TDC_REPORT_SOURCE_TAGS: dict[str, str] = {
+    "sor": "tdc_sor",
+    "data_model": "tdc_data_model",
+}
+
+
 def analysis_source_type(source_type: object, report_type: object = None) -> str:
     """分析缓存使用的来源标签（写入侧唯一口径）。
 
@@ -209,6 +219,8 @@ def analysis_source_type(source_type: object, report_type: object = None) -> str
     report = str(report_type or "").strip().casefold()
     if normalized == "aras" and report in _ARAS_REPORT_SOURCE_TAGS:
         return _ARAS_REPORT_SOURCE_TAGS[report]
+    if normalized == "tdc" and report in _TDC_REPORT_SOURCE_TAGS:
+        return _TDC_REPORT_SOURCE_TAGS[report]
     return normalized
 
 
@@ -591,6 +603,35 @@ def _completed(status: str, actual_date: str | None) -> bool:
     return any(token in normalized for token in ("完成", "关闭", "批准", "发布")) or bool(actual_date)
 
 
+def _tdc_data_model_completed(source_type: str, status: str) -> bool:
+    """TDC 数模行完成判定与分析表单口径对齐（2026-09-29 生产缺陷）。
+
+    数模列表行状态是数字码（HAR 实锤 "2"=审批中、"4"=已完成），而
+    ``_completed`` 的子串词表识别不了数字码且数模行无实际完成日期，
+    导致分析快照 completed=0 而表单侧正确。仅对限定标签
+    ``tdc_data_model`` 生效；已废弃/审批中等非完成码不在完成集内自然为
+    False，已废弃行的剔除由连接器同步范围规则负责。
+    """
+    if source_type != "tdc_data_model":
+        return False
+    return str(status or "").strip() in TDC_DATA_MODEL_COMPLETED_STATUSES
+
+
+def _aras_record_close(source_type: str, status: str) -> bool:
+    """PAA/NCR 记录级完成判定与表单口径对齐：状态字面值 ``CLOSE`` 即终态。
+
+    背景（生产缺陷 2026-09-26）：``_completed`` 词表含 ``closed`` 不含 ``close``，
+    PAA 行状态字面值 CLOSE 全部被判未完成，导致分析快照 completed=0/53 而表单侧
+    同一批行按 ``_normalize_stage(status)=="CLOSE"`` 判 31 完成。此处仅对 Aras
+    记录源（aras_paa/aras_ncr）补 CLOSE 终态识别；EWO 行走
+    ``source_stage == EWO_TERMINAL_STAGE`` 分支不经此函数，TDC 源完成语义不变。
+    """
+    return (
+        str(source_type or "").startswith("aras")
+        and str(status or "").strip().casefold() == "close"
+    )
+
+
 def _alert_type(
     item: Mapping[str, Any],
     today: date,
@@ -696,6 +737,9 @@ def normalize_analysis_rows(
             normalize_pending_signers(signers_value),
             limit=500,
         ).strip()
+        if isinstance(status_value, Mapping):
+            # 兼容防御：未扁平化的历史/异构行只取 name（不用数值形态推断完成）。
+            status_value = status_value.get("name")
         status = _safe_text(status_value or "", limit=120)
         source_stage = normalize_ewo_stage(status) if ewo_source else None
         stage_attention = ewo_source and source_stage is None
@@ -733,6 +777,8 @@ def normalize_analysis_rows(
                 source_stage == EWO_TERMINAL_STAGE
                 if ewo_source
                 else _completed(status, actual_date)
+                or _aras_record_close(normalized_source_type, status)
+                or _tdc_data_model_completed(normalized_source_type, status)
             ),
             "planned_date": planned_date,
             "actual_date": actual_date,

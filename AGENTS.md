@@ -34,7 +34,7 @@ navigation index, not a replacement for reading the target implementation.
 - At the start of every non-trivial task, read `PROJECT_MAP.md` after restoring
   the required memory state and before searching for code. Use its Task Router
   to choose a domain and an initial file set.
-- The default production scope is `core/`, `services/`, `web/`, `main.py`,
+- The default production scope is `core/`, `host/`, `plugins/`, `services/`, `web/`, `main.py`,
   `webui.py`, `excel_worker_entry.py`, `tools/excel_worker_cli.py`,
   `tdc_probe_main.py`, and `tdc_probe_cli.py`.
 - Enter `tests/`, `*.spec`, `setup.cfg`, `requirements.txt`,
@@ -65,6 +65,22 @@ navigation index, not a replacement for reading the target implementation.
 - If the target is still not found after the mapped, scoped search, report a
   map gap and the paths already checked, then request or justify a scope
   expansion. Never silently widen the search.
+
+## Plugin Architecture (since 2026-10)
+
+- New features are new plugins: `python tools/new_plugin.py <id> --name 名称`
+  creates `plugins/<id>/` (`plugin.json`, `backend.py` with `register(host)`,
+  `static/pages/*.json`). The legacy `web/static/app.js` / `style.css` are
+  gone: the page is the host shell (`web/static/host/`) plus plugin pages, and
+  old bookmarks redirect via `web/static/host/legacy-routes.js`. Do not add
+  route bodies to `web/app.py` or code to `core/db_manager.py`.
+- Plugins reach shared services only through `host.context` (db, data dir,
+  JSON envelope, `local_guard` for every write route) and must not import
+  `web.*` or other plugins. Plugin tables use `host.table_prefix` and
+  additive `host.migrate([(version, fn)])` steps.
+- Ship a plugin change as a signed `.vsepkg` (`tools/build_plugin_pkg.py`);
+  host changes ship as a new onedir zip. See
+  `docs/PRODUCTION_OPERATION_GUIDE.md` section 7.
 
 ## Runtime Selection
 

@@ -1,0 +1,306 @@
+/* 系统查询插件页：复用旧页面 .aras-* / .grid-* / .structured-error-card 等类，
+   这里只补插件新增的 sq-* 元素。颜色全部取自旧主题变量，跟随明暗主题。 */
+
+.sq-page .aras-head {
+  flex-wrap: wrap;
+}
+
+.sq-mode-groups {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.sq-mode-groups .mode-toolbar {
+  align-items: center;
+}
+
+.sq-mode-system {
+  min-width: 44px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-align: right;
+}
+
+.sq-field-error {
+  display: block;
+  margin-top: 4px;
+  color: var(--error);
+  font-size: 11px;
+}
+
+.sq-page input[aria-invalid="true"] {
+  border-color: var(--error);
+}
+
+.sq-blocked-note {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--warning) 10%, var(--surface-card));
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.sq-mode-title {
+  margin-top: 6px;
+  color: var(--ink);
+}
+
+.sq-car-type {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.sq-car-type select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sq-car-type .car-type-load-btn {
+  flex: 0 0 auto;
+  min-height: 38px;
+}
+
+.sq-status {
+  flex: 1 1 100%;
+  min-width: 0;
+  min-height: 18px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.sq-task {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.sq-task-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.sq-task-id {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.sq-task-status {
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--hairline);
+  color: var(--muted);
+}
+
+.sq-task-status.is-succeeded { color: var(--success); border-color: var(--success); }
+.sq-task-status.is-failed,
+.sq-task-status.is-timeout,
+.sq-task-status.is-interrupted { color: var(--error); border-color: var(--error); }
+.sq-task-status.is-running,
+.sq-task-status.is-queued,
+.sq-task-status.is-leased { color: var(--primary); border-color: var(--primary); }
+
+.sq-task-download {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+
+.sq-progress {
+  height: 6px;
+  margin-top: 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--hairline);
+}
+
+.sq-progress-fill {
+  height: 100%;
+  background: var(--primary);
+  transition: width 0.3s ease;
+}
+
+.sq-task-detail {
+  margin-top: 6px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.result-panel.sq-running {
+  border-color: var(--primary);
+}
+
+.sq-warning {
+  margin: 8px 0;
+}
+
+.sq-grid {
+  overflow: visible;
+}
+
+.sq-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+@media (max-width: 760px) {
+  .sq-mode-groups {
+    align-items: flex-start;
+  }
+  .sq-mode-system {
+    text-align: left;
+  }
+}
+
+.sq-grid .grid-pager {
+  flex-wrap: wrap;
+}
+
+.sq-grid .grid-pager-btn {
+  white-space: nowrap;
+}
+
+.sq-grid .grid-pager-size {
+  width: auto;
+  min-height: 30px;
+  padding: 4px 8px;
+}
+
+/* Legacy Aras form, XML capture and deep-link rules this page reuses (moved from the retired style.css). */
+.panel-section[hidden],
+.aras-fields[hidden],
+
+.overview-tabpanel[hidden] { display: none;
+}
+
+.aras-workbench {
+  background: var(--surface-card);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  padding: 18px;
+}
+
+.aras-form {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.9fr) minmax(0, 1.35fr);
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.form-grid,
+.aras-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.xml-capture-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.xml-capture-toggle input {
+  width: auto;
+  min-height: auto;
+  margin: 0;
+}
+
+.xml-capture-toggle span {
+  margin: 0;
+}
+
+.xml-capture-actions {
+  flex: 1 1 100%;
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  min-width: 0;
+  width: 100%;
+  gap: 7px;
+}
+
+.xml-capture-label {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.xml-capture-actions .secondary-btn {
+  flex: 0 0 auto;
+  min-width: 132px;
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .aras-form,
+    .deliverables-layout {
+      grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 560px) {
+  .top-bar,
+    .aras-workbench,
+    .form-block,
+    .result-panel { border-radius: 8px;
+  }
+  .form-grid,
+    .aras-fields,
+    .dyna-form-grid,
+    .operation-controls {
+      grid-template-columns: 1fr;
+  }
+}
+
+.deep-link-back-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  margin-bottom: 14px;
+  background: var(--surface-soft, #f0f4f9);
+  border: 1px solid var(--hairline, #d0d7de);
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.deep-link-back-bar .back-link-btn {
+  background: transparent;
+  border: none;
+  color: var(--primary, #0969da);
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.deep-link-back-bar .back-link-btn:hover {
+  text-decoration: underline;
+}
+
+.deep-link-back-bar .deep-link-hint {
+  color: var(--muted, #57606a);
+  font-size: 12px;
+}
+.in-place-modal-body .field-note {
+  margin-bottom: 14px;
+}

@@ -5,6 +5,19 @@ delete. Per-plan rulings stay in their SDD ledger (`.superpowers/sdd/…`, local
 and get promoted here once they prove durable. Newest first. Keep entries
 short: decision, why, cost if violated, source pointer.
 
+## 2026-10-01 — 插件化重构立项：宿主 + 功能插件 + Schema 视图 + onedir 签名插件包
+
+1. **方向**：保留 `services/` 能力层，把 Web 层、数据归属和打包分发重建为 CTFd 式 Flask 插件目录（`register(host)`）+ `plugin.json` 声明式清单 + calibre 式签名 `.vsepkg` 导入；前端为无构建的 Preact + htm（用户确认）。
+2. **迁移纪律**：绞杀者方式分 4 个 Sprint；重构期间新需求一律写成插件，不再往 `app.js`、`web/app.py`、`core/db_manager.py` 加代码；插件不得互相 import 或直接写公共表。
+3. **基线**：重构前代码点为分支 `checkpoint/pre-plugin-refactor-20261001`（d15d0f2）；重构分支 `refactor/plugin-host`。
+4. **表单定义单一来源暂放 `core/form_registry.py`**：onedir 包里插件以源码放在 exe 旁、不进 PYZ，旧 services/core 在冻结运行时无法 import 插件目录；旧调用方迁完后再移入插件。
+5. **S1 门槛演练（Claude 执行，2026-10-01）**：用 `tools/new_plugin.py` 新建只读“归档任务看板”插件，只改了插件自己的 `backend.py`（约 30 行）和 `static/pages/jobs.json`，宿主与旧文件改动为 0；浏览器验证通过后删除（只是演练，不上线）。演练暴露的 UI Kit 缺口（图例文字写死）已补上 `labels`。容器时钟不能当真实耗时，“新增展示页 ≤45 分钟”仍需开发者本人实测一次。
+6. **签名插件包（S2）**：`.vsepkg` 用 Ed25519 签名（`cryptography`），私钥只在打包机，用 `tools/plugin_keys.py init` 生成并把公钥写入 `host/trusted_keys.json`；导入只暂存，重启时生效，新版本加载失败自动回滚到上一版或随包内置版本。用户在“设置 → 插件更新”页操作，不会强制更新。
+7. **表单 form_key 不再用 SQL CHECK（S2）**：合法性由写入前按 `core/form_registry.py` 校验；旧库检测到 CHECK 时整表重建一次。`CURRENT_SCHEMA_VERSION` 保持 14，这样回退旧版 exe 仍能打开数据库。
+8. **数据库按域拆分（S3）**：`DatabaseManager` 变成门面，方法按领域放在 `core/repos/`（项目状态、表单快照、自动同步、定时归档、crawl 任务、插件迁移），共用常量和辅助函数在 `core/db_common.py`；对外接口不变。插件自己的表用 `p_<id>_` 前缀，由 `host.migrate([(版本, fn)])` 做只加不减的迁移，版本记在 `plugin_schema_versions`，数据库版本高于插件时跳过不报错（保证插件包可回滚）。
+Cost if violated: 新功能继续散落到共享巨型文件，增量发布无法实现。
+Source: `docs/PLUGIN_REFACTOR_PROPOSAL_20261001.md`、`docs/PLUGIN_REFACTOR_PLAN_20261001.md`。
+
 ## 2026-09-25 — NCR 命名行：位置视图是权威值来源，标签字典只是有损投影
 
 1. **`NcrWorkbookRow.named_row()` 必须携带契约顺序的 `values`**。官方 NCR 进度数据表头有 11 个
@@ -562,3 +575,14 @@ DSH DeepSeek Harness + v4.1 Flash 主代理和 ZCode Gemini 3.8 Flash 交互主�
 ## 2026-09-25 Expert Advisor 共享 7 日额度改为 30（取代先前 8 次）
 
 用户明确要求把前一轮讨论的本地滚动 7 日上限直接设为 30 次。codex-readonly 的 Sol/high、Sol/xhigh、Astra/medium、Astra/high 四档继续共用一个 provider 账本，weekly_cap=30。其他护栏保持：滚动 5 小时 2 次、自然日 10 次、每任务 2 次；Astra 另限自然日 1 次、滚动 7 日 2 次。此变更不重置 ChatGPT Plus 服务端额度或历史账本，也不自动扩大顾问触发场景。
+
+## 2026-10-02 恢复策略：移植而非合并，行为测试取代源码文本测试
+
+- 决定：旧业务分支遗漏行为**按条目移植**到插件架构（后端取参考顶端文件、前端按插件重写），不整条 merge/cherry-pick，
+  不恢复 `web/static/app.js` 与旧全局样式；旧 `app.js` 源码文本断言一律不恢复，业务断言迁为 API / Node 纯逻辑 / 真浏览器行为测试。
+- 决定：映射取证请求通道集中在 `deliverable/discovery.js`（向导与高级设置共用），可变 `discoveryLimits` 供测试压缩时限；
+  终态文案用按交付物限定的待显示槽（面板卸载后写、重新挂载时取走）。
+- 决定：候选预览与执行共用同一报表类型（预览必须逐字节等于执行写入）；NCR 科室范围只是绑定上的声明（`sectionScope`），不是查询键，
+  不发送 `seccode`；取消端点不要求 `base_url`。
+- 决定：不保留“表单明细用户列偏好”概念（现有表单明细表无该存储；系统查询网格的列偏好键不变）。
+

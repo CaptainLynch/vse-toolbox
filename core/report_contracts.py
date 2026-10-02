@@ -161,11 +161,13 @@ _TDC_SOR_SOURCE_FIELDS: dict[int, tuple[str, ...]] = {
     5: ("title",),
     6: ("sorPartNo",),
     7: ("sorPartName",),
-    8: ("startUserName",),
+    # 「申请人」：生产列表接口实测返回的键是 startUser（2026-09-28 现场取证），
+    # 契约历史上的 startUserName 在该接口上不存在——实测键优先，旧键作回退。
+    8: ("startUser", "startUserName"),
     9: ("deptName",),
     10: ("sectionName",),
     11: ("startTime",),
-    12: ("latestCompletedNode",),
+    12: ("latestCompletedNode", "sorProcessStatus"),
     13: ("processInstanceStatus",),
     14: ("currentAssigneeNameList",),
 }
@@ -269,6 +271,7 @@ _ENUM_LABELS: dict[str, dict[str, str]] = {
     "paa_stock_disp": {"3": "N/A不适用"},
     "paa_days_or_qty": {"0": "天数"},
     "tdc_status": {
+        "2": "审批中",
         "4": "已完成",
     },
 }

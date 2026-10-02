@@ -1,0 +1,115 @@
+{
+  "renderer": "analysis",
+  "title": "数模设计审核流程",
+  "description": "数据来自最近一次自动归档快照；逾期口径：审批中且申请日期滞留超过 7 天。",
+  "source": "forms/tdc_data_model/rows",
+  "filters": [
+    {
+      "key": "流水单号",
+      "label": "流水单号",
+      "type": "text"
+    },
+    {
+      "key": "_status",
+      "label": "状态",
+      "optionsFromRows": true
+    },
+    {
+      "key": "_stage",
+      "label": "项目 / 车型",
+      "optionsFromRows": true
+    },
+    {
+      "key": "_section",
+      "label": "部门",
+      "optionsFromRows": true
+    },
+    {
+      "key": "_model",
+      "label": "发布属性",
+      "optionsFromRows": true
+    },
+    {
+      "key": "_overdue",
+      "label": "逾期状态",
+      "optionsFromRows": true
+    },
+    {
+      "key": "_submitted",
+      "label": "提交日期（起）",
+      "type": "date",
+      "match": "gte"
+    }
+  ],
+  "charts": [
+    {
+      "type": "doneBars",
+      "id": "stage",
+      "title": "项目 / 车型状态",
+      "groupBy": "_stage",
+      "doneField": "_completed"
+    },
+    {
+      "type": "doneBars",
+      "id": "section",
+      "title": "部门状态",
+      "groupBy": "_section",
+      "doneField": "_completed"
+    }
+  ],
+  "columns": [
+    {
+      "key": "流水单号",
+      "title": "流水单号"
+    },
+    {
+      "key": "_status",
+      "title": "状态"
+    },
+    {
+      "key": "_overdue",
+      "title": "逾期状态"
+    },
+    {
+      "key": "项目/车型",
+      "title": "项目/车型"
+    },
+    {
+      "key": "发布属性",
+      "title": "发布属性"
+    },
+    {
+      "key": "部门",
+      "title": "部门"
+    },
+    {
+      "key": "申请人",
+      "title": "申请人"
+    },
+    {
+      "key": "零件号",
+      "title": "零件号"
+    },
+    {
+      "key": "零件名称",
+      "title": "零件名称"
+    },
+    {
+      "key": "申请日期",
+      "title": "申请日期"
+    },
+    {
+      "key": "最新审批记录",
+      "title": "最新审批记录"
+    },
+    {
+      "key": "签署率",
+      "title": "签署率"
+    },
+    {
+      "key": "待审批人员",
+      "title": "待审批人员"
+    }
+  ],
+  "rowKey": "id"
+}

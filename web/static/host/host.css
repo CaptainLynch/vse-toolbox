@@ -1,0 +1,176 @@
+@import url("chrome.css?v=20261001");
+@import url("kit.css?v=20261001");
+
+/* UI Kit v0 styles. Reuses the theme tokens from base.css so plugin
+   pages follow light/dark themes; chart rows reuse .analysis-dept-* classes. */
+
+#plugin-host {
+  padding: 4px 0 24px;
+}
+
+.vk-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.vk-page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.vk-page-header h2 {
+  margin: 0;
+  font-size: 18px;
+  color: var(--ink);
+}
+
+.vk-page-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.vk-muted {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.vk-btn {
+  padding: 4px 12px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 6px;
+  background: var(--surface-card);
+  color: var(--ink);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.vk-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.vk-btn.is-primary {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: #fff;
+}
+
+.vk-state {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px;
+  border: 1px dashed var(--hairline-strong);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.vk-state.is-error {
+  border-style: solid;
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.vk-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 14px;
+  padding: 12px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.vk-filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.vk-filter-field input,
+.vk-filter-field select {
+  min-width: 140px;
+  padding: 4px 8px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 6px;
+  background: var(--surface-card);
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.vk-filter-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.vk-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+}
+
+.vk-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.vk-table th,
+.vk-table td {
+  padding: 6px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--hairline);
+  white-space: nowrap;
+}
+
+.vk-table th {
+  position: sticky;
+  top: 0;
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 11px;
+}
+
+.vk-table th.is-sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.vk-table tr.is-clickable {
+  cursor: pointer;
+}
+
+.vk-table tbody tr:hover {
+  background: var(--surface-soft);
+}
+
+.vk-table-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.vk-pager {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.vk-chart-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}

@@ -7,7 +7,7 @@ access SQLite and return only controlled-root artifact metadata to the runner.
 
 from __future__ import annotations
 
-from core.diagnostic_recording import observed
+from core.diagnostic_recording import emit, observed
 
 import tempfile
 from pathlib import Path
@@ -30,6 +30,7 @@ from services.scheduled_archive_runner import (
     ArchiveConnectorRegistry,
     ArchiveJobContext,
 )
+from services.scope_exclusion import exclude_paa_cancel_rows, exclude_tdc_scope_rows
 from services.tdc_auth import TDCPasswordAuthClient
 from services.tdc_crawler import (
     TDCCrawlerClient,
@@ -429,13 +430,34 @@ class TDCArchiveConnector:
                     artifact_type="official_xlsx",
                     expected_size=official.byte_count,
                 )
+        # TASK-20260930-R7-G2：表单快照行接入同步范围剔除（与同步路径同一实现，
+        # 单一来源）。剔除只作用于进入 form_snapshot 的行集；normalized CSV/JSON
+        # 与 record_count 保持全量——归档侧没有"JSON 原始"旁路，原始取证职责
+        # 由官方工作簿本体承担。
+        form_rows: tuple[Mapping[str, Any], ...] | None = None
+        dropped_scope = 0
+        if projection_error is None:
+            kept_rows, dropped_scope = exclude_tdc_scope_rows(
+                context.report_type, rows
+            )
+            form_rows = tuple(kept_rows)
+        if dropped_scope:
+            emit(
+                "tdc_scope_exclusion",
+                {
+                    "report_type": context.report_type,
+                    "kept_count": len(form_rows or ()),
+                    "dropped_count": dropped_scope,
+                },
+                name="archive_connector.TDCArchiveConnector._collect_authenticated",
+            )
         normalized = _normalized_artifacts(archive, context, rows)
         # 数模设计审核流程复用统一交付物表单明细视图，归档行同时作为
         # 表单快照来源（官方表为位置行，JSON 兜底为字典行）。
         return ArchiveCollection(
             len(rows),
             (xlsx, *normalized),
-            form_rows=None if projection_error else tuple(rows),
+            form_rows=form_rows,
             form_projection_error=projection_error,
         )
 
@@ -550,10 +572,24 @@ class ArasArchiveConnector:
                 max_records=_ARAS_PAA_MAX_RECORDS,
             )
             rows = tuple(dict(row) for row in result.rows)
+            # TASK-20260930-R7-G2：CANCEL 行不进表单快照（与同步路径同一实现）；
+            # normalized CSV/JSON 保持全量——PAA 归档没有官方工作簿，normalized
+            # 产物即原始取证。
+            kept_rows, dropped_cancel = exclude_paa_cancel_rows(rows)
+            if dropped_cancel:
+                emit(
+                    "aras_scope_exclusion",
+                    {
+                        "report_type": "paa",
+                        "kept_count": len(kept_rows),
+                        "dropped_count": dropped_cancel,
+                    },
+                    name="archive_connector.ArasArchiveConnector._collect_authenticated",
+                )
             return ArchiveCollection(
                 len(rows),
                 _normalized_artifacts(archive, context, rows),
-                form_rows=rows,
+                form_rows=tuple(kept_rows),
             )
         return self._collect_ncr(crawler, context, archive)
 

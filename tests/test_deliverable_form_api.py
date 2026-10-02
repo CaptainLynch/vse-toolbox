@@ -451,7 +451,7 @@ def test_tdc_form_view_endpoint_returns_schema_charts_and_filter_options(client)
     assert data["formKey"] == "tdc_data_model"
     assert data["reportType"] == "tdc_data_model"
     assert len(data["schema"]["columns"]) == 45
-    assert data["schema"]["defaultVisibleCount"] == 15
+    assert data["schema"]["defaultVisibleCount"] == 16
     assert all(column["index"] not in (12, 13) for column in data["schema"]["columns"])
     assert data["summary"]["total"] == 2
     assert data["summary"]["completed"] == 1
@@ -700,7 +700,7 @@ def test_form_view_matrix_and_rollup_filtered_rows(client) -> None:
     assert rows_data["items"][0]["dimensions"]["section"] == "车体工程"
 
 
-def test_form_rows_attach_rollup_target_and_tdc_forms_stay_raw(client) -> None:
+def test_form_rows_attach_rollup_target_and_tdc_data_model_joins_rollup(client) -> None:
     http, db = client
     db.publish_deliverable_form_snapshot(
         _paa_snapshot(snapshot_at="2026-09-01T18:00:00Z", source_run_id=2)
@@ -717,10 +717,21 @@ def test_form_rows_attach_rollup_target_and_tdc_forms_stay_raw(client) -> None:
     tdc_view = http.get("/api/deliverable-forms/tdc_data_model/view")
     tdc_data = tdc_view.get_json()["data"]
     assert "sectionStageMatrix" not in tdc_data["charts"]
-    assert "sectionRollup" not in tdc_data
+    assert tdc_data.get("sectionRollup")
+    assert tdc_data["charts"]["sectionCounts"] == [
+        {"label": "车身科", "total": 1},
+        {"label": "车体科", "total": 0},
+        {"label": "内饰科", "total": 1},
+        {"label": "外饰科", "total": 0},
+        {"label": "车体架构集成科", "total": 0},
+        {"label": "未归集", "total": 0},
+    ]
     tdc_rows = http.get("/api/deliverable-forms/tdc_data_model/rows")
     tdc_items = tdc_rows.get_json()["data"]["items"]
-    assert tdc_items and all("sectionRollupTarget" not in item for item in tdc_items)
+    assert tdc_items and {item["sectionRollupTarget"] for item in tdc_items} == {
+        "内饰科",
+        "车身科",
+    }
 
 
 def test_rollup_rule_change_takes_effect_without_resync(client) -> None:

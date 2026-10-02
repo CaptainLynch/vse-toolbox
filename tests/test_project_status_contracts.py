@@ -890,10 +890,15 @@ def test_declared_filter_keys_match_connector_consumption(
     declared = project_status_sync_contract(deliverable_id)["filterKeys"]
     assert declared, f"{deliverable_id} must declare filterKeys"
 
+    # 带白名单校验的键（NCR sectionCode）用合法哨兵——通用 sentinel-* 会被
+    # fail-closed 解析器拒绝，而校验性拒绝同样证明键被消费；这里直接喂合法值。
+    sentinel_overrides = {"sectionCode": "BE", "section_code": "BE"}
     baseline = build({})
-    full_rule = {key: f"sentinel-{key}" for key in declared}
+    full_rule = {
+        key: sentinel_overrides.get(key, f"sentinel-{key}") for key in declared
+    }
     for key in declared:
-        single = build({key: f"sentinel-{key}"})
+        single = build({key: sentinel_overrides.get(key, f"sentinel-{key}")})
         assert single != baseline, f"declared filter key {key} is not consumed"
 
     full = build(full_rule)

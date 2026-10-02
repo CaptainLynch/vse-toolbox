@@ -1,7 +1,6 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import re
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +16,7 @@ from services.aras_auth import ArasAuthError
 from services.aras_crawler import (
     ArasAuthenticationError,
     ArasCrawlerError,
+    ArasNcrExportContractError,
     EWOReportPage,
     PAAReportPage,
 )
@@ -1042,6 +1042,28 @@ def test_route_validation_and_aras_error_are_sanitized(client) -> None:
     assert "tok123" not in text
 
 
+def test_ncr_export_contract_error_maps_to_dedicated_code_and_chinese_message(client) -> None:
+    """官方 NCR 导出方法未返回文件引用 → 502 + ncr_export_no_file + 中文可操作文案。
+
+    消息携带无泄漏结构签名并指引回传诊断文件；不再落到通用 query_failed 分支。
+    """
+    FakeArasClient.fail = ArasNcrExportContractError(
+        "NCR progress response does not contain a Result Item with _file id",
+        "result_present=true result_text_present=false child_tags=[] item_count=0 body_chars=87",
+    )
+    failed = client.post(
+        "/api/aras/ewo/query", json={"base_url": "http://aras.example", "cookie": "sid=abc123"}
+    )
+    body = failed.get_json()
+    assert failed.status_code == 502
+    assert body["error"]["type"] == "ArasNcrExportContractError"
+    assert body["error"]["code"] == "ncr_export_no_file"
+    message = body["error"]["message"]
+    assert "官方 NCR 导出方法未返回文件引用" in message
+    assert "result_present=true" in message
+    assert "诊断文件" in message
+
+
 def test_remote_report_mutations_are_rejected_before_upstream_access(client) -> None:
     for endpoint in ("/api/aras/ewo/query", "/api/tdc/data-model/query"):
         response = client.post(
@@ -1956,14 +1978,14 @@ def test_static_guards_for_boundaries_and_credentials() -> None:
     service_text = Path("services/aras_crawler.py").read_text(encoding="utf-8-sig")
     assert not re.search(r"\b(rich|flask|render_template|jsonify|document\.|window\.)\b", service_text)
 
+    frontend = sorted(Path("web/static/host").glob("**/*.js")) + sorted(Path("plugins").glob("*/static/**/*.js"))
     cli_web_text = "\n".join(
         Path(path).read_text(encoding="utf-8-sig")
         for path in [
             "main.py",
             "web/app.py",
             "web/templates/dashboard.html",
-            "web/static/app.js",
-            "web/static/style.css",
+            *(path for path in frontend if "vendor" not in path.parts),
         ]
     )
     assert not re.search(
@@ -1976,92 +1998,6 @@ def test_static_guards_for_boundaries_and_credentials() -> None:
     assert not re.search(
         r"requests\.(?:get|post|head|request)\(",
         Path("tests/test_aras_cli_web.py").read_text(encoding="utf-8-sig"),
-    )
-
-
-def test_static_aras_export_download_markers_and_department_fields() -> None:
-    html_text = Path("web/templates/dashboard.html").read_text(encoding="utf-8-sig")
-    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
-    css_text = Path("web/static/style.css").read_text(encoding="utf-8-sig")
-
-    # 业务部门字段：PAA（分页与全量共用字段组）与 NCR 进度/明细都要有
-    assert html_text.count('name="department"') >= 2
-    assert html_text.count('placeholder="技术中心-车体工程"') >= 2
-    assert 'name="section_code"' in html_text  # NCR 高级字段保留
-    assert "BA/BE/BI/EXT/INT/SES/VE" in html_text
-    assert 'placeholder="*310S*|*730S*"' in html_text
-    assert html_text.count('title="支持 * 模糊和 | 并集"') >= 10
-    assert 'title="搜索符号将原样传给 NCR 服务"' in html_text
-
-    # 统一域账号登录后，连接区不再保留账号密码/Cookie 备用模式，
-    # 凭据统一来自「设置 → 统一域账号登录」（该表单是全页唯一账号输入）。
-    assert 'id="aras-auth-mode"' not in html_text
-    assert '<option value="password" selected>' not in html_text
-    assert 'id="aras-username"' not in html_text
-    assert 'id="aras-password"' not in html_text
-    assert html_text.count('name="username"') == 1
-    assert html_text.count('name="password"') == 1
-    assert "统一域账号登录" in html_text
-
-    # 按钮 action 标识（预览 / 全量导出 / 生成并下载）
-    assert 'data-aras-action="preview"' in html_text
-    assert 'data-aras-action="export"' in html_text
-    assert 'data-aras-action="download"' in html_text
-    assert 'type="button"' in html_text
-    assert 'id="aras-include-xml"' in html_text
-    assert 'id="aras-xml-actions"' in html_text
-    assert 'id="aras-download-request-xml"' in html_text
-    assert 'id="aras-download-response-xml"' in html_text
-    assert 'style.css?v=' in html_text
-    assert 'app.js?v=' in html_text
-
-    # 导出 / 下载端点在前端配置中
-    assert "/api/aras/ewo/export" in js_text
-    assert "/api/aras/paa/export" in js_text
-    assert "/api/aras/ncr/detail/download" in js_text
-    assert "include_xml" in js_text
-    assert "downloadArasXml" in js_text
-    assert "requestXml" in js_text
-    assert "responseXml" in js_text
-    download_block = js_text[js_text.index("function downloadArasXml") : js_text.index("function showArasError")]
-    assert "setTimeout" in download_block
-    assert "showArasError" in download_block
-
-    actions_rule = re.search(r"\.actions-block\s*\{([^}]*)\}", css_text)
-    assert actions_rule is not None
-    assert "flex-wrap: wrap" in actions_rule.group(1)
-    xml_actions_rule = re.search(r"\.xml-capture-actions\s*\{([^}]*)\}", css_text)
-    assert xml_actions_rule is not None
-    assert "flex: 1 1 100%" in xml_actions_rule.group(1)
-    secondary_rule = re.search(r"\.xml-capture-actions \.secondary-btn\s*\{([^}]*)\}", css_text)
-    assert secondary_rule is not None
-    assert "white-space: nowrap" in secondary_rule.group(1)
-
-    # XML 取证只挂在用户批准的 EWO/PAA 查询上，不应误出现在 NCR
-    paa_block = js_text[js_text.index("paa: ") : js_text.index('"ncr-progress"')]
-    assert "xmlCapture: true" in paa_block
-
-    # NCR 进度通过后端 Vault 链路生成并下载，同时保留业务部门筛选
-    progress_block = js_text[js_text.index('"ncr-progress"') : js_text.index('"ncr-detail"')]
-    assert 'downloadEndpoint: "/api/aras/ncr/progress/download"' in progress_block
-    assert "exportEndpoint" not in progress_block
-    assert 'exportLabel: "生成并下载"' in progress_block
-    assert "department" in progress_block
-    assert "xmlCapture: true" not in progress_block
-
-    # blob 下载 helper 读取导出状态头并解析 Content-Disposition 文件名
-    assert "X-Export-Row-Count" in js_text
-    assert "X-Export-Truncated" in js_text
-    assert "Content-Disposition" in js_text
-    assert "URL.revokeObjectURL" in js_text
-
-    # 凭据不进 localStorage / sessionStorage（只随 POST body 发送）
-    assert "sessionStorage" not in html_text
-    assert "sessionStorage" not in js_text
-    assert not re.search(
-        r"(?:cookie|token|authorization|sessionid|csrf|password).{0,80}localStorage",
-        html_text + js_text,
-        re.IGNORECASE,
     )
 
 

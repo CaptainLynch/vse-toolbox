@@ -26,7 +26,7 @@ MAP_SCHEMA_VERSION = 1
 # These are the only source roots the map generator traverses.  Do not replace
 # this with a repository-root glob: tracked HAR/HTML/XLSX evidence is not
 # production code and is intentionally outside the map.
-SOURCE_DIRS = ("core", "services", "web")
+SOURCE_DIRS = ("core", "host", "plugins", "services", "web")
 SOURCE_FILES = (
     "main.py",
     "webui.py",
@@ -91,6 +91,13 @@ ROLE_OVERRIDES = {
     "core/archive_store.py": "Atomic local archive storage and retention",
     "core/credential_provider.py": "Windows credential lookup boundary",
     "core/db_manager.py": "SQLite schema, migrations, leases and persistence",
+    "core/db_common.py": "Shared DB constants, DDL, exceptions and helpers",
+    "core/repos/project_status.py": "ProjectStatusRepo: master plan, deliverables, analysis cache, manual policy",
+    "core/repos/form_snapshots.py": "FormSnapshotRepo: deliverable form snapshots and rows",
+    "core/repos/sync_runs.py": "SyncRunRepo: sync bindings, leases, runs, artifacts, mapping observations",
+    "core/repos/archive_jobs.py": "ArchiveRepo: scheduled archive jobs, leases, runs, artifacts",
+    "core/repos/crawl_tasks.py": "CrawlTaskRepo: crawl task persistence",
+    "core/repos/plugin_schema.py": "PluginSchemaRepo: per-plugin additive schema migrations",
     "core/domain_identity.py": "DPAPI-backed domain identity/session state",
     "core/excel_tasks.py": "Excel task contracts, path safety and repository",
     "core/excel_worker.py": "Excel task execution core",
@@ -121,6 +128,15 @@ ROLE_OVERRIDES = {
     "services/windows_http.py": "WinHTTP/Schannel transport boundary",
     "services/xlsx_preview.py": "Dependency-free bounded XLSX preview",
     "web/app.py": "Flask composition adapter and Web API routes",
+    "host/__init__.py": "Plugin host package exports",
+    "host/context.py": "HostContext: shared services handed to plugins",
+    "host/plugin.py": "plugin.json manifest contract and host API compatibility",
+    "host/registry.py": "Plugin discovery, isolated loading and blueprint registration",
+    "host/updates.py": "Signed .vsepkg verification, staging, activation and rollback",
+    "core/form_registry.py": "Deliverable form definitions (single source for legacy form dicts)",
+    "plugins/deliverable_forms/backend.py": "deliverable-forms plugin: read-only form snapshot rows",
+    "plugins/sign_daily/backend.py": "sign-daily plugin: 3D单签署日报 routes, config and daily baselines",
+    "plugins/sign_daily/report.py": "3D单签署日报 metrics, owed-by-section and email rendering (pure)",
     "main.py": "Rich CLI adapter, menu routing and legacy operations",
     "webui.py": "WebUI source/frozen launcher",
     "excel_worker_entry.py": "Frozen Excel Worker launcher",
@@ -219,7 +235,7 @@ def _internal_imports(tree: ast.Module) -> tuple[str, ...]:
         else:
             continue
         for name in candidates:
-            if name.startswith(("core", "services", "web", "tools", "main", "tdc_probe")):
+            if name.startswith(("core", "host", "services", "web", "tools", "main", "tdc_probe")):
                 names.add(name)
     return tuple(sorted(names)[:6])
 
@@ -268,7 +284,8 @@ def source_fingerprint(root: Path = ROOT) -> str:
         relative = _relative(path, root).encode("utf-8")
         digest.update(relative)
         digest.update(b"\0")
-        digest.update(path.read_bytes())
+        # 统一换行后再哈希：Windows(CRLF) 与 Linux(LF) checkout 得到同一指纹。
+        digest.update(path.read_bytes().replace(b"\r\n", b"\n"))
         digest.update(b"\0")
     return digest.hexdigest()
 
@@ -295,7 +312,7 @@ def _manual_sections() -> str:
         repository and tests remain the authority; this map is navigation,
         not a substitute for reading the target implementation.
 
-        **Approved production scope:** `core/`, `services/`, `web/`,
+        **Approved production scope:** `core/`, `host/`, `plugins/`, `services/`, `web/`,
         `main.py`, `webui.py`, `excel_worker_entry.py`,
         `tools/excel_worker_cli.py`, `tdc_probe_main.py`, and
         `tdc_probe_cli.py`.
@@ -321,7 +338,11 @@ def _manual_sections() -> str:
 
         | Task cue | Start here | Continue with | Focused tests |
         | --- | --- | --- | --- |
-        | Web/API/UI | `web/app.py` | `web/static/app.js`, `web/templates/dashboard.html` | `tests/*web*.py` |
+        | 插件宿主/新功能插件 | `host/registry.py` | `host/plugin.py`, `host/context.py`, `tools/new_plugin.py`, `docs/PLUGIN_REFACTOR_PLAN_20261001.md` | `tests/test_plugin_host.py` |
+        | 插件前端 Shell/UI Kit | `web/static/host/shell.js` | `web/static/host/kit.js`, `web/static/host/pages.js`, `web/static/host/api.js` | `tests/test_host_frontend.py` |
+        | 交付物表单插件/表单定义 | `core/form_registry.py` | `plugins/deliverable_forms/backend.py`, `services/deliverable_form_analysis.py` | `tests/test_plugin_deliverable_forms.py` |
+        | 3D单签署日报插件 | `plugins/sign_daily/report.py` | `plugins/sign_daily/backend.py`, `plugins/sign_daily/static/report.js` | `tests/test_plugin_sign_daily.py` |
+        | Web/API/UI | `web/app.py` | `web/static/host/shell.js`, `web/templates/dashboard.html` | `tests/*web*.py` |
         | Aras EWO/PAA/NCR | `web/app.py` | `services/aras_auth.py`, `services/aras_crawler.py`, `services/aras_export.py` | `tests/*aras*.py` |
         | TDC/SOR/数模/A 面 | `web/app.py` | `services/tdc_auth.py`, `services/tdc_crawler.py`, `services/tdc_export_cache.py` | `tests/*tdc*.py` |
         | 项目状态/交付物 | `services/project_status_sync_runner.py` | `services/project_status_*.py`, `core/db_manager.py` | `tests/*project_status*.py` |

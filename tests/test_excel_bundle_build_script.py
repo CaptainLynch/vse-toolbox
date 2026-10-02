@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -91,7 +92,12 @@ if "-m" in args and "PyInstaller" in args:
         # Determine which spec is being built
         for a in args:
             if "VSE-WebUI.spec" in a:
-                (out_dir / "VSE-WebUI.exe").write_bytes(b"dummy webui exe")
+                # onedir: dist/VSE-WebUI/{VSE-WebUI.exe,_internal/,plugins/}
+                bundle = out_dir / "VSE-WebUI"
+                (bundle / "_internal").mkdir(parents=True, exist_ok=True)
+                (bundle / "plugins").mkdir(exist_ok=True)
+                (bundle / "VSE-WebUI.exe").write_bytes(b"dummy webui exe")
+                (bundle / "_internal" / "base_library.zip").write_bytes(b"dummy runtime")
             elif "VSE-ExcelWorker.spec" in a:
                 (out_dir / "VSE-ExcelWorker.exe").write_bytes(b"dummy worker exe")
     sys.exit(0)
@@ -103,11 +109,16 @@ sys.exit(0)
     )
 
     # Batch wrapper or python script runner
-    wrapper = tmp_path / "mock_python.cmd"
-    wrapper.write_text(
-        f'@echo off\n"{sys.executable}" "{mock_script}" %*\n',
-        encoding="utf-8",
-    )
+    if sys.platform == "win32":
+        wrapper = tmp_path / "mock_python.cmd"
+        wrapper.write_text(
+            f'@echo off\n"{sys.executable}" "{mock_script}" %*\n',
+            encoding="utf-8",
+        )
+    else:
+        wrapper = tmp_path / "mock_python.sh"
+        wrapper.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{mock_script}" "$@"\n', encoding="utf-8")
+        wrapper.chmod(0o755)
     return wrapper
 
 
@@ -144,8 +155,17 @@ def test_build_script_successful_mock_build(tmp_path: Path, mock_pyinstaller_pyt
 
     assert res.returncode == 0, f"Script failed: {res.stdout}\n{res.stderr}"
     assert "Verification succeeded:" in res.stdout
-    assert (out_dir / "VSE-WebUI.exe").is_file()
-    assert (out_dir / "VSE-ExcelWorker.exe").is_file()
+    bundle = out_dir / "VSE-WebUI"
+    assert (bundle / "VSE-WebUI.exe").is_file()
+    # 进程控制器在 VSE-WebUI.exe 同目录查找 Worker
+    assert (bundle / "VSE-ExcelWorker.exe").is_file()
+    sums = (bundle / "SHA256SUMS.txt").read_text(encoding="ascii").splitlines()
+    listed = sorted(line.split("  ", 1)[1] for line in sums)
+    assert listed == ["VSE-ExcelWorker.exe", "VSE-WebUI.exe", "_internal/base_library.zip"]
+    with zipfile.ZipFile(out_dir / "VSE-WebUI.zip") as archive:
+        names = {name.replace("\\", "/") for name in archive.namelist()}
+    assert "VSE-WebUI/VSE-WebUI.exe" in names
+    assert "VSE-WebUI/VSE-ExcelWorker.exe" in names
 
 
 def test_build_script_fails_when_pyinstaller_errors(tmp_path: Path) -> None:

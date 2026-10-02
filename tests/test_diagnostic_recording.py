@@ -234,3 +234,59 @@ def test_product_disclosure_payloads_survive_recording(tmp_path):
         'row_count': 3,
         'remedy': 'reproject_from_archived_workbook',
     }
+
+
+def test_mapping_stability_mismatch_payload_survives_recording(tmp_path):
+    """F10 稳定性核验失败披露（TASK-20260929-F10-STABILITY-GATE）必须在录制产物里可读。
+
+    只放原因枚举（闭集词表）与计数；单号、字段名等非白名单键必须被整体投影掉。
+    """
+    recorder = dr.Recorder(tmp_path)
+    identity = recorder.start()['id']
+    with dr.recording_scope(recorder):
+        dr.emit('mapping_stability_mismatch', {
+            'stability_reason': 'total_mismatch',
+            'expected_count': 409,
+            'actual_count': 410,
+            'raw_incident': 'SHOULD-NOT-APPEAR',
+        }, name='web.mapping_discovery')
+    with zipfile.ZipFile(io.BytesIO(recorder.export(identity))) as bundle:
+        events = [json.loads(line) for line in bundle.read('events.jsonl').splitlines()]
+    data = [e['data'] for e in events if e['kind'] == 'mapping_stability_mismatch'][0]
+    assert data == {'stability_reason': 'total_mismatch', 'expected_count': 409, 'actual_count': 410}
+
+
+def test_tdc_scope_and_status_distribution_payloads_survive_recording(tmp_path):
+    """TDC 同步范围剔除与状态码直方图（2026-09-29）必须在录制产物里可读。
+
+    状态码是闭集数字词；非白名单键（如原始单号）必须被整体投影掉。
+    """
+    recorder = dr.Recorder(tmp_path)
+    identity = recorder.start()['id']
+    with dr.recording_scope(recorder):
+        dr.emit('tdc_scope_exclusion', {
+            'report_type': 'sor',
+            'kept_count': 100,
+            'dropped_count': 2,
+            'raw_incident': 'SHOULD-NOT-APPEAR',
+        }, name='sync_connector.TDCProjectStatusConnector.collect')
+        dr.emit('tdc_status_distribution', {
+            'report_type': 'data_model',
+            'tdc_status_code': '2',
+            'status_count': 9,
+        }, name='sync_connector.TDCProjectStatusConnector.collect')
+        dr.emit('tdc_status_distribution', {
+            'report_type': 'data_model',
+            'tdc_status_code': 'not-a-real-code-value',
+            'status_count': 1,
+        }, name='sync_connector.TDCProjectStatusConnector.collect')
+    with zipfile.ZipFile(io.BytesIO(recorder.export(identity))) as bundle:
+        events = [json.loads(line) for line in bundle.read('events.jsonl').splitlines()]
+    scope = [e['data'] for e in events if e['kind'] == 'tdc_scope_exclusion'][0]
+    dist = {e['data'].get('tdc_status_code'): e['data'] for e in events if e['kind'] == 'tdc_status_distribution'}
+    assert scope == {'report_type': 'sor', 'kept_count': 100, 'dropped_count': 2}
+    assert dist['2'] == {'report_type': 'data_model', 'tdc_status_code': '2', 'status_count': 9}
+    # 非闭集码值被指纹化（仍留痕但不可读原文），计数保持可读。
+    weird = [data for code, data in dist.items() if code not in {'2'}][0]
+    assert weird['tdc_status_code'] not in ('not-a-real-code-value',)
+    assert weird['status_count'] == 1

@@ -184,6 +184,18 @@ class ArasAuthenticationError(ArasCrawlerError):
     """Raised when Aras redirects to login or rejects the supplied browser session."""
 
 
+class ArasNcrExportContractError(ArasCrawlerError):
+    """Raised when the official NCR export method replies without a usable file reference.
+
+    消息只携带无泄漏的结构签名（Result 是否存在/直接文本有无/子标签名/Item 数/
+    响应总字符数），响应正文内容只经既有诊断事件管道脱敏落盘，绝不进入异常文本。
+    """
+
+    def __init__(self, message: str, signature: str) -> None:
+        super().__init__(message)
+        self.signature = signature
+
+
 class CrawlCancelled(RuntimeError):
     """Raised at a pagination boundary when the caller requested cancellation."""
 
@@ -826,7 +838,10 @@ class ArasCrawlerClient:
             None,
         )
         if result is None:
-            raise ArasCrawlerError("NCR progress response does not contain Result")
+            raise ArasNcrExportContractError(
+                "NCR progress response does not contain Result",
+                _ncr_export_signature(root, xml_text),
+            )
         item = None
         file_node = None
         for candidate in result.iter():
@@ -841,8 +856,9 @@ class ArasCrawlerClient:
                 file_node = candidate_file
                 break
         if item is None or file_node is None:
-            raise ArasCrawlerError(
-                "NCR progress response does not contain a Result Item with _file id"
+            raise ArasNcrExportContractError(
+                "NCR progress response does not contain a Result Item with _file id",
+                _ncr_export_signature(root, xml_text),
             )
         return NCRExportResult(
             file_id=(file_node.text or "").strip(),
@@ -858,7 +874,10 @@ class ArasCrawlerClient:
         result = next((node for node in root.iter() if _local_name(node.tag) == "Result"), None)
         file_name = (result.text or "").strip() if result is not None else ""
         if not file_name:
-            raise ArasCrawlerError("NCR detail response does not contain a file name")
+            raise ArasNcrExportContractError(
+                "NCR detail response does not contain a file name",
+                _ncr_export_signature(root, xml_text),
+            )
         return NCRDetailExportResult(file_name=file_name, raw_xml=xml_text)
 
     @staticmethod
@@ -1236,6 +1255,27 @@ def _search_elements(name: str, value: str | None, *, default_like: bool = False
 
 def _cdata(value: str) -> str:
     return value.replace("]]>", "]]]]><![CDATA[>")
+
+
+def _ncr_export_signature(root: ET.Element, xml_text: str) -> str:
+    """无泄漏的 NCR 导出响应结构签名：只含结构事实，不含任何正文内容。
+
+    用于把「无匹配数据 / 参数不被接受 / 响应形状不符」区分开来：签名随异常消息
+    进入 UI 与 run_state 安全可读，正文本身仍走诊断事件管道（脱敏落盘）。
+    """
+    result = next((node for node in root.iter() if _local_name(node.tag) == "Result"), None)
+    if result is None:
+        return "result_present=false"
+    child_tags = [_local_name(child.tag) for child in list(result)][:8]
+    item_count = sum(1 for node in result.iter() if _local_name(node.tag) == "Item")
+    text_present = bool((result.text or "").strip())
+    return (
+        "result_present=true"
+        f" result_text_present={'true' if text_present else 'false'}"
+        f" child_tags=[{','.join(child_tags)}]"
+        f" item_count={item_count}"
+        f" body_chars={len(xml_text)}"
+    )
 
 
 def _parse_xml(xml_text: str) -> ET.Element:

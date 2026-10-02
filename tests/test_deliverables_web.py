@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from xml.sax.saxutils import escape
 from zipfile import ZipFile
@@ -552,27 +551,6 @@ def test_tdc_sor_car_type_project_endpoint_returns_safe_options(client) -> None:
     assert "secret-cookie" not in response.get_data(as_text=True)
 
 
-def test_tdc_ui_exposes_fast_and_exact_preview_modes() -> None:
-    """Both TDC report forms expose fast list and exact official-export modes."""
-    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
-    assert "快速查询" in js_text
-    assert "官方 Excel 精确预览（较慢）" in js_text
-    assert 'fieldValue(form, "preview_source")' in js_text
-    assert 'if (item.id === "tdc-data-model" || item.id === "tdc-sor")' in js_text
-    assert 'payload.preview_source = "official_export"' not in js_text
-
-
-def test_tdc_sor_ui_uses_manual_vehicle_project_input() -> None:
-    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
-
-    assert "/api/tdc/sor/car-type-projects" in js_text
-    assert "loadTdcSorProjectOptions" in js_text
-    assert "tdc-car-type-project-options" in js_text
-    assert "重新加载车型项目" in js_text
-    assert "car_type_project_id" in js_text
-    assert "input.dataset.deliverableField = field.name;" in js_text
-
-
 def test_tdc_preview_source_rejects_unknown_values_before_upstream_access(client) -> None:
     before = len(FakeTDCWebClient.calls)
     response = client.post(
@@ -589,15 +567,6 @@ def test_tdc_preview_source_rejects_unknown_values_before_upstream_access(client
     assert response.status_code == 400
     assert response.get_json()["error"]["type"] == "ValidationError"
     assert len(FakeTDCWebClient.calls) == before
-
-
-def test_result_table_body_cells_wrap_long_text() -> None:
-    css_text = Path("web/static/style.css").read_text(encoding="utf-8-sig")
-    body_rules = re.findall(r"\.result-table tbody tr td\s*\{([^}]*)\}", css_text)
-
-    assert body_rules
-    assert "white-space: normal" in body_rules[-1]
-    assert "overflow-wrap: anywhere" in body_rules[-1]
 
 
 def test_tdc_export_cache_module_is_part_of_the_runtime_contract() -> None:
@@ -1217,95 +1186,3 @@ def test_tdc_disabled_a_face_routes_are_contract_blocked(client) -> None:
 
     missing = client.post("/api/tdc/dm-change-form/query", json={"base_url": "https://tdc.example", "filters": {}})
     assert missing.status_code == 404
-
-
-def test_static_deliverables_guards() -> None:
-    html_text = Path("web/templates/dashboard.html").read_text(encoding="utf-8-sig")
-    js_text = Path("web/static/app.js").read_text(encoding="utf-8-sig")
-    css_text = Path("web/static/style.css").read_text(encoding="utf-8-sig")
-
-    assert 'data-panel-link="deliverables"' in html_text
-    assert 'id="deliverables"' in html_text
-    assert "/api/deliverables/catalog" in js_text
-    for endpoint in (
-        "/api/tdc/data-model/query",
-        "/api/tdc/data-model/crawl-all",
-        "/api/tdc/data-model/export",
-        "/api/tdc/sor/query",
-        "/api/tdc/sor/crawl-all",
-        "/api/tdc/sor/export",
-    ):
-        assert endpoint in js_text
-
-    assert "RECENT_RUN_LIMIT" in js_text
-    assert "recentRuns" in js_text
-    assert "sessionStorage" not in js_text
-    assert "sessionStorage" not in html_text
-    storage_lines = [line for line in js_text.splitlines() if "localStorage" in line]
-    assert storage_lines
-    assert all("THEME_KEY" in line or "GRID_COLUMN_PREF_KEY" in line for line in storage_lines)
-    assert not re.search(
-        r"(?:cookie|token|authorization|sessionid|csrf|password).{0,80}localStorage",
-        html_text + js_text,
-        re.IGNORECASE,
-    )
-
-    assert "item.availability === \"available\"" in js_text
-    assert "item.availability !== \"available\"" in js_text
-    assert "Number(" in js_text
-    assert "redactSensitiveText(err.message)" in js_text
-    assert "clearDeliverablePayloadSecrets" in js_text
-    # 统一域账号登录后，交付物表单不再保留账号密码输入，凭据清理只剩 payload 侧。
-    assert "clearDeliverableFormSecrets" not in js_text
-    assert 'name="auth_mode"' not in js_text
-    assert "payload.headers = {}" in js_text
-    assert "tdc-headers" in js_text
-    assert 'name="output_format"' in js_text
-    assert 'value="XLSX"' in js_text
-    assert "checkValidity" in js_text
-    assert "reportValidity" in js_text
-    assert "DELIVERABLE_STATUS_TONE_CLASS" in js_text
-    assert "status-${item.implementation_status}" not in js_text
-    assert "当前请求仍在处理中，请等待完成" in js_text
-    assert "已排队" in js_text
-    assert 'name="operation_mode"' in js_text
-    assert '<option value="query" selected>查询预览</option>' in js_text
-    assert '<option value="crawl_all">全量抓取</option>' in js_text
-    assert '<option value="export">导出 XLSX</option>' in js_text
-    assert 'id="deliverable-operation-mode"' in js_text
-    assert 'operationMode.addEventListener("change"' in js_text
-    assert 'id="deliverable-run-button"' in js_text
-    assert 'id="deliverable-download-button"' in js_text
-    assert 'data-deliverable-download' in js_text
-    assert 'runDeliverableOperation(item, "export")' in js_text
-    assert 'preview_source' in js_text
-    assert 'mode.disabled = Boolean(isRunning)' in js_text
-    assert 'runButton.disabled = Boolean(isRunning)' in js_text
-    assert js_text.count('runDeliverableOperation(item, operation);') == 1
-    assert 'data-deliverable-operation' not in js_text
-    assert 'name="page" type="number" min="1" value="1" required' in js_text
-    assert 'name="page_size" type="number" min="1" value="50" required' in js_text
-    assert 'name="max_pages" type="number" min="1" value="100" required' in js_text
-    assert 'name="max_records" type="number" min="1" value="10000" required' in js_text
-    assert 'name="output_format" required' in js_text
-    assert 'name="file_name" type="text" value="${escapeHtml(config.defaultExportName)}" required' in js_text
-    assert js_text.index('operationMode.addEventListener("change"') < js_text.index('form.addEventListener("submit"')
-    assert ".deliverables-layout" in css_text
-    assert ".deliverable-item" in css_text
-    mobile_list_rule = re.search(
-        r"@media \(max-width: 560px\)[\s\S]*?\.deliverable-list\s*\{([^}]*)\}",
-        css_text,
-    )
-    assert mobile_list_rule is not None
-    assert "width: 100%" in mobile_list_rule.group(1)
-    assert "max-height: 42vh" in mobile_list_rule.group(1)
-    assert "overflow-y: auto" in mobile_list_rule.group(1)
-    assert "overflow-x: hidden" in mobile_list_rule.group(1)
-    assert ".recent-item" in css_text
-    assert ".status-chip.is-fully-implemented" in css_text
-    assert ".status-chip.is-backend-no-frontend" in css_text
-    assert ".status-chip.is-partial" in css_text
-    assert ".status-chip.is-placeholder" in css_text
-    assert "overflow-x: hidden" in css_text
-    assert "border-radius: 16px" not in css_text
-    assert css_text.count("border-radius: 12px") == 1

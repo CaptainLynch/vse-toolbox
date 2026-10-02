@@ -407,8 +407,7 @@ def test_form_snapshot_check_constraint_rebuild_allows_tdc_data_model(
             "SELECT sql FROM sqlite_master "
             "WHERE type = 'table' AND name = 'deliverable_form_snapshots'"
         ).fetchone()["sql"] or ""
-        assert "tdc_data_model" in ddl
-        assert "tdc_sor" in ddl
+        assert "form_key IN" not in ddl
         assert "deliverable_form_snapshots_rebuild" not in ddl
         assert not db.table_exists("deliverable_form_snapshots_rebuild")
         assert c.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -443,16 +442,13 @@ def test_form_snapshot_check_constraint_rebuild_allows_tdc_data_model(
         ).fetchone()[0]
         assert stored == 1
 
-    # 未知键仍被 CHECK 约束拒绝。
-    with db.get_connection() as c:
-        with pytest.raises(sqlite3.IntegrityError):
-            c.execute(
-                "INSERT INTO deliverable_form_snapshots "
-                "(snapshot_key, form_key, report_type, snapshot_at, row_count, "
-                "schema_json, summary_json, charts_json) "
-                "VALUES ('bad-key', 'unknown_form', 'ewo', "
-                "'2026-09-02T00:00:00Z', 0, '{}', '{}', '{}')"
-            )
+    # 表上已无 CHECK；未知键由写入前的注册表校验拒绝。
+    with pytest.raises(ValueError):
+        db.publish_deliverable_form_snapshot({
+            "formKey": "unknown_form", "reportType": "ewo",
+            "snapshotAt": "2026-09-02T00:00:00Z",
+            "schema": {}, "summary": {}, "charts": {}, "rows": [],
+        })
 
 
 def test_excel_task_artifact_schema_contract(tmp_db: DatabaseManager) -> None:
@@ -699,7 +695,7 @@ def test_form_snapshot_check_constraint_rebuild_allows_tdc_sor(
             "SELECT sql FROM sqlite_master "
             "WHERE type = 'table' AND name = 'deliverable_form_snapshots'"
         ).fetchone()["sql"] or ""
-        assert "tdc_sor" in ddl
+        assert "form_key IN" not in ddl
         assert "deliverable_form_snapshots_rebuild" not in ddl
         assert c.execute("PRAGMA foreign_key_check").fetchall() == []
 
@@ -1000,7 +996,7 @@ def test_seed_includes_form_snapshot_driven_deliverables(tmp_db: DatabaseManager
     ]
     assert [row["display_code"] for row in rows][-3:] == ["DEL-006", "DEL-007", "DEL-008"]
     for row in rows[-3:]:
-        assert row["name"] in ("PAA 报告", "NCR 审批进度", "NCR 审批明细")
+        assert row["name"] in ("PAA流程", "NCR 审批进度", "NCR 审批明细")
         assert row["planned_date"] is None
         assert row["progress"] == 0
         assert row["phase_id"] == "VPI-T2"
@@ -1014,6 +1010,52 @@ def test_seed_form_snapshot_driven_deliverables_idempotent(tmp_db: DatabaseManag
     rows = _seed_deliverable_rows(tmp_db)
     assert len(rows) == 8
     assert all(row["planned_date"] is None for row in rows[-3:])
+
+
+def test_seed_paa_deliverable_display_name(tmp_db: DatabaseManager) -> None:
+    """D6 交付物种子显示名统一为「PAA流程」（新库直接落新默认名）。"""
+    rows = _seed_deliverable_rows(tmp_db)
+    d6 = next(row for row in rows if row["id"] == "VPI-T2-D6")
+    assert d6["name"] == "PAA流程"
+
+
+def test_seed_renames_legacy_paa_report_name(tmp_path: Path) -> None:
+    """存量库升级时，D6 旧默认名「PAA 报告」必须被幂等更正为「PAA流程」；
+    用户自定义名不在迁移范围内，永不覆盖。"""
+    db = DatabaseManager(db_path=tmp_path / "legacy-paa-name.db")
+    db.init_database()
+    with db.get_connection() as conn:
+        # 还原存量库：D6 仍为旧默认名；同 id 的用户自定义名对照保留。
+        conn.execute(
+            "UPDATE project_status_deliverables SET name = 'PAA 报告' WHERE id = 'VPI-T2-D6'"
+        )
+        conn.commit()
+
+    db.init_database()  # 模拟应用重启后的再迁移
+    db.init_database()  # 幂等：重复迁移无副作用
+
+    with db.get_connection() as conn:
+        legacy = conn.execute(
+            "SELECT name FROM project_status_deliverables WHERE id = 'VPI-T2-D6'"
+        ).fetchone()[0]
+
+    assert legacy == "PAA流程"
+
+    # 用户手动改过的名字不在迁移范围内。
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE project_status_deliverables SET name = 'PAA 流程管理' WHERE id = 'VPI-T2-D6'"
+        )
+        conn.commit()
+
+    db.init_database()
+
+    with db.get_connection() as conn:
+        custom = conn.execute(
+            "SELECT name FROM project_status_deliverables WHERE id = 'VPI-T2-D6'"
+        ).fetchone()[0]
+
+    assert custom == "PAA 流程管理"
 
 
 def test_legacy_planned_date_not_null_is_relaxed_by_rebuild(tmp_path: Path) -> None:
