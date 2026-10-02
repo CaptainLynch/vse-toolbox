@@ -467,7 +467,7 @@
 .overview-deliverable-detail-view .form-cost-change-decrease { color: var(--success); font-weight: 700; }
 .overview-deliverable-detail-view .form-row-table-section { display: grid; gap: 10px; }
 .overview-deliverable-detail-view .form-row-table-wrap { overflow: auto; border: 1px solid var(--hairline); border-radius: 8px; }
-.overview-deliverable-detail-view .form-row-table { min-width: 1100px; width: 100%; border-collapse: collapse; }
+.overview-deliverable-detail-view .form-row-table { min-width: 1100px; width: max-content; border-collapse: collapse; }
 .overview-deliverable-detail-view .form-row-table th, .overview-deliverable-detail-view .form-row-table td { padding: 8px 10px; border-bottom: 1px solid var(--hairline); text-align: left; vertical-align: top; }
 .overview-deliverable-detail-view .form-row-table th { color: var(--muted); background: var(--surface-soft); font-size: 11px; white-space: nowrap; }
 .overview-deliverable-detail-view .form-row-table td { color: var(--body); font-size: 12px; }

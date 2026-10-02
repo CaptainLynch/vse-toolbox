@@ -79,11 +79,23 @@ export function SearchMultiSelect({
     }
   };
 
+  // Picking an option removes its button (selected values leave the candidate list) while
+  // the click is still bubbling. The selector then lives in a <label> in several hosts and the
+  // detached target no longer counts as "interactive content", so the label's default action
+  // would forward a click to its first labelable descendant — the new token's × button —
+  // and remove the value that was just picked. Cancelling the default action of clicks on our
+  // own buttons keeps pick / remove strictly local to this control.
+  const keepClickLocal = (event) => {
+    const target = event.target;
+    if (target && typeof target.closest === "function" && target.closest("button")) event.preventDefault();
+  };
+
   return html`<div
     class="analysis-multi-select"
     role="group"
     aria-label=${ariaLabel}
     ref=${rootRef}
+    onClick=${keepClickLocal}
     onfocusout=${(event) => {
       if (!rootRef.current || !rootRef.current.contains(event.relatedTarget)) closeList();
     }}
