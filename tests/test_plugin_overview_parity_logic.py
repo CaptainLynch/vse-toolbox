@@ -51,7 +51,12 @@ const paa = P.buildWizardDiscovery({model: "F610S", department: "技术中心_�
 const initSor = P.wizardInitialValues({matchRule: {approvalStatus: "审批中", status: "WRONG"}}, caps("sor", "tdc"), true);
 const initDm = P.wizardInitialValues({matchRule: {status: "已完成"}}, caps("data_model", "tdc"), true);
 const initNcr = P.wizardInitialValues({matchRule: {sectionScope: ["车身科", 7]}}, caps("ncr_detail"), true);
+const keep = P.buildPolicyPayload({id: "VPI-T2-D7"}, {reportType: "ncr_progress", sourceType: "aras", sectionScopePresets: ["车身科"], matchFields: [["projectModel", "车型项目"]]},
+  {matchRule: {projectModel: "F610S", sectionScope: ["车身科", "内饰科"]}}, {mode: "automatic", enabled: false, match: {projectModel: "F610S"}, authority: {}, mapping: {}, interval: "15"});
+const drop = P.buildPolicyPayload({id: "VPI-T2-D6"}, {reportType: "paa", sourceType: "aras", matchFields: [["projectModel", "车型项目"]]},
+  {matchRule: {projectModel: "F610S", sectionScope: ["车身科"]}}, {mode: "automatic", enabled: false, match: {projectModel: "F610S"}, authority: {}, mapping: {}, interval: "15"});
 console.log(JSON.stringify({
+  keepScope: keep.matchRule.sectionScope, dropScope: drop.matchRule.sectionScope === undefined,
   ncr: {filters: ncr.filters, rule: ncr.matchRule},
   ncrNoScope: {filters: ncrNoScope.filters, rule: ncrNoScope.matchRule},
   sor: {filters: sor.filters, rule: sor.matchRule},
@@ -87,6 +92,12 @@ def test_wizard_payloads_per_report_kind() -> None:
     # PAA ignores the status field entirely
     assert "status" not in data["paa"]["filters"] and "approval_status" not in data["paa"]["filters"]
     assert data["initSor"] == "审批中" and data["initDm"] == "已完成" and data["initNcr"] == ["车身科", "7"]
+
+
+def test_advanced_editor_keeps_the_ncr_scope_declaration() -> None:
+    data = _run(_WIZARD)
+    assert data["keepScope"] == ["车身科", "内饰科"]        # advanced save does not silently drop the wizard's declaration
+    assert data["dropScope"] is True                          # only NCR bindings carry it
 
 
 def test_stability_gate_messages_never_leak_identifiers() -> None:

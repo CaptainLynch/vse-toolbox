@@ -732,9 +732,11 @@ PROJECT_STATUS_SOURCE_CAPABILITIES: dict[str, dict[str, object]] = {
             "note": "风险备注（「状态」「更改主题」「更改类别」「当前审批人滞留天数」「备注」列）",
         },
         "syncNote": None,
+        # sectionScope：向导「科室」预设多选的范围声明（随绑定保存，不是查询键，不进 filterKeys，
+        # 也不参与映射证据签名；归集口径见 core/section_rollup）。
         "matchKeys": (
             "ncrNo", "projectModel", "projectNames", "sectionCode", "section_code",
-            "department", "rspDepartment", "changeType", "aggregate", "reportType",
+            "department", "rspDepartment", "changeType", "aggregate", "reportType", "sectionScope",
         ),
         "matchFields": (
             ("ncrNo", "NCR 编号", "ncr_no", "建议优先填写 NCR 编号"),
@@ -770,9 +772,11 @@ PROJECT_STATUS_SOURCE_CAPABILITIES: dict[str, dict[str, object]] = {
             "note": "风险备注（「状态」「更改主题」「更改类别」「零件更改类型」「备注」列）",
         },
         "syncNote": None,
+        # sectionScope：向导「科室」预设多选的范围声明（随绑定保存，不是查询键，不进 filterKeys，
+        # 也不参与映射证据签名；归集口径见 core/section_rollup）。
         "matchKeys": (
             "ncrNo", "projectModel", "projectNames", "sectionCode", "section_code",
-            "department", "rspDepartment", "changeType", "aggregate", "reportType",
+            "department", "rspDepartment", "changeType", "aggregate", "reportType", "sectionScope",
         ),
         "matchFields": (
             ("ncrNo", "NCR 编号", "ncr_no", "建议优先填写 NCR 编号"),

@@ -653,7 +653,10 @@ def test_candidate_preview_with_note_list_mapping(tmp_path):
 
 
 def test_candidate_preview_aggregate_multiple_records_with_note_list(tmp_path):
-    """聚合模式下多记录 candidate_preview：owner 不写，note 逐单号拼接。"""
+    """聚合模式下多记录 candidate_preview：owner 不写，note 为与执行同源的「共 N 条；状态计数」摘要。
+
+    （旧最终实现里预览仍走历史「单号：卡点」明细而连接器执行写摘要，预览与执行不一致；
+    现预览与连接器聚合路径传同一报表类型，逐字节一致。）"""
     db = DatabaseManager(tmp_path / "db.sqlite")
     db.init_database()
     service = MappingDiscoveryService(db)
@@ -687,7 +690,12 @@ def test_candidate_preview_aggregate_multiple_records_with_note_list(tmp_path):
 
     note_diff = next(d for d in diffs if d["targetField"] == "note")
     assert note_diff["sourceField"] == ["node", "status"]
-    assert note_diff["candidateValue"] == "F610S-001：节点A｜审批中；F610S-002：节点B｜待审核"
+    from services.project_status_records import build_aggregate_candidate_values
+    executed = build_aggregate_candidate_values(
+        identified_records(rows), {"note": ["node", "status"]}, report="data_model"
+    )["note"]
+    assert note_diff["candidateValue"] == executed
+    assert executed.startswith("共 2 条；")
 
 
 def test_candidate_preview_aggregate_multiple_records_with_single_string_note(tmp_path):
@@ -717,7 +725,12 @@ def test_candidate_preview_aggregate_multiple_records_with_single_string_note(tm
     assert preview["state"] == "matched"
     diffs = preview["differences"]
     note_diff = next(d for d in diffs if d["targetField"] == "note")
-    assert note_diff["candidateValue"] == "F610S-001：阶段卡点A；F610S-002：阶段卡点B"
+    from services.project_status_records import build_aggregate_candidate_values
+    executed = build_aggregate_candidate_values(
+        identified_records(rows), {"note": "summaryNote"}, report="data_model"
+    )["note"]
+    assert note_diff["candidateValue"] == executed
+    assert executed.startswith("共 2 条；")
 
 
 def test_observe_aggregate_mode_sanitization(tmp_db: DatabaseManager):
@@ -824,12 +837,13 @@ def test_candidate_preview_with_six_records_aligns_with_actual_connector_aggrega
         mapping=mapping, cursor={}, expected_deliverable_updated_at="v1",
         run_id=1, credential_ref="domain",
     )
-    actual_snap = _snapshot(ctx, rows, [])
+    # 生产连接器聚合路径总会传报表类型：预览必须与其逐字节一致。
+    actual_snap = _snapshot(ctx, rows, [], report="data_model")
     actual_note = actual_snap.candidates[0].field_values["note"]
 
-    # 彻底杜绝漏第 6 条的问题：两者严格相等
+    # 彻底杜绝漏第 6 条的问题：两者严格相等，且 N 是全部 6 条（不是 5 条展示样本）。
     assert preview_note == actual_note
-    assert "5：note-5" in preview_note
+    assert preview_note.startswith("共 6 条；")
 
 
 def test_fingerprint_parity_long_identity_and_large_record_set(tmp_path):
@@ -959,9 +973,8 @@ def test_aggregate_preview_recomputes_full_candidate_after_mapping_change(tmp_pa
     service.observe("VPI-T2-D5", "tdc", rows, aggregate=True)
     preview_a = service.candidate_preview("VPI-T2-D5")
     candidate_a = next(item["candidateValue"] for item in preview_a["differences"] if item["targetField"] == "note")
-    # API output is display-capped, while the comparison/cache retains the
-    # bounded full value used by execution.
-    assert len(candidate_a) == 200
+    # The summary is built from the bounded full cache (6 rows), not the 5 display rows.
+    assert candidate_a.startswith("共 6 条；")
     db.set_project_status_update_policy(
         "VPI-T2-D5", "automatic", True, None, json.dumps(rule),
         json.dumps({"note": "b"}), {"remark": "automatic"},
@@ -973,9 +986,10 @@ def test_aggregate_preview_recomputes_full_candidate_after_mapping_change(tmp_pa
         external_key=None, match_rule=rule, mapping={"note": "b"}, cursor={},
         expected_deliverable_updated_at="v1", run_id=1, credential_ref="domain",
     )
-    actual = _snapshot(ctx, rows, []).candidates[0].field_values["note"]
+    actual = _snapshot(ctx, rows, [], report="data_model").candidates[0].field_values["note"]
     assert candidate == actual
-    assert "5：B-5" in candidate
+    # 计数来自完整候选缓存（6 行），而不是 5 行展示样本。
+    assert candidate.startswith("共 6 条；") and candidate_a.startswith("共 6 条；")
 
 
 def test_candidate_preview_compares_full_values_and_normalizes_single_dates(tmp_path):
@@ -1321,3 +1335,46 @@ def test_f10_failed_sample_row_is_never_used_as_baseline(tmp_path):
     )
     assert after_failure["state"] == "not_found"
     assert after_failure["stability"] == {"confirmed": 0, "required": 2, "ready": False}
+
+
+@pytest.mark.parametrize(
+    ("deliverable_id", "source_type", "report", "match_rule", "mapping", "rows"),
+    [
+        ("VPI-T2-D2", "tdc", "sor", {"aggregate": True, "reportType": "sor"}, {"note": ["processInstanceStatus"]},
+         [{"processNo": f"S-{i}", "processInstanceStatus": status}
+          for i, status in enumerate(["审批中", "审批中", "已完成"])]),
+        ("VPI-T2-D5", "tdc", "data_model", {"aggregate": True, "reportType": "data_model"}, {"note": ["status"]},
+         [{"incident": f"I-{i}", "status": code} for i, code in enumerate(["2", "4", "4"])]),
+        ("VPI-T2-D6", "aras", "paa", {"aggregate": True, "reportType": "paa"}, {"note": ["state"]},
+         [{"_no": f"P-{i}", "state": state} for i, state in enumerate(["PROC", "PROC", "CLOSE"])]),
+        ("VPI-T2-D8", "aras", "ncr_detail", {"aggregate": True, "reportType": "ncr_detail"}, {"note": ["状态"]},
+         [{"NCR编号": f"N-{i}", "状态": "审批中", "测算工程工装费用(万元)": str(10 + i),
+           "测算单件成本变化（元）": str(-5 * i)} for i in range(3)]),
+    ],
+)
+def test_candidate_preview_note_is_byte_identical_to_the_executed_aggregate_note(
+    tmp_path, deliverable_id, source_type, report, match_rule, mapping, rows
+):
+    """预览与执行字节级一致：连接器写入的多记录备注（共 N 条；状态计数）与预览端同源。"""
+    from services.project_status_records import build_aggregate_candidate_values
+
+    db = DatabaseManager(tmp_path / "db.sqlite")
+    db.init_database()
+    service = MappingDiscoveryService(db)
+    db.set_project_status_update_policy(
+        deliverable_id=deliverable_id,
+        mode="automatic",
+        enabled=True,
+        external_key=None,
+        match_rule_json=json.dumps(match_rule),
+        mapping_json=json.dumps(mapping),
+        field_authority={"remark": "automatic"},
+    )
+    service.observe(deliverable_id, source_type, rows, None, aggregate=True, match_rule=match_rule)
+    service.observe(deliverable_id, source_type, rows, None, aggregate=True, match_rule=match_rule)
+
+    preview = service.candidate_preview(deliverable_id)
+    note = next(diff for diff in preview["differences"] if diff["targetField"] == "note")
+    executed = build_aggregate_candidate_values(identified_records(rows), mapping, report=report)["note"]
+    assert executed.startswith("共 3 条")
+    assert note["candidateValue"] == executed

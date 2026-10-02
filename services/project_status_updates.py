@@ -53,11 +53,33 @@ def _valid_mapping_source(source_field: object) -> bool:
     return False
 
 
+_SECTION_SCOPE_MAX_ITEMS = 20
+_SECTION_SCOPE_MAX_LEN = 100
+
+
+def _valid_section_scope(value: Any) -> bool:
+    """科室范围声明：非空字符串列表（无控制字符、不重复、有界）。"""
+    if not isinstance(value, list) or not value or len(value) > _SECTION_SCOPE_MAX_ITEMS:
+        return False
+    if not all(
+        isinstance(item, str) and bool(item.strip()) and len(item) <= _SECTION_SCOPE_MAX_LEN
+        and not _has_control_chars(item)
+        for item in value
+    ):
+        return False
+    return len({item.strip() for item in value}) == len(value)
+
+
 def _valid_match_rule_values(match_rule: Mapping[str, Any]) -> bool:
-    """Query rules contain only boolean aggregate and nonblank strings."""
+    """Query rules contain only boolean aggregate and nonblank strings.
+
+    ``sectionScope`` is the one declaration-only list (NCR wizard section presets).
+    """
     return all(
         isinstance(value, bool)
         if key == "aggregate"
+        else _valid_section_scope(value)
+        if key == "sectionScope"
         else isinstance(value, str) and bool(value.strip()) and not _has_control_chars(value)
         for key, value in match_rule.items()
     )

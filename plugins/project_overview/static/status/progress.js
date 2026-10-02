@@ -44,8 +44,13 @@ export function DeliverableProgressBand({ state }) {
     rememberedFilter = value;
     setFilterState(value);
   };
-  const ready = !state.loading && !state.error && !overviewIsEmpty(state.data);
   const data = state.data;
+  // 刷新时保留已渲染的环形卡：整网格替换成「加载中」会让「按下-刷新-松开」的点击被
+  // 浏览器取消（环图间歇性点不开的机制之一）。仅当还没有可显示数据（首次加载/空态后重载）
+  // 才显示加载占位；刷新期间网格标 aria-busy。
+  const refreshing = state.loading && !state.error && Boolean(data) && !overviewIsEmpty(data);
+  const ready = (!state.loading || refreshing) && !state.error && !overviewIsEmpty(data);
+  const rings = ready ? visibleProgressRings(data, filter) : [];
   return html`<section class="deliverable-status-band overview-band" aria-label="交付物完成状态">
     <div class="band-head">
       <div>
@@ -66,9 +71,11 @@ export function DeliverableProgressBand({ state }) {
         <span class="deliverable-auto-hidden">${autoHiddenHint(data.deliverables, filter, data)}</span>
       </label>` : null}
     </div>
-    <div class="deliverable-progress-grid">
+    <div class="deliverable-progress-grid" aria-busy=${refreshing ? "true" : undefined}>
       ${ready
-        ? visibleProgressRings(data, filter).map((ring) => html`<${ProgressRing} key=${ring.id} ring=${ring} />`)
+        ? (rings.length
+          ? rings.map((ring) => html`<${ProgressRing} key=${ring.id} ring=${ring} />`)
+          : html`<p class="is-empty">暂无可展示的交付物</p>`)
         : html`<${BandState} ...${state} onRetry=${state.retry} />`}
     </div>
   </section>`;

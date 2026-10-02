@@ -5,7 +5,7 @@
 > 权威来源：`web/app.py`、`web/diagnostics.py`、`web/ewo_enrichment.py` 路由装饰器；参数行为以代码和测试为准
 > 默认读取：按 API/UI 任务读取
 > 由 `tools/generate_api_endpoints.py` 从上述路由模块 AST 解析自动生成，
-> 生成时间：2026-09-22 08:06，共 94 个端点。
+> 生成时间：2026-10-02 04:12，共 102 个端点。
 > 手工新增路由后请重跑该脚本刷新本清单。
 
 通用约定：
@@ -126,6 +126,11 @@
 | 方法 | 路径 | 处理函数 |
 | --- | --- | --- |
 | GET/POST | `/` | `index` |
+| GET | `/api/host/manifest` | `api_host_manifest` |
+| GET | `/api/host/updates` | `api_host_updates` |
+| POST | `/api/host/updates/<plugin_id>/discard` | `api_host_updates_discard` |
+| POST | `/api/host/updates/<plugin_id>/rollback` | `api_host_updates_rollback` |
+| POST | `/api/host/updates/import` | `api_host_updates_import` |
 | GET | `/api/tasks` | `api_tasks_list` |
 | GET | `/api/tasks/<task_id>` | `api_tasks_get` |
 | POST | `/api/tasks/<task_id>/cancel` | `api_tasks_cancel` |
@@ -150,6 +155,7 @@
 | GET | `/api/project-status/deliverables/<deliverable_id>/debug-bundle` | `api_project_status_debug_bundle` |
 | GET | `/api/project-status/deliverables/<deliverable_id>/mapping-discovery` | `api_project_status_mapping_discovery_history` |
 | POST | `/api/project-status/deliverables/<deliverable_id>/mapping-discovery` | `api_project_status_mapping_discovery` |
+| POST | `/api/project-status/deliverables/<deliverable_id>/mapping-discovery/cancel` | `api_project_status_mapping_discovery_cancel` |
 | POST | `/api/project-status/deliverables/<deliverable_id>/sync-now` | `api_project_status_sync_now` |
 | GET | `/api/project-status/deliverables/<deliverable_id>/unified-status` | `api_project_status_unified_status` |
 | GET | `/api/project-status/deliverables/<deliverable_id>/update-policy` | `api_project_status_update_policy` |
@@ -161,4 +167,6 @@
 | GET | `/api/project-status/scheduler` | `api_project_status_scheduler_status` |
 | POST | `/api/project-status/scheduler/config` | `api_project_status_scheduler_config` |
 | POST | `/api/project-status/scheduler/sync-all` | `api_project_status_scheduler_sync_all` |
+| GET | `/api/project-status/section-rollup` | `api_section_rollup_get` |
+| PUT | `/api/project-status/section-rollup` | `api_section_rollup_put` |
 | GET | `/api/project-status/updates` | `api_project_status_updates` |

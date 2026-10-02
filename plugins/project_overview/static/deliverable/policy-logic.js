@@ -490,6 +490,10 @@ export function buildPolicyPayload(item, capabilities, storedPolicy, values) {
     if (value) payload.matchRule[key] = value;
     else delete payload.matchRule[key];
   });
+  // NCR 科室范围声明由向导维护；高级设置保存时原样保留，避免静默丢失。
+  if (capabilities.sectionScopePresets && Array.isArray(storedRule.sectionScope) && storedRule.sectionScope.length) {
+    payload.matchRule.sectionScope = storedRule.sectionScope.map((value) => String(value));
+  }
   if (!payload.externalKey && !payload.matchRule.aggregate && payload.matchRule.ewoNo) payload.externalKey = payload.matchRule.ewoNo;
   EWO_POLICY_AUTOMATIC_FIELDS.forEach(([key]) => {
     const automatic = Boolean(values.authority && values.authority[key]);

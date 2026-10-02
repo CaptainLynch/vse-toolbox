@@ -316,10 +316,11 @@ def build_aggregate_candidate_values(
 ) -> dict[str, str | None]:
     """统一根据规范化记录集与映射生成拟写入字段值（connector 与 preview 唯一来源）。
 
-    ``report``（G34 备注摘要化，过渡语义）：``None`` 时多记录分支保持旧
-    明细行为（逐条「单号：卡点信息」以「；」连接、1000 字截断）——历史调用
-    方（discovery / ewo_v2）不传即不变；连接器聚合路径接线后总会传报表类型，
-    此时多记录分支返回确定性摘要（见 :func:`_aggregate_note_summary`）。
+    ``report``（G34 备注摘要化）：``None`` 时多记录分支保持旧明细行为（逐条
+    「单号：卡点信息」以「；」连接、1000 字截断），仅供不带报表语境的调用方；
+    连接器聚合路径、ewo_v2 与映射取证/候选预览一律传同一报表类型（能力注册表的
+    ``reportType``），此时多记录分支返回确定性摘要（见 :func:`_aggregate_note_summary`），
+    预览与执行逐字节一致。
     单记录分支两种取值下行为完全一致。
     """
     if not identified:

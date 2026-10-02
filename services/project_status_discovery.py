@@ -9,7 +9,10 @@ import re
 from typing import Any, Mapping, Sequence
 
 from core.db_manager import DatabaseManager
-from core.project_status_contracts import project_status_supports_record_set
+from core.project_status_contracts import (
+    PROJECT_STATUS_SOURCE_CAPABILITIES,
+    project_status_supports_record_set,
+)
 from core.redaction import redact_sensitive_text
 from services.project_status_records import (
     IDENTITY_FIELDS as _IDENTITY_FIELDS,
@@ -53,6 +56,18 @@ def _scalar(value: Any) -> str | None:
 def _key(row: Mapping[str, Any]) -> str | None:
     value = record_identity(row)
     return value or None
+
+
+def _aggregate_report(deliverable_id: str) -> str | None:
+    """多记录备注摘要的报表类型（与连接器聚合路径同源：能力注册表的 reportType）。
+
+    预览（候选值对比）必须与连接器实际写入逐字节一致：连接器总会传报表类型，
+    因此取证/预览端也必须传同一类型，否则预览仍显示旧「单号：状态」明细而执行
+    写入「共 N 条；状态计数」摘要。
+    """
+    capabilities = PROJECT_STATUS_SOURCE_CAPABILITIES.get(str(deliverable_id), {})
+    report = str(capabilities.get("reportType") or "").strip()
+    return report or None
 
 
 class MappingDiscoveryService:
@@ -149,9 +164,11 @@ class MappingDiscoveryService:
                 fingerprint = aggregate_fingerprint(records)
                 if versioned_ewo:
                     from services.ewo_binding_records import ewo_v2_candidate_values
-                    aggregated_candidate_values = ewo_v2_candidate_values(records, current_mapping, effective_rule)
+                    aggregated_candidate_values = ewo_v2_candidate_values(records, current_mapping, effective_rule, report=_aggregate_report(deliverable_id))
                 else:
-                    aggregated_candidate_values = build_aggregate_candidate_values(records, current_mapping)
+                    aggregated_candidate_values = build_aggregate_candidate_values(
+                        records, current_mapping, report=_aggregate_report(deliverable_id)
+                    )
         else:
             candidates = [(key, row) for key, row in keyed if selected is None or key == selected]
             full_candidates = [
@@ -846,9 +863,13 @@ class MappingDiscoveryService:
         if cache_complete:
             if binding_match_rule.get('contractVersion') == '2':
                 from services.ewo_binding_records import ewo_v2_candidate_values
-                candidate_values = ewo_v2_candidate_values(cached_records, mapping, binding_match_rule)
+                candidate_values = ewo_v2_candidate_values(
+                    cached_records, mapping, binding_match_rule, report=_aggregate_report(deliverable_id)
+                )
             else:
-                candidate_values = build_aggregate_candidate_values(cached_records, mapping)
+                candidate_values = build_aggregate_candidate_values(
+                    cached_records, mapping, report=_aggregate_report(deliverable_id)
+                )
         else:
             # A display sample is intentionally capped at five rows/200
             # characters and cannot authorize a write, even for a legacy

@@ -23,6 +23,10 @@ import pytest
 
 playwright_sync = pytest.importorskip("playwright.sync_api")
 
+# Several tests intentionally leave a request unanswered (hung upstream); the pending Playwright
+# route handlers are discarded at teardown and would otherwise surface as unraisable warnings.
+pytestmark = pytest.mark.filterwarnings("ignore::pytest.PytestUnraisableExceptionWarning")
+
 import web.app as web_app  # noqa: E402
 from core.db_manager import DatabaseManager  # noqa: E402
 from services.deliverable_form_analysis import build_form_snapshot, form_definition  # noqa: E402
@@ -64,6 +68,7 @@ def _seed_snapshots(db: DatabaseManager) -> None:
             artifacts=({"display_name": "paa.json", "relative_path": "aras/paa/paa.json", "artifact_type": "normalized_json"},),
         )
     )
+
     # NCR detail: four cost metrics, one negative, one empty-vs-zero pair.
     def ncr_row(no: str, section: str, **costs: object) -> dict[str, object]:
         labelled: dict[str, object] = {"NCR编号": no, "状态": "审批中", "区域": section, "项目": "F610S",
@@ -75,8 +80,9 @@ def _seed_snapshots(db: DatabaseManager) -> None:
         build_form_snapshot(
             "aras_ncr_detail",
             [
-                ncr_row("NCR-001", "车身科", **{"测算工程工装费用(万元)": 10.5, "批准工程工装费用（万元）": 0,
-                                                "测算单件成本变化（元）": -50}),
+                ncr_row("NCR-001", "车身科", **{
+                    "测算工程工装费用(万元)": 10.5, "批准工程工装费用（万元）": 0, "测算单件成本变化（元）": -50,
+                }),
                 ncr_row("NCR-002", "车身科", **{"测算工程工装费用(万元)": 1.5}),
                 ncr_row("NCR-003", "内饰科"),
             ],
@@ -920,3 +926,203 @@ def test_wizard_end_to_end_against_real_backend_task_contract(session: Session, 
     assert saved["enabled"] is True and saved["mode"] == "automatic"
     assert saved["matchRule"]["projectModel"] == "F999X"
     assert saved["mapping"]["note"] == ["latestApproveLog", "status"]
+
+
+# ---------------------------------------------------------------------------
+# preserved behaviour (regression guard): ring centre, click / keyboard jump, placeholder
+
+
+def test_progress_rings_centre_navigate_by_mouse_and_keyboard(session: Session) -> None:
+    page = session.page
+    page.goto(f"{session.base}/#p/project-overview/status")
+    page.wait_for_selector(".progress-ring")
+    ring = page.locator(".progress-ring").first
+    visual = ring.locator(".ring-visual").bounding_box()
+    centre = ring.locator(".ring-center").bounding_box()
+    assert visual and centre
+    assert abs((visual["x"] + visual["width"] / 2) - (centre["x"] + centre["width"] / 2)) <= 1.5
+    assert abs((visual["y"] + visual["height"] / 2) - (centre["y"] + centre["height"] / 2)) <= 1.5
+    # deliverables without a synced value show the placeholder, not a fake percentage
+    unsynced = page.locator(".progress-ring", has_text="待同步").first
+    assert "%" not in unsynced.locator(".ring-center").inner_text()
+    ring.click()
+    page.wait_for_selector(".overview-deliverable-detail-view")
+    assert "deliverable?id=" in page.evaluate("location.hash")
+    page.goto(f"{session.base}/#p/project-overview/status")
+    page.wait_for_selector(".progress-ring")
+    page.locator(".progress-ring").nth(1).focus()
+    page.keyboard.press("Enter")
+    page.wait_for_selector(".overview-deliverable-detail-view")
+    page.go_back()
+    page.wait_for_selector(".progress-ring")
+    page.locator(".progress-ring").nth(2).focus()
+    page.keyboard.press(" ")
+    page.wait_for_selector(".overview-deliverable-detail-view")
+
+
+def _tab(page: Any, label: str) -> Any:
+    return page.locator(".form-chart-tabs > .form-chart-tab-list > .form-chart-tab", has_text=label)
+
+
+def _locked(page: Any) -> str | None:
+    return page.get_attribute(".form-chart-tabs", "data-form-interaction-locked")
+
+
+def test_failed_tab_reload_unlocks_and_shows_retryable_error(session: Session) -> None:
+    page = session.page
+    session.open_deliverable("VPI-T2-D5")
+    page.wait_for_selector(".form-chart-tabs")
+    page.route("**/api/deliverable-forms/tdc_data_model/view*",
+               lambda r: _json_response(r, {"ok": False, "error": {"type": "ServerError", "message": "boom"}}, status=500))
+    _tab(page, "数量趋势").click()
+    page.wait_for_selector(".form-view-load-error")
+    assert "暂不可用" in page.inner_text(".form-view-load-error")
+    assert _locked(page) == "false"
+    page.locator(".form-filter-keyword").first.fill("abc")           # controls are usable again
+    assert page.locator(".form-filter-keyword").first.input_value() == "abc"
+    assert page.get_by_role("button", name="刷新表单数据").count() >= 1
+
+
+def test_stale_failure_does_not_unlock_while_newer_request_is_in_flight(session: Session) -> None:
+    page = session.page
+    session.open_deliverable("VPI-T2-D5")
+    page.wait_for_selector(".form-chart-tabs")
+    held: list[Any] = []
+    page.route("**/api/deliverable-forms/tdc_data_model/view*", lambda r: held.append(r))
+    page.route("**/api/deliverable-forms/tdc_data_model/rows*", lambda r: held.append(r))
+    _tab(page, "数量趋势").click()                                    # request A: view + rows held
+    page.wait_for_function("document.querySelector('.form-chart-tabs').dataset.formInteractionLocked === 'true'")
+    _tab(page, "部门状态").click()                                    # request B (newer): held as well
+    page.wait_for_function("document.querySelector('.form-chart-tabs').dataset.formInteractionLocked === 'true'")
+    page.wait_for_timeout(200)
+    assert len(held) == 4
+    # request A settles with a failure: it is stale, so it neither shows an error nor unlocks
+    for route in held[:2]:
+        _json_response(route, {"ok": False, "error": {"type": "ServerError", "message": "late"}}, status=500)
+    page.wait_for_timeout(300)
+    assert _locked(page) == "true"
+    assert page.locator(".form-view-load-error").count() == 0
+    # request B settles: lock released, content belongs to B
+    for route in held[2:]:
+        route.continue_()
+    page.wait_for_function("document.querySelector('.form-chart-tabs').dataset.formInteractionLocked === 'false'")
+    assert "is-active" in (_tab(page, "部门状态").get_attribute("class") or "")
+    assert page.locator(".form-view-load-error").count() == 0
+
+
+def test_old_request_settling_after_navigation_does_not_touch_the_new_view(session: Session) -> None:
+    page = session.page
+    session.open_deliverable("VPI-T2-D5")
+    page.wait_for_selector(".form-chart-tabs")
+    held: list[Any] = []
+    page.route("**/api/deliverable-forms/tdc_data_model/view*", lambda r: held.append(r))
+    page.route("**/api/deliverable-forms/tdc_data_model/rows*", lambda r: held.append(r))
+    _tab(page, "数量趋势").click()
+    page.wait_for_function("document.querySelector('.form-chart-tabs').dataset.formInteractionLocked === 'true'")
+    session.open_deliverable("VPI-T2-D6")                            # new deliverable, its own view
+    page.wait_for_selector(".form-row-table")
+    for route in held:
+        _json_response(route, {"ok": False, "error": {"type": "ServerError", "message": "late"}}, status=500)
+    page.wait_for_timeout(400)
+    assert _locked(page) == "false"
+    assert page.locator(".form-view-load-error").count() == 0
+    assert "PAA流程" in page.inner_text(".form-analysis-title")
+
+
+def test_ncr_wizard_end_to_end_saves_section_scope_declaration(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    """NCR: the section selection must survive the real binding validation and never reach the upstream query."""
+    from services.project_status_connectors import ArasProjectStatusConnector
+
+    queried: list[dict[str, Any]] = []
+    rows = [{"NCR编号": f"NCR-{i:03d}", "状态": "审批中", "更改主题": f"主题{i}", "区域": "车身科"} for i in range(4)]
+
+    def fake_collect(cls: Any, crawler: Any, report: str, rule: Any) -> list[dict[str, Any]]:
+        queried.append({"report": report, "rule": dict(rule)})
+        return list(rows)
+
+    monkeypatch.setattr(ArasProjectStatusConnector, "_collect_ncr_rows", classmethod(fake_collect))
+    monkeypatch.setattr(web_app, "_build_aras_client_from_payload", lambda payload, hosts: object())
+    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    web_app._MAPPING_DISCOVERY_TASKS.clear()
+    page = session.page
+    page.route("**/api/settings", lambda r: _json_response(r, {"ok": True, "data": {"credentialVaultConfigured": True}})
+               if r.request.method == "GET" else r.fallback())
+    page.route("**/sync-now", lambda r: _json_response(r, {"ok": True, "data": {"result": {"finalState": "success", "outcome": "completed"}}}))
+    session.open_deliverable("VPI-T2-D7")
+    page.wait_for_selector(".policy-sync-summary")
+    page.locator(".policy-sync-enable-btn").click()
+    page.locator(".policy-wizard-field", has_text="车型项目").locator("input").fill("F610S")
+    box = page.locator(".policy-wizard-field", has_text="科室（选填，可多选）").locator(".analysis-multi-select")
+    for name in ("车身科", "内饰科"):
+        box.locator("input").click()
+        box.locator(f".analysis-multi-select-option[data-value='{name}']").click()
+    page.locator(".policy-wizard-start-btn").click()
+    try:
+        page.wait_for_function(
+            "['配置并启用成功', '配置启用失败'].some(t => ((document.querySelector('.policy-sync-wizard-status')||{}).innerText||'').includes(t))",
+            timeout=20000,
+        )
+        text = page.inner_text(".policy-sync-wizard-status")
+    finally:
+        web_app._MAPPING_DISCOVERY_TASKS.clear()
+    assert "配置并启用成功" in text, text
+    assert queried and all("sectionScope" not in call["rule"] and "department" not in call["rule"] for call in queried)
+    saved = page.evaluate("""async () => (await (await fetch('/api/project-status/deliverables/VPI-T2-D7/update-policy')).json()).data""")
+    assert saved["enabled"] is True
+    assert saved["matchRule"]["sectionScope"] == ["车身科", "内饰科"]
+    assert saved["matchRule"]["projectModel"] == "F610S" and "department" not in saved["matchRule"]
+    # the saved declaration is shown on the summary card
+    page.reload()
+    page.wait_for_selector(".policy-sync-summary")
+    assert "车身科、内饰科" in page.inner_text(".policy-sync-summary-facts")
+
+
+def _run_wizard_to_end(session: Session, deliverable: str, fill: Any = None) -> str:
+    page = session.page
+    page.route("**/api/settings", lambda r: _json_response(r, {"ok": True, "data": {"credentialVaultConfigured": True}})
+               if r.request.method == "GET" else r.fallback())
+    page.route("**/sync-now", lambda r: _json_response(r, {"ok": True, "data": {"result": {"finalState": "success", "outcome": "completed"}}}))
+    session.open_deliverable(deliverable)
+    page.wait_for_selector(".policy-sync-summary")
+    page.locator(".policy-sync-enable-btn").click()
+    page.locator(".policy-wizard-field", has_text="车型项目").locator("input").fill("F610S")
+    if fill:
+        fill(page)
+    page.locator(".policy-wizard-start-btn").click()
+    try:
+        page.wait_for_function(
+            "['配置并启用成功', '配置启用失败'].some(t => ((document.querySelector('.policy-sync-wizard-status')||{}).innerText||'').includes(t))",
+            timeout=20000,
+        )
+        return page.inner_text(".policy-sync-wizard-status")
+    finally:
+        web_app._MAPPING_DISCOVERY_TASKS.clear()
+
+
+def test_sor_wizard_end_to_end_with_status_filter_and_real_binding(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    filters_seen: list[Any] = []
+    rows = [{"processNo": f"S-{i:03d}", "carTypeProject": "F610S", "latestCompletedNode": "节点A",
+             "processInstanceStatus": "审批中"} for i in range(5)]
+
+    class FakeTDCClient:
+        def crawl_sor_all(self, filters, max_records=5000, should_stop=None):  # type: ignore[no-untyped-def]
+            filters_seen.append(filters)
+            return SimpleNamespace(rows=list(rows), total=5, complete=True, stop_reason="reported_pages")
+
+        def query_sor_page(self, filters, page=1, page_size=50):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(rows=rows[:page_size], total=5, page=page, page_size=page_size)
+
+    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda payload, hosts: FakeTDCClient())
+    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    web_app._MAPPING_DISCOVERY_TASKS.clear()
+    text = _run_wizard_to_end(
+        session, "VPI-T2-D2",
+        lambda page: page.locator(".policy-wizard-field", has_text="状态（选填）").locator("input").fill("审批中"),
+    )
+    assert "配置并启用成功" in text, text
+    assert filters_seen and getattr(filters_seen[0], "approval_status", None) == "审批中"     # reached the upstream query
+    saved = session.page.evaluate("""async () => (await (await fetch('/api/project-status/deliverables/VPI-T2-D2/update-policy')).json()).data""")
+    assert saved["matchRule"]["approvalStatus"] == "审批中" and saved["enabled"] is True
+    assert saved["mapping"]["note"] == ["latestCompletedNode", "processInstanceStatus"]
