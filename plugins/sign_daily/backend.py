@@ -57,6 +57,8 @@ def _default_config() -> dict[str, Any]:
     return {
         "roleDepartments": dict(R.DEFAULT_ROLE_DEPARTMENTS),
         "personDepartments": {},
+        # 「@部门」归属时，申请部门 -> 实际科室
+        "applicantDepartments": dict(R.DEFAULT_APPLICANT_DEPARTMENTS),
         "longCycleNames": [],
         # 项目 -> {零件名称: 是否长周期}，生成前勾选确认的结果
         "longCycleConfirmed": {},
@@ -110,6 +112,8 @@ def _validate_config_patch(patch: Any) -> dict[str, Any]:
         clean["roleDepartments"] = _str_map(patch["roleDepartments"], "角色列→科室")
     if "personDepartments" in patch:
         clean["personDepartments"] = _str_map(patch["personDepartments"], "人员→科室")
+    if "applicantDepartments" in patch:
+        clean["applicantDepartments"] = _str_map(patch["applicantDepartments"], "申请部门→科室")
     if "longCycleNames" in patch:
         clean["longCycleNames"] = _str_list(patch["longCycleNames"], "长周期件清单")
     if "longCycleConfirmed" in patch:
@@ -298,6 +302,7 @@ def compose(db: Any, config: Mapping[str, Any], form: Mapping[str, Any], today: 
         feishu_link=form["feishuLink"],
         role_departments=config.get("roleDepartments") or R.DEFAULT_ROLE_DEPARTMENTS,
         person_departments=config.get("personDepartments") or {},
+        applicant_departments=config.get("applicantDepartments") or {},
         previous=previous,
         previous_date=previous_date,
     )

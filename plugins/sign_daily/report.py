@@ -50,6 +50,8 @@ UNASSIGNED = "未分配"
 #: 角色列映射成这个值时，科室取该份单的「部门」（审批人通常就在起草人科室）。
 APPLICANT_DEPARTMENT = "@部门"
 STALL_REASON_PLACEHOLDER = "未填写原因"
+#: 「@部门」归属时，申请部门 -> 实际科室（Lynch 10-02：ES科 的审批人归运营管理部）。
+DEFAULT_APPLICANT_DEPARTMENTS: dict[str, str] = {"ES科": "运营管理部"}
 
 #: 角色列→科室初始映射（待 Lynch 确认，可在页面「设置」里改）。
 DEFAULT_ROLE_DEPARTMENTS: dict[str, str] = {
@@ -387,13 +389,15 @@ def resolve_department(
     flow: Flow,
     role_departments: Mapping[str, str],
     person_departments: Mapping[str, str],
+    applicant_departments: Mapping[str, str] | None = None,
 ) -> str:
     override = _text(person_departments.get(signer.name))
     if override:
         return override
     mapped = _text(role_departments.get(signer.column))
     if mapped == APPLICANT_DEPARTMENT:
-        return flow.department or UNASSIGNED
+        aliased = _text((applicant_departments or {}).get(flow.department))
+        return aliased or flow.department or UNASSIGNED
     return mapped or UNASSIGNED
 
 
@@ -402,6 +406,7 @@ def owed_by_department(
     phase: str,
     role_departments: Mapping[str, str],
     person_departments: Mapping[str, str],
+    applicant_departments: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """未完成单里每个未签人的欠账份数，按科室分组；科室、人都按份数从多到少。"""
     counts: dict[str, dict[str, set[str]]] = {}
@@ -411,7 +416,7 @@ def owed_by_department(
             continue  # 已完成（含签署率<100%的）不进欠账
         for signer in flow.unsigned(phase):
             dept = person_dept.setdefault(
-                signer.name, resolve_department(signer, flow, role_departments, person_departments)
+                signer.name, resolve_department(signer, flow, role_departments, person_departments, applicant_departments)
             )
             counts.setdefault(dept, {}).setdefault(signer.name, set()).add(flow.serial)
     groups = []
@@ -430,6 +435,7 @@ def flow_table(
     today: date,
     role_departments: Mapping[str, str],
     person_departments: Mapping[str, str],
+    applicant_departments: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """未关闭的单：按当前阶段、已申请天数从长到短排。"""
     rows = []
@@ -437,7 +443,7 @@ def flow_table(
         if flow.is_closed:
             continue
         unsigned = [
-            {"name": s.name, "department": resolve_department(s, flow, role_departments, person_departments),
+            {"name": s.name, "department": resolve_department(s, flow, role_departments, person_departments, applicant_departments),
              "phase": s.phase}
             for s in flow.unsigned()
         ]
@@ -723,6 +729,7 @@ def build_report(
     role_departments: Mapping[str, str],
     person_departments: Mapping[str, str],
     previous: Mapping[str, Any] | None,
+    applicant_departments: Mapping[str, str] | None = None,
     previous_date: date | None,
 ) -> dict[str, Any]:
     label = project_label(projects, flows)
@@ -732,7 +739,7 @@ def build_report(
     if delta is not None and previous_date is not None and (today - previous_date).days != 1:
         delta_note = f"注：括号内为较{previous_date:%m-%d}的变化。"
     owed = {
-        phase: owed_by_department(flows, phase, role_departments, person_departments)
+        phase: owed_by_department(flows, phase, role_departments, person_departments, applicant_departments)
         for phase in (PHASE_COUNTERSIGN, PHASE_APPROVAL)
     }
     report: dict[str, Any] = {
@@ -745,7 +752,7 @@ def build_report(
         "planText": plan_text,
         "feishuLink": feishu_link,
         "owed": owed,
-        "flows": flow_table(flows, today, role_departments, person_departments),
+        "flows": flow_table(flows, today, role_departments, person_departments, applicant_departments),
         "unassigned": unassigned_people(owed.values()),
     }
     report["html"] = render_html(report)

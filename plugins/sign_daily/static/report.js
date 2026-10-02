@@ -93,6 +93,7 @@ function Chips({ options, value, onChange, emptyText }) {
 function Settings({ config, onSave }) {
   const [roles, setRoles] = useState({ ...config.roleDepartments });
   const [people, setPeople] = useState(formatPairs(config.personDepartments));
+  const [applicants, setApplicants] = useState(formatPairs(config.applicantDepartments));
   const [longNames, setLongNames] = useState((config.longCycleNames || []).join("\n"));
   const [book, setBook] = useState(config.addressBook || "");
   const [busy, setBusy] = useState(false);
@@ -104,6 +105,7 @@ function Settings({ config, onSave }) {
       await onSave({
         roleDepartments: roles,
         personDepartments: parsePairs(people),
+        applicantDepartments: parsePairs(applicants),
         longCycleNames: parseLines(longNames),
         addressBook: book,
       });
@@ -124,6 +126,10 @@ function Settings({ config, onSave }) {
           ${ROLE_COLUMNS.map((column) => html`<label key=${column}>${column}
             <input value=${roles[column] || ""} onInput=${(e) => setRoles({ ...roles, [column]: e.target.value })} /></label>`)}
         </div>
+      </section>
+      <section>
+        <h4>「@部门」的申请部门 → 科室</h4>
+        <textarea rows="3" placeholder="每行一条，例如：ES科=运营管理部" value=${applicants} onInput=${(e) => setApplicants(e.target.value)}></textarea>
       </section>
       <section>
         <h4>人员 → 科室（优先于角色列）</h4>
