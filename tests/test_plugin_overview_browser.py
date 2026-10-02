@@ -203,6 +203,8 @@ class Session:
         self.page.wait_for_selector(".overview-deliverable-detail-view")
 
     def close(self) -> None:
+        # held (never answered) routes would otherwise warn about un-awaited handlers at teardown
+        self.page.unroute_all(behavior="ignoreErrors")
         self.context.close()
 
 
@@ -857,3 +859,64 @@ def test_wizard_layout_on_narrow_viewport(narrow: Session) -> None:
     box = page.locator(".policy-wizard-field", has_text="科室（选填，可多选）").locator(".analysis-multi-select")
     box.locator("input").click()
     assert box.locator(".analysis-multi-select-option").first.is_visible()
+
+
+def test_wizard_end_to_end_against_real_backend_task_contract(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Front end <-> back end wiring: only the upstream TDC client is faked.
+
+    The real server answers the first discovery with 202 + taskId/paramsHash, runs the crawl as a
+    background task, serves `/api/tasks/<id>/result`, answers the stability check from the same wizard
+    session with a light sample check, and accepts the binding the wizard saves.
+    """
+    from types import SimpleNamespace
+
+    actions: list[str] = []
+    ordered = [
+        {"incident": f"INC-{i:04d}", "projectModel": "F999X", "department": "车体工程",
+         "latestApproveLog": "审批通过", "status": "2"}
+        for i in range(12)
+    ]
+
+    class FakeTDCClient:
+        def crawl_data_model_all(self, filters, max_records=5000, should_stop=None):  # type: ignore[no-untyped-def]
+            actions.append("crawl_all")
+            return SimpleNamespace(rows=list(ordered), total=12, complete=True, stop_reason="reported_pages")
+
+        def query_data_model_page(self, filters, page=1, page_size=50):  # type: ignore[no-untyped-def]
+            actions.append("query_page")
+            return SimpleNamespace(rows=ordered[:page_size], total=12, page=page, page_size=page_size)
+
+    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda payload, hosts: FakeTDCClient())
+    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    web_app._MAPPING_DISCOVERY_TASKS.clear()
+    page = session.page
+    page.route("**/api/settings", lambda r: _json_response(r, {"ok": True, "data": {"credentialVaultConfigured": True}})
+               if r.request.method == "GET" else r.fallback())
+    page.route("**/sync-now", lambda r: _json_response(r, {"ok": True, "data": {"result": {"finalState": "success", "outcome": "completed"}}}))
+    seen: list[str] = []
+    page.on("response", lambda resp: seen.append(f"{resp.status} {resp.request.method} {resp.url.split('/api/', 1)[-1]}")
+            if "/mapping-discovery" in resp.url or "/api/tasks/" in resp.url else None)
+    session.open_deliverable("VPI-T2-D5")
+    page.wait_for_selector(".policy-sync-summary")
+    page.locator(".policy-sync-enable-btn").click()
+    page.locator(".policy-wizard-field", has_text="车型项目").locator("input").fill("F999X")
+    page.locator(".policy-wizard-start-btn").click()
+    text = ""
+    try:
+        page.wait_for_function(
+            "(document.querySelector('.policy-sync-wizard-status')||{}).innerText?.includes('配置并启用成功') || "
+            "(document.querySelector('.policy-sync-wizard-status')||{}).innerText?.includes('配置启用失败')",
+            timeout=20000,
+        )
+        text = page.inner_text(".policy-sync-wizard-status")
+    finally:
+        web_app._MAPPING_DISCOVERY_TASKS.clear()
+    assert "配置并启用成功" in text, (text, seen)
+    assert any(line.startswith("202 POST") for line in seen), seen                      # background task handshake
+    assert any("/result" in line and line.startswith("200") for line in seen), seen    # isomorphic result served
+    assert actions == ["crawl_all", "query_page"]                                      # one full crawl + one light sample check
+    # the real binding was saved by the wizard
+    saved = page.evaluate("""async () => (await (await fetch('/api/project-status/deliverables/VPI-T2-D5/update-policy')).json()).data""")
+    assert saved["enabled"] is True and saved["mode"] == "automatic"
+    assert saved["matchRule"]["projectModel"] == "F999X"
+    assert saved["mapping"]["note"] == ["latestApproveLog", "status"]

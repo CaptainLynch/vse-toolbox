@@ -345,7 +345,10 @@ export const FORM_TRUNCATED_COLUMN_LABELS = new Set([
 export function formAbsentSourceIndexes(data) {
   return new Set(
     Array.isArray(data && data.sourceAbsentIndexes)
-      ? data.sourceAbsentIndexes.map((index) => Number(index)).filter((index) => Number.isFinite(index))
+      ? data.sourceAbsentIndexes
+        .filter((index) => index !== null && index !== "" && typeof index !== "boolean")
+        .map((index) => Number(index))
+        .filter((index) => Number.isFinite(index))
       : [],
   );
 }
