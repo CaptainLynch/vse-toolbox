@@ -1360,3 +1360,24 @@ def test_mapping_discovery_async_artifact_redline_on_async_path(client, monkeypa
             assert forbidden not in artifact_text
     finally:
         web_app._MAPPING_DISCOVERY_TASKS.clear()
+
+
+def test_mapping_discovery_cancel_endpoint_does_not_require_base_url(client) -> None:  # type: ignore[no-untyped-def]
+    """The page's abort handler sends only the cancel token (nothing is queried upstream)."""
+    token, event = web_app._register_discovery_cancel("disc-no-base-url")
+    try:
+        response = client.post(
+            "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery/cancel",
+            json={"cancelToken": token},
+        )
+        assert response.status_code == 200, response.get_json()
+        assert response.get_json()["data"]["cancelled"] is True
+        assert event is not None and event.is_set() is True
+        assert client.post(
+            "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery/cancel", json={"cancelToken": "bad token!"},
+        ).status_code == 400
+        assert client.post(
+            "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery/cancel", data="not json",
+        ).status_code == 400
+    finally:
+        web_app._release_discovery_cancel(token, event)

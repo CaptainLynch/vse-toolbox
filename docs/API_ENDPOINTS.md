@@ -5,7 +5,7 @@
 > 权威来源：`web/app.py`、`web/diagnostics.py`、`web/ewo_enrichment.py` 路由装饰器；参数行为以代码和测试为准
 > 默认读取：按 API/UI 任务读取
 > 由 `tools/generate_api_endpoints.py` 从上述路由模块 AST 解析自动生成，
-> 生成时间：2026-10-02 04:12，共 102 个端点。
+> 生成时间：2026-10-02 04:23，共 102 个端点。
 > 手工新增路由后请重跑该脚本刷新本清单。
 
 通用约定：

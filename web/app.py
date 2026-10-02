@@ -5162,10 +5162,12 @@ def create_app(
         local_error = _local_web_mutation_error()
         if local_error is not None:
             return local_error
-        payload, error = _request_payload()
-        if error is not None:
-            return error
-        token = (payload or {}).get("cancelToken")
+        # 取消不触达上游，因此不要求 base_url（_request_payload 的上游查询校验在此不适用）；
+        # 前端 abort 后只带 cancelToken 调用本端点。
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return _json_error(400, "ValidationError", "JSON object body is required")
+        token = payload.get("cancelToken")
         if not isinstance(token, str) or not _DISCOVERY_CANCEL_TOKEN_RE.match(token):
             return _json_error(400, "ValidationError", "cancelToken 非法")
         with _DISCOVERY_CANCEL_LOCK:

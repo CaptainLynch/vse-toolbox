@@ -109,6 +109,8 @@ def _seed_snapshots(db: DatabaseManager) -> None:
             [
                 dm_row("90000301", "4", "车身科", "T2发布-" + "很长的流程名称" * 12),
                 dm_row("90000302", "2", "内饰科", "T2发布-组件B"),
+                # a historical spelling: the seeded rollup maps it onto 车身科 (whitespace + Latin prefix)
+                dm_row("90000303", "2", "BE 结构工程科", "T2发布-组件C"),
             ],
             snapshot_at="2026-09-30T08:00:00Z",
             source_run_id=3,
@@ -286,7 +288,7 @@ def test_data_model_has_section_counts_tab_and_completion_caliber(session: Sessi
         page.eval_on_selector_all(".form-summary-label", "e => e.map(x => x.innerText)"),
         page.eval_on_selector_all(".form-summary-value", "e => e.map(x => x.innerText)"),
     ))
-    assert cards["总数"] == "2" and cards["已完成"] == "1" and cards["未完成"] == "1"
+    assert cards["总数"] == "3" and cards["已完成"] == "1" and cards["未完成"] == "2"
     page.locator(".form-chart-tabs > .form-chart-tab-list > .form-chart-tab", has_text="按科室").click()
     page.wait_for_selector(".form-chart-title:has-text('按科室统计')")
     assert "数模流程无阶段维度" in page.inner_text(".form-chart-panel-content")
@@ -306,7 +308,7 @@ def test_data_model_rows_show_status_column_and_truncate_long_text(session: Sess
         ".form-row-table tbody tr:not(.form-row-detail-row)",
         f"rows => rows.map(r => r.children[{status_col}].innerText)",
     )
-    assert set(statuses) == {"已完成", "审批中"} and len(statuses) == 2
+    assert set(statuses) == {"已完成", "审批中"} and len(statuses) == 3
     # long flow name and approval log are truncated to one line; the full value is in title
     for needle in ("很长的流程名称", "审批人甲：同意"):
         cell = page.locator(f".form-row-table td.form-cell-truncate[title*='{needle}']").first
@@ -436,13 +438,13 @@ def test_stale_response_never_overwrites_the_latest_view(session: Session) -> No
     assert len(pending) == 2  # view + rows of the first (soon stale) request are in flight
     # newer request: clear the filter (answered normally)
     page.get_by_role("button", name="清除筛选").first.click()
-    page.wait_for_function("document.querySelector('.form-row-count') && document.querySelector('.form-row-count').innerText.includes('2 条')")
+    page.wait_for_function("document.querySelector('.form-row-count') && document.querySelector('.form-row-count').innerText.includes('3 条')")
     # now release the stale responses: they must not repaint the table
     for route in pending:
         route.continue_()
     page.wait_for_timeout(500)
-    assert "2 条" in page.inner_text(".form-row-count")
-    assert page.locator(".form-row-table tbody tr:not(.form-row-detail-row)").count() == 2
+    assert "3 条" in page.inner_text(".form-row-count")
+    assert page.locator(".form-row-table tbody tr:not(.form-row-detail-row)").count() == 3
 
 
 # ---------------------------------------------------------------------------
@@ -823,7 +825,7 @@ def test_wizard_reattaches_to_the_same_inflight_task_after_reload(session: Sessi
     session.page.wait_for_function("document.querySelector('.policy-wizard-start-btn').disabled === true")
     session.page.reload()                                       # first poll loop is abandoned with the page
     session.page.wait_for_selector(".policy-sync-summary")
-    session.page.locator(".policy-sync-enable-btn").click()
+    session.page.locator(".policy-sync-enable-btn, .policy-sync-reconfig-btn").first.click()
     session.page.locator(".policy-wizard-field", has_text="车型项目").locator("input").fill("F999X")
     wiz.limits(taskPollIntervalMs=100)
     state["active"] = False                                     # the task finished while nobody was watching
@@ -904,7 +906,7 @@ def test_wizard_end_to_end_against_real_backend_task_contract(session: Session, 
             if "/mapping-discovery" in resp.url or "/api/tasks/" in resp.url else None)
     session.open_deliverable("VPI-T2-D5")
     page.wait_for_selector(".policy-sync-summary")
-    page.locator(".policy-sync-enable-btn").click()
+    page.locator(".policy-sync-enable-btn, .policy-sync-reconfig-btn").first.click()
     page.locator(".policy-wizard-field", has_text="车型项目").locator("input").fill("F999X")
     page.locator(".policy-wizard-start-btn").click()
     text = ""
@@ -1050,7 +1052,7 @@ def test_ncr_wizard_end_to_end_saves_section_scope_declaration(session: Session,
     page.route("**/sync-now", lambda r: _json_response(r, {"ok": True, "data": {"result": {"finalState": "success", "outcome": "completed"}}}))
     session.open_deliverable("VPI-T2-D7")
     page.wait_for_selector(".policy-sync-summary")
-    page.locator(".policy-sync-enable-btn").click()
+    page.locator(".policy-sync-enable-btn, .policy-sync-reconfig-btn").first.click()
     page.locator(".policy-wizard-field", has_text="车型项目").locator("input").fill("F610S")
     box = page.locator(".policy-wizard-field", has_text="科室（选填，可多选）").locator(".analysis-multi-select")
     for name in ("车身科", "内饰科"):
@@ -1066,7 +1068,9 @@ def test_ncr_wizard_end_to_end_saves_section_scope_declaration(session: Session,
     finally:
         web_app._MAPPING_DISCOVERY_TASKS.clear()
     assert "配置并启用成功" in text, text
-    assert queried and all("sectionScope" not in call["rule"] and "department" not in call["rule"] for call in queried)
+    # two genuinely independent exports (the stability check never reuses the first workbook)
+    assert len(queried) == 2, queried
+    assert all("sectionScope" not in call["rule"] and "department" not in call["rule"] for call in queried)
     saved = page.evaluate("""async () => (await (await fetch('/api/project-status/deliverables/VPI-T2-D7/update-policy')).json()).data""")
     assert saved["enabled"] is True
     assert saved["matchRule"]["sectionScope"] == ["车身科", "内饰科"]
@@ -1084,7 +1088,7 @@ def _run_wizard_to_end(session: Session, deliverable: str, fill: Any = None) -> 
     page.route("**/sync-now", lambda r: _json_response(r, {"ok": True, "data": {"result": {"finalState": "success", "outcome": "completed"}}}))
     session.open_deliverable(deliverable)
     page.wait_for_selector(".policy-sync-summary")
-    page.locator(".policy-sync-enable-btn").click()
+    page.locator(".policy-sync-enable-btn, .policy-sync-reconfig-btn").first.click()
     page.locator(".policy-wizard-field", has_text="车型项目").locator("input").fill("F610S")
     if fill:
         fill(page)
@@ -1126,3 +1130,126 @@ def test_sor_wizard_end_to_end_with_status_filter_and_real_binding(session: Sess
     saved = session.page.evaluate("""async () => (await (await fetch('/api/project-status/deliverables/VPI-T2-D2/update-policy')).json()).data""")
     assert saved["matchRule"]["approvalStatus"] == "审批中" and saved["enabled"] is True
     assert saved["mapping"]["note"] == ["latestCompletedNode", "processInstanceStatus"]
+
+
+def test_client_deadline_cancels_the_running_crawl_on_the_server(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Synchronous (non-task) path: the page's deadline fires, the cancel endpoint trips the crawl's stop hook."""
+    import time
+    from types import SimpleNamespace
+
+    state = {"started": False, "stopped_by_cancel": False}
+
+    class SlowTDCClient:
+        def crawl_data_model_all(self, filters, max_records=5000, should_stop=None):  # type: ignore[no-untyped-def]
+            state["started"] = True
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                if should_stop is not None and should_stop():
+                    state["stopped_by_cancel"] = True
+                    break
+                time.sleep(0.05)
+            return SimpleNamespace(rows=[], total=0, complete=False, stop_reason="cancelled")
+
+    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda payload, hosts: SlowTDCClient())
+    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: None)   # no unified session: synchronous path
+    page = session.page
+    page.route("**/api/settings", lambda r: _json_response(r, {"ok": True, "data": {"credentialVaultConfigured": True}})
+               if r.request.method == "GET" else r.fallback())
+    session.open_deliverable("VPI-T2-D5")
+    page.wait_for_selector(".policy-sync-summary")
+    page.evaluate("""async () => {
+      const mod = await import('/plugins/project-overview/static/deliverable/discovery.js');
+      mod.discoveryLimits.tdcMs = 600;
+    }""")
+    page.locator(".policy-sync-enable-btn, .policy-sync-reconfig-btn").first.click()
+    page.locator(".policy-wizard-field", has_text="车型项目").locator("input").fill("F610S")
+    page.locator(".policy-wizard-start-btn").click()
+    page.wait_for_function("(document.querySelector('.policy-sync-wizard-status')||{}).innerText?.includes('已取消')", timeout=10000)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and not state["stopped_by_cancel"]:
+        time.sleep(0.05)
+    assert state["started"] and state["stopped_by_cancel"], state     # the crawl really stopped; no orphan keeps running
+
+
+def test_cancelling_the_background_task_ends_the_wizard_with_a_restart_hint(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    import time
+    from types import SimpleNamespace
+
+    state = {"started": False, "stopped_by_cancel": False}
+
+    class SlowTDCClient:
+        def crawl_data_model_all(self, filters, max_records=5000, should_stop=None):  # type: ignore[no-untyped-def]
+            state["started"] = True
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                if should_stop is not None and should_stop():
+                    state["stopped_by_cancel"] = True
+                    break
+                time.sleep(0.05)
+            return SimpleNamespace(rows=[], total=0, complete=False, stop_reason="cancelled")
+
+    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda payload, hosts: SlowTDCClient())
+    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    web_app._MAPPING_DISCOVERY_TASKS.clear()
+    page = session.page
+    page.route("**/api/settings", lambda r: _json_response(r, {"ok": True, "data": {"credentialVaultConfigured": True}})
+               if r.request.method == "GET" else r.fallback())
+    try:
+        session.open_deliverable("VPI-T2-D5")
+        page.wait_for_selector(".policy-sync-summary")
+        page.evaluate("""async () => {
+          const mod = await import('/plugins/project-overview/static/deliverable/discovery.js');
+          mod.discoveryLimits.taskPollIntervalMs = 100;
+        }""")
+        page.locator(".policy-sync-enable-btn, .policy-sync-reconfig-btn").first.click()
+        page.locator(".policy-wizard-field", has_text="车型项目").locator("input").fill("F610S")
+        page.locator(".policy-wizard-start-btn").click()
+        page.wait_for_function("document.querySelector('.policy-wizard-start-btn').disabled === true")
+        # what the task centre's cancel button does for the active discovery task
+        cancelled = page.evaluate("""async () => {
+          for (let i = 0; i < 100; i += 1) {
+            const body = await (await fetch('/api/tasks?limit=20')).json();
+            const task = (body.data.tasks || []).find((t) => t.is_active === true && t.category === 'crawl');
+            if (task) {
+              const res = await fetch(`/api/tasks/${task.id}/cancel`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
+              return res.status;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          }
+          return null;
+        }""")
+        assert cancelled == 200, "expected an active discovery task to cancel"
+        page.wait_for_function("(document.querySelector('.policy-sync-wizard-status')||{}).innerText?.includes('映射取证已取消')", timeout=10000)
+        assert "重新点击" in page.inner_text(".policy-sync-wizard-status")
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not state["stopped_by_cancel"]:
+            time.sleep(0.05)
+        assert state["stopped_by_cancel"], state
+        page.wait_for_function("document.querySelector('.policy-wizard-start-btn').disabled === false")
+    finally:
+        web_app._MAPPING_DISCOVERY_TASKS.clear()
+
+
+def test_data_model_section_board_and_filter_use_the_rollup_target(session: Session) -> None:
+    """Board counts and the section filter share one caliber: the rolled-up target name (A8)."""
+    page = session.page
+    session.open_deliverable("VPI-T2-D5")
+    page.wait_for_selector(".form-chart-tabs")
+    _tab(page, "按科室").click()
+    page.wait_for_selector(".form-chart-title:has-text('按科室统计')")
+    rows = {
+        label: numbers for label, numbers in zip(
+            page.eval_on_selector_all(".form-status-bar-label", "e => e.map(x => x.innerText)"),
+            page.eval_on_selector_all(".form-status-bar-numbers", "e => e.map(x => x.innerText)"),
+        )
+    }
+    assert rows["车身科"] == "共 2" and rows["内饰科"] == "共 1"          # "BE 结构工程科" is counted under 车身科
+    page.locator(".form-status-bar-row", has_text="车身科").click()
+    page.wait_for_function("document.querySelector('.form-row-count').innerText.includes('2 条')")
+    sections = page.eval_on_selector_all(
+        ".form-row-table tbody tr:not(.form-row-detail-row)",
+        "rows => rows.map(r => r.innerText)",
+    )
+    assert any("BE 结构工程科" in text for text in sections)              # the table keeps the original value
+    chips = page.locator(".form-filter-chip:not(.is-draft) .form-filter-chip-label").all_inner_texts()
+    assert chips == ["部门：车身科"] or any("车身科" in chip for chip in chips)
