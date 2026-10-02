@@ -410,6 +410,7 @@ export function DeliverableDetail({ item, overview, version, reloadOverview, rep
 
     <section class="deliverable-policy-panel" aria-label=${`${item.name} 更新方式`}>
       <${PolicyPanel}
+        key=${item.id}
         item=${item}
         version=${version}
         onPolicyLoaded=${(policy) => { policyRef.current = policy || {}; }}

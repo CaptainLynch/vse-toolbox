@@ -16,6 +16,7 @@ from services.aras_auth import ArasAuthError
 from services.aras_crawler import (
     ArasAuthenticationError,
     ArasCrawlerError,
+    ArasNcrExportContractError,
     EWOReportPage,
     PAAReportPage,
 )
@@ -1039,6 +1040,28 @@ def test_route_validation_and_aras_error_are_sanitized(client) -> None:
     assert "secret3" not in text
     assert "xyz789" not in text
     assert "tok123" not in text
+
+
+def test_ncr_export_contract_error_maps_to_dedicated_code_and_chinese_message(client) -> None:
+    """官方 NCR 导出方法未返回文件引用 → 502 + ncr_export_no_file + 中文可操作文案。
+
+    消息携带无泄漏结构签名并指引回传诊断文件；不再落到通用 query_failed 分支。
+    """
+    FakeArasClient.fail = ArasNcrExportContractError(
+        "NCR progress response does not contain a Result Item with _file id",
+        "result_present=true result_text_present=false child_tags=[] item_count=0 body_chars=87",
+    )
+    failed = client.post(
+        "/api/aras/ewo/query", json={"base_url": "http://aras.example", "cookie": "sid=abc123"}
+    )
+    body = failed.get_json()
+    assert failed.status_code == 502
+    assert body["error"]["type"] == "ArasNcrExportContractError"
+    assert body["error"]["code"] == "ncr_export_no_file"
+    message = body["error"]["message"]
+    assert "官方 NCR 导出方法未返回文件引用" in message
+    assert "result_present=true" in message
+    assert "诊断文件" in message
 
 
 def test_remote_report_mutations_are_rejected_before_upstream_access(client) -> None:

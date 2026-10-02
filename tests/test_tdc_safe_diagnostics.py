@@ -91,3 +91,45 @@ def test_nested_unrecognized_data_is_never_stringified(tmp_path):
         TDCCrawlerClient(session=Session(payload), output_dir=tmp_path).export_sor()
     assert 'unlabeled-secret' not in str(raised.value)
     assert 'unlabeled-secret' not in json.dumps(raised.value.safe_diagnostic())
+
+
+@pytest.mark.parametrize('status_code', [429, 502, 503, 504])
+def test_retryable_upstream_status_states_retry_semantics(status_code):
+    """有界重试后仍是可重试上游状态 ⇒ 报"暂时不可用，可稍后重试"，不是配置错误。"""
+    error = TDCCrawlerError(
+        f'TDC HTTP {status_code} at /uwf/example/list',
+        stage='status-validation',
+        status_code=status_code,
+        request_id='81f61e1f',
+        operation='query',
+        report_type='data_model',
+    )
+    diagnostic = error.safe_diagnostic()
+    assert diagnostic['retryable'] is True
+
+    with Flask(__name__).app_context():
+        response, status = _tdc_error_response(error, 'data_model', 'query')
+        assert status == 502
+        body = response.get_json()['error']
+        assert body['message'] == f'TDC 暂时不可用（{status_code}），请稍后重试；request_id=81f61e1f'
+        assert body['diagnostic'] == diagnostic
+        # 上游路径等运维细节只留在 diagnostic，不再进用户文案。
+        assert '/uwf/example/list' not in body['message']
+
+
+def test_non_retryable_status_keeps_legacy_message_shape():
+    error = TDCCrawlerError(
+        'TDC HTTP 400 at /uwf/example/list',
+        stage='status-validation',
+        status_code=400,
+        request_id='abc12345',
+        operation='query',
+        report_type='sor',
+    )
+    assert 'retryable' not in error.safe_diagnostic()
+
+    with Flask(__name__).app_context():
+        response, status = _tdc_error_response(error, 'sor', 'query')
+        assert status == 502
+        body = response.get_json()['error']
+        assert body['message'].startswith('TDC HTTP 400 at /uwf/example/list; TDC query failed')

@@ -1,5 +1,26 @@
 # Current State
 
+## 2026-10-02 插件重构遗漏行为恢复完成（分支 claude/restore-plugin-parity，基线 refactor/plugin-host@d0dd01d）
+
+- **完成**：旧业务分支（e2c58a3）9 批生产修复在插件架构下补回，逐条状态/位置/断言见
+  `docs/PLUGIN_PARITY_RESTORE_20261002.md`（A1–A16 + NCR 诊断全部闭环；保留项补回归守护）。
+  后端取自参考顶端（重构未触碰的文件）+ db_manager/deliverable_form_analysis/web/app.py 手工/三方合并；
+  前端按插件责任重写：`deliverable/discovery.js`（90s/240s 截止、协作取消、202 任务轮询 + 参数哈希绑定）、
+  `policy.js`/`policy-logic.js`（向导：SOR 状态、NCR 科室范围、稳定性具体原因、可重试文案、按交付物限定终态文案）、
+  `form-analysis.js`/`form-state.js`/`chart-math.js`（view/rows 超时解锁、草稿 chip、数模「按科室」、NCR 成本表、
+  未识别阶段披露、缺字段/派生状态列/长文本截断）、`multi-select.js`、`deliverable.css`。
+- **真浏览器 + 真后端联调额外发现并修复 5 个旧实现里就存在的缺陷**（见 RECOVERY_NOTES 同日条目）：候选预览与执行备注不一致、
+  NCR `sectionScope` 绑定 422、取消端点要求 base_url 恒 400、Preact 多选点选被 `<label>` 撤销、缺失列判定 null→第 0 列。
+- **门禁**：全量 `pytest -q -n 4` 2704 passed / 4 failed（同基线 4 个 Windows 专属：agent_supervisor relay、
+  excel_worker source command、tdc_probe_standalone ×2）；基线 2504 passed。新增 `tests/test_plugin_overview_browser.py`
+  （Playwright/Chromium，1400px+420px，无 pageerror）、`tests/test_plugin_overview_parity_logic.py`、
+  `tests/test_project_status_section_scope.py`；flake8 零告警；项目地图 verified；API 端点清单已刷新。
+- **执行前沿 / 待办**：①人工审阅并合并本分支（不合并 PR、不打包、不部署）；②**待 Lynch（只能由人完成）**：Windows 上构建 onedir、
+  公司内网实机核对（NCR 导出科室代码、D8 费用对账、真实 Aras 单次导出取消的最长生效时间）、修复前历史快照/分析缓存
+  **重新同步一次**；③数模 3/6 状态码含义仍未确定（原样透传）；④数模审批新功能与进一步架构优化留待后续规划。
+- **未迁入的旧分支内容**：`AGENTS.md` 顾问路由（Astra 试用）条款、旧过程文档、针对 `app.js` 的 cjs 行为门禁/变异自检
+  （被真浏览器行为测试取代）、`tools/verify_js_block_scope.py`（随 app.js 退役删除）。
+
 ## 2026-10-01 插件化重构 S1–S4 代码完成（PR #2，分支 refactor/plugin-host）
 
 - **完成**：宿主 + 插件架构全部落地，旧前端整体退役。

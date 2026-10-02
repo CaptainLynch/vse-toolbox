@@ -17,6 +17,10 @@ from typing import Any, Mapping, Sequence
 
 from core.redaction import redact_sensitive_text
 from core.report_contracts import report_contracts, table_payload
+from core.report_cost_values import (
+    NCR_COST_LABELS as _NCR_COST_LABELS,
+    parse_cost_value,
+)
 from core.section_rollup import (
     resolve_section,
     rollup_targets_in_order,
@@ -43,18 +47,8 @@ _CONTACT_INDEXES = {
     for spec in _form_registry.FORMS
     if spec.contact_indexes is not None
 }
-_NCR_COST_LABELS = {
-    "investment": {
-        "estimate": "测算工程工装费用(万元)",
-        "approved": "批准工程工装费用（万元）",
-        "actual": "实际工程工装费用(万元)",
-    },
-    "vehicleChange": {
-        "estimate": "测算单件成本变化（元）",
-        "approved": "批准单件成本变化（元）",
-        "actual": "实际单件成本变化（元）",
-    },
-}
+# NCR 费用标签常量已迁入 core/report_cost_values（费用解析单源），
+# 顶部以旧名 `_NCR_COST_LABELS` 引用，历史消费者不受影响。
 _NCR_PROGRESS_STAGE_DATE_LABELS = {
     "PE提交": ("PE填写", "PE提交"),
     "NCR管理员": ("NCR管理员",),
@@ -92,11 +86,13 @@ _OVERDUE_THRESHOLD_MAX = 999
 _KEY_COLUMN_LABELS = {spec.report: spec.key_column_labels for spec in _form_registry.FORMS}
 # 数模设计审核流程（TDC 47 列导出）的展示口径：
 # - “重量（单件）”“零件合计”不在明细视图体现（列索引 12/13）；
-# - 默认可见列以“EWO/SOR号”收尾；
+# - 默认可见列以“最新审批记录”收尾（2026-09-29 生产反馈前为“EWO/SOR号”）；
 # - 审批中滞留阈值见 _OVERDUE_RULES["tdc_data_model"]；
 # - “已废弃”是终态，不计入未完成，也不参与逾期判定。
 _TDC_HIDDEN_COLUMN_INDEXES = {"tdc_data_model": frozenset({12, 13})}
-_TDC_DEFAULT_VISIBLE_COUNT = 15
+# 16 = 官方 47 列中去掉 12/13 后的前 16 列：默认可见列以「最新审批记录」(17) 收尾，
+# 与交付物工作台（官方导出）的业务列对齐（2026-09-29 生产反馈：状态/最新审批记录不可见）。
+_TDC_DEFAULT_VISIBLE_COUNT = 16
 _TDC_DEPRECATED_STATUS = "已废弃"
 _TDC_DATA_MODEL_COMPLETED_STATUSES = frozenset(
     {"4", "已完成", "完成", "审批完成", "审批通过", "已归档", "归档", "已发布", "流程结束", "已生效"}
@@ -110,7 +106,14 @@ _SOR_TERMINAL_STATUSES = _form_registry.get_form("tdc_sor").terminal_statuses
 
 
 def _normalize_sor_status(value: object) -> str:
-    """Normalize SOR approval status (mixed EN/CN source values) to Chinese."""
+    """Normalize SOR approval status (mixed EN/CN source values) to Chinese.
+
+    兼容防御：同步行已由 ``flatten_sor_rows`` 扁平化为纯文本；这里再兜一层——
+    若历史/异构行仍是嵌套对象，只取 ``name``（如「已完成」），不用数值形态
+    （value/valueStr）推断完成语义。
+    """
+    if isinstance(value, Mapping):
+        value = value.get("name")
     text = _safe_text(value, 120)
     return {"Completed": "已完成", "Terminated": "已终止", "Cancelled": "已作废"}.get(
         text, text
@@ -220,17 +223,12 @@ def _parse_datetime(value: object) -> datetime | None:
 
 
 def _number(value: object) -> float | None:
-    if value is None or isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    text = str(value).strip().replace(",", "")
-    if not text:
-        return None
-    try:
-        return float(text)
-    except ValueError:
-        return None
+    """数值解析统一走 core/report_cost_values.parse_cost_value（G34 单源）。
+
+    语义与历史实现逐位一致：None/布尔 → None；数值类型直转 float；
+    字符串去千分位与首尾空白后 float()，空串/非数 → None。
+    """
+    return parse_cost_value(value)
 
 
 def _clean_value(value: object, *, contact: bool = False) -> object | None:
@@ -308,9 +306,30 @@ def _normalize_stage(value: object) -> str:
 
 
 def _normalize_tdc_status(value: object) -> str:
-    """Normalize TDC list/status codes before deriving completion metrics."""
+    """Normalize TDC list/status codes before deriving completion metrics.
+
+    现场证据（2026-09-29 内网 HAR + 官方导出样本对照）：数模列表行状态为数字码，
+    "2"=审批中、"4"=已完成；未入表的码原样透传（诚实渲染，禁止猜测）。
+    """
     text = _safe_text(value, 120)
-    return {"4": "已完成"}.get(text, text)
+    return {"2": "审批中", "4": "已完成"}.get(text, text)
+
+
+TDC_SYNC_EXCLUDED_STATUSES = frozenset({"已废弃", "已撤回"})
+
+
+def normalize_tdc_report_status(report: str, value: object) -> str:
+    """连接器同步范围判定用的状态文本归一（与表单分析同一套映射，禁止第二套口径）。
+
+    SOR 行状态为文本（兼容防御：嵌套对象只取 name）；数模行为数字码
+    （"2"=审批中、"4"=已完成，未映射码透传）。范围剔除只对已证实映射的
+    文本生效——未映射码既不显示为文本也不会被误剔（2026-09-29 顾问裁决 A 案）。
+    """
+    if report == "sor":
+        return _normalize_sor_status(value)
+    if report == "data_model":
+        return _normalize_tdc_status(value)
+    return str(value or "").strip()
 
 
 def _add_months(value: date, months: int) -> date:
@@ -553,6 +572,61 @@ def form_definition(form_key: str) -> dict[str, Any]:
                 ),
             }
     return definition
+
+
+# 只有以源键命名的 TDC 列表报表才谈得上"某个键上游不返回"；工作簿位置行与
+# ARAS 中文标签行的键不在同一套词表里，误判会把整表标成"源端不提供"。
+_SOURCE_KEY_REPORTS = frozenset({"tdc_data_model", "tdc_sor"})
+
+
+def source_absent_indexes(
+    form_key: str,
+    rows: Sequence[Mapping[str, Any]],
+) -> tuple[int, ...]:
+    """位置列中「上游完全未提供」的列下标（三态降级判据的取值来源）。
+
+    判据是**键缺失**而不是值为空：某位置的全部候选源字段在快照原始行里都不存在，
+    该列才显示"源端不提供"；键存在但值为空是真实空值，不得误标。
+    （生产 2026-09-28：SOR 列表接口不返回 deptName/sectionName/latestCompletedNode 等键，
+    而 sorPartNo 返回但值为空——两者必须区分。）
+
+    两道护栏：非源键报表直接返回空集；整份快照里一个候选键都没出现时也返回空集
+    （说明这批行不是这套键命名，而不是"上游全不给"）。
+    """
+    if _report_type(form_key) not in _SOURCE_KEY_REPORTS:
+        return ()
+    columns = form_definition(form_key).get("columns")
+    if not isinstance(columns, Sequence) or isinstance(columns, (str, bytes)):
+        return ()
+    candidates: dict[int, tuple[str, ...]] = {}
+    for column in columns:
+        if not isinstance(column, Mapping):
+            continue
+        index = column.get("index")
+        names = column.get("sourceFields")
+        if not isinstance(index, int):
+            continue
+        if not isinstance(names, Sequence) or isinstance(names, (str, bytes)):
+            continue
+        resolved = tuple(str(name) for name in names if str(name))
+        if resolved:
+            candidates[index] = resolved
+    present = {
+        str(key)
+        for row in rows
+        if isinstance(row, Mapping)
+        for key in row
+    }
+    vocabulary = {name for names in candidates.values() for name in names}
+    if not vocabulary or not (vocabulary & present):
+        return ()
+    return tuple(
+        sorted(
+            index
+            for index, names in candidates.items()
+            if not (set(names) & present)
+        )
+    )
 
 
 def _positional_value(
@@ -1288,8 +1362,16 @@ def _distinct_ncr_rows(
 def _stage_status_summary(
     report: str,
     rows: Sequence[Mapping[str, Any]],
-) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
+) -> dict[str, Any]:
+    """部门/项目状态阶段行 + 未注册阶段计数（summarize 的 ``departmentStatus``）。
+
+    返回 ``{"stages": [...], "unrecognizedStageCount": int}``；``stages`` 即
+    历史载荷（label/onTime/overdue/unknown 行列表），新增键对消费者兼容。
+    ``unrecognizedStageCount`` = stage 非空但不在官方阶段词表的行数（全报表
+    统一口径）：PAA 不再产出「其他状态」桶（G34），这些行只经本计数披露；
+    EWO/NCR进度 仍聚合为「其他状态」行，本计数与其行数一致（等价披露）。
+    """
+    result_rows: list[dict[str, Any]] = []
     stages = _STAGES_BY_REPORT[report]
     if report in {"tdc_data_model", "tdc_sor"}:
         observed: set[str] = set()
@@ -1301,12 +1383,13 @@ def _stage_status_summary(
                     observed.add(value)
         stages = tuple(sorted(observed))
     official = set(stages)
+    unrecognized = 0
     for stage in stages:
         selected = [
             row for row in rows
             if str(row.get("dimensions", {}).get("stage") or "") == stage
         ]
-        result.append(
+        result_rows.append(
             {
                 "label": stage,
                 "onTime": sum(_status_bucket(row) == "on_time" for row in selected),
@@ -1315,15 +1398,17 @@ def _stage_status_summary(
             }
         )
     if report in {"ewo", "paa", "ncr_progress"}:
-        # OPEN、CANCEL、起草、挂起以及未注册的自定义节点统一聚合为
-        # “其他状态”单独展示，不并入按期/逾期阶段列（用户 2026-09-02 确认）。
+        # OPEN、CANCEL、起草、挂起以及未注册的自定义节点：EWO/NCR进度聚合为
+        # “其他状态”单独展示（用户 2026-09-02 确认）；PAA 自 G34 起不再产出
+        # 该桶，只进 unrecognizedStageCount。
         others = [
             row for row in rows
             if str(row.get("dimensions", {}).get("stage") or "")
             and str(row.get("dimensions", {}).get("stage") or "") not in official
         ]
-        if others:
-            result.append(
+        unrecognized = len(others)
+        if report != "paa" and others:
+            result_rows.append(
                 {
                     "label": "其他状态",
                     "onTime": sum(_status_bucket(row) == "on_time" for row in others),
@@ -1331,7 +1416,7 @@ def _stage_status_summary(
                     "unknown": sum(_status_bucket(row) == "unknown" for row in others),
                 }
             )
-    return result
+    return {"stages": result_rows, "unrecognizedStageCount": unrecognized}
 
 
 def _section_status_summary(
@@ -1356,8 +1441,12 @@ def _section_status_summary(
     ]
 
 
-# 科室归集适用的报表；tdc 两张报表的 section 语义不同（部门/车型项目），不参与。
-_ROLLUP_REPORTS = frozenset({"ewo", "paa", "ncr_progress", "ncr_detail"})
+# 科室归集适用的报表。tdc_sor 的 section 取自 sectionName（车型项目语义），
+# 不参与；tdc_data_model 的 section 取自「部门」列（现场值即科级，如
+# “内饰科”），用户已确认需要归集（TASK-20260930-R7-G34）。
+_ROLLUP_REPORTS = frozenset(
+    {"ewo", "paa", "ncr_progress", "ncr_detail", "tdc_data_model"}
+)
 
 # 归集规则编辑器与「未归集」口径适用的表单键（web 层据此下发规则与传参）。
 SECTION_ROLLUP_FORM_KEYS = frozenset(
@@ -1370,19 +1459,24 @@ SECTION_ROLLUP_FORM_KEYS = frozenset(
 def _section_stage_matrix(
     report: str,
     rows: Sequence[Mapping[str, Any]],
-    rollup: Mapping[str, str],
+    rollup: Mapping[str, str | None],
 ) -> dict[str, Any]:
     """科室 × 节点（状态）计数矩阵；「按科室」「按状态」两个分页共用。
 
     覆盖口径与既有阶段看板一致：只统计 stage 非空的行。官方节点按
-    ``_STAGES_BY_REPORT`` 顺序全量保留（含零计数），非正式节点并入
-    「其他状态」；科室行 = 规则目标顺序 + 固定兜底「未归集」。
+    ``_STAGES_BY_REPORT`` 顺序全量保留（含零计数）；EWO/NCR进度 的非正式
+    节点并入「其他状态」收尾列，PAA 自 G34 起不再产出该桶——不在词表的
+    行只计入返回载荷的 ``unrecognizedStageCount``（整数，全报表统一口径）；
+    科室行 = 规则目标顺序 + 固定兜底「未归集」。
     cells 与对侧维度数组的顺序严格对齐，前端可直接渲染两种透视。
     """
     stage_labels = list(_STAGES_BY_REPORT[report])
-    stage_labels.append("其他状态")
+    keeps_other_bucket = report in {"ewo", "ncr_progress"}
+    if keeps_other_bucket:
+        stage_labels.append("其他状态")
     section_labels = rollup_targets_in_order(rollup) + [unassigned_label()]
     counts: dict[tuple[str, str], int] = {}
+    unrecognized = 0
     for row in rows:
         dimensions = row.get("dimensions")
         if not isinstance(dimensions, Mapping):
@@ -1391,6 +1485,9 @@ def _section_stage_matrix(
         if not stage:
             continue
         if stage not in stage_labels:
+            unrecognized += 1
+            if not keeps_other_bucket:
+                continue
             stage = "其他状态"
         section = resolve_section(dimensions.get("section"), rollup) or unassigned_label()
         counts[(section, stage)] = counts.get((section, stage), 0) + 1
@@ -1412,14 +1509,18 @@ def _section_stage_matrix(
         stages.append(
             {"label": stage, "total": sum(cell["count"] for cell in cells), "cells": cells}
         )
-    return {"sections": sections, "stages": stages}
+    return {
+        "sections": sections,
+        "stages": stages,
+        "unrecognizedStageCount": unrecognized,
+    }
 
 
 def _section_counts(
     rows: Sequence[Mapping[str, Any]],
-    rollup: Mapping[str, str],
+    rollup: Mapping[str, str | None],
 ) -> list[dict[str, Any]]:
-    """NCR明细（无状态维度）的归集后科室计数。"""
+    """NCR明细（无状态维度）与数模（阶段词表为空）的归集后科室计数。"""
     counts: dict[str, int] = {}
     for row in rows:
         dimensions = row.get("dimensions")
@@ -1428,6 +1529,59 @@ def _section_counts(
         counts[section] = counts.get(section, 0) + 1
     labels = rollup_targets_in_order(rollup) + [unassigned_label()]
     return [{"label": label, "total": counts.get(label, 0)} for label in labels]
+
+
+def _section_costs(
+    rows: Sequence[Mapping[str, Any]],
+    rollup: Mapping[str, str | None],
+) -> list[dict[str, Any]]:
+    """NCR 明细按**归集后科室**的成本聚合（2026-09-29 生产反馈 F8）。
+
+    用户要求的四项指标：测算/批准 工程工装费用（万元）、测算/批准 单件成本
+    变化（元）。成本值在 ``row["cost"]`` 已解析为带符号 float（方向由符号
+    派生），直接求和即"累计"；每个指标单列"有值件数"，把「无批准值」与
+    「0」区分开（顾问要求）。科室口径与 ``_section_counts`` 完全一致
+    （共用 ``resolve_section``），点击行筛选不会对不上。
+    """
+    metric_names = (
+        ("investmentEstimate", "investment", "estimate"),
+        ("investmentApproved", "investment", "approved"),
+        ("vehicleChangeEstimate", "vehicleChange", "estimate"),
+        ("vehicleChangeApproved", "vehicleChange", "approved"),
+    )
+    sums: dict[str, dict[str, float]] = {}
+    counts: dict[str, dict[str, int]] = {}
+    totals: dict[str, int] = {}
+    for row in rows:
+        dimensions = row.get("dimensions")
+        raw = dimensions.get("section") if isinstance(dimensions, Mapping) else None
+        section = resolve_section(raw, rollup) or unassigned_label()
+        totals[section] = totals.get(section, 0) + 1
+        cost = row.get("cost")
+        if not isinstance(cost, Mapping):
+            continue
+        for metric, group, name in metric_names:
+            source = cost.get(group)
+            value = _number(source.get(name)) if isinstance(source, Mapping) else None
+            if value is None:
+                continue
+            sums.setdefault(section, {}).setdefault(metric, 0.0)
+            counts.setdefault(section, {}).setdefault(metric, 0)
+            sums[section][metric] += value
+            counts[section][metric] += 1
+    labels = rollup_targets_in_order(rollup) + [unassigned_label()]
+    result: list[dict[str, Any]] = []
+    for label in labels:
+        costs: dict[str, dict[str, Any]] = {}
+        for metric, _group, _name in metric_names:
+            metric_sums = sums.get(label, {})
+            metric_counts = counts.get(label, {})
+            costs[metric] = {
+                "sum": metric_sums.get(metric, 0.0),
+                "count": metric_counts.get(metric, 0),
+            }
+        result.append({"label": label, "total": totals.get(label, 0), "costs": costs})
+    return result
 
 
 def _selected_sections(section_filter: object) -> frozenset[str] | None:
@@ -1441,17 +1595,22 @@ def _selected_sections(section_filter: object) -> frozenset[str] | None:
 def _filter_rows_by_section_rollup(
     rows: Sequence[Mapping[str, Any]],
     section_filter: object,
-    rollup: Mapping[str, str],
+    rollup: Mapping[str, str | None],
 ) -> list[Mapping[str, Any]]:
-    """行级归集筛选：逐行经 ``resolve_section`` 判定后再匹配所选目标。
+    """行级归集筛选：筛选值与行值经**同一个**归集原语判定后再匹配。
 
-    「未归集」是逐行分类（未命中任何规则的行），不存在值列表展开，
-    因此没有任何截断上限或静默漏数路径。
+    筛选值先按匹配口径（空白归一/前缀剥离）解析到目标科室（未登记值解析为
+    「未归集」），再与逐行归集结果比较——保证筛选与看板同口径，且旧深链携带
+    的历史科室值在登记为别名后可以直接命中。「未归集」是逐行分类（未命中
+    任何规则的行），不存在值列表展开，因此没有任何截断上限或静默漏数路径。
     """
-    selected = _selected_sections(section_filter)
-    if selected is None:
+    selected_values = _selected_sections(section_filter)
+    if selected_values is None:
         return list(rows)
     unassigned = unassigned_label()
+    selected = frozenset(
+        resolve_section(value, rollup) or unassigned for value in selected_values
+    )
     filtered = []
     for row in rows:
         dimensions = row.get("dimensions")
@@ -1463,7 +1622,7 @@ def _filter_rows_by_section_rollup(
 
 def _attach_section_rollup_target(
     row: Mapping[str, Any],
-    rollup: Mapping[str, str],
+    rollup: Mapping[str, str | None],
 ) -> dict[str, Any]:
     """为明细行附加归集后科室派生字段（不改 ``values[]`` 位置语义）。"""
     updated = dict(row)
@@ -1510,7 +1669,7 @@ def summarize_form_rows(
     rows: Sequence[Mapping[str, Any]],
     *,
     snapshot_at: str,
-    section_rollup: Mapping[str, str] | None = None,
+    section_rollup: Mapping[str, str | None] | None = None,
 ) -> dict[str, Any]:
     report = _report_type(form_key)
     metric_rows = _metric_rows(
@@ -1548,12 +1707,17 @@ def summarize_form_rows(
         "overdue": overdue,
         "unknown": unknown,
         "snapshotAt": snapshot_at,
-        "departmentStatus": {"stages": _stage_status_summary(report, metric_rows)},
+        "departmentStatus": _stage_status_summary(report, metric_rows),
         "sectionStatus": _section_status_summary(metric_rows),
     }
     if section_rollup is not None and report in _ROLLUP_REPORTS:
-        if report == "ncr_detail":
+        if report in {"ncr_detail", "tdc_data_model"}:
+            # ncr_detail 无状态维度；数模阶段词表为空（阶段图走观察值口径，
+            # 出矩阵会退化）——两者都不产出 sectionStageMatrix，只给归集后
+            # 的科室计数条；费用合计仍为 ncr_detail 独有。
             result["sectionCounts"] = _section_counts(metric_rows, section_rollup)
+            if report == "ncr_detail":
+                result["sectionCosts"] = _section_costs(metric_rows, section_rollup)
         else:
             result["sectionStageMatrix"] = _section_stage_matrix(
                 report,
@@ -1624,6 +1788,12 @@ def build_form_snapshot(
         snapshot_at=snapshot_at,
     )
     report = _report_type(form_key)
+    # 「上游完全未提供」的列必须在**建快照时**从原始行判定并随快照持久化：
+    # 规范化行只保留位置 values，源键名在入库前就被丢弃，取数时已无从判断。
+    schema = form_definition(form_key)
+    absent_indexes = source_absent_indexes(form_key, rows)
+    if absent_indexes:
+        schema["sourceAbsentIndexes"] = list(absent_indexes)
     charts = {
         "departmentStatus": summary["departmentStatus"],
         "sectionStatus": summary["sectionStatus"],
@@ -1636,7 +1806,7 @@ def build_form_snapshot(
         report_type=report,
         source_run_id=source_run_id,
         snapshot_at=snapshot_at,
-        schema=form_definition(form_key),
+        schema=schema,
         rows=tuple(normalized),
         summary=summary,
         charts=charts,
@@ -1783,6 +1953,9 @@ def _chart_payload(
         counts = summary.get("sectionCounts")
         if isinstance(counts, list):
             charts["sectionCounts"] = counts
+        costs = summary.get("sectionCosts")
+        if isinstance(costs, list):
+            charts["sectionCosts"] = costs
     if report == "ncr_detail":
         charts["departmentCost"] = list(summary.get("departmentCost", []))
         charts["sectionCost"] = list(summary.get("sectionCost", []))
@@ -1791,7 +1964,7 @@ def _chart_payload(
 
 def _filter_options(
     rows: Sequence[Mapping[str, Any]],
-    section_rollup: Mapping[str, str] | None = None,
+    section_rollup: Mapping[str, str | None] | None = None,
 ) -> dict[str, list[str]]:
     options: dict[str, set[str]] = {
         "status": set(),
@@ -1952,7 +2125,7 @@ class DeliverableFormAnalysisService:
         offset: int = 0,
         limit: int = 200,
         overdue_thresholds: Mapping[str, object] | None = None,
-        section_rollup: Mapping[str, str] | None = None,
+        section_rollup: Mapping[str, str | None] | None = None,
     ) -> dict[str, Any]:
         key = self._validate_key(form_key)
         rollup = section_rollup if _report_type(key) in _ROLLUP_REPORTS else None
@@ -2064,7 +2237,7 @@ class DeliverableFormAnalysisService:
         filters: Mapping[str, object] | None = None,
         trend_limit: int = 30,
         overdue_thresholds: Mapping[str, object] | None = None,
-        section_rollup: Mapping[str, str] | None = None,
+        section_rollup: Mapping[str, str | None] | None = None,
     ) -> dict[str, Any]:
         key = self._validate_key(form_key)
         rollup = section_rollup if _report_type(key) in _ROLLUP_REPORTS else None
@@ -2212,6 +2385,16 @@ class DeliverableFormAnalysisService:
                     snapshot_at=str(latest.get("snapshot_at") or ""),
                     thresholds=thresholds,
                 )
+        # 列「上游完全未提供」的快照级事实（建快照时判定并持久化，见
+        # source_absent_indexes）。schema 仍按现行契约下发，该字段只作展示口径，
+        # 不改变列数与列序；无快照或旧快照没有该字段时为空列表 → 不做降级。
+        stored_schema = latest.get("schema") if isinstance(latest, Mapping) else None
+        raw_absent = stored_schema.get("sourceAbsentIndexes") if isinstance(stored_schema, Mapping) else None
+        source_absent_indexes_payload = [
+            int(index)
+            for index in (raw_absent if isinstance(raw_absent, Sequence) and not isinstance(raw_absent, (str, bytes)) else [])
+            if isinstance(index, int)
+        ]
         return {
             "formKey": key,
             "reportType": _report_type(key),
@@ -2220,6 +2403,7 @@ class DeliverableFormAnalysisService:
             "rowCount": int(latest.get("row_count") or 0) if latest else 0,
             "matchedRowCount": int(summary.get("total") or 0),
             "schema": schema,
+            "sourceAbsentIndexes": source_absent_indexes_payload,
             "summary": summary,
             "charts": _chart_payload(key, summary, trend),
             "trend": trend,

@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 import web.app as web_app
@@ -475,6 +477,18 @@ def test_project_status_payload_exposes_sync_display_and_capabilities(client) ->
         assert item["updateMethod"] == "manual"
         assert item["sourceInfo"]["syncCapable"] is False
         assert item["sourceInfo"]["syncNote"]
+        # NCR 交付物下发官方科室代码表（单一来源 NCR_SECTION_CODES）；其它为 null。
+        if item["id"] in {"VPI-T2-D7", "VPI-T2-D8"}:
+            assert item["sourceInfo"]["ncrSectionCodes"] == [
+                "BA", "BE", "BI", "EXT", "INT", "SES", "VE",
+            ]
+            # 科室预设与看板归集口径同源（默认五科室；用户可在归集规则编辑）。
+            assert item["sourceInfo"]["sectionScopePresets"] == [
+                "车身科", "车体科", "内饰科", "外饰科", "车体架构集成科",
+            ]
+        else:
+            assert item["sourceInfo"]["ncrSectionCodes"] is None
+            assert item["sourceInfo"]["sectionScopePresets"] is None
 
     assert items["VPI-T2-D2"]["sourceInfo"]["reportType"] == "sor"
     assert items["VPI-T2-D3"]["sourceInfo"]["reportType"] == "ewo"
@@ -579,12 +593,13 @@ def test_mapping_discovery_rule_fields_whitelists_paa_and_ncr() -> None:
     paa_alias_rule, _ = _mapping_discovery_query_identity(paa_alias_payload, "VPI-T2-D6")
     assert paa_alias_rule["paaNo"] == "PAA-2026-002"
 
-    # NCR progress (D7)
+    # NCR progress (D7)：科室代码（白名单解析，F3 2026-09-26）
     ncr_progress_payload = {
         "filters": {
             "department": "技术中心_车体工程",
             "project_model": "F610S",
             "ncr_no": "NCR-2026-001",
+            "section_code": "be, INT",
         },
         "aggregate": True,
     }
@@ -592,6 +607,22 @@ def test_mapping_discovery_rule_fields_whitelists_paa_and_ncr() -> None:
     assert ncr_rule["department"] == "技术中心_车体工程"
     assert ncr_rule["projectModel"] == "F610S"
     assert ncr_rule["ncrNo"] == "NCR-2026-001"
+    assert ncr_rule["sectionCode"] == "be, INT"
+
+    # NCR 科室代码非法输入：fail-closed 422 语义（列合法代码）。
+    from web.app import _ArasRequestError
+
+    with pytest.raises(_ArasRequestError, match="合法代码"):
+        _mapping_discovery_query_identity(
+            {
+                "filters": {
+                    "project_model": "F610S",
+                    "section_code": "结构工程科",
+                },
+                "aggregate": True,
+            },
+            "VPI-T2-D7",
+        )
 
     # NCR detail (D8) with serial_number alias
     ncr_detail_payload = {
@@ -625,3 +656,755 @@ def test_tdc_data_model_mapping_discovery_supports_status_filter() -> None:
     assert rule["department"] == "车体工程"
     assert rule["status"] == "审批中"
     assert values["status"] == "审批中"
+
+
+# ===== 映射取证的协作式取消（前端 abort 必须让服务端真的停下来） =====
+
+
+def test_mapping_discovery_cancel_token_registry_is_bounded() -> None:
+    assert web_app._register_discovery_cancel("bad token!") == (None, None)
+    assert web_app._register_discovery_cancel(None) == (None, None)
+    assert web_app._register_discovery_cancel("x" * 65) == (None, None)
+
+    token, event = web_app._register_discovery_cancel("disc-abc_123-XYZ")
+    assert token == "disc-abc_123-XYZ"
+    assert event is not None and event.is_set() is False
+    with web_app._DISCOVERY_CANCEL_LOCK:
+        assert web_app._DISCOVERY_CANCEL_TOKENS[token] is event
+
+    web_app._release_discovery_cancel(token, event)
+    with web_app._DISCOVERY_CANCEL_LOCK:
+        assert token not in web_app._DISCOVERY_CANCEL_TOKENS
+        web_app._DISCOVERY_CANCEL_TOKENS.clear()
+    # 登记有上限：异常路径不会无限增长。注意 _register_discovery_cancel 自己会取锁，
+    # 不能在持有 _DISCOVERY_CANCEL_LOCK 时调用它，否则自死锁。
+    for index in range(web_app._DISCOVERY_CANCEL_MAX_TOKENS + 5):
+        web_app._register_discovery_cancel(f"disc-{index}")
+    with web_app._DISCOVERY_CANCEL_LOCK:
+        assert len(web_app._DISCOVERY_CANCEL_TOKENS) <= web_app._DISCOVERY_CANCEL_MAX_TOKENS
+        web_app._DISCOVERY_CANCEL_TOKENS.clear()
+
+
+def test_mapping_discovery_cancel_endpoint_sets_registered_event(client) -> None:  # type: ignore[no-untyped-def]
+    token, event = web_app._register_discovery_cancel("disc-endpoint-1")
+    try:
+        response = client.post(
+            "/api/project-status/deliverables/VPI-T2-D2/mapping-discovery/cancel",
+            json={"base_url": "https://tdc.example", "cancelToken": token},
+        )
+        assert response.status_code == 200
+        assert response.get_json()["data"]["cancelled"] is True
+        assert event is not None and event.is_set() is True
+    finally:
+        web_app._release_discovery_cancel(token, event)
+
+
+def test_mapping_discovery_cancel_endpoint_rejects_unknown_and_invalid(client) -> None:  # type: ignore[no-untyped-def]
+    unknown = client.post(
+        "/api/project-status/deliverables/VPI-T2-D2/mapping-discovery/cancel",
+        json={"base_url": "https://tdc.example", "cancelToken": "disc-never-registered"},
+    )
+    assert unknown.status_code == 200
+    assert unknown.get_json()["data"] == {"cancelled": False, "reason": "not_running"}
+
+    invalid = client.post(
+        "/api/project-status/deliverables/VPI-T2-D2/mapping-discovery/cancel",
+        json={"base_url": "https://tdc.example", "cancelToken": "bad token!"},
+    )
+    assert invalid.status_code == 400
+
+
+# ===== F9a / F10 向导取证去重与独立轻量签名核验 =====
+
+
+def test_mapping_discovery_rejects_malformed_wizard_session_id(client) -> None:  # type: ignore[no-untyped-def]
+    invalid = client.post(
+        "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery",
+        json={"base_url": "https://tdc.sgmw.com.cn", "wizardSessionId": "bad session id with spaces!"},
+    )
+    assert invalid.status_code == 422
+    assert "wizardSessionId" in invalid.get_json()["error"]["fields"]
+
+
+def test_mapping_discovery_f9a_session_cache_deduplicates(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    crawl_calls: list[object] = []
+
+    class FakeTDCClient:
+        def crawl_data_model_all(self, filters, max_records=5000, should_stop=None):  # type: ignore[no-untyped-def]
+            crawl_calls.append(("crawl", filters))
+            return SimpleNamespace(
+                rows=[
+                    {"incident": "INC-001", "projectModel": "F610S", "department": "车体工程"},
+                    {"incident": "INC-002", "projectModel": "F610S", "department": "车体工程"},
+                ],
+                complete=True,
+                stop_reason="reported_pages",
+            )
+
+    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    payload = {
+        "base_url": "https://tdc.sgmw.com.cn",
+        "wizardSessionId": "wiz-sess-test-01",
+        "filters": {"project_model": "F610S", "department": "车体工程"},
+        "aggregate": True,
+    }
+
+    # 1. 第一次发现：发起真实抓取并写入会话缓存
+    resp1 = client.post("/api/project-status/deliverables/VPI-T2-D5/mapping-discovery", json=payload)
+    assert resp1.status_code == 200
+    assert len(crawl_calls) == 1
+
+    # 2. 第二次发现（同一会话、相同基础查询）：命中缓存，不发起上游抓取
+    resp2 = client.post(
+        "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery",
+        json={**payload, "selectedExternalKey": "INC-001"},
+    )
+    assert resp2.status_code == 200
+    assert len(crawl_calls) == 1  # 依然是 1，证明未重复调用上游！
+
+    # 3. 换一个会话 ID：缓存隔离，发起新的上游调用
+    resp3 = client.post(
+        "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery",
+        json={**payload, "wizardSessionId": "wiz-sess-test-02"},
+    )
+    assert resp3.status_code == 200
+    assert len(crawl_calls) == 2
+
+
+def test_mapping_discovery_f10_stability_sampling_verification(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    actions: list[str] = []
+
+    class FakeTDCClient:
+        def crawl_data_model_all(self, filters, max_records=5000, should_stop=None):  # type: ignore[no-untyped-def]
+            actions.append("crawl_all")
+            return SimpleNamespace(
+                rows=[{"incident": "INC-001", "projectModel": "F610S", "department": "车体工程"}],
+                complete=True,
+                stop_reason="reported_pages",
+            )
+
+        def query_data_model_page(self, filters, page=1, page_size=50):  # type: ignore[no-untyped-def]
+            actions.append("query_page")
+            return SimpleNamespace(
+                rows=[{"incident": "INC-001", "projectModel": "F610S", "department": "车体工程"}],
+                total=1,
+                page=1,
+                page_size=50,
+            )
+
+    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    payload = {
+        "base_url": "https://tdc.sgmw.com.cn",
+        "wizardSessionId": "wiz-stability-01",
+        "filters": {"project_model": "F610S", "department": "车体工程"},
+        "aggregate": True,
+    }
+
+    # 第 1 次：全量取证
+    resp1 = client.post("/api/project-status/deliverables/VPI-T2-D5/mapping-discovery", json=payload)
+    assert resp1.status_code == 200
+    assert actions == ["crawl_all"]
+    assert resp1.get_json()["data"]["stability"]["confirmed"] == 1
+
+    # 第 2 次（F10 轻量签名采样）：只请求单页 query_page，不走全量抓取
+    resp2 = client.post(
+        "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery",
+        json={**payload, "stabilityCheck": True},
+    )
+    assert resp2.status_code == 200
+    assert actions == ["crawl_all", "query_page"]
+    data2 = resp2.get_json()["data"]
+    assert data2["state"] == "matched"
+    assert data2["stability"]["confirmed"] == 2
+    assert data2["stability"]["ready"] is True
+
+
+def test_mapping_discovery_f10_stability_detects_total_mismatch(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    class FakeTDCClient:
+        def crawl_data_model_all(self, filters, max_records=5000, should_stop=None):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(
+                rows=[{"incident": "INC-001", "projectModel": "F610S", "department": "车体工程"}],
+                complete=True,
+                stop_reason="reported_pages",
+            )
+
+        def query_data_model_page(self, filters, page=1, page_size=50):  # type: ignore[no-untyped-def]
+            # 上游在两次请求间总数发生变化（如从 1 变到 2），未保持一致
+            return SimpleNamespace(
+                rows=[{"incident": "INC-001", "projectModel": "F610S", "department": "车体工程"}],
+                total=2,
+                page=1,
+                page_size=50,
+            )
+
+    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    payload = {
+        "base_url": "https://tdc.sgmw.com.cn",
+        "wizardSessionId": "wiz-stability-mismatch",
+        "filters": {"project_model": "F610S", "department": "车体工程"},
+        "aggregate": True,
+    }
+
+    resp1 = client.post("/api/project-status/deliverables/VPI-T2-D5/mapping-discovery", json=payload)
+    assert resp1.status_code == 200
+    assert resp1.get_json()["data"]["stability"]["confirmed"] == 1
+
+    resp2 = client.post(
+        "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery",
+        json={**payload, "stabilityCheck": True},
+    )
+    assert resp2.status_code == 200
+    data2 = resp2.get_json()["data"]
+    assert data2["state"] == "key_changed"
+    assert data2["stability"]["confirmed"] == 0
+    assert data2["stability"]["ready"] is False
+
+
+def test_mapping_discovery_f10_stability_aggregate_over_one_page(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """回归主用例（TASK-20260929-F10-STABILITY-GATE）：>50 条聚合 + 上游倒序。
+
+    r4 缺陷：第 1 次观测存的是全量按单号排序后的前 5 个单号，第 2 次采样是
+    上游页序第 1 页 50 行，两集合不可能互为子集 → 聚合模式必然报"映射稳定性
+    未就绪"。修复后基线为全量单号截断哈希集合，采样 ⊆ 基线即通过。
+    """
+    actions: list[str] = []
+    ordered = [
+        {"incident": f"INC-{i:04d}", "projectModel": "F610S", "department": "车体工程"}
+        for i in range(60)
+    ]
+    upstream_rows = list(reversed(ordered))  # 上游按时间倒序：页 1 是单号最大的一批
+
+    class FakeTDCClient:
+        def crawl_data_model_all(self, filters, max_records=5000, should_stop=None):  # type: ignore[no-untyped-def]
+            actions.append("crawl_all")
+            return SimpleNamespace(
+                rows=list(upstream_rows),
+                total=60,
+                complete=True,
+                stop_reason="reported_pages",
+            )
+
+        def query_data_model_page(self, filters, page=1, page_size=50):  # type: ignore[no-untyped-def]
+            actions.append("query_page")
+            return SimpleNamespace(
+                rows=upstream_rows[:page_size],
+                total=60,
+                page=page,
+                page_size=page_size,
+            )
+
+    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    payload = {
+        "base_url": "https://tdc.sgmw.com.cn",
+        "wizardSessionId": "wiz-stability-60",
+        "filters": {"project_model": "F610S", "department": "车体工程"},
+        "aggregate": True,
+    }
+
+    resp1 = client.post("/api/project-status/deliverables/VPI-T2-D5/mapping-discovery", json=payload)
+    assert resp1.status_code == 200
+    assert resp1.get_json()["data"]["stability"]["confirmed"] == 1
+
+    resp2 = client.post(
+        "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery",
+        json={**payload, "stabilityCheck": True},
+    )
+    assert resp2.status_code == 200
+    data2 = resp2.get_json()["data"]
+    assert data2["state"] == "matched"
+    assert data2["stability"] == {"confirmed": 2, "required": 2, "ready": True}
+    assert data2["mismatch"] is None
+    assert actions == ["crawl_all", "query_page"]
+
+
+def test_mapping_discovery_f10_stability_mismatch_structure_reported(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """采样不一致时响应必须带结构化 mismatch（原因枚举 + 计数），供前端给出具体文案。"""
+    ordered = [
+        {"incident": f"INC-{i:04d}", "projectModel": "F610S", "department": "车体工程"}
+        for i in range(60)
+    ]
+
+    class FakeTDCClient:
+        def crawl_data_model_all(self, filters, max_records=5000, should_stop=None):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(
+                rows=list(ordered),
+                total=60,
+                complete=True,
+                stop_reason="reported_pages",
+            )
+
+        def query_data_model_page(self, filters, page=1, page_size=50):  # type: ignore[no-untyped-def]
+            # 上游第 1 页混入一条新记录（把最后一条挤到第 2 页），声明总数不变。
+            drifted = [{"incident": "INC-9000", "projectModel": "F610S"}] + ordered[:49]
+            return SimpleNamespace(rows=drifted, total=60, page=page, page_size=page_size)
+
+    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    payload = {
+        "base_url": "https://tdc.sgmw.com.cn",
+        "wizardSessionId": "wiz-stability-drift",
+        "filters": {"project_model": "F610S", "department": "车体工程"},
+        "aggregate": True,
+    }
+
+    resp1 = client.post("/api/project-status/deliverables/VPI-T2-D5/mapping-discovery", json=payload)
+    assert resp1.status_code == 200
+
+    resp2 = client.post(
+        "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery",
+        json={**payload, "stabilityCheck": True},
+    )
+    assert resp2.status_code == 200
+    data2 = resp2.get_json()["data"]
+    assert data2["state"] == "key_changed"
+    assert data2["mismatch"] == {
+        "reason": "sample_not_in_baseline",
+        "expected": 60,
+        "actual": 50,
+    }
+
+
+def test_mapping_discovery_f10_stability_cache_hit_keeps_declared_total(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """顾问复核 F2：F9a 缓存命中路径再次落观测时必须沿用首次抓取的声明总数。
+
+    上游存在跨页重复行时，去重后行数（60）< 声明总数（62）；若缓存命中的
+    再观测用去重后行数充当 `_upstreamTotal`，采样端的声明总数就会与之假性
+    失配，向导永远无法就绪。
+    """
+    actions: list[str] = []
+    ordered = [
+        {"incident": f"INC-{i:04d}", "projectModel": "F610S", "department": "车体工程"}
+        for i in range(60)
+    ]
+
+    class FakeTDCClient:
+        def crawl_data_model_all(self, filters, max_records=5000, should_stop=None):  # type: ignore[no-untyped-def]
+            actions.append("crawl_all")
+            # 模拟爬虫跨页去重后剩 60 行，但上游声明总数是 62。
+            return SimpleNamespace(
+                rows=list(ordered), total=62, complete=True, stop_reason="reported_pages"
+            )
+
+        def query_data_model_page(self, filters, page=1, page_size=50):  # type: ignore[no-untyped-def]
+            actions.append("query_page")
+            return SimpleNamespace(
+                rows=ordered[:page_size], total=62, page=page, page_size=page_size
+            )
+
+    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    payload = {
+        "base_url": "https://tdc.sgmw.com.cn",
+        "wizardSessionId": "wiz-stability-cache-total",
+        "filters": {"project_model": "F610S", "department": "车体工程"},
+        "aggregate": True,
+    }
+
+    resp1 = client.post("/api/project-status/deliverables/VPI-T2-D5/mapping-discovery", json=payload)
+    assert resp1.status_code == 200
+    assert resp1.get_json()["data"]["stability"]["confirmed"] == 1
+
+    # 同会话同参数的再次取证（缓存命中路径）：不得重复抓取，且基线总数保持 62。
+    resp1b = client.post("/api/project-status/deliverables/VPI-T2-D5/mapping-discovery", json=payload)
+    assert resp1b.status_code == 200
+    assert actions == ["crawl_all"]
+
+    resp2 = client.post(
+        "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery",
+        json={**payload, "stabilityCheck": True},
+    )
+    assert resp2.status_code == 200
+    data2 = resp2.get_json()["data"]
+    assert data2["state"] == "matched"
+    assert data2["stability"] == {"confirmed": 2, "required": 2, "ready": True}
+    assert data2["mismatch"] is None
+    assert actions == ["crawl_all", "query_page"]
+
+
+# ===== G5 映射取证后台化：202 契约 / 参数哈希绑定 / 单在途 / 协作取消 =====
+
+
+def _wait_unified_task(client, task_id: str, timeout_s: float = 5.0) -> dict:  # type: ignore[no-untyped-def]
+    import time
+
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        resp = client.get(f"/api/tasks/{task_id}")
+        assert resp.status_code == 200
+        data = resp.get_json()["data"]
+        if data.get("is_active") is False:
+            return data
+        time.sleep(0.02)
+    raise AssertionError(f"task {task_id} did not settle within {timeout_s}s")
+
+
+def test_mapping_discovery_async_202_contract_and_isomorphic_result(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """统一域会话在位时全量取证转后台任务：202 受理 → 轮询 succeeded →
+    结果与同步响应同构且携带同一参数哈希（G5 参数绑定）。"""
+    crawl_calls: list[object] = []
+
+    class FakeTDCClient:
+        def crawl_data_model_all(self, filters, max_records=5000, should_stop=None):  # type: ignore[no-untyped-def]
+            crawl_calls.append(("crawl", filters))
+            return SimpleNamespace(
+                rows=[{"incident": "INC-001", "projectModel": "F610S", "department": "车体工程"}],
+                complete=True,
+                stop_reason="reported_pages",
+                total=1,
+            )
+
+    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    payload = {
+        "base_url": "https://tdc.sgmw.com.cn",
+        "wizardSessionId": "wiz-sess-async-01",
+        "filters": {"project_model": "F610S", "department": "车体工程"},
+        "aggregate": True,
+    }
+    web_app._MAPPING_DISCOVERY_TASKS.clear()
+    try:
+        resp = client.post(
+            "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery", json=payload
+        )
+        assert resp.status_code == 202
+        data = resp.get_json()["data"]
+        assert data["taskId"]
+        assert data["status"] in {"queued", "running"}
+        assert data["statusUrl"] == f"/api/tasks/{data['taskId']}"
+        assert data["resultUrl"] == f"/api/tasks/{data['taskId']}/result"
+        assert len(data["paramsHash"]) == 16
+
+        task = _wait_unified_task(client, data["taskId"])
+        assert task["status"] == "succeeded"
+        assert len(crawl_calls) == 1
+
+        result_resp = client.get(f"/api/tasks/{data['taskId']}/result")
+        assert result_resp.status_code == 200
+        result_data = result_resp.get_json()["data"]
+        assert result_data["paramsHash"] == data["paramsHash"]
+        assert isinstance(result_data["result"], dict)
+    finally:
+        web_app._MAPPING_DISCOVERY_TASKS.clear()
+
+
+def test_mapping_discovery_async_same_params_reattach_and_conflict(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """单在途契约：同参数重复提交返回原任务（重挂）；不同参数在途时 409 显式拒绝。"""
+    import threading
+
+    release = threading.Event()
+    started = threading.Event()
+
+    class BlockingTDCClient:
+        def crawl_data_model_all(self, filters, max_records=5000, should_stop=None):  # type: ignore[no-untyped-def]
+            started.set()
+            if not release.wait(timeout=5.0):
+                raise AssertionError("test event not released")
+            return SimpleNamespace(
+                rows=[{"incident": "INC-001"}], complete=True,
+                stop_reason="reported_pages", total=1,
+            )
+
+    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: BlockingTDCClient())
+    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    payload = {
+        "base_url": "https://tdc.sgmw.com.cn",
+        "wizardSessionId": "wiz-sess-async-02",
+        "filters": {"project_model": "F610S", "department": "车体工程"},
+        "aggregate": True,
+    }
+    web_app._MAPPING_DISCOVERY_TASKS.clear()
+    try:
+        resp1 = client.post(
+            "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery", json=payload
+        )
+        assert resp1.status_code == 202
+        task_id = resp1.get_json()["data"]["taskId"]
+        assert started.wait(2.0)
+
+        resp2 = client.post(
+            "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery", json=payload
+        )
+        assert resp2.status_code == 202
+        assert resp2.get_json()["data"]["taskId"] == task_id
+
+        resp3 = client.post(
+            "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery",
+            json={**payload, "aggregate": False},
+        )
+        assert resp3.status_code == 409
+        assert resp3.get_json()["error"]["type"] == "DiscoveryInProgress"
+
+        release.set()
+        task = _wait_unified_task(client, task_id)
+        assert task["status"] == "succeeded"
+    finally:
+        release.set()
+        web_app._MAPPING_DISCOVERY_TASKS.clear()
+
+
+def test_mapping_discovery_async_cooperative_cancel(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """后台取证任务可经任务中心协作取消：TDC 分页边界停止，结果丢弃。"""
+    import threading
+    import time as _time
+
+    from services.tdc_crawler import CrawlCancelled
+
+    started = threading.Event()
+
+    class SlowTDCClient:
+        def crawl_data_model_all(self, filters, max_records=5000, should_stop=None):  # type: ignore[no-untyped-def]
+            started.set()
+            for _ in range(500):
+                if should_stop is not None and should_stop():
+                    raise CrawlCancelled("cancelled at page boundary")
+                _time.sleep(0.02)
+            return SimpleNamespace(rows=[], complete=True, stop_reason="reported_pages", total=0)
+
+    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: SlowTDCClient())
+    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    payload = {
+        "base_url": "https://tdc.sgmw.com.cn",
+        "wizardSessionId": "wiz-sess-async-03",
+        "filters": {"project_model": "F610S"},
+        "aggregate": True,
+    }
+    web_app._MAPPING_DISCOVERY_TASKS.clear()
+    try:
+        resp = client.post(
+            "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery", json=payload
+        )
+        assert resp.status_code == 202
+        task_id = resp.get_json()["data"]["taskId"]
+        assert started.wait(2.0)
+
+        cancel = client.post(f"/api/tasks/{task_id}/cancel", json={})
+        assert cancel.status_code == 200
+
+        task = _wait_unified_task(client, task_id)
+        assert task["status"] == "cancelled"
+
+        result_resp = client.get(f"/api/tasks/{task_id}/result")
+        assert result_resp.status_code == 409
+    finally:
+        web_app._MAPPING_DISCOVERY_TASKS.clear()
+
+
+def test_mapping_discovery_password_mode_stays_sync(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """凭据红线：密码模式不进后台任务（凭据禁止入库），回落同步路径且行为不变。"""
+    calls: list[object] = []
+
+    class FakeTDCClient:
+        def crawl_data_model_all(self, filters, max_records=5000, should_stop=None):  # type: ignore[no-untyped-def]
+            calls.append(("crawl", filters))
+            return SimpleNamespace(
+                rows=[{"incident": "INC-001"}], complete=True,
+                stop_reason="reported_pages", total=1,
+            )
+
+    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    payload = {
+        "base_url": "https://tdc.sgmw.com.cn",
+        "wizardSessionId": "wiz-sess-async-04",
+        "filters": {"project_model": "F610S"},
+        "aggregate": True,
+        "auth_mode": "password",
+        "username": "u",
+        "password": "p",
+    }
+    web_app._MAPPING_DISCOVERY_TASKS.clear()
+    try:
+        resp = client.post(
+            "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery", json=payload
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["ok"] is True
+        assert len(calls) == 1
+        assert "VPI-T2-D5" not in web_app._MAPPING_DISCOVERY_TASKS
+    finally:
+        web_app._MAPPING_DISCOVERY_TASKS.clear()
+
+
+def test_mapping_discovery_cancel_endpoint_cancels_background_task(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """顾问复审 F1/F2：后台任务在途时，前端 abort 经 cancel 端点按交付物兜底
+    协作取消；且 worker 退出前注册键不释放（换参提交仍 409，不产生双 worker）。"""
+    import threading
+
+    release = threading.Event()
+    started = threading.Event()
+
+    class BlockingTDCClient:
+        def crawl_data_model_all(self, filters, max_records=5000, should_stop=None):  # type: ignore[no-untyped-def]
+            started.set()
+            # 阻塞直到测试放行：cancel 后 worker 仍未退出（模拟不可中断导出）。
+            if not release.wait(timeout=5.0):
+                raise AssertionError("test event not released")
+            return SimpleNamespace(
+                rows=[{"incident": "INC-001"}], complete=True,
+                stop_reason="reported_pages", total=1,
+            )
+
+    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: BlockingTDCClient())
+    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    payload = {
+        "base_url": "https://tdc.sgmw.com.cn",
+        "wizardSessionId": "wiz-sess-async-05",
+        "filters": {"project_model": "F610S"},
+        "aggregate": True,
+    }
+    web_app._MAPPING_DISCOVERY_TASKS.clear()
+    try:
+        resp = client.post(
+            "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery",
+            json={**payload, "cancelToken": "disc-own-token"},
+        )
+        assert resp.status_code == 202
+        task_id = resp.get_json()["data"]["taskId"]
+        assert started.wait(2.0)
+
+        # 令牌已随 202 释放（握手未被前端读到）：取消按「令牌→任务」关联兜底（F1），
+        # 且只认本任务的令牌——过期/未知令牌不得取消它（见 test_stale_cancel_token_…）。
+        cancel = client.post(
+            "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery/cancel",
+            json={"base_url": "https://tdc.example", "cancelToken": "disc-own-token"},
+        )
+        assert cancel.status_code == 200
+        cancel_data = cancel.get_json()["data"]
+        assert cancel_data["cancelled"] is True
+        assert cancel_data["taskId"] == task_id
+
+        # worker 仍在运行：注册键未释放，换参提交必须仍 409（F2）。
+        conflict = client.post(
+            "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery",
+            json={**payload, "aggregate": False},
+        )
+        assert conflict.status_code == 409
+
+        release.set()
+        task = _wait_unified_task(client, task_id)
+        assert task["status"] == "cancelled"
+
+        # worker 退出后注册键已释放：可重新提交。
+        resp2 = client.post(
+            "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery", json=payload
+        )
+        assert resp2.status_code == 202
+        _wait_unified_task(client, resp2.get_json()["data"]["taskId"])
+    finally:
+        release.set()
+        web_app._MAPPING_DISCOVERY_TASKS.clear()
+
+
+def test_mapping_discovery_cookie_mode_stays_sync(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """G5（顾问复审 F1 配套）：显式 Cookie 模式不进后台任务，回落同步（凭据红线）。"""
+    class FakeTDCClient:
+        def crawl_data_model_all(self, filters, max_records=5000, should_stop=None):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(
+                rows=[{"incident": "INC-001"}], complete=True,
+                stop_reason="reported_pages", total=1,
+            )
+
+    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    payload = {
+        "base_url": "https://tdc.sgmw.com.cn",
+        "wizardSessionId": "wiz-sess-async-06",
+        "filters": {"project_model": "F610S"},
+        "aggregate": True,
+        # 显式携带敏感字段提交：它们只允许留在请求闭包内，绝不落盘。
+        "auth_mode": "browser",
+        "cookie": "<COOKIE_PLACEHOLDER>",
+        "headers": {"X-Demo": "<HEADER_PLACEHOLDER>"},
+    }
+    web_app._MAPPING_DISCOVERY_TASKS.clear()
+    try:
+        resp = client.post(
+            "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery", json=payload
+        )
+        # cookie 属显式 Cookie 模式 → 不进后台任务，回落同步（200）。
+        assert resp.status_code == 200
+    finally:
+        web_app._MAPPING_DISCOVERY_TASKS.clear()
+
+
+def test_mapping_discovery_async_artifact_redline_on_async_path(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """G5（顾问复审 F11）：统一域会话异步路径的落盘 artifact 只含 result 与 paramsHash。"""
+    import json as _json
+
+    class FakeTDCClient:
+        def crawl_data_model_all(self, filters, max_records=5000, should_stop=None):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(
+                rows=[{"incident": "INC-001"}], complete=True,
+                stop_reason="reported_pages", total=1,
+            )
+
+    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    payload = {
+        "base_url": "https://tdc.sgmw.com.cn",
+        "wizardSessionId": "wiz-sess-async-07",
+        "filters": {"project_model": "F610S"},
+        "aggregate": True,
+    }
+    web_app._MAPPING_DISCOVERY_TASKS.clear()
+    try:
+        resp = client.post(
+            "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery", json=payload
+        )
+        assert resp.status_code == 202
+        task_id = resp.get_json()["data"]["taskId"]
+        task = _wait_unified_task(client, task_id)
+        assert task["status"] == "succeeded"
+        runner = client.application.extensions["crawl_task_runner"]
+        artifact_file = runner.downloads_dir / f"{task_id}.result.json"
+        artifact_payload = _json.loads(artifact_file.read_text(encoding="utf-8"))
+        assert set(artifact_payload.keys()) == {"result", "paramsHash"}
+        artifact_text = artifact_file.read_text(encoding="utf-8").lower()
+        for forbidden in ("cookie", "authorization", "password", "set-token", "bearer"):
+            assert forbidden not in artifact_text
+    finally:
+        web_app._MAPPING_DISCOVERY_TASKS.clear()
+
+
+def test_mapping_discovery_cancel_endpoint_does_not_require_base_url(client) -> None:  # type: ignore[no-untyped-def]
+    """The page's abort handler sends only the cancel token (nothing is queried upstream)."""
+    token, event = web_app._register_discovery_cancel("disc-no-base-url")
+    try:
+        response = client.post(
+            "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery/cancel",
+            json={"cancelToken": token},
+        )
+        assert response.status_code == 200, response.get_json()
+        assert response.get_json()["data"]["cancelled"] is True
+        assert event is not None and event.is_set() is True
+        assert client.post(
+            "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery/cancel", json={"cancelToken": "bad token!"},
+        ).status_code == 400
+        assert client.post(
+            "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery/cancel", data="not json",
+        ).status_code == 400
+    finally:
+        web_app._release_discovery_cancel(token, event)
+
+
+def test_stale_cancel_token_cannot_cancel_a_later_task(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """旧请求 A 的延迟取消（令牌已释放、不属于当前任务）不得取消后来启动的任务 B。"""
+    cancelled: list[str] = []
+
+    class FakeRunner:
+        def get_task(self, task_id):  # type: ignore[no-untyped-def]
+            return {"status": "running"}
+
+        def cancel_task(self, task_id):  # type: ignore[no-untyped-def]
+            cancelled.append(task_id)
+
+    monkeypatch.setattr(web_app, "_crawl_runner_from_request", lambda: FakeRunner())
+    web_app._MAPPING_DISCOVERY_TASKS.clear()
+    web_app._MAPPING_DISCOVERY_TASKS["VPI-T2-D5"] = {"task_id": "NEW-TASK-B", "params_hash": "NEW-QUERY-B", "tokens": ["disc-token-b"]}
+    url = "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery/cancel"
+    try:
+        stale = client.post(url, json={"cancelToken": "old-request-A"})
+        assert stale.status_code == 200 and stale.get_json()["data"] == {"cancelled": False, "reason": "not_running"}
+        assert cancelled == []
+        own = client.post(url, json={"cancelToken": "disc-token-b"})
+        assert own.get_json()["data"]["cancelled"] is True and cancelled == ["NEW-TASK-B"]
+    finally:
+        web_app._MAPPING_DISCOVERY_TASKS.clear()

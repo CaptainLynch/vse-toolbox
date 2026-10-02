@@ -20,7 +20,9 @@ from typing import Any, Mapping, Sequence
 
 from core.redaction import redact_sensitive_text
 from core.ewo_binding_v2 import normalize_ewo_v2_rule
+from core.report_cost_values import cost_note_segments
 from services.pagination_integrity import COMPLETE_STOP_REASONS as COMPLETE_RESULT_STOP_REASONS  # noqa: F401
+from services.deliverable_form_analysis import normalize_tdc_report_status
 from services.project_status_deliverable_analysis import (
     EWO_DEFAULT_RSP_DEPARTMENT_EXPRESSION,
 )
@@ -95,6 +97,19 @@ def record_identity(row: Mapping[str, Any]) -> str:
             if cleaned:
                 return cleaned
     return ""
+
+
+_IDENTITY_DIGEST_LEN = 16
+
+
+def identity_digest(value: str) -> str:
+    """单号截断哈希：稳定性基线只落不可逆摘要，不存原始单号明文。
+
+    映射发现两侧（全量取证与轻量采样）必须共用本函数，保证同一单号
+    在基线集合与采样集合之间可判定子集关系。
+    """
+    text = str(value)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:_IDENTITY_DIGEST_LEN]
 
 
 def identified_records(
@@ -222,11 +237,92 @@ def normalize_candidate_value(api_field: str, value: Any) -> str | None:
     return cleaned
 
 
+# 多记录摘要用的状态候选键（按序取首个非空值；G34 备注摘要化）。
+# 键序即现场证据优先级：列表接口字段在前，工作簿中文名兜底。
+_STATUS_KEYS_BY_REPORT: dict[str, tuple[str, ...]] = {
+    "sor": ("processInstanceStatus", "approvalStatus", "审批状态"),
+    "data_model": ("status", "状态"),
+    "paa": ("state", "current_state__name"),
+    "ncr_progress": ("状态", "status"),
+    "ncr_detail": ("状态", "status"),
+    "ewo": ("state", "current_state__name", "current_state__keyed_name"),
+}
+
+_UNFILLED_STATUS_LABEL = "未填写"
+# 数模已映射状态码（与 normalize_tdc_report_status 同一映射，仅用于识别
+# 「未映射码」以便展示 其他(码N)；文本归一本身仍走同一函数，禁止第二套口径）。
+_DATA_MODEL_MAPPED_CODES = frozenset({"2", "4"})
+
+_AGGREGATE_NOTE_LIMIT = 1000
+
+
+def _aggregate_status_label(report: str, row: Mapping[str, Any]) -> str:
+    """按报表候选键取首个非空状态并归一为摘要展示文本（空计为「未填写」）。"""
+    raw = ""
+    for key in _STATUS_KEYS_BY_REPORT.get(report, ()):
+        text = clean_identity(row.get(key)).strip()
+        if text:
+            raw = text
+            break
+    if not raw:
+        return _UNFILLED_STATUS_LABEL
+    if report == "data_model":
+        # 数字码归一走与连接器/分析同一函数；未映射码诚实披露为 其他(码N)。
+        if raw in _DATA_MODEL_MAPPED_CODES:
+            return normalize_tdc_report_status("data_model", raw)
+        return f"其他(码{raw})"
+    return raw
+
+
+def _aggregate_note_summary(
+    identified: Sequence[tuple[str, Mapping[str, Any]]],
+    report: str,
+) -> dict[str, str | None]:
+    """多记录风险备注摘要：状态计数优先完整，费用段按顺序在预算内追加。
+
+    格式：``共 N 条；<状态> X、<状态> Y…``（计数降序、同数按状态名升序）；
+    ncr_detail 追加四指标费用合计段。超过 1000 字时先保「共 N 条」与全部
+    状态计数完整，再按顺序截费用段（宁可费用段缺失也不截断状态计数；
+    状态段本身极长时保持完整，不做字符截断）。
+    """
+    counts: dict[str, int] = {}
+    for _identity, row in identified:
+        label = _aggregate_status_label(report, row)
+        counts[label] = counts.get(label, 0) + 1
+    ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    head = f"共 {len(identified)} 条；" + "、".join(
+        f"{status} {count}" for status, count in ordered
+    )
+    if report != "ncr_detail":
+        return {"note": head}
+    summary = head
+    segments = cost_note_segments(
+        (row for _identity, row in identified),
+        total_count=len(identified),
+    )
+    for segment in segments:
+        candidate = f"{summary}；{segment}"
+        if len(candidate) > _AGGREGATE_NOTE_LIMIT:
+            break
+        summary = candidate
+    return {"note": summary}
+
+
 def build_aggregate_candidate_values(
     identified: Sequence[tuple[str, Mapping[str, Any]]],
     mapping: Mapping[str, Any],
+    *,
+    report: str | None = None,
 ) -> dict[str, str | None]:
-    """统一根据规范化记录集与映射生成拟写入字段值（connector 与 preview 唯一来源）。"""
+    """统一根据规范化记录集与映射生成拟写入字段值（connector 与 preview 唯一来源）。
+
+    ``report``（G34 备注摘要化）：``None`` 时多记录分支保持旧明细行为（逐条
+    「单号：卡点信息」以「；」连接、1000 字截断），仅供不带报表语境的调用方；
+    连接器聚合路径、ewo_v2 与映射取证/候选预览一律传同一报表类型（能力注册表的
+    ``reportType``），此时多记录分支返回确定性摘要（见 :func:`_aggregate_note_summary`），
+    预览与执行逐字节一致。
+    单记录分支两种取值下行为完全一致。
+    """
     if not identified:
         return {}
     if len(identified) == 1:
@@ -248,6 +344,8 @@ def build_aggregate_candidate_values(
         return values
 
     # 多记录聚合模式：不写 owner/plannedDate，仅聚合 note
+    if report is not None:
+        return _aggregate_note_summary(identified, report)
     note_sources = mapping.get("note")
     note_sources = [note_sources] if isinstance(note_sources, str) else list(note_sources or [])
     parts: list[str] = []

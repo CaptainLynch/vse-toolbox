@@ -7,6 +7,7 @@ import pytest
 from core.db_manager import DatabaseManager
 from services.project_status_deliverable_analysis import (
     ProjectStatusDeliverableAnalysisService,
+    analysis_source_type,
     normalize_analysis_rows,
     normalize_pending_signers,
     summarize_analysis_items,
@@ -71,6 +72,60 @@ def test_normalize_and_summarize_analysis_rows() -> None:
         "completed": 0,
         "incomplete": 1,
     }
+
+
+def test_aras_paa_close_status_counts_completed_like_form_caliber(
+    tmp_db: DatabaseManager,
+) -> None:
+    """生产缺陷闭环（2026-09-26）：分析口径必须识别 aras_paa 的 CLOSE 终态。
+
+    同一批行的表单口径按 ``_normalize_stage(status)=="CLOSE"`` 判完成；分析侧
+    ``_completed`` 词表只有 ``closed`` 没有 ``close``，曾把 PAA 53 行全判未完成
+    （顶部「当前状态」卡 0% 而统一表单分析卡 31/53）。
+    """
+    rows = [
+        {"id": "P-1", "name": "A面确认", "status": "CLOSE", "dueDate": "2026-08-20"},
+        {"id": "P-2", "name": "B面确认", "status": "APPR L1", "dueDate": "2026-08-25"},
+        {"id": "P-3", "name": "C面确认", "status": "EDIT"},
+    ]
+    items = normalize_analysis_rows(rows, source_type="aras_paa")
+    assert [item["is_completed"] for item in items] == [True, False, False]
+
+    service = ProjectStatusDeliverableAnalysisService(
+        tmp_db,
+        clock=lambda: date(2026, 8, 23),
+    )
+    service.publish(
+        "VPI-T2-D6",
+        301,
+        rows,
+        snapshot_at="2026-08-23T07:00:00Z",
+        source_type="aras_paa",
+    )
+    summary = service.latest_link_summary("VPI-T2-D6")
+    assert summary is not None
+    assert summary["summary"]["total"] == 3
+    assert summary["summary"]["completed"] == 1
+    # CLOSE 行视为完成后不得再进入逾期/缺日期分母（P-2 临期、P-3 缺计划日期）。
+    overview = service.overview("VPI-T2-D6")
+    assert overview["summary"]["overdue"] == 0
+    assert overview["summary"]["dueSoon"] == 1
+    assert overview["summary"]["missingDueDate"] == 1
+
+
+def test_aras_ncr_close_completes_but_tdc_sources_stay_unchanged() -> None:
+    """CLOSE 终态识别按来源限定：aras_ncr 受益；TDC 完成语义不外溢。"""
+    ncr_items = normalize_analysis_rows(
+        [{"id": "N-1", "name": "NCR 流程", "status": "CLOSE"}],
+        source_type="aras_ncr",
+    )
+    assert ncr_items[0]["is_completed"] is True
+
+    tdc_items = normalize_analysis_rows(
+        [{"id": "T-1", "name": "SOR 流程", "status": "close"}],
+        source_type="tdc_sor",
+    )
+    assert tdc_items[0]["is_completed"] is False
 
 
 def test_normalize_preserves_business_number_and_pending_signers() -> None:
@@ -883,3 +938,61 @@ def test_chart_groups_apply_member_mapping(tmp_db: DatabaseManager) -> None:
 
     with pytest.raises(ValueError):
         service.chart_groups("VPI-T2-D5", "department", groups=rules, unmatched="bogus")
+
+
+def test_analysis_status_alias_covers_sor_process_instance_status() -> None:
+    """分析口径的 status 别名必须覆盖 TDC SOR 的 processInstanceStatus（生产缺陷 2026-09-26）。
+
+    应用行已扁平化为纯文本 → 直接命中完成词表；历史/异构行仍是嵌套对象时只取
+    name，不用数值形态推断完成。
+    """
+    items = normalize_analysis_rows(
+        [
+            {"id": "S-1", "name": "A", "processInstanceStatus": "已完成"},
+            {"id": "S-2", "name": "B", "processInstanceStatus": "审批中"},
+            {"id": "S-3", "name": "C", "processInstanceStatus": {"value": 4, "valueStr": "4"}},
+        ],
+        source_type="tdc_sor",
+    )
+    assert [item["is_completed"] for item in items] == [True, False, False]
+    assert items[2]["source_status"] in ("", None)
+
+
+def test_tdc_data_model_numeric_status_completion_alignment() -> None:
+    """分析口径对齐表单侧：数模数字状态码 "4"=已完成、"2"/未知码=未完成（2026-09-29 生产缺陷）。
+
+    现场症状：分析快照 completed=0/717 而表单明细正常——``_completed`` 的子串
+    词表识别不了数字码且数模行无实际完成日期。修复后仅 tdc_data_model 标签
+    生效，已废弃/审批中不在完成集内自然为 False。
+    """
+    items = normalize_analysis_rows(
+        [
+            {"id": "D-1", "name": "A", "status": "4"},
+            {"id": "D-2", "name": "B", "status": "2"},
+            {"id": "D-3", "name": "C", "status": "9"},
+            {"id": "D-4", "name": "D", "status": "已完成"},
+        ],
+        source_type="tdc_data_model",
+    )
+    assert [item["is_completed"] for item in items] == [True, False, False, True]
+
+
+def test_tdc_sor_rows_keep_text_completion_semantics() -> None:
+    """SOR 行完成判定不受数模数字码对齐影响（来源限定，不外溢）。"""
+    items = normalize_analysis_rows(
+        [
+            {"id": "S-1", "name": "A", "status": "已完成"},
+            {"id": "S-2", "name": "B", "status": "审批中"},
+            {"id": "S-3", "name": "C", "status": "已撤回"},
+        ],
+        source_type="tdc_sor",
+    )
+    assert [item["is_completed"] for item in items] == [True, False, False]
+
+
+def test_analysis_source_type_tags_tdc_reports() -> None:
+    """TDC 写入侧使用限定来源标签（与 Aras 同一先例）；其他来源不变。"""
+    assert analysis_source_type("tdc", "data_model") == "tdc_data_model"
+    assert analysis_source_type("tdc", "sor") == "tdc_sor"
+    assert analysis_source_type("tdc", "unknown_report") == "tdc"
+    assert analysis_source_type("aras", "ewo") == "aras_ewo"

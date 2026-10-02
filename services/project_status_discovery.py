@@ -9,7 +9,10 @@ import re
 from typing import Any, Mapping, Sequence
 
 from core.db_manager import DatabaseManager
-from core.project_status_contracts import project_status_supports_record_set
+from core.project_status_contracts import (
+    PROJECT_STATUS_SOURCE_CAPABILITIES,
+    project_status_supports_record_set,
+)
 from core.redaction import redact_sensitive_text
 from services.project_status_records import (
     IDENTITY_FIELDS as _IDENTITY_FIELDS,
@@ -19,6 +22,7 @@ from services.project_status_records import (
     clean_identity,
     compute_config_signature,
     compute_mapping_signature,
+    identity_digest,
     identified_records,
     normalize_candidate_value,
     observation_is_aggregate,
@@ -31,6 +35,13 @@ _VALUE_LIMIT = 200
 _FULL_VALUE_LIMIT = 1000
 _CANDIDATE_CACHE_KEY = "_candidateCache"
 _CANDIDATE_CACHE_MAX_BYTES = 2 * 1024 * 1024
+# F10 稳定性基线保留键：与 `_candidateCache` 同载荷共存，启用授权路径只读
+# `_candidateCache`，指纹/config_signature 均不消费这些键（顾问硬性条件，测试钉住）。
+_STABILITY_SCHEMA = 1
+_SCHEMA_KEY = "_schema"
+_STABILITY_IDS_KEY = "_stabilityIds"
+_UPSTREAM_TOTAL_KEY = "_upstreamTotal"
+_MISMATCH_KEY = "_mismatch"
 _STATUS_HINT = re.compile(r"status|state|node|stage|approval|approve|状态|节点|审批", re.I)
 _SENSITIVE_FIELD = re.compile(r"authorization|cookie|token|secret|password|session|csrf", re.I)
 
@@ -47,6 +58,18 @@ def _key(row: Mapping[str, Any]) -> str | None:
     return value or None
 
 
+def _aggregate_report(deliverable_id: str) -> str | None:
+    """多记录备注摘要的报表类型（与连接器聚合路径同源：能力注册表的 reportType）。
+
+    预览（候选值对比）必须与连接器实际写入逐字节一致：连接器总会传报表类型，
+    因此取证/预览端也必须传同一类型，否则预览仍显示旧「单号：状态」明细而执行
+    写入「共 N 条；状态计数」摘要。
+    """
+    capabilities = PROJECT_STATUS_SOURCE_CAPABILITIES.get(str(deliverable_id), {})
+    report = str(capabilities.get("reportType") or "").strip()
+    return report or None
+
+
 class MappingDiscoveryService:
     def __init__(self, db: DatabaseManager) -> None:
         self.db = db
@@ -60,6 +83,7 @@ class MappingDiscoveryService:
         *,
         aggregate: bool = False,
         match_rule: Mapping[str, Any] | None = None,
+        upstream_total: int | None = None,
     ) -> dict[str, Any]:
         if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes, bytearray)):
             raise ValueError("rows must be a sequence of objects")
@@ -71,6 +95,12 @@ class MappingDiscoveryService:
             )
         if not isinstance(aggregate, bool):
             raise ValueError("aggregate must be a boolean")
+        if upstream_total is not None and (
+            isinstance(upstream_total, bool)
+            or not isinstance(upstream_total, int)
+            or upstream_total < 0
+        ):
+            raise ValueError("upstream_total must be a non-negative integer or None")
         if selected_external_key is not None and not isinstance(selected_external_key, str):
             raise ValueError("selected_external_key must be a string or null")
         safe_rows = [self._safe_row(row) for row in rows]
@@ -134,9 +164,11 @@ class MappingDiscoveryService:
                 fingerprint = aggregate_fingerprint(records)
                 if versioned_ewo:
                     from services.ewo_binding_records import ewo_v2_candidate_values
-                    aggregated_candidate_values = ewo_v2_candidate_values(records, current_mapping, effective_rule)
+                    aggregated_candidate_values = ewo_v2_candidate_values(records, current_mapping, effective_rule, report=_aggregate_report(deliverable_id))
                 else:
-                    aggregated_candidate_values = build_aggregate_candidate_values(records, current_mapping)
+                    aggregated_candidate_values = build_aggregate_candidate_values(
+                        records, current_mapping, report=_aggregate_report(deliverable_id)
+                    )
         else:
             candidates = [(key, row) for key, row in keyed if selected is None or key == selected]
             full_candidates = [
@@ -160,20 +192,23 @@ class MappingDiscoveryService:
         summaries = [{"externalKey": key, "fields": row} for key, row in candidates[:_SAMPLE_LIMIT]]
         report = self._field_report([row for _, row in candidates] or safe_rows)
         candidate_cache = self._candidate_cache(cache_records, current_mapping)
-        aggregated_payload = None
-        if aggregated_candidate_values is not None or candidate_cache is not None:
-            aggregated_payload = dict(aggregated_candidate_values or {})
-            if candidate_cache is not None:
-                aggregated_payload[_CANDIDATE_CACHE_KEY] = candidate_cache
+        # F10 稳定性基线：与采样同源的比对基准。基线 = 全量有单号记录的截断哈希
+        # 集合（顺序无关，采样只需 ⊆ 基线）+ 上游声明总数（缺省回退为去重后行数，
+        # 已知风险：分页漂移时可能误拒）。必须与指纹/config_signature 解耦。
+        stability_baseline_ids = sorted({identity_digest(key) for key, _ in full_keyed})
+        resolved_upstream_total = upstream_total if upstream_total is not None else len(rows)
+        aggregated_payload: dict[str, Any] = dict(aggregated_candidate_values or {})
+        if candidate_cache is not None:
+            aggregated_payload[_CANDIDATE_CACHE_KEY] = candidate_cache
+        aggregated_payload[_SCHEMA_KEY] = _STABILITY_SCHEMA
+        aggregated_payload[_UPSTREAM_TOTAL_KEY] = resolved_upstream_total
+        aggregated_payload[_STABILITY_IDS_KEY] = stability_baseline_ids
         observation_id = self.db.record_mapping_observation(
             deliverable_id, source_type, state, external_key, fingerprint,
             len(candidates), json.dumps(summaries, ensure_ascii=False),
             json.dumps(report, ensure_ascii=False),
             config_signature=config_signature,
-            aggregated_candidate_json=(
-                json.dumps(aggregated_payload, ensure_ascii=False)
-                if aggregated_payload is not None else None
-            ),
+            aggregated_candidate_json=json.dumps(aggregated_payload, ensure_ascii=False),
         )
         progress = self.db.mapping_stability_count(deliverable_id, expected_signature=config_signature)
         return {
@@ -182,6 +217,160 @@ class MappingDiscoveryService:
             "candidates": summaries, "fieldReport": report,
             "stability": {"confirmed": progress, "required": 2, "ready": progress >= 2},
         }
+
+    def observe_stability_sample(
+        self,
+        deliverable_id: str,
+        source_type: str,
+        sample_rows: Sequence[Mapping[str, Any]],
+        total_count: int,
+        *,
+        aggregate: bool = False,
+        match_rule: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """F10: 对上游独立轻量签名核验，比对通过才确认为稳定。
+
+        比对基准由 `observe()` 落库的保留键提供：`_upstreamTotal`（上游声明总数，
+        同源比对）与 `_stabilityIds`（全量单号截断哈希集合，顺序无关——采样单号
+        只需 ⊆ 基线，与上游排序解耦；零漂移时确定性通过，第 1 页出现新记录或
+        总数变化时正确拒绝）。缺保留键的历史观测回退旧"摘要前 5 单号子集"逻辑。
+        """
+        previous = self.db.list_mapping_observations(deliverable_id, 1)
+        if not previous or previous[0]["result_state"] != "matched":
+            return {
+                "observationId": None,
+                "state": "not_found",
+                "externalKey": None,
+                "candidateCount": total_count,
+                "candidates": [],
+                "fieldReport": {"fields": []},
+                "stability": {"confirmed": 0, "required": 2, "ready": False},
+                "mismatch": None,
+            }
+        obs1 = previous[0]
+        config_signature = obs1.get("config_signature")
+        if match_rule is not None:
+            rule_sig = compute_config_signature(source_type, match_rule)
+            if config_signature and rule_sig != config_signature:
+                config_signature = rule_sig
+
+        baseline_payload = self._stability_baseline_payload(obs1)
+        legacy_baseline = baseline_payload is None
+        if legacy_baseline:
+            baseline_payload = {}
+
+        safe_samples = [self._safe_row(r) for r in sample_rows]
+        sample_keys = {k for r in safe_samples if (k := _key(r))}
+        mismatch: dict[str, Any] | None = None
+
+        # 1. 总数：上游声明总数对声明总数（legacy 回退：去重后候选数，不同源但保底）。
+        expected_total = baseline_payload.get(_UPSTREAM_TOTAL_KEY)
+        if not isinstance(expected_total, int) or isinstance(expected_total, bool) or expected_total < 0:
+            expected_total = obs1["candidate_count"]
+        if expected_total != total_count:
+            mismatch = {
+                "reason": "total_mismatch",
+                "expected": expected_total,
+                "actual": total_count,
+            }
+
+        # 2. 首页采样单号必须全部落在基线集合内（顺序无关）。
+        if mismatch is None:
+            baseline_ids = baseline_payload.get(_STABILITY_IDS_KEY)
+            if not legacy_baseline and isinstance(baseline_ids, list):
+                sample_hashes = {identity_digest(key) for key in sample_keys}
+                if not sample_hashes.issubset(set(baseline_ids)):
+                    mismatch = {
+                        "reason": "sample_not_in_baseline",
+                        "expected": len(set(baseline_ids)),
+                        "actual": len(sample_hashes),
+                    }
+            else:
+                # legacy：旧观测只有排序后前 5 个单号摘要，退化为双向子集比对。
+                obs1_summaries = json.loads(obs1["candidate_summary_json"] or "[]")
+                obs1_sample_keys = {
+                    s.get("externalKey") for s in obs1_summaries
+                    if isinstance(s, dict) and s.get("externalKey")
+                }
+                if obs1_sample_keys and not bool(
+                    obs1_sample_keys.issubset(sample_keys)
+                    or sample_keys.issubset(obs1_sample_keys)
+                ):
+                    mismatch = {
+                        "reason": "legacy_baseline",
+                        "expected": len(obs1_sample_keys),
+                        "actual": len(sample_keys),
+                    }
+
+        # 3. 列键集合（偏松，维持现状；收紧为后续待办）。
+        if mismatch is None:
+            sample_field_keys = {
+                k for r in sample_rows for k in r.keys()
+                if not _SENSITIVE_FIELD.search(str(k))
+            }
+            obs1_report = json.loads(obs1["field_report_json"] or "{}")
+            obs1_fields = set(obs1_report.get("fields", []))
+            if obs1_fields and not (sample_field_keys & obs1_fields):
+                mismatch = {
+                    "reason": "fields_mismatch",
+                    "expected": len(obs1_fields),
+                    "actual": len(sample_field_keys),
+                }
+
+        if mismatch is None:
+            state = "matched"
+            fingerprint = obs1["candidate_fingerprint"]
+            external_key = obs1["external_key"]
+            summaries_json = obs1["candidate_summary_json"]
+            report_json = obs1["field_report_json"]
+            agg_json = obs1.get("aggregated_candidate_json")
+        else:
+            state = "key_changed"
+            fingerprint = hashlib.sha256(
+                ("mismatch:" + json.dumps(mismatch, sort_keys=True, ensure_ascii=False)).encode("utf-8")
+            ).hexdigest()
+            external_key = obs1["external_key"]
+            summaries_json = "[]"
+            report_json = "{}"
+            agg_json = json.dumps(
+                {_SCHEMA_KEY: _STABILITY_SCHEMA, _MISMATCH_KEY: mismatch},
+                ensure_ascii=False,
+            )
+
+        observation_id = self.db.record_mapping_observation(
+            deliverable_id,
+            source_type,
+            state,
+            external_key,
+            fingerprint,
+            total_count,
+            summaries_json,
+            report_json,
+            config_signature=config_signature,
+            aggregated_candidate_json=agg_json,
+        )
+        progress = self.db.mapping_stability_count(deliverable_id, expected_signature=config_signature)
+        return {
+            "observationId": observation_id,
+            "state": state,
+            "externalKey": external_key,
+            "candidateCount": total_count,
+            "candidates": json.loads(summaries_json),
+            "fieldReport": json.loads(report_json),
+            "stability": {"confirmed": progress, "required": 2, "ready": progress >= 2},
+            "mismatch": mismatch,
+        }
+
+    @staticmethod
+    def _stability_baseline_payload(observation: Mapping[str, Any]) -> dict[str, Any] | None:
+        """读取观测里的 F10 稳定性基线保留键；缺 `_schema` 视为 legacy，返回 None。"""
+        try:
+            payload = json.loads(observation.get("aggregated_candidate_json") or "{}")
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(payload, dict) or payload.get(_SCHEMA_KEY) != _STABILITY_SCHEMA:
+            return None
+        return payload
 
     @staticmethod
     def _safe_row(row: Mapping[str, Any]) -> dict[str, str | None]:
@@ -674,9 +863,13 @@ class MappingDiscoveryService:
         if cache_complete:
             if binding_match_rule.get('contractVersion') == '2':
                 from services.ewo_binding_records import ewo_v2_candidate_values
-                candidate_values = ewo_v2_candidate_values(cached_records, mapping, binding_match_rule)
+                candidate_values = ewo_v2_candidate_values(
+                    cached_records, mapping, binding_match_rule, report=_aggregate_report(deliverable_id)
+                )
             else:
-                candidate_values = build_aggregate_candidate_values(cached_records, mapping)
+                candidate_values = build_aggregate_candidate_values(
+                    cached_records, mapping, report=_aggregate_report(deliverable_id)
+                )
         else:
             # A display sample is intentionally capped at five rows/200
             # characters and cannot authorize a write, even for a legacy

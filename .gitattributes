@@ -1,0 +1,2 @@
+# Vendored runtime is checksummed byte-for-byte (tests/test_host_frontend.py): never CRLF-convert it.
+web/static/host/vendor/* text eol=lf

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+import services.tdc_crawler as tdc_module
 from services.tdc_crawler import (
     AFACE_PAGE_PATH,
     DATA_MODEL_EXPORT_PATH,
@@ -1014,3 +1015,255 @@ def test_data_model_crawl_continues_when_page_one_has_duplicate_across_17_pages(
     _require_complete_result(result)
     mapping_rows = _require_complete_mapping_result(result, _TDCRequestError)
     assert len(mapping_rows) == 849
+
+
+def test_flatten_sor_rows_nested_objects_to_scalars_without_repr() -> None:
+    """SOR 应用行扁平化（2026-09-26 生产缺陷）：嵌套对象取标量文本，绝不 str(dict)。"""
+    from services.tdc_crawler import flatten_sor_rows
+
+    raw = [
+        {
+            "processNo": "SOR-1",
+            "carTypeProject": {"id": "x", "projectNo": "F610S", "projectName": "F610S", "sorEnabled": True},
+            "processInstanceStatus": {"value": 4, "name": "已完成", "valueStr": "4"},
+            "currentAssigneeNameList": [{"name": "张三"}, {"name": "李四"}],
+            "token": "should-be-dropped",
+        },
+        {
+            "processNo": "SOR-2",
+            "processInstanceStatus": {"value": 2, "valueStr": "2"},
+            "title": "座椅软枕",
+        },
+    ]
+    snapshot_copy = [
+        dict(row) for row in raw
+    ]
+    flattened = flatten_sor_rows(raw)
+
+    assert flattened[0]["carTypeProject"] == "F610S"
+    assert flattened[0]["processInstanceStatus"] == "已完成"
+    assert flattened[0]["currentAssigneeNameList"] == "张三、李四"
+    assert "token" not in flattened[0]
+    # name 缺失：留空，不得用 valueStr/value 推断完成语义。
+    assert flattened[1]["processInstanceStatus"] is None
+    assert flattened[1]["title"] == "座椅软枕"
+    # 原始行未被原地改写（原始行 = 归档 JSON/字段报告的取证来源）。
+    assert raw == snapshot_copy
+    assert isinstance(raw[0]["carTypeProject"], dict)
+
+
+def test_flatten_sor_rows_plain_scalars_and_web_sensitive_key_parity() -> None:
+    """纯字符串行原样保留；爬虫与 web 两份敏感键清单钉住一致。"""
+    import web.app as web_app
+
+    from services.tdc_crawler import SOR_SENSITIVE_KEYS, flatten_sor_rows
+
+    rows = [{"processNo": "SOR-3", "latestCompletedNode": "终审通过", "title": ""}]
+    flattened = flatten_sor_rows(rows)
+    assert flattened[0]["processNo"] == "SOR-3"
+    assert flattened[0]["latestCompletedNode"] == "终审通过"
+    assert flattened[0]["title"] is None
+    assert set(SOR_SENSITIVE_KEYS) == set(web_app._SENSITIVE_RESPONSE_KEYS)
+
+
+def test_flatten_sor_rows_f6c_nested_extraction_and_part_aggregation() -> None:
+    """F6c 现场抓包（2026-09-29）：零件成对去重聚合、startUser 解包及最新完成节点对接。"""
+    from services.tdc_crawler import flatten_sor_rows
+
+    raw_sample = [
+        {
+            "processNo": "SOR202609280008",
+            "sorNo": "SGMW-E262S-SOR0002",
+            "carTypeProject": {"projectNo": "E262S", "projectName": "E262S"},
+            "processInstanceStatus": {"value": 2, "name": "审批中"},
+            "sorPartList": [
+                {"partNo": "27246864", "partName": "上安装板装饰组件"},
+                {"partNo": "27246868", "partName": "上安装板左装饰盖"},
+                {"partNo": "27246869", "partName": "上安装板右装饰盖"},
+                # 重复项测试保序去重
+                {"partNo": "27246864", "partName": "上安装板装饰组件"},
+            ],
+            "sorPartNo": None,
+            "sorProcessStatus": "三审通过",
+            "startUser": {
+                "trueName": "韦大方",
+                "domainLogin": "w22400188",
+                "deptInfo": {
+                    "name": "外饰科",
+                    "parentDept": {"name": "车体工程"},
+                },
+            },
+        },
+        # 边界与异常防御用例：空列表、None、字符串 startUser
+        {
+            "processNo": "SOR-EMPTY-PARTS",
+            "sorPartList": [],
+            "sorPartNo": "PART-TOP",
+            "sorPartName": "顶层零件",
+            "startUser": "纯文本申请人",
+            "deptName": "既有部门",
+            "sectionName": "既有科室",
+            "latestCompletedNode": "初审通过",
+            "sorProcessStatus": "二审通过",
+        },
+    ]
+
+    flattened = flatten_sor_rows(raw_sample)
+
+    # 第一行：现场典型样本
+    row1 = flattened[0]
+    assert row1["processNo"] == "SOR202609280008"
+    assert row1["sorNo"] == "SGMW-E262S-SOR0002"
+    assert row1["carTypeProject"] == "E262S"
+    assert row1["processInstanceStatus"] == "审批中"
+    assert row1["sorPartNo"] == "27246864、27246868、27246869"
+    assert row1["sorPartName"] == "上安装板装饰组件、上安装板左装饰盖、上安装板右装饰盖"
+    assert row1["startUser"] == "韦大方"
+    assert row1["startUserName"] == "韦大方"
+    assert row1["sectionName"] == "外饰科"
+    assert row1["deptName"] == "车体工程"
+    assert row1["latestCompletedNode"] == "三审通过"
+    assert row1["sorProcessStatus"] == "三审通过"
+
+    # 第二行：顶层已有值优先，空零件列表防御
+    row2 = flattened[1]
+    assert row2["sorPartNo"] == "PART-TOP"
+    assert row2["sorPartName"] == "顶层零件"
+    assert row2["startUser"] == "纯文本申请人"
+    assert row2["startUserName"] == "纯文本申请人"
+    assert row2["deptName"] == "既有部门"
+    assert row2["sectionName"] == "既有科室"
+    assert row2["latestCompletedNode"] == "初审通过"
+    assert row2["sorProcessStatus"] == "二审通过"
+
+
+# ── 列表查询的有界重试 ──
+# 生产 2026-09-28：数模列表上游偶发 503 直接让"开始配置并启用"失败。
+# 只重试幂等列表 GET 的 429/502/503/504，且带总预算；睡眠入口可替换，用例不真等待。
+
+
+def _retry_harness(monkeypatch, session, events=None):  # type: ignore[no-untyped-def]
+    sleeps: list[float] = []
+    monkeypatch.setattr(tdc_module, "_sleep", sleeps.append)
+    client = TDCCrawlerClient(
+        "https://tdc.example",
+        session=session,
+        diagnostic_hook=(events if events is not None else []).append,
+    )
+    return client, sleeps
+
+
+def test_query_page_retries_transient_503_then_succeeds(monkeypatch) -> None:
+    events: list = []
+    session = FakeSession([
+        FakeResponse({"code": 503, "msg": "unavailable"}, status_code=503),
+        FakeResponse(page_payload([{"id": "1"}])),
+    ])
+    client, sleeps = _retry_harness(monkeypatch, session, events)
+
+    result = client.query_sor_page(page=1, page_size=2)
+
+    assert [row["id"] for row in result.rows] == ["1"]
+    assert len(session.calls) == 2
+    assert sleeps == [pytest.approx(0.5)]
+    attempts = [event.attempt for event in events if event.stage == "response"]
+    assert attempts == [1, 2]
+
+
+def test_query_page_stops_after_bounded_attempts(monkeypatch) -> None:
+    session = FakeSession([FakeResponse({"code": 503}, status_code=503) for _ in range(3)])
+    client, sleeps = _retry_harness(monkeypatch, session)
+
+    with pytest.raises(TDCCrawlerError) as info:
+        client.query_sor_page(page=1, page_size=2)
+
+    assert info.value.status_code == 503
+    assert info.value.stage == "status-validation"
+    assert len(session.calls) == tdc_module._RETRY_MAX_ATTEMPTS
+    assert sum(sleeps) <= tdc_module._RETRY_TOTAL_BUDGET_SECONDS
+
+
+def test_query_page_honours_retry_after_seconds(monkeypatch) -> None:
+    session = FakeSession([
+        FakeResponse(
+            {"code": 429},
+            status_code=429,
+            headers={"Content-Type": "application/json", "Retry-After": "2"},
+        ),
+        FakeResponse(page_payload([{"id": "1"}])),
+    ])
+    client, sleeps = _retry_harness(monkeypatch, session)
+
+    client.query_sor_page(page=1, page_size=2)
+
+    assert sleeps == [pytest.approx(2.0)]
+
+
+@pytest.mark.parametrize("status", [400, 401, 404, 500])
+def test_query_page_does_not_retry_non_retryable_status(monkeypatch, status: int) -> None:
+    session = FakeSession([FakeResponse({}, status_code=status)])
+    client, sleeps = _retry_harness(monkeypatch, session)
+
+    with pytest.raises(TDCCrawlerError) as info:
+        client.query_sor_page(page=1, page_size=2)
+
+    assert info.value.status_code == status
+    assert len(session.calls) == 1
+    assert sleeps == []
+
+
+def test_query_page_does_not_retry_transport_exception(monkeypatch) -> None:
+    session = FakeSession([])
+    session.get = lambda *args, **kwargs: (_ for _ in ()).throw(WinHTTPTimeoutError("timed out"))  # type: ignore[assignment]
+    client, sleeps = _retry_harness(monkeypatch, session)
+
+    with pytest.raises(TDCCrawlerError) as info:
+        client.query_sor_page(page=1, page_size=2)
+
+    assert info.value.stage == "request"
+    assert sleeps == []
+
+
+def test_query_page_caps_retry_after_wait_and_attempts(monkeypatch) -> None:
+    session = FakeSession([
+        FakeResponse(
+            {},
+            status_code=503,
+            headers={"Content-Type": "application/json", "Retry-After": "3600"},
+        )
+        for _ in range(3)
+    ])
+    client, sleeps = _retry_harness(monkeypatch, session)
+
+    with pytest.raises(TDCCrawlerError):
+        client.query_sor_page(page=1, page_size=2)
+
+    assert sleeps == [pytest.approx(tdc_module._RETRY_MAX_WAIT_SECONDS)] * 2
+    assert len(session.calls) == tdc_module._RETRY_MAX_ATTEMPTS
+
+
+def test_query_page_stops_when_total_budget_would_be_exceeded(monkeypatch) -> None:
+    monkeypatch.setattr(tdc_module, "_RETRY_TOTAL_BUDGET_SECONDS", 0.6)
+    session = FakeSession([
+        FakeResponse(
+            {},
+            status_code=503,
+            headers={"Content-Type": "application/json", "Retry-After": "5"},
+        )
+        for _ in range(3)
+    ])
+    client, sleeps = _retry_harness(monkeypatch, session)
+
+    with pytest.raises(TDCCrawlerError):
+        client.query_sor_page(page=1, page_size=2)
+
+    assert sleeps == []
+    assert len(session.calls) == 1
+
+
+def test_retry_after_seconds_parses_numeric_and_http_date() -> None:
+    assert tdc_module._retry_after_seconds("") is None
+    assert tdc_module._retry_after_seconds("not-a-date") is None
+    assert tdc_module._retry_after_seconds("-5") == pytest.approx(0.0)
+    assert tdc_module._retry_after_seconds("2") == pytest.approx(2.0)
+    assert tdc_module._retry_after_seconds("Wed, 21 Oct 2099 07:28:00 GMT") > 0

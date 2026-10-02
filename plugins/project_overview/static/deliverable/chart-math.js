@@ -207,13 +207,80 @@ export function departmentBoardRows(matrix, boardTab) {
   };
 }
 
-export function sectionCountBars(counts) {
+export function sectionCountBars(counts, segmentLabel = "NCR明细") {
   const safe = Array.isArray(counts) ? counts : [];
   return formMatrixBars(safe.map((row, index) => ({
     label: row.label,
     total: Number(row.total) || 0,
-    segments: [{ label: "NCR明细", count: Number(row.total) || 0, color: formDimensionColor(row.label, index) }],
+    segments: [{ label: segmentLabel, count: Number(row.total) || 0, color: formDimensionColor(row.label, index) }],
   })));
+}
+
+// ---- NCR detail per-section cost table ----------------------------------------
+
+/** 行 = 归集后科室；列 = 件数 + 测算/批准 工装费用（万元）与 单件成本变化（元）。 */
+export const SECTION_COST_METRICS = [
+  { key: "investmentEstimate", label: "测算工装费用（万元）" },
+  { key: "investmentApproved", label: "批准工装费用（万元）" },
+  { key: "vehicleChangeEstimate", label: "测算单件成本变化（元）" },
+  { key: "vehicleChangeApproved", label: "批准单件成本变化（元）" },
+];
+
+/** 千分位 + 两位小数（四舍五入），负值带前导 "-"。 */
+export function formatCostSum(value) {
+  const rounded = Math.round(Number(value) * 100) / 100;
+  const negative = rounded < 0;
+  const absText = String(Math.abs(rounded));
+  const dotAt = absText.indexOf(".");
+  const intPart = dotAt >= 0 ? absText.slice(0, dotAt) : absText;
+  const decPart = dotAt >= 0 ? absText.slice(dotAt) : "";
+  return `${negative ? "-" : ""}${intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ",")}${decPart}`;
+}
+
+/**
+ * charts.sectionCosts -> render model. 数值列带行内条（按列内 |值| 最大值归一）；
+ * 负值（成本下降）显式标记；「无值」与「0」用 有值件数（count）区分：
+ * count=0 → 无有效值（—），count>0 且 sum=0 → 真实 0。
+ */
+export function sectionCostRows(rows) {
+  const safe = Array.isArray(rows) ? rows : [];
+  const cellOf = (row, key) => (row && row.costs && row.costs[key]) || null;
+  const columnMax = {};
+  SECTION_COST_METRICS.forEach((metric) => {
+    columnMax[metric.key] = Math.max(1, ...safe.map((row) => {
+      const cell = cellOf(row, metric.key);
+      const value = Number(cell && cell.sum);
+      return Number.isFinite(value) && cell && cell.count ? Math.abs(value) : 0;
+    }));
+  });
+  return safe.map((row) => {
+    const label = String((row && row.label) || "未命名");
+    return {
+      label,
+      total: Number(row && row.total) || 0,
+      cells: SECTION_COST_METRICS.map((metric) => {
+        const cell = cellOf(row, metric.key);
+        const count = Number(cell && cell.count) || 0;
+        const value = Number(cell && cell.sum) || 0;
+        if (!count) return { key: metric.key, count: 0, empty: true, title: "该科室没有此指标的有效值" };
+        return {
+          key: metric.key,
+          count,
+          empty: false,
+          negative: value < 0,
+          text: formatCostSum(value),
+          widthPct: Math.min(100, (Math.abs(value) / columnMax[metric.key]) * 100),
+          title: `${label} · ${metric.label}：累计 ${formatCostSum(value)}（${count} 项有值）`,
+        };
+      }),
+    };
+  });
+}
+
+/** Integer count of rows outside the stage vocabulary (payload.unrecognizedStageCount); 0 when absent/invalid. */
+export function unrecognizedStageCount(payload) {
+  const count = payload && typeof payload === "object" ? Number(payload.unrecognizedStageCount) : NaN;
+  return Number.isInteger(count) && count > 0 ? count : 0;
 }
 
 // ---- chart label editor -----------------------------------------------------

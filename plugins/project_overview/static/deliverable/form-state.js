@@ -8,7 +8,7 @@ export const DELIVERABLE_FORM_TABS = {
   aras_paa: [["departmentStatus", "部门状态"], ["quantityTrend", "数量趋势"]],
   aras_ncr_progress: [["departmentStatus", "部门状态"], ["quantityTrend", "数量趋势"]],
   aras_ncr_detail: [["sectionCounts", "按科室"], ["departmentCost", "部门成本"], ["sectionCost", "科室成本"]],
-  tdc_data_model: [["departmentStatus", "项目状态"], ["sectionStatus", "部门状态"], ["quantityTrend", "数量趋势"]],
+  tdc_data_model: [["departmentStatus", "项目状态"], ["sectionStatus", "部门状态"], ["sectionCounts", "按科室"], ["quantityTrend", "数量趋势"]],
   tdc_sor: [["departmentStatus", "车型项目状态"], ["sectionStatus", "科室状态"], ["quantityTrend", "数量趋势"]],
 };
 
@@ -267,7 +267,22 @@ export function buildDeliverableFormQuery(filters, includePaging = false, state 
   return params;
 }
 
+/**
+ * view/rows 读取上限。此前请求无截止，挂起时交互守卫永久锁死（筛选条"点不动"）。
+ * 阈值取正常视图耗时的宽松上界；对象可变，测试把它压到毫秒级来验证超时路径。
+ */
+export const FORM_VIEW_LIMITS = { timeoutMs: 30000 };
+
+/** Retryable error raised when view/rows do not settle within the deadline. */
+export function formViewLoadTimeoutError(timeoutMs) {
+  const error = new Error(`表单数据读取超过 ${Math.round(timeoutMs / 1000)} 秒未完成，已取消；可稍后重试。`);
+  error.retryable = true;
+  error.formViewTimeout = true;
+  return error;
+}
+
 export function formViewErrorMessage(error) {
+  if (error && error.formViewTimeout) return String(error.message || "表单数据读取超时，请稍后重试。");
   const status = Number(error && error.status);
   if (status === 401 || status === 403) return "表单数据未认证，请先完成统一域账号登录。";
   if (status >= 500 || status === 0) return "表单数据服务暂不可用，请稍后重试。";
@@ -304,4 +319,69 @@ export function buildRollupPayload(draft) {
       aliases: (entry.aliases || []).map((alias) => String(alias || "").trim()).filter(Boolean),
     })),
   };
+}
+
+// ---- rows table presentation (absent source columns, derived status, truncation) ----
+
+/** 上游整个接口都不返回该列时的单元格文案：明示来源缺失，区分"源端不提供"与"真实空值"。 */
+export const FORM_ABSENT_SOURCE_TEXT = "源端不提供";
+
+/**
+ * 长文本列在明细表里截断成单行（CSS ellipsis），完整值进 title 悬浮；
+ * 「查看全部字段」明细始终有全值，不丢数据。表头不截断。
+ * 列名来自各报表的展示契约（services/deliverable_form_analysis._KEY_COLUMN_LABELS
+ * 与 TDC 47 列导出表头）。
+ */
+export const FORM_TRUNCATED_COLUMN_LABELS = new Set([
+  "流程名", // 数模
+  "零件名称", // 数模 / SOR / NCR明细
+  "零件或总成名称", // PAA
+  "标题", // SOR
+  "主题", // EWO
+  "最新审批记录", // 数模默认可见列收尾（审批日志长文本）
+]);
+
+/** 服务端在建快照时判定的「上游完全未提供」位置列（sourceAbsentIndexes）。 */
+export function formAbsentSourceIndexes(data) {
+  return new Set(
+    Array.isArray(data && data.sourceAbsentIndexes)
+      ? data.sourceAbsentIndexes
+        .filter((index) => index !== null && index !== "" && typeof index !== "boolean")
+        .map((index) => Number(index))
+        .filter((index) => Number.isFinite(index))
+      : [],
+  );
+}
+
+export function formColumnIndex(column) {
+  const index = Number(column && column.index);
+  return Number.isFinite(index) ? index : NaN;
+}
+
+/**
+ * 明细表显示列。数模（47 列位置契约）的「状态」物理列在末位（index 46），横向排开不可见：
+ * 在「部门」后插入「状态」派生列（读行维度 dimensions.status 的归一化文本，不动
+ * values 物理列序；历史快照同样适用）。
+ */
+export function formDisplayColumns(data, visibleColumns) {
+  const display = visibleColumns.slice();
+  if (String((data && data.formKey) || "") === "tdc_data_model" && !display.some((column) => column && column.derivedStatus)) {
+    const derived = { label: "状态", derivedStatus: true };
+    const deptPos = display.findIndex((column) => column && column.label === "部门");
+    if (deptPos >= 0) display.splice(deptPos + 1, 0, derived);
+    else display.splice(Math.min(1, display.length), 0, derived);
+  }
+  return display;
+}
+
+/** One body cell: {text, className, title}. */
+export function formRowCell(column, item, absent) {
+  if (column && column.derivedStatus) {
+    const dimensions = item && item.dimensions && typeof item.dimensions === "object" ? item.dimensions : null;
+    return { text: dimensions ? dimensions.status : null, className: "", title: "" };
+  }
+  const index = formColumnIndex(column);
+  if (absent.has(index)) return { text: FORM_ABSENT_SOURCE_TEXT, className: "form-cell-absent", title: "", absent: true };
+  const values = Array.isArray(item && item.values) ? item.values : [];
+  return { text: values[Number.isFinite(index) ? index : 0], className: "", title: "" };
 }

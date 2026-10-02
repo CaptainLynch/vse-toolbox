@@ -2,13 +2,16 @@
 // renderDeliverableFormAnalysis): snapshot actions, summary, chart tabs
 // with per-tab filter bar, department board + section rollup rules, trend
 // and cost charts, paged rows table and the statistics disclosure.
-import { html, useEffect, useRef, useState } from "/static/host/vendor/preact-htm.js";
+import { html, useEffect, useLayoutEffect, useRef, useState } from "/static/host/vendor/preact-htm.js";
 import { apiRequest, enc, plainErrorMessage } from "./api.js";
 import {
   departmentBoardRows,
   formStatusBars,
   formTrendGeometry,
+  sectionCostRows,
   sectionCountBars,
+  unrecognizedStageCount,
+  SECTION_COST_METRICS,
 } from "./chart-math.js";
 import {
   archiveFormatDate,
@@ -23,6 +26,8 @@ import {
 import {
   DELIVERABLE_FORM_CHART_TITLES,
   DELIVERABLE_FORM_TABS,
+  FORM_TRUNCATED_COLUMN_LABELS,
+  FORM_VIEW_LIMITS,
   OVERDUE_STATE_LABELS,
   appendFormFilter,
   applyDraftFilters,
@@ -37,9 +42,16 @@ import {
   currentFormFilterState,
   deliverableFormFilterLabel,
   deliverableFormKey,
+  formAbsentSourceIndexes,
+  formColumnIndex,
+  formDisplayColumns,
   formDraftStatus,
+  formFilterStatesEqual,
   formOptionValues,
+  formRowCell,
   formViewErrorMessage,
+  formViewLoadTimeoutError,
+  FORM_ABSENT_SOURCE_TEXT,
   markFormFilterStateDisplayed,
   overdueThresholdsFromInputs,
   removeDisplayedFilter,
@@ -86,15 +98,38 @@ function FormFilterBar({ data, state, onReload, bump }) {
     </label>`;
   };
   const displayed = currentFormDisplayedFilterState(state);
+  // 草稿 chip（点选候选"无反馈"的生产反馈）：有未应用草稿时 chips 区显示草稿条件并标注
+  // 「待应用」，【应用筛选】高亮；移除草稿 chip 只改草稿（不触发请求）。
+  const draftDirty = !formFilterStatesEqual(displayed, draft);
+  const applyDirty = !formFilterStatesEqual(currentFormFilterState(state), draft);
+  const source = draftDirty ? draft : displayed;
   const chips = [];
-  Object.entries(displayed).forEach(([key, value]) => {
+  Object.entries(source).forEach(([key, value]) => {
     (Array.isArray(value) ? value : [value]).forEach((item) => {
       const display = key === "overdueState" ? (OVERDUE_STATE_LABELS[item] || item) : item;
       const label = deliverableFormFilterLabel(formKey, key);
-      chips.push(html`<span class="form-filter-chip" key=${`${key}:${item}`}>
+      const remove = () => {
+        if (draftDirty) {
+          const next = cloneFormFilterState(draft);
+          if (Array.isArray(next[key])) {
+            const rest = next[key].filter((candidate) => String(candidate) !== String(item));
+            if (rest.length) next[key] = rest;
+            else delete next[key];
+          } else {
+            delete next[key];
+          }
+          state.draftFilterStateByTab[state.activeTab] = next;
+          state.pageByTab[state.activeTab] = 0;
+          bump();
+          return;
+        }
+        removeDisplayedFilter(state, key, item);
+        onReload();
+      };
+      chips.push(html`<span class=${draftDirty ? "form-filter-chip is-draft" : "form-filter-chip"} key=${`${key}:${item}`}>
         <span class="form-filter-chip-label">${`${label}：${safeDisplayValue(display)}`}</span>
         <button type="button" class="form-filter-chip-remove" aria-label=${`删除筛选 ${label} ${safeDisplayValue(display)}`}
-          onClick=${() => { removeDisplayedFilter(state, key, item); onReload(); }}>×</button>
+          onClick=${remove}>×</button>
       </span>`);
     });
   });
@@ -114,7 +149,7 @@ function FormFilterBar({ data, state, onReload, bump }) {
             value=${String(draft.relationEwo || "")} onInput=${setText("relationEwo")} />
         </label>`}
         <div class="form-filter-actions">
-          <button type="button" class="btn is-secondary" onClick=${() => { applyDraftFilters(state); onReload(); }}>应用筛选</button>
+          <button type="button" class=${applyDirty ? "btn is-secondary is-draft-dirty" : "btn is-secondary"} onClick=${() => { applyDraftFilters(state); onReload(); }}>应用筛选</button>
           <button type="button" class="btn is-secondary" onClick=${() => { clearCurrentFilters(state); onReload(); }}>清除筛选</button>
         </div>
       </div>
@@ -140,6 +175,7 @@ function FormFilterBar({ data, state, onReload, bump }) {
       </div>
     </div>
     <div class="form-filter-chips chart-filter-state">
+      ${draftDirty && html`<span class="form-filter-chips-note">待应用（点【应用筛选】生效）：</span>`}
       ${chips.length ? chips : html`<span class="form-filter-empty">0 个筛选条件</span>`}
     </div>
   </section>`;
@@ -147,11 +183,20 @@ function FormFilterBar({ data, state, onReload, bump }) {
 
 // ---- charts -----------------------------------------------------------------
 
-function StatusBars({ entries, filterKey, state, onReload, title, description }) {
+// 「其他状态」桶移除后，不在阶段词表的行只经载荷里的 unrecognizedStageCount
+// （整数，全报表统一口径）披露。旧快照无该键、计数为 0 或非法值时一律不渲染——
+// 既不静默丢失，也绝不显示 NaN/undefined。
+function UnrecognizedNote({ payload }) {
+  const count = unrecognizedStageCount(payload);
+  return count > 0 ? html`<p class="form-chart-unrecognized">${`未识别 ${count} 条`}</p>` : null;
+}
+
+function StatusBars({ entries, filterKey, state, onReload, title, description, payload }) {
   const rows = formStatusBars(entries);
   return html`<section class="form-chart-panel-content">
     <h5 class="form-chart-title">${title}</h5>
     <p class="form-chart-description">${description}</p>
+    <${UnrecognizedNote} payload=${payload} />
     <div class="form-chart-legend">
       <span class="form-chart-legend-item form-status-on-time">按期推进 / 正常</span>
       <span class="form-chart-legend-item form-status-overdue">逾期风险</span>
@@ -295,7 +340,7 @@ function RollupPanel({ data, state, onReload, bump }) {
   return html`<details class="form-rollup-panel" open=${open} ontoggle=${onToggle}>
     <summary>科室归集规则</summary>
     <div class="form-rollup-body">
-      ${hasRules && html`<p class="form-rollup-hint">历史科室先归集到现行科室再统计；「科室 / 区域」筛选同样按归集口径，未登记的历史值计入「未归集」，不会静默丢弃。规则保存在本地数据库，保存后立即生效——只调整统计口径，不改写原始数据，无需重新同步。</p>`}
+      ${hasRules && html`<p class="form-rollup-hint">历史科室先归集到现行科室再统计；「科室 / 区域」筛选同样按归集口径，未登记的历史值计入「未归集」，不会静默丢弃。匹配忽略空格差异，并自动识别「英文缩写前缀 + 空格」形态（如登记「结构工程科」即可命中「BE 结构工程科」）；无空格分隔或其他写法请登记完整历史值。规则保存在本地数据库，保存后立即生效——只调整统计口径，不改写原始数据，无需重新同步。</p>`}
       ${body}
     </div>
   </details>`;
@@ -333,6 +378,7 @@ function DepartmentStatusBoard({ data, state, onReload, bump }) {
     <p class="form-chart-description">${state.boardTab === "byStatus"
       ? "按审批节点 / 业务状态统计（完整状态按流程顺序展示，含当前无数据状态），柱内色段为归集后科室的数量占比；点击状态行可追加筛选。"
       : "按归集后科室统计，柱内色段为各审批节点 / 业务状态的数量占比；点击科室行可追加科室筛选，悬停查看状态明细。"}</p>
+    <${UnrecognizedNote} payload=${matrix} />
     <div class="form-chart-tab-list dept-board-tab-list" role="tablist">
       ${[["bySection", "按科室"], ["byStatus", "按状态"]].map(([key, label]) => html`<button
         type="button" key=${key} role="tab"
@@ -352,12 +398,48 @@ function DepartmentStatusBoard({ data, state, onReload, bump }) {
   </section>`;
 }
 
+// NCR 明细按科室的四项成本指标表。行 = 归集后科室；数值列带行内条，负值（成本下降）
+// 显式着色；「无值」与「0」用有值件数区分。行点击 = 追加科室筛选（与计数条同语义）。
+function SectionCostsTable({ data, state, onReload }) {
+  const rows = sectionCostRows(data && data.charts && data.charts.sectionCosts);
+  if (!rows.length) return null;
+  return html`<table class="form-section-cost-table">
+    <thead><tr>
+      <th>科室</th><th class="is-number">件数</th>
+      ${SECTION_COST_METRICS.map((metric) => html`<th class="is-number" key=${metric.key}>${metric.label}</th>`)}
+    </tr></thead>
+    <tbody>
+      ${rows.map((row) => {
+        const activate = () => { appendFormFilter(state, "section", row.label); onReload(); };
+        return html`<tr key=${row.label} role="button" tabindex="0" aria-label=${`科室 ${row.label}：追加科室筛选`}
+          onClick=${activate} onKeyDown=${keyActivate(activate)}>
+          <td class="form-section-cost-name">${row.label}</td>
+          <td class="is-number">${String(row.total)}</td>
+          ${row.cells.map((cell) => cell.empty
+    ? html`<td class="is-number form-section-cost-cell" key=${cell.key} title=${cell.title}><span class="form-section-cost-none">—</span></td>`
+    : html`<td class="is-number form-section-cost-cell" key=${cell.key} title=${cell.title}>
+              <span class=${cell.negative ? "form-section-cost-value is-negative" : "form-section-cost-value"}>${cell.text}</span>
+              <span class="form-section-cost-bar"><span class=${cell.negative ? "form-section-cost-fill is-negative" : "form-section-cost-fill"} style=${{ width: `${cell.widthPct}%` }}></span></span>
+              <span class="form-section-cost-count">${`${cell.count} 项有值`}</span>
+            </td>`)}
+        </tr>`;
+      })}
+    </tbody>
+  </table>`;
+}
+
 function SectionCountsBoard({ data, state, onReload, bump }) {
+  // 数模阶段词表为空、阶段矩阵恒缺，走与 NCR 明细同源的计数板分支；说明与色段名
+  // 按表单键区分，避免数模页签里出现"NCR明细"字样。
+  const isDataModel = String((data && data.formKey) || "") === "tdc_data_model";
   const counts = data && data.charts && Array.isArray(data.charts.sectionCounts) ? data.charts.sectionCounts : [];
   return html`<section class="form-chart-panel-content">
     <h5 class="form-chart-title">按科室统计</h5>
-    <p class="form-chart-description">NCR明细无状态维度，仅按归集后科室统计数量；点击科室行可追加科室筛选。</p>
-    <${MatrixBars} bars=${sectionCountBars(counts)} filterKey="section" state=${state} onReload=${onReload} />
+    <p class="form-chart-description">${isDataModel
+    ? "数模流程无阶段维度，按归集后科室统计数量；点击科室行可追加科室筛选。"
+    : "NCR明细无状态维度，按归集后科室统计数量与四项成本指标；点击科室行可追加科室筛选。"}</p>
+    <${SectionCostsTable} data=${data} state=${state} onReload=${onReload} />
+    <${MatrixBars} bars=${sectionCountBars(counts, isDataModel ? "数模" : "NCR明细")} filterKey="section" state=${state} onReload=${onReload} />
     <${RollupPanel} data=${data} state=${state} onReload=${onReload} bump=${bump} />
   </section>`;
 }
@@ -475,7 +557,7 @@ function ChartPanelContent({ data, state, onReload, bump }) {
     } else {
       const stages = charts.departmentStatus && Array.isArray(charts.departmentStatus.stages) ? charts.departmentStatus.stages : [];
       const [title, description] = titles.departmentStatus || ["部门总状态", "各阶段 / 审批节点按期推进数与逾期风险数"];
-      parts.push(html`<${StatusBars} key="dept" entries=${stages} filterKey="stage" state=${state} onReload=${onReload} title=${title} description=${description} />`);
+      parts.push(html`<${StatusBars} key="dept" entries=${stages} payload=${charts.departmentStatus} filterKey="stage" state=${state} onReload=${onReload} title=${title} description=${description} />`);
     }
   } else if (tab === "sectionStatus") {
     const [title, description] = titles.sectionStatus
@@ -509,10 +591,15 @@ function FormRowsTable({ data, rowsData, state, onReload }) {
   const visible = keyIndexes.length
     ? columns.filter((column) => keyIndexes.includes(Number(column && column.index)))
     : columns.slice(0, Math.min(columns.length, Math.max(8, defaultVisibleCount)));
+  // 数模「状态」派生列；「源端不提供」= 该位置的全部候选源字段在整份快照的原始行里都不存在
+  // （快照级事实由服务端判定，见 deliverable_form_analysis.source_absent_indexes）。键存在
+  // 但值为空是真实空值，走普通单元格，不得误标。
+  const displayColumns = formDisplayColumns(data, visible);
+  const absent = formAbsentSourceIndexes(data);
   const items = rowsData && Array.isArray(rowsData.items) ? rowsData.items : [];
   const offset = Number(rowsData && rowsData.offset) || 0;
   const limit = Math.max(1, Number(rowsData && rowsData.limit) || 50);
-  const span = 2 + visible.length;
+  const span = 2 + displayColumns.length;
   return html`<section class="form-row-table-section">
     <div class="form-row-table-head">
       <h5 class="form-chart-title">表单明细</h5>
@@ -521,22 +608,43 @@ function FormRowsTable({ data, rowsData, state, onReload }) {
     <div class="form-row-table-wrap">
       <table class="form-row-table">
         <thead><tr>
-          ${["工作表", "行号", ...visible.map((column, index) => (column && column.label ? String(column.label) : `列 ${index + 1}`))]
-            .map((label, index) => html`<th key=${index}>${label}</th>`)}
+          ${["工作表", "行号"].map((label) => html`<th key=${label}>${label}</th>`)}
+          ${displayColumns.map((column, index) => {
+            const label = column && column.derivedStatus ? "状态" : (column && column.label ? String(column.label) : `列 ${index + 1}`);
+            const isAbsent = column && !column.derivedStatus && absent.has(formColumnIndex(column));
+            return html`<th key=${`c${index}`} class=${isAbsent ? "form-cell-absent" : null}>${label}</th>`;
+          })}
         </tr></thead>
         <tbody>
           ${items.map((row, rowIndex) => {
             const values = Array.isArray(row && row.values) ? row.values : [];
-            const cells = [row && row.sheetName, row && row.rowNumber, ...visible.map((column) => values[Number(column && column.index) || 0])];
             return html`
-              <tr key=${`r${rowIndex}`}>${cells.map((value, index) => html`<td key=${index}>${safeDisplayValue(value)}</td>`)}</tr>
+              <tr key=${`r${rowIndex}`}>
+                <td>${safeDisplayValue(row && row.sheetName)}</td>
+                <td>${safeDisplayValue(row && row.rowNumber)}</td>
+                ${displayColumns.map((column, index) => {
+                  const cell = formRowCell(column, row, absent);
+                  if (cell.absent) return html`<td key=${`c${index}`} class="form-cell-absent">${FORM_ABSENT_SOURCE_TEXT}</td>`;
+                  const text = safeDisplayValue(cell.text);
+                  // 长文本列截断成单行，完整值进 title 悬浮（“查看全部字段”仍有全值）。
+                  if (column && !column.derivedStatus && text !== "-" && FORM_TRUNCATED_COLUMN_LABELS.has(String(column.label || ""))) {
+                    return html`<td key=${`c${index}`} class="form-cell-truncate" title=${text}>${text}</td>`;
+                  }
+                  return html`<td key=${`c${index}`}>${text}</td>`;
+                })}
+              </tr>
               <tr class="form-row-detail-row" key=${`d${rowIndex}`}><td colspan=${span}>
                 <details class="form-row-full-detail">
                   <summary>查看全部字段</summary>
                   <dl class="form-row-field-grid">
-                    ${columns.map((column, index) => html`
-                      <dt key=${`t${index}`}>${column && column.label ? String(column.label) : `列 ${index + 1}`}</dt>
-                      <dd key=${`v${index}`}>${safeDisplayValue(values[Number(column && column.index) || index])}</dd>`)}
+                    ${columns.map((column, index) => {
+                      const physical = formColumnIndex(column);
+                      return html`
+                        <dt key=${`t${index}`}>${column && column.label ? String(column.label) : `列 ${index + 1}`}</dt>
+                        ${absent.has(physical)
+    ? html`<dd key=${`v${index}`} class="form-cell-absent">${FORM_ABSENT_SOURCE_TEXT}</dd>`
+    : html`<dd key=${`v${index}`}>${safeDisplayValue(values[Number.isFinite(physical) ? physical : index])}</dd>`}`;
+                    })}
                   </dl>
                 </details>
               </td></tr>`;
@@ -653,7 +761,9 @@ const GUARDED_EVENTS = ["beforeinput", "change", "click", "compositionend", "com
 
 /** While a tab switch is loading, block the stale controls (tab buttons and Tab key stay usable). */
 function useInteractionGuard(ref, locked) {
-  useEffect(() => {
+  // 布局阶段安装：与 data-form-interaction-locked 属性同一次提交内生效，
+  // 不存在「属性已锁定、监听器尚未安装」的窗口。
+  useLayoutEffect(() => {
     const root = ref.current;
     if (!root || !locked) return undefined;
     const guard = (event) => {
@@ -662,6 +772,14 @@ function useInteractionGuard(ref, locked) {
       if (target && typeof target.closest === "function" && target.closest(".form-chart-tab-list > .form-chart-tab")) return;
       event.preventDefault();
       event.stopPropagation();
+      // 可观测性：每次拦截累加 data-* 计数，首次拦截 console.debug 一条。现场 F12 一条命令
+      // 即可判断点击是否被守卫吞掉：
+      //   document.querySelector(".form-chart-tabs").dataset.formInteractionBlockedCount
+      const blocked = Number(root.dataset.formInteractionBlockedCount || "0") + 1;
+      root.dataset.formInteractionBlockedCount = String(blocked);
+      if (blocked === 1 && typeof console !== "undefined" && console.debug) {
+        console.debug("[vse] 表单交互守卫拦截事件（加载中锁定）", event.type);
+      }
     };
     GUARDED_EVENTS.forEach((name) => root.addEventListener(name, guard, true));
     return () => GUARDED_EVENTS.forEach((name) => root.removeEventListener(name, guard, true));
@@ -686,6 +804,7 @@ export function FormAnalysisPanel({ item, version, ctl, onViewData, archive }) {
   const bump = () => setTick((value) => value + 1);
   const [view, setView] = useState({ data: null, rowsData: null, tab: "", error: null });
   const [bgBusy, setBgBusy] = useState(false);
+  const lastGoodTab = useRef("");
   const chartsRef = useRef(null);
   const rowsRef = useRef(null);
   const alive = useRef(true);
@@ -697,25 +816,40 @@ export function FormAnalysisPanel({ item, version, ctl, onViewData, archive }) {
     const sequence = ++state.requestSeq;
     state.viewStatus = "loading";
     bump();
+    // 锁的单一真相是 state.viewStatus：最新请求落定（成功、失败或超时 abort）即解锁，
+    // 锁滞留时间由此有上界。过期请求（sequence 已被更新的请求取代）落定时不渲染、不写状态，
+    // 因此不会污染最新视图。
+    const controller = typeof AbortController === "function" ? new AbortController() : null;
+    const timeoutMs = FORM_VIEW_LIMITS.timeoutMs;
+    let timedOut = false;
+    const timer = controller ? setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs) : null;
+    const signal = controller ? controller.signal : undefined;
     try {
       const query = buildDeliverableFormQuery(filters);
       const rowQuery = buildDeliverableFormQuery(filters, true, state);
       const [data, rowsData] = await Promise.all([
-        apiRequest(`/api/deliverable-forms/${enc(formKey)}/view?${query.toString()}`),
-        apiRequest(`/api/deliverable-forms/${enc(formKey)}/rows?${rowQuery.toString()}`),
+        apiRequest(`/api/deliverable-forms/${enc(formKey)}/view?${query.toString()}`, { signal }),
+        apiRequest(`/api/deliverable-forms/${enc(formKey)}/rows?${rowQuery.toString()}`, { signal }),
       ]);
       if (!alive.current || sequence !== state.requestSeq) return false;
       state.viewStatus = "success";
+      lastGoodTab.current = tab;
       markFormFilterStateDisplayed(state, filters, tab);
       const viewData = data || {};
       if (onViewData) onViewData(viewData);
       setView({ data: viewData, rowsData: rowsData || { items: [], total: 0, offset: 0, limit: 50 }, tab, error: null });
       return true;
-    } catch (error) {
+    } catch (rawError) {
       if (!alive.current || sequence !== state.requestSeq) return false;
+      const error = timedOut ? formViewLoadTimeoutError(timeoutMs) : rawError;
       state.viewStatus = "error";
+      // 页签切换失败：回到最后一次成功的页签，使界面显示/编辑的筛选状态与之后
+      // 「应用筛选」「刷新」所读取的页签一致（否则条件会被写进未显示的页签）。
+      if (lastGoodTab.current && lastGoodTab.current !== state.activeTab) state.activeTab = lastGoodTab.current;
       setView((prev) => ({ ...prev, error }));
       return false;
+    } finally {
+      if (timer !== null) clearTimeout(timer);
     }
   };
   if (ctl) ctl.current = { reload: load };

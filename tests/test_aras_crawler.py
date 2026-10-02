@@ -10,6 +10,7 @@ from services.aras_crawler import (
     ArasAuthenticationError,
     ArasCrawlerClient,
     ArasCrawlerError,
+    ArasNcrExportContractError,
     EWOReportFilters,
     NCRApprovalFilters,
     NCRExportResult,
@@ -561,6 +562,43 @@ def test_parsers_reject_empty_or_malformed_responses() -> None:
         ArasCrawlerClient.parse_download_token_response("{}")
 
 
+def test_ncr_export_contract_failures_carry_signature_without_body() -> None:
+    """NCR 导出契约失败必须携带无泄漏结构签名；响应正文内容绝不进入异常消息。
+
+    签名用于把「无匹配数据 / 参数不被接受 / 响应形状不符」区分开；正文只经
+    既有诊断事件管道脱敏落盘（顾问审计定稿：截断 ≠ 脱敏，不内联原始片段）。
+    """
+    with pytest.raises(ArasNcrExportContractError) as empty_result:
+        ArasCrawlerClient.parse_ncr_progress_response("<Result />")
+    assert "result_present=true" in empty_result.value.signature
+    assert "result_text_present=false" in empty_result.value.signature
+    assert "child_tags=[]" in empty_result.value.signature
+    assert "item_count=0" in empty_result.value.signature
+
+    shaped = "<Envelope><Body><Result><Item type='File'><id>FILE-SECRET</id></Item></Result></Body></Envelope>"
+    with pytest.raises(ArasNcrExportContractError) as no_file:
+        ArasCrawlerClient.parse_ncr_progress_response(shaped)
+    assert "child_tags=[Item]" in no_file.value.signature
+    assert "item_count=1" in no_file.value.signature
+    assert f"body_chars={len(shaped)}" in no_file.value.signature
+    # 正文内容（含敏感形态的元素文本）不进签名，也不进异常消息。
+    assert "FILE-SECRET" not in no_file.value.signature
+    assert "FILE-SECRET" not in str(no_file.value)
+    assert "<Item" not in str(no_file.value)
+
+    with pytest.raises(ArasNcrExportContractError) as detail:
+        ArasCrawlerClient.parse_ncr_detail_response(
+            "<Envelope><Body><Result><file>report.xlsx</file></Result></Body></Envelope>"
+        )
+    assert "result_text_present=false" in detail.value.signature
+    assert "child_tags=[file]" in detail.value.signature
+    assert "report.xlsx" not in str(detail.value)
+
+    with pytest.raises(ArasNcrExportContractError) as missing:
+        ArasCrawlerClient.parse_ncr_progress_response("<Envelope><Body /></Envelope>")
+    assert missing.value.signature == "result_present=false"
+
+
 def test_query_methods_do_not_call_get_or_head() -> None:
     session = FakeSession([FakeResponse(fixture_text("ncr_detail_response.xml"))])
     client = ArasCrawlerClient("http://aras.example", session=session)  # type: ignore[arg-type]
@@ -824,3 +862,25 @@ def test_download_ncr_progress_file_rejects_cross_origin_vault_url(tmp_path) -> 
 
     assert [call["method"] for call in session.calls] == ["POST"]
     assert list(tmp_path.iterdir()) == []
+
+
+def test_parse_ncr_section_codes_input_whitelist_and_prefix_paste() -> None:
+    """NCR 科室代码输入解析（保存/探测/collect 三入口共用，fail-closed）。"""
+    from services.aras_department_mapping import parse_ncr_section_codes_input
+
+    assert parse_ncr_section_codes_input(None) == ()
+    assert parse_ncr_section_codes_input("") == ()
+    assert parse_ncr_section_codes_input("   ") == ()
+    assert parse_ncr_section_codes_input("be") == ("BE",)
+    assert parse_ncr_section_codes_input("BA，be、int;  ve") == ("BA", "BE", "INT", "VE")
+    # 前缀粘贴：合法代码 + 空白 + 名称后缀 → 按代码接受，后缀不参与校验。
+    assert parse_ncr_section_codes_input("BE 结构工程科") == ("BE",)
+    # 空白分隔的多个合法代码：逐个接受。
+    assert parse_ncr_section_codes_input("BA BE") == ("BA", "BE")
+    # 纯中文/未知代码/无分隔的非代码：显式拒绝并列出合法代码。
+    with pytest.raises(ValueError, match="合法代码"):
+        parse_ncr_section_codes_input("结构工程科")
+    with pytest.raises(ValueError, match="合法代码"):
+        parse_ncr_section_codes_input("BAbe")
+    with pytest.raises(ValueError, match="合法代码"):
+        parse_ncr_section_codes_input("XX 结构工程科")

@@ -467,7 +467,7 @@
 .overview-deliverable-detail-view .form-cost-change-decrease { color: var(--success); font-weight: 700; }
 .overview-deliverable-detail-view .form-row-table-section { display: grid; gap: 10px; }
 .overview-deliverable-detail-view .form-row-table-wrap { overflow: auto; border: 1px solid var(--hairline); border-radius: 8px; }
-.overview-deliverable-detail-view .form-row-table { min-width: 1100px; width: 100%; border-collapse: collapse; }
+.overview-deliverable-detail-view .form-row-table { min-width: 1100px; width: max-content; border-collapse: collapse; }
 .overview-deliverable-detail-view .form-row-table th, .overview-deliverable-detail-view .form-row-table td { padding: 8px 10px; border-bottom: 1px solid var(--hairline); text-align: left; vertical-align: top; }
 .overview-deliverable-detail-view .form-row-table th { color: var(--muted); background: var(--surface-soft); font-size: 11px; white-space: nowrap; }
 .overview-deliverable-detail-view .form-row-table td { color: var(--body); font-size: 12px; }
@@ -792,3 +792,33 @@
   color: var(--warning);
   font-weight: 700;
 }
+
+/* 筛选点选反馈：草稿条件与"待应用"提示、应用按钮高亮。 */
+.overview-deliverable-detail-view .form-filter-chips-note { color: var(--warning); font-size: 12px; white-space: nowrap; }
+.overview-deliverable-detail-view .form-filter-chip.is-draft { border-style: dashed; border-color: var(--warning); color: var(--warning); background: var(--canvas); }
+.overview-deliverable-detail-view .btn.is-draft-dirty { border-color: var(--warning); color: var(--warning); font-weight: 600; }
+
+/* NCR 明细按科室成本指标表（行=归集科室，行内条+有值件数）。 */
+.overview-deliverable-detail-view .form-section-cost-table { width: 100%; border-collapse: collapse; background: var(--canvas); border: 1px solid var(--hairline); border-radius: 8px; font-size: 13px; }
+.overview-deliverable-detail-view .form-section-cost-table th, .overview-deliverable-detail-view .form-section-cost-table td { padding: 6px 10px; border-bottom: 1px solid var(--hairline); text-align: left; vertical-align: top; }
+.overview-deliverable-detail-view .form-section-cost-table th.is-number, .overview-deliverable-detail-view .form-section-cost-table td.is-number { text-align: right; }
+.overview-deliverable-detail-view .form-section-cost-table th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+.overview-deliverable-detail-view .form-section-cost-table tbody tr { cursor: pointer; }
+.overview-deliverable-detail-view .form-section-cost-table tbody tr:hover { background: var(--surface-soft); }
+.overview-deliverable-detail-view .form-section-cost-name { white-space: nowrap; font-weight: 600; }
+.overview-deliverable-detail-view .form-section-cost-cell { min-width: 130px; }
+.overview-deliverable-detail-view .form-section-cost-value { font-variant-numeric: tabular-nums; }
+.overview-deliverable-detail-view .form-section-cost-value.is-negative { color: var(--success); }
+.overview-deliverable-detail-view .form-section-cost-bar { display: block; height: 4px; margin-top: 3px; background: var(--hairline); border-radius: 2px; overflow: hidden; }
+.overview-deliverable-detail-view .form-section-cost-fill { display: block; height: 100%; background: var(--primary); border-radius: 2px; }
+.overview-deliverable-detail-view .form-section-cost-fill.is-negative { background: var(--success); }
+.overview-deliverable-detail-view .form-section-cost-count { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
+.overview-deliverable-detail-view .form-section-cost-none { color: var(--muted); }
+
+/* 上游根本不返回该列：与"键在但值为空"的真实空值区分（斜体灰字，表头同步变灰）。 */
+.overview-deliverable-detail-view .form-row-table th.form-cell-absent, .overview-deliverable-detail-view .form-row-field-grid dt.form-cell-absent { color: var(--muted-soft); }
+.overview-deliverable-detail-view .form-row-table td.form-cell-absent, .overview-deliverable-detail-view .form-row-field-grid dd.form-cell-absent { color: var(--muted-soft); font-style: italic; }
+/* 流程名/零件名称等长文本列截断成单行，行高不再被撑爆；完整值经 title 悬浮与「查看全部字段」明细仍可见。 */
+.overview-deliverable-detail-view .form-row-table td.form-cell-truncate { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 「其他状态」桶移除后，未注册阶段的行数在总数旁显式披露。 */
+.overview-deliverable-detail-view .form-chart-unrecognized { margin: 0; color: var(--muted-soft); font-size: 11px; }
