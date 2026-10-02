@@ -1,0 +1,13 @@
+{
+  "id": "sign-daily",
+  "name": "签署日报",
+  "version": "0.1.0",
+  "hostApi": ">=1,<2",
+  "description": "一键抓取 TDC 数模设计审核流程并生成 3D单签署进展日报邮件（复制正文 / .eml 草稿）",
+  "pages": [
+    {"id": "report", "title": "签署日报", "kind": "module", "module": "report.js"}
+  ],
+  "nav": [
+    {"title": "签署日报", "page": "report", "order": 35}
+  ]
+}

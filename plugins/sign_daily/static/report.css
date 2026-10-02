@@ -1,0 +1,28 @@
+.sd-page { display: flex; flex-direction: column; gap: 16px; }
+.sd-form { display: flex; flex-direction: column; gap: 10px; max-width: 960px; }
+.sd-field { display: flex; flex-direction: column; gap: 4px; }
+.sd-field > span { font-weight: 600; color: var(--ink); }
+.sd-field input:not([type="checkbox"]), .sd-field textarea, .sd-settings textarea, .sd-role-grid input {
+  font: inherit; padding: 6px 8px; border: 1px solid var(--hairline-strong); border-radius: 6px;
+  background: var(--canvas); color: var(--ink); box-sizing: border-box; width: 100%;
+}
+.sd-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.sd-chip { display: inline-flex; flex-direction: row; white-space: nowrap; align-items: center; gap: 4px; padding: 3px 10px; border: 1px solid var(--hairline-strong);
+  border-radius: 999px; cursor: pointer; user-select: none; }
+.sd-chip input { margin: 0; }
+.sd-chip.is-on { border-color: var(--primary); background: var(--surface-soft); }
+.sd-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.sd-progress { color: var(--muted); }
+.sd-panel { border: 1px solid var(--hairline); border-radius: 8px; padding: 8px 12px; max-width: 960px; }
+.sd-panel > summary { cursor: pointer; font-weight: 600; }
+.sd-settings { display: flex; flex-direction: column; gap: 12px; margin-top: 8px; }
+.sd-settings h4 { margin: 4px 0; }
+.sd-role-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 6px 12px; }
+.sd-role-grid label { display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+.sd-result { display: flex; flex-direction: column; gap: 10px; }
+.sd-notice { padding: 6px 10px; border-left: 3px solid var(--warning); background: var(--surface-soft); }
+.sd-confirm { padding: 8px 12px; border: 1px solid var(--warning); border-radius: 8px; }
+.sd-confirm ul { list-style: none; padding: 0; margin: 6px 0; }
+.sd-preview-bar { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; align-items: flex-start; }
+/* 预览固定白底，和邮件里看到的一致 */
+.sd-preview { background: #fff; color: #1f2329; border: 1px solid var(--hairline); border-radius: 8px; padding: 16px; overflow-x: auto; }
