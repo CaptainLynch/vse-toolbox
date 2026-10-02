@@ -575,3 +575,14 @@ DSH DeepSeek Harness + v4.1 Flash 主代理和 ZCode Gemini 3.8 Flash 交互主�
 ## 2026-09-25 Expert Advisor 共享 7 日额度改为 30（取代先前 8 次）
 
 用户明确要求把前一轮讨论的本地滚动 7 日上限直接设为 30 次。codex-readonly 的 Sol/high、Sol/xhigh、Astra/medium、Astra/high 四档继续共用一个 provider 账本，weekly_cap=30。其他护栏保持：滚动 5 小时 2 次、自然日 10 次、每任务 2 次；Astra 另限自然日 1 次、滚动 7 日 2 次。此变更不重置 ChatGPT Plus 服务端额度或历史账本，也不自动扩大顾问触发场景。
+
+## 2026-10-02 恢复策略：移植而非合并，行为测试取代源码文本测试
+
+- 决定：旧业务分支遗漏行为**按条目移植**到插件架构（后端取参考顶端文件、前端按插件重写），不整条 merge/cherry-pick，
+  不恢复 `web/static/app.js` 与旧全局样式；旧 `app.js` 源码文本断言一律不恢复，业务断言迁为 API / Node 纯逻辑 / 真浏览器行为测试。
+- 决定：映射取证请求通道集中在 `deliverable/discovery.js`（向导与高级设置共用），可变 `discoveryLimits` 供测试压缩时限；
+  终态文案用按交付物限定的待显示槽（面板卸载后写、重新挂载时取走）。
+- 决定：候选预览与执行共用同一报表类型（预览必须逐字节等于执行写入）；NCR 科室范围只是绑定上的声明（`sectionScope`），不是查询键，
+  不发送 `seccode`；取消端点不要求 `base_url`。
+- 决定：不保留“表单明细用户列偏好”概念（现有表单明细表无该存储；系统查询网格的列偏好键不变）。
+

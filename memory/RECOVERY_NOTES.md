@@ -616,3 +616,25 @@ repo are the authoritative record.
 ## 2026-09-25 Expert Advisor 本地配额重置边界
 
 重置本地顾问额度时不要删除 ledger-*.jsonl，也不要调用 Plus 账户重置。策略 local_quota_reset_at 只过滤该时间之前的 codex-readonly 启动用于本地自然日、任务和滚动上限；--status 的 prior_launches_preserved 显示历史启动数。修改 advisor_core.py 后必须升级 broker 健康协议并重启已核实身份的本机进程；仅改策略字段则服务每次请求会重新读取。用户授权重置后，115 项离线测试及两次合成 live 已通过。
+
+## 2026-10-02 插件重构遗漏恢复：联调发现的旧实现缺陷（verified root causes）
+
+- **方法教训**：旧分支的前端/接线测试是 `app.js` 源码文本断言 + Node VM 桩，后端测试各自带满参数调用，**从未真浏览器+真后端联调**。
+  凡"旧测试通过 = 行为正确"的推断都要用 Playwright + 真 Flask（只伪造上游客户端）复核。联调脚手架见
+  `tests/test_plugin_overview_browser.py`（`Wizard` 拦截类、`live` 模块级服务）。
+- **预览≠执行**：`project_status_discovery` 的 `build_aggregate_candidate_values`/`ewo_v2_candidate_values` 不传 `report`，
+  连接器传 → 预览显示旧明细、执行写“共 N 条；状态计数”。旧测试两边都走默认 `report=None` 所以通过。
+  修复：`_aggregate_report(deliverable_id)`（能力注册表 reportType）。
+- **NCR `sectionScope` 422**：向导写该键，但 `matchKeys` 无此键且 `_valid_match_rule_values` 只认字符串/布尔。修复：D7/D8
+  `matchKeys` 加入、`_valid_section_scope`（≤20 项、去重、≤100 字）；不是 filterKeys，不进配置签名（签名按白名单忽略未知键）；
+  高级设置 `buildPolicyPayload` 保存时保留。
+- **取消端点恒 400**：`_request_payload()` 要求 `base_url`，前端取消只发 `cancelToken`。旧测试带了 `base_url`。修复：取消端点自行解析 JSON。
+- **Preact 多选点选被撤销**：选中候选 → 该按钮从候选列表移除（重渲染）→ 点击仍在冒泡，但目标已脱离文档，宿主 `<label>` 不再把它当
+  交互内容 → label 激活行为把点击转给第一个可标签后代（新 token 的 × 按钮）→ 值被删。仅点选触发，键盘输入 Enter 不触发。修复：
+  `SearchMultiSelect` 根节点对自身 `button` 点击 `preventDefault`。**不要**再用选项节点 `key` 稳定性去解释它——节点本来就稳定。
+- **`Number(null) === 0`**：`sourceAbsentIndexes` 里夹 null 会把第 0 列标成“源端不提供”。
+- **行表宽度**：`.form-row-table{width:100%}` 在列多时把短列压到单字宽，行高 68px；改 `width:max-content;min-width:1100px`。
+- **Playwright 注意**：`page.unroute` 会把挂起的路由自动放行（再 `continue_()` 报 already handled）；`page.goto` 会清空页面内状态
+  （`window.*` 探针要在 goto 之后注入）；挂起路由在用例结束 `unroute_all(behavior="ignoreErrors")`。
+- 全量并行：`python -m pytest -q -p no:cacheprovider -n 4`（约 70s，需 `pip install pytest-xdist imapclient selenium xlwings`）。
+
