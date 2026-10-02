@@ -76,6 +76,14 @@ _TEXT_FIELDS.add('final_state')
 _NUMBER_FIELDS.update({'kept_count', 'dropped_count'})
 _TEXT_FIELDS.update({'report_type', 'remedy'})
 _VALUES.add('reproject_from_archived_workbook')
+# F10 映射稳定性核验失败披露：只放原因枚举与计数，不落单号/字段名/原始响应。
+_NUMBER_FIELDS.update({'expected_count', 'actual_count'})
+_TEXT_FIELDS.add('stability_reason')
+_VALUES.update({'total_mismatch', 'sample_not_in_baseline', 'fields_mismatch', 'legacy_baseline'})
+# TDC 同步范围剔除（已废弃/已撤回）与数模状态码直方图取证：码值为闭集数字词。
+_NUMBER_FIELDS.update({'status_count', 'unknown_count'})
+_TEXT_FIELDS.add('tdc_status_code')
+_VALUES.update({str(i) for i in range(0, 13)} | {'(empty)', '(unprintable)'})
 
 
 def _dumps(value):

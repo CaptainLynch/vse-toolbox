@@ -611,7 +611,7 @@ class DatabaseManager(
             ("VPI-T2-D3", "EWO 流程", "进行中", "李珊", "2026-08-22", None, 0, "待同步", "ARAS EWO"),
             ("VPI-T2-D4", "造型 VDR 审批流程", "进行中", "陈璇", "2026-08-15", None, 0, "待同步", "TDC A 面（待契约确认）"),
             ("VPI-T2-D5", "数模设计审核流程报表", "进行中", "赵岩", "2026-08-08", None, 0, "待同步", "TDC 数模设计审核流程报表"),
-            ("VPI-T2-D6", "PAA 报告", "进行中", "", None, None, 0, "", "ARAS PAA"),
+            ("VPI-T2-D6", "PAA流程", "进行中", "", None, None, 0, "", "ARAS PAA"),
             ("VPI-T2-D7", "NCR 审批进度", "进行中", "", None, None, 0, "", "ARAS NCR"),
             ("VPI-T2-D8", "NCR 审批明细", "进行中", "", None, None, 0, "", "ARAS NCR"),
         )
@@ -679,6 +679,16 @@ class DatabaseManager(
             SET name = 'EWO 流程'
             WHERE id = 'VPI-T2-D3'
               AND name = 'EWO 定点流程'
+            """
+        )
+        # 存量库改名迁移：PAA 报告 → PAA流程（仅改写仍等于旧默认名的行，
+        # 用户自定义名不在守卫范围内，永不覆盖）。
+        conn.execute(
+            """
+            UPDATE project_status_deliverables
+            SET name = 'PAA流程'
+            WHERE id = 'VPI-T2-D6'
+              AND name = 'PAA 报告'
             """
         )
         # 存量库锚点迁移：主计划名称默认改为车型 F610S（旧默认是「VPI-T2 主计划时间轴」）。

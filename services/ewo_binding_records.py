@@ -10,10 +10,10 @@ def attach_ewo_source_ids(result):
     return [row for _, row in identified_ewo_v2_rows(rows)]
 
 
-def ewo_v2_candidate_values(records, mapping, rule):
+def ewo_v2_candidate_values(records, mapping, rule, report=None):
     normalized = normalize_ewo_v2_rule(dict(rule))
     if normalized['bindingMode'] == 'record_set' and set(mapping) - {'note'}:
         raise ValueError('EWO record sets cannot map scalar owner or planned date')
-    values = build_aggregate_candidate_values(records, mapping)
+    values = build_aggregate_candidate_values(records, mapping, report=report)
     # Missing/empty source content is not authority to clear local fields.
     return {key: value for key, value in values.items() if value is not None and value != ''}

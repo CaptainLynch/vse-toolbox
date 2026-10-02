@@ -824,13 +824,15 @@ def test_aras_ncr_admission_failure_blocks_projection_but_keeps_official_artifac
 
 
 def test_ncr_archive_path_has_no_binding_department_narrowing(tmp_path: Path) -> None:
-    """已知差异（钉住，待生产证据后统一）：归档路径不做内存部门收窄。
+    """两路径 NCR 行集合口径已收敛（2026-09-26 生产证据后统一）：绑定部门在两条
+    路径都不参与查询与收窄。
 
-    归档任务用 `sectionCode/sectionCodes` 走**上游**查询；交付物绑定则在
-    `services.project_status_connectors._collect_ncr_rows` 里再按 `department`
-    做一次内存收窄（并在丢弃行时发诊断事件）。因此两者的**行集合**口径仍不同，
-    只有行**形状**已统一。删除/新增任一侧的收窄都必须同时更新本测试与
-    `docs/PLAN_20260925_BOARD_TRIM_AND_ARAS_UNIFY.md` 的延后项说明。
+    归档任务用 `sectionCode/sectionCodes` 走**上游**查询；交付物绑定曾在
+    `services.project_status_connectors._collect_ncr_rows` 里按 `department`
+    做内存收窄——生产实锤（2026-09-26）：NCR 报表没有部门维度，部门名兜底进
+    seccode 会让服务端导出方法生成不了文件，部门收窄又匹配不到科室列。两者
+    已一并移除（seccode 与内存收窄只接受真实科室代码）。本测试钉住：归档源码
+    无收窄函数、同步源码保留收窄函数（仅服务 sectionCode 来源）。
     """
     import services.project_status_connectors as project_connectors
 

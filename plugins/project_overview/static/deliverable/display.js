@@ -193,7 +193,7 @@ export const DELIVERABLE_FIXED_SOURCES = {
   "VPI-T2-D3": "ARAS EWO",
   "VPI-T2-D4": "TDC A 面（契约待验证）",
   "VPI-T2-D5": "数模设计审核流程报表",
-  "VPI-T2-D6": "ARAS PAA 报告",
+  "VPI-T2-D6": "ARAS PAA流程",
   "VPI-T2-D7": "ARAS NCR 审批进度",
   "VPI-T2-D8": "ARAS NCR 审批明细",
 };

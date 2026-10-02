@@ -10,6 +10,8 @@ from services.project_status_discovery import MappingDiscoveryService
 from services.project_status_records import (
     aggregate_fingerprint,
     compute_config_signature,
+    identified_records,
+    observation_is_aggregate,
 )
 from services.project_status_deliverable_analysis import EWO_DEFAULT_RSP_DEPARTMENT_EXPRESSION
 
@@ -1084,3 +1086,238 @@ def test_observe_record_set_filters_legacy_scalar_mappings(tmp_path):
     }
     result = service.observe("VPI-T2-D3", "aras", rows, aggregate=True, match_rule=rule)
     assert result["state"] == "matched"
+
+
+# ── F10 稳定性基线修复（TASK-20260929-F10-STABILITY-GATE）──────────────────────
+
+
+def _sor_rule() -> dict[str, object]:
+    return {"reportType": "sor", "aggregate": True}
+
+
+def test_f10_stability_sample_aggregate_over_one_page_reverse_order(tmp_path):
+    """回归主用例：>50 条聚合、上游序与单号序相反，零漂移必须通过。
+
+    r4 缺陷：第 1 次观测只存全量按单号排序后的前 5 个单号，第 2 次采样是上游
+    页序第 1 页 50 行，两集合不可能互为子集 → 聚合模式结构性报"稳定性未就绪"。
+    """
+    db = DatabaseManager(tmp_path / "db.sqlite")
+    db.init_database()
+    service = MappingDiscoveryService(db)
+    rows = [{"incident": f"SOR-{i:04d}", "approvalStatus": "审批中"} for i in range(60)]
+    rows.reverse()  # 上游按时间倒序：页 1 是单号最大的一批
+    first = service.observe(
+        "VPI-T2-D2", "tdc", rows, aggregate=True, match_rule=_sor_rule(), upstream_total=60
+    )
+    assert first["state"] == "matched"
+    assert first["stability"]["confirmed"] == 1
+    second = service.observe_stability_sample(
+        "VPI-T2-D2", "tdc", rows[:50], 60, aggregate=True, match_rule=_sor_rule()
+    )
+    assert second["state"] == "matched"
+    assert second["stability"] == {"confirmed": 2, "required": 2, "ready": True}
+    assert second["mismatch"] is None
+
+
+def test_f10_stability_sample_tolerates_identity_less_rows(tmp_path):
+    """count 比对用上游声明总数：无单号行不再让"有单号行数≠声明总数"误判。"""
+    db = DatabaseManager(tmp_path / "db.sqlite")
+    db.init_database()
+    service = MappingDiscoveryService(db)
+    rows = []
+    for i in range(60):
+        if i in (0, 7):
+            rows.append({"approvalStatus": "审批中"})  # 无单号行
+        else:
+            rows.append({"incident": f"SOR-{i:04d}", "approvalStatus": "审批中"})
+    first = service.observe(
+        "VPI-T2-D2", "tdc", rows, aggregate=True, match_rule=_sor_rule(), upstream_total=60
+    )
+    assert first["state"] == "matched"
+    assert first["candidateCount"] == 58  # 有单号行数（仅供展示，不参与 count 比对）
+    second = service.observe_stability_sample(
+        "VPI-T2-D2", "tdc", rows[:50], 60, aggregate=True, match_rule=_sor_rule()
+    )
+    assert second["stability"] == {"confirmed": 2, "required": 2, "ready": True}
+
+
+def test_f10_stability_sample_rejects_new_record_in_sample(tmp_path):
+    """第 1 页混入新记录（总数不变）→ sample_not_in_baseline，正确拒绝。"""
+    db = DatabaseManager(tmp_path / "db.sqlite")
+    db.init_database()
+    service = MappingDiscoveryService(db)
+    rows = [{"incident": f"SOR-{i:04d}", "approvalStatus": "审批中"} for i in range(60)]
+    service.observe(
+        "VPI-T2-D2", "tdc", rows, aggregate=True, match_rule=_sor_rule(), upstream_total=60
+    )
+    drifted = [{"incident": "SOR-9000", "approvalStatus": "审批中"}] + rows[:49]
+    result = service.observe_stability_sample(
+        "VPI-T2-D2", "tdc", drifted, 60, aggregate=True, match_rule=_sor_rule()
+    )
+    assert result["state"] == "key_changed"
+    assert result["stability"]["ready"] is False
+    assert result["mismatch"] == {"reason": "sample_not_in_baseline", "expected": 60, "actual": 50}
+
+
+def test_f10_stability_sample_reports_total_mismatch_counts(tmp_path):
+    """声明总数变化 → total_mismatch 并给出期望/实际计数。"""
+    db = DatabaseManager(tmp_path / "db.sqlite")
+    db.init_database()
+    service = MappingDiscoveryService(db)
+    rows = [{"incident": f"SOR-{i:04d}", "approvalStatus": "审批中"} for i in range(60)]
+    service.observe(
+        "VPI-T2-D2", "tdc", rows, aggregate=True, match_rule=_sor_rule(), upstream_total=60
+    )
+    result = service.observe_stability_sample(
+        "VPI-T2-D2", "tdc", rows[:50], 61, aggregate=True, match_rule=_sor_rule()
+    )
+    assert result["state"] == "key_changed"
+    assert result["mismatch"] == {"reason": "total_mismatch", "expected": 60, "actual": 61}
+
+
+def test_f10_stability_sample_single_record_unified(tmp_path):
+    """单记录模式统一走基线集合逻辑：声明总数一致 + 采样 ⊆ 基线 → 通过。"""
+    db = DatabaseManager(tmp_path / "db.sqlite")
+    db.init_database()
+    service = MappingDiscoveryService(db)
+    rows = [{"incident": "FLOW-1", "approvalStatus": "审批中"}]
+    rule = {"reportType": "sor", "aggregate": False}
+    first = service.observe("VPI-T2-D2", "tdc", rows, match_rule=rule, upstream_total=1)
+    assert first["stability"]["confirmed"] == 1
+    second = service.observe_stability_sample("VPI-T2-D2", "tdc", rows, 1, match_rule=rule)
+    assert second["stability"] == {"confirmed": 2, "required": 2, "ready": True}
+    assert second["mismatch"] is None
+
+
+def test_f10_stability_sample_legacy_row_falls_back_to_summary_subset(tmp_path):
+    """缺 `_schema` 的历史观测回退旧摘要子集逻辑；失败时标 legacy_baseline。"""
+    db = DatabaseManager(tmp_path / "db.sqlite")
+    db.init_database()
+    service = MappingDiscoveryService(db)
+    rule = {"reportType": "sor", "aggregate": False}
+    config_sig = compute_config_signature("tdc", rule)
+    row = {"incident": "FLOW-1", "approvalStatus": "审批中"}
+    # 直接落一条旧版本形状的观测（无保留键），模拟部署过渡期的历史证据。
+    db.record_mapping_observation(
+        "VPI-T2-D2", "tdc", "matched", "FLOW-1", "legacy-fingerprint", 1,
+        json.dumps([{"externalKey": "FLOW-1", "fields": {"incident": "FLOW-1"}}], ensure_ascii=False),
+        json.dumps({"fields": ["incident", "approvalStatus"]}, ensure_ascii=False),
+        config_signature=config_sig,
+        aggregated_candidate_json=json.dumps({"_candidateCache": {"version": 1, "complete": False}}),
+    )
+    second = service.observe_stability_sample(
+        "VPI-T2-D2", "tdc", [row], 1, match_rule=rule
+    )
+    assert second["stability"] == {"confirmed": 2, "required": 2, "ready": True}
+
+    # 同一 legacy 基线下采样到不同单号 → 失败原因为 legacy_baseline。
+    db.record_mapping_observation(
+        "VPI-T2-D2", "tdc", "key_changed", "FLOW-1", "mismatch-x", 1,
+        "[]", "{}", config_signature=config_sig, aggregated_candidate_json=None,
+    )
+    db.record_mapping_observation(
+        "VPI-T2-D2", "tdc", "matched", "FLOW-1", "legacy-fingerprint-2", 1,
+        json.dumps([{"externalKey": "FLOW-1", "fields": {"incident": "FLOW-1"}}], ensure_ascii=False),
+        json.dumps({"fields": ["incident", "approvalStatus"]}, ensure_ascii=False),
+        config_signature=config_sig,
+        aggregated_candidate_json=None,
+    )
+    third = service.observe_stability_sample(
+        "VPI-T2-D2", "tdc", [{"incident": "FLOW-999"}], 1, match_rule=rule
+    )
+    assert third["state"] == "key_changed"
+    assert third["mismatch"]["reason"] == "legacy_baseline"
+
+
+def test_f10_stability_baseline_stores_hashes_not_raw_ids(tmp_path):
+    """基线只落单号截断哈希与声明总数，原始单号不得出现在基线载荷里。"""
+    db = DatabaseManager(tmp_path / "db.sqlite")
+    db.init_database()
+    service = MappingDiscoveryService(db)
+    rows = [{"incident": f"SOR-{i:04d}", "approvalStatus": "审批中"} for i in range(60)]
+    service.observe(
+        "VPI-T2-D2", "tdc", rows, aggregate=True, match_rule=_sor_rule(), upstream_total=60
+    )
+    obs = db.list_mapping_observations("VPI-T2-D2", 1)[0]
+    payload = json.loads(obs["aggregated_candidate_json"])
+    assert payload["_schema"] == 1
+    assert payload["_upstreamTotal"] == 60
+    ids = payload["_stabilityIds"]
+    assert len(ids) == 60
+    assert all(len(value) == 16 and set(value) <= set("0123456789abcdef") for value in ids)
+    # 基线数组必须恰好是全部单号经共用助手的截断哈希（可逆比对子集关系的基石）。
+    from services.project_status_records import identity_digest
+
+    assert ids == sorted(identity_digest(f"SOR-{i:04d}") for i in range(60))
+
+
+def test_f10_reserved_keys_do_not_change_fingerprint_or_aggregate_flag(tmp_path):
+    """顾问硬性条件：保留键不参与指纹与聚合判定（部署过渡期首试不得必败）。"""
+    db = DatabaseManager(tmp_path / "db.sqlite")
+    db.init_database()
+    service = MappingDiscoveryService(db)
+    rows = [{"incident": f"SOR-{i:04d}", "approvalStatus": "审批中"} for i in range(60)]
+    service.observe(
+        "VPI-T2-D2", "tdc", rows, aggregate=True, match_rule=_sor_rule(), upstream_total=60
+    )
+    obs = db.list_mapping_observations("VPI-T2-D2", 1)[0]
+    assert obs["candidate_fingerprint"] == aggregate_fingerprint(identified_records(rows))
+    assert observation_is_aggregate(obs) is True
+
+    single_rule = {"reportType": "sor", "aggregate": False}
+    service.observe(
+        "VPI-T2-D5", "tdc", [{"incident": "FLOW-1"}], match_rule=single_rule, upstream_total=1
+    )
+    single_obs = db.list_mapping_observations("VPI-T2-D5", 1)[0]
+    assert observation_is_aggregate(single_obs) is False
+
+
+def test_f10_failed_sample_then_fresh_pair_reaches_ready(tmp_path):
+    """失败采样只打断连续计数：重新完成一对一致观测后仍可就绪。"""
+    db = DatabaseManager(tmp_path / "db.sqlite")
+    db.init_database()
+    service = MappingDiscoveryService(db)
+    rows = [{"incident": f"SOR-{i:04d}", "approvalStatus": "审批中"} for i in range(60)]
+    rule = _sor_rule()
+    service.observe("VPI-T2-D2", "tdc", rows, aggregate=True, match_rule=rule, upstream_total=60)
+    drifted = [{"incident": "SOR-9000", "approvalStatus": "审批中"}] + rows[:49]
+    failed = service.observe_stability_sample(
+        "VPI-T2-D2", "tdc", drifted, 60, aggregate=True, match_rule=rule
+    )
+    assert failed["stability"]["confirmed"] == 0
+    second_first = service.observe(
+        "VPI-T2-D2", "tdc", rows, aggregate=True, match_rule=rule, upstream_total=60
+    )
+    assert second_first["stability"]["confirmed"] == 1
+    second_sample = service.observe_stability_sample(
+        "VPI-T2-D2", "tdc", rows[:50], 60, aggregate=True, match_rule=rule
+    )
+    assert second_sample["stability"] == {"confirmed": 2, "required": 2, "ready": True}
+
+
+def test_f10_failed_sample_row_is_never_used_as_baseline(tmp_path):
+    """顾问复核 F1：失败行（key_changed，带 _mismatch 载荷）不得被选作稳定性基线。
+
+    基线选取按 result_state=="matched" 硬过滤；失败行之后直接采样必须返回
+    not_found（确认数 0），而不是把失败行当基线走新路径。
+    """
+    db = DatabaseManager(tmp_path / "db.sqlite")
+    db.init_database()
+    service = MappingDiscoveryService(db)
+    rows = [{"incident": f"SOR-{i:04d}", "approvalStatus": "审批中"} for i in range(60)]
+    rule = _sor_rule()
+    service.observe("VPI-T2-D2", "tdc", rows, aggregate=True, match_rule=rule, upstream_total=60)
+    drifted = [{"incident": "SOR-9000", "approvalStatus": "审批中"}] + rows[:49]
+    failed = service.observe_stability_sample(
+        "VPI-T2-D2", "tdc", drifted, 60, aggregate=True, match_rule=rule
+    )
+    assert failed["state"] == "key_changed"
+    # 失败行已落库且载荷非空（含 _schema/_mismatch），但绝不能成为下一次采样基线。
+    latest = db.list_mapping_observations("VPI-T2-D2", 1)[0]
+    assert latest["result_state"] == "key_changed"
+    assert json.loads(latest["aggregated_candidate_json"])["_schema"] == 1
+    after_failure = service.observe_stability_sample(
+        "VPI-T2-D2", "tdc", rows[:50], 60, aggregate=True, match_rule=rule
+    )
+    assert after_failure["state"] == "not_found"
+    assert after_failure["stability"] == {"confirmed": 0, "required": 2, "ready": False}

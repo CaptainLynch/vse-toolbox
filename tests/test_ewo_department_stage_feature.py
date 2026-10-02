@@ -23,7 +23,9 @@ def test_ewo_stage_semantics_do_not_leak_onto_paa_ncr() -> None:
     assert analysis_source_type("aras", "paa") == "aras_paa"
     assert analysis_source_type("aras", "ncr_progress") == "aras_ncr"
     assert analysis_source_type("aras", "ncr_detail") == "aras_ncr"
-    assert analysis_source_type("tdc", "sor") == "tdc"
+    # 2026-09-29 起 TDC 也按报表限定标签（数模完成口径需要来源区分）。
+    assert analysis_source_type("tdc", "sor") == "tdc_sor"
+    assert analysis_source_type("tdc", "data_model") == "tdc_data_model"
 
     assert is_ewo_source_type("aras") is True
     assert is_ewo_source_type("aras_ewo") is True

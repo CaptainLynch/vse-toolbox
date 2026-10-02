@@ -13,9 +13,10 @@ import re
 import time
 import uuid
 from dataclasses import dataclass, field, replace
-from datetime import date, datetime
+from datetime import date, datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import unquote, urljoin, urlsplit
 
 from core.redaction import redact_sensitive_text
@@ -69,6 +70,17 @@ _PERSON_QUERY_KEYS = {"applicant", "startusername", "applicanttel", "phone", "te
 _PATH_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _ENUM_RE = re.compile(r"^[\w\u3400-\u9fff .()/+-]{1,128}$", re.UNICODE)
+
+# 列表查询的有界重试：上游网关偶发 5xx 不该让整次映射取证失败
+# （生产 2026-09-28：数模列表返回 503，向导直接报"配置启用失败"）。
+# 只重试幂等的列表 GET，且带总预算——重试把失败时间拉长 2–3 倍同样不可接受。
+_RETRYABLE_STATUSES = frozenset({429, 502, 503, 504})
+_RETRY_MAX_ATTEMPTS = 3
+_RETRY_BASE_WAIT_SECONDS = 0.5
+_RETRY_MAX_WAIT_SECONDS = 10.0
+_RETRY_TOTAL_BUDGET_SECONDS = 20.0
+# 测试可替换的睡眠入口（真实 sleep 会让重试用例变慢且不稳定）。
+_sleep = time.sleep
 
 
 class CrawlCancelled(RuntimeError):
@@ -130,6 +142,10 @@ class TDCCrawlerError(RuntimeError):
         })
         if type(self.reason_available) is bool:
             result["reasonAvailable"] = self.reason_available
+        if self.stage == "status-validation" and self.status_code in _RETRYABLE_STATUSES:
+            # 有界重试后仍失败 ⇒ 上游持续不可用：调用方据此给出"可稍后重试"的语义，
+            # 而不是把它当成配置错误。只在为真时下发，历史诊断形状不变。
+            result["retryable"] = True
         return result
 
     def safe_diagnostic_message(self) -> str:
@@ -826,57 +842,71 @@ class TDCCrawlerClient:
         request_id = _request_id()
         url = self._url(route)
         headers = self._headers(referer_path, "application/json, text/plain, */*")
-        started = time.perf_counter()
-        try:
-            response = self.session.get(url, params=dict(params), headers=headers, timeout=self.timeout)
-        except Exception as exc:
-            elapsed = _elapsed_ms(started)
-            event = self._exception_event(
-                report_type, "request", request_id, route, params, headers, page, page_size, elapsed, exc
-            )
-            self._emit(event)
-            raise TDCCrawlerError(
-                f"TDC request failed: {type(exc).__name__}: {redact_sensitive_text(exc)}",
-                stage="request",
-                request_id=request_id,
-                operation="query",
-                report_type=report_type,
-            ) from exc
+        attempt = 1
+        retry_waited = 0.0
+        while True:
+            started = time.perf_counter()
+            try:
+                response = self.session.get(url, params=dict(params), headers=headers, timeout=self.timeout)
+            except Exception as exc:
+                elapsed = _elapsed_ms(started)
+                event = self._exception_event(
+                    report_type, "request", request_id, route, params, headers, page, page_size, elapsed, exc
+                )
+                self._emit(event)
+                raise TDCCrawlerError(
+                    f"TDC request failed: {type(exc).__name__}: {redact_sensitive_text(exc)}",
+                    stage="request",
+                    request_id=request_id,
+                    operation="query",
+                    report_type=report_type,
+                ) from exc
 
-        elapsed = _elapsed_ms(started)
-        status = int(getattr(response, "status_code", 0) or 0)
-        content_type = _header_value(getattr(response, "headers", {}), "Content-Type")
-        content_length = _content_length(response)
-        base_event: dict[str, Any] = dict(
-            timestamp=_timestamp(),
-            stage="response",
-            request_id=request_id,
-            page_type=report_type,
-            method="GET",
-            origin=self._origin(),
-            path=route,
-            query=_safe_query(params),
-            page=page,
-            page_size=page_size,
-            attempt=1,
-            timeout=self.timeout,
-            status_code=status,
-            elapsed_ms=elapsed,
-            content_type=content_type,
-            content_length=content_length,
-            request_headers=_safe_headers(headers),
-            response_headers=_safe_headers(getattr(response, "headers", {})),
-        )
-        if status < 200 or status >= 300:
-            self._emit(TDCHttpDiagnosticEvent(**base_event, reason=f"HTTP {status}"))
-            raise TDCCrawlerError(
-                f"TDC HTTP {status} at {route}",
-                stage="status-validation",
+            elapsed = _elapsed_ms(started)
+            status = int(getattr(response, "status_code", 0) or 0)
+            content_type = _header_value(getattr(response, "headers", {}), "Content-Type")
+            content_length = _content_length(response)
+            base_event: dict[str, Any] = dict(
+                timestamp=_timestamp(),
+                stage="response",
                 request_id=request_id,
-                operation="query",
-                report_type=report_type,
+                page_type=report_type,
+                method="GET",
+                origin=self._origin(),
+                path=route,
+                query=_safe_query(params),
+                page=page,
+                page_size=page_size,
+                attempt=attempt,
+                timeout=self.timeout,
                 status_code=status,
+                elapsed_ms=elapsed,
+                content_type=content_type,
+                content_length=content_length,
+                request_headers=_safe_headers(headers),
+                response_headers=_safe_headers(getattr(response, "headers", {})),
             )
+            if status < 200 or status >= 300:
+                self._emit(TDCHttpDiagnosticEvent(**base_event, reason=f"HTTP {status}"))
+                wait = _retry_wait_seconds(response, attempt) if status in _RETRYABLE_STATUSES else None
+                if (
+                    wait is not None
+                    and attempt < _RETRY_MAX_ATTEMPTS
+                    and retry_waited + wait <= _RETRY_TOTAL_BUDGET_SECONDS
+                ):
+                    _sleep(wait)
+                    retry_waited += wait
+                    attempt += 1
+                    continue
+                raise TDCCrawlerError(
+                    f"TDC HTTP {status} at {route}",
+                    stage="status-validation",
+                    request_id=request_id,
+                    operation="query",
+                    report_type=report_type,
+                    status_code=status,
+                )
+            break
         if _looks_like_html(response, content_type):
             self._emit(TDCHttpDiagnosticEvent(**base_event, validation="rejected-login-html"))
             raise TDCCrawlerError(
@@ -1338,6 +1368,35 @@ def _header_value(headers: Any, name: str) -> str:
     return ""
 
 
+def _retry_after_seconds(value: str) -> float | None:
+    """解析 Retry-After：数字秒或 HTTP-date；无法解析返回 None。"""
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        return max(0.0, float(text))
+    except ValueError:
+        pass
+    try:
+        parsed = parsedate_to_datetime(text)
+    except (TypeError, ValueError):
+        return None
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return max(0.0, (parsed - datetime.now(timezone.utc)).total_seconds())
+
+
+def _retry_wait_seconds(response: Any, attempt: int) -> float:
+    """本次重试的等待时长：优先遵守 Retry-After，其次指数退避，均设上限。"""
+    header = _retry_after_seconds(_header_value(getattr(response, "headers", {}), "Retry-After"))
+    if header is not None:
+        return min(header, _RETRY_MAX_WAIT_SECONDS)
+    backoff = _RETRY_BASE_WAIT_SECONDS * 2 ** max(0, attempt - 1)
+    return min(backoff, _RETRY_MAX_WAIT_SECONDS)
+
+
 def _safe_headers(headers: Any) -> dict[str, str]:
     if not isinstance(headers, Mapping):
         return {}
@@ -1405,6 +1464,168 @@ _EXPORT_REASON_FALLBACKS = {
 
 def _project_scalar(value: Any) -> str:
     return str(value).strip() if type(value) in (str, int) else ""
+
+
+#: SOR 行扁平化时整体丢弃的敏感/无应用语义键（与 web 层 _SENSITIVE_RESPONSE_KEYS
+#: 保持同集，测试钉住两份清单一致）。
+SOR_SENSITIVE_KEYS = frozenset(
+    {
+        "raw_xml",
+        "file_id",
+        "authorization",
+        "set-cookie",
+        "cookie",
+        "token",
+        "api_key",
+        "sid",
+        "sessionid",
+        "arasauth",
+        "jsessionid",
+        "csrf",
+        "secret",
+        "password",
+    }
+)
+
+
+def flatten_sor_value(
+    value: Any,
+    *,
+    preferred_keys: tuple[str, ...] = (),
+) -> str | None:
+    """Flatten known TDC SOR objects without serializing raw JSON into cells.
+
+    嵌套对象取首个命中的首选/兜底键的标量文本；列表合并为顿号连接；纯标量
+    经脱敏后返回。绝不把 dict/list 以 ``str()`` 形态放进单元格。
+    """
+    if value is None:
+        return None
+    if isinstance(value, Mapping):
+        fallback_keys = (
+            "projectNo",
+            "projectName",
+            "name",
+            "userName",
+            "keyed_name",
+            "label",
+            "code",
+            "value",
+        )
+        for key in (*preferred_keys, *fallback_keys):
+            if key not in value:
+                continue
+            candidate = flatten_sor_value(value[key], preferred_keys=preferred_keys)
+            if candidate:
+                return candidate
+        return None
+    if isinstance(value, (list, tuple)):
+        parts = [
+            part
+            for item in value
+            if (part := flatten_sor_value(item, preferred_keys=preferred_keys))
+        ]
+        return "、".join(parts) if parts else None
+    text = redact_sensitive_text(value).strip()
+    return text or None
+
+
+def flatten_sor_rows(rows: list[dict[str, Any]]) -> list[dict[str, str | None]]:
+    """Return SOR rows with application/display fields and no nested raw values.
+
+    同步链路的「原始行 → 应用行」边界：返回**新的**字典，不原地改写输入。
+    审批状态（processInstanceStatus）只取 ``name``（如「已完成」）——数值形态
+    （value/valueStr）的完成语义契约未确立，不得据此推断。取证路径
+    （mapping-discovery 字段报告与归档 JSON）必须继续使用原始行。
+
+    F6c 零件聚合与嵌套字段解包（2026-09-29 现场真实抓包）：
+    1. 零件成对聚合：遍历 sorPartList 提取 (partNo, partName) 保序去重，分别顿号拼接；
+    2. 申请人与部门/科室解包：从 startUser.trueName 与 deptInfo / parentDept 提取；
+    3. 最新完成节点：从 sorProcessStatus 对接 latestCompletedNode。
+    """
+    safe: list[dict[str, str | None]] = []
+    for row in rows:
+        clean: dict[str, str | None] = {}
+        for key, value in row.items():
+            key_text = str(key)
+            if key_text.lower() in SOR_SENSITIVE_KEYS:
+                continue
+            if key_text == "processInstanceStatus":
+                status_name = (
+                    value.get("name") if isinstance(value, Mapping) else value
+                )
+                clean[key_text] = flatten_sor_value(status_name)
+            elif key_text == "carTypeProject":
+                clean[key_text] = flatten_sor_value(
+                    value,
+                    preferred_keys=("projectNo", "projectName"),
+                )
+            elif key_text == "currentAssigneeNameList":
+                clean[key_text] = flatten_sor_value(
+                    value,
+                    preferred_keys=("name", "userName", "keyed_name"),
+                )
+            elif key_text == "startUser":
+                # 申请人及嵌套部门/科室解包
+                if isinstance(value, Mapping):
+                    true_name = (
+                        value.get("trueName")
+                        or value.get("name")
+                        or value.get("userName")
+                    )
+                    clean["startUser"] = flatten_sor_value(true_name)
+                    clean["startUserName"] = clean["startUser"]
+                    dept_info = value.get("deptInfo")
+                    if isinstance(dept_info, Mapping):
+                        sec_name = dept_info.get("name")
+                        if sec_name and not clean.get("sectionName"):
+                            clean["sectionName"] = flatten_sor_value(sec_name)
+                        parent_dept = dept_info.get("parentDept")
+                        if isinstance(parent_dept, Mapping):
+                            dept_name = parent_dept.get("name")
+                            if dept_name and not clean.get("deptName"):
+                                clean["deptName"] = flatten_sor_value(dept_name)
+                else:
+                    user_val = flatten_sor_value(value)
+                    clean["startUser"] = user_val
+                    clean["startUserName"] = user_val
+            else:
+                clean[key_text] = flatten_sor_value(value)
+
+        # 1. 零件成对聚合（F6c）：保持 409 行工作流单标量契约
+        part_list = row.get("sorPartList")
+        if isinstance(part_list, Sequence) and not isinstance(part_list, (str, bytes, bytearray)):
+            seen_pairs: set[tuple[str | None, str | None]] = set()
+            part_nos: list[str] = []
+            part_names: list[str] = []
+            for item in part_list:
+                if isinstance(item, Mapping):
+                    raw_no = item.get("partNo")
+                    raw_name = item.get("partName")
+                    no_str = flatten_sor_value(raw_no)
+                    name_str = flatten_sor_value(raw_name)
+                    pair = (no_str, name_str)
+                    if pair not in seen_pairs:
+                        seen_pairs.add(pair)
+                        if no_str:
+                            part_nos.append(no_str)
+                        if name_str:
+                            part_names.append(name_str)
+            if part_nos and not clean.get("sorPartNo"):
+                clean["sorPartNo"] = "、".join(part_nos)
+            if part_names and not clean.get("sorPartName"):
+                clean["sorPartName"] = "、".join(part_names)
+
+        # 2. 最新完成节点对接：sorProcessStatus -> latestCompletedNode
+        proc_status = row.get("sorProcessStatus")
+        if proc_status is not None:
+            proc_status_str = flatten_sor_value(proc_status)
+            if proc_status_str:
+                clean["sorProcessStatus"] = proc_status_str
+                if not clean.get("latestCompletedNode"):
+                    clean["latestCompletedNode"] = proc_status_str
+
+        safe.append(clean)
+    return safe
 
 
 def _safe_api_code(value: Any) -> int | None:

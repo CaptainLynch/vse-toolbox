@@ -112,6 +112,9 @@
 
   async function refresh() {
     if (polling) return;
+    // 向导（映射取证 + 首次同步）进行中：长请求期间不再叠加状态轮询，
+    // 状态面板保持上一次结果即可。见 app.js 的 __vseWizardBusy。
+    if (active && window.__vseWizardBusy === true) return;
     polling = true;
     try {
       const response = await nativeFetch('/api/diagnostics', { cache: 'no-store' });

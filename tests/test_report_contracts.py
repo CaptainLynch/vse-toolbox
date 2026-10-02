@@ -472,3 +472,18 @@ def test_tdc_sor_table_payload_uses_production_column_order() -> None:
     ]]
     assert result["mappingComplete"] is True
     assert result["unmappedColumns"] == []
+
+
+def test_tdc_sor_applicant_maps_measured_production_key() -> None:
+    """申请人列：生产列表接口给它的是 startUser（2026-09-28 现场取证），
+    契约里的 startUserName 在该接口上不存在；实测键优先、旧键回退。"""
+    from core.report_contracts import table_payload
+
+    measured = table_payload("tdc_sor", [{"processNo": "S-1", "startUser": "张三"}])
+    assert measured["rows"][0][8] == "张三"
+
+    legacy = table_payload("tdc_sor", [{"processNo": "S-1", "startUserName": "李四"}])
+    assert legacy["rows"][0][8] == "李四"
+
+    both = table_payload("tdc_sor", [{"processNo": "S-1", "startUser": "张三", "startUserName": "李四"}])
+    assert both["rows"][0][8] == "张三"

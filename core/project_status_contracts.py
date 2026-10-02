@@ -449,7 +449,7 @@ DELIVERABLE_DEFAULT_MAPPINGS: dict[str, dict[str, object]] = {
 
 DELIVERABLE_FIELD_ALIASES: dict[str, dict[str, tuple[str, ...]]] = {
     "VPI-T2-D2": {
-        "owner": ("startUserName", "applicant", "申请人", "owner", "_owner"),
+        "owner": ("startUser", "startUserName", "applicant", "申请人", "owner", "_owner"),
         "note": ("latestCompletedNode", "processInstanceStatus", "approvalStatus", "最新完成节点", "审批状态", "title", "标题"),
     },
     "VPI-T2-D3": {
@@ -660,13 +660,13 @@ PROJECT_STATUS_SOURCE_CAPABILITIES: dict[str, dict[str, object]] = {
             {"name": "headers", "label": "认证请求头（如 Cookie；仅用于本次抓取，不保存）", "type": "textarea", "placeholder": "Cookie: sid=..."},
         ),
     },
-    # D6-D8：ARAS 独立状态同步交付物（PAA 报告 / NCR 审批进度 / NCR 审批明细）。
+    # D6-D8：ARAS 独立状态同步交付物（PAA流程 / NCR 审批进度 / NCR 审批明细）。
     # 全面对齐 EWO/SOR/数模轻量向导同步模式（syncCapable=True，进同步调度与向导配置）；
     # 同步时全自动更新底层表单快照；仅作展示参考，不计入阶段完成统计分母（countsTowardCompletion=False）。
     "VPI-T2-D6": {
         "sourceType": "aras",
         "reportType": "paa",
-        "displayName": "PAA 报告",
+        "displayName": "PAA流程",
         "syncCapable": True,
         "manualOnly": False,
         "completenessPolicy": "paged_result",
@@ -714,9 +714,12 @@ PROJECT_STATUS_SOURCE_CAPABILITIES: dict[str, dict[str, object]] = {
         "completenessPolicy": "workbook_admission",
         "defaultDepartment": None,
         "supportsRecordSet": False,
+        # NCR 报表没有部门维度：绑定部门不参与查询与收窄（生产实锤 2026-09-26，
+        # 见 docs/PLAN_20260926_NCR_EXPORT_EVIDENCE_PAA_CLOSE_ROLLUP_MATCH.md F1b），
+        # 因此 department/rspDepartment 不在查询键内；seccode 只接受真实科室代码。
         "filterKeys": (
             "ncrNo", "projectModel", "projectNames", "sectionCode",
-            "section_code", "department", "rspDepartment", "changeType",
+            "section_code", "changeType",
         ),
         "aggregate": True,
         "formSnapshotDriven": True,
@@ -751,9 +754,10 @@ PROJECT_STATUS_SOURCE_CAPABILITIES: dict[str, dict[str, object]] = {
         "completenessPolicy": "workbook_admission",
         "defaultDepartment": None,
         "supportsRecordSet": False,
+        # 同 D7：NCR 无部门维度，绑定部门不是查询键（F1b，2026-09-26）。
         "filterKeys": (
             "ncrNo", "projectModel", "projectNames", "sectionCode",
-            "section_code", "department", "rspDepartment", "changeType",
+            "section_code", "changeType",
         ),
         "aggregate": True,
         "formSnapshotDriven": True,

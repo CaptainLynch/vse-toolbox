@@ -14,6 +14,7 @@ from services.aras_ncr_workbook import (
     NcrWorkbookRow,
 )
 from services.pagination_integrity import WorkbookBookkeeping
+from services.project_status_connectors import _exclude_tdc_scope_rows
 from services.tdc_crawler import TDCCrawlerError
 from services.project_status_connectors import (
     ArasProjectStatusConnector,
@@ -105,6 +106,156 @@ def test_tdc_connector_archives_and_returns_normalized_candidate(tmp_path: Path)
     assert snapshot.candidates[0].field_values == {"owner": "审批人"}
     assert {item["artifact_type"] for item in snapshot.artifacts} == {"xlsx", "csv", "json"}
     assert all((tmp_path / item["relative_path"]).is_file() for item in snapshot.artifacts)
+
+
+def test_tdc_connector_collect_tolerates_archive_export_failure(tmp_path: Path):
+    class ExportFailingTDC(FakeTDC):
+        def export_data_model(self, filters):
+            raise RuntimeError("TDC 导出服务瞬时不可用 (503)")
+
+    archive = ArchiveStore({"default": tmp_path}, reserve_bytes=0)
+    connector = TDCProjectStatusConnector(
+        MemoryCredentialProvider({"ref": ("user", "pass")}), archive,
+        auth_factory=FakeAuth, crawler_factory=ExportFailingTDC,
+    )
+    snapshot = connector.collect(context())
+    assert snapshot.match_state == "matched"
+    assert snapshot.candidates[0].field_values == {"owner": "审批人"}
+    # 归档导出虽然失败，但快照数据（CSV、JSON）依然完整落盘
+    assert {item["artifact_type"] for item in snapshot.artifacts} == {"csv", "json"}
+    assert all((tmp_path / item["relative_path"]).is_file() for item in snapshot.artifacts)
+
+
+def test_tdc_sor_collect_flattens_application_rows_and_keeps_raw_json(tmp_path: Path):
+    """SOR 同步链路的行形状边界（2026-09-26 生产缺陷）。
+
+    analysis_rows 与 CSV 用规范化行（嵌套对象取标量文本，审批状态只取 name），
+    归档 JSON 保留原始行作原始取证；原始输入行不得被原地改写。
+    """
+    import json as json_module
+
+    raw_rows = [
+        {
+            "processNo": "SOR202609090006",
+            "carTypeProject": {
+                "id": "67440f9e", "projectNo": "F610S", "projectName": "F610S",
+                "sorEnabled": True,
+            },
+            "sorNo": "SGMW-F610S-SOR0153",
+            "deptName": "车体工程",
+            "sectionName": "外饰科",
+            "processInstanceStatus": {"value": 4, "name": "已完成", "valueStr": "4"},
+            "currentAssigneeNameList": [{"name": "张三"}, {"name": "李四"}],
+        },
+        {
+            "processNo": "SOR-NOSTATUS",
+            "processInstanceStatus": {"value": 2, "valueStr": "2"},
+        },
+    ]
+
+    class SorTDC(FakeTDC):
+        def crawl_sor_all(self, filters, max_records):
+            return SimpleNamespace(rows=raw_rows, complete=True, stop_reason="reported_pages")
+
+        def export_sor(self, filters):
+            path = self.output_dir / "official-sor.xlsx"
+            path.write_bytes(b"PK\x03\x04fake")
+            return SimpleNamespace(path=path, file_name="official-sor.xlsx", byte_count=8)
+
+    archive = ArchiveStore({"default": tmp_path}, reserve_bytes=0)
+    connector = TDCProjectStatusConnector(
+        MemoryCredentialProvider({"ref": ("user", "pass")}), archive,
+        auth_factory=FakeAuth, crawler_factory=SorTDC,
+    )
+    ctx = SyncBindingContext(
+        binding_id=9, deliverable_id="VPI-T2-D2", phase_id="VPI-T2",
+        source_type="tdc", external_key="SOR202609090006",
+        match_rule={"reportType": "sor"},
+        mapping={"owner": "currentAssigneeNameList"}, cursor={},
+        expected_deliverable_updated_at="v1", run_id=11, credential_ref="ref",
+    )
+    snapshot = connector.collect(ctx)
+
+    # 应用行（analysis_rows）：嵌套对象 → 标量文本；状态只取 name。
+    assert snapshot.analysis_rows[0]["carTypeProject"] == "F610S"
+    assert snapshot.analysis_rows[0]["processInstanceStatus"] == "已完成"
+    assert snapshot.analysis_rows[0]["currentAssigneeNameList"] == "张三、李四"
+    # name 缺失时留空，不得用 valueStr/value 推断完成语义。
+    assert snapshot.analysis_rows[1]["processInstanceStatus"] is None
+    # 原始输入行未被原地改写。
+    assert isinstance(raw_rows[0]["carTypeProject"], dict)
+    assert isinstance(raw_rows[0]["processInstanceStatus"], dict)
+
+    by_type = {item["artifact_type"]: item for item in snapshot.artifacts}
+    csv_text = (tmp_path / by_type["csv"]["relative_path"]).read_text(encoding="utf-8-sig")
+    assert "F610S" in csv_text and "已完成" in csv_text
+    assert "'projectNo'" not in csv_text
+    json_payload = json_module.loads(
+        (tmp_path / by_type["json"]["relative_path"]).read_text(encoding="utf-8")
+    )
+    # 归档 JSON 保留原始行（嵌套结构 = 原始取证职责）。
+    assert isinstance(json_payload[0]["carTypeProject"], dict)
+    assert json_payload[0]["processInstanceStatus"]["name"] == "已完成"
+
+
+def test_tdc_sor_collect_produces_f6c_aggregated_analysis_rows(tmp_path: Path):
+    """验证 collect 产出的 analysis_rows 正确包含 F6c 零件聚合与 startUser 解包字段。"""
+    raw_packet = [
+        {
+            "processNo": "SOR202609280008",
+            "sorNo": "SGMW-E262S-SOR0002",
+            "version": "A",
+            "title": "上安装板装饰盖",
+            "startTime": "2026-09-28 10:00:00",
+            "carTypeProject": {"projectNo": "E262S", "projectName": "E262S"},
+            "processInstanceStatus": {"value": 2, "name": "审批中"},
+            "sorPartList": [
+                {"partNo": "27246864", "partName": "上安装板装饰组件"},
+                {"partNo": "27246868", "partName": "上安装板左装饰盖"},
+            ],
+            "sorPartNo": None,
+            "sorProcessStatus": "三审通过",
+            "startUser": {
+                "trueName": "韦大方",
+                "deptInfo": {
+                    "name": "外饰科",
+                    "parentDept": {"name": "车体工程"},
+                },
+            },
+        }
+    ]
+
+    class RealSorTDC(FakeTDC):
+        def crawl_sor_all(self, filters, max_records):
+            return SimpleNamespace(rows=raw_packet, complete=True, stop_reason="reported_pages")
+
+        def export_sor(self, filters):
+            path = self.output_dir / "official-sor.xlsx"
+            path.write_bytes(b"PK\x03\x04fake")
+            return SimpleNamespace(path=path, file_name="official-sor.xlsx", byte_count=8)
+
+    archive = ArchiveStore({"default": tmp_path}, reserve_bytes=0)
+    connector = TDCProjectStatusConnector(
+        MemoryCredentialProvider({"ref": ("user", "pass")}), archive,
+        auth_factory=FakeAuth, crawler_factory=RealSorTDC,
+    )
+    ctx = SyncBindingContext(
+        binding_id=10, deliverable_id="VPI-T2-D2", phase_id="VPI-T2",
+        source_type="tdc", external_key="SOR202609280008",
+        match_rule={"reportType": "sor"},
+        mapping={"owner": "startUser"}, cursor={},
+        expected_deliverable_updated_at="v1", run_id=12, credential_ref="ref",
+    )
+    snapshot = connector.collect(ctx)
+    row = snapshot.analysis_rows[0]
+    assert row["sorPartNo"] == "27246864、27246868"
+    assert row["sorPartName"] == "上安装板装饰组件、上安装板左装饰盖"
+    assert row["startUser"] == "韦大方"
+    assert row["sectionName"] == "外饰科"
+    assert row["deptName"] == "车体工程"
+    assert row["latestCompletedNode"] == "三审通过"
+    # mapping owner 命中 startUser
+    assert snapshot.candidates[0].field_values == {"owner": "韦大方"}
 
 
 def test_tdc_zero_match_needs_attention_without_guess(tmp_path: Path):
@@ -702,16 +853,28 @@ def test_paa_report_page_has_complete_and_stop_reason():
     _require_complete_result(completed_page)
 
 
-def test_ncr_filters_extracts_department_as_section_code():
-    """_ncr_filters 正确提取 department 作为 section_code。"""
+def test_ncr_filters_never_sends_department_as_section_code():
+    """_ncr_filters 只接受白名单科室代码；绑定部门绝不进入 seccode。
+
+    生产实锤（2026-09-26）：部门名兜底进 seccode 会让 NCR 服务端导出方法
+    生成不了文件（NCR 域只有科室、没有部门），清空部门即恢复正常。
+    科室代码走白名单解析器（大小写不敏感、规范化为大写；空 = 不限科室）。
+    """
     rule_with_dept = {"projectModel": "F610S", "department": "技术中心_车体工程"}
     filters = ArasProjectStatusConnector._ncr_filters(rule_with_dept)
-    assert filters.section_code == "技术中心_车体工程"
+    assert filters.section_code is None
+    assert filters.section_codes == ()
     assert filters.project_names == ["F610S"]
 
-    rule_with_sec = {"projectModel": "F610S", "sectionCode": "SEC-01", "department": "技术中心_车体工程"}
+    rule_with_sec = {"projectModel": "F610S", "sectionCode": "be, INT", "department": "技术中心_车体工程"}
     filters2 = ArasProjectStatusConnector._ncr_filters(rule_with_sec)
-    assert filters2.section_code == "SEC-01"
+    assert filters2.section_code is None
+    assert filters2.section_codes == ("BE", "INT")
+
+    with pytest.raises(ValueError, match="合法代码"):
+        ArasProjectStatusConnector._ncr_filters(
+            {"projectModel": "F610S", "sectionCode": "结构工程科"}
+        )
 
 
 def test_ncr_collect_rows_fails_closed_when_workbook_admission_fails(
@@ -755,13 +918,16 @@ def test_ncr_collect_rows_fails_closed_when_workbook_admission_fails(
         )
 
 
-def test_ncr_collect_rows_filters_department_in_memory(monkeypatch, tmp_path):
-    """_collect_ncr_rows 在内存中依据 rule 中的部门进行过滤。
+def test_ncr_collect_rows_ignores_binding_department_keeps_section_code_narrowing(
+    monkeypatch, tmp_path
+):
+    """绑定部门不参与 NCR 内存收窄（生产实锤：报表无部门维度，部门收窄只会整单清空）；
+    真实科室代码（sectionCode，白名单解析）仍会收窄并经诊断渠道披露丢弃数。
 
     行形状为「按已批准表头标签命名」的字典：与归档路径同形，
-    部门过滤读取命名行的 区域/采购科室 等标签。
+    收窄读取命名行的 区域/采购科室 等标签（带前缀值包含代码即命中）。
     """
-    sections = ["车体工程科", "底盘工程科", "技术中心_车体工程", "", "技术中心", "工程"]
+    sections = ["BE 结构工程科", "BI 车体科", "BE", "底盘工程科", "", "INT 内饰科"]
     parsed_rows = tuple(
         NcrWorkbookRow(
             values=(),
@@ -798,7 +964,6 @@ def test_ncr_collect_rows_filters_department_in_memory(monkeypatch, tmp_path):
             return dummy_file
 
     crawler = FakeCrawler()
-    rule = {"projectModel": "F610S", "department": "技术中心_车体工程"}
     events: list[tuple[str, object, str]] = []
     monkeypatch.setattr(
         "services.project_status_connectors.emit",
@@ -806,32 +971,274 @@ def test_ncr_collect_rows_filters_department_in_memory(monkeypatch, tmp_path):
             (kind, data, name)
         ),
     )
-    rows = ArasProjectStatusConnector._collect_ncr_rows(crawler, "ncr_progress", rule)
 
-    # 应该仅匹配车体工程科和技术中心_车体工程，排除底盘、空科室、泛化上级/字词
-    assert len(rows) == 2
+    # 部门绑定：不再收窄，全部行保留、无丢弃事件（与用户验证通过的空部门形态一致）。
+    rows = ArasProjectStatusConnector._collect_ncr_rows(
+        crawler, "ncr_progress", {"projectModel": "F610S", "department": "技术中心_车体工程"}
+    )
+    assert len(rows) == 6
+    assert events == []
     # 写入侧形状：命名行必须同时携带契约顺序的位置视图（重复表头标签时是权威值来源）。
     assert all(isinstance(row["values"], list) for row in rows)
     assert all("NCR编号" in row for row in rows)
-    ncrs = [r["NCR编号"] for r in rows]
-    assert "NCR-001" in ncrs
-    assert "NCR-003" in ncrs
-    assert "NCR-002" not in ncrs
-    # 丢弃数经诊断渠道披露，且载荷键必须落在录制白名单内（否则录制产物里 data 为空）。
+
+    # 白名单科室代码（BE）：仍收窄并披露丢弃数（区域值含代码即命中）。
+    rows_sec = ArasProjectStatusConnector._collect_ncr_rows(
+        crawler, "ncr_progress", {"projectModel": "F610S", "sectionCode": "BE"}
+    )
+    assert len(rows_sec) == 2
     assert [event[0] for event in events] == ["ncr_department_filter"]
     assert events[0][1] == {"kept_count": 2, "dropped_count": 4}
+    assert "NCR-001" in [r["NCR编号"] for r in rows_sec]
+    assert "NCR-003" in [r["NCR编号"] for r in rows_sec]
+    assert "NCR-002" not in [r["NCR编号"] for r in rows_sec]
+
+    # 非白名单科室代码：fail-closed（与保存/探测共用同一解析器）。
+    with pytest.raises(ValueError, match="合法代码"):
+        ArasProjectStatusConnector._collect_ncr_rows(
+            crawler, "ncr_progress", {"projectModel": "F610S", "sectionCode": "结构工程科"}
+        )
 
     # 丢弃行数必须可核对（该过滤发生在工作簿准入门之后，准入簿记覆盖不到它）。
     from services.project_status_connectors import _filter_ncr_rows_by_department
 
     kept, dropped = _filter_ncr_rows_by_department(
-        [row.named_row() for row in parsed_rows], "技术中心_车体工程"
+        [row.named_row() for row in parsed_rows], "BE"
     )
     assert len(kept) == 2 and dropped == 4
     all_rows, no_drop = _filter_ncr_rows_by_department(
         [row.named_row() for row in parsed_rows], None
     )
     assert len(all_rows) == 6 and no_drop == 0
-    assert "NCR-004" not in ncrs
-    assert "NCR-005" not in ncrs
-    assert "NCR-006" not in ncrs
+
+
+def test_exclude_tdc_scope_rows_drops_proven_text_statuses() -> None:
+    """R7-G2：SOR 按候选键序（processInstanceStatus/approvalStatus/审批状态）
+    取首个非空状态值，归一后已废弃/已撤回剔除（含未扁平化嵌套对象防御分支）。"""
+    rows = [
+        {"processInstanceStatus": "已完成"},
+        {"processInstanceStatus": "已废弃"},
+        {"processInstanceStatus": "已撤回"},
+        {"processInstanceStatus": "审批中"},
+        {"processInstanceStatus": {"name": "已撤回", "value": 6}},  # 未扁平化的防御分支
+        {"approvalStatus": "已撤回"},  # 候选键回退（历史/异构行形状）
+    ]
+    kept, dropped = _exclude_tdc_scope_rows("sor", rows)
+    assert dropped == 4
+    assert [row["processInstanceStatus"] for row in kept] == ["已完成", "审批中"]
+
+
+def test_exclude_tdc_scope_rows_keeps_data_model_numeric_codes() -> None:
+    """R7-G2 现状钉住：数模数字码不剔除——"2"/"4" 归一为审批中/已完成，
+    "3"/"6" 未映射透传；映射升级（B 案）裁决前不得误剔。"""
+    rows = [{"status": code} for code in ("2", "4", "3", "6")]
+    kept, dropped = _exclude_tdc_scope_rows("data_model", rows)
+    assert dropped == 0
+    assert len(kept) == 4
+    # 归档官方工作簿文本列（"状态"）按同一剔除集生效；文本 "2" 同样不剔。
+    kept_text, dropped_text = _exclude_tdc_scope_rows(
+        "data_model", [{"状态": "已废弃"}, {"状态": "审批中"}, {"状态": "2"}]
+    )
+    assert dropped_text == 1
+    assert [row["状态"] for row in kept_text] == ["审批中", "2"]
+
+
+def test_exclude_tdc_scope_rows_ignores_other_reports() -> None:
+    rows = [{"status": "已废弃"}]
+    kept, dropped = _exclude_tdc_scope_rows("ewo", rows)
+    assert dropped == 0
+    assert len(kept) == 1
+
+
+def test_status_distribution_counts_pre_exclusion_and_flags_unknown_codes(tmp_path):
+    """F4（顾问终审）：直方图采集点在范围剔除之前，且未知码触发监测事件。
+
+    数模 3/6 映射升级后这些行会被剔除——若在剔除后才统计，直方图将永远
+    看不到它们的分布。本测试锁定：对包含"会被剔除的文本行"的原始行集，
+    直方图仍按原始行计数；已知码之外的码触发 tdc_status_unknown_codes。
+    """
+    from core.diagnostic_recording import Recorder, recording_scope
+    from services.project_status_connectors import _emit_tdc_status_distribution
+
+    rows = [
+        {"status": "2"},
+        {"status": "4"},
+        {"status": "已废弃"},  # 文本行（会被剔除口径排除），直方图仍计数
+        {"status": "7"},       # 未知码 → 监测事件
+    ]
+    recorder = Recorder(tmp_path)
+    identity = recorder.start()["id"]
+    with recording_scope(recorder):
+        _emit_tdc_status_distribution(rows)
+    import json as _json
+    import zipfile as _zipfile
+    import io as _io
+    with _zipfile.ZipFile(_io.BytesIO(recorder.export(identity))) as bundle:
+        events = [
+            _json.loads(line)
+            for line in bundle.read("events.jsonl").splitlines()
+        ]
+    dist = {
+        event["data"].get("tdc_status_code"): event["data"].get("status_count")
+        for event in events
+        if event["kind"] == "tdc_status_distribution"
+    }
+    # 已知数字码直读；「已废弃」文本不在闭集词表内被指纹化（计数仍可读）。
+    assert dist["2"] == 1 and dist["4"] == 1 and dist["7"] == 1
+    assert len(dist) == 4 and sum(dist.values()) == 4
+    unknown = [e["data"] for e in events if e["kind"] == "tdc_status_unknown_codes"]
+    assert len(unknown) == 1 and unknown[0]["unknown_count"] == 1
+
+
+def test_tdc_sor_collect_excludes_scope_rows_and_keeps_raw_json(tmp_path: Path):
+    """R7-G2：SOR 同步剔除已废弃/已撤回行——应用行/CSV 用保留集，归档 JSON
+    仍为未剔除的原始行；tdc_scope_exclusion 事件经 safe_metadata 投影可读。"""
+    import io as _io
+    import json as json_module
+    import zipfile as _zipfile
+
+    from core.diagnostic_recording import Recorder, recording_scope
+
+    raw_rows = [
+        {
+            "processNo": "SOR-KEEP-1",
+            "processInstanceStatus": {"value": 4, "name": "已完成", "valueStr": "4"},
+        },
+        {
+            "processNo": "SOR-KEEP-2",
+            "processInstanceStatus": {"value": 2, "name": "审批中", "valueStr": "2"},
+        },
+        {
+            "processNo": "SOR-DROP-1",
+            "processInstanceStatus": {"value": 3, "name": "已废弃", "valueStr": "3"},
+        },
+        {
+            "processNo": "SOR-DROP-2",
+            "processInstanceStatus": {"value": 6, "name": "已撤回", "valueStr": "6"},
+        },
+    ]
+
+    class SorTDC(FakeTDC):
+        def crawl_sor_all(self, filters, max_records):
+            return SimpleNamespace(rows=raw_rows, complete=True, stop_reason="reported_pages")
+
+        def export_sor(self, filters):
+            path = self.output_dir / "official-sor.xlsx"
+            path.write_bytes(b"PK\x03\x04fake")
+            return SimpleNamespace(path=path, file_name="official-sor.xlsx", byte_count=8)
+
+    archive = ArchiveStore({"default": tmp_path}, reserve_bytes=0)
+    connector = TDCProjectStatusConnector(
+        MemoryCredentialProvider({"ref": ("user", "pass")}), archive,
+        auth_factory=FakeAuth, crawler_factory=SorTDC,
+    )
+    ctx = SyncBindingContext(
+        binding_id=15, deliverable_id="VPI-T2-D2", phase_id="VPI-T2",
+        source_type="tdc", external_key="SOR-KEEP-1",
+        match_rule={"reportType": "sor"},
+        mapping={"owner": "processNo"}, cursor={},
+        expected_deliverable_updated_at="v1", run_id=15, credential_ref="ref",
+    )
+    recorder = Recorder(tmp_path / "diag")
+    identity = recorder.start()["id"]
+    with recording_scope(recorder):
+        snapshot = connector.collect(ctx)
+
+    # 应用行/快照只含保留行；绑定匹配在保留行上成立。
+    assert [row["processNo"] for row in snapshot.analysis_rows] == ["SOR-KEEP-1", "SOR-KEEP-2"]
+    assert snapshot.match_state == "matched"
+    assert snapshot.candidates[0].external_key == "SOR-KEEP-1"
+
+    by_type = {item["artifact_type"]: item for item in snapshot.artifacts}
+    csv_text = (tmp_path / by_type["csv"]["relative_path"]).read_text(encoding="utf-8-sig")
+    assert "SOR-KEEP-1" in csv_text and "SOR-DROP-1" not in csv_text
+    json_payload = json_module.loads(
+        (tmp_path / by_type["json"]["relative_path"]).read_text(encoding="utf-8")
+    )
+    # 归档 JSON 仍为未剔除的原始行（原始取证职责不变）。
+    assert sorted(row["processNo"] for row in json_payload) == [
+        "SOR-DROP-1", "SOR-DROP-2", "SOR-KEEP-1", "SOR-KEEP-2",
+    ]
+
+    # 事件经 safe_metadata 投影后 data 可读（键在白名单、值在闭集词表）。
+    with _zipfile.ZipFile(_io.BytesIO(recorder.export(identity))) as bundle:
+        events = [
+            json_module.loads(line)
+            for line in bundle.read("events.jsonl").splitlines()
+        ]
+    exclusion = [event["data"] for event in events if event["kind"] == "tdc_scope_exclusion"]
+    assert len(exclusion) == 1
+    assert exclusion[0] == {"report_type": "sor", "kept_count": 2, "dropped_count": 2}
+
+
+def test_aras_paa_collect_excludes_cancel_rows_and_keeps_raw_json(tmp_path: Path):
+    """R7-G2：PAA 同步剔除 CANCEL 行（trim+upper 变体一律命中）——CSV/快照用
+    保留集，归档 JSON 仍为原始行；aras_scope_exclusion 事件投影可读。"""
+    import io as _io
+    import json as json_module
+    import zipfile as _zipfile
+
+    from core.diagnostic_recording import Recorder, recording_scope
+
+    raw_rows = [
+        {"_no": "PAA-DROP-1", "state": "CANCEL"},
+        {"_no": "PAA-DROP-2", "state": "cancel "},
+        {"_no": "PAA-DROP-3", "current_state__name": " Cancel "},
+        {"_no": "PAA-KEEP-1", "state": "DRAFT1"},
+        {"_no": "PAA-KEEP-2", "state": "CLOSE"},
+        {"_no": "PAA-KEEP-3", "state": None},
+    ]
+
+    class PaaAras:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def crawl_paa_report_all(self, filters, max_records):
+            return SimpleNamespace(
+                rows=raw_rows, complete=True, stop_reason="short_page"
+            )
+
+    archive = ArchiveStore({"default": tmp_path}, reserve_bytes=0)
+    connector = ArasProjectStatusConnector(
+        MemoryCredentialProvider({"ref": ("user", "pass")}), archive,
+        auth_factory=FakeAuth, crawler_factory=PaaAras,
+    )
+    ctx = SyncBindingContext(
+        binding_id=16, deliverable_id="VPI-T2-D6", phase_id="VPI-T2",
+        source_type="aras", external_key="PAA-KEEP-1",
+        match_rule={"reportType": "paa"},
+        mapping={"owner": "_no"}, cursor={},
+        expected_deliverable_updated_at="v1", run_id=16, credential_ref="ref",
+    )
+    recorder = Recorder(tmp_path / "diag")
+    identity = recorder.start()["id"]
+    with recording_scope(recorder):
+        snapshot = connector.collect(ctx)
+
+    # 应用行/快照只含保留行（空状态行不误剔）。
+    assert [row["_no"] for row in snapshot.analysis_rows] == [
+        "PAA-KEEP-1", "PAA-KEEP-2", "PAA-KEEP-3",
+    ]
+    assert snapshot.match_state == "matched"
+    assert snapshot.candidates[0].external_key == "PAA-KEEP-1"
+    assert snapshot.candidates[0].field_values == {"owner": "PAA-KEEP-1"}
+
+    by_type = {item["artifact_type"]: item for item in snapshot.artifacts}
+    csv_text = (tmp_path / by_type["csv"]["relative_path"]).read_text(encoding="utf-8-sig")
+    assert "PAA-KEEP-1" in csv_text and "PAA-DROP-1" not in csv_text
+    json_payload = json_module.loads(
+        (tmp_path / by_type["json"]["relative_path"]).read_text(encoding="utf-8")
+    )
+    # 归档 JSON 仍为未剔除的原始行（镜像 TDC 契约）。
+    assert len(json_payload) == 6
+    assert any(row["_no"] == "PAA-DROP-1" for row in json_payload)
+
+    # 事件经 safe_metadata 投影后 data 可读。
+    with _zipfile.ZipFile(_io.BytesIO(recorder.export(identity))) as bundle:
+        events = [
+            json_module.loads(line)
+            for line in bundle.read("events.jsonl").splitlines()
+        ]
+    exclusion = [event["data"] for event in events if event["kind"] == "aras_scope_exclusion"]
+    assert len(exclusion) == 1
+    assert exclusion[0] == {"report_type": "paa", "kept_count": 3, "dropped_count": 3}
