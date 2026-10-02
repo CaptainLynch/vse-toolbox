@@ -135,6 +135,8 @@ ROLE_OVERRIDES = {
     "host/updates.py": "Signed .vsepkg verification, staging, activation and rollback",
     "core/form_registry.py": "Deliverable form definitions (single source for legacy form dicts)",
     "plugins/deliverable_forms/backend.py": "deliverable-forms plugin: read-only form snapshot rows",
+    "plugins/sign_daily/backend.py": "sign-daily plugin: 3D单签署日报 routes, config and daily baselines",
+    "plugins/sign_daily/report.py": "3D单签署日报 metrics, owed-by-section and email rendering (pure)",
     "main.py": "Rich CLI adapter, menu routing and legacy operations",
     "webui.py": "WebUI source/frozen launcher",
     "excel_worker_entry.py": "Frozen Excel Worker launcher",
@@ -338,6 +340,7 @@ def _manual_sections() -> str:
         | 插件宿主/新功能插件 | `host/registry.py` | `host/plugin.py`, `host/context.py`, `tools/new_plugin.py`, `docs/PLUGIN_REFACTOR_PLAN_20261001.md` | `tests/test_plugin_host.py` |
         | 插件前端 Shell/UI Kit | `web/static/host/shell.js` | `web/static/host/kit.js`, `web/static/host/pages.js`, `web/static/host/api.js` | `tests/test_host_frontend.py` |
         | 交付物表单插件/表单定义 | `core/form_registry.py` | `plugins/deliverable_forms/backend.py`, `services/deliverable_form_analysis.py` | `tests/test_plugin_deliverable_forms.py` |
+        | 3D单签署日报插件 | `plugins/sign_daily/report.py` | `plugins/sign_daily/backend.py`, `plugins/sign_daily/static/report.js` | `tests/test_plugin_sign_daily.py` |
         | Web/API/UI | `web/app.py` | `web/static/host/shell.js`, `web/templates/dashboard.html` | `tests/*web*.py` |
         | Aras EWO/PAA/NCR | `web/app.py` | `services/aras_auth.py`, `services/aras_crawler.py`, `services/aras_export.py` | `tests/*aras*.py` |
         | TDC/SOR/数模/A 面 | `web/app.py` | `services/tdc_auth.py`, `services/tdc_crawler.py`, `services/tdc_export_cache.py` | `tests/*tdc*.py` |
