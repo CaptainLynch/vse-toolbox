@@ -6,6 +6,8 @@
 // readiness, save, update history).
 import { html, useEffect, useRef, useState } from "/static/host/vendor/preact-htm.js";
 import { apiRequest, enc } from "./api.js";
+import { newWizardSessionId, postMappingDiscovery } from "./discovery.js";
+import { SearchMultiSelect } from "./multi-select.js";
 import { deliverableSyncDisplay, syncResultText } from "./display.js";
 import { redactSensitiveText, safeDisplayValue } from "./format.js";
 import {
@@ -30,6 +32,7 @@ import {
   ewoPolicyErrorMessage,
   ewoPolicyString,
   mappingText,
+  stabilityGateFailureMessage,
   stabilityText,
   wizardInitialValues,
   wizardKind,
@@ -40,6 +43,20 @@ import {
   wizardPrimaryMatchField,
   wizardRetryWithoutDepartment,
 } from "./policy-logic.js";
+
+// 终态文案待显示槽按交付物限定：向导可能在用户离开本交付物后才结束；若不限定
+// 交付物，切到另一交付物时会把上一张卡的提示串到这一张。面板卸载后写入、
+// 面板重新挂载时取走（取走即清除）。
+const pendingPolicyStatus = new Map();
+export function setPendingPolicyStatus(deliverableId, text, error = false) {
+  pendingPolicyStatus.set(String(deliverableId || ""), { text: String(text || ""), error: error === true });
+}
+export function takePendingPolicyStatus(deliverableId) {
+  const key = String(deliverableId || "");
+  const pending = pendingPolicyStatus.get(key) || null;
+  pendingPolicyStatus.delete(key);
+  return pending;
+}
 
 const policyPath = (id) => `/api/project-status/deliverables/${enc(id)}/update-policy`;
 const discoveryPath = (id) => `/api/project-status/deliverables/${enc(id)}/mapping-discovery`;
@@ -79,7 +96,13 @@ function SyncSummaryCard({ item, policy, capabilities, settings, advancedOpen, o
     const model = rule.projectCode || rule.modelInfo || rule.carTypeProject || rule.projectModel;
     const dept = rule.rspDepartment || rule.department;
     if (model) facts.push(["车型项目", safeDisplayValue(model)]);
-    if (dept) facts.push(["责任部门", safeDisplayValue(dept)]);
+    if (kind.isNcr) {
+      // NCR 无部门维度：摘要卡展示科室范围声明（归集口径的预设多选）。
+      const scopeList = Array.isArray(rule.sectionScope) ? rule.sectionScope : [];
+      if (scopeList.length) facts.push(["科室", safeDisplayValue(scopeList.join("、"))]);
+    } else if (dept) {
+      facts.push(["责任部门", safeDisplayValue(dept)]);
+    }
     if (rule.status) facts.push(["状态", safeDisplayValue(rule.status)]);
     facts.push(["同步周期", `每 ${current.intervalMinutes || 15} 分钟`]);
   }
@@ -102,20 +125,27 @@ function SyncSummaryCard({ item, policy, capabilities, settings, advancedOpen, o
       return;
     }
     setRunning(true);
+    // 整段向导（取证 + 存策略 + 首次同步）可能持续 1–2 分钟：期间让诊断轮询让路，
+    // 避免每秒级的 /api/diagnostics 请求与长请求争抢。
+    window.__vseWizardBusy = true;
     try {
       const plan = buildWizardDiscovery(values, capabilities);
-      say("正在抓取映射证据（第 1/2 次）...");
-      let result = (await apiRequest(discoveryPath(item.id), { method: "POST", body: plan.payload })) || {};
+      // 同一次启用内的多次取证共享会话：服务端据此复用第 1 次的全量抓取并做第 2 次轻量核验。
+      plan.payload.wizardSessionId = newWizardSessionId();
+      // 统一域会话下该请求会转后台任务（202），postMappingDiscovery 内部轮询至完成；
+      // 密码/Cookie 模式仍同步执行。两次取证独立契约不变。
+      say("正在抓取映射证据（第 1/2 次，统一域会话下后台执行）...");
+      let result = (await postMappingDiscovery(item.id, plan.payload)) || {};
       if (result.state === "ambiguous" && !plan.aggregate) {
         say("候选不唯一，请选择一次目标记录。");
         const selected = await pickCandidate(result.candidates);
         setCandidates(null);
         plan.payload.selectedExternalKey = selected;
-        result = (await apiRequest(discoveryPath(item.id), { method: "POST", body: plan.payload })) || {};
+        result = (await postMappingDiscovery(item.id, plan.payload)) || {};
       }
       if (result.state !== "matched" && plan.kind.isTdc && plan.deptVal) {
         say("指定部门未匹配，正在尝试不限部门自动重试...");
-        const retry = (await apiRequest(discoveryPath(item.id), { method: "POST", body: wizardRetryWithoutDepartment(plan.payload) })) || {};
+        const retry = (await postMappingDiscovery(item.id, wizardRetryWithoutDepartment(plan.payload))) || {};
         if (retry && (retry.state === "matched" || (retry.state === "ambiguous" && !plan.aggregate))) {
           result = retry;
           dropDepartment(plan);
@@ -125,10 +155,10 @@ function SyncSummaryCard({ item, policy, capabilities, settings, advancedOpen, o
       let confirmed = Number(result.stability && result.stability.confirmed);
       if (!Number.isFinite(confirmed) || confirmed < 2) {
         say("正在验证映射稳定性（第 2/2 次）...");
-        result = (await apiRequest(discoveryPath(item.id), { method: "POST", body: plan.payload })) || {};
+        result = (await postMappingDiscovery(item.id, { ...plan.payload, stabilityCheck: true })) || {};
         confirmed = Number(result.stability && result.stability.confirmed);
         if (result.state !== "matched" || !Number.isFinite(confirmed) || confirmed < 2) {
-          throw new Error("映射稳定性未就绪（需连续两次一致的脱敏证据），请稍后重试。");
+          throw new Error(stabilityGateFailureMessage(result));
         }
       }
       const mappingResult = wizardMapping(plan, capabilities, result);
@@ -137,12 +167,16 @@ function SyncSummaryCard({ item, policy, capabilities, settings, advancedOpen, o
       say("配置已启用，正在触发首次同步...");
       const syncData = await apiRequest(`/api/project-status/deliverables/${enc(item.id)}/sync-now`, { method: "POST" });
       say(`配置并启用成功！${syncResultText(syncData)}`);
-      setRunning(false);
       await onReloadOverview();
     } catch (err) {
       setCandidates(null);
-      say(`配置启用失败：${redactSensitiveText(ewoPolicyErrorMessage(err))}`, true);
+      // 上游暂时不可用（服务端已重试耗尽）→ 直接用服务端文案（含"请稍后重试"与
+      // request_id）；其余失败仍是配置启用失败。
+      const detail = redactSensitiveText(ewoPolicyErrorMessage(err));
+      say(err && err.retryable ? detail : `配置启用失败：${detail}`, true);
+    } finally {
       setRunning(false);
+      window.__vseWizardBusy = false;
     }
   };
 
@@ -160,6 +194,8 @@ function SyncSummaryCard({ item, policy, capabilities, settings, advancedOpen, o
     }
   };
 
+  // 科室预设与看板「科室归集规则」目标同源（sourceInfo.sectionScopePresets 下发）。
+  const presetTargets = Array.isArray(capabilities && capabilities.sectionScopePresets) ? capabilities.sectionScopePresets : [];
   const declaredHint = POLICY_SYNC_HINTS[syncDisplay.state];
   const numberText = kind.isEwo ? "EWO 编号（选填，留空则整车聚合）"
     : kind.isPaa ? "PAA 编号（选填，留空则整车聚合）"
@@ -212,17 +248,32 @@ function SyncSummaryCard({ item, policy, capabilities, settings, advancedOpen, o
             <span>车型项目 / 车型信息</span>
             <input type="text" maxlength="200" placeholder="例如 F610S 或 N300（整车项目聚合）" value=${values.model} onInput=${set("model")} />
           </label>
-          <label class="policy-ewo-field policy-wizard-field">
-            <span>责任部门</span>
-            <input type="text" maxlength="200" value=${values.department} onInput=${set("department")}
-              placeholder=${kind.isTdc ? "TDC 部门（如 车体工程，支持留空）" : `默认：${values.defaultDept}`} />
-            <small class="policy-field-note">${kind.isTdc
-              ? "TDC 部门（如“车体工程”），支持留空查询全量数据。请勿填写 Aras 形式“技术中心_车体工程”。"
-              : `默认筛选“${values.defaultDept}”，支持按需修改。`}</small>
-          </label>
-          ${kind.isDataModel && html`<label class="policy-ewo-field policy-wizard-field">
-            <span>状态（选填）</span>
-            <input type="text" maxlength="200" placeholder="选填，如：审批中、已完成，留空查询全部" value=${values.status} onInput=${set("status")} />
+          ${kind.isNcr
+    ? html`<label class="policy-ewo-field policy-wizard-field">
+              <span>科室（选填，可多选）</span>
+              <${SearchMultiSelect}
+                ariaLabel="科室"
+                placeholder=${presetTargets.length ? "选填，留空=不限科室" : "选填"}
+                options=${presetTargets.map((value) => String(value))}
+                values=${values.sections}
+                onChange=${(next) => setValues((prev) => ({ ...prev, sections: next }))}
+              />
+              <small class="policy-field-note">科室维度按预设归集统计，其他科室值计入「未归集」；历史科室名可在看板下方「科室归集规则」登记。选择随配置保存，便于核对同步范围。</small>
+            </label>`
+    : html`<label class="policy-ewo-field policy-wizard-field">
+              <span>责任部门</span>
+              <input type="text" maxlength="200" value=${values.department} onInput=${set("department")}
+                placeholder=${kind.isTdc ? "TDC 部门（如 车体工程，支持留空）" : `默认：${values.defaultDept}`} />
+              <small class="policy-field-note">${kind.isTdc
+    ? "TDC 部门（如“车体工程”），支持留空查询全量数据。请勿填写 Aras 形式“技术中心_车体工程”。"
+    : `默认筛选“${values.defaultDept}”，支持按需修改。`}</small>
+            </label>`}
+          ${(kind.isDataModel || kind.isSor) && html`<label class="policy-ewo-field policy-wizard-field">
+            <span>${kind.isDataModel ? "状态（选填，实验性）" : "状态（选填）"}</span>
+            <input type="text" maxlength="200" placeholder="选填，如：审批中、已完成，留空查询全部" value=${values.status} onInput=${set("status")}
+              title=${kind.isDataModel
+    ? "实验性：该值直接传给 TDC 状态筛选参数，上游对其取值格式未经验证；已废弃/已撤回的剔除由同步范围规则自动完成，不依赖本字段。"
+    : "该值作为 TDC SOR 状态筛选；已废弃/已撤回的行会先按同步范围规则自动剔除，剔除优先于本筛选（所选状态统计不含这些行）。"} />
           </label>`}
           <label class="policy-ewo-field policy-wizard-field">
             <span>定时自动同步周期</span>
@@ -317,7 +368,7 @@ function BindingEditor({ item, policy, capabilities, settings, discovery: initia
     setDiscovering(true);
     setDiscoveryStatus({ text: "正在抓取脱敏映射证据...", tone: "busy" });
     try {
-      const result = (await apiRequest(discoveryPath(item.id), { method: "POST", body: evidencePayload })) || {};
+      const result = (await postMappingDiscovery(item.id, evidencePayload)) || {};
       setDiscovery((prev) => ({
         ...prev,
         stability: result.stability || prev.stability,
@@ -517,9 +568,19 @@ export function PolicyPanel({ item, version, onPolicyLoaded, onEvidenceRefresh, 
   const capabilities = item.sourceInfo && typeof item.sourceInfo === "object" ? item.sourceInfo : null;
   const [state, setState] = useState({ loading: true, policy: null, settings: null, discovery: null, error: "", seq: 0 });
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [wizardStatus, setWizardStatus] = useState({ text: "", error: false });
+  const [wizardStatus, setWizardStatus] = useState(() => takePendingPolicyStatus(item.id) || { text: "", error: false });
   const [notice, setNotice] = useState(null);
   const seq = useRef(0);
+  // 向导可能在用户离开本交付物后才结束：面板卸载后的提示写入按交付物限定的待显示槽，
+  // 由该交付物的下一次挂载取走；挂载期间直接更新状态（卡片重建不影响，状态在本层）。
+  const mounted = useRef(true);
+  const deliverableId = useRef(item.id);
+  deliverableId.current = item.id;
+  useEffect(() => () => { mounted.current = false; }, []);
+  const publishStatus = useRef((next) => {
+    if (mounted.current) setWizardStatus(next);
+    else setPendingPolicyStatus(deliverableId.current, next && next.text, next && next.error);
+  }).current;
 
   useEffect(() => {
     if (!capabilities || !capabilities.syncCapable) return undefined;
@@ -575,7 +636,7 @@ export function PolicyPanel({ item, version, onPolicyLoaded, onEvidenceRefresh, 
       onSyncNow=${() => apiRequest(`/api/project-status/deliverables/${enc(item.id)}/sync-now`, { method: "POST" })}
       onReloadOverview=${onReloadOverview}
       status=${wizardStatus}
-      setStatus=${setWizardStatus}
+      setStatus=${publishStatus}
     />
     <details class="policy-advanced-settings" open=${advancedOpen} ontoggle=${(e) => setAdvancedOpen(e.currentTarget.open)}>
       <summary class="policy-advanced-summary">

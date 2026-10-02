@@ -35,6 +35,10 @@ export function requestError(body, status) {
     diagnosticPath: error && typeof error.diagnosticPath === "string" ? error.diagnosticPath : "",
     diagnostic: error && error.diagnostic && typeof error.diagnostic === "object" ? error.diagnostic : null,
     data: body && body.data !== undefined ? body.data : null,
+    // 上游暂时不可用（服务端有界重试后仍是 5xx/429）：提示"可稍后重试"，
+    // 不能用"配置启用失败"这种把瞬时故障说成配置问题的措辞。
+    retryable: Boolean(error && error.diagnostic && error.diagnostic.retryable === true)
+      || Boolean(error && error.retryable === true),
   });
 }
 

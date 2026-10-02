@@ -113,6 +113,30 @@ export function ewoPolicyErrorMessage(error) {
   return facts ? `${msg}${facts}` : msg;
 }
 
+/**
+ * F10 稳定性核验失败的具体原因（后端 mismatch：只含原因枚举与计数，无单号）。
+ */
+export function stabilityGateFailureMessage(result) {
+  const mismatch = result && typeof result === "object" ? result.mismatch : null;
+  if (mismatch && typeof mismatch === "object") {
+    const expected = Number(mismatch.expected);
+    const actual = Number(mismatch.actual);
+    if (mismatch.reason === "total_mismatch" && Number.isFinite(expected) && Number.isFinite(actual)) {
+      return `映射稳定性核验未通过：上游记录数在两次核验间变化（${expected}→${actual}），请稍后重试。`;
+    }
+    if (mismatch.reason === "sample_not_in_baseline") {
+      return "映射稳定性核验未通过：第 1 页样本与首次取证基线不一致（上游数据可能已变化），请稍后重试。";
+    }
+    if (mismatch.reason === "fields_mismatch") {
+      return "映射稳定性核验未通过：字段结构在两次核验间变化，请稍后重试。";
+    }
+    if (mismatch.reason === "legacy_baseline") {
+      return "映射稳定性核验未通过：历史证据格式不兼容，请重新开始配置以重新取证。";
+    }
+  }
+  return "映射稳定性未就绪（需连续两次一致的脱敏证据），请稍后重试。";
+}
+
 export function stabilityText(stability) {
   return stability && Number.isFinite(Number(stability.confirmed))
     ? `${Math.min(Math.max(Number(stability.confirmed), 0), 2)}/2`
@@ -195,7 +219,10 @@ export function wizardInitialValues(policy, capabilities, vaultConfigured) {
     credential,
     model: ewoPolicyString(rule.projectCode || rule.modelInfo || rule.carTypeProject || rule.projectModel || ""),
     department: ewoPolicyString(rule.rspDepartment || rule.department || defaultDept),
-    status: rule.status ? ewoPolicyString(rule.status) : "",
+    // 数模存 matchRule.status；SOR 存 matchRule.approvalStatus（TDC SOR 状态筛选）。
+    status: ewoPolicyString(kind.isSor ? rule.approvalStatus : rule.status),
+    // NCR 无部门维度：科室为归集口径预设多选，随绑定保存为 matchRule.sectionScope。
+    sections: Array.isArray(rule.sectionScope) ? rule.sectionScope.map((value) => String(value)) : [],
     interval: String((policy && policy.intervalMinutes) || 15),
     number: ewoPolicyString(rule.ewoNo || rule.processNo || rule.incident || rule.paaNo || rule.ncrNo || ""),
     defaultDept,
@@ -238,6 +265,9 @@ export function buildWizardDiscovery(values, capabilities) {
   } else if (kind.isSor) {
     set("carTypeProject", "car_type_project", modelVal);
     set("department", "department", deptVal);
+    // SOR 状态筛选：approvalStatus 存绑定，approval_status 进取证请求
+    // （后端 _MAPPING_DISCOVERY_RULE_FIELDS 映射回 approvalStatus）。
+    set("approvalStatus", "approval_status", ewoPolicyString(values.status));
     set("processNo", "serial_number", specificNo);
   } else if (kind.isDataModel) {
     set("projectModel", "project_model", modelVal);
@@ -250,7 +280,10 @@ export function buildWizardDiscovery(values, capabilities) {
     set("paaNo", "serial_number", specificNo);
   } else if (kind.isNcr) {
     set("projectModel", "project_model", modelVal);
-    set("department", "department", deptVal);
+    // NCR 无部门维度：绑定部门不是查询键，科室只作为归集口径的范围声明保存
+    // （不发送 seccode——科室名→导出代码映射契约未确立）。
+    const sectionScope = Array.isArray(values.sections) ? values.sections.map((value) => String(value)).filter(Boolean) : [];
+    if (sectionScope.length) matchRule.sectionScope = sectionScope;
     set("ncrNo", "serial_number", specificNo);
   } else if (primary) {
     filters[primary.filterName] = specificNo || modelVal;
