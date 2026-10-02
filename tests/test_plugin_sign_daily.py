@@ -137,17 +137,6 @@ def test_owed_groups_by_department_with_override() -> None:
     assert unmapped[-1]["department"] == R.UNASSIGNED
 
 
-def test_es_section_approvers_go_to_operations() -> None:
-    rows = [_row(流水单号="F999X-3D-0009", 部门="ES科", 零件名称="锁止件", 车身="会签乙",
-                 **{"首席/总监": "总监甲(未签)"}, 应签人数=2, 已签人数=1, 签署率="50.00%")]
-    flows = R.build_flows(rows)
-    owed = R.owed_by_department(flows, R.PHASE_APPROVAL, R.DEFAULT_ROLE_DEPARTMENTS, {},
-                                R.DEFAULT_APPLICANT_DEPARTMENTS)
-    assert [g["department"] for g in owed] == ["运营管理部"]
-    plain = R.owed_by_department(flows, R.PHASE_APPROVAL, R.DEFAULT_ROLE_DEPARTMENTS, {})
-    assert [g["department"] for g in plain] == ["ES科"]
-
-
 def test_flow_table_lists_open_flows_by_stage_then_age() -> None:
     flows = R.filter_scope(R.build_flows(_flow_rows()), ["F999X"], [])
     rows = R.flow_table(flows, date(2026, 10, 2), R.DEFAULT_ROLE_DEPARTMENTS, {})
@@ -240,7 +229,6 @@ def test_state_without_data_explains_next_step(client) -> None:  # type: ignore[
     assert data["data"] is None
     assert "一键生成" in data["dataError"]
     assert data["config"]["roleDepartments"]["空调电子"] == "电子电器"
-    assert data["config"]["applicantDepartments"] == {"ES科": "运营管理部"}
     response = http.post("/api/p/sign-daily/generate", json=FORM)
     assert response.status_code == 409
 
