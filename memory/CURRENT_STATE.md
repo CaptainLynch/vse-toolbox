@@ -12,7 +12,10 @@
   `services/form_search.py`（多值搜索 + `terms` 过滤键）、project-overview 路由 form-terms/watchlist/sync-settings、
   明细页搜索与关注清单面板、明细列表「同步设置」列、全量同步确认、零启用警示；绑定设置改动写 scheduled_archive_config_audit。
 - **两轮审计**：第一轮自审修 2 处、第三步自审修 2 处；第二轮整分支审计 10 条全部修复并补回归测试（见审计文档 §10）。
-- **门禁**：签署日报与 §9 相关测试全部通过；全量见本节下方最新一次运行记录；浏览器测试（Playwright）覆盖日报页与明细页。
+- **门禁**：全量 `pytest tests`：2850 passed / 6 failed（4 个是既有 Windows 专属：agent_supervisor relay、excel_worker
+  source command、tdc_probe_standalone ×2；另 2 个是本分支引入——deliverable.css 新规则未加作用域、前端 API 根路径常量
+  被路径检查当成路由——已修复，`test_plugin_project_overview_deliverable.py` + 浏览器套件复跑 95 passed）。
+  浏览器测试（Playwright）覆盖日报页与交付物明细页；改动文件 flake8 零告警；项目地图 verified。
 - **待用户（只能由人完成）**：F610M/F610S 导出回归（验收 21）；粘贴到飞书邮件实测（验收 20）；合成在途样例三件套；
   飞书邮箱/新版 Outlook 打开 .eml 实测；第一期真实日报发出前人工对照 TDC 复核；签名打包 `.vsepkg`（插件）与宿主 onedir
   （宿主有改动：services/、core/repos、web/app.py 一处查询键）。

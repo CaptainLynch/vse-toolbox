@@ -3,14 +3,16 @@ import { html, useEffect, useState } from "/static/host/vendor/preact-htm.js";
 import { apiRequest, enc, plainErrorMessage } from "./api.js";
 import { itemStateText, scopeLabel, termSummaryText, TERMS_PLACEHOLDER } from "./watchlist-logic.js";
 
-const API = "/api/p/project-overview";
+const WATCHLIST_PATH = "/api/p/project-overview/watchlist";
+const TERMS_PATH = "/api/p/project-overview/form-terms";
+const WATCHLIST_CSV_PATH = "/api/p/project-overview/watchlist.csv";
 
 export async function loadWatchlist() {
-  return apiRequest(`${API}/watchlist`);
+  return apiRequest(WATCHLIST_PATH);
 }
 
 async function changeWatchlist(body) {
-  return apiRequest(`${API}/watchlist`, { method: "POST", body });
+  return apiRequest(WATCHLIST_PATH, { method: "POST", body });
 }
 
 /** S2、S5：多值搜索框；占位符一输入就消失，所以下方常驻同一句说明。 */
@@ -32,7 +34,7 @@ export function TermsSummary({ terms, onWatchlistChanged }) {
     setSummary(null);
     setMessage("");
     if (!terms) return undefined;
-    apiRequest(`${API}/form-terms?terms=${enc(terms)}`)
+    apiRequest(`${TERMS_PATH}?terms=${enc(terms)}`)
       .then((data) => { if (alive) setSummary(data); })
       .catch((err) => { if (alive) setMessage(plainErrorMessage(err, "搜索摘要读取失败")); });
     return () => { alive = false; };
@@ -85,7 +87,7 @@ export function WatchlistPanel({ watchlist, onChanged }) {
           onChange=${() => run({ action: "scope", scope: "all" })} />同步全部表单</label>
         <label><input type="radio" name="watch-scope" checked=${watchlist.scope === "watchlist"} disabled=${busy}
           onChange=${() => run({ action: "scope", scope: "watchlist" })} />仅同步关注清单</label>
-        <a class="btn is-secondary" href=${`${API}/watchlist.csv`} download="watchlist.csv">导出 CSV</a>
+        <a class="btn is-secondary" href=${WATCHLIST_CSV_PATH} download="watchlist.csv">导出 CSV</a>
         <button type="button" class="btn is-secondary" disabled=${busy || !watchlist.count}
           onClick=${() => { if (window.confirm("清空关注清单？")) run({ action: "clear" }); }}>清空</button>
       </div>
