@@ -1,7 +1,7 @@
 // 签署日报「设置」：花名册、长周期规则与词表、长周期结论、未在册人员区域、区域显示名、通讯录与阈值（规格 §7、§8）。
 import { html, useEffect, useState } from "/static/host/vendor/preact-htm.js";
 import {
-  decodeCsv, formatPairs, formatSynonyms, lines, parsePairs, parseSynonyms,
+  bytesToBase64, decodeCsv, formatPairs, formatSynonyms, lines, parsePairs, parseSynonyms,
 } from "./report-logic.js";
 
 const TABS = [
@@ -31,7 +31,7 @@ function useAsync() {
 
 /** 导入（选文件、校验、差异预览、确认、单事务提交并备份）、导出、备份恢复、恢复内置种子（M5–M7）。 */
 function ImportExport({ api, dataset, view, onView, onChanged }) {
-  const [csv, setCsv] = useState("");
+  const [source, setSource] = useState(null); // {csv} 或 {xlsx}
   const [fileName, setFileName] = useState("");
   const [replace, setReplace] = useState(false);
   const [skip, setSkip] = useState(false);
@@ -40,22 +40,26 @@ function ImportExport({ api, dataset, view, onView, onChanged }) {
   const pick = async (event) => {
     const file = event.currentTarget.files && event.currentTarget.files[0];
     if (!file) return;
-    if (!/\.csv$/i.test(file.name)) {
-      op.setMessage("请选择 CSV 文件；xlsx 请先另存为 CSV（UTF-8 或 GBK 都可以）");
+    const buffer = await file.arrayBuffer();
+    if (/\.xlsx$/i.test(file.name)) {
+      setSource({ xlsx: bytesToBase64(new Uint8Array(buffer)) });
+    } else if (/\.csv$/i.test(file.name)) {
+      setSource({ csv: decodeCsv(buffer) });
+    } else {
+      op.setMessage("请选择 CSV 或 xlsx 文件");
       return;
     }
     setFileName(file.name);
-    setCsv(decodeCsv(await file.arrayBuffer()));
     setPlan(null);
   };
   const preview = () => op.run(async () => {
-    const data = await api.post(`settings/${dataset}/import`, { csv, replace, commit: false });
+    const data = await api.post(`settings/${dataset}/import`, { ...source, replace, commit: false });
     setPlan(data.plan);
   });
   const commit = () => op.run(async () => {
-    const data = await api.post(`settings/${dataset}/import`, { csv, replace, commit: true, skipErrors: skip });
+    const data = await api.post(`settings/${dataset}/import`, { ...source, replace, commit: true, skipErrors: skip });
     setPlan(null);
-    setCsv("");
+    setSource(null);
     setFileName("");
     onView(data.view);
     onChanged();
@@ -69,11 +73,11 @@ function ImportExport({ api, dataset, view, onView, onChanged }) {
   return html`<section class="sd-import">
     <h5>导入、导出与备份</h5>
     <div class="sd-actions">
-      <label class="vk-btn">选择 CSV<input type="file" accept=".csv,text/csv" hidden onChange=${pick} /></label>
+      <label class="vk-btn">选择 CSV / xlsx<input type="file" accept=".csv,.xlsx,text/csv" hidden onChange=${pick} /></label>
       <span class="vk-muted">${fileName}</span>
       <label><input type="radio" checked=${!replace} onChange=${() => setReplace(false)} />合并更新</label>
       <label><input type="radio" checked=${replace} onChange=${() => setReplace(true)} />整体覆盖（种子层停用）</label>
-      <button type="button" class="vk-btn" disabled=${op.busy || !csv} onClick=${preview}>校验并预览差异</button>
+      <button type="button" class="vk-btn" disabled=${op.busy || !source} onClick=${preview}>校验并预览差异</button>
       <a class="vk-btn" href=${api.url(`settings/${dataset}.csv`)} download=${`${dataset}.csv`}>导出 CSV</a>
       <button type="button" class="vk-btn" disabled=${op.busy} onClick=${reset}>恢复内置种子</button>
     </div>

@@ -24,8 +24,12 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
+import tempfile
 from datetime import date
+from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import quote
 
@@ -33,6 +37,7 @@ from flask import Response, request
 
 from services import data_model_watchlist as W
 from services.deliverable_form_analysis import form_definition
+from services.xlsx_preview import XLSXPreviewError, read_xlsx_preview
 
 from . import mail as M
 from . import rules as V
@@ -42,6 +47,8 @@ from . import settings as SET
 _TEXT_LIMIT = 20000
 _LIST_LIMIT = 2000
 _CSV_LIMIT = 2 * 1024 * 1024
+_XLSX_LIMIT = 5 * 1024 * 1024
+_IMPORT_MAX_ROWS = 5000
 #: 数据日期换算用的时区；None 取本机时区（测试里固定）。
 _DATA_TZ = None
 
@@ -282,6 +289,27 @@ def preferences_for(config: Mapping[str, Any], key: str) -> dict[str, str]:
 
 
 # ── 数据 ────────────────────────────────────────────────────────────
+
+
+def import_rows(value: Mapping[str, Any]) -> str | list[list[Any]]:
+    """导入来源：CSV 原文，或 base64 的 xlsx（宿主自带的无依赖读取器，只读第一个工作表，§7）。"""
+    if value.get("xlsx") is not None:
+        raw = _str(value.get("xlsx"), "xlsx", _XLSX_LIMIT * 4 // 3 + 4)
+        try:
+            data = base64.b64decode(raw.split(",", 1)[1] if raw.startswith("data:") else raw, validate=True)
+        except (binascii.Error, ValueError):
+            raise _Invalid("xlsx 文件不是有效的 base64") from None
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "import.xlsx"
+            path.write_bytes(data)
+            try:
+                preview = read_xlsx_preview(path, max_rows=_IMPORT_MAX_ROWS + 1, max_columns=20)
+            except XLSXPreviewError:
+                raise _Invalid("读不了这个 xlsx，请另存为 CSV 再导入") from None
+        if preview.truncated:
+            raise _Invalid(f"文件超过 {_IMPORT_MAX_ROWS} 行，请拆分后导入")
+        return [list(row) for row in preview.rows]
+    return _str(value.get("csv"), "CSV", _CSV_LIMIT)
 
 
 def _headers(latest: Mapping[str, Any]) -> list[str]:
@@ -657,14 +685,14 @@ def register(host):
         if dataset == "vocabulary":
             raise _Invalid("词表不支持 CSV 导入")
         value = body() if isinstance(body(), Mapping) else {}
-        text = _str(value.get("csv"), "CSV", _CSV_LIMIT)
+        source = import_rows(value)
         replace, commit, skip = value.get("replace", False), value.get("commit", False), value.get("skipErrors", False)
         if not all(isinstance(flag, bool) for flag in (replace, commit, skip)):
             raise _Invalid("导入选项必须是布尔值")
         if dataset == "roster":
-            plan = settings.roster_import_plan(text, replace)
+            plan = settings.roster_import_plan(source, replace)
         else:
-            plan = settings.rules_import_plan(text, replace, SET.to_vocabulary(settings.vocabulary()))
+            plan = settings.rules_import_plan(source, replace, SET.to_vocabulary(settings.vocabulary()))
         preview = {k: v for k, v in plan.items() if k != "entries"}
         preview["counts"] = {k: len(plan[k]) for k in ("added", "changed", "removed", "conflicts", "errors")}
         if not commit:

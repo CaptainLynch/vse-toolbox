@@ -105,7 +105,7 @@ def test_discarded_dropped_unknown_status_flagged():  # P6
 
 
 def test_unsigned_mark_count_checked_against_field():  # P7
-    result = R.build_flows([_row("S1", 冲压="张三(未签)、李四(未签)", 未签人数=1)])
+    result = R.build_flows([_row("S1", 冲压="张三(未签)、李四(未签)", 未签人数=1, 待审批人员="张三、李四")])
     assert [a["kind"] for a in result.anomalies] == ["unsignedCountDiffer"]
 
 
@@ -447,3 +447,10 @@ def test_generated_rule_ids_do_not_collide_with_explicit_ones():
     parsed = R.parse_long_cycle_table(table)
     assert [rule.rule_id for rule in parsed["rules"]] == ["LC02", "LC01"]
     assert parsed["errors"] == [{"line": 4, "text": "规则编号「LC01」重复"}]
+
+
+def test_pending_empty_is_reported():  # §8：会签列有未签但待审批人员为空
+    result = R.build_flows([_row("S1", 冲压="冲压丁(未签)", 待审批人员="")])
+    assert any(a["kind"] == "pendingEmpty" for a in result.anomalies)
+    row = R.flow_rows(result.flows, DATA_DATE, ROSTER)[0]
+    assert row["stage"] == R.STAGE_COUNTERSIGN and R.todo_text(row).startswith("—")

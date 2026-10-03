@@ -373,3 +373,44 @@ def test_config_validation_and_refresh_scope(client) -> None:  # type: ignore[no
     app.extensions["scheduled_archive_admin"] = _FakeArchive({"exitCode": 0, "results": [{"outcome": "completed"}]})
     conflict = http.post(f"{API}/refresh", json={"watchlistOnly": False})
     assert conflict.status_code == 409 and "仅关注清单" in conflict.get_json()["error"]["message"]
+
+
+def _xlsx(rows: list[list[str]]) -> bytes:
+    import io
+    from xml.sax.saxutils import escape
+    from zipfile import ZipFile
+
+    def ref(col: int, row: int) -> str:
+        return f"{chr(64 + col)}{row}"
+
+    body = "".join(
+        f'<row r="{r}">' + "".join(
+            f'<c r="{ref(c, r)}" t="inlineStr"><is><t>{escape(v)}</t></is></c>' for c, v in enumerate(values, 1)
+        ) + "</row>"
+        for r, values in enumerate(rows, 1)
+    )
+    buffer = io.BytesIO()
+    with ZipFile(buffer, "w") as archive:
+        archive.writestr("xl/workbook.xml", (
+            '<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/'
+            '2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>'
+            '<sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>'))
+        archive.writestr("xl/_rels/workbook.xml.rels", (
+            '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/'
+            '2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/'
+            'relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>'))
+        archive.writestr("xl/worksheets/sheet1.xml", (
+            '<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/'
+            f'2006/main"><sheetData>{body}</sheetData></worksheet>'))
+    return buffer.getvalue()
+
+
+def test_roster_import_accepts_xlsx(client) -> None:  # type: ignore[no-untyped-def]  # §7：宿主自带 xlsx 读取
+    _, http, _, _ = client
+    data = _xlsx([["责任工程师名称", "责任工程师专业科室"], ["新人甲(x1)", "车身科"], ["新人甲(x2)", "车身科"]])
+    payload = {"xlsx": base64.b64encode(data).decode(), "commit": True}
+    result = _ok(http.post(f"{API}/settings/roster/import", json=payload))
+    assert result["plan"]["counts"]["added"] == 1 and result["plan"]["merged"] == 1
+    assert any(r["name"] == "新人甲" and r["source"] == "本地新增" for r in result["view"]["rows"])
+    bad = http.post(f"{API}/settings/roster/import", json={"xlsx": base64.b64encode(b"not a zip").decode()})
+    assert bad.status_code == 400 and "另存为 CSV" in bad.get_json()["error"]["message"]

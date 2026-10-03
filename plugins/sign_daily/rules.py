@@ -288,6 +288,9 @@ def build_flows(rows: Iterable[Mapping[str, Any]]) -> ParseResult:
             continue
         if flow.status != STATUS_DONE and flow.status not in KNOWN_IN_FLIGHT_STATUSES:
             anomalies.append({"serial": flow.serial, "kind": "unknownStatus", "text": f"没见过的状态「{flow.status}」，按在途处理"})
+        if flow.in_flight and flow.unsigned(PHASE_COUNTERSIGN) and not flow.pending:
+            anomalies.append({"serial": flow.serial, "kind": "pendingEmpty",
+                              "text": "会签列有未签但待审批人员为空，当前待办人显示「—」"})
         marks = len(flow.unsigned()) + sum(1 for signed in flow.add_sign.values() if not signed)
         if marks != flow.unsigned_count:
             anomalies.append({

@@ -336,8 +336,9 @@ class SettingsStore:
         with self.db.get_connection() as conn:
             conn.execute(f"DELETE FROM {self.roster_table} WHERE name = ?", (name,))
 
-    def roster_import_plan(self, text: str, replace: bool) -> dict[str, Any]:
-        parsed = V.parse_roster_table(read_csv_text(text))
+    def roster_import_plan(self, source: str | Sequence[Sequence[Any]], replace: bool) -> dict[str, Any]:
+        """source 是 CSV 原文，或已读出的表格行（xlsx）。"""
+        parsed = V.parse_roster_table(read_csv_text(source) if isinstance(source, str) else source)
         current = {name: department for name, department in self.roster()}
         incoming = {e["name"]: e["department"] for e in parsed["entries"]}
         added = [{"name": n, "department": d} for n, d in incoming.items() if n not in current]
@@ -438,8 +439,9 @@ class SettingsStore:
             number += 1
         return f"LC{number:02d}"
 
-    def rules_import_plan(self, text: str, replace: bool, vocab: V.Vocabulary) -> dict[str, Any]:
-        parsed = parse_rule_table(read_csv_text(text), vocab)
+    def rules_import_plan(self, source: str | Sequence[Sequence[Any]], replace: bool,
+                          vocab: V.Vocabulary) -> dict[str, Any]:
+        parsed = parse_rule_table(read_csv_text(source) if isinstance(source, str) else source, vocab)
         current = {row["id"]: row for row in self.rule_rows() if row["source"] != SOURCE_DELETED}
         by_name = {row["name"]: rule_id for rule_id, row in current.items()}
         used = set(current) | set(self.seed_rules)
