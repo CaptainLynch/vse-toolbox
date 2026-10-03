@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 
+import csv
 import importlib.util
+import io
 import sys
 from datetime import date
 from decimal import Decimal
@@ -247,59 +249,59 @@ def test_table_sort_stage_then_long_cycle_then_days():  # 验收 19
 # ── §4 长周期 ───────────────────────────────────────────────────────
 
 VOCAB = R.Vocabulary()
-RULES = [
-    R.build_rule(rule_id, name, remark, VOCAB)
-    for rule_id, name, remark in [
-        ("R1", "发动机罩内板", ""),
-        ("R2", "尾门外板", ""),
-        ("R3", "前门内板", ""),
-        ("R4", "前蒙皮总成", ""),
-        ("R5", "副仪表板总成", ""),
-        ("R6", "前地板", "非加强板、横梁"),
-        ("R7", "后地板", "非加强板、横梁"),
-        ("R8", "翼子板", "非加强板"),
-        ("R9", "后侧围内板", "非加强板"),
-        ("R10", "顶盖", ""),
-        ("R11", "仪表板", ""),
-        ("R12", "前照灯总成", ""),
-        ("R13", "B柱下饰板", ""),
-        ("R14", "前门外板", ""),
-        ("R15", "后侧围饰板", ""),
-    ]
-]
+SEEDS = PLUGIN_DIR / "seeds"
+
+
+def _csv(path: Path) -> list[list[str]]:
+    return list(csv.reader(io.StringIO(R.decode_csv(path.read_bytes()))))
+
+
+RULES = R.parse_long_cycle_table(_csv(SEEDS / "long_cycle.csv"), VOCAB)["rules"]
 
 
 @pytest.mark.parametrize("name, expected, rule", [
-    # §4 正反例表（验收 11）
-    ("发罩内板", R.RESULT_HIT, "R1"),
-    ("机盖内板", R.RESULT_HIT, "R1"),
-    ("尾门上外板", R.RESULT_HIT, "R2"),
-    ("尾门下外板", R.RESULT_HIT, "R2"),
-    ("尾门外板上部", R.RESULT_HIT, "R2"),
-    ("左前门内板", R.RESULT_HIT, "R3"),
-    ("前门内板总成(LH)", R.RESULT_HIT, "R3"),
-    ("前保险杠蒙皮总成", R.RESULT_HIT, "R4"),
-    ("中控台总成", R.RESULT_HIT, "R5"),
-    ("前地板横梁", R.RESULT_EXCLUDED, "R6"),
-    ("后地板横梁总成", R.RESULT_EXCLUDED, "R7"),
-    ("翼子板加强板", R.RESULT_EXCLUDED, "R8"),
-    ("后侧围内板加强板", R.RESULT_EXCLUDED, "R9"),
-    ("前地板加强板", R.RESULT_EXCLUDED, "R6"),
+    # §4 正反例表（验收 11），规则取随包种子 seeds/long_cycle.csv
+    ("发罩内板", R.RESULT_HIT, "LC12"),
+    ("机盖内板", R.RESULT_HIT, "LC12"),
+    ("尾门上外板", R.RESULT_HIT, "LC11"),
+    ("尾门下外板", R.RESULT_HIT, "LC11"),
+    ("尾门外板上部", R.RESULT_HIT, "LC11"),
+    ("左前门内板", R.RESULT_HIT, "LC01"),
+    ("前门内板总成(LH)", R.RESULT_HIT, "LC01"),
+    ("前保险杠蒙皮总成", R.RESULT_HIT, "LC26"),
+    ("中控台总成", R.RESULT_HIT, "LC30"),
+    ("前地板横梁", R.RESULT_EXCLUDED, "LC15"),
+    ("后地板横梁总成", R.RESULT_EXCLUDED, "LC16"),
+    ("翼子板加强板", R.RESULT_EXCLUDED, "LC14"),
+    ("后侧围内板加强板", R.RESULT_EXCLUDED, "LC06"),
+    ("前地板加强板", R.RESULT_EXCLUDED, "LC15"),
     ("翼子板支架", R.RESULT_EXCLUDED, ""),
     ("前照灯支架", R.RESULT_EXCLUDED, ""),
     ("顶盖饰条", R.RESULT_EXCLUDED, ""),
     ("仪表板线束", R.RESULT_EXCLUDED, ""),
-    ("前门内板加强板", R.RESULT_SUSPECT, "R3"),
-    ("顶盖横梁", R.RESULT_SUSPECT, "R10"),
-    ("仪表板横梁", R.RESULT_SUSPECT, "R11"),
-    ("翼子板安装板", R.RESULT_SUSPECT, "R8"),
-    ("前蒙皮总成（含支架）", R.RESULT_HIT, "R4"),
+    ("前门内板加强板", R.RESULT_SUSPECT, "LC01"),
+    ("顶盖横梁", R.RESULT_SUSPECT, "LC09"),
+    ("仪表板横梁", R.RESULT_SUSPECT, "LC29"),
+    ("翼子板安装板", R.RESULT_SUSPECT, "LC14"),
+    ("前蒙皮总成（含支架）", R.RESULT_HIT, "LC26"),
     ("前门外板 带支架", R.RESULT_EXCLUDED, ""),
     ("B柱上饰板总成", R.RESULT_MISS, ""),
     ("前门铰链", R.RESULT_MISS, ""),
     # 真实数据带来的两处修正
-    ("后侧围下饰板总成", R.RESULT_HIT, "R15"),
-    ("前照灯焊合总成", R.RESULT_HIT, "R12"),
+    ("后侧围下饰板总成", R.RESULT_HIT, "LC33"),
+    ("前照灯焊合总成", R.RESULT_HIT, "LC36"),
+    # F610M 里的疑似和相近未命中的例子（§4 末尾）
+    ("前门外板加强板A", R.RESULT_SUSPECT, "LC02"),
+    ("尾门外板左加强板", R.RESULT_SUSPECT, "LC11"),
+    ("仪表板上体组件", R.RESULT_SUSPECT, "LC29"),
+    ("前照灯LED模组", R.RESULT_SUSPECT, "LC36"),
+    ("尾灯外装饰盖总成", R.RESULT_SUSPECT, "LC41"),
+    ("前门饰板氛围灯总成", R.RESULT_SUSPECT, "LC31"),
+    ("后位置灯总成", R.RESULT_MISS, ""),
+    ("后贯穿灯右侧装饰件", R.RESULT_MISS, ""),
+    ("尾门外装饰板总成", R.RESULT_MISS, ""),
+    # 多条规则同时命中取核心词最长的一条
+    ("天窗顶盖总成", R.RESULT_HIT, "LC08"),
 ])
 def test_long_cycle_examples(name, expected, rule):
     result = R.classify_part(name, RULES, VOCAB)
@@ -373,3 +375,58 @@ def test_snapshot_coverage():  # D2、R4
     assert R.snapshot_covers({"kind": "all"}, ["S1"])
     assert R.snapshot_covers({"kind": "watchlist", "serials": ["S1", "S2"]}, ["S1"])
     assert not R.snapshot_covers({"kind": "watchlist", "serials": ["S1"]}, ["S1", "S9"])
+
+
+def test_suffix_alternative_after_slash_is_not_a_core_word():  # 「前蒙皮总成/组件」
+    rule = R.build_rule("X", "前蒙皮总成/组件", "", VOCAB)
+    assert rule.core_groups == (("前蒙皮",),)
+    assert R.classify_part("车门组件", [rule], VOCAB).result == R.RESULT_MISS
+
+
+# ── §7 种子与导入校验 ───────────────────────────────────────────────
+
+
+def test_long_cycle_seed_matches_received_list():  # 10-03：43 项，4 项带排除，8 项带「/」
+    assert len(RULES) == 43
+    assert sum(1 for rule in RULES if rule.excludes) == 4
+    assert {rule.rule_id for rule in RULES if len(rule.core_groups) > 1} == {"LC25"}
+
+
+def test_roster_seed_contents():  # M1、R8
+    rows = _csv(SEEDS / "roster.csv")
+    assert rows[0] == ["姓名", "科室"]
+    parsed = R.parse_roster_table(rows)
+    assert not parsed["errors"] and not parsed["conflicts"]
+    assert len(parsed["entries"]) == 784  # 794 行合并同名后 778 人，另加 6 人
+    assert all(not entry["ids"] for entry in parsed["entries"])  # 种子不带工号
+    roster = R.Roster((e["name"], e["department"]) for e in parsed["entries"])
+    for name, department in [("高义轩", "车身科"), ("滕平", "车身科"), ("韦逢义", "车身科"), ("梁海峰", "内饰科"),
+                             ("铁盛武", "内饰科"), ("韦孔辉", "内饰科"), ("段大禄", "内饰科")]:
+        assert roster.lookup(name).department == department
+    hit = roster.lookup("吕金柱")  # A2：TDC 纯姓名命中花名册「吕金柱1」
+    assert (hit.status, hit.matched_name, hit.digit_fallback) == ("hit", "吕金柱1", True)
+
+
+def test_roster_import_validation():  # §7 导入校验、验收 7、8
+    rows = [
+        ["责任工程师名称", "责任工程师专业科室"],
+        ["张三(z001)", "车身科"],
+        ["张三（z002）", "车身科"],
+        ["李四(l001)", "车体科"],
+        ["李四(l002)", "内饰科"],
+        ["王五(w001)", "结构工程科"],
+        ["赵六", "集成科"],
+        ["", ""],
+    ]
+    parsed = R.parse_roster_table(rows)
+    assert parsed["entries"] == [{"name": "张三", "department": "车身科", "ids": ["z001", "z002"]}]
+    assert parsed["merged"] == 1
+    assert parsed["conflicts"] == [{"name": "李四", "departments": ["内饰科", "车体科"]}]
+    assert [e["line"] for e in parsed["errors"]] == [6, 7]
+    assert "历史值" in parsed["errors"][0]["text"]
+    assert R.parse_roster_table([["名字", "部门"]])["errors"][0]["text"] == "表头要有姓名列和科室列"
+
+
+def test_csv_decoding_accepts_gbk():
+    assert R.decode_csv("零件名称,备注\n".encode("gbk")) == "零件名称,备注\n"
+    assert R.decode_csv("\ufeff零件名称".encode("utf-8")) == "零件名称"

@@ -714,6 +714,8 @@ def build_rule(rule_id: str, source_name: str, remark: Any = "", vocab: Vocabula
     groups: list[tuple[str, ...]] = []
     for variant in [*re.split(r"[/／]", _text(source_name)), *aliases]:
         key = normalize_part(variant, vocab)
+        if key in _LIST_SUFFIXES or key in vocab.suffixes:
+            continue  # 「前蒙皮总成/组件」里的「组件」是后缀的另一种写法，不是并列叫法
         for suffix in _LIST_SUFFIXES:
             if key.endswith(suffix) and len(key) > len(suffix):
                 key = key[: -len(suffix)]
@@ -810,6 +812,121 @@ def long_cycle_decisions(
     review.sort(key=lambda i: (i["result"] != RESULT_HIT, i["normalized"]))
     excluded.sort(key=lambda i: i["normalized"])
     return {"counted": counted, "review": review, "excluded": excluded, "classified": by_name}
+
+
+# ── 种子与 CSV 导入校验（§7）─────────────────────────────────────────
+
+ROSTER_NAME_HEADERS = ("姓名", "责任工程师名称")
+ROSTER_DEPARTMENT_HEADERS = ("科室", "责任工程师专业科室")
+_NAME_WITH_ID = re.compile(r"^(.*?)\(([^()]*)\)$")
+
+
+def decode_csv(data: bytes) -> str:
+    """导入文件编码自动识别：UTF-8（含 BOM）优先，失败按 GBK。"""
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return data.decode("gbk")
+
+
+def _header_index(header: Sequence[Any], names: Sequence[str]) -> int | None:
+    cells = [re.sub(r"\s+", "", halfwidth(_text(h))) for h in header]
+    for name in names:
+        if name in cells:
+            return cells.index(name)
+    return None
+
+
+def _cell(row: Sequence[Any], index: int | None) -> Any:
+    return row[index] if index is not None and index < len(row) else None
+
+
+def parse_roster_table(
+    rows: Sequence[Sequence[Any]],
+    current_departments: Iterable[str] = CURRENT_DEPARTMENTS,
+    history_departments: Iterable[str] = HISTORY_DEPARTMENTS,
+) -> dict[str, Any]:
+    """花名册表（首行表头）-> 生效条目、错误行和同名冲突。
+
+    「姓名(工号)」拆成姓名和工号；同名同科室合并并累计工号；同名不同科室报冲突，
+    该姓名不导入；科室不在现行字典里报错，历史科室提示指定现行科室。行号从 1 起，含表头。
+    """
+    if not rows:
+        return {"entries": [], "errors": [{"line": 1, "text": "文件为空"}], "conflicts": [], "merged": 0}
+    name_col = _header_index(rows[0], ROSTER_NAME_HEADERS)
+    dept_col = _header_index(rows[0], ROSTER_DEPARTMENT_HEADERS)
+    if name_col is None or dept_col is None:
+        return {"entries": [], "errors": [{"line": 1, "text": "表头要有姓名列和科室列"}], "conflicts": [], "merged": 0}
+    current, history = set(current_departments), set(history_departments)
+    people: dict[str, dict[str, list[str]]] = {}
+    row_counts: dict[str, int] = {}
+    errors: list[dict[str, Any]] = []
+    for line, row in enumerate(rows[1:], start=2):
+        raw_name, department = _text(_cell(row, name_col)), _text(_cell(row, dept_col))
+        if not raw_name and not department:
+            continue
+        text = re.sub(r"\s+", "", halfwidth(raw_name))
+        match = _NAME_WITH_ID.match(text)
+        name, staff_id = (match.group(1), match.group(2)) if match else (text, "")
+        if not name or not department:
+            errors.append({"line": line, "text": "姓名或科室为空"})
+            continue
+        if department in history:
+            errors.append({"line": line, "text": f"{name} 的科室是历史值「{department}」，请指定现行科室"})
+            continue
+        if department not in current:
+            errors.append({"line": line, "text": f"{name} 的科室「{department}」不在现行科室字典里"})
+            continue
+        ids = people.setdefault(name, {}).setdefault(department, [])
+        if staff_id and staff_id not in ids:
+            ids.append(staff_id)
+        row_counts[name] = row_counts.get(name, 0) + 1
+    entries, conflicts = [], []
+    for name, by_department in people.items():
+        if len(by_department) > 1:
+            conflicts.append({"name": name, "departments": sorted(by_department)})
+            continue
+        department, ids = next(iter(by_department.items()))
+        entries.append({"name": name, "department": department, "ids": ids})
+    merged = sum(1 for name, count in row_counts.items() if count > 1 and len(people[name]) == 1)
+    return {"entries": entries, "errors": errors, "conflicts": conflicts, "merged": merged}
+
+
+def parse_long_cycle_table(rows: Sequence[Sequence[Any]], vocab: Vocabulary | None = None) -> dict[str, Any]:
+    """长周期清单表（首行表头，要有「零件名称」「备注」，可选「别名」「规则编号」）-> 规则。
+
+    重名规则（规范化后的核心词相同）合并核心词组和排除词。
+    """
+    vocab = vocab or Vocabulary()
+    if not rows:
+        return {"rules": [], "errors": [{"line": 1, "text": "文件为空"}]}
+    name_col = _header_index(rows[0], ("零件名称",))
+    remark_col = _header_index(rows[0], ("备注",))
+    alias_col = _header_index(rows[0], ("别名",))
+    id_col = _header_index(rows[0], ("规则编号",))
+    if name_col is None or remark_col is None:
+        return {"rules": [], "errors": [{"line": 1, "text": "表头要有「零件名称」「备注」"}]}
+    rules: dict[tuple[tuple[str, ...], ...], LongCycleRule] = {}
+    errors: list[dict[str, Any]] = []
+    for line, row in enumerate(rows[1:], start=2):
+        name = _text(_cell(row, name_col))
+        if not name:
+            continue
+        aliases = [a for a in re.split(r"[、,，;；]+", _text(_cell(row, alias_col))) if a.strip()]
+        rule_id = _text(_cell(row, id_col)) or f"LC{len(rules) + 1:02d}"
+        rule = build_rule(rule_id, name, _cell(row, remark_col), vocab, aliases)
+        if not rule.core_groups:
+            errors.append({"line": line, "text": f"「{name}」规范化后没有核心词"})
+            continue
+        key = tuple(sorted(rule.core_groups))
+        existing = rules.get(key)
+        if existing is not None:
+            rule = LongCycleRule(
+                existing.rule_id, existing.source_name, existing.core_groups,
+                tuple(dict.fromkeys(existing.excludes + rule.excludes)),
+            )
+        rules[key] = rule
+    return {"rules": list(rules.values()), "errors": errors}
 
 
 # ── 指标（§5）─────────────────────────────────────────────────────────
