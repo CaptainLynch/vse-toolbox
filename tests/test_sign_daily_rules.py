@@ -430,3 +430,20 @@ def test_roster_import_validation():  # §7 导入校验、验收 7、8
 def test_csv_decoding_accepts_gbk():
     assert R.decode_csv("零件名称,备注\n".encode("gbk")) == "零件名称,备注\n"
     assert R.decode_csv("\ufeff零件名称".encode("utf-8")) == "零件名称"
+
+
+def test_conclusions_survive_synonym_changes():  # §4：规则或词表改动后，已有的人工结论不变
+    without_alias = R.Vocabulary(synonyms={k: v for k, v in R.DEFAULT_SYNONYMS.items() if k != "前照灯"})
+    first = R.long_cycle_decisions(["前大灯总成"], RULES, {}, without_alias)
+    assert first["review"] == [] and first["counted"] == set()  # 未命中，用户手工判为不纳入
+    remembered = {R.conclusion_key("前大灯总成"): False}
+    after = R.long_cycle_decisions(["前大灯总成"], RULES, remembered, VOCAB)
+    assert R.classify_part("前大灯总成", RULES, VOCAB).result == R.RESULT_HIT
+    assert after["review"] == [] and after["counted"] == set()
+
+
+def test_generated_rule_ids_do_not_collide_with_explicit_ones():
+    table = [["规则编号", "零件名称", "备注"], ["", "前门内板", ""], ["LC01", "后侧门外板", ""], ["LC01", "顶盖", ""]]
+    parsed = R.parse_long_cycle_table(table)
+    assert [rule.rule_id for rule in parsed["rules"]] == ["LC02", "LC01"]
+    assert parsed["errors"] == [{"line": 4, "text": "规则编号「LC01」重复"}]

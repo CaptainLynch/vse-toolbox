@@ -770,33 +770,41 @@ def classify_part(name: Any, rules: Sequence[LongCycleRule], vocab: Vocabulary |
     return Classification(normalized, RESULT_SUSPECT, rule.rule_id, "余部不在白名单")
 
 
+def conclusion_key(name: Any) -> str:
+    """长周期人工结论的记忆键：零件名称只过 L1，不随同义词表变化。"""
+    return l1_normalize(name)
+
+
 def long_cycle_decisions(
     part_names: Iterable[str],
     rules: Sequence[LongCycleRule],
     conclusions: Mapping[str, bool],
     vocab: Vocabulary | None = None,
 ) -> dict[str, Any]:
-    """§7 复核时序第 1–4 步。conclusions 是本项目的「规范化零件名称 -> 是否纳入」。
+    """§7 复核时序第 1–4 步。conclusions 是本项目的「记忆键 -> 是否纳入」。
 
-    返回 counted（计入长周期的规范化名称）、review（待复核：确定命中默认勾选、疑似默认不勾选）
+    记忆键是 ``conclusion_key``（只做 L1，不做别名归一），这样同义词表改动后
+    已有的人工结论仍然认得（§4：规则或词表改动后，已有的人工结论不变）。
+    返回 counted（计入长周期的记忆键）、review（待复核：确定命中默认勾选、疑似默认不勾选）
     和 excluded（折叠区）。人工结论优先于自动结果。
     """
     vocab = vocab or Vocabulary()
-    by_name: dict[str, Classification] = {}
+    by_key: dict[str, Classification] = {}
     raw_names: dict[str, list[str]] = {}
     for raw in part_names:
         if not _text(raw):
             continue  # 零件名称为空：计入 M，不参与判定
-        result = classify_part(raw, rules, vocab)
-        by_name.setdefault(result.normalized, result)
-        raw_names.setdefault(result.normalized, []).append(_text(raw))
+        key = conclusion_key(raw)
+        if key not in by_key:
+            by_key[key] = classify_part(raw, rules, vocab)
+        raw_names.setdefault(key, []).append(_text(raw))
     counted: set[str] = set()
     review: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = []
-    for key, result in by_name.items():
+    for key, result in by_key.items():
         item = {
-            "normalized": key, "names": sorted(set(raw_names[key])), "result": result.result,
-            "rule": result.rule_id, "reason": result.reason,
+            "normalized": key, "canonical": result.normalized, "names": sorted(set(raw_names[key])),
+            "result": result.result, "rule": result.rule_id, "reason": result.reason,
         }
         if key in conclusions:
             if conclusions[key]:
@@ -811,7 +819,7 @@ def long_cycle_decisions(
             excluded.append(item)
     review.sort(key=lambda i: (i["result"] != RESULT_HIT, i["normalized"]))
     excluded.sort(key=lambda i: i["normalized"])
-    return {"counted": counted, "review": review, "excluded": excluded, "classified": by_name}
+    return {"counted": counted, "review": review, "excluded": excluded, "classified": by_key}
 
 
 # ── 种子与 CSV 导入校验（§7）─────────────────────────────────────────
@@ -908,12 +916,24 @@ def parse_long_cycle_table(rows: Sequence[Sequence[Any]], vocab: Vocabulary | No
         return {"rules": [], "errors": [{"line": 1, "text": "表头要有「零件名称」「备注」"}]}
     rules: dict[tuple[tuple[str, ...], ...], LongCycleRule] = {}
     errors: list[dict[str, Any]] = []
+    explicit_ids = [_text(_cell(row, id_col)) for row in rows[1:] if _text(_cell(row, name_col))]
+    used_ids = {rule_id for rule_id in explicit_ids if rule_id}
+    seen_ids: set[str] = set()
+    serial = 0
     for line, row in enumerate(rows[1:], start=2):
         name = _text(_cell(row, name_col))
         if not name:
             continue
         aliases = [a for a in re.split(r"[、,，;；]+", _text(_cell(row, alias_col))) if a.strip()]
-        rule_id = _text(_cell(row, id_col)) or f"LC{len(rules) + 1:02d}"
+        rule_id = _text(_cell(row, id_col))
+        if rule_id and rule_id in seen_ids:
+            errors.append({"line": line, "text": f"规则编号「{rule_id}」重复"})
+            continue
+        while not rule_id:
+            serial += 1
+            candidate = f"LC{serial:02d}"
+            rule_id = "" if candidate in used_ids else candidate
+        seen_ids.add(rule_id)
         rule = build_rule(rule_id, name, _cell(row, remark_col), vocab, aliases)
         if not rule.core_groups:
             errors.append({"line": line, "text": f"「{name}」规范化后没有核心词"})

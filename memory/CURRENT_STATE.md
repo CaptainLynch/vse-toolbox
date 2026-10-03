@@ -11,7 +11,7 @@
 - **完成**：`plugins/sign_daily/rules.py`（P1–P9、A1–A11、L1–L6、§5 指标/Δ/基线、G1–G4、T1–T4）+
   `tests/test_sign_daily_rules.py` 80 passed；v1 `report.py`/backend 未改，行为不变。
 - **种子已入库**（`plugins/sign_daily/seeds/`，版本 2026.10.03-1）：roster.csv 784 人（仅姓名+科室）、long_cycle.csv 43 项
-  （LC01–LC43）、seed.json。坑：清单「X总成/组件」的「/」后是后缀替代写法，不能当并列叫法拆（已处理并有测试）。
+  （LC01–LC43）、seed.json。自审修复：长周期结论记忆键改为只过 L1 的 `conclusion_key`（词表改动不丢结论）、导入规则编号防撞。坑：清单「X总成/组件」的「/」后是后缀替代写法，不能当并列叫法拆（已处理并有测试）。
 - **执行前沿**：①快照表（D1）+ `/refresh` 后台化；②三图一表 Canvas + 长周期复核阻塞导出；③种子/导入（M1–M8）；
   ④复制富文本 + `.eml` multipart/related。**待用户**：合成在途样例三件套、F610M/F610S 导出（验收 21）。
 
