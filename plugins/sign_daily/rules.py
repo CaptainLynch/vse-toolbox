@@ -94,6 +94,11 @@ def _text(value: Any) -> str:
     return "" if text.lower() in _EMPTY_CELLS else text
 
 
+def cell_text(value: Any) -> str:
+    """单元格 -> 去首尾空白的文本；空值、None、nan 都是空串。"""
+    return _text(value)
+
+
 def _int(value: Any) -> int:
     text = _text(value)
     try:

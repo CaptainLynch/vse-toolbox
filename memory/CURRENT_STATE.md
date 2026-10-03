@@ -12,7 +12,11 @@
   `tests/test_sign_daily_rules.py` 80 passed；v1 `report.py`/backend 未改，行为不变。
 - **种子已入库**（`plugins/sign_daily/seeds/`，版本 2026.10.03-1）：roster.csv 784 人（仅姓名+科室）、long_cycle.csv 43 项
   （LC01–LC43）、seed.json。自审修复：长周期结论记忆键改为只过 L1 的 `conclusion_key`（词表改动不丢结论）、导入规则编号防撞。坑：清单「X总成/组件」的「/」后是后缀替代写法，不能当并列叫法拆（已处理并有测试）。
-- **执行前沿**：①快照表（D1）+ `/refresh` 后台化；②三图一表 Canvas + 长周期复核阻塞导出；③种子/导入（M1–M8）；
+- **第 3 步已完成**：`plugins/sign_daily/service.py` + backend `/api/p/sign-daily/v2/*`（state/preview/generate/long-cycle/
+  refresh），迁移 v2 新表 snapshot_meta/snapshot_rows/long_cycle_conclusion；基线按今天口径重算；旧数据判定 = 有更晚快照
+  或（今天 > 数据日期且该日快照已存）。注意 `get_latest_deliverable_form_snapshot` 按 snapshot_at 取最新，不按发布顺序。
+  测试 `tests/test_plugin_sign_daily_v2.py`。v1 路由/页面未动。
+- **执行前沿**：②三图一表 Canvas + 长周期复核阻塞导出；③种子/导入（M1–M8）；
   ④复制富文本 + `.eml` multipart/related。**待用户**：合成在途样例三件套、F610M/F610S 导出（验收 21）。
 
 ## 2026-10-02 插件重构遗漏行为恢复完成（分支 claude/restore-plugin-parity，基线 refactor/plugin-host@d0dd01d）

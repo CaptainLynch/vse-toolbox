@@ -7,7 +7,17 @@
 - POST generate    生成日报预览，并按 范围+日期 存当天汇总（日变化基线）
 - POST eml         生成 .eml 草稿下载（不改汇总）
 
-数据只读最新的 tdc_data_model 表单快照；计算口径在 report.py。
+v2.0（口径在 rules.py，取数与存储在 service.py；前端切换前与 v1 并存）：
+
+- GET  v2/state                 数据日期、可选项目/归属科室（A9）、种子版本
+- POST v2/preview               预览，不写快照
+- POST v2/generate              生成并写当天零件级快照（D1）
+- POST v2/long-cycle            长周期复核「确认并记住」
+- POST v2/long-cycle/clear      按项目清空长周期结论
+- POST v2/refresh               后台抓取；已有抓取在跑时复用它
+- GET  v2/refresh/<task_id>     抓取进度
+
+数据只读最新的 tdc_data_model 表单快照；v1 计算口径在 report.py。
 """
 
 from __future__ import annotations
@@ -22,6 +32,8 @@ from flask import Response, request
 from services.deliverable_form_analysis import form_definition
 
 from . import report as R
+from . import rules as V
+from . import service as S
 
 FORM_KEY = "tdc_data_model"
 ARCHIVE_JOB_KEY = "tdc_data_model"
@@ -47,6 +59,8 @@ _REMEDY_BY_ERROR_TYPE = {
     "timeout": "retry_or_narrow_filters",
 }
 _LIST_LIMIT = 2000
+#: 数据日期换算用的时区；None 取本机时区（测试里固定）。
+_DATA_TZ = None
 
 
 def _today() -> date:
@@ -57,6 +71,8 @@ def _default_config() -> dict[str, Any]:
     return {
         "roleDepartments": dict(R.DEFAULT_ROLE_DEPARTMENTS),
         "personDepartments": {},
+        # v2 A11：未在册人员 -> 指定区域
+        "personAreas": {},
         "longCycleNames": [],
         # 项目 -> {零件名称: 是否长周期}，生成前勾选确认的结果
         "longCycleConfirmed": {},
@@ -98,6 +114,15 @@ def _str_map(value: Any, name: str) -> dict[str, str]:
     return {_str(k, name, 200).strip(): _str(v, name, 200).strip() for k, v in value.items() if str(k).strip()}
 
 
+def sync_failure_message(result: Mapping[str, Any]) -> str:
+    """归档任务结果 -> 给用户看的抓取失败原因（带闭集处理指引）。"""
+    first = (result.get("results") or [{}])[0] if isinstance(result, Mapping) else {}
+    reason = first.get("errorMessage") or first.get("errorType") or f"退出码 {result.get('exitCode')}"
+    remedy = first.get("remedy") or _REMEDY_BY_ERROR_TYPE.get(str(first.get("errorType")))
+    hint = _REMEDY_TEXT.get(str(remedy))
+    return f"TDC 抓取未完成：{hint}（{reason}）" if hint else f"TDC 抓取未完成：{reason}"
+
+
 def _validate_config_patch(patch: Any) -> dict[str, Any]:
     if not isinstance(patch, Mapping):
         raise _Invalid("请求体必须是 JSON 对象")
@@ -110,6 +135,8 @@ def _validate_config_patch(patch: Any) -> dict[str, Any]:
         clean["roleDepartments"] = _str_map(patch["roleDepartments"], "角色列→科室")
     if "personDepartments" in patch:
         clean["personDepartments"] = _str_map(patch["personDepartments"], "人员→科室")
+    if "personAreas" in patch:
+        clean["personAreas"] = _str_map(patch["personAreas"], "未在册人员→区域")
     if "longCycleNames" in patch:
         clean["longCycleNames"] = _str_list(patch["longCycleNames"], "长周期件清单")
     if "longCycleConfirmed" in patch:
@@ -332,7 +359,8 @@ def register(host):
     ctx = host.context
     bp = host.blueprint
     store = Store(ctx.db, host.table_prefix)
-    host.migrate(store.migrations())
+    snapshots = S.SnapshotStore(ctx.db, host.table_prefix)
+    host.migrate([*store.migrations(), snapshots.migration()])
 
     def body() -> Any:
         return request.get_json(silent=True)
@@ -377,10 +405,7 @@ def register(host):
             return ctx.json_error(502, "SyncFailed", ctx.redact(f"TDC 抓取失败：{exc}"))
         first = (result.get("results") or [{}])[0] if isinstance(result, Mapping) else {}
         if not isinstance(result, Mapping) or result.get("exitCode") != 0 or first.get("outcome") != "completed":
-            reason = first.get("errorMessage") or first.get("errorType") or f"退出码 {result.get('exitCode')}"
-            remedy = first.get("remedy") or _REMEDY_BY_ERROR_TYPE.get(str(first.get("errorType")))
-            hint = _REMEDY_TEXT.get(str(remedy))
-            message = f"TDC 抓取未完成：{hint}（{reason}）" if hint else f"TDC 抓取未完成：{reason}"
+            message = sync_failure_message(result if isinstance(result, Mapping) else {})
             return ctx.json_error(502, "SyncFailed", ctx.redact(message))
         latest = ctx.db.get_latest_deliverable_form_snapshot(FORM_KEY)
         return ctx.json_ok({"updatedAt": latest.get("snapshot_at") if latest else None})
@@ -433,3 +458,157 @@ def register(host):
         )
         response.headers["Cache-Control"] = "no-store"
         return response
+
+    _register_v2(host, store, snapshots, body)
+
+
+# ── v2.0 路由 ───────────────────────────────────────────────────────
+
+
+def _validate_scope(value: Any) -> tuple[S.Scope, str]:
+    if not isinstance(value, Mapping):
+        raise _Invalid("请求体必须是 JSON 对象")
+    scope = S.Scope(_str_list(value.get("projects"), "项目/车型"), _str_list(value.get("departments"), "归属科室"))
+    region = _str(value.get("region"), "区域名", 100).strip() or "车体区域"
+    return scope, region
+
+
+def _validate_review(value: Any) -> tuple[str, list[dict[str, Any]]]:
+    if not isinstance(value, Mapping):
+        raise _Invalid("请求体必须是 JSON 对象")
+    project = _str(value.get("project"), "项目", 200).strip()
+    items = value.get("items")
+    if not project:
+        raise _Invalid("缺少项目")
+    if not isinstance(items, list) or not items or len(items) > _LIST_LIMIT:
+        raise _Invalid("复核结果必须是非空数组")
+    clean = []
+    for item in items:
+        if not isinstance(item, Mapping) or not isinstance(item.get("include"), bool):
+            raise _Invalid("每项复核结果要有零件键和是否纳入")
+        key = V.conclusion_key(_str(item.get("key"), "零件键", 200))
+        if not key:
+            raise _Invalid("零件键不能为空")
+        clean.append({"key": key, "include": item["include"]})
+    return project, clean
+
+
+def _register_v2(host, store: Store, snapshots: S.SnapshotStore, body) -> None:  # type: ignore[no-untyped-def]
+    ctx = host.context
+    bp = host.blueprint
+
+    def source() -> S.SourceData:
+        return S.load_source(ctx.db, _headers, _DATA_TZ)
+
+    @bp.get("/v2/state")
+    def v2_state():
+        try:
+            data = source()
+            parsed = V.build_flows(data.records)
+            context = S._Context(snapshots, [], {})
+            meta = {"dataDate": data.data_date.isoformat(), "snapshotAt": data.snapshot_at}
+            options, error = S.scope_options(parsed.flows, context), None
+        except (S.NoData, V.MissingColumnsError) as exc:
+            meta, options, error = None, {"projects": [], "departments": list(V.CURRENT_DEPARTMENTS)}, str(exc)
+        return ctx.json_ok({
+            "data": meta, "dataError": error, "options": options,
+            "form": store.config().get("form"), "seedVersion": S.seed_version(),
+        })
+
+    def compose(save: bool):
+        guard = ctx.local_guard()
+        if guard is not None:
+            return guard
+        try:
+            scope, region = _validate_scope(body())
+        except _Invalid as exc:
+            return ctx.json_error(400, "ValidationError", str(exc))
+        config = store.config()
+        try:
+            result = S.compose(
+                snapshots, source(), scope, region=region,
+                person_areas=config.get("personAreas") or {}, save_snapshot=save, today=_today(),
+            )
+        except S.NoData as exc:
+            return ctx.json_error(409, "NoData", str(exc))
+        except V.MissingColumnsError as exc:
+            return ctx.json_error(422, "MissingColumns", str(exc))
+        except LookupError as exc:
+            return ctx.json_error(404, "EmptyScope", str(exc))
+        if save:
+            form = dict(config.get("form") or {})
+            form.update({"projects": scope.projects, "departments": scope.departments, "region": region})
+            store.save_config({"form": form})
+        return ctx.json_ok(result)
+
+    @bp.post("/v2/preview")
+    def v2_preview():
+        return compose(save=False)
+
+    @bp.post("/v2/generate")
+    def v2_generate():
+        return compose(save=True)
+
+    @bp.post("/v2/long-cycle")
+    def v2_long_cycle_confirm():
+        guard = ctx.local_guard()
+        if guard is not None:
+            return guard
+        try:
+            project, items = _validate_review(body())
+        except _Invalid as exc:
+            return ctx.json_error(400, "ValidationError", str(exc))
+        classified = S.classify_keys(item["key"] for item in items)
+        snapshots.save_conclusions(project, [
+            {**item, "autoResult": classified[item["key"]].result, "rule": classified[item["key"]].rule_id}
+            for item in items
+        ])
+        return ctx.json_ok({"project": project, "saved": len(items)})
+
+    @bp.post("/v2/long-cycle/clear")
+    def v2_long_cycle_clear():
+        guard = ctx.local_guard()
+        if guard is not None:
+            return guard
+        value = body()
+        try:
+            project = _str((value or {}).get("project") if isinstance(value, Mapping) else None, "项目", 200).strip()
+        except _Invalid as exc:
+            return ctx.json_error(400, "ValidationError", str(exc))
+        if not project:
+            return ctx.json_error(400, "ValidationError", "缺少项目")
+        return ctx.json_ok({"project": project, "cleared": snapshots.clear_conclusions(project)})
+
+    @bp.post("/v2/refresh")
+    def v2_refresh():
+        guard = ctx.local_guard()
+        if guard is not None:
+            return guard
+        try:
+            runner = ctx.service("crawl_task_runner")
+            archive = ctx.service("scheduled_archive_admin")
+        except LookupError as exc:
+            return ctx.json_error(409, "SyncNotReady", str(exc))
+        for task in runner.list_tasks(source=S.TASK_SOURCE, limit=10):
+            if task.get("status") in ("queued", "running"):
+                return ctx.json_ok({**S.task_view(task), "reused": True})
+        worker = S.make_refresh_worker(archive, ctx.db, sync_failure_message)
+        task_id = runner.submit_task(S.TASK_TYPE, S.TASK_SOURCE, {}, worker_fn=worker)
+        task = runner.get_task(task_id) or {"task_id": task_id, "status": "queued"}
+        return ctx.json_ok({**S.task_view(task), "reused": False})
+
+    @bp.get("/v2/refresh/<task_id>")
+    def v2_refresh_status(task_id: str):
+        if not S.valid_task_id(task_id):
+            return ctx.json_error(400, "ValidationError", "无效的任务编号")
+        try:
+            runner = ctx.service("crawl_task_runner")
+        except LookupError as exc:
+            return ctx.json_error(409, "SyncNotReady", str(exc))
+        task = runner.get_task(task_id)
+        if task is None or task.get("source") != S.TASK_SOURCE:
+            return ctx.json_error(404, "NotFound", "没有这个抓取任务")
+        view = S.task_view(task)
+        if view["error"]:
+            view["error"] = ctx.redact(str(view["error"]))
+        return ctx.json_ok(view)
