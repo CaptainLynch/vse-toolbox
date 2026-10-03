@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
 """签署日报 v2.0：零件级快照、基线重算、长周期结论记忆与后台抓取。
 
-口径全部在 ``rules.py``；本模块只负责取数、存取和组装，供 ``backend.py`` 的
-``/v2/*`` 路由使用。v1 路由（``report.py``）在前端切换前保持不变。
+口径全部在 ``rules.py``；本模块只负责取数、存取和组装，供 ``backend.py`` 的路由使用。
 
 - 快照（D1）：每次生成成功后按「数据日期 + 项目」存 TDC 原始行（只留口径用到的列），
   基线（D3）用同一套解析代码、按今天的范围、花名册和长周期结论重算，改规则不会造出假变化。
@@ -17,12 +16,15 @@ import io
 import json
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, tzinfo
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
+from services import data_model_watchlist as W
+
 from . import rules as V
+from . import settings as SET
 
 FORM_KEY = "tdc_data_model"
 ARCHIVE_JOB_KEY = "tdc_data_model"
@@ -48,8 +50,10 @@ def seed_roster() -> tuple[tuple[str, str], ...]:
 
 
 @functools.lru_cache(maxsize=1)
-def seed_rules() -> tuple[V.LongCycleRule, ...]:
-    return tuple(V.parse_long_cycle_table(_read_csv(SEEDS_DIR / "long_cycle.csv"))["rules"])
+def seed_rule_rows() -> tuple[dict[str, Any], ...]:
+    """长周期清单种子 -> 规则行（规则编号、零件名称、备注、别名、启用），供设置层叠加。"""
+    parsed = SET.parse_rule_table(_read_csv(SEEDS_DIR / "long_cycle.csv"), V.Vocabulary())
+    return tuple(parsed["rows"])
 
 
 @functools.lru_cache(maxsize=1)
@@ -175,6 +179,22 @@ class SnapshotStore:
                 [(project, item["key"], int(bool(item["include"])), item["autoResult"], item["rule"]) for item in items],
             )
 
+    def list_conclusions(self, project: str) -> list[dict[str, Any]]:
+        with self.db.get_connection() as conn:
+            return [
+                {"key": row["part_key"], "include": bool(row["include"]), "autoResult": row["auto_result"],
+                 "rule": row["rule_id"], "decidedAt": row["decided_at"]}
+                for row in conn.execute(
+                    f"SELECT part_key, include, auto_result, rule_id, decided_at FROM {self.conclusion_table} "
+                    "WHERE project = ? ORDER BY part_key", (project,)
+                )
+            ]
+
+    def projects_with_conclusions(self) -> list[str]:
+        with self.db.get_connection() as conn:
+            return [row["project"] for row in conn.execute(
+                f"SELECT DISTINCT project FROM {self.conclusion_table} ORDER BY project")]
+
     def clear_conclusions(self, project: str) -> int:
         with self.db.get_connection() as conn:
             return conn.execute(f"DELETE FROM {self.conclusion_table} WHERE project = ?", (project,)).rowcount
@@ -192,6 +212,8 @@ class SourceData:
     records: list[dict[str, Any]]
     snapshot_at: str | None
     data_date: date
+    #: 表单快照覆盖范围：{"kind": "all"} 或关注清单（services/data_model_watchlist.py）
+    coverage: dict[str, Any] = field(default_factory=lambda: {"kind": W.SCOPE_ALL})
 
 
 def data_date_of(snapshot_at: Any, tz: tzinfo | None = None) -> date | None:
@@ -208,10 +230,15 @@ def data_date_of(snapshot_at: Any, tz: tzinfo | None = None) -> date | None:
     return moment.astimezone(tz).date()
 
 
-def load_source(db: Any, headers_of: Callable[[Mapping[str, Any]], list[str]], tz: tzinfo | None = None) -> SourceData:
-    latest = db.get_latest_deliverable_form_snapshot(FORM_KEY)
-    if latest is None:
+def load_source(db: Any, headers_of: Callable[[Mapping[str, Any]], list[str]], tz: tzinfo | None = None,
+                *, watchlist_only: bool = False) -> SourceData:
+    """开关关只认覆盖范围为全部的快照；开关开用最新快照（全部或关注清单都行，§9 S11）。"""
+    newest = db.get_latest_deliverable_form_snapshot(FORM_KEY)
+    if newest is None:
         raise NoData("还没有 TDC 数模设计审核流程数据，请先点「一键生成」抓取")
+    latest = newest if watchlist_only else W.latest_full_snapshot(db, FORM_KEY)
+    if latest is None:
+        raise NoData("最近的数据只同步了关注清单，没有全量数据；请先全量同步，或打开「只统计关注清单」")
     headers = headers_of(latest)
     V.check_columns(headers)
     rows = db.list_deliverable_form_snapshot_rows(int(latest["id"]))
@@ -224,7 +251,7 @@ def load_source(db: Any, headers_of: Callable[[Mapping[str, Any]], list[str]], t
     data_date = data_date_of(snapshot_at, tz)
     if data_date is None:
         raise NoData("TDC 数据缺少抓取时间，无法确定数据日期")
-    return SourceData(records, snapshot_at, data_date)
+    return SourceData(records, snapshot_at, data_date, W.snapshot_coverage(latest))
 
 
 # ── 组装 ────────────────────────────────────────────────────────────
@@ -246,14 +273,32 @@ def _jsonable_summary(summary: Mapping[str, Any] | None) -> dict[str, Any] | Non
     return {group: _jsonable(values) for group, values in summary.items()}
 
 
-class _Context:
-    """一次计算用到的生效配置：花名册、长周期规则与结论、未在册人员指定区域。"""
+@dataclass
+class Effective:
+    """生效配置（种子叠加本地改动，§7 M3）：花名册、长周期规则与词表、未在册人员指定区域、区域显示名。"""
 
-    def __init__(self, store: SnapshotStore, projects: Iterable[str], person_areas: Mapping[str, str]):
-        self.roster = V.Roster(seed_roster())
-        self.rules = list(seed_rules())
-        self.vocab = V.Vocabulary()
-        self.person_areas = dict(person_areas)
+    roster: V.Roster
+    rules: list[V.LongCycleRule]
+    vocab: V.Vocabulary
+    person_areas: dict[str, str] = field(default_factory=dict)
+    area_names: dict[str, str] = field(default_factory=dict)
+
+    @classmethod
+    def seeds(cls) -> "Effective":
+        vocab = V.Vocabulary()
+        rules = [V.build_rule(r["id"], r["name"], r["remark"], vocab) for r in seed_rule_rows()]
+        return cls(V.Roster(seed_roster()), rules, vocab)
+
+
+class _Context:
+    """一次计算用到的生效配置加上所选项目的长周期结论。"""
+
+    def __init__(self, store: SnapshotStore, projects: Iterable[str], effective: Effective):
+        self.roster = effective.roster
+        self.rules = effective.rules
+        self.vocab = effective.vocab
+        self.person_areas = dict(effective.person_areas)
+        self.area_names = dict(effective.area_names)
         self.conclusions = store.conclusions(projects)
 
     def department(self, flow: V.Flow) -> str:
@@ -269,28 +314,37 @@ class _Context:
 
 
 def _long_cycle(ctx: _Context, today: Sequence[V.Flow], base: Sequence[V.Flow]) -> dict[str, Any]:
-    """按项目做长周期判定；基线也用今天的规则和结论（D3）。"""
+    """按项目做长周期判定；基线也用今天的规则和结论（D3）。
+
+    返回待复核清单（确定命中默认勾选、疑似不勾选）、折叠区的排除项、可搜索后手工纳入的未命中零件，
+    以及按今天口径给任意一组单算长周期零件的函数。
+    """
     by_project: dict[str, list[str]] = {}
     for flow in [*today, *base]:
         by_project.setdefault(flow.project, []).extend(flow.parts.values())
-    today_keys = {
-        (flow.project, V.conclusion_key(name)) for flow in today for name in flow.parts.values() if name
-    }
+    # (项目, 记忆键) -> 今天范围内含该零件的单
+    today_flows: dict[tuple[str, str], set[str]] = {}
+    for flow in today:
+        for name in flow.parts.values():
+            if name:
+                today_flows.setdefault((flow.project, V.conclusion_key(name)), set()).add(flow.serial)
     counted: dict[str, set[str]] = {}
     review: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = []
+    misses: list[dict[str, Any]] = []
     for project, names in sorted(by_project.items()):
-        decisions = V.long_cycle_decisions(names, ctx.rules, ctx.conclusions.get(project, {}), ctx.vocab)
+        conclusions = ctx.conclusions.get(project, {})
+        decisions = V.long_cycle_decisions(names, ctx.rules, conclusions, ctx.vocab)
         counted[project] = decisions["counted"]
-        for bucket, items in (("review", decisions["review"]), ("excluded", decisions["excluded"])):
-            target = review if bucket == "review" else excluded
+        for target, items in ((review, decisions["review"]), (excluded, decisions["excluded"])):
             for item in items:
-                if (project, item["normalized"]) in today_keys:
-                    serials = sorted({
-                        f.serial for f in today if f.project == project
-                        and any(V.conclusion_key(n) == item["normalized"] for n in f.parts.values() if n)
-                    })
+                serials = today_flows.get((project, item["normalized"]))
+                if serials:
                     target.append({**item, "project": project, "flows": len(serials)})
+        for key, result in decisions["classified"].items():
+            serials = today_flows.get((project, key))
+            if serials and result.result == V.RESULT_MISS and key not in conclusions:
+                misses.append({"project": project, "normalized": key, "flows": len(serials)})
 
     def long_parts(flows: Sequence[V.Flow]) -> dict[str, set[str]]:
         result: dict[str, set[str]] = {}
@@ -303,7 +357,8 @@ def _long_cycle(ctx: _Context, today: Sequence[V.Flow], base: Sequence[V.Flow]) 
                 result[flow.serial] = keys
         return result
 
-    return {"review": review, "excluded": excluded, "longParts": long_parts}
+    misses.sort(key=lambda item: (item["project"], item["normalized"]))
+    return {"review": review, "excluded": excluded, "misses": misses, "longParts": long_parts}
 
 
 def _pick_baseline(store: SnapshotStore, projects: Sequence[str], data_date: date,
@@ -372,16 +427,29 @@ def compose(
     scope: Scope,
     *,
     region: str,
-    person_areas: Mapping[str, str],
+    effective: Effective,
     save_snapshot: bool,
     today: date | None = None,
+    watchlist: Sequence[str] | None = None,
+    max_gap_days: int = BASELINE_MAX_GAP_DAYS,
 ) -> dict[str, Any]:
-    """today 是生成当天的日历日期；数据日期早于它且那天的快照已存，说明在用旧数据。"""
+    """today 是生成当天的日历日期；数据日期早于它且那天的快照已存，说明在用旧数据。
+
+    watchlist 不为 None 时只统计流水单号在关注清单里的单（§9「只统计关注清单」）；
+    清单里在数据中找不到的单号列在预览顶部，不计入统计。
+    """
     parsed = V.build_flows(source.records)
+    watch_missing: list[str] = []
+    candidates = parsed.flows
+    if watchlist is not None:
+        wanted = set(watchlist)
+        present = {V.cell_text(r.get("流水单号")) for r in source.records}
+        watch_missing = [serial for serial in watchlist if serial not in present]
+        candidates = [flow for flow in parsed.flows if flow.serial in wanted]
     projects_all = sorted({f.project for f in parsed.flows if f.project})
     projects = [p for p in scope.projects if p] or projects_all
-    ctx = _Context(store, projects, person_areas)
-    flows = ctx.in_scope(parsed.flows, Scope(projects, scope.departments))
+    ctx = _Context(store, projects, effective)
+    flows = ctx.in_scope(candidates, Scope(projects, scope.departments))
     if not flows:
         raise LookupError("范围内没有 3D单")
     projects = sorted({f.project for f in flows})
@@ -398,7 +466,7 @@ def compose(
         for dates in stored.values()
     )
     base_date = None if stale else _pick_baseline(store, projects, source.data_date, serials_by_project)
-    mode = {"show": False, "note": ""} if stale else V.baseline_mode(source.data_date, base_date, BASELINE_MAX_GAP_DAYS)
+    mode = {"show": False, "note": ""} if stale else V.baseline_mode(source.data_date, base_date, max_gap_days)
     base_flows: list[V.Flow] = []
     if mode["show"] and base_date is not None:
         base_parsed = V.build_flows(store.snapshot_rows(projects, base_date))
@@ -410,15 +478,22 @@ def compose(
     base = V.summary(base_flows, long_cycle["longParts"](base_flows)) if mode["show"] else None
     delta = V.deltas(current, base)
 
-    charts = V.owed_charts(flows, ctx.roster, ctx.person_areas)
-    table = V.flow_rows(flows, source.data_date, ctx.roster, long_parts.keys(), ctx.person_areas)
+    charts = V.owed_charts(flows, ctx.roster, ctx.person_areas, ctx.area_names)
+    table = V.flow_rows(flows, source.data_date, ctx.roster, long_parts.keys(), ctx.person_areas, ctx.area_names)
     for row in table:
         row["partLabel"] = V.part_label(row)
         row["todoText"] = V.todo_text(row)
 
     label = project_label(scope.projects, flows)
     notices = _notices(flows, ctx, charts, long_cycle, parsed.anomalies)
+    if watch_missing:
+        notices.insert(1 if notices and notices[0]["kind"] == "longCycleReview" else 0, {
+            "kind": "watchlistMissing", "blocking": False, "names": watch_missing,
+            "text": f"关注清单里有 {len(watch_missing)} 个单号在数据里找不到，不计入统计：" + "、".join(watch_missing),
+        })
     lines = _summary_lines(label, region, current, delta)
+    if watchlist is not None:
+        lines.append(f"统计范围：关注清单 {len(flows)} 份")
     if mode["note"]:
         lines.append(mode["note"])
 
@@ -427,8 +502,9 @@ def compose(
         for project in projects:
             rows = [r for r in keep if V.cell_text(r.get("项目/车型")) == project]
             serials = {V.cell_text(r.get("流水单号")) for r in rows if V.cell_text(r.get("流水单号"))}
-            store.save_snapshot(source.data_date, project, rows, scope_kind="all", serials=sorted(serials),
-                                source_snapshot_at=source.snapshot_at)
+            # 快照覆盖范围跟随来源表单快照：全量，或只含关注清单里抓到的单号（D2、R4）。
+            store.save_snapshot(source.data_date, project, rows, scope_kind=source.coverage.get("kind", W.SCOPE_ALL),
+                                serials=sorted(serials), source_snapshot_at=source.snapshot_at)
 
     return {
         "subject": subject_for(label, region, source.data_date),
@@ -443,10 +519,14 @@ def compose(
         "summaryLines": lines,
         "charts": charts,
         "flows": table,
-        "longCycle": {"review": long_cycle["review"], "excluded": long_cycle["excluded"]},
+        "longCycle": {"review": long_cycle["review"], "excluded": long_cycle["excluded"],
+                      "misses": long_cycle["misses"]},
         "exportBlocked": bool(long_cycle["review"]),
         "notices": notices,
         "anomalies": parsed.anomalies,
+        "watchlist": None if watchlist is None else {"count": len(watchlist), "missing": watch_missing,
+                                                     "counted": len(flows)},
+        "coverage": source.coverage.get("kind", W.SCOPE_ALL),
         "seedVersion": seed_version(),
         "snapshotSaved": bool(save_snapshot and not stale),
     }
@@ -491,9 +571,8 @@ def _notices(flows: Sequence[V.Flow], ctx: _Context, charts: Mapping[str, Any],
     return notices
 
 
-def classify_keys(keys: Iterable[str]) -> dict[str, V.Classification]:
-    rules, vocab = list(seed_rules()), V.Vocabulary()
-    return {key: V.classify_part(key, rules, vocab) for key in keys}
+def classify_keys(keys: Iterable[str], effective: Effective) -> dict[str, V.Classification]:
+    return {key: V.classify_part(key, effective.rules, effective.vocab) for key in keys}
 
 
 # ── 后台抓取（R1、R3）────────────────────────────────────────────────

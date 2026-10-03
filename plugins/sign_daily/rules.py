@@ -3,8 +3,7 @@
 
 规格见 Claude Docs「3D单签署进展日报插件 需求规格 v2.0」，条款编号
 （P1–P9、A1–A11、L1–L6、D1–D7、G1–G8、T1–T4）在下方注释里原样引用。
-本模块不碰数据库、Flask 和宿主，输入是行数据和配置，输出是判定结果；
-``report.py`` 是 v1 口径，迁移完成前两者并存，backend 仍用 v1。
+本模块不碰数据库、Flask 和宿主，输入是行数据和配置，输出是判定结果。
 """
 
 from __future__ import annotations
@@ -372,8 +371,10 @@ class Attribution:
     needs_entry: bool = False
 
 
-def area_display(column: str) -> str:
-    return AREA_DISPLAY.get(column, column)
+def area_display(column: str, area_names: Mapping[str, str] | None = None) -> str:
+    """外部列的区域显示名；设置里可改（角色列配置），没改的用默认。"""
+    names = {**AREA_DISPLAY, **(area_names or {})}
+    return names.get(column) or column
 
 
 def attribute(
@@ -382,6 +383,7 @@ def attribute(
     roster: Roster,
     person_areas: Mapping[str, str] | None = None,
     current_departments: Iterable[str] = CURRENT_DEPARTMENTS,
+    area_names: Mapping[str, str] | None = None,
 ) -> Attribution:
     """A3–A8、A11：(姓名, 所在列) -> 责任区域与所进的图。"""
     hit = roster.lookup(name)
@@ -401,7 +403,7 @@ def attribute(
         return Attribution(chart, override, False, hit)
     if column in INTERNAL_COLUMNS:
         return Attribution(2, f"{column}（未在册）", False, hit, needs_entry=True)
-    return Attribution(1, area_display(column), False, hit)
+    return Attribution(1, area_display(column, area_names), False, hit)
 
 
 def approver_label(attribution: Attribution) -> str:
@@ -468,6 +470,7 @@ def owed_charts(
     flows: Sequence[Flow],
     roster: Roster,
     person_areas: Mapping[str, str] | None = None,
+    area_names: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """在途单里「当前待办」的欠账（A10、G1）。返回三张图的分组数据和待补录名单。"""
     charts: dict[int, dict[str, OwedGroup]] = {1: {}, 2: {}, 3: {}}
@@ -479,7 +482,7 @@ def owed_charts(
         for column, name in flow.unsigned():
             if name not in pending:
                 continue  # 未流转到：只在明细表计数
-            attribution = attribute(name, column, roster, person_areas)
+            attribution = attribute(name, column, roster, person_areas, area_names=area_names)
             if attribution.needs_entry:
                 needs_entry.add(name)
             group = charts[attribution.chart].setdefault(
@@ -525,6 +528,7 @@ def flow_rows(
     roster: Roster,
     long_serials: Iterable[str] = (),
     person_areas: Mapping[str, str] | None = None,
+    area_names: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """只列在途的单；按阶段、长周期在前、已申请天数降序、流水单号排序。"""
     long_set = set(long_serials)
@@ -543,7 +547,7 @@ def flow_rows(
             if name in seen:
                 continue
             seen.add(name)
-            attribution = attribute(name, column, roster, person_areas)
+            attribution = attribute(name, column, roster, person_areas, area_names=area_names)
             area = approver_label(attribution) if attribution.chart == 3 else attribution.group
             todo.append({"name": name, "area": area, "external": attribution.chart == 1, "addSign": False})
         for name in flow.add_sign_pending:
