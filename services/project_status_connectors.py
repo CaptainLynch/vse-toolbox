@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from core.diagnostic_recording import emit, observed
 
+import dataclasses
 import hashlib
 import json
 import logging
@@ -16,6 +17,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from core.archive_store import ArchiveStore
 from core.credential_provider import CredentialProvider
+from services import data_model_watchlist
 from core.project_status_contracts import (
     project_status_default_department,
     project_status_supports_record_set,
@@ -376,6 +378,13 @@ class TDCProjectStatusConnector:
                 },
                 name="sync_connector.TDCProjectStatusConnector.collect",
             )
+        coverage = None
+        watchlist = getattr(context, "watchlist", None)
+        if report == "data_model" and watchlist is not None:
+            # 关注清单范围：进度、分析和表单快照只按清单内的表单计算（§9 S1、S10、S11）。
+            application_rows, coverage = data_model_watchlist.apply_watchlist(
+                application_rows, data_model_watchlist.SCOPE_WATCHLIST, watchlist
+            )
         if report == "data_model":
             _emit_tdc_status_distribution(result.rows)
         artifacts = []
@@ -390,7 +399,8 @@ class TDCProjectStatusConnector:
                 csv_rows=application_rows,
             )
         )
-        return _snapshot(context, application_rows, artifacts, report=report)
+        snapshot = _snapshot(context, application_rows, artifacts, report=report)
+        return dataclasses.replace(snapshot, coverage=coverage) if coverage else snapshot
 
     def _normalized(
         self,

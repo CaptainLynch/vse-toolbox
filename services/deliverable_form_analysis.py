@@ -1775,6 +1775,7 @@ def build_form_snapshot(
     source: str,
     artifacts: Sequence[Mapping[str, Any]] = (),
     sheet_name: str | None = None,
+    coverage: Mapping[str, Any] | None = None,
 ) -> FormSnapshotInput:
     normalized = normalize_form_rows(
         form_key,
@@ -1794,6 +1795,9 @@ def build_form_snapshot(
     absent_indexes = source_absent_indexes(form_key, rows)
     if absent_indexes:
         schema["sourceAbsentIndexes"] = list(absent_indexes)
+    # 覆盖范围随快照持久化（全部 / 关注清单）；没写的旧快照按全部处理。
+    if coverage and coverage.get("kind") == "watchlist":
+        schema["coverage"] = dict(coverage)
     charts = {
         "departmentStatus": summary["departmentStatus"],
         "sectionStatus": summary["sectionStatus"],
@@ -1828,6 +1832,8 @@ _VIEW_FILTER_KEYS = frozenset(
         "overdueState",
         "isCompleted",
         "relationEwo",
+        # 多值搜索检索词（services/form_search.py），词与词之间为 OR。
+        "terms",
     }
 )
 # 同一字段内多选为 OR；这些键接受标量（向后兼容）或字符串列表。
@@ -1898,6 +1904,16 @@ def normalize_form_filters(
             continue
         if key == "isCompleted" and isinstance(value, bool):
             normalized[key] = value
+            continue
+        if key == "terms":
+            raw_terms = value if isinstance(value, (list, tuple)) else [value]
+            terms: list[str] = []
+            for item in raw_terms[:100]:
+                text = str(item or "").strip()[:200]
+                if text and text not in terms:
+                    terms.append(text)
+            if terms:
+                normalized[key] = terms
             continue
         if key in _MULTI_FILTER_KEYS:
             raw_items = value if isinstance(value, (list, tuple)) else [value]

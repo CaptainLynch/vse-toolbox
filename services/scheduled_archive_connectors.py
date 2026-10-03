@@ -30,6 +30,7 @@ from services.scheduled_archive_runner import (
     ArchiveConnectorRegistry,
     ArchiveJobContext,
 )
+from services import data_model_watchlist
 from services.scope_exclusion import exclude_paa_cancel_rows, exclude_tdc_scope_rows
 from services.tdc_auth import TDCPasswordAuthClient
 from services.tdc_crawler import (
@@ -72,6 +73,9 @@ _ARCHIVE_SENSITIVE_KEY_PARTS = (
 )
 
 _TDC_DATA_MODEL_KEYS = {
+    # syncScope/watchlist：关注清单同步范围（services/data_model_watchlist.py），不发给 TDC。
+    "syncScope",
+    "watchlist",
     "incident",
     "applicant",
     "department",
@@ -367,8 +371,10 @@ class TDCArchiveConnector:
                 output_dir=Path(temp_dir),
             )
             projection_error: str | None = None
+            coverage = None
             if context.job_key == "tdc_data_model":
                 data_model_filters = self._data_model_filters(context.filters)
+                watch_scope, watch_serials = data_model_watchlist.watchlist_settings(context.filters)
                 official = crawler.export_data_model(data_model_filters)
                 try:
                     rows = _official_workbook_rows(official.path, "data_model")
@@ -440,6 +446,11 @@ class TDCArchiveConnector:
             kept_rows, dropped_scope = exclude_tdc_scope_rows(
                 context.report_type, rows
             )
+            if context.job_key == "tdc_data_model":
+                # 关注清单范围：只把清单里的单号落进表单快照，并记录覆盖范围（§9 S1、S11）。
+                kept_rows, coverage = data_model_watchlist.apply_watchlist(
+                    kept_rows, watch_scope, watch_serials
+                )
             form_rows = tuple(kept_rows)
         if dropped_scope:
             emit(
@@ -459,6 +470,7 @@ class TDCArchiveConnector:
             (xlsx, *normalized),
             form_rows=form_rows,
             form_projection_error=projection_error,
+            form_coverage=coverage,
         )
 
     @staticmethod
@@ -750,6 +762,7 @@ def validate_archive_filters(
     normalized = dict(filters)
     if job_key == "tdc_data_model":
         TDCArchiveConnector._data_model_filters(normalized)
+        normalized = data_model_watchlist.normalized_filters(normalized)
     elif job_key == "tdc_sor":
         TDCArchiveConnector._sor_filters(normalized)
     elif job_key == "aras_ewo":

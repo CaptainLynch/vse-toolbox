@@ -172,6 +172,8 @@ class ConnectorSnapshot:
     expected_deliverable_updated_at: str
     artifacts: Sequence[Mapping[str, Any]] = ()
     analysis_rows: Sequence[Mapping[str, Any]] = field(default=(), repr=False)
+    #: 表单快照覆盖范围（数模关注清单，services/data_model_watchlist.py）；None 表示全部。
+    coverage: Mapping[str, Any] | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)

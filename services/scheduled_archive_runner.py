@@ -107,6 +107,7 @@ _REMEDY_BY_REASON: dict[str, str] = {
     "contract_mismatch": "restore_job_contract",
     "filters_invalid": "repair_job_filters",
     "retry_policy_invalid": "repair_retry_policy",
+    "watchlist_empty": "fill_watchlist",
     "unknown": "inspect_job_configuration",
 }
 
@@ -203,6 +204,8 @@ class ArchiveCollection:
     artifacts: tuple[ArchiveArtifact, ...]
     form_rows: tuple[Mapping[str, object], ...] | None = None
     form_projection_error: str | None = None
+    #: 表单快照覆盖范围（全部 / 关注清单），见 services/data_model_watchlist.py。
+    form_coverage: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -522,6 +525,7 @@ class ArchiveSyncRunner:
             source_run_id=context.run_id,
             source="scheduled_archive",
             artifacts=tuple(item.as_metadata() for item in collection.artifacts),
+            coverage=collection.form_coverage,
         )
         self._db.publish_deliverable_form_snapshot(snapshot)
 

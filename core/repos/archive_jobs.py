@@ -426,6 +426,14 @@ class ArchiveRepo:
                 raise ArchiveJobNotReadyError(
                     "archive job filters are invalid", reason="filters_invalid"
                 )
+            if (
+                template_key == "tdc_data_model"
+                and filters.get("syncScope") == "watchlist"
+                and not filters.get("watchlist")
+            ):
+                raise ArchiveJobNotReadyError(
+                    "data model watchlist is empty", reason="watchlist_empty"
+                )
             try:
                 retry_policy = _normalize_archive_retry_policy(retry_policy)
             except (TypeError, ValueError):

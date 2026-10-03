@@ -178,6 +178,8 @@ class ArchiveJobNotReadyError(ValueError):
         "contract_mismatch",
         "filters_invalid",
         "retry_policy_invalid",
+        # 数模关注清单同步范围但清单为空（services/data_model_watchlist.py）。
+        "watchlist_empty",
         "unknown",
     )
 
@@ -330,6 +332,8 @@ _FORM_ROW_FILTER_KEYS = frozenset(
         "overdueState",
         "isCompleted",
         "relationEwo",
+        # 多值搜索：检索词列表，词与词之间为「或」（services/form_search.py）。
+        "terms",
     }
 )
 
@@ -400,6 +404,19 @@ def _form_row_filter_sql(
             }
         where.append(f"{alias}.is_completed = ?")
         params.append(1 if bool(completed_value) else 0)
+    terms = rule.get("terms")
+    if terms not in (None, "", [], ()):
+        items = terms if isinstance(terms, (list, tuple)) else [terms]
+        cleaned_terms: list[str] = []
+        for item in items[:100]:
+            text = str(item or "").strip()[:200]
+            if text and text not in cleaned_terms:
+                cleaned_terms.append(text)
+        if cleaned_terms:
+            where.append("(" + " OR ".join(
+                f"instr(lower({alias}.search_text), lower(?)) > 0" for _ in cleaned_terms
+            ) + ")")
+            params.extend(cleaned_terms)
     keyword = str(rule.get("keyword") or "").strip()
     if keyword:
         where.append(f"instr(lower({alias}.search_text), lower(?)) > 0")
