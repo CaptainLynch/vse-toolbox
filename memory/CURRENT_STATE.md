@@ -1,5 +1,19 @@
 # Current State
 
+## 2026-10-03 签署日报 v2.0 启动：审计 + 纯函数口径（分支 claude/peaceful-bohr-bi1j7y）
+
+- **依据**：Claude Docs「3D单签署进展日报插件 需求规格 v2.0」；规格里的 `signing_report` 即现有 `plugins/sign_daily/`
+  （id 沿用 `sign-daily`，不改名，避免 v1 表成孤表）。审计全文 `docs/SIGN_DAILY_V2_AUDIT_20261003.md`。
+- **开工前待确认项已闭环**：自有存储/迁移可用（`host.migrate`，前缀 `p_sign_daily_`）；触发抓取可用（`ctx.services` 即
+  `app.extensions`，`scheduled_archive_admin.sync_now`）；进度需插件用 `crawl_task_runner` 包后台任务；抓取锁 = 归档租约。
+  风险：`app.extensions` 键名不是声明契约，建议宿主登记。§9：TDC 筛选键 `incident` = 流水单号（单值）；任务间隔
+  `interval_minutes` 决定频率，15 分钟只是调度 tick。
+- **完成**：`plugins/sign_daily/rules.py`（P1–P9、A1–A11、L1–L6、§5 指标/Δ/基线、G1–G4、T1–T4）+
+  `tests/test_sign_daily_rules.py` 65 passed；v1 `report.py`/backend 未改，行为不变。
+- **执行前沿**：①快照表（D1）+ `/refresh` 后台化；②三图一表 Canvas + 长周期复核阻塞导出；③种子/导入（M1–M8）；
+  ④复制富文本 + `.eml` multipart/related。**待用户**：794 行花名册与 43 项长周期清单种子（只放姓名+科室）、
+  合成在途样例三件套。
+
 ## 2026-10-02 插件重构遗漏行为恢复完成（分支 claude/restore-plugin-parity，基线 refactor/plugin-host@d0dd01d）
 
 - **完成**：旧业务分支（e2c58a3）9 批生产修复在插件架构下补回，逐条状态/位置/断言见
