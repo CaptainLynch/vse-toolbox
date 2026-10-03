@@ -15,6 +15,8 @@ from typing import Any, Mapping, Sequence
 
 MAX_TERMS = 100
 MAX_TERM_LENGTH = 200
+#: 「全部加入关注清单」一次最多带回的流水单号，与关注清单上限一致。
+MAX_SERIALS = 500
 PLACEHOLDER = "输入流水单号、零件名称、零件号或申请人；多个用空格、逗号或换行分隔，可直接粘贴 Excel 一列"
 _SEPARATORS = re.compile(r"[\s,;、]+")
 
@@ -44,7 +46,7 @@ def term_summary(db: Any, form_key: str, terms: Sequence[str]) -> dict[str, Any]
     """S4：-> 匹配多少份表单（按流水单号去重，没有该列的表单按行数）、哪些词没有匹配。"""
     latest = db.get_latest_deliverable_form_snapshot(form_key)
     if latest is None or not terms:
-        return {"terms": list(terms), "forms": 0, "rows": 0, "unmatched": list(terms)}
+        return {"terms": list(terms), "forms": 0, "rows": 0, "unmatched": list(terms), "serials": []}
     snapshot_id = int(latest["id"])
     schema = latest.get("schema")
     if schema is None and latest.get("schema_json"):
@@ -54,18 +56,22 @@ def term_summary(db: Any, form_key: str, terms: Sequence[str]) -> dict[str, Any]
             schema = None
     index = _serial_index(schema)
     rows = db.list_deliverable_form_snapshot_rows(snapshot_id, {"terms": list(terms)})
+    serials: list[str] = []
     if index is None:
         forms = len(rows)
     else:
-        forms = len({
-            str((row.get("values") or [None] * (index + 1))[index] or "").strip()
-            for row in rows
-        } - {""})
+        found = {
+            str(values[index]).strip()
+            for values in (row.get("values") or [] for row in rows)
+            if index < len(values) and values[index] not in (None, "")
+        }
+        forms = len(found)
+        serials = sorted(found)[:MAX_SERIALS]
     unmatched = [
         term for term in terms
         if not db.list_deliverable_form_snapshot_rows(snapshot_id, {"terms": [term]}, limit=1)
     ]
-    return {"terms": list(terms), "forms": forms, "rows": len(rows), "unmatched": unmatched}
+    return {"terms": list(terms), "forms": forms, "rows": len(rows), "unmatched": unmatched, "serials": serials}
 
 
 def form_serials(db: Any, form_key: str) -> set[str]:

@@ -58,6 +58,8 @@ import {
   setDraftFilter,
 } from "./form-state.js";
 import { SearchMultiSelect } from "./multi-select.js";
+import { TermsInput, TermsSummary, WatchlistPanel, loadWatchlist } from "./watchlist.js";
+import { DATA_MODEL_FORM_KEY, termsChipText } from "./watchlist-logic.js";
 
 const keyActivate = (fn) => (event) => {
   if (event.key === "Enter" || event.key === " ") {
@@ -106,7 +108,9 @@ function FormFilterBar({ data, state, onReload, bump }) {
   const chips = [];
   Object.entries(source).forEach(([key, value]) => {
     (Array.isArray(value) ? value : [value]).forEach((item) => {
-      const display = key === "overdueState" ? (OVERDUE_STATE_LABELS[item] || item) : item;
+      const display = key === "overdueState"
+        ? (OVERDUE_STATE_LABELS[item] || item)
+        : key === "terms" ? termsChipText(item) : item;
       const label = deliverableFormFilterLabel(formKey, key);
       const remove = () => {
         if (draftDirty) {
@@ -141,8 +145,10 @@ function FormFilterBar({ data, state, onReload, bump }) {
     </div>
     <div class="form-filter-controls">
       <div class="form-filter-row form-filter-row-search">
-        <input class="form-filter-keyword" type="search" placeholder="编号、项目、零件、负责人" aria-label="关键词" maxlength="200"
-          value=${String(draft.keyword || "")} onInput=${setText("keyword")} />
+        ${formKey === DATA_MODEL_FORM_KEY
+          ? html`<${TermsInput} value=${String(draft.terms || "")} onInput=${setText("terms")} />`
+          : html`<input class="form-filter-keyword" type="search" placeholder="编号、项目、零件、负责人" aria-label="关键词" maxlength="200"
+          value=${String(draft.keyword || "")} onInput=${setText("keyword")} />`}
         ${fields.includes("relationEwo") && html`<label class="form-filter-field">
           <span class="form-filter-label">${deliverableFormFilterLabel(formKey, "relationEwo") || "关联EWO"}</span>
           <input class="form-filter-keyword" type="text" placeholder="按 EWO 号定位关联记录" maxlength="200" aria-label="关联EWO"
@@ -804,11 +810,17 @@ export function FormAnalysisPanel({ item, version, ctl, onViewData, archive }) {
   const bump = () => setTick((value) => value + 1);
   const [view, setView] = useState({ data: null, rowsData: null, tab: "", error: null });
   const [bgBusy, setBgBusy] = useState(false);
+  const [watchlist, setWatchlist] = useState(null);
   const lastGoodTab = useRef("");
   const chartsRef = useRef(null);
   const rowsRef = useRef(null);
   const alive = useRef(true);
   useEffect(() => () => { alive.current = false; }, []);
+  useEffect(() => {
+    // 数模设计审核流程报表：关注清单与同步范围（§9 S1、S6）。
+    if (formKey !== DATA_MODEL_FORM_KEY) return;
+    loadWatchlist().then((data) => { if (alive.current) setWatchlist(data); }).catch(() => {});
+  }, [formKey]);
 
   const load = async () => {
     const filters = cloneFormFilterState(currentFormFilterState(state));
@@ -918,6 +930,7 @@ export function FormAnalysisPanel({ item, version, ctl, onViewData, archive }) {
         }}
       >${bgBusy ? "后台同步中..." : "运行后台归档同步"}</button>`}
     </div>
+    ${dataFormKey === DATA_MODEL_FORM_KEY && html`<${WatchlistPanel} watchlist=${watchlist} onChanged=${setWatchlist} />`}
     <div class="form-summary-grid">
       ${[["总数", summary.total], ["已完成", summary.completed], ["未完成", summary.incomplete], ["逾期", summary.overdue]].map(([label, value]) => html`
         <div class="form-summary-card" key=${label}>
@@ -939,6 +952,8 @@ export function FormAnalysisPanel({ item, version, ctl, onViewData, archive }) {
       </div>
       <section class="form-chart-panel" role="tabpanel" aria-label=${(tabs.find(([key]) => key === state.activeTab) || [])[1] || "表单图表"}>
         <${FormFilterBar} key=${`filter-${shown.activeTab}`} data=${data} state=${shown} onReload=${reload} bump=${bump} />
+        ${dataFormKey === DATA_MODEL_FORM_KEY && html`<${TermsSummary}
+          terms=${String(currentFormFilterState(shown).terms || "")} onWatchlistChanged=${setWatchlist} />`}
         <${ChartPanelContent} data=${data} state=${shown} onReload=${reload} bump=${bump} />
       </section>
     </section>

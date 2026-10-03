@@ -12,6 +12,7 @@ from core.project_status_contracts import (
 )
 from core.ewo_binding_v2 import normalize_ewo_v2_rule
 import json
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Mapping, Sequence
@@ -23,6 +24,8 @@ from core.db_manager import (
 )
 from core.redaction import redact_sensitive_text
 from services.project_status_records import compute_config_signature, observation_is_aggregate
+
+_logger = logging.getLogger(__name__)
 
 PROJECT_STATUS_PILOT_DELIVERABLE_ID = "VPI-T2-D5"
 PROJECT_STATUS_AUDIT_LIMIT = 100
@@ -1104,7 +1107,39 @@ class ProjectStatusUpdateService:
             raise ProjectStatusPolicyError({'request': '绑定已发生变化，请刷新配置后重试'}) from None
         raw = self._db.get_project_status_update_policy(deliverable_id)
         assert raw is not None
+        self._audit_policy_change(deliverable_id, binding, raw["binding"])
         return self._policy_to_api(raw)
+
+    def _audit_policy_change(
+        self,
+        deliverable_id: str,
+        before: Mapping[str, Any],
+        after: Mapping[str, Any],
+    ) -> None:
+        """同步设置改动写进关联归档任务的配置审计（§9 S21）；凭据只记是否配置。"""
+        def view(binding: Mapping[str, Any]) -> dict[str, Any]:
+            return {
+                "enabled": bool(binding.get("enabled")),
+                # None = 没有自己的间隔，跟随调度器频率（services/project_status_scheduler.py _is_fresh）。
+                "intervalMinutes": binding.get("interval_minutes"),
+                "mode": binding.get("mode"),
+                "matchRule": _json_loads(binding.get("match_rule_json")),
+                "credentialConfigured": bool(str(binding.get("credential_ref") or "").strip()),
+            }
+
+        old, new = view(before), view(after)
+        changes = {key: {"from": old[key], "to": new[key]} for key in old if old[key] != new[key]}
+        if not changes:
+            return
+        recorder = getattr(self._db, "record_deliverable_config_audit", None)
+        if recorder is None:
+            return
+        try:
+            recorder(deliverable_id, {"source": "deliverable_sync_settings", "deliverableId": deliverable_id,
+                                      "changes": changes})
+        except Exception as exc:  # noqa: BLE001 - 设置已保存，审计失败只记日志
+            _logger.warning("deliverable sync settings audit failed for %s: %s",
+                            deliverable_id, redact_sensitive_text(str(exc), limit=200))
 
     def list_updates(
         self,

@@ -10,16 +10,21 @@
 - POST watchlist       加入、移除、清空、改同步范围（S1、S6）；经归档任务服务写入，
                        沿用其校验、乐观锁和配置审计（S21）
 - GET  watchlist.csv   导出关注清单（S6）
+- GET  sync-settings   交付物明细列表「同步设置」列（S12–S15）：每个可同步交付物的真实来源
+                       （交付物绑定或归档任务）、启用、间隔、筛选条件原文、上次同步和待配置缺项；
+                       修改仍走宿主既有接口（update-policy、scheduled-archive jobs），保留其校验与审计
 """
 
 from __future__ import annotations
 
 import csv
 import io
+import json
 from typing import Any, Mapping
 
 from flask import Response, request
 
+from core.project_status_contracts import PROJECT_STATUS_SOURCE_CAPABILITIES
 from services import data_model_watchlist as W
 from services import form_search
 
@@ -95,6 +100,94 @@ def _apply(job: Mapping[str, Any], body: Mapping[str, Any]) -> dict[str, Any]:
     return filters
 
 
+def _json(value: Any) -> Any:
+    try:
+        return json.loads(value) if isinstance(value, str) and value else {}
+    except ValueError:
+        return {}
+
+
+def _binding_setting(deliverable_id: str, policy: Mapping[str, Any]) -> dict[str, Any]:
+    binding = policy["binding"]
+    match_rule = _json(binding.get("match_rule_json"))
+    automatic = [row for row in policy.get("authorities") or [] if row.get("authority") == "automatic"]
+    missing = []
+    if not str(binding.get("credential_ref") or "").strip():
+        missing.append("统一域账号凭据")
+    if not isinstance(match_rule, Mapping) or len([k for k in match_rule if k != "reportType"]) == 0:
+        missing.append("筛选条件")
+    aggregate = isinstance(match_rule, Mapping) and match_rule.get("aggregate") is True
+    if not aggregate and not str(binding.get("external_key") or "").strip():
+        missing.append("外部稳定键（在明细页完成映射取证）")
+    if not automatic:
+        missing.append("自动更新的字段（在明细页完成映射取证）")
+    return {
+        "deliverableId": deliverable_id,
+        "kind": "binding",
+        "enabled": bool(binding.get("enabled")),
+        # None = 没有自己的间隔，跟随调度器频率（services/project_status_scheduler.py _is_fresh）。
+        "intervalMinutes": binding.get("interval_minutes"),
+        "mode": binding.get("mode"),
+        "filters": match_rule if isinstance(match_rule, Mapping) else {},
+        "lastAttemptAt": binding.get("last_attempt_at"),
+        "lastSuccessAt": binding.get("last_success_at"),
+        "syncState": binding.get("sync_state"),
+        "lastError": binding.get("last_error_message"),
+        "missing": missing,
+        "updatedAt": binding.get("updated_at"),
+    }
+
+
+def _archive_setting(deliverable_id: str, job: Mapping[str, Any]) -> dict[str, Any]:
+    missing = [] if job.get("credentialConfigured") else ["统一域账号凭据"]
+    return {
+        "deliverableId": deliverable_id,
+        "kind": "archive",
+        "jobKey": job.get("jobKey"),
+        "enabled": bool(job.get("enabled")),
+        "intervalMinutes": job.get("intervalMinutes"),
+        "mode": None,
+        "filters": dict(job.get("filters") or {}),
+        "outputSubdir": job.get("outputSubdir") or "",
+        "lastAttemptAt": job.get("lastAttemptAt"),
+        "lastSuccessAt": job.get("lastSuccessAt"),
+        "syncState": job.get("syncState"),
+        "lastError": job.get("lastErrorMessage"),
+        "missing": missing,
+        "updatedAt": job.get("updatedAt"),
+    }
+
+
+def sync_settings(db: Any, jobs: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """可同步交付物的同步设置（S12）；外部快照驱动的交付物以其归档任务为准。"""
+    by_deliverable = {str(job.get("deliverableId")): job for job in jobs if job.get("deliverableId")}
+    data_model_job = next((job for job in jobs if job.get("jobKey") == W.JOB_KEY), None)
+    result = []
+    for deliverable_id, capabilities in PROJECT_STATUS_SOURCE_CAPABILITIES.items():
+        snapshot_driven = capabilities.get("formSnapshotDriven") is True
+        if not capabilities.get("syncCapable") and not snapshot_driven:
+            continue
+        if snapshot_driven and deliverable_id in by_deliverable:
+            item = _archive_setting(deliverable_id, by_deliverable[deliverable_id])
+        else:
+            policy = db.get_project_status_update_policy(deliverable_id)
+            if policy is None:
+                continue
+            item = _binding_setting(deliverable_id, policy)
+        if capabilities.get("reportType") == "data_model" and data_model_job is not None:
+            try:
+                scope, serials = W.watchlist_settings(data_model_job.get("filters") or {})
+            except W.WatchlistError:
+                scope, serials = W.SCOPE_ALL, ()
+            item["watchlist"] = {"scope": scope, "count": len(serials)}
+            if scope == W.SCOPE_WATCHLIST and not serials:
+                item["missing"] = [*item["missing"], "关注清单"]
+        item["displayName"] = capabilities.get("displayName")
+        item["manualOnly"] = bool(capabilities.get("manualOnly"))
+        result.append(item)
+    return result
+
+
 def register(host):
     ctx = host.context
     bp = host.blueprint
@@ -150,6 +243,14 @@ def register(host):
             message = "；".join(f"{k}：{v}" for k, v in dict(fields).items()) if isinstance(fields, Mapping) else str(exc)
             return ctx.json_error(409, "WatchlistUpdateFailed", ctx.redact(message or "保存关注清单失败"))
         return ctx.json_ok(_watchlist_view(ctx.db, updated))
+
+    @bp.get("/sync-settings")
+    def sync_settings_view():
+        try:
+            jobs = admin().list_jobs()
+        except LookupError:
+            jobs = []
+        return ctx.json_ok({"items": sync_settings(ctx.db, jobs)})
 
     @bp.get("/watchlist.csv")
     def watchlist_csv():

@@ -9,6 +9,7 @@ import { detailsSummaryCells, overviewIsEmpty } from "./shared/status-logic.js";
 import { SyncControlBar } from "./details/sync-bar.js";
 import { DeliverableDetailsTable } from "./details/table.js";
 import { ExternalDeliverablesReference } from "./details/external.js";
+import { useSyncSettings } from "./details/sync-settings.js";
 
 function DetailsSummary({ phase }) {
   return html`<div class="details-phase-bar">
@@ -22,6 +23,7 @@ function DetailsSummary({ phase }) {
 export default function DetailsPage({ plugin }) {
   useStylesheet(`/plugins/${plugin.id}/static/overview.css`);
   const state = useProjectStatus();
+  const settings = useSyncSettings();
   const ready = !state.loading && !state.error && !overviewIsEmpty(state.data);
   return html`<section class="project-overview" aria-label="交付物明细">
     <${OverviewTabs} current="details" />
@@ -30,11 +32,12 @@ export default function DetailsPage({ plugin }) {
         ${ready
           ? html`<div class="overview-details-summary">
               <${DetailsSummary} phase=${state.data.phase} />
-              <${SyncControlBar} onSynced=${() => state.reload({ quiet: true })} />
+              <${SyncControlBar} settings=${settings}
+                onSynced=${async () => { await settings.reload(); await state.reload({ quiet: true }); }} />
             </div>`
           : html`<${BandState} ...${state} onRetry=${state.retry} />`}
       </section>
-      <${DeliverableDetailsTable} state=${state} />
+      <${DeliverableDetailsTable} state=${state} settings=${settings} />
       <${ExternalDeliverablesReference} />
     </div>
   </section>`;

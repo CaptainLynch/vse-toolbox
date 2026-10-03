@@ -55,6 +55,7 @@ def test_multi_term_search_counts_forms_and_lists_unmatched(client):  # type: ig
     text = "F610M-3D-0001\nF610M-3D-0002\nF610M-3D-0099"
     summary = _ok(http.get(f"{API}/form-terms", query_string={"terms": text}))
     assert (summary["forms"], summary["unmatched"]) == (2, ["F610M-3D-0099"])
+    assert summary["serials"] == ["F610M-3D-0001", "F610M-3D-0002"]
     assert summary["placeholder"] == PLACEHOLDER  # 验收 23
     rows = http.get("/api/deliverable-forms/tdc_data_model/rows", query_string={"terms": text}).get_json()
     assert rows["ok"] is True and rows["data"]["total"] == 3
@@ -92,3 +93,32 @@ def test_watchlist_validation(client):  # type: ignore[no-untyped-def]
     assert http.post(f"{API}/watchlist", json={"action": "add", "serials": "x"}).status_code == 400
     assert http.post(f"{API}/watchlist", json={"action": "add", "serials": ["a\nb"]}).status_code == 400
     assert http.post(f"{API}/watchlist", json={"action": "scope", "scope": "x"}).status_code == 400
+
+
+def test_sync_settings_lists_real_sources_and_audits_binding_edits(client):  # type: ignore[no-untyped-def]  # S12–S15、S21
+    _, http, db = client
+    items = {item["deliverableId"]: item for item in _ok(http.get(f"{API}/sync-settings"))["items"]}
+    data_model = items["VPI-T2-D5"]
+    assert data_model["kind"] == "binding" and data_model["watchlist"] == {"scope": "all", "count": 0}
+    assert "统一域账号凭据" in data_model["missing"]
+    snapshot_driven = [item for item in items.values() if item["kind"] == "archive"]
+    assert snapshot_driven and all(item["jobKey"] for item in snapshot_driven)
+
+    # 列表里改间隔走宿主既有 update-policy 接口，并写进关联归档任务的配置审计（S14、S21）
+    response = http.patch("/api/project-status/deliverables/VPI-T2-D5/update-policy", json={"intervalMinutes": 30})
+    assert response.get_json()["ok"] is True, response.get_json()
+    after = {item["deliverableId"]: item for item in _ok(http.get(f"{API}/sync-settings"))["items"]}
+    assert after["VPI-T2-D5"]["intervalMinutes"] == 30
+    with db.get_connection() as conn:
+        row = conn.execute(
+            "SELECT a.changes_json FROM scheduled_archive_config_audit a JOIN scheduled_archive_jobs j ON j.id = a.job_id "
+            "WHERE j.project_status_deliverable_id = 'VPI-T2-D5' ORDER BY a.id DESC LIMIT 1"
+        ).fetchone()
+    assert row is not None
+    # from null：此前没有自己的间隔，跟随调度器频率
+    assert '"intervalMinutes":{"from":null,"to":30}' in row["changes_json"]
+
+    # 关注清单范围但清单为空：同步设置写明缺「关注清单」（S15、S9）
+    _ok(http.post(f"{API}/watchlist", json={"action": "scope", "scope": "watchlist"}))
+    items = {item["deliverableId"]: item for item in _ok(http.get(f"{API}/sync-settings"))["items"]}
+    assert "关注清单" in items["VPI-T2-D5"]["missing"]

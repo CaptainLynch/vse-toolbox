@@ -1,9 +1,11 @@
 // 交付物明细表 (legacy renderDeliverableDetails). Rows open the deliverable
 // (or archive snapshot) detail page; board-hidden deliverables are skipped.
-import { html } from "/static/host/vendor/preact-htm.js";
+import { html, useState } from "/static/host/vendor/preact-htm.js";
 import { pageHash, redactText } from "../shared/client.js";
 import { OVERVIEW_DETAIL_COLUMNS, detailRows, overviewIsEmpty } from "../shared/status-logic.js";
 import { safeDisplayValue } from "../shared/status-data.js";
+import { BatchBar, SyncSettingsCell, SyncSettingsEditor } from "./sync-settings.js";
+import { watchlistProgressSuffix } from "../deliverable/watchlist-logic.js";
 
 function open(row) {
   window.location.hash = pageHash(row.target.page, row.target.params);
@@ -14,10 +16,10 @@ function TableState({ state }) {
   if (state.loading) body = html`<p class="loading">加载中</p>`;
   else if (state.error) body = html`<p class="error-msg" role="alert">加载失败：${redactText(state.error)}</p>`;
   else body = html`<p class="is-empty">暂无数据</p>`;
-  return html`<tr><td colspan=${OVERVIEW_DETAIL_COLUMNS.length + 1}>${body}</td></tr>`;
+  return html`<tr><td colspan=${OVERVIEW_DETAIL_COLUMNS.length + 2}>${body}</td></tr>`;
 }
 
-function DetailRow({ row }) {
+function DetailRow({ row, setting, selected, onSelect, editing, onToggleEditor, onSaved }) {
   const readOnlyText = row.editable ? "" : `手工字段只读：${redactText(row.readOnlyReason)}`;
   return html`<tr
     class="deliverable-detail-row"
@@ -27,12 +29,19 @@ function DetailRow({ row }) {
     onClick=${(event) => { if (!event.target.closest("button")) open(row); }}
   >
     ${row.values.map((value, cellIndex) => html`<td key=${cellIndex} data-label=${OVERVIEW_DETAIL_COLUMNS[cellIndex]}><span class="detail-cell-value">
-      ${cellIndex === 1
+      ${cellIndex === 3 && setting && setting.watchlist
+        ? `${safeDisplayValue(value)}${watchlistProgressSuffix(setting.watchlist)}`
+        : cellIndex === 1
         ? html`<span class=${`status-text is-${row.statusTone}`}>${safeDisplayValue(value)}</span>
           ${row.riskNote ? html`<span class="badge-risk-note" title=${row.riskNote.title}>${row.riskNote.text}</span>` : null}`
         : safeDisplayValue(value)}
       ${cellIndex === 0 && !row.editable ? html`<small class="detail-readonly-note">${readOnlyText}</small>` : null}
     </span></td>`)}
+    <td class="detail-sync-settings" data-label="同步设置">
+      <${SyncSettingsCell} setting=${setting} selected=${selected} onSelect=${onSelect}
+        onToggleEditor=${onToggleEditor} onSaved=${onSaved} />
+      ${editing && setting && html`<${SyncSettingsEditor} setting=${setting} onClose=${onToggleEditor} onSaved=${onSaved} />`}
+    </td>
     <td class="detail-expand-cell">
       <button
         type="button"
@@ -44,8 +53,15 @@ function DetailRow({ row }) {
   </tr>`;
 }
 
-export function DeliverableDetailsTable({ state }) {
+export function DeliverableDetailsTable({ state, settings }) {
   const rows = !state.loading && !state.error && !overviewIsEmpty(state.data) ? detailRows(state.data) : [];
+  const [selected, setSelected] = useState([]);
+  const [editing, setEditing] = useState("");
+  const byId = (settings && settings.byId) || {};
+  const saved = async () => {
+    if (settings) await settings.reload();
+    if (state.reload) await state.reload({ quiet: true });
+  };
   return html`<section class="overview-band details-table-band" aria-label="交付物明细表">
     <div class="band-head">
       <div>
@@ -53,16 +69,24 @@ export function DeliverableDetailsTable({ state }) {
         <h4>交付物明细</h4>
       </div>
     </div>
+    ${settings && settings.error && html`<p class="error-msg" role="alert">同步设置读取失败：${settings.error}</p>`}
+    <${BatchBar} selected=${selected} settings=${byId} onDone=${saved} />
     <div class="overview-table-wrap">
       <table class="overview-details-table">
         <thead>
           <tr>
             ${OVERVIEW_DETAIL_COLUMNS.map((title) => html`<th key=${title} scope="col">${title}</th>`)}
+            <th scope="col">同步设置</th>
             <th scope="col"><span class="visually-hidden">展开控制</span></th>
           </tr>
         </thead>
         <tbody>
-          ${rows.length ? rows.map((row) => html`<${DetailRow} key=${row.id} row=${row} />`) : html`<${TableState} state=${state} />`}
+          ${rows.length ? rows.map((row) => html`<${DetailRow} key=${row.id} row=${row} setting=${byId[row.id]}
+            selected=${selected.includes(row.id)}
+            onSelect=${(on) => setSelected((list) => (on ? [...list, row.id] : list.filter((id) => id !== row.id)))}
+            editing=${editing === row.id}
+            onToggleEditor=${() => setEditing((current) => (current === row.id ? "" : row.id))}
+            onSaved=${saved} />`) : html`<${TableState} state=${state} />`}
         </tbody>
       </table>
     </div>

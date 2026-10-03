@@ -279,3 +279,25 @@ a.overview-tab, a.timeline-edit-btn { text-decoration: none; }
   color: var(--primary);
   border-color: var(--primary);
 }
+
+/* 交付物明细「同步设置」列、批量修改与全量同步确认（签署日报规格 §9 S12–S18） */
+.detail-sync-settings { min-width: 260px; }
+.sync-settings-cell { display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
+.sync-settings-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sync-settings-switch { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; cursor: pointer; }
+.sync-settings-meta { color: var(--muted); }
+.sync-settings-missing { color: var(--warning); }
+.sync-settings-error { color: var(--error); }
+.sync-settings-none { color: var(--muted); }
+.sync-settings-editor { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; padding: 8px; border: 1px solid var(--hairline-strong); border-radius: 6px; background: var(--surface-soft); font-size: 12px; }
+.sync-settings-editor label { display: flex; flex-direction: column; gap: 2px; }
+.sync-settings-editor textarea, .sync-settings-editor input, .sync-settings-editor select { font: inherit; }
+.sync-settings-note { margin: 0; color: var(--muted); }
+.sync-settings-actions { display: flex; gap: 6px; }
+.sync-settings-batch { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 0; padding: 6px 10px; border: 1px solid var(--hairline-strong); border-radius: 6px; }
+.sync-settings-batch input { width: 120px; font: inherit; }
+.sync-settings-batch-msg { color: var(--muted); }
+.details-sync-indicator.is-warning { color: var(--warning); }
+.details-sync-warning { color: var(--warning); font-weight: 600; }
+.details-sync-confirm { margin-top: 8px; padding: 8px 12px; border: 1px solid var(--warning); border-radius: 6px; }
+.details-sync-confirm ul { list-style: none; margin: 6px 0; padding: 0; }
