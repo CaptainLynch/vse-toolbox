@@ -37,6 +37,7 @@ from flask import Response, request
 
 from services import data_model_watchlist as W
 from services.deliverable_form_analysis import form_definition
+from services.form_search import snapshot_schema
 from services.xlsx_preview import XLSXPreviewError, read_xlsx_preview
 
 from . import mail as M
@@ -313,13 +314,8 @@ def import_rows(value: Mapping[str, Any]) -> str | list[list[Any]]:
 
 
 def _headers(latest: Mapping[str, Any]) -> list[str]:
-    schema = latest.get("schema")
-    if schema is None and latest.get("schema_json"):
-        try:
-            schema = json.loads(latest["schema_json"])
-        except ValueError:
-            schema = None
-    if not isinstance(schema, Mapping) or not schema.get("headerRows"):
+    schema = snapshot_schema(latest)
+    if not schema or not schema.get("headerRows"):
         schema = form_definition(S.FORM_KEY)
     return [str(h or "").strip() for h in schema["headerRows"][0]]
 

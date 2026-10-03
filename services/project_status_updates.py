@@ -901,7 +901,8 @@ class ProjectStatusUpdateService:
         match_rule = payload.get("matchRule", _json_loads(binding["match_rule_json"]))
         mapping = payload.get("mapping", _json_loads(binding["mapping_json"]))
         credential_ref = payload.get("credentialRef", binding.get("credential_ref"))
-        interval_minutes = payload.get("intervalMinutes", binding.get("interval_minutes") or 60)
+        # 没传就保留原值；原值为空表示跟随调度器频率，不能被部分更新悄悄改成 60 分钟。
+        interval_minutes = payload.get("intervalMinutes", binding.get("interval_minutes"))
 
         current_authority = {
             PROJECT_STATUS_FIELD_NAME_TO_API[row["field_name"]]: row["authority"]
@@ -972,7 +973,9 @@ class ProjectStatusUpdateService:
                 fields["credentialRef"] = "凭据引用格式无效"
             else:
                 credential_ref = credential_ref.strip()
-        if not isinstance(interval_minutes, int) or isinstance(interval_minutes, bool) or interval_minutes < 1:
+        if interval_minutes is not None and (
+            not isinstance(interval_minutes, int) or isinstance(interval_minutes, bool) or interval_minutes < 1
+        ):
             fields["intervalMinutes"] = "同步周期必须是正整数分钟"
 
         if external_key is not None and not isinstance(external_key, str):

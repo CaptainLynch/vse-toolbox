@@ -16,6 +16,7 @@ import re
 from email.headerregistry import Address
 from email.message import EmailMessage
 from email.policy import SMTP
+from datetime import datetime
 from email.utils import getaddresses
 from typing import Any, Mapping, Sequence
 
@@ -57,8 +58,19 @@ def _paragraphs(text: Any) -> list[str]:
     return [line.strip() for line in str(text or "").splitlines() if line.strip()]
 
 
+_URL = re.compile(r"https?://[^\s<>\"']+")
+
+
 def _link_html(text: str) -> str:
-    return re.sub(r"(https?://[^\s<&]+)", r'<a href="\1">\1</a>', _e(text))
+    """在原文上识别链接（含多个查询参数的 &），再逐段转义。"""
+    out, last = [], 0
+    for match in _URL.finditer(text):
+        url = match.group(0)
+        out.append(_e(text[last:match.start()]))
+        out.append(f'<a href="{html.escape(url, quote=True)}">{_e(url)}</a>')
+        last = match.end()
+    out.append(_e(text[last:]))
+    return "".join(out)
 
 
 def day_level(days: Any, thresholds: Mapping[str, Any]) -> str:
@@ -189,8 +201,15 @@ def render_text(report: Mapping[str, Any], texts: Mapping[str, Any]) -> str:
 
 
 def format_data_time(report: Mapping[str, Any]) -> str:
-    text = str(report.get("snapshotAt") or report.get("dataDate") or "")
-    return text.replace("T", " ").replace("Z", " UTC")[:20].strip()
+    """抓取时间按本机时区显示到分钟（与数据日期同一时区）；解析不了就显示数据日期。"""
+    text = str(report.get("snapshotAt") or "")
+    try:
+        moment = datetime.fromisoformat(text[:-1] + "+00:00" if text.endswith("Z") else text)
+    except ValueError:
+        return str(report.get("dataDate") or "")
+    if moment.tzinfo is not None:
+        moment = moment.astimezone()
+    return moment.strftime("%Y-%m-%d %H:%M")
 
 
 # ── 收件人（§8）──────────────────────────────────────────────────────

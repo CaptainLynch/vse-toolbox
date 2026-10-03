@@ -500,6 +500,10 @@ def compose(
     if save_snapshot and not stale:
         keep = [r for r in source.records if V.cell_text(r.get("项目/车型")) in set(projects)]
         for project in projects:
+            existing = store.snapshot_scope(project, source.data_date)
+            if (source.coverage.get("kind") != W.SCOPE_ALL and existing is not None
+                    and existing.get("kind") == W.SCOPE_ALL):
+                continue  # 同一数据日期已有全量快照：关注清单那份不覆盖它，免得第二天的全量日报失去基线
             rows = [r for r in keep if V.cell_text(r.get("项目/车型")) == project]
             serials = {V.cell_text(r.get("流水单号")) for r in rows if V.cell_text(r.get("流水单号"))}
             # 快照覆盖范围跟随来源表单快照：全量，或只含关注清单里抓到的单号（D2、R4）。

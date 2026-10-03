@@ -5,6 +5,17 @@ delete. Per-plan rulings stay in their SDD ledger (`.superpowers/sdd/…`, local
 and get promoted here once they prove durable. Newest first. Keep entries
 short: decision, why, cost if violated, source pointer.
 
+## 2026-10-03 — 签署日报 v2.0 与数模关注清单的几条长期约定
+
+- 插件 id 保持 `sign-daily`（规格叫 signing_report）：改名会让 v1 的配置表成孤表。表前缀 `p_sign_daily_`。
+- 日报口径只在 `plugins/sign_daily/rules.py`；基线不存汇总数，存零件级原始行并按今天口径重算（规格 D3）。
+- 关注清单的唯一存放处是 tdc_data_model 归档任务的 filters_json（`syncScope`、`watchlist`），两条同步路径都读它；
+  TDC 不能按流水单号查，所以抓全量、落库前过滤；快照在 `schema.coverage` 记覆盖范围，「最近一次全量」只认 kind=all。
+- 花名册本地层按规范化姓名做主键（同名不同科室导入时就拦下），种子只放姓名和科室，不放工号。
+- 同步设置列的写入一律走宿主既有接口（update-policy、scheduled-archive jobs），不在插件里另开写路径；
+  绑定设置改动记到关联归档任务的 scheduled_archive_config_audit。
+- 来源：`docs/SIGN_DAILY_V2_AUDIT_20261003.md`。
+
 ## 2026-10-01 — 插件化重构立项：宿主 + 功能插件 + Schema 视图 + onedir 签名插件包
 
 1. **方向**：保留 `services/` 能力层，把 Web 层、数据归属和打包分发重建为 CTFd 式 Flask 插件目录（`register(host)`）+ `plugin.json` 声明式清单 + calibre 式签名 `.vsepkg` 导入；前端为无构建的 Preact + htm（用户确认）。

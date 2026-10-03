@@ -48,7 +48,7 @@ export function SyncSettingsCell({ setting, selected, onSelect, onToggleEditor, 
       setBusy(false);
     }
   };
-  const missing = setting.enabled ? "" : missingText(setting);
+  const missing = setting.configIssue || (setting.enabled ? "" : missingText(setting));
   return html`<div class="sync-settings-cell" onClick=${(event) => event.stopPropagation()}>
     <div class="sync-settings-line">
       <input type="checkbox" class="sync-settings-select" aria-label=${`选择 ${setting.displayName || setting.deliverableId}`}

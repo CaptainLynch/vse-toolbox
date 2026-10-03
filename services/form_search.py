@@ -34,6 +34,19 @@ def parse_terms(text: Any) -> list[str]:
     return terms
 
 
+def snapshot_schema(snapshot: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+    """表单快照的 schema：列表接口给解析好的 ``schema``，最新快照接口给 ``schema_json`` 原文。"""
+    if not snapshot:
+        return None
+    schema = snapshot.get("schema")
+    if schema is None and snapshot.get("schema_json"):
+        try:
+            schema = json.loads(snapshot["schema_json"])
+        except ValueError:
+            schema = None
+    return schema if isinstance(schema, Mapping) else None
+
+
 def _serial_index(schema: Mapping[str, Any] | None) -> int | None:
     header_rows = (schema or {}).get("headerRows") if isinstance(schema, Mapping) else None
     if not header_rows:
@@ -48,13 +61,7 @@ def term_summary(db: Any, form_key: str, terms: Sequence[str]) -> dict[str, Any]
     if latest is None or not terms:
         return {"terms": list(terms), "forms": 0, "rows": 0, "unmatched": list(terms), "serials": []}
     snapshot_id = int(latest["id"])
-    schema = latest.get("schema")
-    if schema is None and latest.get("schema_json"):
-        try:
-            schema = json.loads(latest["schema_json"])
-        except ValueError:
-            schema = None
-    index = _serial_index(schema)
+    index = _serial_index(snapshot_schema(latest))
     rows = db.list_deliverable_form_snapshot_rows(snapshot_id, {"terms": list(terms)})
     serials: list[str] = []
     if index is None:
@@ -67,9 +74,14 @@ def term_summary(db: Any, form_key: str, terms: Sequence[str]) -> dict[str, Any]
         }
         forms = len(found)
         serials = sorted(found)[:MAX_SERIALS]
+    # 先在合并结果里认出已匹配的词（一次遍历）；只有这里没认出来的词才单独回库确认，
+    # 以库里的 search_text 为准（它可能截断或脱敏，Python 侧的拼接不完全等价）。
+    haystacks = [" ".join(str(v) for v in (row.get("values") or []) if v is not None).lower() for row in rows]
+    seen = {term for term in terms if any(term.lower() in text for text in haystacks)}
     unmatched = [
         term for term in terms
-        if not db.list_deliverable_form_snapshot_rows(snapshot_id, {"terms": [term]}, limit=1)
+        if term not in seen
+        and not db.list_deliverable_form_snapshot_rows(snapshot_id, {"terms": [term]}, limit=1)
     ]
     return {"terms": list(terms), "forms": forms, "rows": len(rows), "unmatched": unmatched, "serials": serials}
 
@@ -79,13 +91,7 @@ def form_serials(db: Any, form_key: str) -> set[str]:
     latest = db.get_latest_deliverable_form_snapshot(form_key)
     if latest is None:
         return set()
-    schema = latest.get("schema")
-    if schema is None and latest.get("schema_json"):
-        try:
-            schema = json.loads(latest["schema_json"])
-        except ValueError:
-            schema = None
-    index = _serial_index(schema)
+    index = _serial_index(snapshot_schema(latest))
     if index is None:
         return set()
     serials = set()

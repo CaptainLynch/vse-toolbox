@@ -18,6 +18,8 @@ from __future__ import annotations
 import json
 from typing import Any, Iterable, Mapping, Sequence
 
+from services.form_search import snapshot_schema
+
 JOB_KEY = "tdc_data_model"
 SCOPE_ALL = "all"
 SCOPE_WATCHLIST = "watchlist"
@@ -121,13 +123,8 @@ def load_watchlist(db: Any) -> tuple[str, tuple[str, ...]]:
 
 def snapshot_coverage(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
     """表单快照的覆盖范围；没记录的旧快照都是全量（S11）。"""
-    schema = (snapshot or {}).get("schema")
-    if schema is None and (snapshot or {}).get("schema_json"):
-        try:
-            schema = json.loads(snapshot["schema_json"])
-        except ValueError:
-            schema = None
-    coverage = schema.get("coverage") if isinstance(schema, Mapping) else None
+    schema = snapshot_schema(snapshot)
+    coverage = schema.get("coverage") if schema else None
     if isinstance(coverage, Mapping) and coverage.get("kind") == SCOPE_WATCHLIST:
         return dict(coverage)
     return {"kind": SCOPE_ALL}

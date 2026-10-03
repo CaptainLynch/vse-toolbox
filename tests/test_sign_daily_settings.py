@@ -131,3 +131,10 @@ def test_vocabulary_validation(mods, tmp_path):
             SET.validate_vocabulary(bad)
     store.reset_seed("vocabulary")
     assert store.vocabulary() == SET.default_vocabulary()
+
+
+def test_rule_import_does_not_collide_with_later_explicit_id(mods, tmp_path):  # 审计
+    _, R = mods
+    store, _ = _store(mods, tmp_path)
+    plan = store.rules_import_plan("规则编号,零件名称,备注\n,尾门外板,\nLC03,顶盖,\n", False, R.Vocabulary())
+    assert sorted(e["id"] for e in plan["added"]) == ["LC03", "LC04"]

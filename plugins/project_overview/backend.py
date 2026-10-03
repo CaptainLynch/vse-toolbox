@@ -49,11 +49,15 @@ def _watchlist_view(db: Any, job: Mapping[str, Any]) -> dict[str, Any]:
     latest = db.get_latest_deliverable_form_snapshot(FORM_KEY)
     coverage = W.snapshot_coverage(latest)
     reported_missing = set(coverage.get("missing") or ())
-    synced = latest is not None
-    items = [
-        {"serial": serial, "found": (serial in present and serial not in reported_missing) if synced else None}
-        for serial in serials
-    ]
+    queried = set(coverage.get("serials") or ()) if coverage.get("kind") == W.SCOPE_WATCHLIST else None
+
+    def found(serial: str) -> bool | None:
+        """已找到 / 未找到 / 未同步：清单快照只查了当时的清单，之后加进来的还没同步过。"""
+        if latest is None or (queried is not None and serial not in queried):
+            return None
+        return serial in present and serial not in reported_missing
+
+    items = [{"serial": serial, "found": found(serial)} for serial in serials]
     return {
         "scope": scope,
         "items": items,
@@ -182,6 +186,8 @@ def sync_settings(db: Any, jobs: list[Mapping[str, Any]]) -> list[dict[str, Any]
             item["watchlist"] = {"scope": scope, "count": len(serials)}
             if scope == W.SCOPE_WATCHLIST and not serials:
                 item["missing"] = [*item["missing"], "关注清单"]
+                # 启用的绑定也会因此停同步（S9），不论启用与否都要让列表看到。
+                item["configIssue"] = "待配置：关注清单为空"
         item["displayName"] = capabilities.get("displayName")
         item["manualOnly"] = bool(capabilities.get("manualOnly"))
         result.append(item)

@@ -454,3 +454,15 @@ def test_pending_empty_is_reported():  # §8：会签列有未签但待审批人
     assert any(a["kind"] == "pendingEmpty" for a in result.anomalies)
     row = R.flow_rows(result.flows, DATA_DATE, ROSTER)[0]
     assert row["stage"] == R.STAGE_COUNTERSIGN and R.todo_text(row).startswith("—")
+
+
+@pytest.mark.parametrize("name", ["前门外板L/H", "前门外板(R-H)", "左前门内板", "LLHH前门", "尾门外板 R/H 总成"])
+def test_conclusion_key_is_idempotent(name):  # 审计：记忆键回传后台再规范化一次必须不变
+    key = R.conclusion_key(name)
+    assert R.conclusion_key(key) == key
+    assert "LH" not in key and "RH" not in key
+
+
+def test_lh_rh_with_punctuation_still_hits():
+    assert R.classify_part("前门外板L/H", RULES, VOCAB).result == R.RESULT_HIT
+    assert R.classify_part("前门外板 R-H 总成", RULES, VOCAB).result == R.RESULT_HIT

@@ -1,23 +1,21 @@
 # Current State
 
-## 2026-10-03 签署日报 v2.0 启动：审计 + 纯函数口径（分支 claude/peaceful-bohr-bi1j7y）
+## 2026-10-03 签署日报 v2.0 + 交付物明细同步增强（§9）全部实现并审计（分支 claude/peaceful-bohr-bi1j7y）
 
-- **依据**：Claude Docs「3D单签署进展日报插件 需求规格 v2.0」；规格里的 `signing_report` 即现有 `plugins/sign_daily/`
-  （id 沿用 `sign-daily`，不改名，避免 v1 表成孤表）。审计全文 `docs/SIGN_DAILY_V2_AUDIT_20261003.md`。
-- **开工前待确认项已闭环**：自有存储/迁移可用（`host.migrate`，前缀 `p_sign_daily_`）；触发抓取可用（`ctx.services` 即
-  `app.extensions`，`scheduled_archive_admin.sync_now`）；进度需插件用 `crawl_task_runner` 包后台任务；抓取锁 = 归档租约。
-  风险：`app.extensions` 键名不是声明契约，建议宿主登记。§9：TDC 筛选键 `incident` = 流水单号（单值）；任务间隔
-  `interval_minutes` 决定频率，15 分钟只是调度 tick。
-- **完成**：`plugins/sign_daily/rules.py`（P1–P9、A1–A11、L1–L6、§5 指标/Δ/基线、G1–G4、T1–T4）+
-  `tests/test_sign_daily_rules.py` 80 passed；v1 `report.py`/backend 未改，行为不变。
-- **种子已入库**（`plugins/sign_daily/seeds/`，版本 2026.10.03-1）：roster.csv 784 人（仅姓名+科室）、long_cycle.csv 43 项
-  （LC01–LC43）、seed.json。自审修复：长周期结论记忆键改为只过 L1 的 `conclusion_key`（词表改动不丢结论）、导入规则编号防撞。坑：清单「X总成/组件」的「/」后是后缀替代写法，不能当并列叫法拆（已处理并有测试）。
-- **第 3 步已完成**：`plugins/sign_daily/service.py` + backend `/api/p/sign-daily/v2/*`（state/preview/generate/long-cycle/
-  refresh），迁移 v2 新表 snapshot_meta/snapshot_rows/long_cycle_conclusion；基线按今天口径重算；旧数据判定 = 有更晚快照
-  或（今天 > 数据日期且该日快照已存）。注意 `get_latest_deliverable_form_snapshot` 按 snapshot_at 取最新，不按发布顺序。
-  测试 `tests/test_plugin_sign_daily_v2.py`。v1 路由/页面未动。
-- **执行前沿**：②三图一表 Canvas + 长周期复核阻塞导出；③种子/导入（M1–M8）；
-  ④复制富文本 + `.eml` multipart/related。**待用户**：合成在途样例三件套、F610M/F610S 导出（验收 21）。
+- **依据**：Claude Docs「3D单签署进展日报插件 需求规格 v2.0」。规格里的 `signing_report` = `plugins/sign_daily/`
+  （id 沿用 `sign-daily`，版本 0.2.0；v1 的 `report.py` 已删除）。审计、实现与偏离全文：`docs/SIGN_DAILY_V2_AUDIT_20261003.md`。
+- **日报插件**：`rules.py`（纯口径）、`service.py`（取数、零件级快照、基线重算、后台抓取）、`settings.py`（种子 + 本地层、
+  导入/备份/恢复）、`mail.py`（三图一表正文、收件人、multipart/related .eml）、`static/chart.js`（Canvas 出图）、
+  `static/report.js` + `settings-panel.js`。种子在 `plugins/sign_daily/seeds/`（784 人只含姓名+科室；43 项规则 LC01–LC43）。
+- **§9（宿主与 project-overview 插件）**：`services/data_model_watchlist.py`（关注清单存 tdc_data_model 归档任务
+  filters_json；两条同步路径都按清单落库；快照 `schema.coverage`；清单为空 → watchlist_empty/fill_watchlist）、
+  `services/form_search.py`（多值搜索 + `terms` 过滤键）、project-overview 路由 form-terms/watchlist/sync-settings、
+  明细页搜索与关注清单面板、明细列表「同步设置」列、全量同步确认、零启用警示；绑定设置改动写 scheduled_archive_config_audit。
+- **两轮审计**：第一轮自审修 2 处、第三步自审修 2 处；第二轮整分支审计 10 条全部修复并补回归测试（见审计文档 §10）。
+- **门禁**：签署日报与 §9 相关测试全部通过；全量见本节下方最新一次运行记录；浏览器测试（Playwright）覆盖日报页与明细页。
+- **待用户（只能由人完成）**：F610M/F610S 导出回归（验收 21）；粘贴到飞书邮件实测（验收 20）；合成在途样例三件套；
+  飞书邮箱/新版 Outlook 打开 .eml 实测；第一期真实日报发出前人工对照 TDC 复核；签名打包 `.vsepkg`（插件）与宿主 onedir
+  （宿主有改动：services/、core/repos、web/app.py 一处查询键）。
 
 ## 2026-10-02 插件重构遗漏行为恢复完成（分支 claude/restore-plugin-parity，基线 refactor/plugin-host@d0dd01d）
 

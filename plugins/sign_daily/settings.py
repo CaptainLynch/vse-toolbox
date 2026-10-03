@@ -444,7 +444,8 @@ class SettingsStore:
         parsed = parse_rule_table(read_csv_text(source) if isinstance(source, str) else source, vocab)
         current = {row["id"]: row for row in self.rule_rows() if row["source"] != SOURCE_DELETED}
         by_name = {row["name"]: rule_id for rule_id, row in current.items()}
-        used = set(current) | set(self.seed_rules)
+        # 文件里显式写的编号先占位，空编号行分配时不会撞上后面的显式编号。
+        used = set(current) | set(self.seed_rules) | {item["id"] for item in parsed["rows"] if item["id"]}
         entries = []
         for item in parsed["rows"]:
             rule_id = item["id"] or by_name.get(item["name"]) or ""

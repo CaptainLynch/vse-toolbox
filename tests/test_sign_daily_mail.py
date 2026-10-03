@@ -116,3 +116,18 @@ def test_png_validation():
     for bad in ("", "not base64!", base64.b64encode(b"GIF89a").decode(), 3):
         with pytest.raises(M.ImageError):
             M.decode_png(bad)
+
+
+def test_links_keep_all_query_parameters_and_time_is_local(monkeypatch):  # 审计
+    body = M.render_html(_report(), {**TEXTS, "feishuLink": "反馈 https://x.feishu.cn/wiki/a?from=a&sheet=b 谢谢"},
+                         THRESHOLDS)
+    assert '<a href="https://x.feishu.cn/wiki/a?from=a&amp;sheet=b">' in body
+    monkeypatch.setenv("TZ", "Asia/Shanghai")
+    import time
+    time.tzset()
+    try:
+        assert M.format_data_time({"snapshotAt": "2026-10-03T01:23:45.123456Z"}) == "2026-10-03 09:23"
+    finally:
+        monkeypatch.delenv("TZ")
+        time.tzset()
+    assert M.format_data_time({"snapshotAt": "", "dataDate": "2026-10-03"}) == "2026-10-03"

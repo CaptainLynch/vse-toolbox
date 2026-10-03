@@ -667,8 +667,13 @@ def l1_normalize(name: Any) -> str:
         if stripped == text:
             break
         text = stripped
-    text = re.sub(r"LH|RH|左|右", "", text)
-    return _PUNCT.sub("", text)
+    # 先去标点再去左右标记（「L/H」「R-H」也能去掉），反复到不再变化：
+    # 结果再规范化一次不变，记忆键（conclusion_key）回传后台时才对得上。
+    while True:
+        stripped = re.sub(r"LH|RH|左|右", "", _PUNCT.sub("", text))
+        if stripped == text:
+            return text
+        text = stripped
 
 
 def _alias_table(vocab: Vocabulary) -> list[tuple[str, str]]:

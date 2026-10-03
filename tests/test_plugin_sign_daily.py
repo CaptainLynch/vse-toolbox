@@ -414,3 +414,18 @@ def test_roster_import_accepts_xlsx(client) -> None:  # type: ignore[no-untyped-
     assert any(r["name"] == "新人甲" and r["source"] == "本地新增" for r in result["view"]["rows"])
     bad = http.post(f"{API}/settings/roster/import", json={"xlsx": base64.b64encode(b"not a zip").decode()})
     assert bad.status_code == 400 and "另存为 CSV" in bad.get_json()["error"]["message"]
+
+
+def test_watchlist_report_does_not_overwrite_same_day_full_snapshot(client) -> None:  # type: ignore[no-untyped-def]
+    _, http, db, _ = client
+    _publish(db, _rows(), "2026-10-02T08:00:00Z")
+    _ok(http.post(f"{API}/generate", json=SCOPE))  # 当天全量快照
+    positional = [{"values": [row.get(h) for h in HEADERS], "sheetName": "Sheet1"} for row in _rows()[:1]]
+    db.publish_deliverable_form_snapshot(build_form_snapshot(
+        "tdc_data_model", positional, snapshot_at="2026-10-02T09:00:00Z", source_run_id=2, source="test",
+        coverage={"kind": "watchlist", "serials": ["S1"], "missing": []}))
+    _set_job_watchlist(db, "watchlist", ["S1"])
+    _ok(http.post(f"{API}/generate", json={**SCOPE, "watchlistOnly": True}))
+    with db.get_connection() as conn:
+        kind = conn.execute("SELECT scope_kind FROM p_sign_daily_snapshot_meta WHERE data_date = '2026-10-02'").fetchone()
+    assert kind["scope_kind"] == "all"  # 第二天的全量日报仍有基线

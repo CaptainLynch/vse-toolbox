@@ -122,3 +122,25 @@ def test_sync_settings_lists_real_sources_and_audits_binding_edits(client):  # t
     _ok(http.post(f"{API}/watchlist", json={"action": "scope", "scope": "watchlist"}))
     items = {item["deliverableId"]: item for item in _ok(http.get(f"{API}/sync-settings"))["items"]}
     assert "关注清单" in items["VPI-T2-D5"]["missing"]
+
+
+def test_partial_policy_patch_keeps_scheduler_interval(client):  # type: ignore[no-untyped-def]  # 审计
+    _, http, db = client
+    before = db.get_project_status_update_policy("VPI-T2-D5")["binding"]["interval_minutes"]
+    assert before is None
+    response = http.patch("/api/project-status/deliverables/VPI-T2-D5/update-policy", json={"mode": "automatic"})
+    assert response.get_json()["ok"] is True, response.get_json()
+    assert db.get_project_status_update_policy("VPI-T2-D5")["binding"]["interval_minutes"] is None
+
+
+def test_serials_added_after_watchlist_sync_are_not_marked_missing(client):  # type: ignore[no-untyped-def]  # 审计
+    _, http, db = client
+    rows = [{"流水单号": "F610M-3D-0001", "零件名称": "前门内板", "状态": "进行中"}]
+    positional = [{"values": [row.get(h) for h in HEADERS], "sheetName": "Sheet1"} for row in rows]
+    db.publish_deliverable_form_snapshot(build_form_snapshot(
+        "tdc_data_model", positional, snapshot_at="2026-10-03T09:00:00Z", source_run_id=2, source="test",
+        coverage={"kind": "watchlist", "serials": ["F610M-3D-0001", "F610M-3D-0098"], "missing": ["F610M-3D-0098"]}))
+    added = {"action": "add", "serials": ["F610M-3D-0001", "F610M-3D-0098", "F610M-3D-0002"]}
+    view = _ok(http.post(f"{API}/watchlist", json=added))
+    assert [(i["serial"], i["found"]) for i in view["items"]] == [
+        ("F610M-3D-0001", True), ("F610M-3D-0098", False), ("F610M-3D-0002", None)]

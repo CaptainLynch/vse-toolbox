@@ -700,7 +700,7 @@ class ProjectStatusRepo:
         mapping_json: str,
         field_authority: dict[str, str],
         credential_ref: str | None = None,
-        interval_minutes: int = 60,
+        interval_minutes: int | None = 60,
         expected_sync_config_revision: int | None = None,
     ) -> int:
         """原子写入绑定与字段归属，自动归属同时解除人工锁。
