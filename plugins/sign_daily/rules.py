@@ -728,11 +728,18 @@ def part_label(row: Mapping[str, Any]) -> str:
     return ("【长周期】" if row["longCycle"] else "") + text
 
 
+def add_sign_text(area: str) -> str:
+    """加签人的标注：区域未知时「加签（区域未知）」本身已含「加签」。"""
+    if not area:
+        return "加签"
+    return area if area == GROUP_ADD_UNKNOWN else f"加签·{area}"
+
+
 def todo_text(row: Mapping[str, Any]) -> str:
     items = []
     for item in row["todo"]:
         if item.get("addSign"):
-            items.append(f"{item['name']}（加签{'·' + item['area'] if item['area'] else ''}）")
+            items.append(f"{item['name']}（{add_sign_text(item['area'])}）")
         elif item.get("returned"):
             items.append(f"{item['name']}（退回修改）")
         else:

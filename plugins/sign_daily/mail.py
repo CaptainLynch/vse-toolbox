@@ -84,13 +84,19 @@ def day_level(days: Any, thresholds: Mapping[str, Any]) -> str:
     return ""
 
 
+def add_sign_text(area: str) -> str:
+    """加签人的标注：区域未知时「加签（区域未知）」本身已含「加签」。"""
+    if not area:
+        return "加签"
+    return area if area.startswith("加签") else f"加签·{area}"
+
+
 def todo_html(row: Mapping[str, Any]) -> str:
     """当前待办人：外区域的人加粗；加签、退回修改另加标注；末尾「另 n 人未签、非当前待办」。"""
     items = []
     for item in row.get("todo") or []:
         if item.get("addSign"):
-            area = f"·{item['area']}" if item.get("area") else ""
-            text = f"{_e(item['name'])}（加签{_e(area)}）"
+            text = f"{_e(item['name'])}（{_e(add_sign_text(item.get('area') or ''))}）"
         elif item.get("returned"):
             text = f"{_e(item['name'])}（退回修改）"
         else:

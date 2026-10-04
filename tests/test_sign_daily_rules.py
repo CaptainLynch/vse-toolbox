@@ -544,3 +544,10 @@ def test_conclusion_key_is_idempotent(name):  # 审计：记忆键回传后台�
 def test_lh_rh_with_punctuation_still_hits():
     assert R.classify_part("前门外板L/H", RULES, VOCAB).result == R.RESULT_HIT
     assert R.classify_part("前门外板 R-H 总成", RULES, VOCAB).result == R.RESULT_HIT
+
+
+def test_unknown_area_add_sign_label_is_not_doubled():  # F620S 真实导出核对时发现的显示问题
+    flow = _flow(冲压="冲压丁(未签)", 待审批人员="冲压丁、新人")
+    row = R.flow_rows([flow], DATA_DATE, ROSTER)[0]
+    assert "新人（加签（区域未知））" in R.todo_text(row)
+    assert "加签·加签" not in R.todo_text(row)
