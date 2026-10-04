@@ -1,13 +1,275 @@
 # -*- coding: utf-8 -*-
-"""Project overview plugin backend.
+"""Project overview plugin backend. Routes are mounted at /api/p/project-overview/.
 
-页面调用宿主已有的 /api/project-status*、/api/deliverable-forms/*、
-/api/scheduled-archive/*、/api/tasks* 等接口（含本机写保护与租约逻辑），
-这些接口暂留在 web/app.py；插件暂不注册自有路由。
+页面主要调用宿主已有的 /api/project-status*、/api/deliverable-forms/*、
+/api/scheduled-archive/*、/api/tasks* 等接口（含本机写保护与租约逻辑）。
+本插件只补数模设计审核流程报表的两组接口（3D单签署日报规格 §9）：
+
+- GET  form-terms      多值搜索结果摘要：匹配几份表单、哪些词没有匹配（S2–S4）
+- GET  watchlist       关注清单与同步范围；清单里在 TDC 查不到的单号标「未找到」（S8）
+- POST watchlist       加入、移除、清空、改同步范围（S1、S6）；经归档任务服务写入，
+                       沿用其校验、乐观锁和配置审计（S21）
+- GET  watchlist.csv   导出关注清单（S6）
+- GET  sync-settings   交付物明细列表「同步设置」列（S12–S15）：每个可同步交付物的真实来源
+                       （交付物绑定或归档任务）、启用、间隔、筛选条件原文、上次同步和待配置缺项；
+                       修改仍走宿主既有接口（update-policy、scheduled-archive jobs），保留其校验与审计
 """
 
 from __future__ import annotations
 
+import csv
+import io
+import json
+from typing import Any, Mapping
+
+from flask import Response, request
+
+from core.project_status_contracts import PROJECT_STATUS_SOURCE_CAPABILITIES
+from services import data_model_watchlist as W
+from services import form_search
+
+FORM_KEY = "tdc_data_model"
+_ACTIONS = {"add", "remove", "clear", "scope"}
+
+
+class _Invalid(ValueError):
+    pass
+
+
+def _job(admin: Any) -> Mapping[str, Any]:
+    job = next((item for item in admin.list_jobs() if item.get("jobKey") == W.JOB_KEY), None)
+    if job is None:
+        raise LookupError("未找到数模设计审核流程报表的同步任务")
+    return job
+
+
+def _watchlist_view(db: Any, job: Mapping[str, Any]) -> dict[str, Any]:
+    scope, serials = W.watchlist_settings(job.get("filters") or {})
+    present = form_search.form_serials(db, FORM_KEY)
+    latest = db.get_latest_deliverable_form_snapshot(FORM_KEY)
+    coverage = W.snapshot_coverage(latest)
+    reported_missing = set(coverage.get("missing") or ())
+    queried = set(coverage.get("serials") or ()) if coverage.get("kind") == W.SCOPE_WATCHLIST else None
+
+    def found(serial: str) -> bool | None:
+        """已找到 / 未找到 / 未同步：清单快照只查了当时的清单，之后加进来的还没同步过。"""
+        if latest is None or (queried is not None and serial not in queried):
+            return None
+        return serial in present and serial not in reported_missing
+
+    items = [{"serial": serial, "found": found(serial)} for serial in serials]
+    return {
+        "scope": scope,
+        "items": items,
+        "count": len(serials),
+        "missing": [item["serial"] for item in items if item["found"] is False],
+        "jobUpdatedAt": job.get("updatedAt"),
+        "jobEnabled": bool(job.get("enabled")),
+        "snapshotCoverage": coverage.get("kind"),
+        "placeholder": form_search.PLACEHOLDER,
+        "limit": W.MAX_WATCHLIST,
+        "configIssue": "待配置：关注清单为空" if scope == W.SCOPE_WATCHLIST and not serials else None,
+    }
+
+
+def _apply(job: Mapping[str, Any], body: Mapping[str, Any]) -> dict[str, Any]:
+    action = body.get("action")
+    if action not in _ACTIONS:
+        raise _Invalid("action 只能是 add、remove、clear、scope")
+    filters = dict(job.get("filters") or {})
+    scope, serials = W.watchlist_settings(filters)
+    incoming = body.get("serials", [])
+    if not isinstance(incoming, list) or len(incoming) > W.MAX_WATCHLIST:
+        raise _Invalid(f"serials 必须是不超过 {W.MAX_WATCHLIST} 个流水单号的数组")
+    try:
+        cleaned = [W.normalize_serial(item) for item in incoming]
+    except W.WatchlistError as exc:
+        raise _Invalid(str(exc)) from None
+    if action == "add":
+        serials = tuple(dict.fromkeys([*serials, *cleaned]))
+    elif action == "remove":
+        drop = set(cleaned)
+        serials = tuple(s for s in serials if s not in drop)
+    elif action == "clear":
+        serials = ()
+    else:
+        scope = body.get("scope")
+        if scope not in (W.SCOPE_ALL, W.SCOPE_WATCHLIST):
+            raise _Invalid("同步范围只能是 all 或 watchlist")
+    filters.update({"syncScope": scope, "watchlist": list(serials)})
+    try:
+        W.watchlist_settings(filters)
+    except W.WatchlistError as exc:
+        raise _Invalid(str(exc)) from None
+    return filters
+
+
+def _json(value: Any) -> Any:
+    try:
+        return json.loads(value) if isinstance(value, str) and value else {}
+    except ValueError:
+        return {}
+
+
+def _binding_setting(deliverable_id: str, policy: Mapping[str, Any]) -> dict[str, Any]:
+    binding = policy["binding"]
+    match_rule = _json(binding.get("match_rule_json"))
+    automatic = [row for row in policy.get("authorities") or [] if row.get("authority") == "automatic"]
+    missing = []
+    if not str(binding.get("credential_ref") or "").strip():
+        missing.append("统一域账号凭据")
+    if not isinstance(match_rule, Mapping) or len([k for k in match_rule if k != "reportType"]) == 0:
+        missing.append("筛选条件")
+    aggregate = isinstance(match_rule, Mapping) and match_rule.get("aggregate") is True
+    if not aggregate and not str(binding.get("external_key") or "").strip():
+        missing.append("外部稳定键（在明细页完成映射取证）")
+    if not automatic:
+        missing.append("自动更新的字段（在明细页完成映射取证）")
+    return {
+        "deliverableId": deliverable_id,
+        "kind": "binding",
+        "enabled": bool(binding.get("enabled")),
+        # None = 没有自己的间隔，跟随调度器频率（services/project_status_scheduler.py _is_fresh）。
+        "intervalMinutes": binding.get("interval_minutes"),
+        "mode": binding.get("mode"),
+        "filters": match_rule if isinstance(match_rule, Mapping) else {},
+        "lastAttemptAt": binding.get("last_attempt_at"),
+        "lastSuccessAt": binding.get("last_success_at"),
+        "syncState": binding.get("sync_state"),
+        "lastError": binding.get("last_error_message"),
+        "missing": missing,
+        "updatedAt": binding.get("updated_at"),
+    }
+
+
+def _archive_setting(deliverable_id: str, job: Mapping[str, Any]) -> dict[str, Any]:
+    missing = [] if job.get("credentialConfigured") else ["统一域账号凭据"]
+    return {
+        "deliverableId": deliverable_id,
+        "kind": "archive",
+        "jobKey": job.get("jobKey"),
+        "enabled": bool(job.get("enabled")),
+        "intervalMinutes": job.get("intervalMinutes"),
+        "mode": None,
+        "filters": dict(job.get("filters") or {}),
+        "outputSubdir": job.get("outputSubdir") or "",
+        "lastAttemptAt": job.get("lastAttemptAt"),
+        "lastSuccessAt": job.get("lastSuccessAt"),
+        "syncState": job.get("syncState"),
+        "lastError": job.get("lastErrorMessage"),
+        "missing": missing,
+        "updatedAt": job.get("updatedAt"),
+    }
+
+
+def sync_settings(db: Any, jobs: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """可同步交付物的同步设置（S12）；外部快照驱动的交付物以其归档任务为准。"""
+    by_deliverable = {str(job.get("deliverableId")): job for job in jobs if job.get("deliverableId")}
+    data_model_job = next((job for job in jobs if job.get("jobKey") == W.JOB_KEY), None)
+    result = []
+    for deliverable_id, capabilities in PROJECT_STATUS_SOURCE_CAPABILITIES.items():
+        snapshot_driven = capabilities.get("formSnapshotDriven") is True
+        if not capabilities.get("syncCapable") and not snapshot_driven:
+            continue
+        if snapshot_driven and deliverable_id in by_deliverable:
+            item = _archive_setting(deliverable_id, by_deliverable[deliverable_id])
+        else:
+            policy = db.get_project_status_update_policy(deliverable_id)
+            if policy is None:
+                continue
+            item = _binding_setting(deliverable_id, policy)
+        if capabilities.get("reportType") == "data_model" and data_model_job is not None:
+            try:
+                scope, serials = W.watchlist_settings(data_model_job.get("filters") or {})
+            except W.WatchlistError:
+                scope, serials = W.SCOPE_ALL, ()
+            item["watchlist"] = {"scope": scope, "count": len(serials)}
+            if scope == W.SCOPE_WATCHLIST and not serials:
+                item["missing"] = [*item["missing"], "关注清单"]
+                # 启用的绑定也会因此停同步（S9），不论启用与否都要让列表看到。
+                item["configIssue"] = "待配置：关注清单为空"
+        item["displayName"] = capabilities.get("displayName")
+        item["manualOnly"] = bool(capabilities.get("manualOnly"))
+        result.append(item)
+    return result
+
 
 def register(host):
-    return None
+    ctx = host.context
+    bp = host.blueprint
+
+    @bp.get("/form-terms")
+    def form_terms():
+        form_key = request.args.get("formKey") or FORM_KEY
+        terms = form_search.parse_terms(request.args.get("terms"))
+        try:
+            data = form_search.term_summary(ctx.db, form_key, terms)
+        except KeyError:
+            return ctx.json_error(404, "NotFound", "未找到表单")
+        return ctx.json_ok({**data, "placeholder": form_search.PLACEHOLDER})
+
+    def admin():
+        return ctx.service("scheduled_archive_admin")
+
+    @bp.get("/watchlist")
+    def watchlist():
+        try:
+            return ctx.json_ok(_watchlist_view(ctx.db, _job(admin())))
+        except LookupError as exc:
+            return ctx.json_error(404, "NotFound", str(exc))
+        except W.WatchlistError as exc:
+            return ctx.json_error(409, "WatchlistInvalid", str(exc))
+
+    @bp.post("/watchlist")
+    def watchlist_update():
+        guard = ctx.local_guard()
+        if guard is not None:
+            return guard
+        body = request.get_json(silent=True)
+        if not isinstance(body, Mapping):
+            return ctx.json_error(400, "ValidationError", "请求体必须是 JSON 对象")
+        try:
+            service = admin()
+            job = _job(service)
+            filters = _apply(job, body)
+            updated = service.update_job(W.JOB_KEY, {
+                "enabled": bool(job.get("enabled")),
+                "filters": filters,
+                "outputSubdir": str(job.get("outputSubdir") or ""),
+                "updatedAt": str(job.get("updatedAt") or ""),
+            })
+        except _Invalid as exc:
+            return ctx.json_error(400, "ValidationError", str(exc))
+        except LookupError as exc:
+            return ctx.json_error(404, "NotFound", str(exc))
+        except W.WatchlistError as exc:
+            return ctx.json_error(409, "WatchlistInvalid", str(exc))
+        except Exception as exc:  # noqa: BLE001 - 归档任务服务的校验与并发冲突原样带回
+            fields = getattr(exc, "fields", None) or getattr(exc, "errors", None)
+            message = "；".join(f"{k}：{v}" for k, v in dict(fields).items()) if isinstance(fields, Mapping) else str(exc)
+            return ctx.json_error(409, "WatchlistUpdateFailed", ctx.redact(message or "保存关注清单失败"))
+        return ctx.json_ok(_watchlist_view(ctx.db, updated))
+
+    @bp.get("/sync-settings")
+    def sync_settings_view():
+        try:
+            jobs = admin().list_jobs()
+        except LookupError:
+            jobs = []
+        return ctx.json_ok({"items": sync_settings(ctx.db, jobs)})
+
+    @bp.get("/watchlist.csv")
+    def watchlist_csv():
+        try:
+            view = _watchlist_view(ctx.db, _job(admin()))
+        except (LookupError, W.WatchlistError) as exc:
+            return ctx.json_error(404, "NotFound", str(exc))
+        buffer = io.StringIO()
+        writer = csv.writer(buffer, lineterminator="\r\n")
+        writer.writerow(["流水单号", "状态"])
+        for item in view["items"]:
+            writer.writerow([item["serial"], {True: "已找到", False: "未找到", None: "未同步"}[item["found"]]])
+        response = Response("﻿" + buffer.getvalue(), mimetype="text/csv")
+        response.headers["Content-Disposition"] = "attachment; filename=\"watchlist.csv\""
+        response.headers["Cache-Control"] = "no-store"
+        return response

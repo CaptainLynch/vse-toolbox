@@ -232,6 +232,43 @@ class ArchiveRepo:
             rows = conn.execute(sql, params).fetchall()
         return [dict(row) for row in rows]
 
+    def record_deliverable_config_audit(
+        self,
+        deliverable_id: str,
+        changes: Mapping[str, object],
+        actor: str = "local_web",
+    ) -> bool:
+        """把交付物同步设置的改动写进其归档任务的配置审计（签署日报规格 §9 S21）。
+
+        交付物与归档任务按 project_status_deliverable_id 关联；没有关联任务时返回 False。
+        changes 只放非敏感字段（凭据只记是否配置，不记别名）。
+        """
+        if actor not in {"local_web", "cli"}:
+            raise ValueError("archive configuration actor is invalid")
+        changes_json = json.dumps(
+            dict(changes), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        with self.get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT id, job_key FROM scheduled_archive_jobs
+                WHERE project_status_deliverable_id = ? AND archived_at IS NULL
+                ORDER BY id LIMIT 1
+                """,
+                (deliverable_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            conn.execute(
+                """
+                INSERT INTO scheduled_archive_config_audit
+                    (job_id, job_key, actor, event_type, changes_json)
+                VALUES (?, ?, ?, 'configuration_updated', ?)
+                """,
+                (int(row["id"]), str(row["job_key"]), actor, changes_json),
+            )
+        return True
+
     def list_archive_jobs(
         self, enabled_only: bool = False, include_archived: bool = False
     ) -> list[dict[str, Any]]:
@@ -425,6 +462,14 @@ class ArchiveRepo:
             if not isinstance(filters, dict):
                 raise ArchiveJobNotReadyError(
                     "archive job filters are invalid", reason="filters_invalid"
+                )
+            if (
+                template_key == "tdc_data_model"
+                and filters.get("syncScope") == "watchlist"
+                and not filters.get("watchlist")
+            ):
+                raise ArchiveJobNotReadyError(
+                    "data model watchlist is empty", reason="watchlist_empty"
                 )
             try:
                 retry_policy = _normalize_archive_retry_policy(retry_policy)

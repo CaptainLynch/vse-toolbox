@@ -165,6 +165,7 @@ export const REMEDY_TEXT = {
   repair_job_filters: "请检查「高级下载条件」后保存",
   repair_retry_policy: "请把「失败后最多尝试次数」改为 1 或 2",
   inspect_job_configuration: "请检查任务配置后重试",
+  fill_watchlist: "待配置：关注清单为空，请先在交付物明细里加入要关注的流水单号",
   save_domain_credential: "请到系统设置登录并勾选“保存至凭据保护库”",
   refresh_domain_credential: "登录信息已失效，请重新登录并保存至凭据保护库",
   wait_and_retry: "任务正在运行，请稍后重试",

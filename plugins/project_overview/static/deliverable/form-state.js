@@ -14,6 +14,7 @@ export const DELIVERABLE_FORM_TABS = {
 
 export const FORM_FILTER_LABELS = {
   keyword: "关键词",
+  terms: "多值搜索",
   status: "状态",
   department: "部门",
   section: "科室 / 区域",
@@ -48,7 +49,7 @@ export const OVERDUE_STATE_LABELS = {
   not_applicable: "已完成 / 不适用",
 };
 
-export const FORM_FILTER_QUERY_KEYS = ["keyword", "status", "department", "section", "model", "stage", "dateStart", "dateEnd", "overdueState", "relationEwo"];
+export const FORM_FILTER_QUERY_KEYS = ["keyword", "terms", "status", "department", "section", "model", "stage", "dateStart", "dateEnd", "overdueState", "relationEwo"];
 export const FORM_MULTI_FILTER_KEYS = new Set(["status", "department", "section", "model", "stage", "overdueState"]);
 
 export function deliverableFormFilterLabel(formKey, key) {

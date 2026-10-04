@@ -34,6 +34,7 @@ from core.project_status_contracts import (
     project_status_source_capabilities,
 )
 from core.redaction import redact_sensitive_text
+from services import data_model_watchlist
 from services.deliverable_form_analysis import build_form_snapshot
 from services.aras_auth import ArasAuthError
 from services.aras_crawler import ArasAuthenticationError, ArasCrawlerError
@@ -157,6 +158,8 @@ class SyncBindingContext:
     credential_ref: str = ""
     # 运行开始时捕获的绑定修订号：apply/发布用它拒绝跨换绑的在途写入。
     sync_config_revision: int = 0
+    # 数模关注清单：非 None 时连接器只保留清单里的流水单号（services/data_model_watchlist.py）。
+    watchlist: tuple[str, ...] | None = None
 
 
 # ── Connector Protocol ──────────────────────────────────────────
@@ -404,6 +407,24 @@ class ProjectStatusSyncRunner:
                 validate_runtime_prerequisites=validate_runtime_prerequisites,
             )
 
+        # 数模设计审核流程报表：同步范围按关注清单（§9 S1、S7）；清单为空时不同步（S9）。
+        watchlist: tuple[str, ...] | None = None
+        registry_entry = find_registry_entry_by_deliverable_id(deliverable_id)
+        if registry_entry and registry_entry.get("form_key") == data_model_watchlist.JOB_KEY:
+            scope, serials = data_model_watchlist.load_watchlist(self._db)
+            if scope == data_model_watchlist.SCOPE_WATCHLIST:
+                if not serials:
+                    return BindingRunResult(
+                        binding_id=binding_id,
+                        deliverable_id=deliverable_id,
+                        source_type=source_type,
+                        outcome="needs_attention",
+                        final_state="needs_attention",
+                        error_type="watchlist_empty",
+                        error_message="待配置：关注清单为空",
+                    )
+                watchlist = serials
+
         # 获取租约（P1-2：传入 listing 时捕获的 expected revision，若列出后发生换绑则拒绝领取并转入 needs_attention）。
         try:
             lease = self._service.acquire_sync_lease(
@@ -472,6 +493,7 @@ class ProjectStatusSyncRunner:
                     if effective_binding.get("sync_config_revision") is not None
                     else (lease.get("sync_config_revision") or 0)
                 ),
+                watchlist=watchlist,
             )
 
             # 在数据库事务外调用 connector。
@@ -528,6 +550,7 @@ class ProjectStatusSyncRunner:
                             source_run_id=run_id,
                             source="project_status_sync",
                             artifacts=snapshot.artifacts,
+                            coverage=getattr(snapshot, "coverage", None),
                         )
                         form_published = self._db.publish_deliverable_form_snapshot(
                             form_snapshot,

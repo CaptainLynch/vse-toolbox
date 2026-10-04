@@ -1,5 +1,25 @@
 # Current State
 
+## 2026-10-03 签署日报 v2.0 + 交付物明细同步增强（§9）全部实现并审计（分支 claude/peaceful-bohr-bi1j7y）
+
+- **依据**：Claude Docs「3D单签署进展日报插件 需求规格 v2.0」。规格里的 `signing_report` = `plugins/sign_daily/`
+  （id 沿用 `sign-daily`，版本 0.2.0；v1 的 `report.py` 已删除）。审计、实现与偏离全文：`docs/SIGN_DAILY_V2_AUDIT_20261003.md`。
+- **日报插件**：`rules.py`（纯口径）、`service.py`（取数、零件级快照、基线重算、后台抓取）、`settings.py`（种子 + 本地层、
+  导入/备份/恢复）、`mail.py`（三图一表正文、收件人、multipart/related .eml）、`static/chart.js`（Canvas 出图）、
+  `static/report.js` + `settings-panel.js`。种子在 `plugins/sign_daily/seeds/`（784 人只含姓名+科室；43 项规则 LC01–LC43）。
+- **§9（宿主与 project-overview 插件）**：`services/data_model_watchlist.py`（关注清单存 tdc_data_model 归档任务
+  filters_json；两条同步路径都按清单落库；快照 `schema.coverage`；清单为空 → watchlist_empty/fill_watchlist）、
+  `services/form_search.py`（多值搜索 + `terms` 过滤键）、project-overview 路由 form-terms/watchlist/sync-settings、
+  明细页搜索与关注清单面板、明细列表「同步设置」列、全量同步确认、零启用警示；绑定设置改动写 scheduled_archive_config_audit。
+- **两轮审计**：第一轮自审修 2 处、第三步自审修 2 处；第二轮整分支审计 10 条全部修复并补回归测试（见审计文档 §10）。
+- **门禁**：全量 `pytest tests`：2850 passed / 6 failed（4 个是既有 Windows 专属：agent_supervisor relay、excel_worker
+  source command、tdc_probe_standalone ×2；另 2 个是本分支引入——deliverable.css 新规则未加作用域、前端 API 根路径常量
+  被路径检查当成路由——已修复，`test_plugin_project_overview_deliverable.py` + 浏览器套件复跑 95 passed）。
+  浏览器测试（Playwright）覆盖日报页与交付物明细页；改动文件 flake8 零告警；项目地图 verified。
+- **待用户（只能由人完成）**：F610M/F610S 导出回归（验收 21）；粘贴到飞书邮件实测（验收 20）；合成在途样例三件套；
+  飞书邮箱/新版 Outlook 打开 .eml 实测；第一期真实日报发出前人工对照 TDC 复核；签名打包 `.vsepkg`（插件）与宿主 onedir
+  （宿主有改动：services/、core/repos、web/app.py 一处查询键）。
+
 ## 2026-10-02 插件重构遗漏行为恢复完成（分支 claude/restore-plugin-parity，基线 refactor/plugin-host@d0dd01d）
 
 - **完成**：旧业务分支（e2c58a3）9 批生产修复在插件架构下补回，逐条状态/位置/断言见

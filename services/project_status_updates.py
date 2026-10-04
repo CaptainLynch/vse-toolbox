@@ -12,6 +12,7 @@ from core.project_status_contracts import (
 )
 from core.ewo_binding_v2 import normalize_ewo_v2_rule
 import json
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Mapping, Sequence
@@ -23,6 +24,8 @@ from core.db_manager import (
 )
 from core.redaction import redact_sensitive_text
 from services.project_status_records import compute_config_signature, observation_is_aggregate
+
+_logger = logging.getLogger(__name__)
 
 PROJECT_STATUS_PILOT_DELIVERABLE_ID = "VPI-T2-D5"
 PROJECT_STATUS_AUDIT_LIMIT = 100
@@ -172,6 +175,8 @@ class ConnectorSnapshot:
     expected_deliverable_updated_at: str
     artifacts: Sequence[Mapping[str, Any]] = ()
     analysis_rows: Sequence[Mapping[str, Any]] = field(default=(), repr=False)
+    #: 表单快照覆盖范围（数模关注清单，services/data_model_watchlist.py）；None 表示全部。
+    coverage: Mapping[str, Any] | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -896,7 +901,8 @@ class ProjectStatusUpdateService:
         match_rule = payload.get("matchRule", _json_loads(binding["match_rule_json"]))
         mapping = payload.get("mapping", _json_loads(binding["mapping_json"]))
         credential_ref = payload.get("credentialRef", binding.get("credential_ref"))
-        interval_minutes = payload.get("intervalMinutes", binding.get("interval_minutes") or 60)
+        # 没传就保留原值；原值为空表示跟随调度器频率，不能被部分更新悄悄改成 60 分钟。
+        interval_minutes = payload.get("intervalMinutes", binding.get("interval_minutes"))
 
         current_authority = {
             PROJECT_STATUS_FIELD_NAME_TO_API[row["field_name"]]: row["authority"]
@@ -967,7 +973,9 @@ class ProjectStatusUpdateService:
                 fields["credentialRef"] = "凭据引用格式无效"
             else:
                 credential_ref = credential_ref.strip()
-        if not isinstance(interval_minutes, int) or isinstance(interval_minutes, bool) or interval_minutes < 1:
+        if interval_minutes is not None and (
+            not isinstance(interval_minutes, int) or isinstance(interval_minutes, bool) or interval_minutes < 1
+        ):
             fields["intervalMinutes"] = "同步周期必须是正整数分钟"
 
         if external_key is not None and not isinstance(external_key, str):
@@ -1102,7 +1110,39 @@ class ProjectStatusUpdateService:
             raise ProjectStatusPolicyError({'request': '绑定已发生变化，请刷新配置后重试'}) from None
         raw = self._db.get_project_status_update_policy(deliverable_id)
         assert raw is not None
+        self._audit_policy_change(deliverable_id, binding, raw["binding"])
         return self._policy_to_api(raw)
+
+    def _audit_policy_change(
+        self,
+        deliverable_id: str,
+        before: Mapping[str, Any],
+        after: Mapping[str, Any],
+    ) -> None:
+        """同步设置改动写进关联归档任务的配置审计（§9 S21）；凭据只记是否配置。"""
+        def view(binding: Mapping[str, Any]) -> dict[str, Any]:
+            return {
+                "enabled": bool(binding.get("enabled")),
+                # None = 没有自己的间隔，跟随调度器频率（services/project_status_scheduler.py _is_fresh）。
+                "intervalMinutes": binding.get("interval_minutes"),
+                "mode": binding.get("mode"),
+                "matchRule": _json_loads(binding.get("match_rule_json")),
+                "credentialConfigured": bool(str(binding.get("credential_ref") or "").strip()),
+            }
+
+        old, new = view(before), view(after)
+        changes = {key: {"from": old[key], "to": new[key]} for key in old if old[key] != new[key]}
+        if not changes:
+            return
+        recorder = getattr(self._db, "record_deliverable_config_audit", None)
+        if recorder is None:
+            return
+        try:
+            recorder(deliverable_id, {"source": "deliverable_sync_settings", "deliverableId": deliverable_id,
+                                      "changes": changes})
+        except Exception as exc:  # noqa: BLE001 - 设置已保存，审计失败只记日志
+            _logger.warning("deliverable sync settings audit failed for %s: %s",
+                            deliverable_id, redact_sensitive_text(str(exc), limit=200))
 
     def list_updates(
         self,

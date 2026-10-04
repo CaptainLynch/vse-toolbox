@@ -101,6 +101,7 @@ from services.project_status_updates import (
     ProjectStatusPolicyError,
     ProjectStatusUpdateService,
 )
+from services.form_search import parse_terms as parse_form_terms
 from services.project_status_discovery import MappingDiscoveryService
 from services.project_status_records import (
     COMPLETE_RESULT_STOP_REASONS,
@@ -4564,6 +4565,7 @@ def create_app(
             "overdueState",
             "isCompleted",
             "relationEwo",
+            "terms",
         }
         multi_keys = {"status", "department", "section", "model", "stage", "overdueState"}
         control_keys = filter_keys | {
@@ -4589,6 +4591,9 @@ def create_app(
                 if len(values) > 1:
                     raise ValueError(f"{key} accepts one value")
                 filters[key] = values[0]
+        if "terms" in filters:
+            # 多值搜索原文 -> 检索词列表（§9 S2，services/form_search.py）。
+            filters["terms"] = parse_form_terms(filters["terms"])
 
         def strict_int(name: str, default: int, lower: int, upper: int) -> int:
             raw = request.args.get(name)

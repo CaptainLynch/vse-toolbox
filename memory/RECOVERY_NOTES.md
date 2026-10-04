@@ -1,5 +1,18 @@
 # Recovery Notes
 
+## 2026-10-03 — 签署日报 v2 / 数模关注清单：已核实的坑
+
+- **TDC 数模没有按流水单号查询的参数**：`incident` 是第 0 列「实例号」，流水单号是 `documentNo`（`core/report_contracts.py`）。
+  接口行用 `documentNo`、官方导出行用表头「流水单号」。
+- **`get_latest_deliverable_form_snapshot` 按 `snapshot_at` 取最新**，不是按发布顺序；要「最近一次全量」用
+  `services/data_model_watchlist.latest_full_snapshot`。
+- **归档任务 filters_json 上限 16 KB**（`core/repos/archive_jobs.py`）：关注清单限 500 个且另做字节预算。
+- **`ArchiveJobNotReadyError.REASONS` 是闭集**，新原因不登记就变成 `unknown`；同时要登记 runner 的 `_REMEDY_BY_REASON`
+  和前端 `archive_data.js` 的 REMEDY_TEXT。
+- **交付物绑定 `interval_minutes` 为 NULL = 跟随调度器频率**（`_is_fresh`），不是 60；部分 PATCH 不能补默认值。
+- **Preact（本仓库 vendor 版）`<option>` 不写 value 会渲染成 `value=""`**：受控 select 选中后拿到空串。所有 option 都要显式 value。
+- **长周期记忆键必须幂等**：前端回传的是已规范化的键，后端会再规范化一次；L1 要先去标点再去 LH/RH 并循环到不变。
+
 ## 2026-09-25 — 诊断披露：`emit` 事件名留存不等于载荷可读
 
 - **症状**：`emit("ncr_department_filter", {"kept": 2, "dropped": 4, ...})` 调用成功、事件名在

@@ -97,7 +97,8 @@ def _seed_snapshots(db: DatabaseManager) -> None:
 
     def dm_row(no: str, status: str, section: str, flow: str) -> dict[str, object]:
         values = _labelled_values("tdc_data_model", 0, {
-            "实例号": no, "流程名": flow, "部门": section, "申请日期": "2026-09-25 10:00:00",
+            "实例号": no, "流程名": flow, "流水单号": f"F999X-3D-{no[-4:]}", "部门": section,
+            "申请日期": "2026-09-25 10:00:00",
             "项目/车型": "F999X", "零件名称": "组件A", "状态": status,
             "最新审批记录": "审批人甲：同意；审批人乙：同意；审批人丙：同意；" * 4,
         })
@@ -432,9 +433,10 @@ def test_stale_response_never_overwrites_the_latest_view(session: Session) -> No
     def slow(route: Any) -> None:
         pending.append(route)
 
-    # first request (keyword "zzz": would show 0 rows) is held; the second (no keyword) is answered at once
-    page.route("**/api/deliverable-forms/tdc_data_model/rows?*keyword=zzz*", slow)
-    page.route("**/api/deliverable-forms/tdc_data_model/view?*keyword=zzz*", slow)
+    # first request (search "zzz": would show 0 rows) is held; the second (no search) is answered at once.
+    # 数模表单的搜索框是多值搜索（§9 S2），请求参数是 terms。
+    page.route("**/api/deliverable-forms/tdc_data_model/rows?*terms=zzz*", slow)
+    page.route("**/api/deliverable-forms/tdc_data_model/view?*terms=zzz*", slow)
     keyword = page.locator(".form-filter-keyword").first
     keyword.fill("zzz")
     page.get_by_role("button", name="应用筛选").first.click()
@@ -1294,3 +1296,40 @@ def test_filter_apply_after_failed_tab_switch_keeps_the_typed_condition(session:
     page.wait_for_function("document.querySelector('.form-filter-draft-state').innerText.includes('已应用')")
     assert any("REVIEW-KEYWORD" in url for url in requests), requests
     assert "is-active" in (_tab(page, "项目状态").get_attribute("class") or "")
+
+
+# ── §9 交付物明细同步增强（签署日报规格 S2–S18）─────────────────────────────
+
+
+def test_details_sync_settings_column_edits_inline(session: Session) -> None:
+    page = session.page
+    page.goto(f"{session.base}/#p/project-overview/details")
+    page.wait_for_selector(".overview-details-table th:has-text('同步设置')")
+    page.wait_for_selector(".sync-settings-cell")
+    row = page.locator("tr.deliverable-detail-row", has=page.locator(".sync-settings-cell")).first
+    row.get_by_role("button", name="编辑").click()
+    editor = row.locator(".sync-settings-editor")
+    editor.locator("input[type=number]").fill("45")
+    editor.get_by_role("button", name="保存").click()
+    page.wait_for_selector(".sync-settings-meta:has-text('每 45 分钟')")
+    assert page.url.endswith("#p/project-overview/details")  # 当场修改，不跳转页面（S13）
+    # S17：立即全量同步先列出本次会同步哪些交付物
+    page.get_by_role("button", name="立即全量同步").click()
+    page.wait_for_selector("[role=dialog][aria-label='确认立即全量同步']")
+    page.get_by_role("button", name="取消").click()
+    assert page.locator("[role=dialog][aria-label='确认立即全量同步']").count() == 0
+
+
+def test_data_model_multi_term_search_and_watchlist(session: Session) -> None:
+    page = session.page
+    session.open_deliverable("VPI-T2-D5")
+    page.wait_for_selector(".form-terms-input")
+    hint = "输入流水单号、零件名称、零件号或申请人；多个用空格、逗号或换行分隔，可直接粘贴 Excel 一列"
+    assert page.inner_text(".form-terms-hint").strip() == hint  # S5：占位符与常驻说明同一句
+    assert page.get_attribute(".form-terms-input", "placeholder") == hint
+    page.fill(".form-terms-input", "F999X-3D-0301\nF999X-3D-0302\nF999X-3D-9999")
+    page.get_by_role("button", name="应用筛选").first.click()
+    page.wait_for_selector(".form-terms-summary:has-text('匹配 2 份表单；1 个词没有匹配')")  # 验收 22
+    assert "F999X-3D-9999" in page.inner_text(".form-terms-unmatched")
+    page.get_by_role("button", name="全部加入关注清单（2 份）").click()
+    page.wait_for_selector(".form-watchlist > summary:has-text('关注清单 2 份')")

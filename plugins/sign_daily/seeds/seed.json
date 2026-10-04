@@ -1,0 +1,33 @@
+{
+  "seedVersion": "2026.10.03-1",
+  "roster": {
+    "source": "责任工程师花名册 794 行（10-03 确认首版）",
+    "sourceRows": 794,
+    "people": 784,
+    "mergedSameName": 16,
+    "corrections": [
+      "高义轩：结构工程科 → 车身科"
+    ],
+    "added": [
+      "滕平",
+      "韦逢义",
+      "梁海峰",
+      "铁盛武",
+      "韦孔辉",
+      "段大禄"
+    ],
+    "departments": {
+      "外饰科": 109,
+      "车身科": 314,
+      "内饰科": 213,
+      "车体架构集成科": 91,
+      "车体科": 57
+    }
+  },
+  "longCycle": {
+    "source": "长周期件参考清单（10-03 收到）",
+    "items": 43,
+    "withExcludes": 4,
+    "withSlash": 8
+  }
+}
