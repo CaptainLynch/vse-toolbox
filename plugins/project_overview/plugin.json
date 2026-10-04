@@ -1,7 +1,7 @@
 {
   "id": "project-overview",
   "name": "项目概览",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "hostApi": ">=1,<2",
   "description": "项目状态概览、交付物明细、主计划维护与交付物详情（旧 #overview 的插件版）；调用既有 /api/project-status 等接口",
   "pages": [
