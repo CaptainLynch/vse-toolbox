@@ -39,23 +39,27 @@ REQUIRED_COLUMNS = (
 STATUS_DONE = "已完成"
 STATUS_DISCARDED = "已废弃"
 #: 见过的在途状态值；其余取值也按在途处理，但记为异常（P6）。
-KNOWN_IN_FLIGHT_STATUSES = frozenset({"进行中"})
+KNOWN_IN_FLIGHT_STATUSES = frozenset({"进行中", "审批中"})
 
 CURRENT_DEPARTMENTS = ("车身科", "车体科", "内饰科", "外饰科", "车体架构集成科")
-HISTORY_DEPARTMENTS = ("结构工程科",)
+HISTORY_DEPARTMENTS = ("结构工程科", "视觉工程科")
 
-GROUP_NOT_ROUTED = "未流转到"
+GROUP_ADD_UNKNOWN = "加签（区域未知）"
 GROUP_CONFLICT = "同名待确认"
 GROUP_HISTORY = "历史科室待拆分"
 APPROVER_UNREGISTERED = "未在册"
 SPECIAL_SECTION_GROUPS = ("车身（未在册）", "内外饰（未在册）", GROUP_HISTORY, GROUP_CONFLICT)
 
 STAGE_COUNTERSIGN = "会签中"
-STAGE_COUNTERSIGN_WITH_ADD = "会签中·含加签"
-STAGE_ADD_SIGN = "加签中"
 STAGE_APPROVAL = "审批中"
+STAGE_RETURNED = "退回修改"
+STAGE_DRAFT = "待提交"
 STAGE_LOCK = "待锁定"
-_STAGE_RANK = {STAGE_COUNTERSIGN: 0, STAGE_COUNTERSIGN_WITH_ADD: 0, STAGE_ADD_SIGN: 1, STAGE_APPROVAL: 2, STAGE_LOCK: 3}
+_STAGE_RANK = {STAGE_COUNTERSIGN: 0, STAGE_APPROVAL: 1, STAGE_RETURNED: 2, STAGE_DRAFT: 3, STAGE_LOCK: 4}
+
+KIND_UNSIGNED = "unsigned"  # 角色列里带未签，且在待审批人员里
+KIND_RETURNED = "returned"  # 已签的设计工程师，单被退回（A13）
+KIND_ADD_SIGN = "addSign"  # 不在任何角色列的待审批人（A13）
 
 MINUS = "−"  # D5：负数写数学减号
 
@@ -150,18 +154,43 @@ def normalize_name(raw: Any) -> tuple[str, bool]:
     return text, unsigned
 
 
-def parse_people(value: Any) -> list[tuple[str, bool]]:
-    """P3：单元格 -> [(姓名, 已签)]；同格重复的人合并，任一处未签即未签。"""
-    seen: dict[str, bool] = {}
+def parse_tokens(value: Any) -> list[tuple[str, bool]]:
+    """P3/P7：单元格 -> [(姓名, 带未签标记)]，同格重名每次出现都保留（人次按出现次数计）。"""
+    result = []
     for token in _PEOPLE_SPLIT.split(_text(value)):
         name, unsigned = normalize_name(token)
-        if not name or name.lower() in _EMPTY_CELLS:
-            continue
+        if name and name.lower() not in _EMPTY_CELLS:
+            result.append((name, unsigned))
+    return result
+
+
+def parse_people(value: Any) -> list[tuple[str, bool]]:
+    """单元格 -> [(姓名, 已签)]；同格重复的人合并，任一处未签即未签。"""
+    seen: dict[str, bool] = {}
+    for name, unsigned in parse_tokens(value):
         seen[name] = seen.get(name, True) and not unsigned
     return list(seen.items())
 
 
 # ── 归并成 3D单（§2 P2–P9）───────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class Placement:
+    name: str
+    kind: str
+    #: 会签阶段的未签人是他未签的所有会签列；加签人在会签阶段为空（按出现频次归属）；审批阶段是单个节点。
+    columns: tuple[str, ...]
+    phase: str
+
+
+_COUNTERSIGN_RANK = 2
+#: 流转顺序（T3）：设计工程师、主任工程师、会签、专家/经理、首席/总监。
+_FLOW_ORDER = {"设计工程师": 0, "主任工程师": 1, "专家/经理": 3, "首席/总监": 4}
+
+
+def _node_rank(column: str) -> int:
+    return _FLOW_ORDER.get(column, _COUNTERSIGN_RANK)
 
 
 @dataclass
@@ -182,6 +211,12 @@ class Flow:
     add_sign: dict[str, bool] = field(default_factory=dict)
     #: 零件键 -> 零件名称；零件键是零件号，空零件号按行区分（P9）。
     parts: dict[str, str] = field(default_factory=dict)
+    #: P7：人次按单元格里名字出现的次数计、不去重，只取该单第一行（各行的角色列相同）。
+    role_count: int = 0
+    role_unsigned_count: int = 0
+    countersign_required: int = 0
+    countersign_signed: int = 0
+    add_sign_count: int = 0
 
     @property
     def is_done(self) -> bool:
@@ -201,30 +236,57 @@ class Flow:
             if not signed and (phase is None or column_phase(column) == phase)
         ]
 
-    @property
-    def countersign_required(self) -> int:
-        return sum(1 for column, _ in self.roles if column_phase(column) == PHASE_COUNTERSIGN)
+    def placements(self) -> list[Placement]:
+        """A12、A13：待审批人员里的每个人落在哪个节点。"""
+        unsigned_columns: dict[str, list[str]] = {}
+        for column, name in self.unsigned():
+            unsigned_columns.setdefault(name, []).append(column)
+        countersign_open = bool(self.unsigned(PHASE_COUNTERSIGN))
+        result = []
+        for name in self.pending:
+            columns = unsigned_columns.get(name)
+            if columns:
+                rank = min(_node_rank(column) for column in columns)
+                if rank == _COUNTERSIGN_RANK:
+                    result.append(Placement(name, KIND_UNSIGNED, tuple(c for c in columns if column_phase(c) == PHASE_COUNTERSIGN),
+                                            PHASE_COUNTERSIGN))
+                else:
+                    column = next(c for c in columns if _node_rank(c) == rank)
+                    result.append(Placement(name, KIND_UNSIGNED, (column,), PHASE_APPROVAL))
+            elif self.roles.get(("设计工程师", name)) is True:
+                result.append(Placement(name, KIND_RETURNED, ("设计工程师",), PHASE_APPROVAL))
+            elif countersign_open:
+                result.append(Placement(name, KIND_ADD_SIGN, (), PHASE_COUNTERSIGN))
+            else:
+                open_nodes = {column for column, _ in self.unsigned(PHASE_APPROVAL)}
+                node = next((c for c in APPROVAL_COLUMNS[1:] if c in open_nodes), APPROVAL_COLUMNS[1])
+                result.append(Placement(name, KIND_ADD_SIGN, (node,), PHASE_APPROVAL))
+        return result
 
     @property
-    def countersign_signed(self) -> int:
-        return sum(1 for (column, _), signed in self.roles.items() if signed and column_phase(column) == PHASE_COUNTERSIGN)
+    def not_current(self) -> list[str]:
+        """未签但非当前待办：角色列带「(未签)」、但不在待审批人员里；不计欠账。"""
+        pending = set(self.pending)
+        return sorted({name for _, name in self.unsigned() if name not in pending})
 
     @property
-    def add_sign_pending(self) -> list[str]:
-        """P5：待审批人员里、在本单角色列没有未签记录的人，是待签的加签人。"""
-        role_unsigned = {name for _, name in self.unsigned()}
-        return [name for name in self.pending if name not in role_unsigned]
+    def no_pending(self) -> bool:
+        """T2：待审批人员为空，但还有未签（数据异常）。"""
+        return not self.pending and bool(self.unsigned())
 
     @property
     def stage(self) -> str:
-        """T1–T4，取第一条成立的。"""
-        if self.unsigned(PHASE_COUNTERSIGN):
-            return STAGE_COUNTERSIGN_WITH_ADD if self.add_sign_pending else STAGE_COUNTERSIGN
-        if self.add_sign_pending:
-            return STAGE_ADD_SIGN
-        if self.unsigned(PHASE_APPROVAL):
+        """T1–T6，取第一条成立的。"""
+        if not self.pending:
+            if not self.unsigned():
+                return STAGE_LOCK
+            return STAGE_COUNTERSIGN if self.unsigned(PHASE_COUNTERSIGN) else STAGE_APPROVAL
+        placed = self.placements()
+        if any(p.phase == PHASE_COUNTERSIGN for p in placed):
+            return STAGE_COUNTERSIGN
+        if any(p.columns and p.columns[0] != "设计工程师" for p in placed):
             return STAGE_APPROVAL
-        return STAGE_LOCK
+        return STAGE_DRAFT if any(p.kind == KIND_UNSIGNED for p in placed) else STAGE_RETURNED
 
     def days(self, data_date: date) -> int | None:
         """P8：数据日期 − 申请日期，自然日。"""
@@ -252,6 +314,7 @@ def build_flows(rows: Iterable[Mapping[str, Any]]) -> ParseResult:
         if not serial:
             continue
         flow = flows.get(serial)
+        first_row = flow is None
         if flow is None:
             flow = flows[serial] = Flow(
                 serial=serial,
@@ -270,10 +333,22 @@ def build_flows(rows: Iterable[Mapping[str, Any]]) -> ParseResult:
             anomalies.append({"serial": serial, "kind": "rowCountsDiffer", "text": "各行签署人数不一致，取第一行"})
         marks: set[tuple[str, str, bool]] = set()
         for column in ROLE_COLUMNS:
+            tokens = parse_tokens(row.get(column))
+            if first_row:
+                unsigned_tokens = sum(1 for _, unsigned in tokens if unsigned)
+                flow.role_count += len(tokens)
+                flow.role_unsigned_count += unsigned_tokens
+                if column_phase(column) == PHASE_COUNTERSIGN:
+                    flow.countersign_required += len(tokens)
+                    flow.countersign_signed += len(tokens) - unsigned_tokens
             for name, signed in parse_people(row.get(column)):
                 key = (column, name)
                 flow.roles[key] = flow.roles.get(key, True) and signed
                 marks.add((column, name, signed))
+        if first_row:
+            add_tokens = parse_tokens(row.get(ADD_SIGN_COLUMN))
+            flow.add_sign_count += len(add_tokens)
+            flow.role_unsigned_count += sum(1 for _, unsigned in add_tokens if unsigned)
         for name, signed in parse_people(row.get(ADD_SIGN_COLUMN)):
             flow.add_sign[name] = flow.add_sign.get(name, True) and signed
             marks.add((ADD_SIGN_COLUMN, name, signed))
@@ -288,14 +363,18 @@ def build_flows(rows: Iterable[Mapping[str, Any]]) -> ParseResult:
             continue
         if flow.status != STATUS_DONE and flow.status not in KNOWN_IN_FLIGHT_STATUSES:
             anomalies.append({"serial": flow.serial, "kind": "unknownStatus", "text": f"没见过的状态「{flow.status}」，按在途处理"})
-        if flow.in_flight and flow.unsigned(PHASE_COUNTERSIGN) and not flow.pending:
+        if flow.in_flight and flow.no_pending:
             anomalies.append({"serial": flow.serial, "kind": "pendingEmpty",
-                              "text": "会签列有未签但待审批人员为空，当前待办人显示「—」"})
-        marks = len(flow.unsigned()) + sum(1 for signed in flow.add_sign.values() if not signed)
-        if marks != flow.unsigned_count:
+                              "text": "有人未签但待审批人员为空，当前待办人显示「—」"})
+        if flow.role_count + flow.add_sign_count != flow.required:
+            anomalies.append({
+                "serial": flow.serial, "kind": "requiredCountDiffer",
+                "text": f"角色列人次加加签人数 {flow.role_count + flow.add_sign_count}，应签人数字段 {flow.required}，以 TDC 字段为准",
+            })
+        if flow.role_unsigned_count != flow.unsigned_count:
             anomalies.append({
                 "serial": flow.serial, "kind": "unsignedCountDiffer",
-                "text": f"未签标记 {marks} 个，未签人数字段 {flow.unsigned_count}，以 TDC 字段为准",
+                "text": f"未签标记 {flow.role_unsigned_count} 个，未签人数字段 {flow.unsigned_count}，以 TDC 字段为准",
             })
         result.append(flow)
     # 同一单多行不一致只报一次。
@@ -433,6 +512,75 @@ def flow_department(flow: Flow, roster: Roster) -> tuple[str, bool]:
     return department, False
 
 
+@dataclass
+class TodoItem:
+    """一项当前待办：谁、进哪张图哪个组、怎么标注。"""
+    name: str
+    kind: str
+    attribution: Attribution
+
+    @property
+    def label_note(self) -> str:
+        return {KIND_RETURNED: "退回修改", KIND_ADD_SIGN: "加签"}.get(self.kind, "")
+
+    @property
+    def area(self) -> str:
+        att = self.attribution
+        return approver_label(att) if att.chart == 3 else att.group
+
+
+def countersign_frequency(flows: Iterable[Flow]) -> dict[str, str]:
+    """A13：姓名 -> 他在本次数据里出现最多的会签列；次数相同取列顺序靠前的。"""
+    counts: dict[str, dict[str, int]] = {}
+    for flow in flows:
+        for column, name in flow.roles:
+            if column_phase(column) == PHASE_COUNTERSIGN:
+                per = counts.setdefault(name, {})
+                per[column] = per.get(column, 0) + 1
+    order = {column: index for index, column in enumerate(COUNTERSIGN_COLUMNS)}
+    return {name: min(per, key=lambda c: (-per[c], order.get(c, len(order)))) for name, per in counts.items()}
+
+
+def _add_sign_attribution(
+    name: str, column: str | None, roster: Roster, person_areas: Mapping[str, str] | None,
+    area_names: Mapping[str, str] | None, frequency: Mapping[str, str],
+) -> Attribution:
+    hit = roster.lookup(name)
+    if column is not None:
+        return attribute(name, column, roster, person_areas, area_names=area_names)
+    if hit.registered:
+        return attribute(name, COUNTERSIGN_COLUMNS[0], roster, person_areas, area_names=area_names)  # 在册：列只是占位
+    best = frequency.get(name)
+    if best:
+        return attribute(name, best, roster, person_areas, area_names=area_names)
+    override = _text((person_areas or {}).get(normalize_name(name)[0]))
+    if override:
+        return Attribution(2 if override in set(CURRENT_DEPARTMENTS) else 1, override, False, hit)
+    return Attribution(1, GROUP_ADD_UNKNOWN, False, hit)
+
+
+def current_todo(
+    flow: Flow,
+    roster: Roster,
+    person_areas: Mapping[str, str] | None = None,
+    area_names: Mapping[str, str] | None = None,
+    frequency: Mapping[str, str] | None = None,
+) -> list[TodoItem]:
+    """A10、A12、A13：待审批人员里的每一项当前待办 -> 责任区域与所进的图。"""
+    frequency = frequency or {}
+    items: list[TodoItem] = []
+    for placement in flow.placements():
+        if placement.kind == KIND_ADD_SIGN:
+            column = placement.columns[0] if placement.phase == PHASE_APPROVAL else None
+            items.append(TodoItem(placement.name, placement.kind,
+                                  _add_sign_attribution(placement.name, column, roster, person_areas, area_names, frequency)))
+            continue
+        for column in placement.columns:
+            items.append(TodoItem(placement.name, placement.kind,
+                                  attribute(placement.name, column, roster, person_areas, area_names=area_names)))
+    return items
+
+
 # ── 三张欠账图（§6 G1–G8）─────────────────────────────────────────────
 
 
@@ -478,23 +626,25 @@ def owed_charts(
     """在途单里「当前待办」的欠账（A10、G1）。返回三张图的分组数据和待补录名单。"""
     charts: dict[int, dict[str, OwedGroup]] = {1: {}, 2: {}, 3: {}}
     needs_entry: set[str] = set()
+    frequency = countersign_frequency(flows)
     for flow in flows:
         if not flow.in_flight:
             continue  # 已完成（含签署率不到 100%）的未签人不计欠账
-        pending = set(flow.pending)
-        for column, name in flow.unsigned():
-            if name not in pending:
-                continue  # 未流转到：只在明细表计数
-            attribution = attribute(name, column, roster, person_areas, area_names=area_names)
+        for item in current_todo(flow, roster, person_areas, area_names, frequency):
+            attribution = item.attribution
             if attribution.needs_entry:
-                needs_entry.add(name)
+                needs_entry.add(item.name)
             group = charts[attribution.chart].setdefault(
                 attribution.group,
                 OwedGroup(attribution.group, special=attribution.group in SPECIAL_SECTION_GROUPS),
             )
-            label = f"{name}（{approver_label(attribution)}）" if attribution.chart == 3 else name
+            if attribution.chart == 3:
+                note = f"·{item.label_note}" if item.label_note else ""
+                label = f"{item.name}（{approver_label(attribution)}{note}）"
+            else:
+                label = item.name
             # 在册按「人 + 单」去重，未在册按「人 + 区域 + 单」去重：两者都落在同一组的同一根柱。
-            group.bars.setdefault(name, OwedBar(name, label)).serials.add(flow.serial)
+            group.bars.setdefault(item.name, OwedBar(item.name, label)).serials.add(flow.serial)
     return {
         "external": _order_by_volume(charts[1]),
         "sections": _order_sections(charts[2]),
@@ -504,7 +654,7 @@ def owed_charts(
 
 
 def _order_by_volume(groups: Mapping[str, OwedGroup]) -> list[dict[str, Any]]:
-    ordered = sorted(groups.values(), key=lambda g: (-g.person_times, -g.flow_count, g.name))
+    ordered = sorted(groups.values(), key=lambda g: (g.name == GROUP_ADD_UNKNOWN, -g.person_times, -g.flow_count, g.name))
     return [g.as_dict() for g in ordered]
 
 
@@ -535,33 +685,23 @@ def flow_rows(
 ) -> list[dict[str, Any]]:
     """只列在途的单；按阶段、长周期在前、已申请天数降序、流水单号排序。"""
     long_set = set(long_serials)
+    frequency = countersign_frequency(flows)
     rows = []
     for flow in flows:
         if not flow.in_flight:
             continue
-        pending = set(flow.pending)
         todo: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        not_routed: set[str] = set()
-        for column, name in flow.unsigned():
-            if name not in pending:
-                not_routed.add(name)
+        seen: set[tuple[str, str]] = set()
+        for item in current_todo(flow, roster, person_areas, area_names, frequency):
+            key = (item.name, item.area)
+            if key in seen:
                 continue
-            if name in seen:
-                continue
-            seen.add(name)
-            attribution = attribute(name, column, roster, person_areas, area_names=area_names)
-            area = approver_label(attribution) if attribution.chart == 3 else attribution.group
-            todo.append({"name": name, "area": area, "external": attribution.chart == 1, "addSign": False})
-        for name in flow.add_sign_pending:
-            if name in seen:
-                continue
-            seen.add(name)
-            hit = roster.lookup(name)
+            seen.add(key)
             todo.append({
-                "name": name, "area": hit.department if hit.status == "hit" else "",
-                "external": False, "addSign": True,
+                "name": item.name, "area": item.area, "external": item.attribution.chart == 1,
+                "addSign": item.kind == KIND_ADD_SIGN, "returned": item.kind == KIND_RETURNED,
             })
+        todo.sort(key=lambda item: not item["external"])  # 外区域的人排在前面
         names = [name for name in flow.parts.values() if name]
         department, _ = flow_department(flow, roster)
         rows.append({
@@ -573,7 +713,8 @@ def flow_rows(
             "applicant": flow.applicant,
             "stage": flow.stage,
             "todo": todo,
-            "notRouted": len(not_routed - seen),
+            "noPending": flow.no_pending,
+            "notCurrent": len(flow.not_current),
             "countersign": (flow.countersign_signed, flow.countersign_required),
             "total": (flow.signed, flow.required),
             "days": flow.days(data_date),
@@ -590,13 +731,17 @@ def part_label(row: Mapping[str, Any]) -> str:
 def todo_text(row: Mapping[str, Any]) -> str:
     items = []
     for item in row["todo"]:
-        if item["addSign"]:
+        if item.get("addSign"):
             items.append(f"{item['name']}（加签{'·' + item['area'] if item['area'] else ''}）")
+        elif item.get("returned"):
+            items.append(f"{item['name']}（退回修改）")
         else:
             items.append(f"{item['name']}（{item['area']}）")
     text = "、".join(items) or "—"
-    if row["notRouted"]:
-        text += f"，另 {row['notRouted']} 人未流转到"
+    if row.get("noPending"):
+        text += "（无待审批人）"
+    if row.get("notCurrent"):
+        text += f"，另 {row['notCurrent']} 人未签、非当前待办"
     return text
 
 

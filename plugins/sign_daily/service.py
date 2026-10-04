@@ -555,7 +555,7 @@ def _notices(flows: Sequence[V.Flow], ctx: _Context, charts: Mapping[str, Any],
     for flow in flows:
         if not flow.in_flight:
             continue
-        for _, name in flow.unsigned():
+        for name in {*flow.pending, *(n for _, n in flow.unsigned())}:
             status = ctx.roster.lookup(name).status
             if status == "conflict":
                 conflict.add(name)
@@ -569,7 +569,7 @@ def _notices(flows: Sequence[V.Flow], ctx: _Context, charts: Mapping[str, Any],
                         "text": "花名册里同名不同科室，请到花名册处理：" + "、".join(sorted(conflict))})
     if history:
         notices.append({"kind": "historyDepartment", "blocking": False,
-                        "text": "科室是历史值「结构工程科」，请指定现行科室：" + "、".join(sorted(history))})
+                        "text": "科室是历史值（" + "、".join(V.HISTORY_DEPARTMENTS) + "），请指定现行科室：" + "、".join(sorted(history))})
     if anomalies:
         notices.append({"kind": "anomalies", "blocking": False, "text": f"数据异常 {len(anomalies)} 条，已按规则处理"})
     return notices

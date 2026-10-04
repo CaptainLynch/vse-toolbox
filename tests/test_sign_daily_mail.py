@@ -44,12 +44,13 @@ def _report(**overrides):
             {"serial": "S1", "partLabel": "【长周期】前门内板等2件", "department": "车身科", "applicant": "林锦辉",
              "stage": "会签中",
              "todo": [{"name": "冲压丁", "area": "冲压", "external": True, "addSign": False},
-                      {"name": "加签壬", "area": "", "external": False, "addSign": True}],
-             "notRouted": 1, "countersign": (1, 2), "total": (1, 2), "days": 15},
+                      {"name": "加签壬", "area": "", "external": False, "addSign": True},
+                      {"name": "起草甲", "area": "车身科", "external": False, "addSign": False, "returned": True}],
+             "notCurrent": 1, "countersign": (1, 2), "total": (1, 2), "days": 15},
             {"serial": "S2", "partLabel": "顶棚", "department": "车体科", "applicant": "蒋运飞", "stage": "审批中",
-             "todo": [], "notRouted": 0, "countersign": (2, 2), "total": (2, 3), "days": 8},
+             "todo": [], "notCurrent": 0, "countersign": (2, 2), "total": (2, 3), "days": 8},
             {"serial": "S3", "partLabel": "<b>x</b>", "department": "车身科", "applicant": "A", "stage": "待锁定",
-             "todo": [], "notRouted": 0, "countersign": (1, 1), "total": (1, 1), "days": 2},
+             "todo": [], "notCurrent": 0, "countersign": (1, 1), "total": (1, 1), "days": 2},
         ],
     }
     report.update(overrides)
@@ -65,7 +66,7 @@ def test_html_order_images_and_table():
     assert "cid:sd-sections" not in body and "本阶段无未签" in body  # G6
     assert "柱高 = 当前待办的在途 3D单份数" in body  # G7
     assert '<a href="https://x.feishu.cn/base/abc">' in body
-    assert "<b>冲压丁（冲压）</b>" in body and "加签壬（加签）" in body and "另 1 人未流转到" in body
+    assert "<b>冲压丁（冲压）</b>" in body and "加签壬（加签）" in body and "起草甲（退回修改）" in body and "另 1 人未签、非当前待办" in body
     assert 'bgcolor="#ffd6d6"' in body and "font-weight:bold;\">15<" in body  # 超期：浅红底红色粗体
     assert 'bgcolor="#fff3c4"' in body  # 预警：浅黄底
     assert "&lt;b&gt;x&lt;/b&gt;" in body  # 转义
@@ -83,7 +84,7 @@ def test_empty_report_and_plain_text():
     lines = text.splitlines()
     header = lines.index("\t".join(M._TABLE_HEADERS))
     assert lines[header + 1].split("\t")[:3] == ["1", "S1", "【长周期】前门内板等2件"]
-    assert "冲压丁（冲压）、加签壬（加签），另 1 人未流转到" in lines[header + 1]
+    assert "冲压丁（冲压）、加签壬（加签）、起草甲（退回修改），另 1 人未签、非当前待办" in lines[header + 1]
 
 
 def test_recipients_add_owed_people_and_list_gaps():

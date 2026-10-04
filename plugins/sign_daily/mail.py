@@ -85,18 +85,22 @@ def day_level(days: Any, thresholds: Mapping[str, Any]) -> str:
 
 
 def todo_html(row: Mapping[str, Any]) -> str:
-    """当前待办人：外区域的人加粗；加签人标「加签」；末尾「另 n 人未流转到」。"""
+    """当前待办人：外区域的人加粗；加签、退回修改另加标注；末尾「另 n 人未签、非当前待办」。"""
     items = []
     for item in row.get("todo") or []:
         if item.get("addSign"):
             area = f"·{item['area']}" if item.get("area") else ""
-            items.append(f"{_e(item['name'])}（加签{_e(area)}）")
+            text = f"{_e(item['name'])}（加签{_e(area)}）"
+        elif item.get("returned"):
+            text = f"{_e(item['name'])}（退回修改）"
         else:
             text = f"{_e(item['name'])}（{_e(item.get('area'))}）"
-            items.append(f"<b>{text}</b>" if item.get("external") else text)
+        items.append(f"<b>{text}</b>" if item.get("external") else text)
     out = "、".join(items) or "—"
-    if row.get("notRouted"):
-        out += f"，另 {int(row['notRouted'])} 人未流转到"
+    if row.get("noPending"):
+        out += "（无待审批人）"
+    if row.get("notCurrent"):
+        out += f"，另 {int(row['notCurrent'])} 人未签、非当前待办"
     return out
 
 

@@ -1,5 +1,13 @@
 # Current State
 
+## 2026-10-04 规格 10-04 修订（F620S 在途样例）已落地（分支 claude/peaceful-bohr-bi1j7y）
+
+- 规格在 10-04 修订在途规则：当前待办以「待审批人员」为准（A10/A12/A13）、阶段改为会签中/审批中/退回修改/待提交/待锁定
+  （T1–T6，取消「加签中」）、P3/P6/P7/P10、视觉工程科列为历史科室。`plugins/sign_daily/rules.py` 的 `Flow.placements()`、
+  `current_todo()`、`countersign_frequency()` 是新口径入口；邮件明细「另 n 人未签、非当前待办」「（无待审批人）」。
+  两处解读和未动项（后蒙皮上/下组件仍为疑似）见审计文档 §11。签署日报相关 128 个测试通过。
+- **待用户**：F620S 真实导出（135 份/19 份在途）本地回归，预期归属车身五科室的在途单 5 份；其余待办同下。
+
 ## 2026-10-03 签署日报 v2.0 + 交付物明细同步增强（§9）全部实现并审计（分支 claude/peaceful-bohr-bi1j7y）
 
 - **依据**：Claude Docs「3D单签署进展日报插件 需求规格 v2.0」。规格里的 `signing_report` = `plugins/sign_daily/`
