@@ -7,6 +7,7 @@ import base64
 import email
 import importlib.util
 import sys
+import time
 from email import policy
 from pathlib import Path
 
@@ -119,16 +120,22 @@ def test_png_validation():
             M.decode_png(bad)
 
 
-def test_links_keep_all_query_parameters_and_time_is_local(monkeypatch):  # 审计
+def test_links_keep_all_query_parameters():  # 审计
     body = M.render_html(_report(), {**TEXTS, "feishuLink": "反馈 https://x.feishu.cn/wiki/a?from=a&sheet=b 谢谢"},
                          THRESHOLDS)
     assert '<a href="https://x.feishu.cn/wiki/a?from=a&amp;sheet=b">' in body
+
+
+def test_data_time_falls_back_to_data_date():
+    assert M.format_data_time({"snapshotAt": "", "dataDate": "2026-10-03"}) == "2026-10-03"
+
+
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="time.tzset only exists on POSIX; Windows uses the system zone")
+def test_data_time_is_local(monkeypatch):  # 审计
     monkeypatch.setenv("TZ", "Asia/Shanghai")
-    import time
     time.tzset()
     try:
         assert M.format_data_time({"snapshotAt": "2026-10-03T01:23:45.123456Z"}) == "2026-10-03 09:23"
     finally:
         monkeypatch.delenv("TZ")
         time.tzset()
-    assert M.format_data_time({"snapshotAt": "", "dataDate": "2026-10-03"}) == "2026-10-03"

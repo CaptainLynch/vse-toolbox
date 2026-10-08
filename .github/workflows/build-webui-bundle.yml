@@ -2,6 +2,7 @@ name: Build VSE-WebUI standalone bundle (Windows)
 
 # 环境测试用：在 Windows 构建机上打出免安装的 VSE-WebUI（exe + _internal + plugins），
 # 同事机器不需要装 Python。产物是 VSE-WebUI.zip，解压即用。
+# 在 claude/** 分支推送本文件会自动构建；也可以在 Actions 页面手动运行。
 on:
   workflow_dispatch:
   push:
