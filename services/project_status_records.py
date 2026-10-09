@@ -46,11 +46,12 @@ MAX_AGGREGATE_RECORDS = 5000
 _QUERY_RULE_KEYS_BY_SOURCE: dict[str, frozenset[str]] = {
     "tdc": frozenset(
         {
-            "reportType", "aggregate", "incident", "applicant", "department",
-            "section", "applicationStart", "applicationEnd", "projectModel",
-            "partNumber", "modelNumber", "processNo", "processType",
-            "carTypeProject", "carTypeProjectId", "title", "partName", "version",
-            "sorNumber", "latestCompletedNode", "approvalStatus", "status",
+            "reportType", "aggregate", "incident", "documentNo", "applicant",
+            "department", "section", "applicationStart", "applicationEnd",
+            "projectModel", "partNumber", "modelNumber", "processNo",
+            "processType", "carTypeProject", "carTypeProjectId", "title",
+            "partName", "version", "sorNumber", "latestCompletedNode",
+            "approvalStatus", "status",
         }
     ),
     "aras": frozenset(

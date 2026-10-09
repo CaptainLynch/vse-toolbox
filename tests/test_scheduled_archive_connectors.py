@@ -530,7 +530,7 @@ def test_production_registry_approved_job_keys(tmp_path: Path) -> None:
             },
             TDCDataModelFilters,
             {
-                "serial_number": "INC-99", "applicant": "John Doe", "department": "DeptA",
+                "instance_no": "INC-99", "applicant": "John Doe", "department": "DeptA",
                 "section": "SecB", "application_start": "2026-01-01", "application_end": "2026-01-31",
                 "project_model": "PM-1", "part_number": "PN-01", "model_number": "MN-02",
             },
@@ -999,7 +999,7 @@ def test_empty_and_whitespace_filter_values_are_normalized_to_none(tmp_path: Pat
     credential, _, _ = random_credential()
     connector.collect(context, credential)
     assert len(auth_list) == 1 and auth_list[0].session.closed == 1
-    assert crawlers[0].last_crawl_filters.serial_number is None
+    assert crawlers[0].last_crawl_filters.instance_no is None
     assert crawlers[0].last_crawl_filters.applicant is None
 
 

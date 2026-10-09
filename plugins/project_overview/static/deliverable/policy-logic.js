@@ -225,6 +225,9 @@ export function wizardInitialValues(policy, capabilities, vaultConfigured) {
     sections: Array.isArray(rule.sectionScope) ? rule.sectionScope.map((value) => String(value)) : [],
     interval: String((policy && policy.intervalMinutes) || 15),
     number: ewoPolicyString(rule.ewoNo || rule.processNo || rule.incident || rule.paaNo || rule.ncrNo || ""),
+    // 数模流水单号（documentNo）与实例号并存二选一：回填只按各自键取值，
+    // 不做跨键转换（存量 incident 绑定打开后不填流水单号框，反之亦然）。
+    documentNo: ewoPolicyString(rule.documentNo || ""),
     defaultDept,
   };
 }
@@ -237,6 +240,10 @@ export function wizardPrecheck(values, policy, capabilities, vaultConfigured) {
     return "系统设置未检测到凭据保护库，请先登录并保存统一域账号。";
   }
   if (!specificNo && !modelVal && wizardPrimaryMatchField(capabilities)) return "请填写车型项目或车型信息（例如 F610S）。";
+  const documentNo = ewoPolicyString(values.documentNo);
+  if (documentNo && specificNo) {
+    return "流水单号与实例号二选一：请只填写其中一项（流水单号为 3D- 前缀，实例号为纯数字）。";
+  }
   return "";
 }
 
@@ -248,7 +255,10 @@ export function buildWizardDiscovery(values, capabilities) {
   const rawDept = ewoPolicyString(values.department);
   const deptVal = kind.isTdc ? normalizeTdcDepartment(rawDept) : rawDept;
   const specificNo = ewoPolicyString(values.number);
-  const aggregate = !specificNo;
+  // 聚合 = 未指定单号；数模流水单号也是"指定单号"（绑定到命中行的 incident 作为
+  // externalKey），只填流水单号时同样按单记录取证。
+  const documentNoVal = ewoPolicyString(values.documentNo);
+  const aggregate = !specificNo && !(kind.isDataModel && documentNoVal);
   const filters = {};
   const matchRule = { reportType: capabilities.reportType || (kind.isEwo ? "ewo" : ""), aggregate };
   const set = (ruleKey, filterKey, value) => {
@@ -273,6 +283,10 @@ export function buildWizardDiscovery(values, capabilities) {
     set("projectModel", "project_model", modelVal);
     set("department", "department", deptVal);
     set("status", "status", ewoPolicyString(values.status));
+    // 流水单号（documentNo）与实例号（incident）并存二选一（wizardPrecheck 拦截
+    // 同填）：流水单号走后端全量抓取+本地精确匹配（它不是 TDC 查询参数），实例号
+    // 仍是线上参数 incident。互不覆写，存量绑定回填不跨键转换。
+    set("documentNo", "document_no", ewoPolicyString(values.documentNo));
     set("incident", "serial_number", specificNo);
   } else if (kind.isPaa) {
     set("projectModel", "project_model", modelVal);
@@ -290,6 +304,9 @@ export function buildWizardDiscovery(values, capabilities) {
     matchRule[primary.key] = specificNo || modelVal;
   }
   const payload = { filters, selectedExternalKey: specificNo || null, aggregate, ...wizardEvidenceDefaults(capabilities) };
+  // 流水单号绑定：document_no 已在 filters 里（发现端 _mapping_discovery_query_identity
+  // 按 mapping 键收口为 matchRule.documentNo），selectedExternalKey 由后端映射发现
+  // 回填为命中行的实例号（incident），不在请求里预置。
   if (kind.isEwo) {
     payload.contractVersion = "2";
     payload.bindingMode = aggregate ? "record_set" : "single_record";

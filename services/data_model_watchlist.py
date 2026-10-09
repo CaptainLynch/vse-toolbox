@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 from typing import Any, Iterable, Mapping, Sequence
 
+from core.diagnostic_recording import emit
 from services.form_search import snapshot_schema
 
 JOB_KEY = "tdc_data_model"
@@ -105,11 +106,94 @@ def apply_watchlist(
     }
 
 
+def _row_instance(row: Mapping[str, Any]) -> str:
+    """接口行的实例号（incident，第 0 列）；缺列或空值返回空串。"""
+    value = row.get("incident")
+    if value in (None, ""):
+        return ""
+    return str(value).strip()
+
+
+def match_serial(
+    rows: Iterable[Mapping[str, Any]],
+    serial: str | None,
+) -> tuple[list[Mapping[str, Any]], dict[str, Any]]:
+    """按流水单号精确匹配行（本地匹配是正确性的唯一保证）。
+
+    TDC 查询参数里没有流水单号，只有实例号 ``incident``；因此目标单号只能对
+    全量抓取结果本地匹配。精确相等、区分大小写、只去首尾空白——严禁前缀或
+    包含匹配。纯函数：不做 IO、不翻页。
+
+    -> (命中行列表, 簿记 dict)；簿记含 ``serial``/``scanned``/``matched`` 与
+    命中行的实例号列表 ``matched_instances``（缺 incident 的命中行不贡献条目）。
+
+    空目标单号抛 ``WatchlistError``：绝不退化成"匹配全部行"。
+    """
+    target = str(serial or "").strip()
+    if not target:
+        raise WatchlistError("流水单号不能为空")
+    scanned_rows = list(rows)
+    matched = [row for row in scanned_rows if row_serial(row) == target]
+    return matched, {
+        "serial": target,
+        "scanned": len(scanned_rows),
+        "matched": len(matched),
+        "matched_instances": [
+            instance for row in matched if (instance := _row_instance(row))
+        ],
+    }
+
+
+def match_serials(
+    rows: Iterable[Mapping[str, Any]],
+    serials: Sequence[str],
+) -> tuple[list[Mapping[str, Any]], dict[str, Any]]:
+    """多流水单号集合本地精确匹配（match_serial 的集合版，单次全量抓取共用）。
+
+    -> (命中行列表, 簿记 dict)；簿记含 ``requested``（去重后的目标单号）、
+    ``found``（扫描结果中命中的单号）、``missing``（已扫描但查不到的单号，
+    S8 语义：只展示不删除）、``scanned``/``matched``。命中行按目标单号顺序
+    合并、行不重复。空目标列表抛 ``WatchlistError``：绝不退化成"匹配全部行"。
+    """
+    wanted = list(dict.fromkeys(str(s or "").strip() for s in serials))
+    wanted = [s for s in wanted if s]
+    if not wanted:
+        raise WatchlistError("流水单号不能为空")
+    scanned_rows = list(rows)
+    serial_by_index = {index: row_serial(row) for index, row in enumerate(scanned_rows)}
+    matched_rows: list[Mapping[str, Any]] = []
+    used_indexes: set[int] = set()
+    found: list[str] = []
+    missing: list[str] = []
+    for serial in wanted:
+        hits = [index for index, value in serial_by_index.items() if value == serial]
+        if hits:
+            found.append(serial)
+            matched_rows.extend(scanned_rows[index] for index in hits if index not in used_indexes)
+            used_indexes.update(hits)
+        else:
+            missing.append(serial)
+    return matched_rows, {
+        "requested": wanted,
+        "found": found,
+        "missing": missing,
+        "scanned": len(scanned_rows),
+        "matched": len(matched_rows),
+    }
+
+
 def load_watchlist(db: Any) -> tuple[str, tuple[str, ...]]:
     """从 tdc_data_model 归档任务读同步范围和清单；任务缺失或配置非法时按全部处理。"""
     try:
         jobs = db.list_archive_jobs()
-    except Exception:  # noqa: BLE001 - 读不到配置时不改变既有同步行为
+    except Exception as exc:  # noqa: BLE001 - 读不到配置时不改变既有同步行为
+        # 回退行为不变，但静默回退会让"关注清单被忽略"无法定位：发一次有界诊断事件。
+        emit(
+            "watchlist_load_jobs_failed",
+            {"state": "failed"},
+            name="data_model_watchlist.load_watchlist",
+            exception=exc,
+        )
         return SCOPE_ALL, ()
     job = next((item for item in jobs if item.get("job_key") == JOB_KEY), None)
     if job is None:
@@ -117,7 +201,13 @@ def load_watchlist(db: Any) -> tuple[str, tuple[str, ...]]:
     try:
         filters = json.loads(job.get("filters_json") or "{}")
         return watchlist_settings(filters if isinstance(filters, Mapping) else {})
-    except (ValueError, WatchlistError):
+    except (ValueError, WatchlistError) as exc:
+        emit(
+            "watchlist_load_settings_failed",
+            {"state": "failed"},
+            name="data_model_watchlist.load_watchlist",
+            exception=exc,
+        )
         return SCOPE_ALL, ()
 
 

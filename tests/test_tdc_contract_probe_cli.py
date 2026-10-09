@@ -232,7 +232,7 @@ def test_password_cleared_after_login(
     monkeypatch.setattr(
         tdc_probe_cli,
         "_ask_tdc_data_model_filters",
-        lambda: TDCDataModelFilters(serial_number="WF-100"),
+        lambda: TDCDataModelFilters(instance_no="WF-100"),
     )
     monkeypatch.setattr(tdc_probe_cli.Confirm, "ask", lambda prompt, **kw: "继续" in prompt)
     monkeypatch.setattr(tdc_probe_cli, "_ask_positive_int", lambda prompt, default: default)
@@ -283,7 +283,7 @@ def test_password_cleared_on_auth_failure(
     monkeypatch.setattr(
         tdc_probe_cli,
         "_ask_tdc_data_model_filters",
-        lambda: TDCDataModelFilters(serial_number="WF-100"),
+        lambda: TDCDataModelFilters(instance_no="WF-100"),
     )
     monkeypatch.setattr(tdc_probe_cli.Confirm, "ask", lambda prompt, **kw: "继续" in prompt)
     monkeypatch.setattr(tdc_probe_cli, "_ask_positive_int", lambda prompt, default: default)
@@ -316,7 +316,7 @@ def test_no_header_cookie_auth_mode(
     monkeypatch.setattr(
         tdc_probe_cli,
         "_ask_tdc_data_model_filters",
-        lambda: TDCDataModelFilters(serial_number="WF-100"),
+        lambda: TDCDataModelFilters(instance_no="WF-100"),
     )
     monkeypatch.setattr(tdc_probe_cli.Confirm, "ask", lambda prompt, **kw: "继续" in prompt)
     monkeypatch.setattr(tdc_probe_cli, "_ask_positive_int", lambda prompt, default: default)
@@ -385,7 +385,7 @@ def test_probe_saves_report_to_runtime(
     monkeypatch.setattr(
         tdc_probe_cli,
         "_ask_tdc_data_model_filters",
-        lambda: TDCDataModelFilters(serial_number="WF-100"),
+        lambda: TDCDataModelFilters(instance_no="WF-100"),
     )
     monkeypatch.setattr(tdc_probe_cli.Confirm, "ask", lambda prompt, **kw: "继续" in prompt)
     monkeypatch.setattr(tdc_probe_cli, "_ask_positive_int", lambda prompt, default: default)
@@ -446,7 +446,7 @@ def test_workflow_identifiers_displayed_locally_but_not_saved(
     monkeypatch.setattr(
         tdc_probe_cli,
         "_ask_tdc_data_model_filters",
-        lambda: TDCDataModelFilters(serial_number="WF-100"),
+        lambda: TDCDataModelFilters(instance_no="WF-100"),
     )
     monkeypatch.setattr(tdc_probe_cli.Confirm, "ask", lambda prompt, **kw: "继续" in prompt)
     monkeypatch.setattr(tdc_probe_cli, "_ask_positive_int", lambda prompt, default: default)
@@ -585,7 +585,7 @@ def test_probe_with_stability_check_enabled(
     monkeypatch.setattr(
         tdc_probe_cli,
         "_ask_tdc_data_model_filters",
-        lambda: TDCDataModelFilters(serial_number="WF-100"),
+        lambda: TDCDataModelFilters(instance_no="WF-100"),
     )
     # 确认继续探测 + 确认执行稳定性检查 + 不查看分类字段
     confirm_answers = iter([True, True, False])
@@ -622,7 +622,7 @@ def test_probe_with_categorical_fields_selected(
     monkeypatch.setattr(
         tdc_probe_cli,
         "_ask_tdc_data_model_filters",
-        lambda: TDCDataModelFilters(serial_number="WF-100"),
+        lambda: TDCDataModelFilters(instance_no="WF-100"),
     )
     # 继续探测(True) -> 不稳定性检查(False) -> 查看分类字段(True)
     confirm_answers = iter([True, False, True])
@@ -668,7 +668,7 @@ def test_probe_with_zero_rows_returned(
     monkeypatch.setattr(
         tdc_probe_cli,
         "_ask_tdc_data_model_filters",
-        lambda: TDCDataModelFilters(serial_number="WF-EMPTY"),
+        lambda: TDCDataModelFilters(instance_no="WF-EMPTY"),
     )
     monkeypatch.setattr(tdc_probe_cli.Confirm, "ask", lambda prompt, **kw: "继续" in prompt)
     monkeypatch.setattr(tdc_probe_cli, "_ask_positive_int", lambda prompt, default: default)
@@ -704,7 +704,7 @@ def test_probe_handles_crawler_error_gracefully(
     monkeypatch.setattr(
         tdc_probe_cli,
         "_ask_tdc_data_model_filters",
-        lambda: TDCDataModelFilters(serial_number="WF-100"),
+        lambda: TDCDataModelFilters(instance_no="WF-100"),
     )
     monkeypatch.setattr(tdc_probe_cli.Confirm, "ask", lambda prompt, **kw: "继续" in prompt)
     monkeypatch.setattr(tdc_probe_cli, "_ask_positive_int", lambda prompt, default: default)
@@ -838,7 +838,7 @@ def test_tdc_contract_probe_cli_success_returns_zero(
     monkeypatch.setattr(
         tdc_probe_cli,
         "_ask_tdc_data_model_filters",
-        lambda: TDCDataModelFilters(serial_number="test"),
+        lambda: TDCDataModelFilters(instance_no="test"),
     )
     monkeypatch.setattr(tdc_probe_cli, "_ask_positive_int", lambda prompt, default: default)
     monkeypatch.setattr(
@@ -894,7 +894,7 @@ def test_tdc_contract_probe_cli_auth_failure_returns_one(
     monkeypatch.setattr(
         tdc_probe_cli,
         "_ask_tdc_data_model_filters",
-        lambda: TDCDataModelFilters(serial_number="test"),
+        lambda: TDCDataModelFilters(instance_no="test"),
     )
     monkeypatch.setattr(tdc_probe_cli, "_ask_positive_int", lambda prompt, default: default)
     monkeypatch.setattr(

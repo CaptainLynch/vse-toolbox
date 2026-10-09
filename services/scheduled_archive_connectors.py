@@ -76,6 +76,8 @@ _TDC_DATA_MODEL_KEYS = {
     # syncScope/watchlist：关注清单同步范围（services/data_model_watchlist.py），不发给 TDC。
     "syncScope",
     "watchlist",
+    # documentNo：流水单号（向导规则持久化用）。它不是 TDC 查询参数，不发给上游。
+    "documentNo",
     "incident",
     "applicant",
     "department",
@@ -476,8 +478,9 @@ class TDCArchiveConnector:
     @staticmethod
     def _data_model_filters(value: Mapping[str, object]) -> TDCDataModelFilters:
         rule = _checked_filters(value, _TDC_DATA_MODEL_KEYS)
+        # documentNo（流水单号）不是 TDC 查询参数：只读取这里列出的键，它自然被忽略。
         return TDCDataModelFilters(
-            serial_number=_text(rule.get("incident")),
+            instance_no=_text(rule.get("incident")),
             applicant=_text(rule.get("applicant")),
             department=_text(rule.get("department")),
             section=_text(rule.get("section")),

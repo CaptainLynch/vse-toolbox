@@ -464,6 +464,16 @@ class ProjectStatusUpdateService:
             or _contains_forbidden_config_key(match_rule)
         ):
             raise SyncBindingNotReadyError("match rule is not approved for the fixed report")
+        if (
+            contract["reportType"] == "data_model"
+            and str(match_rule.get("documentNo") or "").strip()
+            and str(match_rule.get("incident") or "").strip()
+        ):
+            # 数模流水单号与实例号二选一（向导语义 2026-10-09）：同填会在运行期取
+            # 交集，两键指向不同行时永久 not_found 且无从提示，服务端 fail-closed。
+            raise SyncBindingNotReadyError(
+                "流水单号与实例号二选一：请只保留其中一项后重新保存配置"
+            )
         automatic_fields = {
             PROJECT_STATUS_FIELD_NAME_TO_API[row["field_name"]]
             for row in raw["authorities"]
@@ -1005,6 +1015,15 @@ class ProjectStatusUpdateService:
                 fields["matchRule"] = "匹配规则字段类型无效"
             elif _contains_forbidden_config_key(match_rule):
                 fields["matchRule"] = "不允许配置 URL、主机或敏感请求键"
+            elif (
+                isinstance(match_rule, dict)
+                and match_rule.get("reportType") == "data_model"
+                and str(match_rule.get("documentNo") or "").strip()
+                and str(match_rule.get("incident") or "").strip()
+            ):
+                # 数模流水单号与实例号二选一（与 assert_sync_ready 落库校验同语义，
+                # 2026-10-09）：同填会在运行期取交集，指向不同行则永久 not_found。
+                fields["matchRule"] = "流水单号与实例号二选一：请只保留其中一项"
             elif len(_json_dumps(match_rule)) > _TEXT_LIMITS["match_rule"]:
                 fields["matchRule"] = "匹配规则过长"
 

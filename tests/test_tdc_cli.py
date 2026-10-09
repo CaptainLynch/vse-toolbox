@@ -258,7 +258,7 @@ def test_debug_toggle_is_session_local_and_never_prompts_for_unsafe_raw(monkeypa
 
 
 def test_data_model_page_normal_mode_calls_service_without_http_noise(cli, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    filters = TDCDataModelFilters(serial_number="WF-1")
+    filters = TDCDataModelFilters(instance_no="WF-1")
     monkeypatch.setattr(main, "_tdc_action_menu", lambda: "1")
     monkeypatch.setattr(main, "_ask_tdc_data_model_filters", lambda: filters)
 

@@ -20,6 +20,7 @@ import {
   resultMetaText,
   resultRowCount,
   safeDisplayValue,
+  serialMatchNotice,
   SENSITIVE_COLUMNS,
   taskPercent,
   taskProgressText,
@@ -98,7 +99,10 @@ function initialGroupValues(modeId) {
 function filterSummary(modeId, payload) {
   const labels = new Map(fieldsForGroup(MODES[modeId].fieldGroup).map((f) => [f.name, f.label]));
   const parts = [];
-  Object.entries(payload.filters || {}).forEach(([key, value]) => {
+  const entries = Object.entries(payload.filters || {});
+  // 流水单号在请求体顶层（不是 filters），但它仍是用户填写的筛选条件。
+  if (payload.document_no) entries.push(["document_no", payload.document_no]);
+  entries.forEach(([key, value]) => {
     if (key === "car_type_project_id") return;
     const shown = Array.isArray(value) ? value.join(",") : String(value ?? "").trim();
     if (shown) parts.push(`${labels.get(key) || key}: ${redactSensitiveText(shown)}`);
@@ -681,6 +685,7 @@ export default function SystemQueryPage({ plugin }) {
   const connection = connections[mode.system];
   const busy = Boolean(running);
   const shownResult = result && result.modeId === modeId ? result : null;
+  const serialNotice = shownResult ? serialMatchNotice(shownResult.data) : null;
   const deepLinkActive = deepLink.from === "overview";
 
   return html`<div class="aras-workbench sq-page">
@@ -791,6 +796,7 @@ export default function SystemQueryPage({ plugin }) {
         <p class="result-output-meta">预览生成时间：${shownResult.at} · 筛选条件：${shownResult.summary}</p>
         ${mode.resultKind === "rows" ? html`
           <p class="result-meta">${resultMetaText(modeId, shownResult.data)}</p>
+          ${serialNotice && html`<p class="result-meta result-warning" role="status">${serialNotice}</p>`}
           ${shownResult.data.mappingComplete === false && Array.isArray(shownResult.data.unmappedColumns)
             && shownResult.data.unmappedColumns.length > 0 && html`<p class="result-meta result-warning">
               ${mode.system === "tdc"

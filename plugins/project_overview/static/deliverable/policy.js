@@ -200,7 +200,8 @@ function SyncSummaryCard({ item, policy, capabilities, settings, advancedOpen, o
   const numberText = kind.isEwo ? "EWO 编号（选填，留空则整车聚合）"
     : kind.isPaa ? "PAA 编号（选填，留空则整车聚合）"
       : kind.isNcr ? "NCR 编号（选填，留空则整车聚合）"
-        : (primary ? `${primary.label}（选填）` : "外部编号（选填）");
+        : kind.isDataModel ? "实例号 incident（选填，纯数字；与流水单号二选一）"
+          : (primary ? `${primary.label}（选填）` : "外部编号（选填）");
 
   return html`<section class="policy-sync-summary" aria-label=${`${item.name} 数据同步`}>
     <div class="policy-sync-summary-head">
@@ -274,6 +275,11 @@ function SyncSummaryCard({ item, policy, capabilities, settings, advancedOpen, o
               title=${kind.isDataModel
     ? "实验性：该值直接传给 TDC 状态筛选参数，上游对其取值格式未经验证；已废弃/已撤回的剔除由同步范围规则自动完成，不依赖本字段。"
     : "该值作为 TDC SOR 状态筛选；已废弃/已撤回的行会先按同步范围规则自动剔除，剔除优先于本筛选（所选状态统计不含这些行）。"} />
+          </label>`}
+          ${kind.isDataModel && html`<label class="policy-ewo-field policy-wizard-field">
+            <span>流水单号（选填，与下方实例号二选一）</span>
+            <input type="text" maxlength="200" placeholder="例如 3D-00001018；填写后走全量抓取+本地精确匹配，较慢" value=${values.documentNo} onInput=${set("documentNo")} />
+            <small class="policy-field-note">流水单号是 3D- 前缀的流程编号（报表第 2 列）。TDC 不支持按它直接查询，同步会先全量抓取再本地精确匹配，耗时较长；与实例号（纯数字）只能填其一。</small>
           </label>`}
           <label class="policy-ewo-field policy-wizard-field">
             <span>定时自动同步周期</span>

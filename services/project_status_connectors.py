@@ -363,6 +363,9 @@ class TDCProjectStatusConnector:
         application_rows = (
             flatten_sor_rows(list(result.rows)) if report == "sor" else list(result.rows)
         )
+        # 绑定带流水单号（documentNo）时按其本地精确收窄（爬虫完整性已在
+        # _require_complete_result 把关；原始归档行 result.rows 不收窄——取证职责）。
+        application_rows = self._narrow_by_document_no(application_rows, context.match_rule)
         # F3（2026-09-29 生产反馈）：同步范围剔除已废弃/已撤回表单（用户口径，
         # docs/PLAN_20260929_R5_SIX_ISSUES.md）。只剔"已证实映射"的状态文本——
         # SOR 行状态为文本立即生效；数模码映射升级后自动生效。归档 JSON 仍为
@@ -420,14 +423,55 @@ class TDCProjectStatusConnector:
 
     @staticmethod
     def _data_model_filters(rule: Mapping[str, Any]) -> TDCDataModelFilters:
+        # incident 是第 0 列实例号；documentNo（流水单号）不是 TDC 查询参数，不在这里消费。
         return TDCDataModelFilters(
-            serial_number=_clean_scalar(rule.get("incident")), applicant=_clean_scalar(rule.get("applicant")),
+            instance_no=_clean_scalar(rule.get("incident")), applicant=_clean_scalar(rule.get("applicant")),
             department=_clean_scalar(rule.get("department")), section=_clean_scalar(rule.get("section")),
             application_start=_clean_scalar(rule.get("applicationStart")), application_end=_clean_scalar(rule.get("applicationEnd")),
             project_model=_clean_scalar(rule.get("projectModel")), part_number=_clean_scalar(rule.get("partNumber")),
             model_number=_clean_scalar(rule.get("modelNumber")),
             status=_clean_scalar(rule.get("status")),
         )
+
+    @staticmethod
+    def _narrow_by_document_no(
+        rows: Sequence[Mapping[str, Any]],
+        rule: Mapping[str, Any],
+    ) -> list[Mapping[str, Any]]:
+        """绑定带流水单号（documentNo）时按其本地精确收窄行集。
+
+        流水单号不是 TDC 查询参数（查询参数 incident 是第 0 列实例号）：同步
+        路径与映射发现（web/app.py run_observation）同走「全量抓取 → 本地精确
+        匹配」。抓取完整性由调用方的 ``_require_complete_result`` 在收窄前把关。
+        行身份（externalKey=incident）与候选匹配机制不因收窄改变。
+
+        空集归因（顾问复核 2026-10-09）：输入非空而输出为空时区分「行集完全
+        没有流水单号列（结构漂移，raise 不落 not_found）」与「有列但无匹配
+        （真正的 not_found）」；命中 0 行时发一次有界诊断。
+        """
+        document_no = str(rule.get("documentNo") or "").strip()
+        if not document_no:
+            return list(rows)
+        matched, bookkeeping = data_model_watchlist.match_serial(rows, document_no)
+        if not matched:
+            from services.data_model_watchlist import row_serial
+
+            if rows and not any(row_serial(row) for row in rows):
+                emit(
+                    "tdc_document_no_structure_drift",
+                    {"report_type": "data_model", "row_count": len(rows)},
+                    name="sync_connector.TDCProjectStatusConnector.collect",
+                )
+                raise ValueError(
+                    "同步行缺少流水单号列（documentNo/流水单号），无法按流水单号匹配；"
+                    "上游结构可能已变化，请重新进行映射发现"
+                )
+            emit(
+                "tdc_document_no_zero_match",
+                {"report_type": "data_model", "scanned": bookkeeping["scanned"]},
+                name="sync_connector.TDCProjectStatusConnector.collect",
+            )
+        return list(matched)
 
     @staticmethod
     def _sor_filters(rule: Mapping[str, Any]) -> TDCSORFilters:

@@ -302,7 +302,7 @@ def test_crawler_gets_explicit_output_dir(
     monkeypatch.setattr(
         tdc_probe_cli,
         "_ask_tdc_data_model_filters",
-        lambda: TDCDataModelFilters(serial_number="TEST-001"),
+        lambda: TDCDataModelFilters(instance_no="TEST-001"),
     )
     monkeypatch.setattr(tdc_probe_cli, "_ask_positive_int", lambda prompt, default: default)
     monkeypatch.setattr(
@@ -470,7 +470,7 @@ def test_failure_returns_one(
     monkeypatch.setattr(
         tdc_probe_cli,
         "_ask_tdc_data_model_filters",
-        lambda: TDCDataModelFilters(serial_number="TEST-FAIL"),
+        lambda: TDCDataModelFilters(instance_no="TEST-FAIL"),
     )
     monkeypatch.setattr(tdc_probe_cli, "_ask_positive_int", lambda prompt, default: default)
     monkeypatch.setattr(

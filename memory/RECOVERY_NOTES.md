@@ -12,6 +12,27 @@
 - **交付物绑定 `interval_minutes` 为 NULL = 跟随调度器频率**（`_is_fresh`），不是 60；部分 PATCH 不能补默认值。
 - **Preact（本仓库 vendor 版）`<option>` 不写 value 会渲染成 `value=""`**：受控 select 选中后拿到空串。所有 option 都要显式 value。
 - **长周期记忆键必须幂等**：前端回传的是已规范化的键，后端会再规范化一次；L1 要先去标点再去 LH/RH 并循环到不变。
+## 2026-10-03 — onedir 生产包构建/冒烟的接口与工具事实
+
+- 插件化宿主 `/api/host/manifest` 返回的插件 id 是 `manifest.id`（连字符，如
+  `deliverable-forms`、`sign-daily`），与插件**目录名**（下划线 `sign_daily`）不同；
+  插件 API 前缀为 `/api/p/<manifest.id>/...`。按目录名拼 URL 会得到 404。
+- `/api/version` 响应是 `{"ok": true, "data": {...}}` 包装，`rawVersion`/`channel`/
+  `buildId`/`isFrozen` 都在 `data` 内，不在顶层。
+- 冻结模式下 Excel Worker 的查找规则：`services/excel_worker_process_controller.py`
+  要求 `VSE-ExcelWorker.exe` 与 `VSE-WebUI.exe` **同目录**（`Path(sys.executable).parent`），
+  缺失即 FileNotFoundError；官方 `VSE-WebUI.spec`（onedir）只构建宿主，
+  Worker 需另行 `VSE-ExcelWorker.spec`（onefile）构建后复制进 `dist/VSE-WebUI/`。
+- `taskkill`/`tasklist` 输出是 OEM（cp936）编码：`subprocess.run(..., text=True)`
+  在中文 Windows 上会 UnicodeDecodeError（stdout 变 None）；用字节 capture 再
+  `decode(..., errors="replace")`（只匹配 ASCII 子串时安全）。
+- 工作区未跟踪的 `VSE-WebUI-compact.spec` 是旧 onefile 方案：缺
+  `('host/trusted_keys.json', 'host')` datas，也没有 plugins 复制逻辑，
+  **勿再用于现架构**；官方 `VSE-WebUI.spec` 自 2026-10-01 起为 onedir 且自带
+  `_copy_plugins`（仓库 plugins/ 源码复制到 dist/VSE-WebUI/plugins/）。
+- main 上的 `.github/workflows/build-windows-exe.yml` 已过时：仍
+  `node --check web/static/app.js`（该文件已删），在 main 上必然失败——
+  与产品无关；有效的 CI 门禁是 build.yml（测试+构建）与 verify-project-map。
 
 ## 2026-09-25 — 诊断披露：`emit` 事件名留存不等于载荷可读
 
@@ -630,6 +651,35 @@ repo are the authoritative record.
 
 重置本地顾问额度时不要删除 ledger-*.jsonl，也不要调用 Plus 账户重置。策略 local_quota_reset_at 只过滤该时间之前的 codex-readonly 启动用于本地自然日、任务和滚动上限；--status 的 prior_launches_preserved 显示历史启动数。修改 advisor_core.py 后必须升级 broker 健康协议并重启已核实身份的本机进程；仅改策略字段则服务每次请求会重新读取。用户授权重置后，115 项离线测试及两次合成 live 已通过。
 
+## 2026-10-01 插件重构分叉遗漏生产修复链
+
+- `refactor/plugin-host@589071e` 与上个业务分支 `e2c58a3` 的共同祖先是 `d15d0f2`，后续9批业务修复未合入；迁移旧前端/删除旧源码断言也同时漏掉这段新后端与测试。当前2504通过不能证明旧r3-r7合同保留。
+- 审计用git archive导出明确生产范围和选中测试，保持当前checkout；旧分支96项全过，当前断言/缺失导入显示多项遗漏。见 `docs/BRANCH_REFACTOR_PARITY_AUDIT_20261001.md`。收集错误须与产品断言区分，兼容测试只移除不可用导入、不改断言；不能把77失败视作77个独立bug。
+- 圆环/占位/点击等部分前端修复已重实现，不能以旧提交未在历史或app.js删除直接断言全部功能丢失。筛选挂起的超时保证缺失已静态确认，现场完整点击故障未在浏览器复现。
+
+## 2026-10-01 云端恢复源分支的可达性
+
+- git ls-remote实查旧业务远端仍d15d0f2，本地修复顶端e2c58a3没有推送。云端只clone远端会拿不到9批修复，必须提供本轮Git bundle或经用户授权另行发布参考分支。bundle以d15d0f2为prerequisite，仅含之后26提交，不含真实工作区数据。
+- 远端重构d0dd01d相对审计589071e只改form-key测试路径。云端执行仍应核实最新tip，不盲目固定旧审计版本；提示词/报告尚未提交，已随ZIP显式提供。
+
+## 2026-10-02 PR #3 本地验收的已验证边界
+
+- 后台任务 deadline 必须覆盖单次 fetch、JSON body 和最终结果读取；仅在 while 循环头检查 Date.now，不能中断挂住的 await。PR f5b0df0 的 discovery.js 握手202后清除计时器，状态/结果请求不带 signal，50ms上限在300ms后仍未落定。独立复现脚本见 .runtime/pr3-windows-review/repro-discovery-hang.mjs。
+- 取消不能从未知令牌直接回落到“当前交付物的任何任务”。旧请求A过期时新任务B可能已运行；PR取消API合成复现确实取消了B。令牌应与具体任务/查询身份绑定，原令牌生命周期需延长到worker实际退出。
+- 对照e2c58a3旧app.js/web/app.py，以上两个取证缺陷在恢复来源中也存在；应列“继承的旧缺陷”，不能归为Claude此次新造业务回归。
+- 旧失败页签显示 shown.activeTab、请求却读 state.activeTab 会导致“应用筛选”漏条件；PR与d0dd01d都已真浏览器复现，不能归为PR新引入。
+- Preact useEffect 的事件守卫安装与DOM锁定属性更新之间有窗口；Windows新浏览器用例只等locked=true，首次点击blocked-count为空，600ms及5000ms截止皆复现；等200ms后锁仍true、计数为2。不能用增加超时掩盖就绪语义，也不能只把失败当CPU忙。
+- map生成器read_bytes指纹受CRLF影响：PR Windows raw指纹与Linux不同，197源文件CRLF；按LF归一后fingerprint及完整生成地图都与提交一致。检查失败应报告跨平台问题，不重写fingerprint冒称通过。
+- vendor/preact-htm.js记录的SHA也要求LF字节，Windows checkout CRLF使host_frontend checksum断言失败；d0dd01d基线305项对比只有这一失败（304通过）。PR全量2726通过、2失败、3跳过，另一失败是新增guard断言；完整浏览器37项36通过。符号链接权限不足导致3跳过，不自动提升权限。
+- 独立测试脚本放在.runtime时，Python直接运行的sys.path不含工作树，须显式PYTHONPATH指定目标checkout；合成Excel任务数据库必须先init_database。两个准备脚本的问题已纠正，冻结ExcelWorker随后真实COM合并通过；这些不计产品失败。
+- ZCode run-worker dry-run也创建task run目录，随后同task_id live会FileExistsError；可在未启动模型的情况下用明确LIVE后缀执行同合同。此次live仍因runtimeModel未知字段preflight-blocked，已停止该路由，未绕过或切换供应商。Windows打包/功能结果由直接本地验证支持。
+
+## 2026-10-02 PR #3 969e501 修复复核
+
+- 新增 `.gitattributes` 不能保证旧工作树中内容未变的 vendor 文件立刻从 CRLF 改为 LF。复用 f5 工作树切到969后仍CRLF，普通 checkout-index --force 也未刷新；全新原生工作树 vendor 为 LF，host/map17项全部通过、地图check通过。确认单个文件无用户改动后删除工作文件再 git restore 能重建LF，checksum通过；hash-object与index/HEAD完全一致。最后仅刷新该路径的index stat，工作树保持干净，没有更改记录的校验值。
+- R1独立截止探针必须让fetch模拟体响应AbortSignal；不响应signal的永久挂起Promise不代表浏览器fetch实际语义。969的status、status body、result、result body四种abort-aware探针均在50ms预算附近退出并返回retryable任务中心提示；浏览器两个新增挂起场景也通过。
+- R2独立探针应使用独立向导会话并模拟协作取消。初版两个参数场景复用会话，模拟客户端在取消后仍返回结果，第二场景未进入模拟抓取；改为独立会话且should_stop时抛CrawlCancelled后2项通过。初始token和reattach token均可取消所属任务，未知token为not_running。
+- 969 Windows全量最终2731通过、1失败、3跳过、4告警；唯一失败为guard用例第422行后续retry trend等待8s，guard拦截/解锁断言已过，不能描述为旧B2时序复发。日志再次出现policy getter→seed INSERT OR IGNORE的database is locked与GET500，repo/analytics相对d0未改；锁持有者与完整因果链未定位。用例重试还保持模拟600ms截止、只等旧DOM标题，不能证明刷新落定；单独重跑通过不证明全量稳定。应保留原guard断言，分开模拟超时与真实retry预算/就绪，同时定位SQLite锁，不能只增加DOM等待掩盖500。历史hash用例本轮全量通过，也不能宣称锁已修复。
 ## 2026-10-02 插件重构遗漏恢复：联调发现的旧实现缺陷（verified root causes）
 
 - **方法教训**：旧分支的前端/接线测试是 `app.js` 源码文本断言 + Node VM 桩，后端测试各自带满参数调用，**从未真浏览器+真后端联调**。

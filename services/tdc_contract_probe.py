@@ -902,7 +902,7 @@ TDCDataModelFiltersLike = Any
 
 #: TDCDataModelFilters 字段名列表（与 services/tdc_crawler.py TDCDataModelFilters 一致）。
 _FILTER_FIELD_NAMES: tuple[str, ...] = (
-    "serial_number",
+    "instance_no",
     "applicant",
     "department",
     "section",
@@ -915,7 +915,7 @@ _FILTER_FIELD_NAMES: tuple[str, ...] = (
 
 #: TDCDataModelFilters 字段名 → 显示标签（用于报告 filter_fields_used）。
 FILTER_FIELD_LABELS: dict[str, str] = {
-    "serial_number": "incident",
+    "instance_no": "incident",
     "applicant": "applicant",
     "department": "superDepartment",
     "section": "department",

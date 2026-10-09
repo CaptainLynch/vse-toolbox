@@ -47,9 +47,15 @@ const ncr = P.buildWizardDiscovery({model: "F610S", department: "技术中心_�
 const ncrNoScope = P.buildWizardDiscovery({model: "F610S", department: "x", number: "N-1", sections: []}, caps("ncr_progress"));
 const sor = P.buildWizardDiscovery({model: "F610S", department: "车体工程", number: "", status: "审批中"}, caps("sor", "tdc"));
 const dm = P.buildWizardDiscovery({model: "F610S", department: "车体工程", number: "", status: "已完成"}, caps("data_model", "tdc"));
+const dmDoc = P.buildWizardDiscovery({model: "F610S", department: "车体工程", number: "", status: "", documentNo: "3D-00001018"}, caps("data_model", "tdc"));
+const dmDocTrim = P.buildWizardDiscovery({model: "", department: "", number: "", status: "", documentNo: " 3D-00001193 "}, caps("data_model", "tdc"));
 const paa = P.buildWizardDiscovery({model: "F610S", department: "技术中心_车体工程", number: "", status: "ignored"}, caps("paa"));
 const initSor = P.wizardInitialValues({matchRule: {approvalStatus: "审批中", status: "WRONG"}}, caps("sor", "tdc"), true);
 const initDm = P.wizardInitialValues({matchRule: {status: "已完成"}}, caps("data_model", "tdc"), true);
+const initDmDoc = P.wizardInitialValues({matchRule: {documentNo: "3D-00001018"}}, caps("data_model", "tdc"), true);
+// 存量 incident 绑定：number 回填实例号，documentNo 框必须为空（不跨键转换）。
+const initDmLegacy = P.wizardInitialValues({matchRule: {incident: "51553863"}}, caps("data_model", "tdc"), true);
+const dmPrecheckBoth = P.wizardPrecheck({credential: "domain", model: "", number: "51553863", documentNo: "3D-00001018", status: "", sections: [], interval: "15", defaultDept: "车体工程"}, {}, caps("data_model", "tdc"), true);
 const initNcr = P.wizardInitialValues({matchRule: {sectionScope: ["车身科", 7]}}, caps("ncr_detail"), true);
 const keep = P.buildPolicyPayload({id: "VPI-T2-D7"}, {reportType: "ncr_progress", sourceType: "aras", sectionScopePresets: ["车身科"], matchFields: [["projectModel", "车型项目"]]},
   {matchRule: {projectModel: "F610S", sectionScope: ["车身科", "内饰科"]}}, {mode: "automatic", enabled: false, match: {projectModel: "F610S"}, authority: {}, mapping: {}, interval: "15"});
@@ -61,8 +67,13 @@ console.log(JSON.stringify({
   ncrNoScope: {filters: ncrNoScope.filters, rule: ncrNoScope.matchRule},
   sor: {filters: sor.filters, rule: sor.matchRule},
   dm: {filters: dm.filters, rule: dm.matchRule},
+  dmDoc: {filters: dmDoc.filters, rule: dmDoc.matchRule},
+  dmDocTrim: {filters: dmDocTrim.filters, rule: dmDocTrim.matchRule},
   paa: {filters: paa.filters, rule: paa.matchRule},
   initSor: initSor.status, initDm: initDm.status, initNcr: initNcr.sections,
+  initDmDoc: {documentNo: initDmDoc.documentNo, number: initDmDoc.number},
+  initDmLegacy: {documentNo: initDmLegacy.documentNo, number: initDmLegacy.number},
+  dmPrecheckBoth,
   gate: [
     P.stabilityGateFailureMessage({mismatch: {reason: "total_mismatch", expected: 100, actual: 101}}),
     P.stabilityGateFailureMessage({mismatch: {reason: "sample_not_in_baseline"}}),
@@ -89,6 +100,19 @@ def test_wizard_payloads_per_report_kind() -> None:
     assert data["sor"]["rule"]["approvalStatus"] == "审批中" and "status" not in data["sor"]["rule"]
     # data model keeps status
     assert data["dm"]["filters"]["status"] == "已完成" and "approval_status" not in data["dm"]["filters"]
+    # 数模流水单号：进 matchRule.documentNo + filters.document_no（发现请求顶层语义由
+    # _mapping_discovery_query_identity 的 mapping 键收口），与实例号互不覆写。
+    assert data["dmDoc"]["rule"]["documentNo"] == "3D-00001018"
+    assert data["dmDoc"]["filters"]["document_no"] == "3D-00001018"
+    assert "incident" not in data["dmDoc"]["rule"] and "serial_number" not in data["dmDoc"]["filters"]
+    assert data["dmDocTrim"]["rule"]["documentNo"] == "3D-00001193"
+    assert data["dmDocTrim"]["rule"]["aggregate"] is False  # 只填流水单号按单记录取证
+    # 回填不跨键转换：存量 incident 绑定 → number=实例号、流水单号框空；
+    # documentNo 绑定 → 只回填流水单号框。
+    assert data["initDmDoc"] == {"documentNo": "3D-00001018", "number": ""}
+    assert data["initDmLegacy"] == {"documentNo": "", "number": "51553863"}
+    # 同填流水单号与实例号被 precheck 拦截。
+    assert "二选一" in data["dmPrecheckBoth"]
     # PAA ignores the status field entirely
     assert "status" not in data["paa"]["filters"] and "approval_status" not in data["paa"]["filters"]
     assert data["initSor"] == "审批中" and data["initDm"] == "已完成" and data["initNcr"] == ["车身科", "7"]

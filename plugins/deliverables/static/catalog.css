@@ -248,6 +248,17 @@
   font-size: 12px;
 }
 
+/* 流水单号本地匹配的覆盖度提示（与 system_query/query.css 的 result-warning 同语义）。 */
+.dlv-page .result-panel .result-warning {
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  color: var(--on-dark);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
 .dlv-page .table-wrap {
   max-width: 100%;
   overflow-x: auto;

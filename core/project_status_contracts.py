@@ -638,12 +638,15 @@ PROJECT_STATUS_SOURCE_CAPABILITIES: dict[str, dict[str, object]] = {
         },
         "syncNote": None,
         "matchKeys": (
-            "incident", "applicant", "department", "section",
+            "incident", "documentNo", "applicant", "department", "section",
             "applicationStart", "applicationEnd", "projectModel",
             "partNumber", "modelNumber", "status", "aggregate", "reportType",
         ),
         "matchFields": (
-            ("incident", "流程编号", "serial_number", "建议优先填写流程编号"),
+            # 流水单号（documentNo）不是 TDC 查询参数：填写后走全量抓取+本地精确
+            # 匹配，与实例号（incident）二选一，不得同时填写。
+            ("documentNo", "流水单号（选填）", "document_no", "例如 3D-00001018；填写后走全量抓取+本地匹配，较慢"),
+            ("incident", "实例号(incident)（选填）", "serial_number", "纯数字实例号；与流水单号二选一"),
             ("applicant", "申请人", "applicant", "可选"),
             ("department", "部门", "department", "可选"),
             ("section", "科室", "section", "可选"),

@@ -42,6 +42,7 @@ import {
   recentRunTitle,
   redactSensitiveText,
   resultMetaText,
+  serialMatchWarning,
   statusOptions,
   systemQueryHash,
   taskPercent,
@@ -404,7 +405,7 @@ function DeliverableDetail({ item, categories, runLock, onRecord }) {
     let payload = null;
     try {
       payload = buildPayload(item, current, op);
-      const summary = formatFilterSummary(item, payload.filters);
+      const summary = formatFilterSummary(item, payload.filters, payload.document_no);
       const endpoint = config.endpoints[op];
       if (!endpoint) throw messageError(`未配置操作端点: ${op}`);
       if (op === "export") {
@@ -718,6 +719,7 @@ function DeliverableDetail({ item, categories, runLock, onRecord }) {
         <p class="result-output-meta">${item.name} -> ${output.operation}</p>
         <p class="result-meta">${resultMetaText(output.data)}</p>
         ${unmappedWarning(output.data) && html`<p class="result-meta result-warning">${unmappedWarning(output.data)}</p>`}
+        ${serialMatchWarning(output.data) && html`<p class="result-meta result-warning" role="status">${serialMatchWarning(output.data)}</p>`}
         ${(output.data.rows || []).length === 0
           ? html`<${EmptyNotice} title="未查询到符合条件的交付物记录"
               desc="当前筛选条件下未返回任何交付物数据。已保留所选交付物及筛选配置，您可以修改筛选条件后重试。" />`

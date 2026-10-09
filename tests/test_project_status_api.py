@@ -658,6 +658,151 @@ def test_tdc_data_model_mapping_discovery_supports_status_filter() -> None:
     assert values["status"] == "审批中"
 
 
+# ===== 数模流水单号：不发上游，全量抓取后本地精确匹配（A′ 路线） =====
+
+
+def _document_no_rule(document_no: str) -> tuple[dict, dict]:
+    from web.app import _mapping_discovery_query_identity
+
+    return _mapping_discovery_query_identity(
+        {"filters": {"document_no": document_no}, "aggregate": False}, "VPI-T2-D5"
+    )
+
+
+def test_document_no_rule_is_never_sent_to_tdc() -> None:
+    """规则里保留 documentNo（绑定依据），但 values 里不带它——它没有上游参数。"""
+    rule, values = _document_no_rule("F610S-3D-0001")
+
+    assert rule["documentNo"] == "F610S-3D-0001"
+    assert "document_no" not in values
+    assert "incident" not in rule  # 不再把流水单号写进 incident
+
+
+def _document_no_discovery(monkeypatch, rows, *, complete=True, stop_reason="reported_pages"):  # type: ignore[no-untyped-def]
+    seen: list[str | None] = []
+
+    class FakeTDCClient:
+        def crawl_data_model_all(self, filters, max_records=5000, should_stop=None):  # type: ignore[no-untyped-def]
+            seen.append(filters.instance_no)
+            return SimpleNamespace(rows=list(rows), complete=complete, stop_reason=stop_reason)
+
+    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    return seen
+
+
+def _post_document_no_discovery(client, document_no: str):  # type: ignore[no-untyped-def]
+    return client.post(
+        "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery",
+        json={
+            "base_url": "https://tdc.sgmw.com.cn",
+            "filters": {"document_no": document_no},
+            "aggregate": False,
+        },
+    )
+
+
+def test_document_no_discovery_passes_on_exactly_one_local_match(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    rows = [
+        {"incident": "FLOW-A", "documentNo": "F610S-3D-0001"},
+        {"incident": "FLOW-B", "documentNo": "F610S-3D-0002"},
+    ]
+    seen = _document_no_discovery(monkeypatch, rows)
+
+    response = _post_document_no_discovery(client, "F610S-3D-0001")
+
+    assert response.status_code == 200
+    assert seen == [None]  # 流水单号绝不发给上游
+    data = response.get_json()["data"]
+    assert data["state"] == "matched"
+    assert data["externalKey"] == "FLOW-A"  # 有效查询结果是命中行的实例号
+    assert data["serialMatch"] == {
+        "serial": "F610S-3D-0001",
+        "scanned": 2,
+        "matched": 1,
+        "matched_instances": ["FLOW-A"],
+    }
+
+
+def test_document_no_discovery_zero_match_keeps_not_found_with_coverage(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    rows = [{"incident": "FLOW-A", "documentNo": "F610S-3D-0001"}]
+    _document_no_discovery(monkeypatch, rows)
+
+    response = _post_document_no_discovery(client, "F610S-3D-9999")
+
+    assert response.status_code == 200
+    data = response.get_json()["data"]
+    assert data["state"] == "not_found"  # 既有「映射发现未匹配」路径
+    assert data["serialMatch"]["matched"] == 0
+    assert data["serialMatch"]["scanned"] == 1  # 附覆盖范围
+
+
+def test_document_no_discovery_rejects_multiple_matches(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    rows = [
+        {"incident": "FLOW-A", "documentNo": "F610S-3D-0001"},
+        {"incident": "FLOW-B", "documentNo": "F610S-3D-0001"},
+    ]
+    _document_no_discovery(monkeypatch, rows)
+
+    response = _post_document_no_discovery(client, "F610S-3D-0001")
+
+    assert response.status_code == 400
+    assert "该流水单号命中多行，请核对后重试" in response.get_json()["error"]["message"]
+
+
+def test_document_no_discovery_rejects_incomplete_crawl(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    rows = [{"incident": "FLOW-A", "documentNo": "F610S-3D-0001"}]
+    _document_no_discovery(monkeypatch, rows, complete=False, stop_reason="max_pages")
+
+    response = _post_document_no_discovery(client, "F610S-3D-0001")
+
+    assert response.status_code == 422
+    assert "抓取不完整，无法判定流水单号，请重试" in response.get_json()["error"]["message"]
+
+
+def test_document_no_discovery_rejects_incident_and_document_no_together(client) -> None:
+    """服务端互斥（2026-10-09 顾问复核）：同填流水单号与实例号在发现入口即拒绝。"""
+    response = client.post(
+        "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery",
+        json={
+            "base_url": "https://tdc.sgmw.com.cn",
+            "filters": {"document_no": "3D-00001018", "serial_number": "900001"},
+            "aggregate": False,
+        },
+    )
+
+    assert response.status_code == 400
+    assert "二选一" in response.get_json()["error"]["message"]
+
+
+def test_document_no_discovery_stability_sample_uses_same_local_match(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """F10 采样必须与首次观测同源（全量抓取 + 本地匹配），否则永远无法就绪。"""
+    rows = [
+        {"incident": "FLOW-A", "documentNo": "F610S-3D-0001", "currentApprover": "Alice"},
+        {"incident": "FLOW-B", "documentNo": "F610S-3D-0002", "currentApprover": "Bob"},
+    ]
+    seen = _document_no_discovery(monkeypatch, rows)
+
+    first = _post_document_no_discovery(client, "F610S-3D-0001")
+    assert first.status_code == 200
+    assert first.get_json()["data"]["stability"]["confirmed"] == 1
+
+    second = client.post(
+        "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery",
+        json={
+            "base_url": "https://tdc.sgmw.com.cn",
+            "filters": {"document_no": "F610S-3D-0001"},
+            "aggregate": False,
+            "stabilityCheck": True,
+        },
+    )
+
+    assert second.status_code == 200
+    data = second.get_json()["data"]
+    assert data["state"] == "matched"
+    assert data["stability"] == {"confirmed": 2, "required": 2, "ready": True}
+    assert seen == [None, None]  # 两次都不把流水单号发上游
+
+
 # ===== 映射取证的协作式取消（前端 abort 必须让服务端真的停下来） =====
 
 

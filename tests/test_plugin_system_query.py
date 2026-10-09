@@ -101,6 +101,13 @@ console.log(JSON.stringify({
   payloadSorQuery: lib.buildPayload("tdc-sor", values.sor, tdc),
   payloadSorCrawl: lib.buildPayload("tdc-sor", values.sor, tdc, {operation: "crawl_all"}),
   payloadSorExport: lib.buildPayload("tdc-sor", values.sor, tdc, {operation: "export"}),
+  payloadDmSerial: lib.buildPayload("tdc-data-model", {serial_number: "900001", document_no: "F610S-3D-0002", page: "1", page_size: "50"}, tdc),
+  serialNotice: [
+    lib.serialMatchNotice({serialMatch: {requested: "x", scanned: 12, matched: 0, scannedPages: 3, complete: false, reason: "crawl_incomplete"}}),
+    lib.serialMatchNotice({serialMatch: {requested: "x", scanned: 12, matched: 0, scannedPages: 3, complete: true}}),
+    lib.serialMatchNotice({serialMatch: {requested: "x", scanned: 12, matched: 2, scannedPages: 3, complete: true}}),
+    lib.serialMatchNotice({rows: []}),
+  ],
   errorsEwo: lib.validateForm("ewo", {...values.ewo, page: "0"}, {base_url: "ftp://x"}),
   errorsOk: lib.validateForm("ewo", {page: "1", page_size: "50", max_records: "2000"}, aras),
   errorsTdcExport: lib.validateForm("tdc-sor", {...values.sor, file_name: "../x.csv"}, tdc, "export"),
@@ -177,10 +184,49 @@ def test_field_groups_cover_every_filter_and_number(node_data) -> None:
 
 def test_tdc_modes_match_server_filter_contract(node_data) -> None:
     tdc, groups = node_data["tdc"], node_data["groups"]
-    assert tuple(tdc["tdc-data-model"]["filterNames"]) == web_app._TDC_DATA_MODEL_FILTER_NAMES
+    # document_no（流水单号）是前端本地精确匹配选择器：它不是 TDC 查询参数，服务端
+    # 从请求体顶层读取它，因此不在服务端 filter 名单里（见 lib.buildPayload）。
+    assert tuple(n for n in tdc["tdc-data-model"]["filterNames"] if n != "document_no") == web_app._TDC_DATA_MODEL_FILTER_NAMES
     assert tuple(tdc["tdc-sor"]["filterNames"]) + ("car_type_project_id",) == web_app._TDC_SOR_FILTER_NAMES
-    for group, server_fields in (("tdc-data-model", web_app._TDC_DATA_MODEL_FIELDS), ("tdc-sor", web_app._TDC_SOR_FIELDS)):
-        assert groups[group] == [[f["name"], f["label"], f["type"]] for f in server_fields]
+    assert groups["tdc-sor"] == [[f["name"], f["label"], f["type"]] for f in web_app._TDC_SOR_FIELDS]
+    # 数模：2026-10-09 起目录单源也含 document_no（交付物工作台接入 A′），
+    # 前端字段与目录逐字段一致（含顺序）；仅 serial_number 的前端标签改为
+    # 「实例号(incident)」以消除与流水单号的混淆，document_no 标签同为「流水单号」。
+    dm = {name: [name, label, type_] for name, label, type_ in groups["tdc-data-model"]}
+    assert [f["name"] for f in web_app._TDC_DATA_MODEL_FIELDS] == list(dm)
+    for field in web_app._TDC_DATA_MODEL_FIELDS:
+        assert dm[field["name"]][2] == field["type"], field["name"]
+        if field["name"] != "serial_number":
+            assert dm[field["name"]][1] == field["label"], field["name"]
+    assert dm["serial_number"][1] == "实例号(incident)"
+
+
+def test_tdc_data_model_document_no_field_and_incident_label(node_data) -> None:
+    tdc, groups = node_data["tdc"], node_data["groups"]
+    assert "document_no" in tdc["tdc-data-model"]["filterNames"]
+    fields = {f[0]: f for f in groups["tdc-data-model"]}
+    assert fields["document_no"][1] == "流水单号"
+    assert fields["document_no"][2] == "text"
+    assert fields["serial_number"][1] == "实例号(incident)"
+    # SOR 的 processNo 语义未受影响：标签保持「流水号」。
+    assert {f[0]: f for f in groups["tdc-sor"]}["serial_number"][1] == "流水号"
+
+
+def test_document_no_travels_at_the_payload_top_level(node_data) -> None:
+    payload = node_data["payloadDmSerial"]
+    assert payload["document_no"] == "F610S-3D-0002"
+    # 进 filters 会被服务端按"不支持的筛选字段"拒绝；它不是 TDC 查询参数。
+    assert "document_no" not in payload["filters"]
+    assert payload["filters"]["serial_number"] == "900001"  # 实例号仍走 incident 参数
+    assert payload["preview_source"] == "list_endpoint"
+
+
+def test_serial_match_notice_separates_incomplete_from_not_found(node_data) -> None:
+    incomplete, not_found, hit, absent = node_data["serialNotice"]
+    # 抓取不完整 = "无法判定"，绝不能与"未找到"共用一句话。
+    assert incomplete == "抓取不完整，无法判定流水单号，请重试（已扫描 3 页 / 12 行）"
+    assert not_found == "未找到该流水单号（已扫描 3 页 / 12 行，覆盖完整）"
+    assert hit is None and absent is None
 
 
 def test_every_mode_endpoint_is_a_registered_post_route(app, node_data) -> None:

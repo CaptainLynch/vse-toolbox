@@ -1082,7 +1082,7 @@ def test_mapping_discovery_post_freezes_query_identity_before_rebind_and_can_ena
 
     class FakeTDC:
         def crawl_data_model_all(self, filters, **kwargs):  # type: ignore[no-untyped-def]
-            calls.append((filters.serial_number, int(kwargs["max_records"])))
+            calls.append((filters.instance_no, int(kwargs["max_records"])))
             if len(calls) == 1:
                 test_db.set_project_status_update_policy(
                     deliverable_id="VPI-T2-D5",
@@ -1214,19 +1214,27 @@ def test_mapping_discovery_post_canonicalizes_sor_and_ewo_filters(
     )
 
 
-def test_mapping_discovery_selected_key_is_sent_to_tdc_query(
+def test_mapping_discovery_selected_document_no_is_matched_locally(
     client,
     test_db: DatabaseManager,
     monkeypatch,
 ) -> None:
-    """非聚合选择的稳定键同时约束实际请求与观测签名。"""
+    """数模的稳定键是流水单号（documentNo）：不发上游，本地精确匹配收窄行集。
+
+    非聚合选择的稳定键仍必须同时约束实际请求与观测签名，只是约束方式从
+    "把值塞进 incident 查询参数"（incident 是第 0 列实例号，会查成 0 行）改成
+    "全量抓取后本地 match_serial，恰好命中 1 行才放行"。
+    """
     seen: list[str | None] = []
 
     class FakeTDC:
         def crawl_data_model_all(self, filters, **kwargs):  # type: ignore[no-untyped-def]
-            seen.append(filters.serial_number)
+            seen.append(filters.instance_no)
             return SimpleNamespace(
-                rows=[{"incident": "FLOW-A", "currentApprover": "Alice"}],
+                rows=[
+                    {"incident": "FLOW-A", "documentNo": "F610S-3D-0001", "currentApprover": "Alice"},
+                    {"incident": "FLOW-B", "documentNo": "F610S-3D-0002", "currentApprover": "Bob"},
+                ],
                 complete=True,
                 stop_reason="short_page",
             )
@@ -1238,18 +1246,23 @@ def test_mapping_discovery_selected_key_is_sent_to_tdc_query(
             "base_url": "https://tdc.example",
             "aggregate": False,
             "filters": {},
-            "selectedExternalKey": "FLOW-A",
+            "selectedExternalKey": "F610S-3D-0001",
         },
         headers=_loopback_headers(),
         environ_base={"REMOTE_ADDR": "127.0.0.1"},
     )
 
     assert response.status_code == 200
-    assert seen == ["FLOW-A"]
+    assert seen == [None]  # 流水单号不是 TDC 查询参数，绝不发给上游
+    data = response.get_json()["data"]
+    assert data["state"] == "matched"
+    assert data["externalKey"] == "FLOW-A"  # 有效查询结果是命中行的实例号
+    assert data["serialMatch"]["matched"] == 1
     observed = test_db.list_mapping_observations("VPI-T2-D5", 1)[0]
+    assert observed["external_key"] == "FLOW-A"
     assert observed["config_signature"] == compute_config_signature(
         "tdc",
-        {"reportType": "data_model", "aggregate": False, "incident": "FLOW-A"},
+        {"reportType": "data_model", "aggregate": False, "documentNo": "F610S-3D-0001"},
     )
 
 

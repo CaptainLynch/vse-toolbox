@@ -150,7 +150,11 @@ export function buildPayload(modeId, values, connection, { operation = "query", 
   }
   mode.filterNames.forEach((name) => {
     const value = trimmed(values, name);
-    if (value) payload.filters[name] = value;
+    if (!value) return;
+    // 流水单号（documentNo）不是 TDC 查询参数：服务端从请求体顶层读取它，然后全量
+    // 翻页做本地精确匹配。放进 filters 会被服务端按"不支持的筛选字段"拒绝。
+    if (name === "document_no") payload.document_no = value;
+    else payload.filters[name] = value;
   });
   if (modeId === "tdc-sor" && trimmed(values, "car_type_project_id")) {
     payload.filters.car_type_project_id = trimmed(values, "car_type_project_id");
@@ -494,6 +498,26 @@ export function resultMetaText(modeId, data) {
 export function resultRowCount(data) {
   if (data && data.count != null) return Number(data.count) || 0;
   return data && Array.isArray(data.rows) ? data.rows.length : 0;
+}
+
+/**
+ * A′ 路线（流水单号本地精确匹配）的覆盖度说明，无 serialMatch 时返回 null。
+ *
+ * complete=false 的语义是"抓取不完整，无法判定"，不是"未找到"——两者绝不能
+ * 用同一句话，否则用户会把抓取失败当成"这个流水单号不存在"。
+ */
+export function serialMatchNotice(data) {
+  const match = data && data.serialMatch;
+  if (!match || typeof match !== "object") return null;
+  const coverage = `已扫描 ${match.scannedPages ?? "-"} 页 / ${match.scanned ?? "-"} 行`;
+  if (match.complete === false) {
+    const reason = match.reason && match.reason !== "crawl_incomplete" ? `（原因：${match.reason}）` : "";
+    return `抓取不完整，无法判定流水单号，请重试（${coverage}）${reason}`;
+  }
+  if (Number(match.matched) === 0) {
+    return `未找到该流水单号（${coverage}，覆盖完整）`;
+  }
+  return null;
 }
 
 export function isModeId(value) {

@@ -235,7 +235,12 @@ export function buildPayload(item, values, operation) {
   };
   (item.fields || []).forEach((field) => {
     const value = trimmed(values, field.name);
-    if (value) payload.filters[field.name] = value;
+    if (!value) return;
+    // 流水单号（documentNo）不是 TDC 查询参数：服务端从请求体顶层读取它（可多值，
+    // 分隔符约定同交付物明细搜索），然后全量翻页做本地精确匹配。放进 filters 会被
+    // 服务端按"不支持的筛选字段"拒绝（与 system_query 的 buildPayload 同约定）。
+    if (item.id === "tdc-data-model" && field.name === "document_no") payload.document_no = value;
+    else payload.filters[field.name] = value;
   });
   if (item.id === "tdc-sor") {
     const projectId = trimmed(values, "car_type_project_id");
@@ -306,7 +311,7 @@ export function validateForm(item, values, operation) {
 }
 
 /** Legacy formatDeliverableFilterSummary. */
-export function formatFilterSummary(item, filters = {}) {
+export function formatFilterSummary(item, filters = {}, documentNo = "") {
   const labels = new Map((item.fields || []).map((f) => [f.name, f.label || f.name]));
   const parts = [];
   Object.entries(filters || {}).forEach(([key, val]) => {
@@ -315,6 +320,10 @@ export function formatFilterSummary(item, filters = {}) {
       parts.push(`${labels.get(key) || key}: ${redactSensitiveText(String(val).trim())}`);
     }
   });
+  // document_no 在请求体顶层（不在 filters 里），筛选摘要需要单独带上。
+  if (String(documentNo || "").trim()) {
+    parts.push(`${labels.get("document_no") || "流水单号"}: ${redactSensitiveText(String(documentNo).trim())}`);
+  }
   return parts.length ? parts.join("；") : "无筛选条件";
 }
 
@@ -326,6 +335,29 @@ export function resultMetaText(data) {
 export function unmappedWarning(data) {
   if (data && data.mappingComplete === false && Array.isArray(data.unmappedColumns) && data.unmappedColumns.length > 0) {
     return `列表接口尚未提供 ${data.unmappedColumns.length} 个官方导出列，已保留为空值；请使用官方导出预览。`;
+  }
+  return "";
+}
+
+/**
+ * A′ 流水单号本地匹配的覆盖度说明（与 system_query/lib.js serialMatchNotice 同语义，
+ * 两份拷贝由 tests/test_plugin_system_query.py 的防漂移断言锁定）。
+ * 单号缺命中、多号含 missing、抓取不完整分别给不同文案；无 serialMatch 返回 ""。
+ */
+export function serialMatchWarning(data) {
+  const match = data && data.serialMatch;
+  if (!match || typeof match !== "object") return "";
+  const coverage = `已扫描 ${match.scannedPages ?? "-"} 页 / ${match.scanned ?? "-"} 行`;
+  if (match.complete === false) {
+    const reason = match.reason && match.reason !== "crawl_incomplete" ? `（原因：${match.reason}）` : "";
+    return `抓取不完整，无法判定流水单号，请重试（${coverage}）${reason}`;
+  }
+  const missing = Array.isArray(match.missing) ? match.missing : [];
+  if (missing.length > 0) {
+    return `未找到以下流水单号：${missing.join("、")}（${coverage}，覆盖完整）`;
+  }
+  if (Number(match.matched) === 0) {
+    return `未找到该流水单号（${coverage}，覆盖完整）`;
   }
   return "";
 }

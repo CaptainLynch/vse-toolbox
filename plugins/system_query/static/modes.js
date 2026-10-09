@@ -84,7 +84,10 @@ export const FIELD_GROUPS = {
   },
   "tdc-data-model": {
     fields: [
-      text("serial_number", "流水号"),
+      // serial_number 是 API 层键名，语义是第 0 列实例号 incident（纯数字），不是流水单号；
+      // 流水单号（documentNo）不是 TDC 查询参数，只能全量抓取后本地精确匹配。
+      text("serial_number", "实例号(incident)"),
+      text("document_no", "流水单号", { placeholder: "例如 3D-00001193；填写后走全量抓取 + 本地精确匹配，较慢" }),
       text("applicant", "申请人"),
       text("department", "部门"),
       text("section", "科室"),
@@ -213,7 +216,7 @@ export const TDC_MODES = {
     defaultFileName: "tdc_data_model.xlsx",
     submitLabel: "查询预览",
     fieldGroup: "tdc-data-model",
-    filterNames: ["serial_number", "applicant", "department", "section", "application_start", "application_end", "project_model", "part_number", "model_number", "status"],
+    filterNames: ["serial_number", "document_no", "applicant", "department", "section", "application_start", "application_end", "project_model", "part_number", "model_number", "status"],
     numberNames: ["page", "page_size"],
     crawlNumberNames: ["page_size", "max_pages", "max_records"],
     preferredColumns: [],

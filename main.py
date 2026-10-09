@@ -691,7 +691,8 @@ _TDC_SOR_COLUMNS = [
 
 def _ask_tdc_data_model_filters() -> TDCDataModelFilters:
     return TDCDataModelFilters(
-        serial_number=_blank_to_none(Prompt.ask("流水单号", default="")),
+        # 该值对应 TDC 查询参数 incident（第 0 列「实例号」），不是流水单号（documentNo）。
+        instance_no=_blank_to_none(Prompt.ask("实例号（incident）", default="")),
         applicant=_blank_to_none(Prompt.ask("申请人", default="")),
         department=_blank_to_none(Prompt.ask("部门", default="")),
         section=_blank_to_none(Prompt.ask("科室", default="")),

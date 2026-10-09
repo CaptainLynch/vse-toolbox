@@ -51,6 +51,71 @@ def test_apply_watchlist_reads_both_row_shapes_and_keeps_missing():  # S8
     assert W.apply_watchlist([{"incident": "A-1"}], "watchlist", ["A-1"])[0] == []
 
 
+def test_match_serial_is_exact_and_returns_bookkeeping() -> None:
+    """本地匹配是流水单号的唯一判定依据：精确相等 + 首尾 strip + 区分大小写。"""
+    rows = [
+        {"incident": "900001", "documentNo": "F610S-3D-0001"},
+        {"incident": "900002", "documentNo": "F610S-3D-0002"},
+        {"incident": "900003", "documentNo": "F610S-3D-0002"},
+        {"流水单号": " F610S-3D-0003 "},
+    ]
+
+    matched, book = W.match_serial(rows, " F610S-3D-0001 ")
+    assert matched == [rows[0]]
+    assert book == {
+        "serial": "F610S-3D-0001", "scanned": 4, "matched": 1, "matched_instances": ["900001"],
+    }
+
+    matched, book = W.match_serial(rows, "F610S-3D-0002")
+    assert matched == rows[1:3]
+    assert book["matched"] == 2 and book["scanned"] == 4
+    assert book["matched_instances"] == ["900002", "900003"]
+
+    # 表头「流水单号」与接口 documentNo 都可匹配，行值自身也 strip
+    assert W.match_serial(rows, "F610S-3D-0003")[0] == [rows[3]]
+    assert W.match_serial(rows, "F610S-3D-0003")[1]["matched_instances"] == []  # 无 incident 不贡献
+
+    matched, book = W.match_serial(rows, "F610S-3D-9999")
+    assert matched == [] and book["matched"] == 0 and book["scanned"] == 4
+    assert book["matched_instances"] == []
+
+
+def test_match_serial_never_degrades_to_prefix_or_case_insensitive() -> None:
+    rows = [{"documentNo": "F610S-3D-0001"}, {"documentNo": "f610s-3d-0001"}]
+
+    assert W.match_serial(rows, "F610S-3D-000")[0] == []  # 前缀不算
+    assert W.match_serial(rows, "610S-3D-0001")[0] == []  # 包含不算
+    assert W.match_serial(rows, "F610S-3D-0001")[0] == [rows[0]]  # 区分大小写
+
+
+def test_match_serial_rejects_empty_target() -> None:
+    """空单号绝不退化成"匹配全部行"。"""
+    rows = [{"documentNo": "A-1"}]
+    for bad in ("", "   ", None):
+        with pytest.raises(W.WatchlistError):
+            W.match_serial(rows, bad)
+
+
+def test_load_watchlist_fallback_is_unchanged_and_emits_diagnostics(monkeypatch) -> None:
+    """回退行为不变（按全部处理），但走既有诊断渠道发一次事件。"""
+    events: list[str] = []
+    monkeypatch.setattr(
+        W, "emit", lambda kind, data=None, **kwargs: events.append(kind)
+    )
+
+    class _UnreadableJobs:
+        def list_archive_jobs(self):
+            raise RuntimeError("boom")
+
+    class _BrokenSettings:
+        def list_archive_jobs(self):
+            return [{"job_key": W.JOB_KEY, "filters_json": "{not json"}]
+
+    assert W.load_watchlist(_UnreadableJobs()) == ("all", ())
+    assert W.load_watchlist(_BrokenSettings()) == ("all", ())
+    assert events == ["watchlist_load_jobs_failed", "watchlist_load_settings_failed"]
+
+
 def test_form_snapshot_records_coverage_and_latest_full_lookup():  # S11
     watch = build_form_snapshot("tdc_data_model", [], snapshot_at="2026-10-03T08:00:00Z", source_run_id=1,
                                 source="test", coverage={"kind": "watchlist", "serials": ["A-1"], "missing": []})
@@ -121,7 +186,7 @@ def test_archive_connector_keeps_only_watchlist_rows(tmp_path: Path):
     assert [row["documentNo"] for row in collection.form_rows] == ["A-1"]
     assert collection.form_coverage == {"kind": "watchlist", "serials": ["A-1", "Z-9"], "missing": ["Z-9"]}
     assert collection.record_count == 2  # 归档原始件仍是全量
-    assert crawlers[0].filters.serial_number is None  # 清单不发给 TDC
+    assert crawlers[0].filters.instance_no is None  # 清单不发给 TDC
 
     full = connector.collect(_archive_context({}), credential)
     assert len(full.form_rows) == 2 and full.form_coverage == {"kind": "all"}

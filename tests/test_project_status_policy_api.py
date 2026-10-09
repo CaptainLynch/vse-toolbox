@@ -577,6 +577,12 @@ def test_match_fields_use_real_discovery_filter_names() -> None:
     ):
         capabilities = project_status_source_capabilities(deliverable_id)
         for field in capabilities["matchFields"]:
+            # document_no（流水单号）是唯一的例外：它不是 TDC 查询参数，发现端按
+            # _MAPPING_DISCOVERY_RULE_FIELDS 键收口为 matchRule.documentNo 本地匹配，
+            # 绝不发上游（2026-10-09 数模流水单号绑定）。
+            if field[2] == "document_no":
+                assert "document_no" in web_app._MAPPING_DISCOVERY_RULE_FIELDS[("tdc", "data_model")]
+                continue
             assert field[2] in allowed, (deliverable_id, field)
 
     ewo_capabilities = project_status_source_capabilities("VPI-T2-D3")

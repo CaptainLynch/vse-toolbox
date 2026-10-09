@@ -108,6 +108,138 @@ def test_tdc_connector_archives_and_returns_normalized_candidate(tmp_path: Path)
     assert all((tmp_path / item["relative_path"]).is_file() for item in snapshot.artifacts)
 
 
+def test_tdc_connector_document_no_narrows_rows_locally(tmp_path: Path):
+    """运行期消费 matchRule.documentNo：全量抓取后本地精确收窄，不发给上游。
+
+    流水单号（documentNo）不是 TDC 查询参数：绑定带它时，连接器抓全量后按
+    documentNo 收窄行集，快照身份/候选匹配仍按 externalKey（incident）走既有机制。
+    """
+    class FullThenFilteredTDC(FakeTDC):
+        def crawl_data_model_all(self, filters, max_records):
+            assert filters.instance_no is None  # documentNo 绝不充当 incident 发上游
+            return SimpleNamespace(
+                rows=[
+                    {"incident": "900001", "documentNo": "3D-00001018", "currentApprover": "张三"},
+                    {"incident": "900002", "documentNo": "3D-00001193", "currentApprover": "李四"},
+                    {"incident": "900003", "documentNo": "3D-00001200", "currentApprover": "王五"},
+                ],
+                complete=True,
+                stop_reason="reported_pages",
+            )
+
+        def export_data_model(self, filters):
+            path = self.output_dir / "official.xlsx"
+            path.write_bytes(b"PK\x03\x04fake")
+            return SimpleNamespace(path=path, file_name="official.xlsx", byte_count=8)
+
+    archive = ArchiveStore({"default": tmp_path}, reserve_bytes=0)
+    connector = TDCProjectStatusConnector(
+        MemoryCredentialProvider({"ref": ("user", "pass")}), archive,
+        auth_factory=FakeAuth, crawler_factory=FullThenFilteredTDC,
+    )
+    ctx = SyncBindingContext(
+        binding_id=20, deliverable_id="VPI-T2-D5", phase_id="VPI-T2",
+        source_type="tdc", external_key="900002",
+        match_rule={"reportType": "data_model", "documentNo": "3D-00001193"},
+        mapping={"owner": "currentApprover"}, cursor={},
+        expected_deliverable_updated_at="v1", run_id=21, credential_ref="ref",
+    )
+    snapshot = connector.collect(ctx)
+    # 命中行只剩 documentNo 匹配的那一行；单记录身份仍按 externalKey（incident）。
+    assert len(snapshot.analysis_rows) == 1
+    assert snapshot.analysis_rows[0]["incident"] == "900002"
+    assert snapshot.match_state == "matched"
+    assert snapshot.candidates[0].field_values == {"owner": "李四"}
+
+
+def test_tdc_connector_document_no_no_match_is_not_found(tmp_path: Path):
+    """绑定流水单号在源端已消失：按 documentNo 收窄后 0 行 → not_found（不是全量误报 matched）。"""
+
+    class NoHitTDC(FakeTDC):
+        def crawl_data_model_all(self, filters, max_records):
+            return SimpleNamespace(
+                rows=[{"incident": "900001", "documentNo": "3D-00001018"}],
+                complete=True, stop_reason="reported_pages",
+            )
+
+        def export_data_model(self, filters):
+            path = self.output_dir / "official.xlsx"
+            path.write_bytes(b"PK\x03\x04fake")
+            return SimpleNamespace(path=path, file_name="official.xlsx", byte_count=8)
+
+    archive = ArchiveStore({"default": tmp_path}, reserve_bytes=0)
+    connector = TDCProjectStatusConnector(
+        MemoryCredentialProvider({"ref": ("user", "pass")}), archive,
+        auth_factory=FakeAuth, crawler_factory=NoHitTDC,
+    )
+    ctx = SyncBindingContext(
+        binding_id=21, deliverable_id="VPI-T2-D5", phase_id="VPI-T2",
+        source_type="tdc", external_key="900001",
+        match_rule={"reportType": "data_model", "documentNo": "3D-00009999"},
+        mapping={"owner": "currentApprover"}, cursor={},
+        expected_deliverable_updated_at="v1", run_id=22, credential_ref="ref",
+    )
+    snapshot = connector.collect(ctx)
+    assert snapshot.match_state == "not_found"
+
+
+def test_tdc_connector_document_no_missing_column_raises_not_not_found(tmp_path: Path):
+    """空集归因：行集完全没有流水单号列（结构漂移）→ 明确报错，不落 not_found。"""
+
+    class NoColumnTDC(FakeTDC):
+        def crawl_data_model_all(self, filters, max_records):
+            return SimpleNamespace(
+                rows=[{"incident": "900001", "currentApprover": "张三"}],
+                complete=True, stop_reason="reported_pages",
+            )
+
+        def export_data_model(self, filters):
+            path = self.output_dir / "official.xlsx"
+            path.write_bytes(b"PK\x03\x04fake")
+            return SimpleNamespace(path=path, file_name="official.xlsx", byte_count=8)
+
+    archive = ArchiveStore({"default": tmp_path}, reserve_bytes=0)
+    connector = TDCProjectStatusConnector(
+        MemoryCredentialProvider({"ref": ("user", "pass")}), archive,
+        auth_factory=FakeAuth, crawler_factory=NoColumnTDC,
+    )
+    ctx = SyncBindingContext(
+        binding_id=23, deliverable_id="VPI-T2-D5", phase_id="VPI-T2",
+        source_type="tdc", external_key="900001",
+        match_rule={"reportType": "data_model", "documentNo": "3D-00001018"},
+        mapping={"owner": "currentApprover"}, cursor={},
+        expected_deliverable_updated_at="v1", run_id=24, credential_ref="ref",
+    )
+    with pytest.raises(ValueError, match="流水单号列"):
+        connector.collect(ctx)
+
+
+def test_tdc_connector_document_no_incomplete_crawl_fails_closed(tmp_path: Path):
+    """运行期抓取不完整：fail-closed 报错，绝不把部分行当完整结果收窄。"""
+
+    class IncompleteTDC(FakeTDC):
+        def crawl_data_model_all(self, filters, max_records):
+            return SimpleNamespace(
+                rows=[{"incident": "900001", "documentNo": "3D-00001018"}],
+                complete=False, stop_reason="max_pages",
+            )
+
+    archive = ArchiveStore({"default": tmp_path}, reserve_bytes=0)
+    connector = TDCProjectStatusConnector(
+        MemoryCredentialProvider({"ref": ("user", "pass")}), archive,
+        auth_factory=FakeAuth, crawler_factory=IncompleteTDC,
+    )
+    ctx = SyncBindingContext(
+        binding_id=22, deliverable_id="VPI-T2-D5", phase_id="VPI-T2",
+        source_type="tdc", external_key="900001",
+        match_rule={"reportType": "data_model", "documentNo": "3D-00001018"},
+        mapping={"owner": "currentApprover"}, cursor={},
+        expected_deliverable_updated_at="v1", run_id=23, credential_ref="ref",
+    )
+    with pytest.raises(ValueError, match="incomplete"):
+        connector.collect(ctx)
+
+
 def test_tdc_connector_collect_tolerates_archive_export_failure(tmp_path: Path):
     class ExportFailingTDC(FakeTDC):
         def export_data_model(self, filters):

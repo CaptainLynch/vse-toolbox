@@ -1,23 +1,105 @@
 # Current State
 
-## 2026-10-08 免安装包构建流水线与 README 更新（分支 claude/peaceful-bohr-bi1j7y）
+## 2026-10-09 第二批实施完成并经顾问复核：向导流水单号 + 同步运行期消费（未 commit）
 
-- 新增 `.github/workflows/build-webui-bundle.yml`：windows-latest、Python 3.12、跑签署日报/关注清单相关测试、
-  `tools/build_excel_bundle.ps1` 打 onedir 包、启动打好的 exe 冒烟（/api/version、sign-daily state、overview、三个插件在包里）、
-  上传 `VSE-WebUI.zip` + `SHA256SUMS.txt`（Artifacts，保留 30 天）。在 `claude/**` 推送该文件自动触发。
-  第 1 次运行失败：`test_sign_daily_mail` 的本地时区用例用了仅 POSIX 有的 `time.tzset`（Windows 上也会失败），已拆开并在无 tzset 的系统跳过；
-  第 2 次（616f483）全绿，产物约 46 MB，未签名。冒烟只证明能启动、接口能通；TDC 登录/抓取与 Excel 功能仍待用户在公司电脑验证。
-- README 更新：onedir 交付形态、插件体系与三个插件版本（sign-daily 0.2.0、project-overview 0.1.1、scheduled-archive 0.1.1）、
-  签署日报与关注清单能力、免安装包构建说明、审计文档链接。
-- **待办（用户未决）**：图1 窄组标题重叠（G3）；明细表待办人超过 8 人截断（§6，当前未做）。
+- **实施内容（5 文件 + 复核后补 3 处）**：
+  - `core/project_status_contracts.py` D5：matchKeys 增 `documentNo`；matchFields 增流水单号输入定义，incident 标签改「实例号(incident)（选填）」。
+  - `services/project_status_records.py`：tdc 签名词表增 `documentNo`（已核验 compute_config_signature 按 rule.items() 迭代只收实际存在键——存量签名不变，顾问 Q4 本地闭合）。
+  - `services/project_status_connectors.py`：`_narrow_by_document_no()`——matchRule.documentNo 非空时在 `_require_complete_result`（完整性门）后、范围剔除（逐行无状态，已核验可交换）前用 `match_serial` 收窄 application_rows；归档原始行不收窄（取证）；空集归因（复核建议 3）：行集缺 documentNo/流水单号列 → `tdc_document_no_structure_drift` 诊断 + raise「结构漂移」（不落 not_found），有列无匹配 → `tdc_document_no_zero_match` 诊断 + not_found。
+  - `plugins/project_overview/static/deliverable/policy-logic.js`：`wizardInitialValues` 增 documentNo 回填（只按各自键，不跨键转换）；`wizardPrecheck` 拦截同填；`buildWizardDiscovery` aggregate 判定 `!specificNo && !(isDataModel && documentNo)`，`set("documentNo","document_no",…)` 与 incident 并存互不覆写。
+  - `plugins/project_overview/static/deliverable/policy.js`：数模新增「流水单号（选填，与下方实例号二选一）」输入框。
+  - **复核后补（顾问 run 6bc0f2a3 建议 1、3）**：服务端互斥两处——`project_status_updates.py` update_update_policy 内联校验（fields["matchRule"]="流水单号与实例号二选一…"）+ assert_sync_ready（SyncBindingNotReadyError）；`web/app.py` `_mapping_discovery_query_identity` 同填 400。核对确认：发现端与运行期用同一 `match_serial`（匹配器一致）；单记录 `_stable_version` 哈希匹配到的单行非全量行（口径差不存在）；归档/快照口径差经核实不触发（version 基于单行）。
+- **顾问复核（Claude live，run 6bc0f2a3-d7b1-4781-951c-ebb0b5faa832，意见 `~/.dsh/expert-advisor/runs/claude-20261009-055013-170a5056.advice.md`）**：Q1 收窄顺序正确（采纳）；Q1 口径差（partial——本地核验 version 基于单行不触发，未加 rawRowCount 簿记）；Q2 同填落库（采纳，服务端两处互斥已补，前端 buildPolicyPayload 高级编辑器路径未加——服务端已拦）；Q3 aggregate 语义（采纳——空集归因已补；「重新编辑静默换 incident」为推断未复现，登记待观察）；Q4 签名金样（采纳——以实现核验替代金样测试：缺失键不进哈希）；Q5 端到端（partial——发现端 aggregate=False+documentNo 端到端测试已存在且通过（test_project_status_api.py 既有 5 用例），「发现→落库→同步」完整链路集成测试未建，登记待办）。
+- **门禁**：聚焦 123 passed + updates/connectors 69 passed + policy_api 32 passed；flake8 零告警；node --check 通过；地图 verified。新增测试：连接器 4（收窄/未命中/结构漂移/不完整 fail-closed）、updates 2（互斥拒绝/只填 documentNo 合法落库）、发现端互斥 1、向导纯逻辑扩展（回填不跨键/aggregate=False/同填拦截）。
+- **边界/待办**：① 高级设置编辑器（buildPolicyPayload）无前端互斥提示（服务端已拦，不阻断）；② 「发现→落库→首次同步」三段式集成测试未建（顾问建议 2 完整版）；③ 多个 documentNo 绑定每轮各自全量抓取（成本观察，顾问建议 6 后置）；④ 未 commit，与第一批/10-07 A′ 改动同在工作树。
+- **生产验证用例**：向导填流水单号 3D-00001018（车型项目留空）→ 映射发现命中 1 行 externalKey=incident → 启用 → 立即同步 → 明细/图表更新；同填流水单号+实例号 → 保存被拒（前端 precheck 先拦，直调 API 服务端拦）。
 
-## 2026-10-04 规格 10-04 修订（F620S 在途样例）已落地（分支 claude/peaceful-bohr-bi1j7y）
+## 2026-10-09 第一批实施完成：交付物工作台接入 A′ + 多流水单号集合匹配（未 commit，待用户验证）
 
-- 规格在 10-04 修订在途规则：当前待办以「待审批人员」为准（A10/A12/A13）、阶段改为会签中/审批中/退回修改/待提交/待锁定
-  （T1–T6，取消「加签中」）、P3/P6/P7/P10、视觉工程科列为历史科室。`plugins/sign_daily/rules.py` 的 `Flow.placements()`、
-  `current_todo()`、`countersign_frequency()` 是新口径入口；邮件明细「另 n 人未签、非当前待办」「（无待审批人）」。
-  两处解读和未动项（后蒙皮上/下组件仍为疑似）见审计文档 §11。签署日报相关 128 个测试通过。
-- **待用户**：F620S 真实导出（135 份/19 份在途）本地回归，预期归属车身五科室的在途单 5 份；其余待办同下。
+- **背景**：用户澄清后确认①交付物工作台保留页内查询（字段单源+测试锁一致性，不做深链跳转）；②「一起查询」= 同一数模表单输入多个流水单号、结果合并一张表。
+- **后端**：
+  - `web/app.py`：`_TDC_DATA_MODEL_FIELDS` 增 `document_no`「流水单号」（紧跟 serial_number，两前端字段序一致）、`serial_number` 标签改「实例号(incident)」；`_TDC_DATA_MODEL_FILTER_NAMES` 排除 document_no（进 filters 仍 400——fail-open 防护，有测试钉住）；`_tdc_document_nos()` 多值解析（分隔符约定同 form_search：空格/逗号/分号/顿号/换行；>100 个 fail-closed 400）；`_tdc_data_model_serial_query` 单号路径簿记不变（requested 为字符串），多号路径走 `match_serials`（requested 数组 + found/missing）。
+  - `services/data_model_watchlist.py`：新增 `match_serials(rows, serials)` 纯函数——集合精确匹配，命中行按目标单号顺序合并不重复，簿记 requested/found/missing/scanned/matched（missing 沿用 S8 只展示不删除）。
+- **前端**：
+  - `plugins/deliverables/static/lib.js`：`buildPayload` 对 tdc-data-model 把 document_no 提升到请求体顶层（与 system_query 同约定）；新增 `serialMatchWarning()`（与 system_query serialMatchNotice 同语义五态：不完整/单号未找到/多号含 missing/全命中/无簿记）；`formatFilterSummary` 第三参带顶层 document_no。
+  - `plugins/deliverables/static/catalog.js`：结果区渲染 serialMatchWarning（role=status）；`catalog.css` 补 `.result-warning` 样式（此前 deliverables 无此样式）。
+- **防漂移测试**（`tests/test_deliverables_system_query_parity.py` 新文件，Node 22+）：两份 buildPayload 同输入输出一致、serialMatch 五态语义一致、目录单源字段序 == modes.js 字段序、filter 名单排除 document_no。`test_plugin_system_query.py::test_tdc_modes_match_server_filter_contract` 更新为全字段含序一致（document_no 已入目录单源）。
+- **门禁**：聚焦 123 passed（deliverables_web/watchlist/tdc_crawler/system_query/parity）+ 278 passed（project_status/scheduled_archive/tdc probe/cli）；flake8 改动文件零告警；node --check 通过；项目地图 --write 后 verified。
+- **边界/待办**：① 向导（第二批）未动：仍无 document_no 输入入口，且同步运行期连接器不消费 documentNo（project_status_connectors.py:423）——第二批须同时补运行期；② 系统查询页多号能力同享（同一后端分支，modes.js 无需改，占位符文案未更新多值说明）；③ 未做真实浏览器验证；④ 未 commit（工作树含 10-07 A′ 全部改动，等用户一起验证后处理）。
+- **验证用例**：交付物工作台流水单号填 `3D-00001018`（单号命中）；`3D-00001018, 3D-00001193`（多号合并）；多号含不存在单号（命中行 + 「未找到以下流水单号：…」提示）；实例号框填 3D- 前缀仍 0 行（语义未变）。
+
+## 2026-10-09 数模交付物工作台接入 A′ + 多表单批量查询：根因闭合、顾问定案（未实施）
+
+- **用户报告两个问题**：① 系统查询页按流水单号 3D-00001018 可命中（A′ 生效），但交付物工作台查询预览 0 行（`fetched=1 stop=single_page`）、数据同步绑定向导映射发现 0 行；② 系统查询无法多个表单一起查询。
+- **根因①（三处代码证据闭合）**：A′ 后端能力已就绪（`/api/tdc/data-model/query` 顶层 `document_no` → `_tdc_data_model_serial_query` 全量翻页+本地匹配），但两个前端入口未接入：a) 交付物目录 `_TDC_DATA_MODEL_FIELDS`（web/app.py:360）只有 `serial_number`「流水号」，无 `document_no` 字段；b) `plugins/deliverables/static/lib.js` `buildPayload()` 不把 `document_no` 提升到顶层（system_query 的 lib.js 有）；c) 向导 `policy-logic.js:279` `kind.isDataModel` 仍 `set("incident","serial_number",specificNo)`，把 3D- 流水单号当实例号发上游 → 必然 0 行。
+- **根因②（现状核实）**：`plugins/system_query/static/query.js` 单活动模式设计（`useState(initialMode)`），无批量/联查能力。
+- **顾问咨询（Claude，两次 live，TASK-20261009-TDC-DM-WORKBENCH）**：包 1 run 3a8acd74（意见 `~/.dsh/expert-advisor/runs/claude-20261009-044955-c38c05d1.advice.md`）：**推翻原 W2「把 incident 改写为 documentNo」**（语义替换会把存量绑定编辑保存后悄悄改坏，应新增独立流水单号输入与实例号并存二选一）；推翻「不加 3D- 提示」（改为实例号框非纯数字时确定性校验提示，不硬编码前缀）；采纳 serialMatch 簿记必须区分「扫完 0 命中」vs「扫描未完成（complete=false 按错误态渲染）」；采纳共享逻辑保持两份前端拷贝。包 2 run b26e291e（意见 `claude-20261009-045111-1c5c61b8.advice.md`）：采纳 Q1 前端编排（先参数化重构 payload/render 为 (modeDef, values) 纯函数，再加批量编排模块，并发度 2、同 source 串行）；并发/呈现待决部分暂缓（等用户澄清「一起查询」是解读 A 多表单各填条件 / B 一个编号查多报表 / 同表单多条件）；Q3 否决。
+- **缺失证据本地已补（决定 1 依据）**：`_tdc_filters_from_payload`（web/app.py:1143）对未知 filters 键 **400 拒绝**（非静默丢弃，无 fail-open——顾问担心的最坏情形不存在，后端归一化降为可选加固）；**同步运行期连接器不消费 documentNo**（project_status_connectors.py:423 注释明示；运行期范围控制走 watchlist 机制 sync_runner:411-426）——所以向导新增 documentNo 输入前必须先补运行期读取点，否则造出「能建不能跑」的绑定；TDC client 为每请求新建（无共享会话单例），前端批量并发无共享态踩踏。
+- **问题 2 用户已澄清（2026-10-09）**：「多个表单一起查询」实指**同一份表单（数模报表）输入多个流水单号、结果合并在一张表**——不是多表单编排。Q1/Q2 批量方案作废。定案：复用 A′（一次全量抓取）+ 集合本地匹配：`data_model_watchlist` 新增 `match_serials(rows, serials)` 纯函数（match_serial 改为其单单号特例或并存），簿记含 per-serial 命中/`missing`（沿用 apply_watchlist S8 语义：missing 只展示不删除）；输入解析复用 `services/form_search.parse_terms` 约定（空格/逗号/顿号/换行分隔、去重、上限 100，可直接粘贴 Excel 一列）；与其他筛选条件 AND；全部单号都 missing 时展示「已全量扫描、未找到以下单号」而非空表；fail-closed（扫描不完整仍按错误态）。落点：系统查询页 document_no 字段 + 交付物工作台（与问题 1 第一批同版）；向导/同步不动（多单号同步范围已有关注清单机制，上限 500）。
+- **定案实施顺序（等用户批准）**：第一批 W1——`_TDC_DATA_MODEL_FIELDS` 增 `document_no`「流水单号」、`serial_number` 标签改「实例号(incident)」（name 不动，需查全部遍历消费者）；deliverables lib.js 对 tdc-data-model 提升 document_no 到顶层（trim/空串不发）；serialMatchNotice 逻辑拷贝到 deliverables（两份拷贝+同组单测防漂移）；实例号框非纯数字提示；可加后端归一化兜底（顶层优先、filters.document_no 提升或 400）；**document_no 支持多单号集合匹配（上条定案）**。第二批向导——新增独立流水单号输入（与实例号并存、回填不跨键转换、matchRule 二选一），**同时补同步运行期对 documentNo 的消费**（绑定含 documentNo 时走全量抓取+match_serial 或提示改用关注清单）；展示映射发现 serialMatch 簿记。
+- 咨询包：`.runtime/consult-20261009-tdc-dm-workbench-p1.md` / `-p2.md`；裁决已写回账本（1=overturned 2=adopted 3=overturned 4=adopted；1=adopted 2=partial 3=deferred）。未改业务代码。
+
+## 2026-10-09 同步远端 6 提交 + 生产测试包 20261009 出厂（clawbot 投递失败，文件在本地待取）
+
+- **同步**：fetch 后远端 `claude/peaceful-bohr-bi1j7y` 领先 6 提交（9e7e86e 签署日报 10-04 规格修订：当前待办以「待审批人员」为准、阶段 T1–T6 取消「加签中」；bf971c2 未知区域加签标签去重；616f483 tzset Windows 修复；d9bee17 build-webui-bundle.yml CI；97d605c 地图；f27cff6 README）。与工作树 A′ 修复**零文件交集**（仅 PROJECT_MAP/memory 可合并）。经 stash→merge（PROJECT_MAP 指纹行冲突，取远端后重新 --write）→stash pop（显式 checkout 恢复 26 文件）完成，合并提交 c6c327c，A′ 内容逐文件断言恢复。
+- **合并后门禁**：A′ 聚焦 249 passed +1 skip（tzset 新用例在 Windows 跳过，符合 616f483 预期）+ 系统查询/向导/归档 166 passed；flake8 两套改动文件 CLEAN；地图 verified。
+- **构建**：`0.3.0-production-test-20261009` / buildId `20261009-merge-f27cff6-a1-serial-local-match` / isFrozen=true；onedir 宿主 + onefile Worker 同目录；打包契约 23 passed；纯净目录冒烟（端口 5149）：首启自建库、8 插件、版本元数据正确、modes.js 含 document_no（字节一致）、sign-daily state 200、端口释放干净。
+- **交付物（未送达）**：`dist/hci-20261009/VSE-WebUI-0.3.0-production-test-20261009.zip`，SHA-256 `1b88ec9fd9664b90ba02f612dab7fb42226e8f2dd55e0f3c376c98629091e68b`（1185 项，CRC OK）+ `SHA256SUMS.txt` + `README-测试说明.txt`（数模已知对四用例 + 签署日报新口径验证）。
+- **clawbot 故障与恢复**：2026-10-09 约 04:05–04:20 连续 5 次 `sendmessage ret=-2 prepare failed`（含退避与文本探针）；用户在微信给 bot 发消息刷新 context 后通道恢复，**20261009 包三件套已全部送达**（text 7514282477235493768 / caption 7514282589886187016 / zip 7514282591375191688 / readme 7514282718269666056）。结论：context_token 过期即表现为 ret=-2，重发前让用户发一条消息即可。
+- A′ 源码改动仍未 commit（工作树）；合并提交 c6c327c 已在本地 refactor/plugin-host。
+
+## 2026-10-07 生产测试包 20261007 出厂（含 A′ 流水单号修复，已 clawbot 投递）
+
+- **构建**：工作树（A′ 全部改动 + query.css 补丁）→ PyInstaller 6.21.0（venv `.runtime/pr3-review-venv`）onedir 宿主 + onefile Worker 同目录；版本 `0.3.0-production-test-20261007` / buildId `20261007-plugin-host-a1-serial-local-match` / isFrozen=true。打包契约 23 passed。
+- **出厂冒烟**：纯净目录 `.runtime/smoke-exe-20261007` + 端口 5147 + `--no-browser` → 首启自建 `data\vse_toolbox.db`、8 插件挂载（manifest 200）、`/api/version` 元数据正确、`/api/project-status` 200、`/plugins/system-query/static/{lib,modes}.js` 已含 `serialMatchNotice`/「实例号(incident)」/`document_no`（字节核对与工作树一致）、taskkill 后端口释放干净。
+- **交付物**：`dist/hci-20261007/` — ZIP 63,235,121 B，SHA-256 `9743247677f58a33080f645bcdd94179accd98533c8883c576229f4d790ab23f`（1185 项，CRC OK）+ `SHA256SUMS.txt` + `README-测试说明.txt`（含已知对 51553863/3D-00001193 四用例验证清单）。**未做 UPX**。
+- **clawbot 投递**：caption 7513834629138238344 / zip 7513834630866397320 / readme 7513834711657004296。
+- **待用户（生产）**：按 README 第四节验证流水单号四用例 + 向导绑定 + 立即同步；顺带抓一次「页面按流水单号筛选」的 DevTools 记录判 B 升级。源码仍未 commit（A′ 全部改动在工作树），验证通过后再处理提交/PR。
+
+## 2026-10-07 数模流水单号 A′ 修复实施完成（v4.1 Flash 双 worker，未提交，等用户验证）
+
+- **实施完成**：继前节根因/顾问定案后，用户批准「新建子智能体走 v4.1flash 修复」。直连 Agent 派发失败两次（子智能体供应商 zai-start-plan/GLM-5.3-Flash 不可用，已上报未换道），改走 CreateWorkflow + `subagent_model=deepseek-v4.1-flash/global-workbuddy$max` 两个有界 worker 完成。
+- **后端**（worker run dwfrun-b5037d0f，lead 逐文件验 diff + 独立复跑）：
+  - `services/tdc_crawler.py`：`TDCDataModelFilters.serial_number`→`instance_no`（线上仍 `incident`，契约零变化）；更名传播到 project_status_connectors/scheduled_archive_connectors/tdc_contract_probe/main.py/tdc_probe_cli.py（CLI 提示改「实例号(incident)」）。
+  - `services/data_model_watchlist.py`：新增 `match_serial(rows, serial)` 纯函数（documentNo 精确相等/区分大小写/空值抛 WatchlistError，簿记含 scanned/matched/matched_instances）；`load_watchlist` 两个静默回退分支补 `watchlist_load_jobs_failed`/`watchlist_load_settings_failed` 诊断事件（回退行为不变）。
+  - `web/app.py`：查询页 `document_no`（请求体顶层）→ `_tdc_data_model_serial_query` 全量 crawl+本地匹配，响应加 `serialMatch{requested,scanned,matched,scannedPages,complete,reason?}`；fail-closed 三分支（0 命中=未找到/不完整 reason=crawl_incomplete/official_export 组合 400）；向导 `_MAPPING_DISCOVERY_RULE_FIELDS` 增 `document_no→documentNo`、stable_filter_name 改 `documentNo`、恰好 1 行放行（externalKey=命中行 incident）、多行 400「该流水单号命中多行」、不完整 422+pagination diagnostic；F10 稳定性采样同源修正（否则带流水单号绑定永远无法就绪——worker 发现的合同外必要修正，lead 核验采纳）；`_TDC_DATA_MODEL_KEYS` 增 `documentNo`（持久化用，不发上游）。
+  - 测试：新增 17 条（更名契约/match_serial 5 态/查询页三分支/向导 6 态含 `seen==[None]` 证明 documentNo 不发上游）；更名跟随约 20 处机械改名。
+- **前端**（worker run dwfrun-9addc1f2，lead 验 diff）：
+  - `plugins/system_query/static/modes.js`：tdc-data-model 的 serial_number 标签改「实例号(incident)」、新增 `document_no`「流水单号」字段+filterNames；tdc-sor 未动。
+  - `lib.js`：buildPayload 把 document_no 提升到请求体顶层（进 filters 会被 400）；新增 `serialMatchNotice(data)`（complete=false→「抓取不完整…」/matched=0→「未找到…覆盖完整」/其余 null）。
+  - `query.js`：结果区渲染 serialNotice（role=status）+ 筛选摘要显示顶层 document_no。lead 补 `query.css` `.result-panel .result-warning` 样式（该类此前在 catalog.js/query.js 均无定义）。
+  - 向导 policy-logic.js 未改：实测 plainErrorMessage 已原样透出后端新文案（含 diagnostic 附加）。
+- **验收（lead 独立复跑）**：聚焦后端 291 passed + 跟随更名 101 passed + 前端/交付物 124 passed、test_plugin_system_query 19 passed（含 CSS 后复跑）；flake8 改动文件 CLEAN（25 条既有告警经 HEAD 基线比对非本次引入）；node --check 经 .mjs 副本验证有效通过；项目地图 --write 后 verified（fingerprint a21d1666…）。全量 2848 passed / 1 failed（tzset，Windows 既有）/ 2 skipped（浏览器套件跳过；vendor 校验和 CRLF 既有问题）。
+- **已知边界/待办**：① 向导 UI 暂无 document_no 输入入口（policy-logic.js 仍写 matchRule.incident），后端 documentNo 匹配需已保存规则或高级设置触发——向导输入项待下一轮或用户提出；② official_export+流水单号 400 文案会显示在错误卡（可接受）；③ 未做真实浏览器 UI 验证（system_query 无浏览器测试）；④ **生产验证用已知对 (51553863, 3D-00001193)**：流水单号框命中 1 行/实例号框命中同行/流水单号框填实例号报未找到；⑤ 生产抓包判 B 仍开放（页面按流水单号筛选的 DevTools 记录）；⑥ 未 commit/未打包，等用户验证后处理。
+
+## 2026-10-07 数模流水单号查询 0 行根因确认，顾问定案 A′ 路线（已实施，见上节）
+
+- **生产问题**：系统查询页数模报表按流水号 `3D-00001193` 查询 0 行；数模同步向导「映射发现未匹配（命中 0 行 0 字段）」启用失败。
+- **根因（已闭合，三处代码+生产截图互证）**：查询页「流水号」字段经 `web/app.py:1157` → `services/tdc_crawler.py:223` 映射到 TDC 参数 `incident`，但 `incident` 是第 0 列「实例号」（纯数字如 51553863）；流水单号（`3D-` 前缀）是第 2 列 `documentNo`，**TDC list/export 查询参数里没有它**（`core/report_contracts.py:132-135`、`services/data_model_watchlist.py:11,31`、`docs/SIGN_DAILY_V2_AUDIT_20261003.md` 更正条目）。`3D-…` 被当实例号精确匹配 → 必然 0 行；向导同因（`web/app.py:1344` 把 selected_external_key 写进 `incident`）。
+- **Claude 顾问咨询**（run 23150aaf-eac2-45ac-a67c-856240d9da72，TASK-20261007-TDC-DM-SERIAL，包 `.runtime/consult-20261007-tdc-dm-serial.md`，意见 `~/.dsh/expert-advisor/runs/claude-20261007-205243-9e898cb7.advice.md`）：推翻原案 A/B/C，定 **A′**——流水单号一律不发上游，全量抓取后本地按 `documentNo` 精确匹配（watchlist 口径延伸到查询页与向导）；fail-closed（0 命中报未找到+覆盖范围、分页不完整报无法判定、多命中有行列出、命中行 documentNo 为空单独错误码）；抓包证实上游参数前不猜参数名。裁决已写回：1=overturned、2=no_change、3=adopted。
+- **顾问缺失证据本地已补**（决定 3 依据）：`apply_watchlist` 清单为空 → kept=[]（不静默全量）；快照在清单保留之后发布；前端只有「全部加入关注清单」（快照检索带值），无手工直接录入入口 → 新单号循环依赖真实存在，A′ 查询页命中行即入口。`load_watchlist` 读失败回退全量且无告警——实施时须补诊断。
+- **实施要点（等用户批准）**：内部 `serial_number` 改实例号语义（线上仍 `incident`，旧持久化值按实例号处理）；服务层新增 documentNo 本地精确匹配（与 watchlist 同层、复用其保留逻辑）；查询页字段改标「实例号」+ 新增「流水单号」（全量翻页+本地匹配，显示扫描 N 页/M 行/命中 K）；向导恰好 1 行才继续，发现与同步同数据源；并行生产抓包判 B（若证实上游支持 documentNo 参数，B 升主案、A′ 降为断言）。验证四用例用已知对 (51553863, 3D-00001193)。未改任何业务代码。
+
+## 2026-10-04 签署日报 v2 原样合并进 main；生产测试包 20261004 出厂（7d42d7a，8 插件）
+
+- claude/peaceful-bohr-bi1j7y（10 提交：sign-daily v2.0 重写、project-overview 数模关注清单/多词检索/交付物同步设置列、
+  插件版本 bump 0.2.0/0.1.1/0.1.1）按用户指示**原样**合并：refactor/plugin-host 快进 bd5e742，PR #6 → main@9dc354b；
+  CI 发现项目地图过期（481e0a8 改源后未重生成聚合指纹，仅指纹行漂移），PR #7 刷新 → main@7d42d7a，地图门禁转绿。
+- 合并前审阅：架构合规（插件无 web.* 导入、写路由有 local_guard、host.context）；聚焦测试 184 passed，两个失败均为
+  测试侧（tzset POSIX 专属、浏览器"取消"定位器组合运行歧义），未修（用户指示不改）。**审阅发现 seeds/roster.csv 含
+  784 真实姓名+科室且分支已推送公开仓库（repo PUBLIC）**；曾做脱敏集成分支（映射留档 .runtime/roster_name_mapping.json），
+  用户明确"不要更改，直接合并"后已撤销——PII 公开暴露为用户知情的既成事实，README 引导正式环境经 xlsx 导入真实花名册。
+- 打包：`.agents/worktrees/prodtest-webui-20261004`（7d42d7a 全新检出，地图 verified）+ `.runtime/pr3-review-venv`
+  （PyInstaller 6.21.0）；打包契约 36/36；宿主 onedir + Worker onefile 同目录；出厂冒烟 **12/12**（纯净目录
+  `--port 5130 --no-browser` 首启、8 插件挂载、版本元数据、/api/p/sign-daily/state 与 sync-settings 200、无 traceback、
+  端口释放干净）。**注意冻结 exe 默认端口也是 5000**（与 webui.py 相同），冒烟脚本必须显式传端口。
+- 交付物：`dist/hci-20261004/` — VSE-WebUI-0.3.0-production-test-20261004.zip（63,228,685 B，SHA-256 8a586cc9…697）+
+  SHA256SUMS.txt + README-测试说明.txt（含 v2 验收清单）。未做 UPX；已于 2026-10-04 经微信 clawbot 投递
+  （text 7512377992300426120 / zip 7512378093852915592 / readme 7512378165848089224）。
+- 用户开发实例排查：5000 端口残留两个旧 `python.exe webui.py`（10-01/10-03 启动、合并前代码）导致"看不到签署日报"；
+  已终止并以用户 Python 3.14 重启 5000（manifest 8 插件、sign-daily 0.2.0 loaded、state/sync-settings 200）。
+- 下一步（用户）：拷 ZIP 到测试机按 README 第四节复测（签署日报 v2 端到端：TDC 认证→抓取→三图一表→.eml 飞书/Outlook
+  打开、真实花名册 xlsx 导入、watchlist/同步设置列、Excel COM、定时归档）；.vsepkg 分发仍需先 plugin_keys.py init。
 
 ## 2026-10-03 签署日报 v2.0 + 交付物明细同步增强（§9）全部实现并审计（分支 claude/peaceful-bohr-bi1j7y）
 
@@ -39,6 +121,82 @@
   飞书邮箱/新版 Outlook 打开 .eml 实测；第一期真实日报发出前人工对照 TDC 复核；签名打包 `.vsepkg`（插件）与宿主 onedir
   （宿主有改动：services/、core/repos、web/app.py 一处查询键）。
 
+## 2026-10-03 生产测试 onedir 包已构建并通过出厂冒烟（main@2dfa72b，8 插件）
+
+- 用户要求生成无依赖 exe 用于生产环境测试。插件化后官方契约为 **onedir**（`VSE-WebUI.spec`），
+  旧 onefile / 工作区未跟踪的 `VSE-WebUI-compact.spec` 已过时（缺 trusted_keys datas 与
+  plugins 复制），本次未使用；「无依赖」按现行契约交付为自包含 onedir 文件夹 + ZIP。
+- 构建来源 **origin/main 2dfa72b**（PR #5 合并后：含全部 parity 修复 + sign_daily 插件），
+  在 `.agents/worktrees/prodtest-webui-main` 新建分离工作树执行；原工作区无关脏文件未动，
+  本地 refactor/plugin-host@589071e 仍落后远端 1 提交（d0dd01d）未拉取。
+  venv 复用 `.runtime/pr3-review-venv`（Python 3.12.10 / PyInstaller 6.21.0）。
+- 门禁：打包契约测试 **35 passed**（worker/winhttp/version/excel_bundle/tdc_probe packaging）；
+  出厂冒烟 **25/25**（纯净目录 + 端口 5130 首启自建 `data\vse_toolbox.db`、
+  `/api/host/manifest` 8 插件全挂载、`/api/version` rawVersion/channel/buildId/isFrozen 正确、
+  `/api/project-status` 与 `/api/scheduled-archive/jobs` 200、`/api/p/sign-daily/state` 注册、
+  taskkill /F /T 后端口释放无残留、无 traceback）。包内 shell.js/trusted_keys/sign_daily
+  与源码字节一致。
+- 交付物：`E:\project\vse-toolbox\dist\hci-20261003\` —
+  `VSE-WebUI-0.3.0-production-test-20261003.zip`（63,063,179 B，SHA-256
+  `0fb3bb6bde101283bcf42f67d20b55259175aab86e0232eaabb785a3d2ad3d6c`）、`SHA256SUMS.txt`、
+  `README-测试说明.txt`。构建树 `dist/VSE-WebUI/`：VSE-WebUI.exe 5,703,599 B +
+  VSE-ExcelWorker.exe 41,782,795 B（同目录必需）+ _internal + plugins，约 88MB。
+  UPX 本机不在 PATH，包体未压缩。版本元数据 rawVersion=0.3.0-production-test-20261003、
+  channel=production-test、buildId=20261003-main-2dfa72b-plugins8。
+- 已知事项：① `host/trusted_keys.json` 为空 → `.vsepkg` 签名插件包导入需先在打包机
+  `python tools/plugin_keys.py init` 再出一版宿主，README 已注明；② main 的
+  build-windows-exe.yml 过时（app.js 已删必然失败）与产品无关，build.yml /
+  verify-project-map 均绿；③ 本机未对 2dfa72b 重跑全量 pytest（该提交 CI build.yml 通过；
+  969e501 Windows 全量 2731 passed / 1 已知 flaky 见下节）。
+- 下一步（用户）：拷 ZIP 到测试机按 README 第四节复测（顶栏版本、8 插件"运行中"、
+  overview 数据、sign_daily 页面、真实 Excel COM、内网定时同步）；如需插件包分发先做
+  plugin_keys.py init。ZIP 与 README 已于 2026-10-03 经微信 clawbot 投递
+  （text 7512024676374557704 / zip 7512024770071206664 / readme 7512024830506952456）。
+
+## 2026-10-02 PR #3 修复 969e501 Windows 复核完成，仍有一个重试场景待闭环
+
+- 用户提供 Claude 修复 R1/R2/B1/B2/B3 的新提交，已 fetch 并固定 head 969e501b650f1d8917b886d21216ef81ebb754fa。原工作区仍 refactor/plugin-host@589071e，保留无关脏文件；复用旧审查工作树并新建 pr3-windows-969e501 原生工作树，全量在后者执行。
+- 定向 87 passed / 3 warnings，177.23s，其中浏览器40项全部通过；含B1/B2、状态/结果挂起、过期token与历史hash用例。独立Node探针覆盖status/body/result/body，四种都按50ms截止abort（53–76ms）。改动Python flake8与两个JS语法检查通过。
+- B3全新检出：地图check通过，host/map相关17 passed。复用旧工作树最初vendor仍CRLF（16 passed / 1 checksum failed），新属性不会保证刷新未变文件；单文件删除后从HEAD恢复LF，checksum通过，blob与HEAD相同，工作树干净。
+- Windows全量2731 passed / 1 failed / 3 skipped / 4 warnings，2251.55s（37:31），exit1，最终日志/XML已读取，证据 .runtime/pr3-windows-recheck-969e501/。浏览器40项39通过1失败，三跳过仍为符号链接权限不足；告警为Playwright清理协程未await。R1/R2/B1/B3相关用例全量通过，历史hash用例也通过。
+- 唯一失败为test_view_timeout_unlocks_interaction_and_offers_retry:422等待trend图表8s；本次guard blocked-count、超时解锁等断言都已通过，不是原B2守卫未安装复发。失败日志同时出现get_project_status_update_policy→_ensure_project_status_policy INSERT OR IGNORE的database is locked、GET 500，锁持有者与完整因果链未定位。这两处repo/analytics文件相对d0基线未改。
+- 该用例在模拟超时后真实后端重试仍用600ms截止（生产30000ms），刷新后只等旧DOM标题，不能证明刷新落定；可能受负载/锁冲突影响。单独复跑1 passed，5.06s，不能据此宣称全量稳定。独立R2初始/重新挂接token探针2 passed。
+- 下一动作：合并前稳定重试测试的预算与响应就绪，并定位只读GET种子写入的锁冲突；保留原守卫/超时断言，不只延长DOM等待掩盖500；修正后复跑聚焦及Windows全量。报告 docs/PR3_FIX_RECHECK_WINDOWS_20261002.md 已更新。本轮未改产品、未重打969包、未合并/推送/部署；上轮f5打包/COM证据不能冒用为969验收。真实内网验收与两PR合并留待后续。结束前远端head/base仍969/d0，两份969工作树产品源码干净，原工作区无关改动保留。
+
+## 2026-10-02 PR #3 独立审查 / Windows 回归完成，待补修
+
+- 用户已授权启动独立审查与 Windows 回归。固定 head f5b0df0b25b29693bdaeec1baf9223f0741ad187、基线 d0dd01d0b6da4f8f3f60587adfb8d434f8876113；创建原生管理的 pr3-windows-review、pr3-windows-baseline 两个工作树，原工作区未切分支，保留既有脏文件。
+- 报告：docs/PR3_INDEPENDENT_REVIEW_WINDOWS_20261002.md；证据 .runtime/pr3-windows-review/；测试 venv .runtime/pr3-review-venv/。仅生成审查/验收材料，PR 产品代码未修改，也未合并/推送/发布。
+- 已独立复现两个 PR 取证缺口：discovery.js 清除握手 timer 后，挂住的 task 状态/结果 fetch 绕过轮询 deadline；cancel 端点用未知/过期 token 按交付物回落，会取消后来启动的另一任务。进一步对照e2c58a3，两项都是恢复继承的旧缺陷，不是Claude此次新造业务回归；建议先修 R1/R2 再合并。
+- 另有已复现的基线问题：页签切换失败后，shown 编辑旧 tab，reload 取新 activeTab，应用筛选丢条件。新增浏览器 guard 断言未等待 useEffect 监听器安装，Windows 重跑仍失败；200ms 后同一锁定状态能拦截，须明确就绪条件。地图 check 的 CRLF 指纹差异已证明只影响 fingerprint，LF 归一后整个地图匹配。
+- 初次定向：330 passed / 2 failed / 2 warnings；哈希用例单独重跑及最终全量通过，guard用例仍失败。PR全量 Windows：2726 passed / 2 failed / 3 skipped / 3 warnings，42:14，exit1，最终日志/XML已读取。两失败：vendor字节校验CRLF（基线已有）+新增guard时序断言；浏览器37项36通过1失败。三跳过均因符号链接创建无权限。基线Windows打包/Worker/插件聚焦59 passed；额外305项对比304 passed / 1 vendor校验失败（同源文件/测试未改）。未跑基线全量，不冒称全部对照。
+- 本机官方 onedir + Worker + ZIP 构建成功；7插件加载、44页面/宽度组合0脚本错误/0横向溢出；真实冻结 Excel Worker COM 合成 merge_append 成功并无 EXCEL 残留；合成旧库升级保持自定义字段、PAA默认名迁移，基线代码可重开升级库副本。flake8及12个JS语法检查通过。临时冻结WebUI已停止。
+- 按项目路由尝试 Gemini 只读复核，dry-run选 gemini-3.8-flash-high；live preflight 因 Unrecognized key runtimeModel 被阻止，未生成模型审查结果，已停止该路由且未切换供应商。Codex直接审查独立于Claude修复会话。
+- 下一动作：经用户进一步授权补修R1/R2、守卫安装/断言就绪及Windows换行校验，再复跑聚焦与全量；B1页签失败后筛选丢条件需修或登记。真实公司 Aras/TDC、官方 NCR 白名单/费用/取消时延、实际用户数据及已安装插件覆盖版本升级仍未验收；真实COM仅合成merge_append已验。数模新增功能继续后续规划。PR #3 / #2 都未合并（#2目标是feature分支，不是main）；结束前远端SHA未变、两个审查工作树产品源码干净，已停止临时冻结WebUI。
+
+## 2026-10-01 Claude云端补回遗漏的提示词与材料已生成
+
+- 用户决定先补回遗漏，数模新功能后续规划；本轮要求生成Claude cloud session提示词，不在本机实施业务修复。
+- 提示词：docs/CLAUDE_CLOUD_RESTORE_PROMPT_20261001.md。附件：.runtime/claude-cloud-parity-inputs-20261001.zip（提示词、审计报告、旧业务修复Git bundle）；ZIP内容/CRC/逐字节校验通过，bundle verify通过。
+- 已通过git ls-remote核实：旧业务远端仍d15d0f2，e2c58a3及9批修复仅本地；bundle含d15d0f2之后26提交，需共同祖先前置对象，云端导入独立parity-source/previous参考ref。
+- 最新远端重构d0dd01d仅新增tests/test_form_key_consistency.py路径定位；已fetch更新远端ref，本地工作树仍589071e。提示词要求从最新远端工作、先核实仍缺项，保留插件架构，17类恢复验收、分批测试、报告云端无法验证项，不实现新功能/整体架构拆分。
+- 下一动作：用户将提示词和ZIP提供给Claude云端；本机未push旧分支或开始修复，未提交提示词/审计文档，既有无关改动保留。
+
+## 2026-10-01 数模新增功能前的架构建议（讨论中，未实施）
+
+- 用户询问架构优化方案，并计划近期扩展数模审批流程；具体新增功能尚未明确，已询问使用场景。
+- 基于代码：页面已插件化，但表单定义仍静态放core/form_registry.py，分析服务仍集中services/deliverable_form_analysis.py，deliverable_forms插件主要读快照；不能宣称数模业务已能只靠插件包独立升级。
+- 建议方向（尚未形成用户批准的设计）：保留单进程模块化宿主；先恢复旧分支生产修复及行为回归，再以数模领域插件试点业务规则/页面归属；宿主提供明确的采集、快照、任务与会话服务，插件通过context使用，启动注册表避免宿主反向import插件；原始数据/本地扩展数据分离，分析口径带版本并共享于卡片、明细、导出。
+- 下一动作：确认用户近期新增功能的场景，再收敛数模插件边界、接口和发布验收；没有修改业务代码、生成正式实施方案或启动开发。上一轮审计结论见下节。
+
+## 2026-10-01 插件重构分支保留性审计完成（未修复）
+
+- 用户要求核对最新重构是否遗漏上一分支改动。比较 `refactor/plugin-host@589071e` 与 `feature/scheduled-deliverables-overview-excel@e2c58a3`；共同祖先 `d15d0f2`。旧分支分叉后 26 个提交（9 批业务修复）未进入重构历史。
+- 确认遗漏：NCR 部门/科室范围（合成导出 6 行被筛到 0）、SOR 字段解包/零件聚合、SOR/PAA 范围剔除、数模/PAA/NCR 完成口径、TDC 导出软失败与网关重试、归集规范化及24别名种子、数模归集、NCR成本表、备注摘要、取证取消/会话去重/轻量稳定核验/Aras后台任务，以及若干展示/命名/诊断保证。完整条目和代码定位见 `docs/BRANCH_REFACTOR_PARITY_AUDIT_20261001.md`。
+- 对照证据：旧分支96项聚焦回归全部通过；当前直接运行62失败/4通过/3文件收集错误；仅移除不可用顶层导入的额外19项检查15失败/4通过。均隔离数据库与合成上游，不把失败条数当产品问题数。证据在 `.runtime/branch-audit/`，耐久结论已入报告。
+- 部分前端效果已保留：圆环居中/点击与键盘跳转、无同步值占位、向导失败文字、筛选草稿状态。未证实旧下拉失灵完整触发序列在Preact重现；只确认请求超时保证缺失。
+- 本轮只改审计报告、记忆和地图fingerprint，未改业务源码，未提交/推送/打包；无关未跟踪文件保留。地图刷新后check通过。
+- 下一动作：用户若要求修复，按报告先恢复后端数据/范围/完成口径，再迁入取证合同及插件UI；不要直接恢复旧app.js，也不要把重构现有2504通过当成旧生产修复已覆盖。既有S1-S4上线/人工验收前沿保留在下节。
 ## 2026-10-02 插件重构遗漏行为恢复完成（分支 claude/restore-plugin-parity，基线 refactor/plugin-host@d0dd01d）
 
 - **完成**：旧业务分支（e2c58a3）9 批生产修复在插件架构下补回，逐条状态/位置/断言见

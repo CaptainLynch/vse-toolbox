@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 import pytest
@@ -71,7 +72,7 @@ def page_payload(rows, *, current=1, size=2, total=None, pages=None):  # type: i
 
 def test_data_model_filter_mapping_and_empty_omission() -> None:
     filters = TDCDataModelFilters(
-        serial_number=" WF-1 ",
+        instance_no=" WF-1 ",
         applicant="Alice",
         department="Engineering",
         section="Body",
@@ -95,7 +96,18 @@ def test_data_model_filter_mapping_and_empty_omission() -> None:
         "modelNumber": "DM-1",
         "status": "已完成",
     }
-    assert TDCDataModelFilters(serial_number=" ", part_number=None, status=None).to_params() == {}
+    assert TDCDataModelFilters(instance_no=" ", part_number=None, status=None).to_params() == {}
+
+
+def test_data_model_filter_field_is_instance_no_but_wire_param_is_incident() -> None:
+    """内部更名（实例号语义）不改变线上请求契约：参数名仍是 incident。"""
+    field_names = {field.name for field in dataclasses.fields(TDCDataModelFilters)}
+
+    assert "instance_no" in field_names
+    assert "serial_number" not in field_names  # 数模的旧名已删除，避免与流水单号混淆
+    assert TDCDataModelFilters(instance_no=" 900123 ").to_params() == {"incident": "900123"}
+    # SOR 的 serial_number 语义是流程编号（processNo），不受本次更名影响。
+    assert TDCSORFilters(serial_number="SOR-1").to_params() == {"processNo": "SOR-1"}
 
 
 def test_sor_filter_mapping_project_pair_and_validation() -> None:

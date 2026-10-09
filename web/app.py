@@ -21,7 +21,7 @@ import sys
 import tempfile
 import threading
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence, cast
@@ -101,7 +101,9 @@ from services.project_status_updates import (
     ProjectStatusPolicyError,
     ProjectStatusUpdateService,
 )
+from services.form_search import MAX_TERMS as MAX_DOCUMENT_NOS
 from services.form_search import parse_terms as parse_form_terms
+from services.form_search import _SEPARATORS as _FORM_TERM_SEPARATORS
 from services.project_status_discovery import MappingDiscoveryService
 from services.project_status_records import (
     COMPLETE_RESULT_STOP_REASONS,
@@ -126,6 +128,7 @@ from services.project_status_sync_runner import (
     create_production_registry,
 )
 from services.project_status_connectors import build_project_status_ewo_filters
+from services.data_model_watchlist import match_serial, match_serials
 from services.scheduled_archive_admin import (
     ArchiveAdminValidationError,
     ScheduledArchiveAdminService,
@@ -356,7 +359,12 @@ _DELIVERABLE_CATEGORIES = [
 ]
 
 _TDC_DATA_MODEL_FIELDS = [
-    {"name": "serial_number", "label": "流水号", "type": "text"},
+    # serial_number 的 API 键名语义是第 0 列实例号（incident，纯数字）；流水单号
+    # （documentNo，3D- 前缀）不是 TDC 查询参数，走顶层 document_no 全量抓取 + 本地匹配。
+    {"name": "serial_number", "label": "实例号(incident)", "type": "text"},
+    # 目录/交付物工作台可见的输入字段；不在 _TDC_DATA_MODEL_FILTER_NAMES 里
+    # （服务端从请求体顶层读取，进 filters 会被 400 拒绝——fail-open 防护）。
+    {"name": "document_no", "label": "流水单号", "type": "text"},
     {"name": "applicant", "label": "申请人", "type": "text"},
     {"name": "department", "label": "部门", "type": "text"},
     {"name": "section", "label": "科室", "type": "text"},
@@ -1153,8 +1161,10 @@ def _tdc_filters_from_payload(
 
 
 def _tdc_data_model_filters(values: dict[str, str | None]) -> TDCDataModelFilters:
+    # API 层键名仍是 serial_number（前端传参键；历史持久化值一律按实例号处理）：
+    # 它对应第 0 列实例号 incident，不是流水单号（documentNo）。
     return TDCDataModelFilters(
-        serial_number=values.get("serial_number"),
+        instance_no=values.get("serial_number"),
         applicant=values.get("applicant"),
         department=values.get("department"),
         section=values.get("section"),
@@ -1201,7 +1211,9 @@ def _tdc_preview_source(payload: Mapping[str, Any]) -> str:
     return source
 
 
-_TDC_DATA_MODEL_FILTER_NAMES = tuple(field["name"] for field in _TDC_DATA_MODEL_FIELDS)
+_TDC_DATA_MODEL_FILTER_NAMES = tuple(
+    field["name"] for field in _TDC_DATA_MODEL_FIELDS if field["name"] != "document_no"
+)
 _TDC_SOR_FILTER_NAMES = tuple(field["name"] for field in _TDC_SOR_FIELDS) + ("car_type_project_id",)
 
 _MAPPING_DISCOVERY_RULE_FIELDS: dict[tuple[str, str], dict[str, str]] = {
@@ -1216,6 +1228,8 @@ _MAPPING_DISCOVERY_RULE_FIELDS: dict[tuple[str, str], dict[str, str]] = {
         "part_number": "partNumber",
         "model_number": "modelNumber",
         "status": "status",
+        # 流水单号不是 TDC 查询参数：该值不发上游，改为全量抓取后本地精确匹配。
+        "document_no": "documentNo",
     },
     ("tdc", "sor"): {
         "serial_number": "processNo",
@@ -1341,7 +1355,9 @@ def _mapping_discovery_query_identity(
         rule["rspDepartment"] = EWO_DEFAULT_RSP_DEPARTMENT_EXPRESSION
     if not versioned_ewo and not aggregate and selected_external_key:
         stable_filter_name = {
-            "tdc/data_model": "incident",
+            # 数模的稳定键是流水单号（documentNo），不是实例号 incident：incident
+            # 是第 0 列实例号，拿它当"选定单号"会把查询收窄到错误的行集。
+            "tdc/data_model": "documentNo",
             "tdc/sor": "processNo",
             "aras/ewo": "ewoNo",
             "aras/paa": "paaNo",
@@ -1371,6 +1387,15 @@ def _mapping_discovery_query_identity(
         rule = normalize_ewo_v2_rule(rule)
         if not aggregate and selected_external_key != rule['sourceItemId']:
             raise error_type('Selected EWO source ID mismatch')
+    if source_type == "tdc" and report_type == "data_model":
+        # 流水单号与实例号二选一（与 updates 落库校验同语义，2026-10-09）：同填时
+        # 运行期会按两键取交集，指向不同行则永久 not_found 且无从提示。
+        if str(rule.get("documentNo") or "").strip() and str(rule.get("incident") or "").strip():
+            raise error_type("流水单号与实例号二选一：请只填写其中一项")
+        if rule.get("documentNo"):
+            # 流水单号（documentNo）不是 TDC 查询参数（查询参数 incident 是第 0 列
+            # 实例号）：该值绝不发给上游，改为全量抓取后由调用方本地精确匹配。
+            values.pop("document_no", None)
     return rule, values
 
 
@@ -1396,6 +1421,12 @@ def _pagination_diagnostic(result: Any, row_count: int) -> dict[str, Any]:
     }
 
 
+def _mapping_result_is_complete(result: Any) -> bool:
+    """抓取结果是否有显式终局证据（与 ``_require_complete_mapping_result`` 同源）。"""
+    stop_reason = str(getattr(result, "stop_reason", "unknown") or "unknown")
+    return getattr(result, "complete", None) is True and stop_reason in COMPLETE_RESULT_STOP_REASONS
+
+
 def _require_complete_mapping_result(result: Any, error_type: type[ValueError]) -> list[dict[str, Any]]:
     """Accept only a crawler result with explicit end-of-data evidence.
 
@@ -1411,11 +1442,7 @@ def _require_complete_mapping_result(result: Any, error_type: type[ValueError]) 
             "DiscoveryLimitExceeded",
             422,
         )
-    stop_reason = str(getattr(result, "stop_reason", "unknown") or "unknown")
-    if (
-        getattr(result, "complete", None) is not True
-        or stop_reason not in COMPLETE_RESULT_STOP_REASONS
-    ):
+    if not _mapping_result_is_complete(result):
         raise error_type(
             "mapping discovery query was incomplete; narrow the filters or retry",
             "IncompleteDiscovery",
@@ -2853,6 +2880,111 @@ def _tdc_error_response(exc: Exception, report_type: str, operation: str):
     return _json_error(500, type(exc).__name__, "Unexpected server error")
 
 
+def _tdc_document_no(payload: Mapping[str, Any]) -> str | None:
+    """流水单号（documentNo）。它不是 TDC 查询参数，只能本地精确匹配。
+
+    缺省或纯空白 = 不启用本地匹配；类型非法 fail-closed。
+    """
+    value = payload.get("document_no")
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise _TDCRequestError("document_no must be a string")
+    return value.strip() or None
+
+
+def _tdc_document_nos(payload: Mapping[str, Any]) -> list[str] | None:
+    """流水单号（可多值，分隔符约定同交付物明细搜索：空格/逗号/分号/顿号/换行）。
+
+    缺省 = 不启用本地匹配；去重保序，上限沿用 form_search.MAX_TERMS（超限部分
+    被 parse_terms 丢弃，这里按分隔符预扫描发现超限即 fail-closed），全空白也
+    fail-closed——绝不静默截断或退化成无过滤查询。
+    """
+    raw = _tdc_document_no(payload)
+    if raw is None:
+        return None
+    if len(_FORM_TERM_SEPARATORS.split(raw.strip())) > MAX_DOCUMENT_NOS:
+        raise _TDCRequestError(f"流水单号一次最多 {MAX_DOCUMENT_NOS} 个，请分批查询")
+    serials = parse_form_terms(raw)
+    if not serials:
+        raise _TDCRequestError("document_no 不能为空")
+    return serials
+
+
+def _tdc_data_model_serial_query(
+    payload: Mapping[str, Any],
+    filters: TDCDataModelFilters,
+    allowed_hosts: Sequence[str],
+    document_nos: list[str],
+):
+    """带流水单号的数模查询：全量翻页 → 本地精确匹配（A′ 路线）。
+
+    单个流水单号保持既有簿记形状（``requested`` 为字符串）；多个流水单号走
+    集合匹配，簿记含 ``found``/``missing`` 明细（S8：missing 只展示不删除）。
+    fail-closed：抓取不完整时返回 200 + 空行 + ``serialMatch.complete=false``
+    且 ``reason="crawl_incomplete"``——语义是"无法判定"，不是"未找到"；只有
+    抓取完整且匹配 0 行才是真正的"未找到"。
+    """
+    page_size = _tdc_positive_int(payload.get("page_size"), "page_size", 50, _TDC_PAGE_SIZE_MAX)
+    max_pages = _tdc_positive_int(payload.get("max_pages"), "max_pages", 100, _TDC_MAX_PAGES_MAX)
+    max_records = _tdc_positive_int(
+        payload.get("max_records"), "max_records", 10000, _TDC_MAX_RECORDS_MAX
+    )
+    client: TDCCrawlerClient | None = None
+    try:
+        client = _build_tdc_client_from_payload(payload, allowed_hosts)
+        crawl_result = client.crawl_data_model_all(
+            filters,
+            page_size=page_size,
+            max_pages=max_pages,
+            max_records=max_records,
+        )
+    finally:
+        _close_owned_tdc_client(client)
+    scanned_pages = int(getattr(crawl_result, "fetched_pages", 0) or 0)
+    scanned = len(crawl_result.rows)
+    if not _mapping_result_is_complete(crawl_result):
+        data = _tdc_result_data(
+            replace(crawl_result, rows=[], unique_count=0, duplicate_count=0)
+        )
+        data["serialMatch"] = {
+            "requested": document_nos if len(document_nos) > 1 else document_nos[0],
+            "scanned": scanned,
+            "matched": 0,
+            "scannedPages": scanned_pages,
+            "complete": False,
+            "reason": "crawl_incomplete",
+        }
+        return jsonify({"ok": True, "data": data})
+    if len(document_nos) == 1:
+        matched, bookkeeping = match_serial(crawl_result.rows, document_nos[0])
+        data = _tdc_result_data(
+            replace(crawl_result, rows=matched, unique_count=len(matched), duplicate_count=0)
+        )
+        data["serialMatch"] = {
+            "requested": bookkeeping["serial"],
+            "scanned": bookkeeping["scanned"],
+            "matched": bookkeeping["matched"],
+            "scannedPages": scanned_pages,
+            "complete": True,
+        }
+        return jsonify({"ok": True, "data": data})
+    matched, bookkeeping = match_serials(crawl_result.rows, document_nos)
+    data = _tdc_result_data(
+        replace(crawl_result, rows=matched, unique_count=len(matched), duplicate_count=0)
+    )
+    data["serialMatch"] = {
+        "requested": bookkeeping["requested"],
+        "found": bookkeeping["found"],
+        "missing": bookkeeping["missing"],
+        "scanned": bookkeeping["scanned"],
+        "matched": bookkeeping["matched"],
+        "scannedPages": scanned_pages,
+        "complete": True,
+    }
+    return jsonify({"ok": True, "data": data})
+
+
 def _tdc_report_query(
     report_type: str,
     filter_builder,
@@ -2866,9 +2998,18 @@ def _tdc_report_query(
     client: TDCCrawlerClient | None = None
     try:
         filters = filter_builder(_tdc_filters_from_payload(payload, allowed_names))
+        document_nos = _tdc_document_nos(payload) if report_type == "data_model" else None
         page = _tdc_positive_int(payload.get("page"), "page", 1, _TDC_PAGE_MAX)
         page_size = _tdc_positive_int(payload.get("page_size"), "page_size", 50, _TDC_PAGE_SIZE_MAX)
         preview_source = _tdc_preview_source(payload)
+        if document_nos is not None:
+            # 流水单号必须走全量翻页 + 本地精确匹配；官方导出预览是另一种数据源，
+            # 静默忽略 document_no 会让用户拿到"全部行"当成匹配结果。
+            if preview_source != "list_endpoint":
+                raise _TDCRequestError(
+                    "document_no 本地匹配只支持 list_endpoint 数据源"
+                )
+            return _tdc_data_model_serial_query(payload, filters, allowed_hosts, document_nos)
         if preview_source == "official_export":
             preview_builder = (
                 _tdc_official_data_model_preview
@@ -4881,11 +5022,15 @@ def create_app(
                 payload, deliverable_id, selected
             )
             source_type = "tdc" if deliverable_id in {"VPI-T2-D2", "VPI-T2-D5"} else "aras"
+            # 数模流水单号（documentNo）不是 TDC 查询参数：规则里带它时只做本地
+            # 精确匹配，绝不发给上游（见 _mapping_discovery_query_identity）。
+            document_no = str(match_rule.get("documentNo") or "").strip()
             cache_key = None
             if wizard_session_id and not is_stability_check:
                 base_query_params = {
                     k: v for k, v in values.items()
-                    if k not in {"serial_number", "incident", "processNo", "ewo_no", "paa_no", "ncr_no"}
+                    if k not in {"serial_number", "incident", "processNo", "ewo_no",
+                                 "paa_no", "ncr_no", "document_no"}
                 }
                 base_query_params["aggregate"] = match_rule.get("aggregate")
                 if "contractVersion" in match_rule:
@@ -4930,6 +5075,15 @@ def create_app(
                                 max_records=MAX_AGGREGATE_RECORDS,
                                 should_stop=should_stop,
                             )
+                        if document_no and not _mapping_result_is_complete(crawl_result):
+                            # fail-closed：抓不全就不能判定"这个流水单号没有匹配行"。
+                            raise _TDCRequestError(
+                                "抓取不完整，无法判定流水单号，请重试",
+                                "IncompleteDiscovery",
+                                422,
+                                None,
+                                _pagination_diagnostic(crawl_result, len(crawl_result.rows)),
+                            )
                         rows = _require_complete_mapping_result(crawl_result, _TDCRequestError)
                         crawl_total = getattr(crawl_result, "total", None)
                         if (
@@ -4940,11 +5094,32 @@ def create_app(
                             upstream_declared_total = crawl_total
                         if cache_key:
                             _set_discovery_session_cache(cache_key, rows, upstream_declared_total)
-                    return discovery_service.observe(
-                        deliverable_id, "tdc", rows, selected,
+                    serial_match: dict[str, Any] | None = None
+                    effective_selected = selected
+                    if document_no:
+                        # 本地精确匹配是流水单号的唯一判定依据：恰好命中 1 行才放行，
+                        # 并把该行的实例号 incident 作为有效查询结果（线上参数语义）。
+                        matched, serial_match = match_serial(rows, document_no)
+                        if len(matched) > 1:
+                            raise _TDCRequestError("该流水单号命中多行，请核对后重试")
+                        if upstream_declared_total is None:
+                            # 本地匹配不改变上游范围：基线总数仍是全量抓取的行数，
+                            # 否则 F10 采样（同样全量抓取）会与基线总数误判失配。
+                            upstream_declared_total = len(rows)
+                        rows = matched
+                        effective_selected = (
+                            serial_match["matched_instances"][0] if matched else None
+                        )
+                    observation = discovery_service.observe(
+                        deliverable_id, "tdc", rows, effective_selected,
                         aggregate=bool(match_rule["aggregate"]), match_rule=match_rule,
                         upstream_total=upstream_declared_total,
                     )
+                    if serial_match is not None:
+                        # 0 行时仍走既有「未匹配」路径（state=not_found），但附带
+                        # 覆盖范围，用户能看到抓了多少行/多少页，而不是只看到"未匹配"。
+                        observation = {**observation, "serialMatch": serial_match}
+                    return observation
                 if cached_rows is not None:
                     rows = cached_rows
                 else:
@@ -5095,14 +5270,41 @@ def create_app(
                         paged_result = client.query_sor_page(
                             _tdc_sor_filters(values), page=1, page_size=50
                         )
+                        sample_rows, sample_total = paged_result.rows, paged_result.total
+                    elif document_no:
+                        # 流水单号只能本地判定：采样必须与首次观测同源（全量抓取 +
+                        # 精确匹配）。拿"全量第 1 页"去比"匹配到的那一行"必然误报
+                        # 不稳定，让带流水单号的绑定永远无法就绪。
+                        crawl_result = client.crawl_data_model_all(
+                            _tdc_data_model_filters(values),
+                            max_records=MAX_AGGREGATE_RECORDS,
+                        )
+                        if not _mapping_result_is_complete(crawl_result):
+                            raise _TDCRequestError(
+                                "抓取不完整，无法判定流水单号，请重试",
+                                "IncompleteDiscovery",
+                                422,
+                                None,
+                                _pagination_diagnostic(crawl_result, len(crawl_result.rows)),
+                            )
+                        sample_rows, _ = match_serial(crawl_result.rows, document_no)
+                        if len(sample_rows) > 1:
+                            raise _TDCRequestError("该流水单号命中多行，请核对后重试")
+                        full_total = getattr(crawl_result, "total", None)
+                        sample_total = (
+                            full_total
+                            if isinstance(full_total, int) and not isinstance(full_total, bool)
+                            else len(crawl_result.rows)
+                        )
                     else:
                         paged_result = client.query_data_model_page(
                             _tdc_data_model_filters(values), page=1, page_size=50
                         )
-                    if paged_result.total is None or paged_result.total < 0:
+                        sample_rows, sample_total = paged_result.rows, paged_result.total
+                    if sample_total is None or sample_total < 0:
                         raise _TDCRequestError("TDC 返回的总记录数无效")
                     result = discovery_service.observe_stability_sample(
-                        deliverable_id, "tdc", paged_result.rows, paged_result.total,
+                        deliverable_id, "tdc", sample_rows, sample_total,
                         aggregate=bool(match_rule["aggregate"]), match_rule=match_rule,
                     )
                     mismatch = result.get("mismatch") if isinstance(result, dict) else None
