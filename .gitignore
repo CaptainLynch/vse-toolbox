@@ -71,3 +71,7 @@ error data/
 /pelican_*
 
 
+
+# FineReport/TIR evidence: raw HAR captures and exported sample workbooks never enter git
+*.har
+TIR数据简表*.xlsx

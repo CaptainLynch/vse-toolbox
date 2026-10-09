@@ -1,0 +1,22 @@
+{
+  "id": "tir-report",
+  "name": "TIR数据简表",
+  "version": "0.1.0",
+  "hostApi": ">=1,<2",
+  "description": "从帆软报表平台导出 TIR数据简表，交付 Excel 与脱敏 HAR",
+  "pages": [
+    {
+      "id": "report",
+      "title": "TIR数据简表",
+      "kind": "module",
+      "module": "report.js"
+    }
+  ],
+  "nav": [
+    {
+      "title": "TIR数据简表",
+      "page": "report",
+      "order": 37
+    }
+  ]
+}

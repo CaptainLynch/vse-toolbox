@@ -1,5 +1,17 @@
 # Recovery Notes
 
+## 2026-10-09 — 帆软 FineReport（report.sgmw.com.cn）TIR数据简表 协议事实
+
+- Chrome 导出的 HAR 是「脱敏 HAR」：没有 Cookie/Authorization 头不代表请求不带鉴权。登录响应 `data.accessToken`，
+  前端写 `fine_auth_token` cookie + `Authorization: Bearer`。
+- `__parameters__` = encodeURIComponent(cjkEncode(JSON))，cjkEncode 同时编码 `[`、`]`（`[5b]`/`[5d]`）；浏览器提交全部
+  44 个键（22 个 LABEL*）。实现与 HAR 逐字节一致。多选值以 `','` 连接。
+- `read_w_content` 的 html：第 0 行是标题、第 1 行表头；第 14 列是隐藏空列；有不闭合的 `<td/>`——用 `.*?</td>`
+  会吞掉下一格（首行第 0 列丢失），要截到下一个 `<td`/`</tr`。`reportTotalPage=0` 表示未分页。响应里的 watermark
+  含登录用户名，HAR/日志一律不记正文。
+- 新报表 `tdc/TIR/TIR数据简表.cpt`（entry 3770a19c-…）没有地区参数；`REGION_NAME` 属旧报表 `旧TIR/整车-简表.cpt`。
+- 真实下载端点（`op=export&format=excel&extype=simple`）、登录公钥位置、sessionID 页面模式仍是假设，待 `tools/tir_probe.py`。
+
 ## 2026-10-03 — 签署日报 v2 / 数模关注清单：已核实的坑
 
 - **TDC 数模没有按流水单号查询的参数**：`incident` 是第 0 列「实例号」，流水单号是 `documentNo`（`core/report_contracts.py`）。

@@ -1,5 +1,20 @@
 # Current State
 
+## 2026-10-09 签署日报文案调整（A）+ TIR数据简表插件（B）— 分支 refactor/plugin-host
+
+- **A 已提交**（`feat(sign-daily): body shows countersign rate only…`）：正文汇总行去掉总签单率、已锁定发布移到
+  T2 发布率前；明细表去掉总签单率列（10 列 / 1000 px，`totalRate`/`total` 仍计算并返回）；图题与收件人提示
+  「欠账」→「未签单情况」；`baseline_mode` 不再输出「首次生成，无日变化」。sign-daily 5 个测试文件 130 passed。
+- **B 已实现离线部分**：`plugins/tir_report/`（protocol/client/har/xlsx_writer/service/backend + `static/report.js`）、
+  `tools/tir_probe.py`、`tests/test_plugin_tir_report.py`（30 passed）、方案 `docs/TIR_REPORT_PLUGIN_DESIGN_20261009.md`
+  （含独立复核 10 条全部采纳）。`.gitignore` 增加 `*.har`、`TIR数据简表*.xlsx`（未全局忽略 *.xlsx：仓库有受跟踪样例）。
+- **未做 / 待确认**：Phase 0 真实探针未跑（云端 Linux 无内网、无凭据）。下一步：在 Windows 内网机
+  `python tools/tir_probe.py --credential-ref <条目名>`，看 `.runtime/tir_probe_report.json` 的 R1（公钥/明文登录）、
+  R2（`op=export&format=excel&extype=simple` 是否返回 PK）、sessionID 来源；再用 `python webui.py --only tir-report`
+  手工验收。用户待答：交付形态是否独立插件（默认是）、默认参数与是否每日自动跑、帆软 credential_ref 条目名、
+  若主导出不成立是否接受 `rebuilt`（无样式）产物。「地区」不是 TIR数据简表.cpt 的参数（属旧 整车-简表）。
+- 未执行：`webui.py` 肉眼核对（无 Windows 浏览器环境）、`.vsepkg` 打包（Phase 3 可选）。
+
 ## 2026-10-09 第二批实施完成并经顾问复核：向导流水单号 + 同步运行期消费（未 commit）
 
 - **实施内容（5 文件 + 复核后补 3 处）**：
