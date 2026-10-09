@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """签署日报 v2.0 邮件正文：三图一表的 HTML、纯文本、收件人与 .eml 草稿（纯函数）。
 
-- 正文顺序固定：汇总数字、图1 外区域会签欠账、图2 内部科室会签欠账、图3 审批欠账、
+- 正文顺序固定：汇总数字、图1 外区域会签未签单情况、图2 内部科室会签未签单情况、图3 审批未签单情况、
   在途流程明细表（§6）。图片位用 ``cid:sd-<图>``：.eml 里按 Content-ID 内嵌，
   预览和「复制正文」时前端把它换成同一张 PNG 的 data URI，三处必然一致。
 - 表格只用 ``<table>``、行内样式和 bgcolor，固定像素宽度（§10 复制富文本）。
@@ -21,9 +21,9 @@ from email.utils import getaddresses
 from typing import Any, Mapping, Sequence
 
 CHARTS = (
-    ("external", "图1 外区域会签欠账"),
-    ("sections", "图2 内部科室会签欠账"),
-    ("approval", "图3 审批欠账"),
+    ("external", "图1 外区域会签未签单情况"),
+    ("sections", "图2 内部科室会签未签单情况"),
+    ("approval", "图3 审批未签单情况"),
 )
 CHART_WIDTH = 720
 CHART_CAPTION = "柱高 = 当前待办的在途 3D单份数"
@@ -42,7 +42,7 @@ _OVERDUE_BG = "#ffd6d6"
 _RED = "#d83931"
 _TABLE_HEADERS = (
     "序号", "流水单号", "零件名称", "归属科室", "申请人", "当前阶段", "当前待办人",
-    "会签签单率", "总签单率", "已申请天数", "停滞原因",
+    "会签签单率", "已申请天数", "停滞原因",
 )
 
 
@@ -138,14 +138,13 @@ def _table_html(rows: Sequence[Mapping[str, Any]], thresholds: Mapping[str, Any]
             f'<td style="{_TD}white-space:nowrap;">{_e(row["stage"])}</td>',
             f'<td style="{_TD}">{todo_html(row)}</td>',
             f'<td style="{_TD}white-space:nowrap;">{_ratio(row["countersign"])}</td>',
-            f'<td style="{_TD}white-space:nowrap;">{_ratio(row["total"])}</td>',
             days_cell,
             f'<td style="{_TD}color:{_RED};">{STALL_PLACEHOLDER}</td>',
         ]
         body.append("<tr>" + "".join(cells) + "</tr>")
     return (
-        f'<table cellpadding="0" cellspacing="0" border="1" width="1100" '
-        f'style="border-collapse:collapse;width:1100px;{_FONT}"><tr>{head}</tr>' + "".join(body) + "</table>"
+        f'<table cellpadding="0" cellspacing="0" border="1" width="1000" '
+        f'style="border-collapse:collapse;width:1000px;{_FONT}"><tr>{head}</tr>' + "".join(body) + "</table>"
     )
 
 
@@ -204,7 +203,7 @@ def render_text(report: Mapping[str, Any], texts: Mapping[str, Any]) -> str:
             todo = re.sub(r"</?b>", "", todo_html(row))
             out.append("\t".join([
                 str(index), row["serial"], row["partLabel"], row["department"], row["applicant"], row["stage"],
-                html.unescape(todo), _ratio(row["countersign"]), _ratio(row["total"]),
+                html.unescape(todo), _ratio(row["countersign"]),
                 "—" if row.get("days") is None else str(row["days"]), STALL_PLACEHOLDER,
             ]))
     return "\n".join(out) + "\n"

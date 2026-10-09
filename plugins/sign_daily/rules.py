@@ -1206,7 +1206,7 @@ def fmt_count_delta(value: Any) -> str:
 def baseline_mode(data_date: date, base_date: date | None, max_gap_days: int = 14) -> dict[str, Any]:
     """-> {"show": 是否显示括号, "note": 汇总段后的说明行}。"""
     if base_date is None or (data_date - base_date).days > max_gap_days:
-        return {"show": False, "note": "首次生成，无日变化"}
+        return {"show": False, "note": ""}
     if base_date >= data_date:
         return {"show": False, "note": ""}  # 旧数据：不写快照，不显示括号
     if (data_date - base_date).days == 1:

@@ -262,7 +262,7 @@ function PeopleTab({ api, state, onSaved }) {
     await onSaved();
   }, "已保存");
   return html`<div class="sd-settings-tab sd-grid-2">
-    <label class="sd-field">未在册人员指定区域（A11，每行「姓名=区域」；指定后他在所有会签列的欠账都归到这个区域）
+    <label class="sd-field">未在册人员指定区域（A11，每行「姓名=区域」；指定后他在所有会签列的未签单情况都归到这个区域）
       <textarea rows="8" value=${areas} onInput=${(e) => setAreas(e.target.value)}></textarea></label>
     <div class="sd-field"><span>外部会签列的区域显示名（角色列配置）</span>
       <div class="sd-role-grid">${state.externalColumns.map((column) => html`<label key=${column}>${column}
@@ -280,7 +280,7 @@ function MailTab({ api, state, onSaved }) {
   const num = (key) => (e) => setThresholds({ ...thresholds, [key]: parseInt(e.target.value, 10) || 0 });
   const save = () => op.run(async () => { await api.post("config", { addressBook: book, thresholds }); await onSaved(); }, "已保存");
   return html`<div class="sd-settings-tab">
-    <label class="sd-field">通讯录（当天有欠账且在通讯录里的人自动加进收件人；同名多个邮箱时不自动加入）
+    <label class="sd-field">通讯录（当天有未签单情况且在通讯录里的人自动加进收件人；同名多个邮箱时不自动加入）
       <textarea rows="6" placeholder='"张三"<zhangsan@example.com>; "李四"<lisi@example.com>' value=${book} onInput=${(e) => setBook(e.target.value)}></textarea></label>
     <div class="sd-actions">
       <label>预警天数 <input type="number" min="1" value=${thresholds.warnDays} onInput=${num("warnDays")} /></label>

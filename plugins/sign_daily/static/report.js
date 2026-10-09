@@ -8,7 +8,7 @@ import {
 } from "./report-logic.js";
 import { SettingsPanel } from "./settings-panel.js";
 
-const CHART_TITLES = { external: "图1 外区域会签欠账", sections: "图2 内部科室会签欠账", approval: "图3 审批欠账" };
+const CHART_TITLES = { external: "图1 外区域会签未签单情况", sections: "图2 内部科室会签未签单情况", approval: "图3 审批未签单情况" };
 const POLL_MS = 1500;
 
 function Chips({ options, value, onChange, emptyText }) {
@@ -123,10 +123,10 @@ function Recipients({ result, onSave }) {
   const list = (items) => items.map((r) => r.name || r.address).join("、") || "（空）";
   const { added, missing, ambiguous } = result.recipients;
   return html`<details class="sd-panel" open=${missing.length > 0 || ambiguous.length > 0}>
-    <summary>收件人 ${result.recipients.to.length} 人，抄送 ${result.recipients.cc.length} 人${added.length ? `（自动加入有欠账的人 ${added.length} 位）` : ""}</summary>
+    <summary>收件人 ${result.recipients.to.length} 人，抄送 ${result.recipients.cc.length} 人${added.length ? `（自动加入有未签单情况的人 ${added.length} 位）` : ""}</summary>
     <p><b>收件人：</b>${list(result.recipients.to)}</p>
     <p><b>抄送：</b>${list(result.recipients.cc)}</p>
-    ${missing.length > 0 && html`<p class="sd-warn">有欠账但通讯录里没有邮箱：${missing.join("、")}</p>`}
+    ${missing.length > 0 && html`<p class="sd-warn">有未签单情况但通讯录里没有邮箱：${missing.join("、")}</p>`}
     ${ambiguous.length > 0 && html`<p class="sd-warn">通讯录里同名对应多个邮箱，没有自动加入，请手工选择：${ambiguous.map((a) => `${a.name}（${a.addresses.join(" / ")}）`).join("；")}</p>`}
     <label class="sd-field">收件人名单（本范围记住，粘贴 "姓名"&lt;邮箱&gt;）
       <textarea rows="3" value=${to} onInput=${(e) => setTo(e.target.value)}></textarea></label>

@@ -390,9 +390,10 @@ def _summary_lines(label: str, region: str, current: Mapping[str, Any], delta: M
 
     def line(values: Mapping[str, Any], d: Mapping[str, Any], t2_label: str) -> str:
         return (
-            f"会签签单率{pct(values, d, 'countersignRate')}，总签单率{pct(values, d, 'totalRate')}，"
+            f"会签签单率{pct(values, d, 'countersignRate')}，"
             f"3D单完成{count(values, d, 'complete')}/{values['flows']}份，"
-            f"{t2_label}{pct(values, d, 't2Rate')}，已锁定发布{count(values, d, 'locked')}/{values['parts']}"
+            f"已锁定发布{count(values, d, 'locked')}/{values['parts']}，"
+            f"{t2_label}{pct(values, d, 't2Rate')}"
         )
 
     def nm(values: Mapping[str, Any], d: Mapping[str, Any], key: str) -> str:

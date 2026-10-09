@@ -108,7 +108,10 @@ def test_first_generation_has_no_delta_and_charts_follow_spec(client) -> None:  
     _publish(db, _rows(), "2026-10-02T08:00:00Z")
     report = _ok(http.post(f"{API}/generate", json=SCOPE))
     assert report["delta"] is None and report["baseDate"] is None
-    assert report["summaryLines"][-1] == "首次生成，无日变化"  # 验收 14
+    assert not any("首次生成" in line for line in report["summaryLines"])  # 验收 14：不再显示该说明行
+    for line in report["summaryLines"][1:3]:  # 汇总行顺序与不再渲染总签单率
+        assert "总签单率" not in line
+        assert line.index("会签签单率") < line.index("3D单完成") < line.index("已锁定发布") < line.index("T2发布率")
     assert "(" not in "".join(report["summaryLines"][:3])
     total = report["summary"]["total"]
     assert (total["flows"], total["parts"], total["complete"], total["locked"]) == (4, 5, 1, 1)
@@ -166,7 +169,7 @@ def test_next_day_delta_and_rule_change_does_not_fake_change(client) -> None:  #
     assert second["delta"]["longCycle"]["flows"] == 0
     assert second["delta"]["longCycle"]["complete"] == 1
     assert "3D单完成2(+1)/4份" in second["summaryLines"][2]
-    assert second["summaryLines"][-1] != "首次生成，无日变化"
+    assert not any("首次生成" in line for line in second["summaryLines"])
 
     # 同一天重新生成：覆盖当天快照，照常显示括号（D1）
     again = _ok(http.post(f"{API}/generate", json=SCOPE))
@@ -323,7 +326,7 @@ def test_eml_export_blocked_until_review_and_embeds_png(client) -> None:  # type
     }))
     report = _ok(http.post(f"{API}/preview", json=SCOPE))
     assert report["recipients"]["added"] == [{"name": "冲压丁", "address": "d@x.com"}]
-    assert "总监辛" in report["recipients"]["missing"]  # 有欠账但通讯录里没有邮箱，导出前列出
+    assert "总监辛" in report["recipients"]["missing"]  # 有未签单情况但通讯录里没有邮箱，导出前列出
     images = {key: PNG for key in report["chartsWithData"]}
     blocked = http.post(f"{API}/eml", json={**SCOPE, "images": images})
     assert blocked.status_code == 409  # 有待复核项时禁止导出（§1 缺陷 8）

@@ -32,7 +32,7 @@ TEXTS = {"greeting": "各位领导、同事：", "planText": "计划10-10发布"
 
 def _report(**overrides):
     report = {
-        "summaryLines": ["F610M-车体区域-3D单流程共4份", "长周期：…", "总：…", "首次生成，无日变化"],
+        "summaryLines": ["F610M-车体区域-3D单流程共4份", "长周期：…", "总：…"],
         "snapshotAt": "2026-10-03T08:00:00Z",
         "charts": {
             "external": [{"group": "冲压", "personTimes": 2, "flows": 2, "people": 1,
@@ -60,8 +60,8 @@ def _report(**overrides):
 
 def test_html_order_images_and_table():
     body = M.render_html(_report(), TEXTS, THRESHOLDS)
-    order = [body.index(marker) for marker in ("首次生成", "计划10-10发布", "图1 外区域会签欠账", "图2 内部科室会签欠账",
-                                               "图3 审批欠账", "在途流程签署明细")]
+    order = [body.index(marker) for marker in ("F610M-车体区域", "计划10-10发布", "图1 外区域会签未签单情况", "图2 内部科室会签未签单情况",
+                                               "图3 审批未签单情况", "在途流程签署明细")]
     assert order == sorted(order)  # 汇总、文案、图1、图2、图3、明细表（§6）
     assert 'src="cid:sd-external"' in body and 'src="cid:sd-approval"' in body
     assert "cid:sd-sections" not in body and "本阶段无未签" in body  # G6
@@ -139,3 +139,19 @@ def test_data_time_is_local(monkeypatch):  # 审计
     finally:
         monkeypatch.delenv("TZ")
         time.tzset()
+
+
+def test_no_total_rate_owed_or_first_generation_text_and_column_count():
+    report = _report()
+    html_body = M.render_html(report, TEXTS, THRESHOLDS)
+    text_body = M.render_text(report, TEXTS)
+    for forbidden in ("总签单率", "欠账", "首次生成"):
+        assert forbidden not in html_body and forbidden not in text_body
+    assert "总签单率" not in M._TABLE_HEADERS
+    assert len(M._TABLE_HEADERS) == 10
+    lines = text_body.splitlines()
+    start = lines.index("\t".join(M._TABLE_HEADERS))
+    for row_line in lines[start + 1:start + 1 + len(report["flows"])]:
+        assert len(row_line.split("\t")) == len(M._TABLE_HEADERS)
+    first_row = html_body.split("<tr>")[2]
+    assert first_row.count("<td") == len(M._TABLE_HEADERS)

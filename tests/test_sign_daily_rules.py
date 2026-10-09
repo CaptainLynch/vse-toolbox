@@ -441,7 +441,7 @@ def test_delta_uses_display_values():  # 验收 17、D4、D5
 
 
 def test_baseline_modes():  # 验收 14、15、18
-    assert R.baseline_mode(DATA_DATE, None) == {"show": False, "note": "首次生成，无日变化"}
+    assert R.baseline_mode(DATA_DATE, None) == {"show": False, "note": ""}
     assert R.baseline_mode(DATA_DATE, date(2026, 10, 2)) == {"show": True, "note": ""}
     monday = date(2026, 10, 5)
     assert R.baseline_mode(monday, date(2026, 10, 2))["note"] == "括号内为较 10-02 的变化"
