@@ -81,7 +81,15 @@ jobs:
             foreach ($p in "sign-daily","project-overview","scheduled-archive") {
               if (!(Test-Path (Join-Path $dist "plugins\$($p.Replace('-','_'))\plugin.json"))) { throw "plugin $p missing from bundle" }
             }
+            # 单 exe 部署：Excel Worker 是同一个 exe 的 --excel-worker 子进程，
+            # 这里只验证哨兵分发在冻结包内可用（不执行真实 COM 任务）。
+            $workerHelp = & $exe --excel-worker --help 2>&1 | Out-String
+            if ($LASTEXITCODE -ne 0) { throw "--excel-worker sentinel failed: $workerHelp" }
+            if ($workerHelp -match "VSE Toolbox WebUI") { throw "sentinel started the host instead of the worker" }
+            "--excel-worker sentinel OK"
+            if (Test-Path (Join-Path $dist "VSE-ExcelWorker.exe")) { throw "single-exe bundle must not contain VSE-ExcelWorker.exe" }
           } finally {
+            # 单 exe 后宿主与 Worker 进程同名 VSE-WebUI.exe；按名字杀会一并清掉两者。
             Get-Process -Name "VSE-WebUI","VSE-ExcelWorker" -ErrorAction SilentlyContinue | Stop-Process -Force
           }
 

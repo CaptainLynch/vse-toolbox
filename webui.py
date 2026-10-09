@@ -7,19 +7,23 @@
     python webui.py --host 0.0.0.0      # 允许局域网访问（写操作仅限本机回环）
     python webui.py --port 8000
     python webui.py --only deliverable-forms   # 只加载一个插件（单插件沙箱）
+    python webui.py --excel-worker run ...     # Excel Worker 哨兵（内部使用）
 
-冻结构建: pyinstaller --noconfirm webui.spec
+冻结构建: pyinstaller --noconfirm VSE-WebUI.spec
 """
 
 from __future__ import annotations
 
 import argparse
+import multiprocessing
 import os
+import sys
 import threading
 import time
 import urllib.error
 import urllib.request
 import webbrowser
+from pathlib import Path
 
 #: 就绪探测的最长等待（秒）：超时说明服务未能监听，放弃唤起浏览器。
 _READINESS_PROBE_TIMEOUT_SECONDS = 30.0
@@ -145,11 +149,18 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     port = _resolve_port(args.port)
     # 延迟导入：--help 无需加载应用；冻结后模块由打包器收集。
+    from core.excel_tasks import load_production_excel_roots
     from core.runtime_paths import app_root
     from web.app import create_app
 
     plugin_only = [item.strip() for item in (args.only or "").split(",") if item.strip()] or None
-    app = create_app(plugin_only=plugin_only)
+    # 已批准的 Excel 根目录来自 VSE_EXCEL_ROOTS_JSON。此前只有 `python web/app.py`
+    # 的 __main__ 读取它，经 webui.py（打包入口）启动时 Excel 任务接口恒为「未配置」
+    # ——单 exe 的 Excel 功能因此不可用。配置非法时 fail-closed 抛出，不静默降级。
+    app = create_app(
+        plugin_only=plugin_only,
+        excel_roots=load_production_excel_roots(),
+    )
     if args.diagnostics:
         try:
             app.extensions["diagnostic_recorder"].start()
@@ -178,5 +189,27 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def _excel_worker_main(argv: list[str]) -> int:
+    """Excel Worker 哨兵分支：不加载 Flask 与插件，直接转发给 Worker CLI。
+
+    单 exe 部署（2026-10-09 顾问复核方案 A）下，宿主用 `--excel-worker` 自调起
+    一个 Worker 子进程，取代原先同目录的独立 `VSE-ExcelWorker.exe`——进程隔离、
+    可终止、Excel COM 不进宿主进程这三点都不变。源码态等价于直接运行
+    `python tools/excel_worker_cli.py <argv>`。
+    """
+    if not getattr(sys, "frozen", False):
+        tools_dir = Path(__file__).resolve().parent / "tools"
+        if tools_dir.is_dir() and str(tools_dir) not in sys.path:
+            sys.path.insert(0, str(tools_dir))
+    from excel_worker_cli import main as worker_main
+
+    return worker_main(argv)
+
+
 if __name__ == "__main__":
+    # freeze_support() 必须早于哨兵判断：否则 multiprocessing 的派生进程
+    # （--multiprocessing-fork）会被误判为一次宿主启动。
+    multiprocessing.freeze_support()
+    if len(sys.argv) > 1 and sys.argv[1] == "--excel-worker":
+        raise SystemExit(_excel_worker_main(sys.argv[2:]))
     raise SystemExit(main())

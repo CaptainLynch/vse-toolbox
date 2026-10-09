@@ -7,6 +7,8 @@ import shutil
 import tempfile
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_submodules
+
 
 def _clean_build_field(val, limit=100):
     if not isinstance(val, str):
@@ -41,7 +43,7 @@ hiddenimports = ['requests', 'tkinter', 'tkinter.filedialog']
 # WinHTTP via COM (WinHttp.WinHttpRequest.5.1) is the WebUI's HTTP transport for
 # Aras/TDC auth on win32; pythoncom + pywintypes + win32com.client are imported
 # lazily inside services/windows_http.py and services/aras_auth.py, so PyInstaller
-# static analysis cannot see them. xlwings (Excel automation) stays excluded.
+# static analysis cannot see them.
 hiddenimports += [
     'pythoncom',
     'pywintypes',
@@ -50,6 +52,12 @@ hiddenimports += [
     'win32com.client',
     'win32com.client.gencache',
 ]
+# 单 exe 部署（2026-10-09 顾问复核方案 A）：宿主同时承担 Excel Worker 角色，
+# 通过 `--excel-worker` 哨兵自调起子进程（webui.py）。因此 Excel 自动化依赖
+# 必须收进本包——原先它们只在独立的 VSE-ExcelWorker.exe 里。
+hiddenimports += ['excel_worker_cli']
+hiddenimports += collect_submodules('win32com')
+hiddenimports += collect_submodules('xlwings')
 # Selenium is used only by the optional CLI intranet scraper.  The WebUI
 # entrypoint does not import or expose that scraper, so collecting every
 # Selenium submodule needlessly adds roughly 28 MB to the standalone bundle.
@@ -57,7 +65,9 @@ hiddenimports += [
 
 a = Analysis(
     ['webui.py'],
-    pathex=[],
+    # tools/ 需在 pathex 上：worker 哨兵分支惰性导入 excel_worker_cli（tools 下），
+    # 静态分析看不到这条动态导入，靠 hiddenimports + pathex 一并收进来。
+    pathex=['tools'],
     binaries=[],
     datas=[
         ('web/templates', 'web/templates'),
@@ -72,10 +82,10 @@ a = Analysis(
     runtime_hooks=[],
     # These integrations are CLI-only and are exposed through services' lazy
     # exports.  The WebUI has no execution path for them; excluding the lazy
-    # modules also keeps their optional Selenium/IMAP/Rich dependency trees
-    # out of the standalone WebUI package.
+    # modules also keeps their optional Selenium/IMAP dependency trees out of
+    # the standalone WebUI package.  xlwings is NOT excluded any more: the host
+    # doubles as the Excel Worker (single-exe deployment).
     excludes=[
-        'xlwings',
         'selenium',
         'services.intranet_scraper',
         'services.feishu_imap',
@@ -86,6 +96,9 @@ a = Analysis(
         '_distutils_hack',
         # Dynamic WinHTTP dispatch does not use makepy/type-library browsers;
         # these optional pywin32 helpers are the source of pythonwin/win32ui.
+        # 注：xlwings 在导入期调用 gencache.EnsureModule（UDF 早绑定用，包在
+        # 裸 except 里）；本产品不用 UDF，因此保留这些排除。真机验收需覆盖
+        # “清空 %TEMP%\gen_py 后首次运行成功”。
         'win32com.client.makepy',
         'win32com.client.selecttlb',
         'win32com.client.combrowse',

@@ -21,8 +21,8 @@ TDC 报表导出、交付物目录、Excel 文件批处理与定时自动下载�
 ## 2. 运行架构
 
 推荐以「Web 工作台」方式使用：双击 `VSE-WebUI.exe` 后，用浏览器操作全部功能；
-涉及 Excel 真实读写时，主进程会自动调起同目录下的 `VSE-ExcelWorker.exe` 独立完成，
-两者物理隔离，Excel 崩溃不影响 Web 服务。
+涉及 Excel 真实读写时，主进程会用 `--excel-worker` 参数**调起自己的第二个进程**
+独立完成（同一个 exe，独立进程），两者物理隔离，Excel 崩溃不影响 Web 服务。
 
 ![运行架构](images/exe-guide/00-architecture.png)
 
@@ -32,16 +32,19 @@ TDC 报表导出、交付物目录、Excel 文件批处理与定时自动下载�
 
 | 文件 | 作用 | 是否必需 |
 |---|---|---|
-| `VSE-WebUI.exe` | Web 工作台主进程（仪表盘、Aras、TDC、定时任务、设置） | 必需 |
-| `VSE-ExcelWorker.exe` | Excel 自动化工作进程（真实 Office COM / xlwings 执行） | 使用 Excel 功能时必需 |
+| `VSE-WebUI.exe` | Web 工作台主进程（仪表盘、Aras、TDC、定时任务、设置），同时承担 Excel 自动化 | 必需 |
 | `SHA256SUMS.txt` | 文件校验值清单 | 建议保留 |
 
-**部署要求**：两个 exe 必须放在**同一个目录**（例如 `D:\VSE-Toolbox\`），主进程按
-“同目录查找”规则拉起 Worker。把文件复制到任意可写目录即可，不需要安装步骤。
+**部署要求**：把整个文件夹复制到任意可写目录（例如 `D:\VSE-Toolbox\`）即可，不需要安装步骤。
+
+> **2026-10-09 起改为单 exe**：Excel Worker 已并入宿主，用 `--excel-worker` 哨兵自调起
+> 子进程，不再需要同目录的 `VSE-ExcelWorker.exe`。从旧版文件夹升级时，旧目录里遗留的
+> `VSE-ExcelWorker.exe` 不再被调用，可以直接删除；`data/` 文件夹整体保留即可沿用数据库、
+> 归档与设置。
 
 > **插件化版本起改为文件夹包（onedir）**：`tools/build_excel_bundle.ps1` 产出
 > `dist/VSE-WebUI/` 文件夹和传输包 `dist/VSE-WebUI.zip`。文件夹内有 `VSE-WebUI.exe`、
-> `VSE-ExcelWorker.exe`、`_internal/`（运行时，勿改动）、`plugins/`（功能插件）和
+> `_internal/`（运行时，勿改动）、`plugins/`（功能插件）和
 > `SHA256SUMS.txt`（覆盖文件夹内全部文件）。解压后整个文件夹一起使用，不要单独拷出 exe。
 > 从单文件版升级时，把旧 exe 旁边的 `data/` 文件夹整体移到新的 `VSE-WebUI/` 文件夹里，
 > 本地数据库、归档和设置即可沿用。
@@ -50,8 +53,8 @@ TDC 报表导出、交付物目录、Excel 文件批处理与定时自动下载�
 
 ```powershell
 cd D:\VSE-Toolbox
-Get-FileHash -Algorithm SHA256 .\VSE-WebUI.exe, .\VSE-ExcelWorker.exe
-# 结果与随包的 SHA256SUMS.txt 逐条比对
+Get-FileHash -Algorithm SHA256 .\VSE-WebUI.exe
+# 结果与随包的 SHA256SUMS.txt 逐条比对（清单覆盖文件夹内全部文件）
 ```
 
 ## 4. 运行环境要求

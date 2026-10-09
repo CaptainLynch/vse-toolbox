@@ -50,16 +50,17 @@ def test_build_script_static_analysis() -> None:
 
     # Specs
     assert "VSE-WebUI.spec" in content
-    assert "VSE-ExcelWorker.spec" in content
+    # 单 exe 部署（2026-10-09 方案 A）：不再构建独立 Worker，但必须显式断言其不存在。
+    assert "VSE-ExcelWorker.spec" not in content
+    assert "VSE-ExcelWorker.exe" in content
 
     # PyInstaller flags
     assert "--distpath" in content
     assert "--workpath" in content
     assert "--noconfirm" in content
 
-    # Verification of sibling executables
+    # Verification of the host executable
     assert "VSE-WebUI.exe" in content
-    assert "VSE-ExcelWorker.exe" in content
     assert "SHA256SUMS.txt" in content
     assert "Get-FileHash" in content
     assert "Test-Path" in content
@@ -98,8 +99,6 @@ if "-m" in args and "PyInstaller" in args:
                 (bundle / "plugins").mkdir(exist_ok=True)
                 (bundle / "VSE-WebUI.exe").write_bytes(b"dummy webui exe")
                 (bundle / "_internal" / "base_library.zip").write_bytes(b"dummy runtime")
-            elif "VSE-ExcelWorker.spec" in a:
-                (out_dir / "VSE-ExcelWorker.exe").write_bytes(b"dummy worker exe")
     sys.exit(0)
 
 # Default exit code
@@ -157,15 +156,15 @@ def test_build_script_successful_mock_build(tmp_path: Path, mock_pyinstaller_pyt
     assert "Verification succeeded:" in res.stdout
     bundle = out_dir / "VSE-WebUI"
     assert (bundle / "VSE-WebUI.exe").is_file()
-    # 进程控制器在 VSE-WebUI.exe 同目录查找 Worker
-    assert (bundle / "VSE-ExcelWorker.exe").is_file()
+    # 单 exe：不再有独立 Worker（Excel 由宿主 --excel-worker 自调起）
+    assert not (bundle / "VSE-ExcelWorker.exe").exists()
     sums = (bundle / "SHA256SUMS.txt").read_text(encoding="ascii").splitlines()
     listed = sorted(line.split("  ", 1)[1] for line in sums)
-    assert listed == ["VSE-ExcelWorker.exe", "VSE-WebUI.exe", "_internal/base_library.zip"]
+    assert listed == ["VSE-WebUI.exe", "_internal/base_library.zip"]
     with zipfile.ZipFile(out_dir / "VSE-WebUI.zip") as archive:
         names = {name.replace("\\", "/") for name in archive.namelist()}
     assert "VSE-WebUI/VSE-WebUI.exe" in names
-    assert "VSE-WebUI/VSE-ExcelWorker.exe" in names
+    assert "VSE-WebUI/VSE-ExcelWorker.exe" not in names
 
 
 def test_build_script_fails_when_pyinstaller_errors(tmp_path: Path) -> None:

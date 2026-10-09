@@ -1,5 +1,45 @@
 # Current State
 
+## 2026-10-09 分支 feat/single-exe-excel-worker：方案 A 实施完成（Excel Worker 并入单 exe，冒烟 24/24）
+
+- **分支**：从 `refactor/plugin-host @ 819e56f` 新建 `feat/single-exe-excel-worker`。按顾问复核的方案 A 实施：**保进程、不保 exe**。
+- **实施内容**：
+  - `webui.py`：新增 `_excel_worker_main(argv)` 哨兵分支；`if __name__ == "__main__"` 顺序为 `multiprocessing.freeze_support()` → 精确匹配 `sys.argv[1] == "--excel-worker"` → 转发剩余 argv 给 Worker CLI → 否则宿主 main。宿主导入保持惰性（`web.app` 仍在 main 内导入）。
+  - `services/excel_worker_process_controller.py`：frozen 分支改为 `[sys.executable, "--excel-worker", "run", ...]` 自调起；stdout/stderr 重定向到 `data/excel_worker.log`（不与宿主日志共句柄）；`CREATE_NO_WINDOW`（非 Windows 为 0）；fail-closed 改为校验 `sys.executable` 存在且为普通文件。
+  - `VSE-WebUI.spec`：`pathex=['tools']`、hiddenimports 增 `excel_worker_cli` + `collect_submodules('win32com'/'xlwings')`；**从 excludes 移除 `xlwings`**（excludes 会覆盖收集）；保留 `win32com.client.makepy` 等排除并在注释里登记「xlwings 的 gencache.EnsureModule 包在裸 except，真机需验证早绑定回退」。
+  - `tools/build_excel_bundle.ps1`：只建宿主；断言产物**不含** `VSE-ExcelWorker.exe`；文案改 Single-executable。
+  - `.github/workflows/build-webui-bundle.yml`：冒烟新增冻结包内 `--excel-worker --help` 哨兵检查 + 断言无独立 Worker exe。
+  - 文档：`docs/EXCEL_TASK_WORKER.md`（Packaging And Process Boundary 整段重写，含进程同名副作用）、`docs/USER_GUIDE_STANDALONE_EXE.md`（架构/清单/校验命令/升级说明）、`README.md`、`tools/generate_project_map.py`（Runtime products 行与 Core boundaries 改为 `webui.py (--excel-worker)`）。
+- **顺带修复既有缺陷（本机实测发现）**：`webui.py` 从未把 `VSE_EXCEL_ROOTS_JSON` 传给 `create_app`（只有 `python web/app.py` 的 `__main__` 读它），因此**打包版 Excel 任务接口一直返回「未配置」**——这会让单 exe 的 Excel 功能根本不可用。已修为 `create_app(..., excel_roots=load_production_excel_roots())`（配置非法 fail-closed），并加回归测试。
+- **测试**：新增 `tests/test_webui_excel_worker_sentinel.py`（8 项：哨兵转发、不启动宿主、不绑端口、精确匹配首参、`sys.modules` 不含 flask/web/plugins、宿主导入不含 xlwings、excel_roots 已接线）；更新 `test_excel_worker_process_controller.py`（frozen 命令形状）、`test_excel_worker_packaging.py`（单 spec 收集 xlwings + Worker spec 子集防漂移 + 构建脚本断言）、`test_excel_bundle_build_script.py`、`test_webui_winhttp_packaging.py`。
+- **门禁**：全量 `pytest tests/` → **2922 passed / 1 failed / 5 skipped**（唯一失败 `test_host_frontend.py::test_vendored_runtime_matches_recorded_checksum` 是既有 vendor CRLF 校验和问题，该文件未被本次触碰）；flake8 改动文件零告警；项目地图 verified。
+- **构建与出厂冒烟**：`0.3.0-production-test-20261009c` / buildId `20261009c-single-exe-excel-worker`；宿主 `VSE-WebUI.exe` 8,915,425 B（SHA-256 a26d4e1e…77fc）；`dist/hci-20261009c/VSE-WebUI.zip` 41,610,346 B（SHA-256 e5352b00…526f8）——**比 20261009b 的 63,323,084 B 小 21.7 MB**（不再重复打包 onefile 运行时）。冒烟 `.runtime/smoke_exe_20261009c.ps1` **24/24 通过**，含：哨兵在冻结包内可用、无独立 Worker exe、`_internal` 含 xlwings/win32com、9 插件 loaded、数模目录含 document_no、**`excel-worker/start` 返回 running 且宿主自调起第二个 VSE-WebUI 进程（before=1 after=2）**、Worker 日志落 `data/excel_worker.log`、stop 后 Worker 退出仅剩宿主、Worker 运行期间 WebUI 仍响应、端口释放、无残留进程。
+- **未验证（本机无 Excel，须真机执行，顾问列出的门禁）**：真实 COM 任务且无残留 `EXCEL.EXE`；清空 `%TEMP%\gen_py` 后首次运行；Worker 卡模态框时 terminate/kill 生效；宿主被强杀后 Worker 去向；安装路径含空格与非 ASCII；无控制台闪窗；旧版目录覆盖升级；杀软/白名单下自调起未被拦截。
+- **未做**：UPX；未合并进 `refactor/plugin-host`；未做 clawbot 投递；`VSE-ExcelWorker.spec` 与 `excel_worker_entry.py` 保留（仅开发机备用，已用防漂移测试钉住依赖子集关系）。
+
+## 2026-10-09 Excel Worker 合包架构结论经顾问复核（有条件成立，未实施）
+
+- **问题**：能否把 VSE-ExcelWorker.exe 与 VSE-WebUI.exe 合成一个。**结论：可以合一个 exe，但不能合一个进程**——要保的是「两个进程」，不是「两个 exe」。推荐方案 A：宿主 exe 收到 `--excel-worker` 哨兵时在**启动 Flask 之前**自调起子进程（`sys.executable --excel-worker run ...`），spec 补 `xlwings` 依赖。方案 B（in-process）否决；方案 C（现状）保留部署坑。
+- **顾问复核（Claude live，run 7dc45207-8939-4f49-8432-7fbe12871afd，意见 `~/.dsh/expert-advisor/runs/claude-20261009-094258-acd0cf10.advice.md`）**：方向正确（「保进程不保 exe」成立），但指出两处硬点并要我补三项证据。裁决：1=adopted、2=adopted、3=partial。
+- **三项缺失证据本地已补（决定 1 依据）**：
+  ① `VSE-WebUI.spec`/`VSE-ExcelWorker.spec` **均为 `console=True`、`runtime_hooks=[]`** → 无 windowed 子进程 stdout=None 风险、无自定义 runtime hook 副作用；`webui.py` 顶层只有 stdlib 导入，`from web.app import create_app` 在 `main()` 内惰性导入 → 哨兵分发放文件顶部安全。**且无单实例锁**（`_resolve_port` 只做取值不探测）→ 若子进程走进 `main()` 会二次绑同一端口，故分发必须早于 main（顾问第 2 点被证实为硬约束）。
+  ② excludes 冲突**不触发**：worker 导入闭包为 `excel_worker_cli → core.{db_manager,excel_tasks,excel_worker,redaction} → services.excel_toolbox → xlwings（惰性）`；宿主排除的 `services.office_toolbox`/`selenium`/`intranet_scraper`/`feishu_imap` **不在**该闭包（office_toolbox 仅 main.py CLI 用）。全仓无 `EnsureDispatch`/`makepy` 调用；xlwings 的 `gencache.EnsureModule` 在其 `__init__.py` 里包在 bare `except: pass`（仅 UDF 早绑定用，本产品不用），且 `win32com.client.gencache` 本就在宿主 hiddenimports 内。**残留项**：宿主排除了 `win32com.client.makepy`，需真机验证早绑定回退无碍。
+  ③ 外部消费者**无硬依赖**：仅文档（USER_GUIDE/EXCEL_PRODUCTION_ACCEPTANCE/README/PROJECT_MAP/RECOVERY_NOTES）、构建脚本、控制器、`excel_worker_entry.py`、CI workflow（`Get-Process -Name "VSE-WebUI","VSE-ExcelWorker"`）、以及**遗留 `webui.spec`**（同时产 `VSE-Toolbox-WebUI`+`VSE-ExcelWorker` 两个 exe，已非当前 canonical，PROJECT_MAP 与构建脚本用 `VSE-WebUI.spec`）。插件/`.vsepkg`/更新器均无引用 → **不需要转发 stub**。
+- **顾问修正我的论证**：「COM 不进 Flask」字面不成立——Flask 进程本就用 COM 跑 WinHTTP（`services/windows_http.py`）；真正要隔离的是 Excel 进程外自动化的**挂死、模态框、不可杀**。另修正「宿主增约 40 MB」措辞：增长落在 `_internal/`，zip 体积须实测，不得写进文档当承诺。
+- **方案 A 落地要点（含顾问补充，未实施）**：① `webui.py` 顶部顺序 `multiprocessing.freeze_support()` → 哨兵精确匹配 `sys.argv[1] == "--excel-worker"` → `sys.exit(worker_main(sys.argv[2:]))` → 其后才是宿主导入；Worker 分支不得导入 flask/web。② 合并 spec（Worker 的 hiddenimports/collect 原样并入，逐条核对 excludes）。③ controller frozen 分支改 `[sys.executable, "--excel-worker", "run", ...]`、stdin=DEVNULL、stdout/stderr 重定向到 Worker 独立日志（不与宿主共用滚动日志）、console 程序加 `CREATE_NO_WINDOW` 可选、不清理 PyInstaller 注入的环境变量、以 `sys.executable` 存在替代原「Worker 缺失即 fail-closed」。④ 构建脚本改为断言产物目录**不存在** `VSE-ExcelWorker.exe`；文档说明旧目录遗留 exe 可删且 controller 不得回退去找。⑤ 进程名变化副作用：任务管理器出现两个 `VSE-WebUI.exe`，按进程名判活/`taskkill /IM`/更新器「等退出再替换」都会受影响，且 Worker 存活时锁住 exe 与 `_internal`。⑥ 契约测试改为断言：单 spec 含 xlwings/win32com 收集、excludes 不含 Worker 闭包模块、frozen 命令行形状、宿主启动后 `sys.modules` 不含 `xlwings`、`--excel-worker` 分支下不含 `flask`。⑦ 建议把独立 `VSE-ExcelWorker.spec` 移出发布链路与契约测试（开发机仍可 `python tools/excel_worker_cli.py`；冻结态诊断用 `VSE-WebUI.exe --excel-worker ...`）。⑧ 可选（另立任务）：Job Object kill-on-close 防孤儿 Worker。
+- **顺带发现（净改善）**：Windows onefile 是「bootloader 父进程 + 真实 Python 子进程」两层，当前 `terminate → kill` 可能只杀到 bootloader，留下孤儿 Worker 与临时解压目录；onedir 下 `Popen` 的 pid 即真实进程 → 合包改善停止语义。
+- **发布前门禁（顾问要求，须在装有 Excel 的真机执行）**：① 真实 COM 任务跑通且结束后无残留 `EXCEL.EXE`；② 清空 `%TEMP%\gen_py` 后首次运行成功；③ 三条停止路径（stop 文件正常退出 / Worker 卡模态框 10s 后 terminate-kill 且无孤儿 / 宿主被强杀后 Worker 去向符合预期）；④ Worker 运行期间 WebUI 仍响应且只有一个 Flask 实例（端口未二次绑定、未二次开浏览器）；⑤ 安装路径含空格与非 ASCII；⑥ 无控制台闪窗且 Worker 日志有内容；⑦ 旧版目录覆盖升级后正常；⑧ 有杀软/白名单环境下自调起未被拦截。
+- **状态**：仅结论与取证，**未改任何代码**；本机无 Excel，真机验收项无法在本机执行。
+
+## 2026-10-09 生产测试包 20261009b 出厂（含数模流水单号两批改动 + Claude tir-report）
+
+- **代码基线**：`refactor/plugin-host` @ `819e56f`（已 fetch 同步：本地 `240580b` 数模流水单号两批 + Claude 6 提交 tir-report/签署日报；本地 `main` 同步至 `7d42d7a`）。**更正前一轮口径**：`240580b` 实际把先前暂存的 10-07 A′ 改动（main.py/tdc_crawler.py/system_query/* 等）一并提交了，A′ 与两批改动现在同一提交内。
+- **构建前门禁**：打包契约 29 passed；聚焦 173 passed（tir_report/system_query/parity/deliverables/connectors/updates/watchlist/向导逻辑）；项目地图 verified。
+- **构建**：`tools/build_excel_bundle.ps1` + `.runtime/pr3-review-venv`（PyInstaller 6.21.0）；`0.3.0-production-test-20261009b` / channel production-test / buildId `20261009b-819e56f-serial-multiform` / isFrozen=true；onedir 宿主 5,723,870 B（SHA-256 d8061ab1…e78e5）+ onefile Worker 41,784,244 B（2f7a4c64…01fb）。构建日志 `.runtime/build-webui-20261009b.log`。
+- **出厂冒烟**：纯净目录 `.runtime/smoke-exe-20261009b` + 端口 5155 + `--no-browser` → **25/25 通过**（自建库、9 插件全部 loaded 含 tir-report、版本元数据、project-status/sign-daily state/jobs/catalog 均 200、目录含 document_no 字段、deliverables lib.js 提升与 serialMatchWarning 字节核对、向导 documentNo 分支、modes.js document_no、端口释放）。脚本 `.runtime/smoke_exe_20261009b.ps1`、结果 `.runtime/smoke-exe-20261009b-result.txt`。**踩坑**：PowerShell 5.1 读无 BOM 中文脚本解析失败（已加 BOM）；`/api/version` 与 `/api/host/manifest` 有 `{ok,data}` 信封，冒烟脚本须读 `.data.*`；端口检查须只看 `State=Listen`（TIME_WAIT 残留非失败）。
+- **交付物**：`dist/hci-20261009b/` — `VSE-WebUI-0.3.0-production-test-20261009b.zip`（63,323,084 B，1192 项，CRC OK，SHA-256 `bf89bf68a4ea4b9a8cbb3663536f62c2f8afafaa1b496592c4bc226d51a75c8e`）+ `SHA256SUMS.txt` + `README-测试说明.txt`（A 交付物工作台/B 同步向导/C 回归三段验证清单 + 已知事项）。已删除构建脚本附带的重名 `VSE-WebUI.zip`（内容相同）。
+- **待用户**：拷 ZIP 到测试机按 README 验证数模流水单号三段（工作台单号/多单号/含未命中、向导只填流水单号启用、同填被拦、存量绑定回填）+ 回归确认；未做 UPX；未做 clawbot 投递（用户未要求）。
+
 ## 2026-10-09 签署日报文案调整（A）+ TIR数据简表插件（B）— 分支 refactor/plugin-host
 
 - **A 已提交**（`feat(sign-daily): body shows countersign rate only…`）：正文汇总行去掉总签单率、已锁定发布移到

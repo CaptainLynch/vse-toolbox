@@ -92,17 +92,33 @@ path, or COM handle from the request body. The optional in-process controller ex
 To maintain process isolation and prevent Office COM dependencies from polluting
 the Flask WebUI process:
 
-- `VSE-WebUI.spec` packages the Flask web application and explicitly excludes
-  Excel COM modules (`xlwings`, `win32com`, `pythoncom`, `pywintypes`).
-- `VSE-ExcelWorker.spec` targets `tools/excel_worker_cli.py` and bundles the
-  required Excel COM and `xlwings` dependencies into a dedicated executable (`VSE-ExcelWorker.exe`).
-- `tools/build_excel_bundle.ps1` automates building both specifications into a single
-  caller-selected directory, isolates intermediate work directories under `.runtime`,
-  and strictly verifies that both sibling executables exist and are regular files.
-- In packaged production deployments (`sys.frozen`), `ExcelWorkerProcessController`
-  launches the sibling `VSE-ExcelWorker.exe` directly in a subprocess without
-  invoking python scripts. If the executable is absent or not a regular file, the
-  controller fails closed with a path-free `RuntimeError`.
+- `VSE-WebUI.spec` packages the Flask web application **and** the Excel Worker:
+  the host re-launches itself with the `--excel-worker` sentinel (`webui.py`
+  dispatches to `tools/excel_worker_cli.py` before any Flask import), so one
+  `VSE-WebUI.exe` covers both roles. Excel COM dependencies (`xlwings`,
+  `win32com`) are therefore collected into this bundle.
+- `VSE-ExcelWorker.spec` still exists for developers who want a standalone
+  worker build; it is **not** part of the release chain.
+  `tests/test_excel_worker_packaging.py` asserts its dependency set stays a
+  subset of the host spec so the two cannot drift apart.
+- `tools/build_excel_bundle.ps1` builds the host only, isolates intermediate work
+  directories under `.runtime`, and asserts the bundle contains `VSE-WebUI.exe`
+  and **no** `VSE-ExcelWorker.exe` (a leftover from an older layout must not be
+  mistaken for the current one).
+- In packaged deployments (`sys.frozen`), `ExcelWorkerProcessController` spawns
+  `[<VSE-WebUI.exe>, --excel-worker, run, --db, <db>, --stop-file, <tmp>]` with
+  `cwd` set to the executable directory, stdin at `DEVNULL`, and stdout/stderr
+  redirected to `data/excel_worker.log` (never the host's log handles). If the
+  executable is absent or not a regular file, the controller fails closed with a
+  path-free `RuntimeError`.
+- The process boundary is unchanged: Excel automation still runs in its own
+  killable process, so a hung Excel instance or a modal dialog cannot freeze the
+  WebUI. A leftover `VSE-ExcelWorker.exe` from an older install is ignored and
+  can be deleted.
+- Note: both processes are named `VSE-WebUI.exe` in the task manager. Any
+  process-name based liveness check, `taskkill /IM`, or updater step that waits
+  for exit must account for that (the worker holds the executable and
+  `_internal/` locked while running).
 - In development/source environments, `ExcelWorkerProcessController` launches
   `python tools/excel_worker_cli.py`.
 - Executable paths are never accepted from HTTP requests or environment variables.

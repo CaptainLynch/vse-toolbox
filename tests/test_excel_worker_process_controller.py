@@ -86,12 +86,11 @@ def test_process_controller_builds_source_command(monkeypatch, repo: ExcelTaskRe
 
 
 def test_process_controller_builds_frozen_command(monkeypatch, repo: ExcelTaskRepository, tmp_path: Path) -> None:
+    """单 exe 部署：冻结态用宿主自身 + `--excel-worker` 哨兵自调起子进程。"""
     bin_dir = tmp_path / "dist" / "VSE-WebUI"
     bin_dir.mkdir(parents=True)
     webui_exe = bin_dir / "VSE-WebUI.exe"
     webui_exe.write_text("", encoding="ascii")
-    worker_exe = bin_dir / "VSE-ExcelWorker.exe"
-    worker_exe.write_text("", encoding="ascii")
 
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "executable", str(webui_exe))
@@ -109,7 +108,8 @@ def test_process_controller_builds_frozen_command(monkeypatch, repo: ExcelTaskRe
     assert status.state == "running"
     assert len(created) == 1
     cmd = created[0].command
-    assert cmd[0] == str(worker_exe.resolve())
+    assert cmd[0] == str(webui_exe.resolve())
+    assert cmd[1] == "--excel-worker"  # 哨兵：宿主自调起，不再有独立 Worker exe
     assert not any(arg.endswith(".py") for arg in cmd)
     assert "excel_worker_cli.py" not in " ".join(cmd)
     assert "run" in cmd
@@ -125,22 +125,18 @@ def test_process_controller_frozen_missing_executable_fails_closed(
     repo: ExcelTaskRepository,
     tmp_path: Path,
 ) -> None:
-    bin_dir = tmp_path / "dist" / "VSE-WebUI"
-    bin_dir.mkdir(parents=True)
-    webui_exe = bin_dir / "VSE-WebUI.exe"
-    webui_exe.write_text("", encoding="ascii")
+    missing = tmp_path / "dist" / "VSE-WebUI" / "VSE-WebUI.exe"
 
     monkeypatch.setattr(sys, "frozen", True, raising=False)
-    monkeypatch.setattr(sys, "executable", str(webui_exe))
+    monkeypatch.setattr(sys, "executable", str(missing))
 
     controller = ExcelWorkerProcessController(repo)
     with pytest.raises(FileNotFoundError) as exc_info:
         controller.start()
 
     err_msg = str(exc_info.value)
-    assert "VSE-ExcelWorker.exe" in err_msg
     assert str(tmp_path) not in err_msg
-    assert str(bin_dir) not in err_msg
+    assert str(missing.parent) not in err_msg
 
 
 def test_process_controller_frozen_directory_executable_fails_closed(
@@ -150,20 +146,17 @@ def test_process_controller_frozen_directory_executable_fails_closed(
 ) -> None:
     bin_dir = tmp_path / "dist" / "VSE-WebUI"
     bin_dir.mkdir(parents=True)
-    webui_exe = bin_dir / "VSE-WebUI.exe"
-    webui_exe.write_text("", encoding="ascii")
-    worker_dir_as_exe = bin_dir / "VSE-ExcelWorker.exe"
-    worker_dir_as_exe.mkdir()
+    exe_dir = bin_dir / "VSE-WebUI.exe"
+    exe_dir.mkdir()
 
     monkeypatch.setattr(sys, "frozen", True, raising=False)
-    monkeypatch.setattr(sys, "executable", str(webui_exe))
+    monkeypatch.setattr(sys, "executable", str(exe_dir))
 
     controller = ExcelWorkerProcessController(repo)
     with pytest.raises(FileNotFoundError) as exc_info:
         controller.start()
 
     err_msg = str(exc_info.value)
-    assert "VSE-ExcelWorker.exe" in err_msg
     assert str(tmp_path) not in err_msg
 
 

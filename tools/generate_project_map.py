@@ -336,7 +336,7 @@ def _manual_sections() -> str:
         | --- | --- | --- | --- |
         | WebUI | `webui.py` | `web/app.py`, `web/templates/`, `web/static/` | `VSE-WebUI.spec` |
         | CLI | `main.py` | `main.py`, `services/` | `VSE-Toolbox.spec` |
-        | Excel Worker | `excel_worker_entry.py` | `tools/excel_worker_cli.py`, `core/excel_worker.py` | `VSE-ExcelWorker.spec` |
+        | Excel Worker | `webui.py` (`--excel-worker` 哨兵) | `tools/excel_worker_cli.py`, `core/excel_worker.py` | `VSE-WebUI.spec`（单 exe；`VSE-ExcelWorker.spec` 仅开发机备用） |
         | TDC Probe | `tdc_probe_main.py` | `tdc_probe_cli.py`, `services/tdc_contract_probe.py` | `VSE-TDC-Probe.spec` |
 
         ## Task router
@@ -365,7 +365,7 @@ def _manual_sections() -> str:
           archive storage and Excel task primitives.
         - `services/` owns Aras/TDC/Office integrations and orchestration.
         - Excel automation has a production out-of-process boundary through
-          `VSE-ExcelWorker.exe`.
+          `VSE-WebUI.exe --excel-worker`（同一个 exe 的独立子进程）。
 
         ## Key flows
 

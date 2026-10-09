@@ -33,6 +33,14 @@ class ExcelWorkerProcessStatus:
         return data
 
 
+def _worker_creation_flags() -> int:
+    """Windows 下不给 Worker 子进程分配控制台窗口（宿主可能无控制台）。
+
+    非 Windows 或旧版 subprocess 无该常量时返回 0，保持默认行为。
+    """
+    return int(getattr(subprocess, "CREATE_NO_WINDOW", 0) or 0)
+
+
 class ExcelWorkerProcessController:
     """Start and stop one worker subprocess without exposing COM to Flask."""
 
@@ -71,21 +79,24 @@ class ExcelWorkerProcessController:
             stop_file = Path(tempfile.gettempdir()) / f"vse-excel-worker-{os.getpid()}-{secrets.token_hex(8)}.stop"
             roots = self._repository.roots
             if getattr(sys, "frozen", False):
-                worker_dir = Path(sys.executable).resolve().parent
-                worker_exe = (worker_dir / "VSE-ExcelWorker.exe").resolve()
-                if not worker_exe.is_file():
+                # 单 exe 部署（2026-10-09 顾问复核方案 A）：宿主用哨兵参数自调起
+                # Worker 子进程。原同目录 VSE-ExcelWorker.exe 已并入宿主；进程隔离
+                # 不变——仍是一个可独立终止的子进程，Excel COM 不进宿主进程。
+                executable = Path(sys.executable).resolve()
+                if not executable.is_file():
                     raise FileNotFoundError(
-                        "Packaged Excel worker executable 'VSE-ExcelWorker.exe' was not found or is not a regular file"
+                        "Packaged WebUI executable was not found or is not a regular file"
                     )
                 command = [
-                    str(worker_exe),
+                    str(executable),
+                    "--excel-worker",
                     "run",
                     "--db",
                     str(self._repository._db.db_path),
                     "--stop-file",
                     str(stop_file),
                 ]
-                cwd = str(worker_dir)
+                cwd = str(executable.parent)
             else:
                 command = [
                     self._python,
@@ -99,14 +110,20 @@ class ExcelWorkerProcessController:
                 cwd = str(self._project_root)
             for root_id in roots.root_ids:
                 command.extend(["--root", f"{root_id}={roots.get_root(root_id)}"])
-            process = subprocess.Popen(
-                command,
-                cwd=cwd,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                text=True,
-            )
+            # Worker 输出写自己的日志文件：不与宿主共用日志句柄（Windows 下宿主
+            # 轮转 rename 会失败），也不与宿主控制台混流。
+            log_path = self._worker_log_path()
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(log_path, "a", encoding="utf-8", errors="replace") as log_handle:
+                process = subprocess.Popen(
+                    command,
+                    cwd=cwd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=log_handle,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    creationflags=_worker_creation_flags(),
+                )
             self._process = process
             self._stop_file = stop_file
             self._status = ExcelWorkerProcessStatus("running", process.pid)
@@ -147,6 +164,18 @@ class ExcelWorkerProcessController:
             return self.status()
 
     def _cleanup_stop_file(self) -> None:
+        stop_file = self._stop_file
+        self._stop_file = None
+        if stop_file is None:
+            return
+        try:
+            stop_file.unlink()
+        except OSError:
+            pass
+
+    def _worker_log_path(self) -> Path:
+        """Worker 日志落库文件同级目录（随数据目录一起被运维看到，不污染宿主日志）。"""
+        return Path(self._repository._db.db_path).parent / "excel_worker.log"
         if self._stop_file is not None:
             try:
                 self._stop_file.unlink(missing_ok=True)

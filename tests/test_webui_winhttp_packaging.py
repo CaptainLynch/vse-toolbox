@@ -91,16 +91,18 @@ def test_spec_hiddenimports_include_required_winhttp_modules() -> None:
     assert {"tkinter", "tkinter.filedialog"} <= set(explicit_imports)
 
 
-def test_spec_excludes_xlwings_and_preserves_pywin32() -> None:
+def test_spec_excludes_keep_pywin32_available() -> None:
+    """单 exe 部署后 xlwings 不再被排除（宿主兼任 Excel Worker），但 pywin32 必须保留。"""
     excludes = set(_analysis_excludes(_parse_spec()))
-    assert "xlwings" in excludes
     assert not {"pythoncom", "pywintypes", "win32com"} & excludes
+    assert "xlwings" not in excludes
 
 
-def test_spec_does_not_collect_all_win32com_or_xlwings() -> None:
+def test_spec_collects_excel_automation_for_single_exe() -> None:
+    """宿主兼任 Excel Worker：必须收集 win32com/xlwings 子模块，否则冻结后 Excel 功能失效。"""
     collected = set(_collected_submodules(_parse_spec()))
-    assert "win32com" not in collected
-    assert "xlwings" not in collected
+    assert "win32com" in collected
+    assert "xlwings" in collected
 
 
 def test_spec_packages_report_contract_data() -> None:

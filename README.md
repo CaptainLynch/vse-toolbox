@@ -19,8 +19,9 @@ Rich CLI、Aras/TDC 数据查询与导出、交付物状态管理、定时归档
 | TDC 契约探测 | `python tdc_probe_main.py --help` | 受控的 TDC 接口诊断 |
 
 生产环境使用 PyInstaller 打包的 **onedir 文件夹**（`VSE-WebUI.exe` + `_internal/` +
-`plugins/` + `VSE-ExcelWorker.exe`），整个文件夹打成 `VSE-WebUI.zip` 分发，同事机器不需要
-安装 Python。Worker 与主程序保持独立进程边界，具体部署、哈希校验和排障步骤见
+`plugins/`），整个文件夹打成 `VSE-WebUI.zip` 分发，同事机器不需要安装 Python。Excel 自动化
+由同一个 exe 用 `--excel-worker` 哨兵调起的独立子进程承担（进程边界不变，见
+`docs/EXCEL_TASK_WORKER.md`），部署、哈希校验和排障步骤见
 `docs/PRODUCTION_OPERATION_GUIDE.md` 与 `docs/USER_GUIDE_STANDALONE_EXE.md`。
 
 ## 插件体系
