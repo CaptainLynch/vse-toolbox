@@ -1,5 +1,24 @@
 # Current State
 
+## 2026-10-08 免安装包构建流水线与 README 更新（分支 claude/peaceful-bohr-bi1j7y）
+
+- 新增 `.github/workflows/build-webui-bundle.yml`：windows-latest、Python 3.12、跑签署日报/关注清单相关测试、
+  `tools/build_excel_bundle.ps1` 打 onedir 包、启动打好的 exe 冒烟（/api/version、sign-daily state、overview、三个插件在包里）、
+  上传 `VSE-WebUI.zip` + `SHA256SUMS.txt`（Artifacts，保留 30 天）。在 `claude/**` 推送该文件自动触发。
+  第 1 次运行失败：`test_sign_daily_mail` 的本地时区用例用了仅 POSIX 有的 `time.tzset`（Windows 上也会失败），已拆开并在无 tzset 的系统跳过；
+  第 2 次（616f483）全绿，产物约 46 MB，未签名。冒烟只证明能启动、接口能通；TDC 登录/抓取与 Excel 功能仍待用户在公司电脑验证。
+- README 更新：onedir 交付形态、插件体系与三个插件版本（sign-daily 0.2.0、project-overview 0.1.1、scheduled-archive 0.1.1）、
+  签署日报与关注清单能力、免安装包构建说明、审计文档链接。
+- **待办（用户未决）**：图1 窄组标题重叠（G3）；明细表待办人超过 8 人截断（§6，当前未做）。
+
+## 2026-10-04 规格 10-04 修订（F620S 在途样例）已落地（分支 claude/peaceful-bohr-bi1j7y）
+
+- 规格在 10-04 修订在途规则：当前待办以「待审批人员」为准（A10/A12/A13）、阶段改为会签中/审批中/退回修改/待提交/待锁定
+  （T1–T6，取消「加签中」）、P3/P6/P7/P10、视觉工程科列为历史科室。`plugins/sign_daily/rules.py` 的 `Flow.placements()`、
+  `current_todo()`、`countersign_frequency()` 是新口径入口；邮件明细「另 n 人未签、非当前待办」「（无待审批人）」。
+  两处解读和未动项（后蒙皮上/下组件仍为疑似）见审计文档 §11。签署日报相关 128 个测试通过。
+- **待用户**：F620S 真实导出（135 份/19 份在途）本地回归，预期归属车身五科室的在途单 5 份；其余待办同下。
+
 ## 2026-10-03 签署日报 v2.0 + 交付物明细同步增强（§9）全部实现并审计（分支 claude/peaceful-bohr-bi1j7y）
 
 - **依据**：Claude Docs「3D单签署进展日报插件 需求规格 v2.0」。规格里的 `signing_report` = `plugins/sign_daily/`

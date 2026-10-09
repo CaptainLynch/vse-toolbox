@@ -1,0 +1,102 @@
+name: Build VSE-WebUI standalone bundle (Windows)
+
+# 环境测试用：在 Windows 构建机上打出免安装的 VSE-WebUI（exe + _internal + plugins），
+# 同事机器不需要装 Python。产物是 VSE-WebUI.zip，解压即用。
+# 在 claude/** 分支推送本文件会自动构建；也可以在 Actions 页面手动运行。
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "claude/**"
+    paths:
+      - ".github/workflows/build-webui-bundle.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-webui-bundle:
+    name: Build VSE-WebUI bundle
+    runs-on: windows-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install runtime and build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install "pyinstaller>=6.10,<7"
+
+      - name: Plugin and host tests (no browser)
+        shell: pwsh
+        run: |
+          python -m pytest `
+            tests/test_sign_daily_rules.py `
+            tests/test_sign_daily_mail.py `
+            tests/test_sign_daily_settings.py `
+            tests/test_plugin_sign_daily.py `
+            tests/test_data_model_watchlist.py `
+            tests/test_plugin_project_overview_watchlist.py `
+            -q --basetemp "$env:RUNNER_TEMP\pytest" -p no:cacheprovider
+
+      - name: Build onedir bundle
+        shell: pwsh
+        env:
+          VSE_TOOLBOX_VERSION: "0.3.0"
+          VSE_TOOLBOX_CHANNEL: "env-test"
+          VSE_TOOLBOX_BUILD_ID: ${{ github.sha }}
+        run: |
+          ./tools/build_excel_bundle.ps1 -OutputDir "$env:RUNNER_TEMP\vse-dist" -Clean
+
+      - name: Smoke the packaged exe
+        shell: pwsh
+        run: |
+          $dist = Join-Path $env:RUNNER_TEMP "vse-dist\VSE-WebUI"
+          $exe = Join-Path $dist "VSE-WebUI.exe"
+          if (!(Test-Path $exe)) { throw "VSE-WebUI.exe missing" }
+          $proc = Start-Process -FilePath $exe -ArgumentList "--port","5077","--no-browser" -WorkingDirectory $dist -PassThru
+          try {
+            $ok = $false
+            foreach ($i in 1..40) {
+              Start-Sleep -Seconds 3
+              try { $v = Invoke-RestMethod "http://127.0.0.1:5077/api/version" -TimeoutSec 5; $ok = $true; break } catch {}
+            }
+            if (-not $ok) { throw "exe did not answer /api/version" }
+            "version: $($v | ConvertTo-Json -Compress)"
+            foreach ($path in "/api/p/sign-daily/state", "/api/overview") {
+              $r = Invoke-WebRequest "http://127.0.0.1:5077$path" -UseBasicParsing -TimeoutSec 20
+              "$path -> $($r.StatusCode)"
+              if ($r.StatusCode -ne 200) { throw "$path returned $($r.StatusCode)" }
+            }
+            foreach ($p in "sign-daily","project-overview","scheduled-archive") {
+              if (!(Test-Path (Join-Path $dist "plugins\$($p.Replace('-','_'))\plugin.json"))) { throw "plugin $p missing from bundle" }
+            }
+          } finally {
+            Get-Process -Name "VSE-WebUI","VSE-ExcelWorker" -ErrorAction SilentlyContinue | Stop-Process -Force
+          }
+
+      - name: Collect artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          Copy-Item "$env:RUNNER_TEMP\vse-dist\VSE-WebUI.zip" out\
+          Copy-Item "$env:RUNNER_TEMP\vse-dist\VSE-WebUI\SHA256SUMS.txt" out\
+          Get-Item out\VSE-WebUI.zip | Select-Object Name, Length
+
+      - name: Upload bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: VSE-WebUI-standalone-${{ github.sha }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 30
