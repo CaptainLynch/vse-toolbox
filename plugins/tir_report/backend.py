@@ -12,7 +12,7 @@
 - POST export                提交导出任务；同组筛选在排队/运行中复用该任务，当日已有成功产物直接复用
 - GET  export/<task_id>      任务进度与结果
 - GET  files                 产物清单
-- GET  files/<day>/<name>    下载 xlsx
+- GET  files/<day>/<stem>    下载 xlsx（文件在「自动归档」同一归档根目录，见 service 模块说明）
 """
 
 from __future__ import annotations
@@ -70,6 +70,11 @@ def register(host):
         except LookupError:
             return None
 
+    def store() -> Any:
+        # 与自动归档同一根目录：设置里的 archiveDirectory，缺省 data/output/exports
+        settings = ctx.db.get_app_settings() if hasattr(ctx.db, "get_app_settings") else {}
+        return S.archive_store(settings.get("archiveDirectory") if isinstance(settings, Mapping) else None)
+
     def domain_ready() -> bool:
         provider = credential_provider()
         return provider is not None and provider.is_available(S.DOMAIN_REF)
@@ -80,6 +85,7 @@ def register(host):
         meta = S.run_export(
             filters,
             data_dir=data_dir,
+            store=store(),
             credential_provider=credential_provider(),
             session_factory=session_factory,
             today=_today(),
@@ -95,7 +101,7 @@ def register(host):
         pass
 
     def _result_view(meta: Mapping[str, Any]) -> dict[str, Any]:
-        keys = ("ok", "rows", "headerCheck", "stem", "day", "reused", "filters")
+        keys = ("ok", "rows", "headerCheck", "stem", "day", "reused", "filters", "relativePath", "fileName")
         return {key: meta.get(key) for key in keys if key in meta}
 
     @bp.get("/state")
@@ -107,7 +113,7 @@ def register(host):
             "autoState": S.load_auto_state(data_dir),
             "report": {"name": P.REPORT_NAME, "path": P.REPORT_PATH},
             "today": _today().isoformat(),
-            "exports": S.list_exports(data_dir, limit=20),
+            "exports": S.list_exports(data_dir, store(), limit=20),
         })
 
     @bp.post("/config")
@@ -137,7 +143,7 @@ def register(host):
         if not domain_ready():
             return ctx.json_error(409, "credential_missing", TirError("credential_missing").args[0])
         if not force:
-            cached = S.find_cached(data_dir, _today().isoformat(), filters)
+            cached = S.find_cached(data_dir, store(), _today().isoformat(), filters)
             if cached is not None:
                 return ctx.json_ok({"taskId": None, "status": "succeeded", "reused": True,
                                     "result": _result_view({**cached, "day": _today().isoformat(), "reused": True})})
@@ -172,11 +178,12 @@ def register(host):
 
     @bp.get("/files")
     def files():
-        return ctx.json_ok({"exports": S.list_exports(data_dir, limit=100)})
+        return ctx.json_ok({"exports": S.list_exports(data_dir, store(), limit=100)})
 
-    @bp.get("/files/<day>/<name>")
-    def download(day: str, name: str):
-        target = S.safe_file_path(data_dir, day, name)
-        if target is None:
+    @bp.get("/files/<day>/<stem>")
+    def download(day: str, stem: str):
+        found = S.download_path(data_dir, store(), day, stem)
+        if found is None:
             return ctx.json_error(404, "NotFound", "没有这个文件")
-        return send_file(target, mimetype=S.XLSX_MIME, as_attachment=True, download_name=f"{P.REPORT_NAME}_{name}")
+        target, file_name = found
+        return send_file(target, mimetype=S.XLSX_MIME, as_attachment=True, download_name=file_name)

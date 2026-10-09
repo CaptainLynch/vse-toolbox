@@ -402,8 +402,8 @@ def _summary_lines(label: str, region: str, current: Mapping[str, Any], delta: M
     return [
         f"{label}-{region}-3D单流程共{nm(total, d_total, 'flows')}份，涉及零件{nm(total, d_total, 'parts')}个，"
         f"其中长周期件流程共{nm(long, d_long, 'flows')}份，涉及零件{nm(long, d_long, 'parts')}个。",
-        "长周期：" + line(long, d_long, "LLP T2发布率") + "；",
-        "总：" + line(total, d_total, "T2发布率") + "。",
+        "长周期签单情况：" + line(long, d_long, "LLP T2发布率") + "；",
+        "总签单情况：" + line(total, d_total, "T2发布率") + "。",
     ]
 
 

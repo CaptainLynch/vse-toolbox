@@ -32,7 +32,7 @@ TEXTS = {"greeting": "各位领导、同事：", "planText": "计划10-10发布"
 
 def _report(**overrides):
     report = {
-        "summaryLines": ["F610M-车体区域-3D单流程共4份", "长周期：…", "总：…"],
+        "summaryLines": ["F610M-车体区域-3D单流程共4份", "长周期签单情况：…", "总签单情况：…"],
         "snapshotAt": "2026-10-03T08:00:00Z",
         "charts": {
             "external": [{"group": "冲压", "personTimes": 2, "flows": 2, "people": 1,

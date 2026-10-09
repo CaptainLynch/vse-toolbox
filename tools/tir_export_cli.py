@@ -9,7 +9,8 @@ Usage::
 计划任务以当前 Windows 用户每小时调用一次；是否导出由插件页面的「自动导出」开关与时间决定
 （``plugins.tir_report.service.auto_decision``），当天已有结果就跳过，登录类失败当天不再重试。
 账号是统一域账号（``data/domain-credential.dpapi``，DPAPI，仅当前 Windows 用户可解密）。
-不启动 Flask，不写数据库；产物与页面导出同一目录（``data/plugins/tir-report/exports/<日>/``）。
+不启动 Flask；只读数据库里的归档根目录设置（``archiveDirectory``），产物与页面导出、与「自动归档」的
+其他交付物写在同一归档根目录、同一格式（``<根>/finereport/tir_brief/<日期>/<运行号>/TIR数据简表.xlsx``）。
 """
 
 from __future__ import annotations
@@ -46,6 +47,13 @@ def domain_provider() -> DPAPICredentialProvider:
     return DPAPICredentialProvider(WindowsDPAPICredentialVault(app_root() / "data" / "domain-credential.dpapi"))
 
 
+def archive_store():  # type: ignore[no-untyped-def]
+    from core.db_manager import DatabaseManager
+
+    settings = DatabaseManager().get_app_settings()
+    return S.archive_store(settings.get("archiveDirectory") if isinstance(settings, dict) else None)
+
+
 def session_factory():  # type: ignore[no-untyped-def]
     from services.windows_http import WinHTTPSession
 
@@ -57,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
                                      description="执行一次 TIR数据简表 自动导出（适合 Windows Task Scheduler）。")
     parser.add_argument("--once", action="store_true", required=True)
     parser.parse_args(argv)
-    result = S.run_auto(plugin_data_dir(), now=datetime.now(), credential_provider=domain_provider(),
+    result = S.run_auto(plugin_data_dir(), now=datetime.now(), store=archive_store(), credential_provider=domain_provider(),
                         session_factory=session_factory)
     print(json.dumps(result, ensure_ascii=False))
     return EXIT_FAILED if result.get("status") == "failed" else EXIT_OK

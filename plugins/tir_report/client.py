@@ -50,6 +50,7 @@ class TirError(RuntimeError):
 @dataclass
 class ExportResult:
     content: bytes  # 帆软原样导出的 xlsx，不做二次改写
+    file_name: str  # 平台给的文件名（Content-Disposition），缺省 TIR数据简表.xlsx
     rows: int | None  # 报表页面上的数据行数（页面内容无法解析时为 None，不影响导出）
     steps: list[str] = field(default_factory=list)
 
@@ -195,7 +196,8 @@ class FineReportClient:
             rows: int | None = len(P.table_from_pages(pages)) - 1
         except P.ProtocolError:
             rows = None
-        return ExportResult(content=content, rows=rows, steps=list(self.steps))
+        return ExportResult(content=content, file_name=P.download_file_name(getattr(response, "headers", None)),
+                            rows=rows, steps=list(self.steps))
 
     def run(self, username: str, password: str, params: Mapping[str, Any]) -> ExportResult:
         """login → entry/access → parameters_d → read_w_content → check/font → export → export_polling.

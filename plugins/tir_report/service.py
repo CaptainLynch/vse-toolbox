@@ -1,13 +1,15 @@
 # -*- coding: utf-8 -*-
-"""TIR 数据简表导出：落盘 Excel、幂等复用、任务视图（不含 Flask）。
+"""TIR 数据简表导出：落盘 Excel、幂等复用、自动导出、任务视图（不含 Flask）。
 
-交付物只有一件：帆软原样导出的 xlsx，落在 ``<插件数据目录>/exports/<导出日 YYYY-MM-DD>/``，文件名是纯 ASCII 的
-``tir_<项目>_<起>-<止>_<键哈希>.xlsx``——同一导出日同一组筛选条件的文件名固定，已有成功产物时直接复用
-（``force`` 才重跑）。复用与产物列表需要的运行记录（行数、表头校验）是插件内部数据，放在
-``<插件数据目录>/runs/<导出日>/<同名>.json``，不进导出目录、不提供下载。失败不写任何文件，原因见任务错误信息。
+交付物只有一件：帆软原样导出的 xlsx。落盘格式与「自动归档」的其他交付物完全一致（用户 2026-10-09 确认）：
+同一个 ``core.archive_store.ArchiveStore`` 写入同一个归档根目录（设置里的 ``archiveDirectory``，缺省
+``data/output/exports``），路径 ``<根>/finereport/tir_brief/<日期>/<运行号>/<平台文件名，缺省 TIR数据简表.xlsx>``，
+artifact_type 为 ``official_xlsx``，与 TDC/Aras 官方工作簿同一套安全检查与重名处理。
+同一导出日同一组筛选条件已有成功产物时直接复用（``force`` 才重跑）；复用判断与产物列表用的运行记录是插件内部数据，
+放在 ``<插件数据目录>/runs/<导出日>/<筛选键>.json``（不提供下载）。失败不写任何文件。
 
-账号：帆软账号与统一域账号相同（用户 2026-10-09 确认），只经宿主的 DPAPI 域账号库读取（``DOMAIN_REF``），
-插件不保存账号口令。自动导出参照「自动归档」：Windows 计划任务每小时跑一次 ``tools/tir_export_cli.py --once``，
+账号：帆软账号与统一域账号相同，只经宿主的 DPAPI 域账号库读取（``DOMAIN_REF``），插件不保存账号口令。
+自动导出参照「自动归档」：Windows 计划任务每小时跑一次 ``tools/tir_export_cli.py --once``，
 由 ``auto_decision`` 判断是否到点、当天是否已有结果；登录类失败当天不再重试，避免锁定域账号。
 同一时刻只允许一个导出（页面任务与计划任务跨进程互斥，``run_lock``）。
 """
@@ -29,6 +31,11 @@ from . import protocol as P
 from .client import FineReportClient, TirError
 
 TASK_TYPE = "tir_report_export"
+#: 归档路径中的来源/报表段，命名风格同 core.db_common.ARCHIVE_JOB_CONTRACTS（aras/ewo、tdc/data_model）。
+ARCHIVE_SOURCE = "finereport"
+ARCHIVE_REPORT = "tir_brief"
+ARTIFACT_TYPE = "official_xlsx"
+RUN_SEQ_FILE = "run-seq.json"
 TASK_SOURCE = "tir-report"
 CONFIG_FILE = "config.json"
 AUTO_STATE_FILE = "auto-state.json"
@@ -40,7 +47,7 @@ AUTO_MAX_ATTEMPTS = 3
 AUTO_STOP_CODES = frozenset({"credential_missing", "credential_unavailable", "login_failed", "login_unsupported"})
 _LOCK_STALE_SECONDS = 30 * 60
 _DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,120}\.xlsx$")
+_STEM_RE = re.compile(r"^tir_[A-Za-z0-9-]{1,24}_\d{8}-\d{8}_[0-9a-f]{8}$")
 _TASK_ID_RE = re.compile(r"^crawl_[0-9a-f]{12}$")
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
@@ -102,8 +109,13 @@ def save_config(data_dir: Path, config: Mapping[str, Any]) -> None:
 # ── 路径 ─────────────────────────────────────────────────────────
 
 
-def exports_root(data_dir: Path) -> Path:
-    return Path(data_dir) / "exports"
+def archive_store(archive_directory: Any = None) -> Any:
+    """Same root selection as the scheduled-archive runner/admin (``archiveDirectory`` setting)."""
+    from core.archive_store import ArchiveStore
+
+    if isinstance(archive_directory, str) and archive_directory.strip():
+        return ArchiveStore({"default": archive_directory.strip()})
+    return ArchiveStore()
 
 
 def runs_root(data_dir: Path) -> Path:
@@ -111,20 +123,10 @@ def runs_root(data_dir: Path) -> Path:
 
 
 def file_stem(filters: P.ExportFilters) -> str:
+    """Run-record key for one filter set (ASCII; not the delivered file name)."""
     project = re.sub(r"[^A-Za-z0-9-]", "", filters.project)[:24] or "all"
     digest = hashlib.sha256(filters.cache_key().encode("utf-8")).hexdigest()[:8]
     return f"tir_{project}_{filters.start_date.replace('-', '')}-{filters.end_date.replace('-', '')}_{digest}"
-
-
-def safe_file_path(data_dir: Path, day: str, name: str) -> Path | None:
-    """Resolve a download request; ``None`` unless it is a listed export inside the exports root."""
-    if not _DAY_RE.match(day or "") or not _NAME_RE.match(name or ""):
-        return None
-    root = exports_root(data_dir).resolve()
-    target = (root / day / name).resolve()
-    if not target.is_relative_to(root) or not target.is_file():
-        return None
-    return target
 
 
 def _atomic_write(path: Path, content: bytes) -> None:
@@ -142,32 +144,75 @@ def _atomic_write(path: Path, content: bytes) -> None:
         raise
 
 
-def find_cached(data_dir: Path, day: str, filters: P.ExportFilters) -> dict[str, Any] | None:
-    stem = file_stem(filters)
+def artifact_path(store: Any, record: Mapping[str, Any]) -> Path | None:
+    """Absolute path of a recorded export, only if it is still a file inside the archive root."""
+    relative = record.get("relativePath")
+    if not isinstance(relative, str) or not relative or relative.startswith(("/", "\\")) or ".." in relative.split("/"):
+        return None
     try:
-        meta = json.loads((runs_root(data_dir) / day / f"{stem}.json").read_text(encoding="utf-8"))
+        root = store.root("default").resolve()
+        target = (root / relative).resolve()
     except (OSError, ValueError):
         return None
-    if meta.get("ok") and (exports_root(data_dir) / day / f"{stem}.xlsx").is_file():
-        return {**meta, "day": day}
+    if not target.is_relative_to(root) or not target.is_file():
+        return None
+    return target
+
+
+def _read_record(data_dir: Path, day: str, stem: str) -> dict[str, Any] | None:
+    try:
+        record = json.loads((runs_root(data_dir) / day / f"{stem}.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return record if isinstance(record, dict) and record.get("ok") else None
+
+
+def find_cached(data_dir: Path, store: Any, day: str, filters: P.ExportFilters) -> dict[str, Any] | None:
+    record = _read_record(data_dir, day, file_stem(filters))
+    if record is not None and artifact_path(store, record) is not None:
+        return {**record, "day": day}
     return None
 
 
-def list_exports(data_dir: Path, limit: int = 50) -> list[dict[str, Any]]:
-    root = exports_root(data_dir)
+def list_exports(data_dir: Path, store: Any, limit: int = 50) -> list[dict[str, Any]]:
+    root = runs_root(data_dir)
     if not root.is_dir():
         return []
     items: list[dict[str, Any]] = []
     for day_dir in sorted((p for p in root.iterdir() if p.is_dir() and _DAY_RE.match(p.name)), reverse=True):
-        for xlsx in sorted(day_dir.glob("tir_*.xlsx"), key=lambda p: p.stat().st_mtime, reverse=True):
-            try:
-                meta = json.loads((runs_root(data_dir) / day_dir.name / f"{xlsx.stem}.json").read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                meta = {"stem": xlsx.stem}
-            items.append({**meta, "day": day_dir.name, "file": xlsx.name})
+        for path in sorted(day_dir.glob("tir_*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+            record = _read_record(data_dir, day_dir.name, path.stem)
+            if record is None or artifact_path(store, record) is None:
+                continue
+            items.append({**record, "day": day_dir.name})
             if len(items) >= limit:
                 return items
     return items
+
+
+def download_path(data_dir: Path, store: Any, day: str, stem: str) -> tuple[Path, str] | None:
+    """Resolve a download by (export day, run-record key); ``None`` unless it is a recorded export."""
+    if not _DAY_RE.match(day or "") or not _STEM_RE.match(stem or ""):
+        return None
+    record = _read_record(data_dir, day, stem)
+    if record is None:
+        return None
+    target = artifact_path(store, record)
+    if target is None:
+        return None
+    return target, str(record.get("fileName") or P.DEFAULT_FILE_NAME)
+
+
+def _next_run_id(data_dir: Path) -> int:
+    """Monotonic run number (the ``<运行号>`` folder, like the archive runner's run id). Call under ``run_lock``."""
+    path = runs_root(data_dir) / RUN_SEQ_FILE
+    try:
+        current = int(json.loads(path.read_text(encoding="utf-8")).get("last", 0))
+    except (OSError, ValueError, AttributeError, TypeError):
+        current = 0
+    value = current + 1
+    _atomic_write(path, json.dumps({"last": value}).encode("utf-8"))
+    return value
 
 
 # ── 导出 ─────────────────────────────────────────────────────────
@@ -233,6 +278,7 @@ def run_export(
     filters: P.ExportFilters,
     *,
     data_dir: Path,
+    store: Any,
     credential_provider: Any,
     session_factory: Callable[[], Any],
     today: date,
@@ -242,10 +288,10 @@ def run_export(
     cancelled: Callable[[], bool] = lambda: False,
     sleep: Callable[[float], None] | None = None,
 ) -> dict[str, Any]:
-    """Run one export with the domain account and write the original xlsx. Returns the run record."""
+    """Run one export with the domain account and archive the original xlsx. Returns the run record."""
     day = today.isoformat()
     if not force:
-        cached = find_cached(data_dir, day, filters)
+        cached = find_cached(data_dir, store, day, filters)
         if cached is not None:
             return {**cached, "reused": True}
     if credential_provider is None or not credential_provider.is_available(DOMAIN_REF):
@@ -259,7 +305,7 @@ def run_export(
 
     with run_lock(data_dir):
         if not force:  # 等锁期间另一进程可能刚导出完
-            cached = find_cached(data_dir, day, filters)
+            cached = find_cached(data_dir, store, day, filters)
             if cached is not None:
                 return {**cached, "reused": True}
         client = FineReportClient(session_factory(), **client_kwargs)
@@ -272,13 +318,16 @@ def run_export(
         except CredentialProviderError:
             raise TirError("credential_unavailable") from None
         progress("save", 90)
+        run_id = _next_run_id(data_dir)
+        artifact = store.write_bytes(result.content, source=ARCHIVE_SOURCE, report=ARCHIVE_REPORT, run_id=run_id,
+                                     file_name=result.file_name, artifact_type=ARTIFACT_TYPE)
         meta: dict[str, Any] = {
             "ok": True, "report": P.REPORT_NAME, "filters": filters.as_payload(), "stem": stem,
-            "rows": result.rows, "headerCheck": header_check(result.content), "bytes": len(result.content),
-            "steps": list(result.steps), "startedAt": started,
+            "runId": run_id, "relativePath": artifact.relative_path, "fileName": artifact.display_name,
+            "sha256": artifact.sha256, "rows": result.rows, "headerCheck": header_check(result.content),
+            "bytes": artifact.size_bytes, "steps": list(result.steps), "startedAt": started,
             "finishedAt": datetime.now().isoformat(timespec="seconds"),
         }
-        _atomic_write(exports_root(data_dir) / day / f"{stem}.xlsx", result.content)
         _atomic_write(runs_root(data_dir) / day / f"{stem}.json",
                       json.dumps(meta, ensure_ascii=False, indent=2).encode("utf-8"))
     progress("done", 100)
@@ -296,7 +345,8 @@ def load_auto_state(data_dir: Path) -> dict[str, Any]:
     return state if isinstance(state, dict) else {}
 
 
-def auto_decision(config: Mapping[str, Any], state: Mapping[str, Any], now: datetime, data_dir: Path) -> str:
+def auto_decision(config: Mapping[str, Any], state: Mapping[str, Any], now: datetime, data_dir: Path,
+                  store: Any) -> str:
     """-> ``run`` 或不跑的原因（disabled / not_yet / done / stopped_today / attempts_exhausted）。"""
     auto = config["auto"]
     if not auto["enabled"]:
@@ -304,7 +354,7 @@ def auto_decision(config: Mapping[str, Any], state: Mapping[str, Any], now: date
     if now.hour < auto["hour"]:
         return "not_yet"
     today = now.date()
-    if find_cached(data_dir, today.isoformat(), default_filters(config, today)) is not None:
+    if find_cached(data_dir, store, today.isoformat(), default_filters(config, today)) is not None:
         return "done"
     if state.get("day") == today.isoformat():
         if state.get("errorCode") in AUTO_STOP_CODES:
@@ -318,6 +368,7 @@ def run_auto(
     data_dir: Path,
     *,
     now: datetime,
+    store: Any,
     credential_provider: Any,
     session_factory: Callable[[], Any],
     base_url: str = P.DEFAULT_BASE_URL,
@@ -326,7 +377,7 @@ def run_auto(
     """One scheduled pass: decide, export with the saved defaults, record the outcome."""
     config = load_config(data_dir)
     state = load_auto_state(data_dir)
-    decision = auto_decision(config, state, now, data_dir)
+    decision = auto_decision(config, state, now, data_dir, store)
     if decision != "run":
         return {"decision": decision}
     today = now.date()
@@ -334,9 +385,11 @@ def run_auto(
     record: dict[str, Any] = {"day": today.isoformat(), "attempts": attempts,
                               "at": now.isoformat(timespec="seconds")}
     try:
-        meta = run_export(default_filters(config, today), data_dir=data_dir, credential_provider=credential_provider,
+        meta = run_export(default_filters(config, today), data_dir=data_dir, store=store,
+                          credential_provider=credential_provider,
                           session_factory=session_factory, today=today, base_url=base_url, sleep=sleep)
-        record.update({"status": "ok", "stem": meta.get("stem"), "rows": meta.get("rows")})
+        record.update({"status": "ok", "stem": meta.get("stem"), "rows": meta.get("rows"),
+                       "relativePath": meta.get("relativePath")})
     except TirError as exc:
         record.update({"status": "failed", "errorCode": exc.code, "error": str(exc)})
     _atomic_write(runs_root(data_dir) / AUTO_STATE_FILE, json.dumps(record, ensure_ascii=False, indent=2).encode("utf-8"))

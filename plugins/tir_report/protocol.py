@@ -285,6 +285,38 @@ def parameters_accepted(text: str) -> bool:
         return False
 
 
+DEFAULT_FILE_NAME = f"{REPORT_NAME}.xlsx"
+_UNSAFE_NAME_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def download_file_name(headers: Mapping[str, Any] | None) -> str:
+    """Official file name from ``Content-Disposition`` (RFC 5987 ``filename*`` first); default ``TIR数据简表.xlsx``.
+
+    与「自动归档」的官方工作簿一样保留平台给的文件名；不安全字符或非 .xlsx 时退回默认名。
+    """
+    from urllib.parse import unquote as _unquote
+
+    value = ""
+    for key, item in (headers or {}).items():
+        if str(key).lower() == "content-disposition":
+            value = str(item)
+    name = ""
+    match = re.search(r"filename\*\s*=\s*([^']*)'[^']*'([^;]+)", value, re.I)
+    if match:
+        try:
+            name = _unquote(match.group(2).strip().strip('"'), encoding=match.group(1) or "utf-8")
+        except LookupError:
+            name = ""
+    if not name:
+        match = re.search(r'filename\s*=\s*"?([^";]+)"?', value, re.I)
+        if match:
+            name = _unquote(match.group(1).strip())
+    name = name.replace("\\", "/").rsplit("/", 1)[-1].strip().rstrip(". ")
+    if not name or _UNSAFE_NAME_RE.search(name) or not name.lower().endswith(".xlsx") or len(name) > 120:
+        return DEFAULT_FILE_NAME
+    return name
+
+
 def is_xlsx(content: bytes) -> bool:
     return content[:2] == b"PK"
 

@@ -150,3 +150,9 @@ cjkEncode 与 HAR 第 33 条形态一致（`问题` → `[95ee][9898]`、`[]` �
 5. 帆软账号 = 统一域账号：`DPAPICredentialProvider(domain_credential_vault).resolve("domain")`，用户名去掉
    `域\` 前缀后登录（待 Phase 0 复核帆软是否接受）。未保存时提示「登录 TDC 并勾选保存至凭据保护库」。
    §10 第 9 条「仍走 Windows 凭据管理器」据此作废。
+6. 落盘格式与「自动归档」其他交付物一致（确认页 B3 反馈）：改用 `core.archive_store.ArchiveStore` 写入同一归档根
+   （设置 `archiveDirectory`，缺省 `data/output/exports`），路径 `<根>/finereport/tir_brief/<日期>/<运行号>/<平台文件名>`，
+   artifact_type `official_xlsx`；文件名取导出响应的 `Content-Disposition`（缺省 `TIR数据简表.xlsx`）。运行号是插件内
+   单调递增序号（`runs/run-seq.json`，在 `run_lock` 内分配）。插件不写 manifest JSON（交付物只有 Excel），运行记录仍在
+   插件数据目录 `runs/<导出日>/<筛选键>.json`，下载路由改为 `files/<day>/<筛选键>` 并校验记录路径位于归档根内。
+   取代 §3 R5 中「插件数据目录 exports/」的落盘方式。

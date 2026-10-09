@@ -12,7 +12,7 @@ function Field({ label, children }) {
 }
 
 function fileLink(api, item) {
-  return html`<a href=${api.url(`files/${item.day}/${item.file}`)}>下载 Excel</a>`;
+  return html`<a href=${api.url(`files/${item.day}/${item.stem}`)}>下载 Excel</a>`;
 }
 
 export default function Page({ api }) {
@@ -81,12 +81,13 @@ export default function Page({ api }) {
     { key: "filters", title: "筛选", sortable: false, format: (_, row) => row.filters ? `${row.filters.project || "全部项目"} / ${row.filters.department || "全部部门"} / ${row.filters.startDate} ~ ${row.filters.endDate}` : "" },
     { key: "rows", title: "行数" },
     { key: "headerCheck", title: "表头", sortable: false, format: (_, row) => row.headerCheck ? (row.headerCheck.ok ? "50 列一致" : `不一致（${row.headerCheck.columns} 列）`) : "" },
+    { key: "relativePath", title: "归档位置", sortable: false, format: (_, row) => html`<code style="font-size:12px;word-break:break-all">${row.relativePath || ""}</code>` },
     { key: "file", title: "下载", sortable: false, format: (_, row) => fileLink(api, row) },
   ];
 
   return html`<div class="vk-page">
     <header class="vk-page-header"><h2>TIR数据简表</h2>
-      <p class="vk-muted">从帆软报表平台导出「${state.report.path}」，交付帆软原样导出的 Excel。帆软账号就是统一域账号。</p></header>
+      <p class="vk-muted">从帆软报表平台导出「${state.report.path}」，交付帆软原样导出的 Excel，与「自动归档」的其他交付物存放在同一归档目录、同一格式。帆软账号就是统一域账号。</p></header>
     ${!state.domainCredentialReady && html`<p class="vk-muted" style="color:var(--error)">还没有保存统一域账号：请登录 TDC 并勾选“保存至凭据保护库”，之后才能导出。</p>`}
     <section class="vk-filter-bar">
       <${Field} label="项目（留空 = 全部项目）"><input value=${form.project} onInput=${set("project")} /></${Field}>

@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import re
 import sys
 import time
 import zipfile
@@ -25,6 +26,7 @@ import web.app as web_app
 from contextlib import contextmanager
 from datetime import datetime
 
+from core.archive_store import ArchiveStore
 from core.credential_provider import ResolvedCredential
 from core.domain_identity import CredentialVaultError, DPAPICredentialProvider
 from plugins.tir_report import protocol as P
@@ -163,7 +165,10 @@ class FakeFineReport:
             return FakeResponse(200, '{"state":1}')
         if path == "/view/report" and query.get("op") == "export":
             if self.export_xlsx:
-                return FakeResponse(200, self.xlsx, "application/x-excel")
+                response = FakeResponse(200, self.xlsx, "application/x-excel")
+                response.headers["Content-Disposition"] = (
+                    "attachment; filename*=UTF-8''TIR%E6%95%B0%E6%8D%AE%E7%AE%80%E8%A1%A8.xlsx")
+                return response
             return FakeResponse(200, "<html>export disabled</html>")
         if path == "/view/report" and "export_polling" in str(data):
             return FakeResponse(200, '{"isExporting":false}\n')
@@ -367,32 +372,43 @@ def _domain(**kwargs) -> DPAPICredentialProvider:  # type: ignore[no-untyped-def
     return DPAPICredentialProvider(FakeVault(**kwargs))
 
 
+def _store(tmp_path: Path) -> ArchiveStore:
+    return ArchiveStore({"default": tmp_path / "archive"})
+
+
 def _run(tmp_path: Path, fake: FakeFineReport, filters: P.ExportFilters | None = None, **kwargs):  # type: ignore[no-untyped-def]
     return S.run_export(
-        filters or _filters(), data_dir=tmp_path, credential_provider=_domain(),
+        filters or _filters(), data_dir=tmp_path, store=_store(tmp_path), credential_provider=_domain(),
         session_factory=lambda: fake, today=TODAY, base_url=HOST, sleep=lambda s: None, **kwargs,
     )
 
 
-def test_run_export_writes_only_the_original_xlsx(tmp_path: Path):
+def test_run_export_archives_the_original_xlsx_like_other_deliverables(tmp_path: Path):
+    """与自动归档的官方工作簿同一 ArchiveStore、同一路径格式：<根>/<来源>/<报表>/<日期>/<运行号>/<平台文件名>。"""
     _, der = _rsa_pair()
     fake = FakeFineReport(public_key=der)
     meta = _run(tmp_path, fake)
-    day_dir = tmp_path / "exports" / "2026-10-09"
-    stem = meta["stem"]
-    assert stem.isascii() and stem.startswith("tir_F610S_20220711-20261009_")
-    assert [p.name for p in day_dir.iterdir()] == [f"{stem}.xlsx"]  # 只交付 Excel
-    xlsx = (day_dir / f"{stem}.xlsx").read_bytes()
-    assert xlsx == fake.xlsx and zipfile.is_zipfile(io.BytesIO(xlsx))
-    preview = read_xlsx_preview(day_dir / f"{stem}.xlsx", max_rows=5)
+    archive = tmp_path / "archive"
+    files = [p for p in archive.rglob("*") if p.is_file()]
+    assert len(files) == 1  # 只交付 Excel
+    relative = files[0].relative_to(archive).as_posix()
+    source, report, day, run_id, name = relative.split("/")
+    assert (source, report, run_id, name) == ("finereport", "tir_brief", "1", "TIR数据简表.xlsx")
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", day)
+    assert meta["relativePath"] == relative and meta["fileName"] == "TIR数据简表.xlsx" and meta["runId"] == 1
+    assert files[0].read_bytes() == fake.xlsx and zipfile.is_zipfile(io.BytesIO(fake.xlsx))
+    preview = read_xlsx_preview(files[0], max_rows=5)
     assert tuple(str(v) for v in preview.rows[0][:50]) == P.EXPECTED_HEADERS
     assert meta["ok"] and meta["rows"] == 3 and meta["headerCheck"] == {"ok": True, "columns": 50}
     assert not list(tmp_path.rglob("*.har"))
-    record_text = (tmp_path / "runs" / "2026-10-09" / f"{stem}.json").read_text(encoding="utf-8")
+    record_text = (tmp_path / "runs" / "2026-10-09" / f"{meta['stem']}.json").read_text(encoding="utf-8")
     for secret in (USER, PASSWORD, TOKEN, SESSION_ID):
         assert secret not in record_text
     assert json.loads(record_text)["steps"][-1] == "export_polling"
     assert not (tmp_path / "runs" / ".lock").exists()
+
+    forced = _run(tmp_path, FakeFineReport(), force=True)  # 第二次运行：运行号递增，目录与命名规则不变
+    assert forced["runId"] == 2 and forced["relativePath"].split("/")[3] == "2"
 
 
 def test_run_export_logs_in_with_domain_account_without_domain_prefix(tmp_path: Path):
@@ -405,7 +421,7 @@ def test_run_export_with_empty_project_means_all_projects(tmp_path: Path):
     filters = P.normalize_filters({"project": "", "endDate": "2026-10-09"}, today=TODAY)
     fake = FakeFineReport()
     meta = _run(tmp_path, fake, filters)
-    assert meta["stem"].startswith("tir_all_20220711-20261009_")
+    assert meta["stem"].startswith("tir_all_20220711-20261009_") and meta["fileName"] == "TIR数据简表.xlsx"
     sent = P.decode_parameters(unquote(fake.calls[3]["data"].split("&")[0].split("=", 1)[1]))
     assert sent["XM"] == "" and sent["BM"] == "车体工程"
 
@@ -423,18 +439,19 @@ def test_run_export_reuses_same_day_result_unless_forced(tmp_path: Path):
 def test_run_export_failure_writes_nothing(tmp_path: Path, fake: FakeFineReport):
     with pytest.raises(TirError):
         _run(tmp_path, fake)
-    assert not (tmp_path / "exports").exists() and not list((tmp_path / "runs").glob("*"))
-    assert S.find_cached(tmp_path, "2026-10-09", _filters()) is None
+    assert not [p for p in (tmp_path / "archive").rglob("*") if p.is_file()]
+    assert not list((tmp_path / "runs").rglob("*.json"))
+    assert S.find_cached(tmp_path, _store(tmp_path), "2026-10-09", _filters()) is None
 
 
 def test_run_export_credential_errors(tmp_path: Path):
     for provider in (None, _domain(configured=False)):
         with pytest.raises(TirError) as info:
-            S.run_export(_filters(), data_dir=tmp_path, credential_provider=provider,
+            S.run_export(_filters(), data_dir=tmp_path, store=_store(tmp_path), credential_provider=provider,
                          session_factory=FakeFineReport, today=TODAY)
         assert info.value.code == "credential_missing"
     with pytest.raises(TirError) as info:
-        S.run_export(_filters(), data_dir=tmp_path, credential_provider=_domain(broken=True),
+        S.run_export(_filters(), data_dir=tmp_path, store=_store(tmp_path), credential_provider=_domain(broken=True),
                      session_factory=FakeFineReport, today=TODAY)
     assert info.value.code == "credential_unavailable"
 
@@ -461,7 +478,8 @@ def _enable_auto(tmp_path: Path, hour: int = 8) -> None:
 
 
 def _auto(tmp_path: Path, fake: FakeFineReport, at: datetime, **kwargs):  # type: ignore[no-untyped-def]
-    return S.run_auto(tmp_path, now=at, credential_provider=_domain(**kwargs), session_factory=lambda: fake,
+    return S.run_auto(tmp_path, now=at, store=_store(tmp_path), credential_provider=_domain(**kwargs),
+                      session_factory=lambda: fake,
                       base_url=HOST, sleep=lambda s: None)
 
 
@@ -475,7 +493,7 @@ def test_auto_export_runs_once_per_day_after_the_configured_hour(tmp_path: Path)
     sent = P.decode_parameters(unquote(fake.calls[3]["data"].split("&")[0].split("=", 1)[1]))
     assert (sent["XM"], sent["ENDTIME"]) == ("", "2026-10-09")  # 默认项目留空，结束日期取当天
     assert _auto(tmp_path, FakeFineReport(), datetime(2026, 10, 9, 9, 5)) == {"decision": "done"}
-    assert (tmp_path / "exports" / "2026-10-09").is_dir()
+    assert S.load_auto_state(tmp_path)["relativePath"].startswith("finereport/tir_brief/")
     assert S.load_auto_state(tmp_path)["status"] == "ok"
 
 
@@ -506,21 +524,30 @@ def test_auto_export_cli_uses_plugin_data_dir_and_domain_vault(monkeypatch: pyte
     monkeypatch.setattr(cli, "domain_provider", lambda: _domain())
     fake = FakeFineReport()
     monkeypatch.setattr(cli, "session_factory", lambda: fake)
+    monkeypatch.setattr(cli, "archive_store", lambda: _store(tmp_path))
     assert cli.main(["--once"]) == 0
-    assert list((data_dir / "exports").rglob("*.xlsx"))
+    assert [p.name for p in (tmp_path / "archive").rglob("*.xlsx")] == ["TIR数据简表.xlsx"]
     with pytest.raises(SystemExit):
         cli.main([])  # 与 scheduled-archive 一样必须显式 --once
 
 
-@pytest.mark.parametrize("day, name", [
-    ("2026-10-09", "..\\..\\config.json"), ("2026-10-09", "../x.json"), ("..", "x.json"),
-    ("2026-10-09", "C:x.xlsx"), ("2026-10-09", "x.exe"), ("2026-10-09", "missing.xlsx"),
-    ("2026-10-09", "x.har"), ("2026-10-09", "x.json"),
+@pytest.mark.parametrize("day, stem", [
+    ("2026-10-09", "..\\..\\config"), ("2026-10-09", "../x"), ("..", "tir_all_20220711-20261009_0123abcd"),
+    ("2026-10-09", "C:x"), ("2026-10-09", "tir_all_20220711-20261009_0123abcd"),
 ])
-def test_safe_file_path_rejects_traversal(tmp_path: Path, day: str, name: str):
-    (tmp_path / "exports" / "2026-10-09").mkdir(parents=True)
-    (tmp_path / "config.json").write_text("{}", encoding="utf-8")
-    assert S.safe_file_path(tmp_path, day, name) is None
+def test_download_path_rejects_traversal_and_unknown_records(tmp_path: Path, day: str, stem: str):
+    assert S.download_path(tmp_path, _store(tmp_path), day, stem) is None
+
+
+def test_download_path_ignores_records_pointing_outside_the_archive(tmp_path: Path):
+    meta = _run(tmp_path, FakeFineReport())
+    record_path = tmp_path / "runs" / "2026-10-09" / f"{meta['stem']}.json"
+    assert S.download_path(tmp_path, _store(tmp_path), "2026-10-09", meta["stem"])[1] == "TIR数据简表.xlsx"
+    for evil in ("../runs/run-seq.json", "/etc/passwd", "finereport/../../x"):
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        record["relativePath"] = evil
+        record_path.write_text(json.dumps(record), encoding="utf-8")
+        assert S.download_path(tmp_path, _store(tmp_path), "2026-10-09", meta["stem"]) is None
 
 
 # ── 插件路由 ────────────────────────────────────────────────────────
@@ -533,6 +560,8 @@ def app_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):  # type: ignore
     monkeypatch.delenv("VSE_TOOLBOX_PLUGIN_ONLY", raising=False)
     app = web_app.create_app(plugin_dirs=[PLUGINS_ROOT], plugin_only=["tir-report"])
     app.config.update(TESTING=True)
+    web_db = db_cls(tmp_path / "plugin.db")
+    web_db.update_app_settings({"archiveDirectory": str(tmp_path / "archive")})  # 不写进仓库的 data/output
     vault = FakeVault(configured=False)
     app.extensions["domain_credential_vault"] = vault  # 插件经 ctx.service 读取，HostContext 是活视图
     backend = sys.modules["vse_plugins.tir_report.backend"]
@@ -580,10 +609,12 @@ def test_plugin_loads_and_exports_end_to_end(app_client):  # type: ignore[no-unt
     assert json.loads(fake.calls[1]["data"])["username"] == USER
 
     files = _ok(http.get("/api/p/tir-report/files"))["exports"]
-    assert len(files) == 1 and files[0]["file"].endswith(".xlsx") and files[0]["rows"] == 3
-    download = http.get(f"/api/p/tir-report/files/{files[0]['day']}/{files[0]['file']}")
+    assert len(files) == 1 and files[0]["relativePath"].startswith("finereport/tir_brief/") and files[0]["rows"] == 3
+    assert (tmp_path / "archive" / files[0]["relativePath"]).is_file()
+    download = http.get(f"/api/p/tir-report/files/{files[0]['day']}/{files[0]['stem']}")
     assert download.status_code == 200 and download.data == fake.xlsx
-    assert http.get("/api/p/tir-report/files/2026-10-09/..%5Cconfig.json").status_code == 404
+    assert "TIR" in download.headers["Content-Disposition"]
+    assert http.get("/api/p/tir-report/files/2026-10-09/..%5Cconfig").status_code == 404
 
     again = _ok(http.post("/api/p/tir-report/export", json={"project": "F610S", "department": "车体工程",
                                                             "startDate": "2022-07-11", "endDate": "2026-10-09"}))
