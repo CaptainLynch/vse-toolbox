@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """TIR数据简表 plugin backend. Routes are mounted at /api/p/tir-report/.
 
-从帆软报表平台导出 ``tdc/TIR/TIR数据简表.cpt``，交付 xlsx + 脱敏 HAR（方案见
+从帆软报表平台导出 ``tdc/TIR/TIR数据简表.cpt``，交付帆软原样导出的 xlsx（方案见
 ``docs/TIR_REPORT_PLUGIN_DESIGN_20261009.md``）。所有写路由先过 ``ctx.local_guard()``。
 
 - GET  state                 配置（凭据别名、默认筛选）与最近产物
@@ -9,7 +9,7 @@
 - POST export                提交导出任务；同组筛选在排队/运行中复用该任务，当日已有成功产物直接复用
 - GET  export/<task_id>      任务进度与结果
 - GET  files                 产物清单
-- GET  files/<day>/<name>    下载 xlsx / har / json
+- GET  files/<day>/<name>    下载 xlsx
 """
 
 from __future__ import annotations
@@ -88,7 +88,7 @@ def register(host):
         pass
 
     def _result_view(meta: Mapping[str, Any]) -> dict[str, Any]:
-        keys = ("ok", "mode", "rows", "headerCheck", "stem", "day", "reused", "har", "filters", "errorCode")
+        keys = ("ok", "rows", "headerCheck", "stem", "day", "reused", "filters")
         return {key: meta.get(key) for key in keys if key in meta}
 
     @bp.get("/state")
@@ -170,4 +170,4 @@ def register(host):
         target = S.safe_file_path(data_dir, day, name)
         if target is None:
             return ctx.json_error(404, "NotFound", "没有这个文件")
-        return send_file(target, mimetype=S.mime_for(name), as_attachment=True, download_name=f"{P.REPORT_NAME}_{name}")
+        return send_file(target, mimetype=S.XLSX_MIME, as_attachment=True, download_name=f"{P.REPORT_NAME}_{name}")

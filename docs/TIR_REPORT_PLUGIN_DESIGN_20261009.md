@@ -8,7 +8,7 @@
 
 | 问题 | 本次决定 | 是否待用户确认 |
 | --- | --- | --- |
-| 交付形态 | **独立插件** `plugins/tir_report/` 产出 Excel + 脱敏 HAR 两份文件，不并入日报邮件 | 是（§6-1，默认按独立插件） |
+| 交付形态 | **独立插件** `plugins/tir_report/` 只产出帆软原样导出的 Excel，不产出 HAR，不并入日报邮件 | 已确认（2026-10-09） |
 | 默认参数 | 项目 `F610S`、部门 `车体工程`、发放日期 `2022-07-11` ~ 当天 | 是（§6-2） |
 | 每日自动跑 | 不做（只提供页面手动触发）；后续可复用 `tools/install_*_task.ps1` 模式 | 是（§6-2） |
 | 凭据 | 页面只保存 `credential_ref` 别名，值由 Windows 凭据管理器解析 | 是（§6-3，需用户提供条目名） |
@@ -32,7 +32,7 @@
    浏览器会把**全部**参数键（含 `LABEL*` 标签键与空值）一起提交，实现照抄同样的键集与顺序。
 4. **取数** `GET view/report?op=fr_write&cmd=read_w_content&reportIndex=0&pn=<页>&__webpage__=true…`
    → `{"outputMode":"STREAM_JSON","html":…,"sheets":…,"watermark":…}`。html 中单元格是
-   `<td col="N" row="M" …><div>文本</div></td>`；首行表头即 50 列。**watermark 含登录用户名**，HAR 记录时必须丢弃响应体。
+   `<td col="N" row="M" …><div>文本</div></td>`；首行表头即 50 列。**watermark 含登录用户名**，该响应不得记录或落盘。
 5. **导出**：HAR 只有 `export/check/font (format=excel)`、`fr_write save_w_content` 与
    `op=export&cmd=export_polling&type=excel`；真正的下载是浏览器导航（隐藏 iframe/表单），未进 XHR 记录。
    FineReport 10 的标准下载端点是 `GET view/report?op=export&format=excel&extype=simple&sessionID=<sid>`。
@@ -46,9 +46,9 @@
   2. 页面未开启传输加密（找不到公钥）→ 明文 + `encrypted:false`。
   3. 两者都失败：平台可能是 SM4 传输加密或滑块验证，探针输出 `login_unsupported` 指引码并停止，不猜测。
   长期 `token/refresh` 续期**不做**：每次任务重新登录，不持久化任何 token。
-- **R2 导出下载**（主路径是**假设**，HAR 未捕获下载请求）：主路径 `op=export&format=excel&extype=simple`，响应必须以 `PK` 开头才算成功；
-  否则退回「解析 `read_w_content` 全部分页 → 自建 xlsx」。退路保真度：表头与单元格文本一致、
-  数值单元格写成数字，**丢失**样式/列宽/合并单元格；产物元数据 `mode=rebuilt` 明确标注，页面可见。
+- **R2 导出下载**（主路径是**假设**，HAR 未捕获下载请求）：`op=export&format=excel&extype=simple`，响应必须是
+  HTTP 200 且以 `PK` 开头才算成功，否则任务以 `export_failed` 失败、不落任何文件。**不做自建 xlsx 退路**
+  （用户 2026-10-09 确认不接受重建产物）。`read_w_content` 仍按浏览器顺序调用一次（报表据此计算），只用于统计行数。
 - **R3 会话与并发**：任务经宿主 `crawl_task_runner` 提交，`source="tir-report"` 固定 → **仅本进程内**同源串行；
   不覆盖 `tools/tir_probe.py`、第二个应用实例或用户自己的浏览器（同账号仍可能互踢，失败按闭集错误码报告，重跑即可）。
   API 调用一律 `allow_redirects=False`；打开报表页按内容判别登录页。单任务内发现登录态失效时**重登一次**；
@@ -57,11 +57,11 @@
   表格解析），有契约测试。幂等：同一「项目+部门+科室+起止日期」在同一导出日已有成功产物时直接复用
   （`force=true` 才重跑）；同键任务在排队/运行中时复用该任务（查重+提交在插件级锁内，避免双击竞态）。
 - **R5 落盘与下载**：宿主无文件下载约定可复用（`crawl_task_runner.downloads_dir` 有 7 天轮换，
-  不适合作为交付物）。最小新增：插件数据目录
-  `ctx.plugin_data_dir("tir-report")/exports/<导出日>/` 下写 `<stem>.xlsx`、`<stem>.har`、`<stem>.json`
-  （元数据）；`stem = tir_<项目ASCII>_<起>-<止>_<筛选键sha256前8位>`，不含用户输入的中文/路径字符。
-  `GET files/<day>/<name>`：`day` 必须匹配 `^\d{4}-\d{2}-\d{2}$`，`name` 必须匹配
-  `^[A-Za-z0-9_-]+\.(xlsx|har|json)$`（拒绝 `\`、盘符、`:` 流），再校验 `resolve()` 位于导出根目录内且是文件。
+  不适合作为交付物）。最小新增：交付物只有 `ctx.plugin_data_dir("tir-report")/exports/<导出日>/<stem>.xlsx`；
+  复用判断与产物列表用的运行记录放在插件内部 `runs/<导出日>/<stem>.json`（不进导出目录、不提供下载）；失败不写文件。
+  `stem = tir_<项目ASCII>_<起>-<止>_<筛选键sha256前8位>`，不含用户输入的中文/路径字符。
+  `GET files/<day>/<name>`：`day` 必须匹配 `^\d{4}-\d{2}-\d{2}$`，`name` 必须匹配 `^[A-Za-z0-9_-]+\.xlsx$`
+  （拒绝 `\`、盘符、`:` 流），再校验 `resolve()` 位于导出根目录内且是文件。
 
 ## 4. 模块边界
 
@@ -70,8 +70,6 @@ plugins/tir_report/
   plugin.json        id tir-report，module 页面 report.js
   protocol.py        纯函数：参数模板/编码、URL 与表单、sessionID/公钥解析、read_w_content 表格解析
   client.py          FineReportClient：login → open_report → set_parameters → read_page → export_excel
-  har.py             HarRecorder：包装 session.get/post，白名单脱敏后写 HAR 1.2
-  xlsx_writer.py     退路用的最小 xlsx 写出器（标准库 zipfile）
   service.py         run_export()：组装客户端、落盘三件套、幂等判断、任务视图
   backend.py         路由（写路由首行 local_guard）
   static/report.js   页面：参数、凭据别名、触发、进度、产物列表与下载
@@ -91,31 +89,23 @@ tools/tir_probe.py   Phase 0 只读探针：逐步验证并把脱敏契约报告
 | POST | `export` | 提交导出任务（`local_guard`）；体 `{project, department, section, startDate, endDate, force}` |
 | GET | `export/<task_id>` | 任务进度与结果 |
 | GET | `files` | 产物清单（按导出日倒序） |
-| GET | `files/<day>/<name>` | 下载 xlsx/har/json |
+| GET | `files/<day>/<name>` | 下载 xlsx |
 
 错误码（闭集）：`credential_missing`（未配置别名）、`credential_unavailable`、`login_failed`、
 `login_unsupported`、`session_not_found`、`export_failed`、`network_error`，各自带中文处理指引。
 
-## 6. HAR 脱敏规则（白名单）
+## 6. 敏感信息约束
 
-- URL 与 Referer：主机一律替换为 `report.invalid`（不落内网主机/IP）；查询参数只保留白名单键（`op, cmd, widgetname, format, extype, type,
-  reportIndex, pn, __boxModel__, __webpage__, __fit__, browserWidth, _paperWidth, _paperHeight`），其余值换 `[redacted]`。
-- 请求头：只保留 `Accept, Content-Type, X-Requested-With, Referer(去查询串)` 的值，其余（含 Cookie、
-  Authorization、sessionID）值换 `[redacted]`。
-- 请求体：表单只保留白名单键（`op, cmd, format, type, startIndex, limitIndex, reload`）；`__parameters__`
-  解码后只保留 `XM/BM/KS/STARTTIME/ENDTIME`；JSON 体（登录）全部值换 `[redacted]`，只留键名。
-- 响应：保留状态码、`Content-Type/Content-Length/Content-Disposition`、尺寸；正文只保留 ≤ 512 字节 JSON 中
-  白名单键 `status/state/isExporting` 的标量值；其他（含登录、`read_w_content` 水印、xlsx 二进制）一律不记。
-- `serverIPAddress`、`connection`、`cookies`、`redirectURL` 恒为空。
-- 兜底自检：客户端把账号、口令、口令密文、token、sessionID 登记给记录器，写出前若任一字面值残留则**拒绝写 HAR**
-  （元数据标 `harError=redaction_self_check_failed`）。测试另断言测试主机名不出现。
+插件不产出 HAR（用户 2026-10-09 确认交付物只有 Excel）。账号口令只在凭据上下文内使用；token、sessionID
+只存在客户端对象内存，不写盘、不进任务参数与运行记录；错误信息只用闭集指引码，不回显服务器原文
+（登录失败消息可能回显账号）。`tools/tir_probe.py` 的报告只含步骤名、布尔值、计数与错误码。
 
 ## 7. 测试策略
 
 `tests/test_plugin_tir_report.py`（全离线，fake session 重放脱敏 fixture，不含真实凭据）：
 cjkEncode 与 HAR 第 33 条形态一致（`问题` → `[95ee][9898]`、`[]` → `[5b][5d]`）；请求序列
 `login → entry/access → parameters_d → read_w_content → check/font → export → export_polling`；
-xlsx 以 `PK` 开头且首行 50 列表头；退路模式自建 xlsx 表头一致；HAR 无凭据/token/sessionID；
+落盘 xlsx 与平台返回字节一致且首行 50 列表头；平台不给 xlsx 时失败且不落文件；运行记录无凭据/token/sessionID；
 插件加载、写路由 `local_guard`、文件下载路径穿越被拒、幂等复用。
 
 ## 8. 分阶段与回滚
@@ -128,7 +118,7 @@ xlsx 以 `PK` 开头且首行 50 列表头；退路模式自建 xlsx 表头一�
 ## 9. 留待确认
 
 1. §1 表中三项用户确认；2. Phase 0 探针结果决定 R1 路径与 R2 主路径是否成立；
-3. 若导出主路径在真实环境不成立，是否接受 `mode=rebuilt` 退路（无样式）作为正式交付物。
+3. ~~是否接受重建 xlsx~~：已确认**不接受**；导出端点若在真实环境不成立，需按探针结果修正端点。
 
 ## 10. 独立复核记录（2026-10-09，Opus 只读审查）
 
@@ -142,5 +132,10 @@ xlsx 以 `PK` 开头且首行 50 列表头；退路模式自建 xlsx 表头一�
 
 - `__parameters__` 编码与 HAR 第 33 条**逐字节一致**（同参数 F610S / 车体工程 / 2022-07-11 ~ 2026-10-09）。
 - `read_w_content` 解析（隐藏第 14 列、不闭合 `<td/>`、标题行）对 HAR 第 35 条响应重建的表格与样例 xlsx
-  **12 行 × 50 列逐格一致**（数值列 `1.0` 与 `1` 的格式差异除外）——退路 `rebuilt` 的数据保真度已证实。
+  **12 行 × 50 列逐格一致**（数值列 `1.0` 与 `1` 的格式差异除外）。重建退路已按用户决定移除，此结论仅用于行数统计。
 - 样例 xlsx 经 `header_check` 判定 50 列表头一致。
+
+## 12. 用户决定（2026-10-09）
+
+1. TIR 只产出 Excel：移除 HAR 产物（`har.py`）及相关路由/页面链接；§6、§10 中 HAR 脱敏条目随之失效。
+2. 不接受重建 xlsx：移除 `xlsx_writer.py` 与 `rebuilt` 模式；拿不到帆软原样导出即失败。

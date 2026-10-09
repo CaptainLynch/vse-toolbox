@@ -2,7 +2,7 @@
 """Offline contract tests for the tir-report plugin (FineReport TIR数据简表 export).
 
 假会话按方案 §2 的协议形态重放**合成**响应：fixture 里的账号、口令、token、sessionID 都是测试占位值，
-不含任何来自真实 HAR 的数据；不发真实网络请求。
+不含任何来自真实 HAR 的数据；不发真实网络请求。交付物只有帆软原样导出的 xlsx（不产出 HAR、不自建表格）。
 """
 
 from __future__ import annotations
@@ -26,8 +26,6 @@ from core.credential_provider import MemoryCredentialProvider
 from plugins.tir_report import protocol as P
 from plugins.tir_report import service as S
 from plugins.tir_report.client import FineReportClient, TirError
-from plugins.tir_report.har import HarRecorder
-from plugins.tir_report.xlsx_writer import build_xlsx
 from services.xlsx_preview import read_xlsx_preview
 
 PLUGINS_ROOT = Path(__file__).resolve().parent.parent / "plugins"
@@ -41,6 +39,36 @@ REF = "VSE/tir-test"
 
 
 # ── 假会话 ──────────────────────────────────────────────────────────
+
+
+def _sample_xlsx(rows: list[list[str]]) -> bytes:
+    """A tiny valid workbook standing in for FineReport's own export (inline strings, one sheet)."""
+    def cell(r: int, c: int, value: str) -> str:
+        col = ""
+        n = c + 1
+        while n:
+            n, rem = divmod(n - 1, 26)
+            col = chr(65 + rem) + col
+        return f'<c r="{col}{r}" t="inlineStr"><is><t>{value}</t></is></c>'
+
+    sheet_rows = "".join(f'<row r="{r}">' + "".join(cell(r, c, v) for c, v in enumerate(row)) + "</row>"
+                         for r, row in enumerate(rows, start=1))
+    main = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    pkg = "http://schemas.openxmlformats.org/package/2006/relationships"
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("[Content_Types].xml", '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                         '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+                         '<Default Extension="xml" ContentType="application/xml"/></Types>')
+        archive.writestr("_rels/.rels", f'<Relationships xmlns="{pkg}"><Relationship Id="rId1" '
+                         f'Type="{rel}/officeDocument" Target="xl/workbook.xml"/></Relationships>')
+        archive.writestr("xl/workbook.xml", f'<workbook xmlns="{main}" xmlns:r="{rel}"><sheets>'
+                         '<sheet name="sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>')
+        archive.writestr("xl/_rels/workbook.xml.rels", f'<Relationships xmlns="{pkg}"><Relationship Id="rId1" '
+                         f'Type="{rel}/worksheet" Target="worksheets/sheet1.xml"/></Relationships>')
+        archive.writestr("xl/worksheets/sheet1.xml", f'<worksheet xmlns="{main}"><sheetData>{sheet_rows}</sheetData></worksheet>')
+    return buffer.getvalue()
 
 
 class FakeResponse:
@@ -89,7 +117,7 @@ class FakeFineReport:
         self.export_xlsx = export_xlsx
         self.login_ok = login_ok
         self.expire_session_once = expire_session_once
-        self.xlsx = build_xlsx([list(P.EXPECTED_HEADERS)] + DATA_ROWS)
+        self.xlsx = _sample_xlsx([list(P.EXPECTED_HEADERS)] + DATA_ROWS)
 
     def set_cookies(self, cookies, url):  # type: ignore[no-untyped-def]
         self.cookies.update(cookies)
@@ -264,7 +292,7 @@ def test_client_request_sequence_rsa_login_and_original_export():
             assert call["headers"]["sessionID"] == SESSION_ID
     export_query = fake.calls[6]["query"]
     assert export_query == {"op": "export", "format": "excel", "extype": "simple", "sessionID": SESSION_ID}
-    assert result.mode == "original" and result.content[:2] == b"PK" and result.rows == 3
+    assert result.content == fake.xlsx and result.rows == 3  # 帆软原样导出，不做二次改写
 
 
 def test_client_plaintext_login_when_page_has_no_public_key():
@@ -274,11 +302,13 @@ def test_client_plaintext_login_when_page_has_no_public_key():
     assert login["encrypted"] is False and login["password"] == PASSWORD
 
 
-def test_client_falls_back_to_rebuilt_xlsx():
+def test_client_fails_when_platform_returns_no_xlsx():
+    """不接受自建表格：导出端点没给 xlsx 就失败。"""
     fake = FakeFineReport(export_xlsx=False)
-    result = _client(fake).run(USER, PASSWORD, P.build_parameters(_filters()))
-    assert result.mode == "rebuilt" and result.content[:2] == b"PK"
-    assert S.header_check(result.content) == {"ok": True, "columns": 50}
+    with pytest.raises(TirError) as info:
+        _client(fake).run(USER, PASSWORD, P.build_parameters(_filters()))
+    assert info.value.code == "export_failed"
+    assert fake.step_paths() == EXPECTED_SEQUENCE
 
 
 def test_client_relogs_in_once_when_session_expired():
@@ -317,35 +347,24 @@ def _run(tmp_path: Path, fake: FakeFineReport, **kwargs):  # type: ignore[no-unt
     )
 
 
-def test_run_export_writes_xlsx_har_and_meta(tmp_path: Path):
+def test_run_export_writes_only_the_original_xlsx(tmp_path: Path):
     _, der = _rsa_pair()
     fake = FakeFineReport(public_key=der)
     meta = _run(tmp_path, fake)
     day_dir = tmp_path / "exports" / "2026-10-09"
     stem = meta["stem"]
     assert stem.isascii() and stem.startswith("tir_F610S_20220711-20261009_")
+    assert [p.name for p in day_dir.iterdir()] == [f"{stem}.xlsx"]  # 只交付 Excel
     xlsx = (day_dir / f"{stem}.xlsx").read_bytes()
-    assert xlsx[:2] == b"PK" and zipfile.is_zipfile(io.BytesIO(xlsx))
+    assert xlsx == fake.xlsx and zipfile.is_zipfile(io.BytesIO(xlsx))
     preview = read_xlsx_preview(day_dir / f"{stem}.xlsx", max_rows=5)
     assert tuple(str(v) for v in preview.rows[0][:50]) == P.EXPECTED_HEADERS
-    assert meta["ok"] and meta["mode"] == "original" and meta["headerCheck"] == {"ok": True, "columns": 50}
-
-    har_text = (day_dir / f"{stem}.har").read_text(encoding="utf-8")
-    har = json.loads(har_text)
-    assert har["log"]["version"] == "1.2" and len(har["log"]["entries"]) == len(EXPECTED_SEQUENCE)
-    login_body = fake.calls[1]["data"].decode()
-    encrypted_pw = json.loads(login_body)["password"]
-    for secret in (USER, PASSWORD, encrypted_pw, TOKEN, SESSION_ID, "report.example.test", "fine_auth_token"):
-        assert secret not in har_text, secret
-    params = next(e for e in har["log"]["entries"] if "parameters_d" in e["request"]["url"])
-    summary = json.loads(params["request"]["postData"]["params"][0]["value"])
-    assert summary == {"XM": "F610S", "BM": "车体工程", "KS": "", "STARTTIME": "2022-07-11", "ENDTIME": "2026-10-09"}
-    for entry in har["log"]["entries"]:
-        assert urlsplit(entry["request"]["url"]).hostname == "report.invalid"
-        assert entry["serverIPAddress"] == "" and entry["request"]["cookies"] == []
-        assert "text" not in entry["response"]["content"] or len(entry["response"]["content"]["text"]) < 64
-    meta_file = json.loads((day_dir / f"{stem}.json").read_text(encoding="utf-8"))
-    assert meta_file["har"] is True and meta_file["steps"][-1] == "export_polling"
+    assert meta["ok"] and meta["rows"] == 3 and meta["headerCheck"] == {"ok": True, "columns": 50}
+    assert not list(tmp_path.rglob("*.har"))
+    record_text = (tmp_path / "runs" / "2026-10-09" / f"{stem}.json").read_text(encoding="utf-8")
+    for secret in (USER, PASSWORD, TOKEN, SESSION_ID):
+        assert secret not in record_text
+    assert json.loads(record_text)["steps"][-1] == "export_polling"
 
 
 def test_run_export_reuses_same_day_result_unless_forced(tmp_path: Path):
@@ -357,13 +376,11 @@ def test_run_export_reuses_same_day_result_unless_forced(tmp_path: Path):
     assert forced["reused"] is False and fake.calls
 
 
-def test_run_export_failure_keeps_har_and_meta_without_xlsx(tmp_path: Path):
+@pytest.mark.parametrize("fake", [FakeFineReport(login_ok=False), FakeFineReport(export_xlsx=False)])
+def test_run_export_failure_writes_nothing(tmp_path: Path, fake: FakeFineReport):
     with pytest.raises(TirError):
-        _run(tmp_path, FakeFineReport(login_ok=False))
-    files = sorted(p.suffix for p in (tmp_path / "exports" / "2026-10-09").iterdir())
-    assert files == [".har", ".json"]
-    meta = json.loads(next((tmp_path / "exports" / "2026-10-09").glob("*.json")).read_text(encoding="utf-8"))
-    assert meta["ok"] is False and meta["errorCode"] == "login_failed"
+        _run(tmp_path, fake)
+    assert not (tmp_path / "exports").exists() and not (tmp_path / "runs").exists()
     assert S.find_cached(tmp_path, "2026-10-09", _filters()) is None
 
 
@@ -378,23 +395,10 @@ def test_run_export_credential_errors(tmp_path: Path):
     assert info.value.code == "credential_unavailable"
 
 
-def test_har_recorder_refuses_to_write_when_secret_survives():
-    from plugins.tir_report.har import HarLeakError
-
-    class Echo(FakeFineReport):
-        def get(self, url, **kwargs):  # type: ignore[no-untyped-def]
-            return FakeResponse(200, json.dumps({"status": TOKEN[:20]}), "application/json")
-
-    recorder = HarRecorder(Echo())
-    recorder.register_secret("abcd1234")
-    recorder.get(HOST + "/webroot/decision/x?op=abcd1234")  # 白名单查询键原样保留 -> 自检必须拦截
-    with pytest.raises(HarLeakError):
-        recorder.dumps()
-
-
 @pytest.mark.parametrize("day, name", [
     ("2026-10-09", "..\\..\\config.json"), ("2026-10-09", "../x.json"), ("..", "x.json"),
     ("2026-10-09", "C:x.xlsx"), ("2026-10-09", "x.exe"), ("2026-10-09", "missing.xlsx"),
+    ("2026-10-09", "x.har"), ("2026-10-09", "x.json"),
 ])
 def test_safe_file_path_rejects_traversal(tmp_path: Path, day: str, name: str):
     (tmp_path / "exports" / "2026-10-09").mkdir(parents=True)
@@ -459,10 +463,9 @@ def test_plugin_loads_and_exports_end_to_end(app_client):  # type: ignore[no-unt
     assert fake.step_paths() == EXPECTED_SEQUENCE
 
     files = _ok(http.get("/api/p/tir-report/files"))["exports"]
-    assert files and sorted(name.rsplit(".", 1)[1] for name in files[0]["files"]) == ["har", "json", "xlsx"]
-    xlsx_name = next(name for name in files[0]["files"] if name.endswith(".xlsx"))
-    download = http.get(f"/api/p/tir-report/files/{files[0]['day']}/{xlsx_name}")
-    assert download.status_code == 200 and download.data[:2] == b"PK"
+    assert len(files) == 1 and files[0]["file"].endswith(".xlsx") and files[0]["rows"] == 3
+    download = http.get(f"/api/p/tir-report/files/{files[0]['day']}/{files[0]['file']}")
+    assert download.status_code == 200 and download.data == fake.xlsx
     assert http.get("/api/p/tir-report/files/2026-10-09/..%5Cconfig.json").status_code == 404
 
     again = _ok(http.post("/api/p/tir-report/export", json={"project": "F610S", "department": "车体工程",

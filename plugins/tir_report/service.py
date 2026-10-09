@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""TIR 数据简表导出：落盘三件套、幂等复用、任务视图（不含 Flask）。
+"""TIR 数据简表导出：落盘 Excel、幂等复用、任务视图（不含 Flask）。
 
-产物目录：``<插件数据目录>/exports/<导出日 YYYY-MM-DD>/``，文件名是纯 ASCII 的
-``tir_<项目>_<起>-<止>_<键哈希>.{xlsx,har,json}``——同一导出日同一组筛选条件的文件名固定，
-已有成功产物时直接复用（``force`` 才重跑）。``.json`` 是元数据（模式、行数、表头校验、步骤）。
-失败时只写 ``.har`` 与 ``.json``（``ok=false``）供取证，不写 ``.xlsx``。
+交付物只有一件：帆软原样导出的 xlsx，落在 ``<插件数据目录>/exports/<导出日 YYYY-MM-DD>/``，文件名是纯 ASCII 的
+``tir_<项目>_<起>-<止>_<键哈希>.xlsx``——同一导出日同一组筛选条件的文件名固定，已有成功产物时直接复用
+（``force`` 才重跑）。复用与产物列表需要的运行记录（行数、表头校验）是插件内部数据，放在
+``<插件数据目录>/runs/<导出日>/<同名>.json``，不进导出目录、不提供下载。失败不写任何文件，原因见任务错误信息。
 """
 
 from __future__ import annotations
@@ -20,20 +20,15 @@ from typing import Any, Callable, Mapping
 
 from . import protocol as P
 from .client import FineReportClient, TirError
-from .har import HarLeakError, HarRecorder
 
 TASK_TYPE = "tir_report_export"
 TASK_SOURCE = "tir-report"
 CONFIG_FILE = "config.json"
 _DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,120}\.(xlsx|har|json)$")
+_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,120}\.xlsx$")
 _TASK_ID_RE = re.compile(r"^crawl_[0-9a-f]{12}$")
 _REF_RE = re.compile(r"^[^\x00-\x1f]{1,256}$")
-_MIME = {
-    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    "har": "application/json",
-    "json": "application/json",
-}
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 # ── 配置（只存凭据别名与默认筛选，不存账号口令） ────────────────────
@@ -82,6 +77,10 @@ def exports_root(data_dir: Path) -> Path:
     return Path(data_dir) / "exports"
 
 
+def runs_root(data_dir: Path) -> Path:
+    return Path(data_dir) / "runs"
+
+
 def file_stem(filters: P.ExportFilters) -> str:
     project = re.sub(r"[^A-Za-z0-9-]", "", filters.project)[:24] or "project"
     digest = hashlib.sha256(filters.cache_key().encode("utf-8")).hexdigest()[:8]
@@ -97,10 +96,6 @@ def safe_file_path(data_dir: Path, day: str, name: str) -> Path | None:
     if not target.is_relative_to(root) or not target.is_file():
         return None
     return target
-
-
-def mime_for(name: str) -> str:
-    return _MIME[name.rsplit(".", 1)[-1]]
 
 
 def _atomic_write(path: Path, content: bytes) -> None:
@@ -119,13 +114,13 @@ def _atomic_write(path: Path, content: bytes) -> None:
 
 
 def find_cached(data_dir: Path, day: str, filters: P.ExportFilters) -> dict[str, Any] | None:
-    meta_path = exports_root(data_dir) / day / f"{file_stem(filters)}.json"
+    stem = file_stem(filters)
     try:
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta = json.loads((runs_root(data_dir) / day / f"{stem}.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    if meta.get("ok") and (meta_path.with_suffix(".xlsx")).is_file():
-        return meta
+    if meta.get("ok") and (exports_root(data_dir) / day / f"{stem}.xlsx").is_file():
+        return {**meta, "day": day}
     return None
 
 
@@ -135,14 +130,12 @@ def list_exports(data_dir: Path, limit: int = 50) -> list[dict[str, Any]]:
         return []
     items: list[dict[str, Any]] = []
     for day_dir in sorted((p for p in root.iterdir() if p.is_dir() and _DAY_RE.match(p.name)), reverse=True):
-        for meta_path in sorted(day_dir.glob("tir_*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        for xlsx in sorted(day_dir.glob("tir_*.xlsx"), key=lambda p: p.stat().st_mtime, reverse=True):
             try:
-                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                meta = json.loads((runs_root(data_dir) / day_dir.name / f"{xlsx.stem}.json").read_text(encoding="utf-8"))
             except (OSError, ValueError):
-                continue
-            files = [name for name in (f"{meta_path.stem}.xlsx", f"{meta_path.stem}.har", meta_path.name)
-                     if (day_dir / name).is_file()]
-            items.append({**meta, "day": day_dir.name, "files": files})
+                meta = {"stem": xlsx.stem}
+            items.append({**meta, "day": day_dir.name, "file": xlsx.name})
             if len(items) >= limit:
                 return items
     return items
@@ -183,7 +176,7 @@ def run_export(
     cancelled: Callable[[], bool] = lambda: False,
     sleep: Callable[[float], None] | None = None,
 ) -> dict[str, Any]:
-    """Run one export and write xlsx + redacted HAR + meta. Returns the meta dict."""
+    """Run one export and write the original xlsx. Returns the run record."""
     day = today.isoformat()
     if not force:
         cached = find_cached(data_dir, day, filters)
@@ -192,47 +185,29 @@ def run_export(
     if not credential_ref:
         raise TirError("credential_missing")
 
-    out_dir = exports_root(data_dir) / day
     stem = file_stem(filters)
-    recorder = HarRecorder(session_factory())
-    client_kwargs: dict[str, Any] = {"base_url": base_url, "on_secret": recorder.register_secret,
-                                     "cancelled": cancelled}
+    client_kwargs: dict[str, Any] = {"base_url": base_url, "cancelled": cancelled}
     if sleep is not None:
         client_kwargs["sleep"] = sleep
-    client = FineReportClient(recorder, **client_kwargs)
-    meta: dict[str, Any] = {
-        "ok": False, "report": P.REPORT_NAME, "filters": filters.as_payload(), "stem": stem,
-        "startedAt": datetime.now().isoformat(timespec="seconds"),
-    }
+    client = FineReportClient(session_factory(), **client_kwargs)
+    started = datetime.now().isoformat(timespec="seconds")
     from core.credential_provider import CredentialProviderError
 
+    progress("login", 10)
     try:
-        progress("login", 10)
-        try:
-            with credential_provider.resolve(credential_ref) as credential:
-                result = client.run(credential.username, credential.password, P.build_parameters(filters))
-        except CredentialProviderError:
-            raise TirError("credential_unavailable") from None
-        progress("save", 90)
-        check = header_check(result.content)
-        meta.update({"ok": True, "mode": result.mode, "rows": result.rows, "headerCheck": check,
-                     "bytes": len(result.content)})
-        _atomic_write(out_dir / f"{stem}.xlsx", result.content)
-    except TirError as exc:
-        meta.update({"errorCode": exc.code, "error": str(exc)})
-        raise
-    finally:
-        meta["steps"] = list(client.steps)
-        meta["finishedAt"] = datetime.now().isoformat(timespec="seconds")
-        try:
-            har_text = recorder.dumps(comment=f"{P.REPORT_NAME} {day} redacted")
-            _atomic_write(out_dir / f"{stem}.har", har_text.encode("utf-8"))
-            meta["har"] = True
-        except HarLeakError:
-            meta["har"] = False
-            meta["harError"] = "redaction_self_check_failed"
-        recorder.clear_secrets()
-        _atomic_write(out_dir / f"{stem}.json", json.dumps(meta, ensure_ascii=False, indent=2).encode("utf-8"))
+        with credential_provider.resolve(credential_ref) as credential:
+            result = client.run(credential.username, credential.password, P.build_parameters(filters))
+    except CredentialProviderError:
+        raise TirError("credential_unavailable") from None
+    progress("save", 90)
+    meta: dict[str, Any] = {
+        "ok": True, "report": P.REPORT_NAME, "filters": filters.as_payload(), "stem": stem,
+        "rows": result.rows, "headerCheck": header_check(result.content), "bytes": len(result.content),
+        "steps": list(result.steps), "startedAt": started,
+        "finishedAt": datetime.now().isoformat(timespec="seconds"),
+    }
+    _atomic_write(exports_root(data_dir) / day / f"{stem}.xlsx", result.content)
+    _atomic_write(runs_root(data_dir) / day / f"{stem}.json", json.dumps(meta, ensure_ascii=False, indent=2).encode("utf-8"))
     progress("done", 100)
     return {**meta, "day": day, "reused": False}
 

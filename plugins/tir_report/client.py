@@ -1,13 +1,12 @@
 # -*- coding: utf-8 -*-
 """FineReport client for the TIR数据简表 export (transport-agnostic, no credential storage).
 
-``session`` 是 requests 风格对象（生产是 ``services.windows_http.WinHTTPSession`` 外包
-``HarRecorder``；测试是假会话）。客户端不保存账号口令：``login`` 拿到的明文只在调用栈里使用，
+``session`` 是 requests 风格对象（生产是 ``services.windows_http.WinHTTPSession``；测试是假会话）。客户端不保存账号口令：``login`` 拿到的明文只在调用栈里使用，
 token 与 sessionID 只存在本对象内存，任务结束即丢弃（方案 R1/R3：每次任务重新登录，不做续期）。
 
 已证实的协议（HAR）与待 Phase 0 证实的假设（公钥位置、sessionID 模式、``op=export`` 下载端点）
-见 ``docs/TIR_REPORT_PLUGIN_DESIGN_20261009.md``；假设不成立时以闭集错误码失败或走 ``rebuilt`` 退路，
-不静默猜测。
+见 ``docs/TIR_REPORT_PLUGIN_DESIGN_20261009.md``；假设不成立时以闭集错误码失败，不静默猜测。
+交付物只有帆软原样导出的 xlsx：导出端点拿不到 xlsx 就失败，不自建表格（用户 2026-10-09 确认不接受重建产物）。
 """
 
 from __future__ import annotations
@@ -32,7 +31,7 @@ REMEDIES = {
     "login_unsupported": "帆软登录页的加密方式无法识别（可能启用了滑块或 SM4），请运行 tools/tir_probe.py 取证后反馈",
     "session_not_found": "打开 TIR数据简表 报表失败（找不到报表会话），请确认账号有该报表权限",
     "parameters_rejected": "报表不接受这组查询参数，请检查项目/部门/日期",
-    "export_failed": "帆软导出失败，且报表内容无法解析",
+    "export_failed": "帆软没有返回 Excel 文件，导出失败；请稍后重试，仍失败请运行 tools/tir_probe.py 取证",
     "network_error": "连接帆软报表平台失败，请确认处于公司内网后重试",
     "cancelled": "任务已取消",
 }
@@ -49,10 +48,8 @@ class TirError(RuntimeError):
 
 @dataclass
 class ExportResult:
-    content: bytes
-    mode: str  # "original"（帆软原样导出）或 "rebuilt"（解析 read_w_content 自建）
-    rows: int
-    headers: list[str] = field(default_factory=list)
+    content: bytes  # 帆软原样导出的 xlsx，不做二次改写
+    rows: int | None  # 报表页面上的数据行数（页面内容无法解析时为 None，不影响导出）
     steps: list[str] = field(default_factory=list)
 
 
@@ -65,7 +62,6 @@ class FineReportClient:
         entry_id: str = P.ENTRY_ID,
         sleep: Callable[[float], None] = time.sleep,
         clock_ms: Callable[[], int] = lambda: int(time.time() * 1000),
-        on_secret: Callable[..., None] | None = None,
         cancelled: Callable[[], bool] = lambda: False,
     ) -> None:
         self._session = session
@@ -73,7 +69,6 @@ class FineReportClient:
         self._entry_id = entry_id
         self._sleep = sleep
         self._clock_ms = clock_ms
-        self._on_secret = on_secret or (lambda *values: None)
         self._cancelled = cancelled
         self._session_id: str | None = None
         self.steps: list[str] = []
@@ -124,9 +119,7 @@ class FineReportClient:
                 raise TirError("login_unsupported", "公钥无法使用") from exc
             body = P.login_body(username, secret, encrypted=True)
         else:
-            secret = password
             body = P.login_body(username, password, encrypted=False)
-        self._on_secret(username, password, secret)
         response = self._send("POST", "/login", "login", data=body.encode("utf-8"),
                               headers={"Content-Type": "application/json;charset=UTF-8"})
         try:
@@ -139,7 +132,6 @@ class FineReportClient:
             token = P.parse_access_token(payload)
         except P.ProtocolError:
             raise TirError("login_failed", f"错误码 {P.login_error_code(payload)}") from None
-        self._on_secret(token)
         # FineReport 前端把 token 写进 fine_auth_token cookie，XHR 另带 Bearer 头；两者都设置。
         self._session.headers["Authorization"] = f"Bearer {token}"
         self._session.set_cookies({"fine_auth_token": token}, self._base + "/")
@@ -160,7 +152,6 @@ class FineReportClient:
                 session_id = P.parse_session_id(self._text(viewlet))
             except P.ProtocolError:
                 raise TirError("session_not_found") from None
-        self._on_secret(session_id)
         self._session_id = session_id
         return session_id
 
@@ -173,6 +164,7 @@ class FineReportClient:
             raise TirError("parameters_rejected", f"HTTP {response.status_code}")
 
     def read_pages(self) -> list[list[list[str]]]:
+        """浏览器在导出前先取一次报表内容（报表据此按参数计算）；这里照做，并顺带统计行数。"""
         pages = []
         page_no, total = 0, 0
         while True:
@@ -181,7 +173,7 @@ class FineReportClient:
             try:
                 rows, total = P.parse_content_page(json.loads(self._text(response)))
             except (ValueError, P.ProtocolError):
-                raise TirError("export_failed", "报表内容不是预期格式") from None
+                return pages  # 行数只用于展示；内容格式变化不阻断导出
             pages.append(rows)
             page_no += 1
             # reportTotalPage=0 表示未分页；>1 时按 pn 继续取（Phase 0 需复核分页起点）。
@@ -189,8 +181,6 @@ class FineReportClient:
                 return pages
 
     def export_excel(self, pages: list[list[list[str]]]) -> ExportResult:
-        from .xlsx_writer import build_xlsx
-
         self._send("POST", "/export/check/font", "check_font", data=P.form_body([("format", "excel")]),
                    headers={"Content-Type": _FORM})
         response = self._send("GET", "/view/report", "export", query=P.export_query(self._session_id or ""),
@@ -198,17 +188,13 @@ class FineReportClient:
         content = bytes(getattr(response, "content", b"") or b"")
         self._send("POST", "/view/report", "export_polling", data=P.export_polling_form(self._clock_ms()),
                    headers={"Content-Type": _FORM})
-        try:
-            table = P.table_from_pages(pages)
-        except P.ProtocolError:
-            table = []
-        if response.status_code == 200 and P.is_xlsx(content):
-            return ExportResult(content=content, mode="original", rows=max(len(table) - 1, 0),
-                                headers=table[0] if table else [], steps=list(self.steps))
-        if not table:
+        if response.status_code != 200 or not P.is_xlsx(content):
             raise TirError("export_failed", f"HTTP {response.status_code}")
-        return ExportResult(content=build_xlsx(table), mode="rebuilt", rows=len(table) - 1,
-                            headers=table[0], steps=list(self.steps))
+        try:
+            rows: int | None = len(P.table_from_pages(pages)) - 1
+        except P.ProtocolError:
+            rows = None
+        return ExportResult(content=content, rows=rows, steps=list(self.steps))
 
     def run(self, username: str, password: str, params: Mapping[str, Any]) -> ExportResult:
         """login → entry/access → parameters_d → read_w_content → check/font → export → export_polling.

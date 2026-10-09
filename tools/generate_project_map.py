@@ -140,10 +140,8 @@ ROLE_OVERRIDES = {
     "plugins/sign_daily/mail.py": "3D单签署日报 email body (three charts + table), recipients and .eml (pure)",
     "plugins/tir_report/backend.py": "tir-report plugin: FineReport TIR数据简表 export routes, tasks and downloads",
     "plugins/tir_report/protocol.py": "FineReport TIR数据简表 protocol: parameters/cjkEncode, sessionID, content parsing (pure)",
-    "plugins/tir_report/har.py": "Whitelist-redacting HAR 1.2 recorder for tir-report runs",
-    "plugins/tir_report/client.py": "FineReport client: login, report session, parameters, export with rebuilt fallback",
-    "plugins/tir_report/service.py": "tir-report export run: xlsx + redacted HAR + meta on disk, same-day reuse, task view",
-    "plugins/tir_report/xlsx_writer.py": "Minimal stdlib .xlsx writer for the tir-report rebuilt fallback",
+    "plugins/tir_report/client.py": "FineReport client: login, report session, parameters, original Excel export",
+    "plugins/tir_report/service.py": "tir-report export run: original xlsx on disk, same-day reuse, task view",
     "main.py": "Rich CLI adapter, menu routing and legacy operations",
     "webui.py": "WebUI source/frozen launcher",
     "excel_worker_entry.py": "Frozen Excel Worker launcher",
@@ -349,7 +347,7 @@ def _manual_sections() -> str:
         | 插件前端 Shell/UI Kit | `web/static/host/shell.js` | `web/static/host/kit.js`, `web/static/host/pages.js`, `web/static/host/api.js` | `tests/test_host_frontend.py` |
         | 交付物表单插件/表单定义 | `core/form_registry.py` | `plugins/deliverable_forms/backend.py`, `services/deliverable_form_analysis.py` | `tests/test_plugin_deliverable_forms.py` |
         | 3D单签署日报插件 | `plugins/sign_daily/rules.py` | `plugins/sign_daily/service.py`, `plugins/sign_daily/settings.py`, `plugins/sign_daily/mail.py`, `plugins/sign_daily/backend.py`, `plugins/sign_daily/static/report.js` | `tests/test_sign_daily_rules.py`, `tests/test_plugin_sign_daily.py` |
-        | TIR数据简表插件/帆软导出 | `plugins/tir_report/protocol.py` | `plugins/tir_report/client.py`, `plugins/tir_report/service.py`, `plugins/tir_report/har.py`, `plugins/tir_report/backend.py`, `tools/tir_probe.py` | `tests/test_plugin_tir_report.py` |
+        | TIR数据简表插件/帆软导出 | `plugins/tir_report/protocol.py` | `plugins/tir_report/client.py`, `plugins/tir_report/service.py`, `plugins/tir_report/backend.py`, `tools/tir_probe.py` | `tests/test_plugin_tir_report.py` |
         | Web/API/UI | `web/app.py` | `web/static/host/shell.js`, `web/templates/dashboard.html` | `tests/*web*.py` |
         | Aras EWO/PAA/NCR | `web/app.py` | `services/aras_auth.py`, `services/aras_crawler.py`, `services/aras_export.py` | `tests/*aras*.py` |
         | TDC/SOR/数模/A 面 | `web/app.py` | `services/tdc_auth.py`, `services/tdc_crawler.py`, `services/tdc_export_cache.py` | `tests/*tdc*.py` |

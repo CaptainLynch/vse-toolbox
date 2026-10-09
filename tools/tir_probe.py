@@ -7,8 +7,8 @@ Usage (Windows, company network)::
     python tools/tir_probe.py --credential-ref <条目名> --project F610S --department 车体工程 --start 2022-07-11
 
 逐步验证方案 §2 的链路（登录页公钥 → 登录 → 打开报表/sessionID → parameters_d → read_w_content →
-check/font → op=export → export_polling），把**脱敏**结论写到 ``.runtime/tir_probe_report.json`` 与
-``.runtime/tir_probe.har``。约定同 ``tdc_probe_main.py``：不写库、不落原始数据（不保存 xlsx、不保存
+check/font → op=export → export_polling），把脱敏结论（只有步骤名、布尔值、计数与闭集错误码）写到
+``.runtime/tir_probe_report.json``。约定同 ``tdc_probe_main.py``：不写库、不落原始数据（不保存 xlsx、不保存
 报表内容），只报告魔数、表头是否 50 列一致与行数。凭据只经 Windows 凭据管理器读取，不接受命令行口令。
 """
 
@@ -27,7 +27,6 @@ from core.credential_provider import CredentialProviderError, WindowsCredentialM
 from plugins.tir_report import protocol as P  # noqa: E402
 from plugins.tir_report import service as S  # noqa: E402
 from plugins.tir_report.client import FineReportClient, TirError  # noqa: E402
-from plugins.tir_report.har import HarLeakError, HarRecorder  # noqa: E402
 
 
 def probe(args: argparse.Namespace, session=None, provider=None) -> dict:
@@ -35,8 +34,7 @@ def probe(args: argparse.Namespace, session=None, provider=None) -> dict:
 
     filters = P.normalize_filters({"project": args.project, "department": args.department, "section": args.section,
                                    "startDate": args.start, "endDate": args.end}, today=date.today())
-    recorder = HarRecorder(session or WinHTTPSession(timeout=60))
-    client = FineReportClient(recorder, base_url=args.base_url, on_secret=recorder.register_secret)
+    client = FineReportClient(session or WinHTTPSession(timeout=60), base_url=args.base_url)
     report: dict = {"report": P.REPORT_PATH, "filters": filters.as_payload(), "checks": {}}
     checks = report["checks"]
     provider = provider or WindowsCredentialManagerProvider()
@@ -56,9 +54,8 @@ def probe(args: argparse.Namespace, session=None, provider=None) -> dict:
             checks["content_pages"] = len(pages)
             checks["content_rows"] = len(table) - 1
             checks["content_header_ok"] = tuple(table[0]) == P.EXPECTED_HEADERS
-            result = client.export_excel(pages)
-            checks["R2_export_mode"] = result.mode
-            checks["R2_export_is_xlsx"] = P.is_xlsx(result.content)
+            result = client.export_excel(pages)  # 拿不到 xlsx 时抛 export_failed
+            checks["R2_export_is_xlsx"] = True
             checks["R2_header"] = S.header_check(result.content)
     except CredentialProviderError:
         checks["error"] = "credential_unavailable"
@@ -67,12 +64,6 @@ def probe(args: argparse.Namespace, session=None, provider=None) -> dict:
     report["steps"] = list(client.steps)
     out_dir = REPO_ROOT / ".runtime"
     out_dir.mkdir(exist_ok=True)
-    try:
-        (out_dir / "tir_probe.har").write_text(recorder.dumps(comment="tir probe redacted"), encoding="utf-8")
-        report["har"] = ".runtime/tir_probe.har"
-    except HarLeakError:
-        report["har"] = "redaction_self_check_failed"
-    recorder.clear_secrets()
     (out_dir / "tir_probe_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return report
 
