@@ -4,7 +4,8 @@
 交付物只有一件：帆软原样导出的 xlsx。落盘格式与「自动归档」的其他交付物完全一致（用户 2026-10-09 确认）：
 同一个 ``core.archive_store.ArchiveStore`` 写入同一个归档根目录（设置里的 ``archiveDirectory``，缺省
 ``data/output/exports``），路径 ``<根>/finereport/tir_brief/<日期>/<运行号>/<平台文件名，缺省 TIR数据简表.xlsx>``，
-artifact_type 为 ``official_xlsx``，与 TDC/Aras 官方工作簿同一套安全检查与重名处理。
+artifact_type 为 ``official_xlsx``，与 TDC/Aras 官方工作簿同一套安全检查与重名处理；同目录另写
+``tir_brief-manifest.json``（``manifest_json``，键与 Aras 官方工作簿的 manifest 一致，用户 2026-10-09 要求）。
 同一导出日同一组筛选条件已有成功产物时直接复用（``force`` 才重跑）；复用判断与产物列表用的运行记录是插件内部数据，
 放在 ``<插件数据目录>/runs/<导出日>/<筛选键>.json``（不提供下载）。失败不写任何文件。
 
@@ -35,6 +36,8 @@ TASK_TYPE = "tir_report_export"
 ARCHIVE_SOURCE = "finereport"
 ARCHIVE_REPORT = "tir_brief"
 ARTIFACT_TYPE = "official_xlsx"
+MANIFEST_TYPE = "manifest_json"
+JOB_KEY = "finereport_tir_brief"
 RUN_SEQ_FILE = "run-seq.json"
 TASK_SOURCE = "tir-report"
 CONFIG_FILE = "config.json"
@@ -321,10 +324,29 @@ def run_export(
         run_id = _next_run_id(data_dir)
         artifact = store.write_bytes(result.content, source=ARCHIVE_SOURCE, report=ARCHIVE_REPORT, run_id=run_id,
                                      file_name=result.file_name, artifact_type=ARTIFACT_TYPE)
+        check = header_check(result.content)
+        manifest = store.write_json(
+            {
+                # 与 services/scheduled_archive_connectors.py 中官方工作簿 manifest 同一组键
+                "jobKey": JOB_KEY,
+                "recordCount": result.rows,
+                "normalization": "official_workbook_only",
+                "bookkeeping": {"headerColumns": check.get("columns"), "headerMatchesContract": check.get("ok"),
+                                "workbookBytes": artifact.size_bytes, "workbookSha256": artifact.sha256},
+                "stopReason": None,
+                "projectionError": None,
+                "report": P.REPORT_PATH,
+                "filters": filters.as_payload(),
+                "workbook": artifact.display_name,
+            },
+            source=ARCHIVE_SOURCE, report=ARCHIVE_REPORT, run_id=run_id,
+            file_name=f"{ARCHIVE_REPORT}-manifest.json", artifact_type=MANIFEST_TYPE,
+        )
         meta: dict[str, Any] = {
             "ok": True, "report": P.REPORT_NAME, "filters": filters.as_payload(), "stem": stem,
             "runId": run_id, "relativePath": artifact.relative_path, "fileName": artifact.display_name,
-            "sha256": artifact.sha256, "rows": result.rows, "headerCheck": header_check(result.content),
+            "manifestPath": manifest.relative_path,
+            "sha256": artifact.sha256, "rows": result.rows, "headerCheck": check,
             "bytes": artifact.size_bytes, "steps": list(result.steps), "startedAt": started,
             "finishedAt": datetime.now().isoformat(timespec="seconds"),
         }

@@ -17,7 +17,7 @@
   用户名去掉 `域\` 前缀），已移除 credential_ref 配置。
 - **确认页反馈（已实现）**：日报汇总行改为「长周期签单情况：…」「总签单情况：…」；TIR Excel 落盘改用
   `ArchiveStore`，与自动归档其他交付物同根同格式：`<archiveDirectory 或 data/output/exports>/finereport/tir_brief/<日期>/<运行号>/TIR数据简表.xlsx`
-  （official_xlsx，不写 manifest）。确认页：https://claude.ai/artifact/UAXUebGjHuETKFyDkueYft
+  （official_xlsx）+ 同目录 `tir_brief-manifest.json`（manifest_json，键同 Aras 官方工作簿 manifest）。确认页：https://claude.ai/artifact/UAXUebGjHuETKFyDkueYft
 - **未做 / 待确认**：Phase 0 真实探针未跑（云端 Linux 无内网、无凭据）。下一步：在 Windows 内网机先在 VSE 里登录 TDC
   并勾选「保存至凭据保护库」，再 `python tools/tir_probe.py`，看 `.runtime/tir_probe_report.json` 的 R1（公钥/明文登录、
   帆软是否接受去掉域前缀的用户名）、R2（`op=export&format=excel&extype=simple` 是否返回 xlsx——不接受重建，不成立就

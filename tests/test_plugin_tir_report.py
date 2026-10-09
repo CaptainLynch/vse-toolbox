@@ -389,8 +389,17 @@ def test_run_export_archives_the_original_xlsx_like_other_deliverables(tmp_path:
     fake = FakeFineReport(public_key=der)
     meta = _run(tmp_path, fake)
     archive = tmp_path / "archive"
-    files = [p for p in archive.rglob("*") if p.is_file()]
-    assert len(files) == 1  # 只交付 Excel
+    files = sorted((p for p in archive.rglob("*") if p.is_file()), key=lambda p: p.suffix != ".xlsx")
+    assert [p.name for p in files] == ["TIR数据简表.xlsx", "tir_brief-manifest.json"]  # 与自动归档一样：工作簿 + manifest
+    assert files[0].parent == files[1].parent
+    manifest_text = files[1].read_text(encoding="utf-8")
+    manifest = json.loads(manifest_text)
+    assert {"jobKey", "recordCount", "normalization", "bookkeeping", "stopReason", "projectionError"} <= set(manifest)
+    assert manifest["recordCount"] == 3 and manifest["workbook"] == "TIR数据简表.xlsx"
+    assert manifest["bookkeeping"]["headerColumns"] == 50 and manifest["bookkeeping"]["headerMatchesContract"] is True
+    for secret in (USER, PASSWORD, TOKEN, SESSION_ID):
+        assert secret not in manifest_text
+    assert meta["manifestPath"] == files[1].relative_to(archive).as_posix()
     relative = files[0].relative_to(archive).as_posix()
     source, report, day, run_id, name = relative.split("/")
     assert (source, report, run_id, name) == ("finereport", "tir_brief", "1", "TIR数据简表.xlsx")
@@ -527,6 +536,7 @@ def test_auto_export_cli_uses_plugin_data_dir_and_domain_vault(monkeypatch: pyte
     monkeypatch.setattr(cli, "archive_store", lambda: _store(tmp_path))
     assert cli.main(["--once"]) == 0
     assert [p.name for p in (tmp_path / "archive").rglob("*.xlsx")] == ["TIR数据简表.xlsx"]
+    assert [p.name for p in (tmp_path / "archive").rglob("*.json")] == ["tir_brief-manifest.json"]
     with pytest.raises(SystemExit):
         cli.main([])  # 与 scheduled-archive 一样必须显式 --once
 
