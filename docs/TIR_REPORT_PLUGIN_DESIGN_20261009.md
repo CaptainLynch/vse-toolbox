@@ -9,9 +9,9 @@
 | 问题 | 本次决定 | 是否待用户确认 |
 | --- | --- | --- |
 | 交付形态 | **独立插件** `plugins/tir_report/` 只产出帆软原样导出的 Excel，不产出 HAR，不并入日报邮件 | 已确认（2026-10-09） |
-| 默认参数 | 项目 `F610S`、部门 `车体工程`、发放日期 `2022-07-11` ~ 当天 | 是（§6-2） |
-| 每日自动跑 | 不做（只提供页面手动触发）；后续可复用 `tools/install_*_task.ps1` 模式 | 是（§6-2） |
-| 凭据 | 页面只保存 `credential_ref` 别名，值由 Windows 凭据管理器解析 | 是（§6-3，需用户提供条目名） |
+| 默认参数 | 项目**留空（全部项目）**、部门 `车体工程`、发放日期 `2022-07-11` ~ 当天；页面可改并保存 | 已确认（项目留空） |
+| 每日自动跑 | 参照「自动归档」：计划任务每小时跑 `tools/tir_export_cli.py --once`，页面开关 + 时间决定是否导出 | 已确认 |
+| 凭据 | 帆软账号 = 统一域账号：经宿主 `domain_credential_vault`（DPAPI）读取，插件不保存任何账号信息 | 已确认 |
 | 「地区」参数 | **TIR数据简表.cpt 没有地区参数**：HAR 第 33 条 `parameters_d` 只含 `XM/BM/KS/STARTTIME/ENDTIME/…`；`REGION_NAME` 属于旧报表 `旧TIR/整车-简表.cpt`（第 56/57 条）。本次只支持新报表真实存在的参数 | 告知用户 |
 
 ## 2. 协议结论（HAR 结构分析）
@@ -50,7 +50,8 @@
   HTTP 200 且以 `PK` 开头才算成功，否则任务以 `export_failed` 失败、不落任何文件。**不做自建 xlsx 退路**
   （用户 2026-10-09 确认不接受重建产物）。`read_w_content` 仍按浏览器顺序调用一次（报表据此计算），只用于统计行数。
 - **R3 会话与并发**：任务经宿主 `crawl_task_runner` 提交，`source="tir-report"` 固定 → **仅本进程内**同源串行；
-  不覆盖 `tools/tir_probe.py`、第二个应用实例或用户自己的浏览器（同账号仍可能互踢，失败按闭集错误码报告，重跑即可）。
+  页面任务与计划任务（`tools/tir_export_cli.py`）另有跨进程文件锁 `runs/.lock` 互斥（§12-4）；不覆盖
+  `tools/tir_probe.py` 与用户自己的浏览器（同账号仍可能互踢，失败按闭集错误码报告，重跑即可）。
   API 调用一律 `allow_redirects=False`；打开报表页按内容判别登录页。单任务内发现登录态失效时**重登一次**；
   传输错误重试 2 次（2s、4s 退避）。插件注册默认处理器 `register_handler("tir_report_export", …)`，宿主「重试」可用。
 - **R4 参数与去重**：`protocol.py` 全部是纯函数（参数模板、cjkEncode、表单体、sessionID 解析、
@@ -84,8 +85,8 @@ tools/tir_probe.py   Phase 0 只读探针：逐步验证并把脱敏契约报告
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `state` | 配置（`credentialRef` 别名、默认参数）、可选部门/项目建议值、最近产物 |
-| POST | `config` | 保存别名与默认参数（`local_guard`） |
+| GET | `state` | 默认筛选、自动导出设置、上次自动导出结果、域账号是否已保存、最近产物 |
+| POST | `config` | 保存默认筛选与自动导出开关/时间（`local_guard`） |
 | POST | `export` | 提交导出任务（`local_guard`）；体 `{project, department, section, startDate, endDate, force}` |
 | GET | `export/<task_id>` | 任务进度与结果 |
 | GET | `files` | 产物清单（按导出日倒序） |
@@ -110,7 +111,7 @@ cjkEncode 与 HAR 第 33 条形态一致（`问题` → `[95ee][9898]`、`[]` �
 
 ## 8. 分阶段与回滚
 
-- Phase 0（待执行）：`python tools/tir_probe.py --credential-ref <别名>`（Windows，内网）→ `.runtime/tir_probe_report.json`。
+- Phase 0（待执行）：`python tools/tir_probe.py`（Windows，内网，已在 VSE 保存统一域账号）→ `.runtime/tir_probe_report.json`。
 - Phase 1/2（本次完成离线部分）：协议纯函数 + 客户端 + 页面 + 双产物。
 - Phase 3（可选）：`python tools/build_plugin_pkg.py plugins/tir_report --key <签名密钥>`。
 - 回滚：插件自包含，删除 `plugins/tir_report/` 与对应测试即可；不涉及数据库迁移；数据目录可留存。
@@ -139,3 +140,13 @@ cjkEncode 与 HAR 第 33 条形态一致（`问题` → `[95ee][9898]`、`[]` �
 
 1. TIR 只产出 Excel：移除 HAR 产物（`har.py`）及相关路由/页面链接；§6、§10 中 HAR 脱敏条目随之失效。
 2. 不接受重建 xlsx：移除 `xlsx_writer.py` 与 `rebuilt` 模式；拿不到帆软原样导出即失败。
+3. 默认项目留空（= 全部项目，`XM` 提交空串）。文件名项目段为 `all`。
+4. 自动导出参照「自动归档」：`tools/install_tir_export_task.ps1` 注册每小时一次的计划任务（当前用户、
+   IgnoreNew、StartWhenAvailable），调用 `tools/tir_export_cli.py --once`；`service.auto_decision` 决定：
+   开关关 → disabled；未到设定小时 → not_yet；当天已有默认筛选的结果 → done；当天登录类失败
+   （credential_missing/credential_unavailable/login_failed/login_unsupported）→ stopped_today（避免锁定域账号）；
+   当天已失败 3 次 → attempts_exhausted。结果写 `runs/auto-state.json`，页面展示。
+   页面任务与计划任务跨进程互斥：`runs/.lock`（O_EXCL，30 分钟视为残留），冲突返回 `busy`。
+5. 帆软账号 = 统一域账号：`DPAPICredentialProvider(domain_credential_vault).resolve("domain")`，用户名去掉
+   `域\` 前缀后登录（待 Phase 0 复核帆软是否接受）。未保存时提示「登录 TDC 并勾选保存至凭据保护库」。
+   §10 第 9 条「仍走 Windows 凭据管理器」据此作废。

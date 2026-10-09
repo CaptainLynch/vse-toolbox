@@ -4,8 +4,11 @@
 从帆软报表平台导出 ``tdc/TIR/TIR数据简表.cpt``，交付帆软原样导出的 xlsx（方案见
 ``docs/TIR_REPORT_PLUGIN_DESIGN_20261009.md``）。所有写路由先过 ``ctx.local_guard()``。
 
-- GET  state                 配置（凭据别名、默认筛选）与最近产物
-- POST config                保存凭据别名与默认筛选（不接收账号口令）
+- GET  state                 默认筛选、自动导出设置与上次自动导出结果、域账号是否已保存、最近产物
+- POST config                保存默认筛选与自动导出设置（不接收账号口令）
+
+账号用统一域账号（宿主 ``domain_credential_vault``，DPAPI）；自动导出由 Windows 计划任务调用
+``tools/tir_export_cli.py --once``（安装：``tools/install_tir_export_task.ps1``），页面只负责开关与时间。
 - POST export                提交导出任务；同组筛选在排队/运行中复用该任务，当日已有成功产物直接复用
 - GET  export/<task_id>      任务进度与结果
 - GET  files                 产物清单
@@ -20,15 +23,11 @@ from typing import Any, Mapping
 
 from flask import request, send_file
 
-from core.credential_provider import WindowsCredentialManagerProvider
+from core.domain_identity import DPAPICredentialProvider
 
 from . import protocol as P
 from . import service as S
 from .client import TirError
-
-#: 测试替换点：凭据提供者与会话工厂（生产是 Windows 凭据管理器 + WinHTTP）。
-credential_provider_factory = WindowsCredentialManagerProvider
-
 
 def session_factory() -> Any:
     from services.windows_http import WinHTTPSession
@@ -65,15 +64,23 @@ def register(host):
     def runner() -> Any:
         return ctx.service("crawl_task_runner")
 
+    def credential_provider() -> Any:
+        try:
+            return DPAPICredentialProvider(ctx.service("domain_credential_vault"))
+        except LookupError:
+            return None
+
+    def domain_ready() -> bool:
+        provider = credential_provider()
+        return provider is not None and provider.is_available(S.DOMAIN_REF)
+
     def worker(task_ctx: Any) -> None:
         params = task_ctx.params if isinstance(task_ctx.params, Mapping) else {}
         filters = P.normalize_filters(params.get("filters") or {}, today=_today())
-        config = S.load_config(data_dir)  # 别名在执行时读，不进任务参数
         meta = S.run_export(
             filters,
             data_dir=data_dir,
-            credential_ref=config["credentialRef"],
-            credential_provider=credential_provider_factory(),
+            credential_provider=credential_provider(),
             session_factory=session_factory,
             today=_today(),
             force=bool(params.get("force")),
@@ -96,6 +103,8 @@ def register(host):
         config = S.load_config(data_dir)
         return ctx.json_ok({
             "config": config,
+            "domainCredentialReady": domain_ready(),
+            "autoState": S.load_auto_state(data_dir),
             "report": {"name": P.REPORT_NAME, "path": P.REPORT_PATH},
             "today": _today().isoformat(),
             "exports": S.list_exports(data_dir, limit=20),
@@ -106,8 +115,8 @@ def register(host):
     def save_config():
         value = body()
         config = S.load_config(data_dir)
-        if "credentialRef" in value:
-            config["credentialRef"] = S.validate_credential_ref(value.get("credentialRef"))
+        if "auto" in value:
+            config["auto"] = S.validate_auto(value.get("auto"))
         defaults = value.get("defaults")
         if isinstance(defaults, Mapping):
             merged = {**config["defaults"], **{k: v for k, v in defaults.items() if k in config["defaults"]}}
@@ -125,7 +134,7 @@ def register(host):
         if not isinstance(force, bool):
             raise P.ProtocolError("force 必须是布尔值")
         filters = P.normalize_filters(value, today=_today())
-        if not S.load_config(data_dir)["credentialRef"]:
+        if not domain_ready():
             return ctx.json_error(409, "credential_missing", TirError("credential_missing").args[0])
         if not force:
             cached = S.find_cached(data_dir, _today().isoformat(), filters)

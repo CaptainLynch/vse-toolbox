@@ -10,11 +10,15 @@
   **用户 2026-10-09 决定**：交付物只有帆软原样导出的 Excel（已移除 HAR 产物 `har.py`）；不接受自建/重建 xlsx
   （已移除 `xlsx_writer.py`，拿不到原样导出即 `export_failed`、不落文件）。运行记录在插件 `runs/<日>/`，不对外下载。
   `.gitignore` 增加 `*.har`、`TIR数据简表*.xlsx`（未全局忽略 *.xlsx：仓库有受跟踪样例）。
-- **未做 / 待确认**：Phase 0 真实探针未跑（云端 Linux 无内网、无凭据）。下一步：在 Windows 内网机
-  `python tools/tir_probe.py --credential-ref <条目名>`，看 `.runtime/tir_probe_report.json` 的 R1（公钥/明文登录）、
-  R2（`op=export&format=excel&extype=simple` 是否返回 xlsx——因不接受重建，这一条不成立就必须修正端点）、
-  sessionID 来源；再 `python webui.py --only tir-report` 手工验收。用户待答：默认参数是否 F610S / 车体工程 /
-  2022-07-11~当天、是否每日自动跑、帆软账号在 Windows 凭据管理器中的条目名。「地区」不是 TIR数据简表.cpt 的参数。
+- **用户 2026-10-09 第二批决定（已实现）**：默认项目留空（全部项目）；自动导出参照「自动归档」——
+  `tools/install_tir_export_task.ps1` 注册每小时计划任务调 `tools/tir_export_cli.py --once`，页面「每天自动导出」开关 +
+  小时决定是否跑，登录类失败当天停止（防锁域账号）、其他失败当天最多 3 次，状态 `runs/auto-state.json`；
+  页面任务与计划任务经 `runs/.lock` 跨进程互斥；帆软账号 = 统一域账号（宿主 DPAPI `domain_credential_vault`，
+  用户名去掉 `域\` 前缀），已移除 credential_ref 配置。
+- **未做 / 待确认**：Phase 0 真实探针未跑（云端 Linux 无内网、无凭据）。下一步：在 Windows 内网机先在 VSE 里登录 TDC
+  并勾选「保存至凭据保护库」，再 `python tools/tir_probe.py`，看 `.runtime/tir_probe_report.json` 的 R1（公钥/明文登录、
+  帆软是否接受去掉域前缀的用户名）、R2（`op=export&format=excel&extype=simple` 是否返回 xlsx——不接受重建，不成立就
+  必须修正端点）、sessionID 来源；再 `python webui.py --only tir-report` 手工验收，需要自动导出时运行一次安装脚本。
 - 未执行：`webui.py` 肉眼核对（无 Windows 浏览器环境）、`.vsepkg` 打包（Phase 3 可选）。
 
 ## 2026-10-09 第二批实施完成并经顾问复核：向导流水单号 + 同步运行期消费（未 commit）

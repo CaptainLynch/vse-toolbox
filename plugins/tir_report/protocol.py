@@ -25,7 +25,7 @@ ENTRY_ID = "3770a19c-4f81-4c1b-9a94-55dd63c6d58e"
 REPORT_PATH = "tdc/TIR/TIR数据简表.cpt"
 REPORT_NAME = "TIR数据简表"
 DEFAULT_BASE_URL = "https://report.sgmw.com.cn"
-DEFAULT_PROJECT = "F610S"
+DEFAULT_PROJECT = ""  # 留空 = 全部项目（用户 2026-10-09 确认）
 DEFAULT_DEPARTMENT = "车体工程"
 DEFAULT_START_DATE = "2022-07-11"
 
@@ -142,8 +142,6 @@ def normalize_filters(raw: Mapping[str, Any] | None, *, today: date) -> ExportFi
             raise ProtocolError(f"{label} 不是有效日期") from exc
     if start > end:
         raise ProtocolError("发放开始日期不能晚于结束日期")
-    if not project:
-        raise ProtocolError("请填写项目")
     return ExportFilters(project=project, department=department, section=section, start_date=start, end_date=end)
 
 

@@ -25,9 +25,10 @@ _MAX_PAGES = 200
 
 #: 闭集错误码 -> 中文处理指引（页面与任务错误信息只用这里的文字，不回显服务器原文）。
 REMEDIES = {
-    "credential_missing": "请先在本页填写帆软账号在 Windows 凭据管理器中的条目名（credential_ref）",
-    "credential_unavailable": "凭据管理器里找不到该条目或条目不完整，请在「Windows 凭据管理器 → 普通凭据」中添加",
-    "login_failed": "帆软登录失败：请确认凭据管理器中的账号口令仍然有效",
+    "credential_missing": "还没有保存统一域账号：请登录 TDC 并勾选“保存至凭据保护库”",
+    "credential_unavailable": "统一域账号读取失败，请重新登录 TDC 并勾选“保存至凭据保护库”",
+    "login_failed": "帆软登录失败：域账号口令可能已更改，请重新登录 TDC 并勾选“保存至凭据保护库”",
+    "busy": "另一个 TIR 导出正在进行（页面或计划任务），请稍后再试",
     "login_unsupported": "帆软登录页的加密方式无法识别（可能启用了滑块或 SM4），请运行 tools/tir_probe.py 取证后反馈",
     "session_not_found": "打开 TIR数据简表 报表失败（找不到报表会话），请确认账号有该报表权限",
     "parameters_rejected": "报表不接受这组查询参数，请检查项目/部门/日期",

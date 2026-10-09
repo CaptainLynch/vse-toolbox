@@ -3,13 +3,14 @@
 
 Usage (Windows, company network)::
 
-    python tools/tir_probe.py --credential-ref <Windows 凭据管理器条目名>
-    python tools/tir_probe.py --credential-ref <条目名> --project F610S --department 车体工程 --start 2022-07-11
+    python tools/tir_probe.py
+    python tools/tir_probe.py --project F610S --department 车体工程 --start 2022-07-11
 
 逐步验证方案 §2 的链路（登录页公钥 → 登录 → 打开报表/sessionID → parameters_d → read_w_content →
 check/font → op=export → export_polling），把脱敏结论（只有步骤名、布尔值、计数与闭集错误码）写到
 ``.runtime/tir_probe_report.json``。约定同 ``tdc_probe_main.py``：不写库、不落原始数据（不保存 xlsx、不保存
-报表内容），只报告魔数、表头是否 50 列一致与行数。凭据只经 Windows 凭据管理器读取，不接受命令行口令。
+报表内容），只报告魔数、表头是否 50 列一致与行数。账号是统一域账号（DPAPI 域账号库，需先在 VSE 里登录 TDC
+并勾选“保存至凭据保护库”），不接受命令行口令。
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from core.credential_provider import CredentialProviderError, WindowsCredentialManagerProvider  # noqa: E402
+from core.credential_provider import CredentialProviderError  # noqa: E402
 from plugins.tir_report import protocol as P  # noqa: E402
 from plugins.tir_report import service as S  # noqa: E402
 from plugins.tir_report.client import FineReportClient, TirError  # noqa: E402
@@ -37,12 +38,15 @@ def probe(args: argparse.Namespace, session=None, provider=None) -> dict:
     client = FineReportClient(session or WinHTTPSession(timeout=60), base_url=args.base_url)
     report: dict = {"report": P.REPORT_PATH, "filters": filters.as_payload(), "checks": {}}
     checks = report["checks"]
-    provider = provider or WindowsCredentialManagerProvider()
+    if provider is None:
+        from tools.tir_export_cli import domain_provider
+
+        provider = domain_provider()
     try:
-        with provider.resolve(args.credential_ref) as credential:
+        with provider.resolve(S.DOMAIN_REF) as credential:
             page = client._send("GET", "/login", "login_page", headers={"Accept": "text/html"}, allow_redirects=True)
             checks["R1_public_key_found"] = P.find_public_key(client._text(page)) is not None
-            client.login(credential.username, credential.password)
+            client.login(S.login_name(credential.username), credential.password)
             checks["R1_login"] = "ok"
             checks["R1_encrypted"] = checks["R1_public_key_found"]
             client.open_report()
@@ -70,7 +74,6 @@ def probe(args: argparse.Namespace, session=None, provider=None) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="TIR数据简表 帆软导出契约只读探针（Phase 0）")
-    parser.add_argument("--credential-ref", required=True, help="Windows 凭据管理器中的普通凭据条目名")
     parser.add_argument("--base-url", default=P.DEFAULT_BASE_URL)
     parser.add_argument("--project", default=P.DEFAULT_PROJECT)
     parser.add_argument("--department", default=P.DEFAULT_DEPARTMENT)
