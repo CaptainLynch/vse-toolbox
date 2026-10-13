@@ -514,17 +514,18 @@ export default function SystemQueryPage({ plugin }) {
     savePrefs(requestMode, values, connections[mode.system].base_url);
     setErrorState(null);
     setWarning("");
-    if (operation !== "export") setXml(null);
+    const isExportLike = operation === "export" || operation === "export_merged";
+    if (!isExportLike) setXml(null);
     setRunning(operation);
-    setStatusText(operation === "query" ? "运行中" : operation === "crawl_all" ? "全量获取中..." : "导出中");
-    if (resultRef.current && operation !== "export") {
+    setStatusText(operation === "query" ? "运行中" : operation === "crawl_all" ? "全量获取中..." : operation === "export_merged" ? "合并导出中..." : "导出中");
+    if (resultRef.current && !isExportLike) {
       setContextNote(operation === "crawl_all"
         ? "保留上次查询结果 · 正在全量获取最新数据..."
         : "保留上次查询结果 · 正在获取最新数据...");
     }
     try {
-      if (operation === "export") {
-        await runExport(requestMode, payload, requestSeq, summary, stillCurrent);
+      if (isExportLike) {
+        await runExport(requestMode, payload, requestSeq, summary, stillCurrent, operation);
       } else {
         const endpoint = operation === "crawl_all" ? mode.crawlAllEndpoint : mode.endpoint;
         const { status, ok, body } = await postJson(endpoint, payload);
@@ -543,7 +544,7 @@ export default function SystemQueryPage({ plugin }) {
       }
     } catch (err) {
       if (!stillCurrent() || (err && err.name === "AbortError")) return;
-      setStatusText(operation === "export" ? "导出失败" : "操作失败");
+      setStatusText(isExportLike ? "导出失败" : "操作失败");
       showError(err && err.type ? err : toQueryError({ error: { message: String(err && err.message) } }, 0), operation);
     } finally {
       clearPayloadSecrets(payload);
@@ -551,9 +552,13 @@ export default function SystemQueryPage({ plugin }) {
     }
   };
 
-  const runExport = async (requestMode, payload, requestSeq, summary, stillCurrent) => {
+  const runExport = async (requestMode, payload, requestSeq, summary, stillCurrent, operation = "export") => {
     const m = MODES[requestMode];
-    const endpoint = m.exportEndpoint || m.downloadEndpoint;
+    // 「导出合并结果」走专用端点（全量抓取 + 本地多单号匹配 → 合并 CSV）；
+    // 官方导出端点不读 document_no，无法按单号过滤。
+    const endpoint = operation === "export_merged"
+      ? m.mergedExportEndpoint
+      : (m.exportEndpoint || m.downloadEndpoint);
     let response;
     try {
       response = await fetch(endpoint, {
@@ -572,7 +577,7 @@ export default function SystemQueryPage({ plugin }) {
         kickTaskCenter();
         if (!mounted.current) return;
         setTask({ taskId: id, kind: "export", modeId: requestMode, seq: requestSeq, summary, status: "queued", active: true, progress: {} });
-        setStatusText(`导出已转入后台任务（${id}），完成后可在此处或右上角「任务」中心下载`);
+        setStatusText(`${operation === "export_merged" ? "合并导出" : "导出"}已转入后台任务（${id}），完成后可在此处或右上角「任务」中心下载`);
         return;
       }
       if (response.status === 202) throw toQueryError({ error: { type: "TaskError", message: "后台导出任务响应无效，请稍后重试" } }, 202);
@@ -686,6 +691,11 @@ export default function SystemQueryPage({ plugin }) {
   const busy = Boolean(running);
   const shownResult = result && result.modeId === modeId ? result : null;
   const serialNotice = shownResult ? serialMatchNotice(shownResult.data) : null;
+  // 官方 XLSX 导出不读顶层 document_no（上游无该查询参数）：填了单号时明确指向合并导出，
+  // 否则用户会拿到"其它条件下的全部行"却以为已按单号过滤（2026-10-10 用户反馈）。
+  const mergedExportNotice = modeId === "tdc-data-model" && String(values.document_no || "").trim()
+    ? "官方「导出 XLSX」不按流水单号过滤（会导出其它条件下的全部行）；只导出这些单号请用「导出合并结果（CSV）」。"
+    : "";
   const deepLinkActive = deepLink.from === "overview";
 
   return html`<div class="aras-workbench sq-page">
@@ -767,6 +777,9 @@ export default function SystemQueryPage({ plugin }) {
           onClick=${() => run("crawl_all")}>${mode.crawlAllLabel || "获取全部结果"}</button>`}
         ${(mode.exportEndpoint || mode.downloadEndpoint) && html`<button class="primary-btn" type="button" data-action="export"
           disabled=${busy} onClick=${() => run("export")}>${mode.exportLabel || "导出"}</button>`}
+        ${mode.mergedExportEndpoint && html`<button class="primary-btn" type="button" data-action="export_merged"
+          disabled=${busy} onClick=${() => run("export_merged")}>${mode.mergedExportLabel || "导出合并结果"}</button>`}
+        ${mergedExportNotice && html`<div class="error-msg sq-warning" role="status">${mergedExportNotice}</div>`}
         ${mode.xmlCapture && html`<label class="xml-capture-toggle">
           <input type="checkbox" checked=${includeXml} onChange=${(event) => setIncludeXml(event.currentTarget.checked)} />
           <span>保存 Aras XML（请求 + 返回）</span>

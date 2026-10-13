@@ -1379,3 +1379,16 @@ def test_tdc_disabled_a_face_routes_are_contract_blocked(client) -> None:
 
     missing = client.post("/api/tdc/dm-change-form/query", json={"base_url": "https://tdc.example", "filters": {}})
     assert missing.status_code == 404
+
+
+def test_merged_export_button_is_wired_in_the_deliverables_workbench() -> None:
+    """工作台「导出合并结果（CSV）」按钮 + 端点映射存在（防静默丢失）。"""
+    from pathlib import Path
+
+    static = Path(__file__).resolve().parent.parent / "plugins" / "deliverables" / "static"
+    lib = (static / "lib.js").read_text(encoding="utf-8")
+    catalog = (static / "catalog.js").read_text(encoding="utf-8")
+    assert 'export_merged: "/api/tdc/data-model/export-merged"' in lib
+    assert 'data-deliverable-run-merged' in catalog
+    assert 'run("export_merged")' in catalog
+    assert 'mergedExportHint' in catalog

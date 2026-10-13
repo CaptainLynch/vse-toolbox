@@ -9,6 +9,7 @@ web/app.py — WEB 适配层：Flask 应用工厂 + /api/overview 路由
     - service/core 层对 Flask 无感知
 """
 
+import csv
 import io
 import hashlib
 import json
@@ -1726,6 +1727,40 @@ def _tdc_result_data(result: Any) -> dict[str, Any]:
     }
 
 
+#: CSV 公式注入缓解：危险前导字符（Excel 会当公式执行）。
+_CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+#: 严格数字字面量豁免：`-12.5` 这类文本必须保持数值语义，不能加 `'` 前缀。
+_STRICT_NUMBER_LITERAL = re.compile(r"^-?\d+(?:\.\d+)?$")
+
+
+def _csv_cell(value: Any) -> Any:
+    """单元格输出前的公式注入缓解（只处理文本，严格数字豁免）。"""
+    if not isinstance(value, str) or not value:
+        return value
+    if value[0] in _CSV_FORMULA_PREFIXES and not _STRICT_NUMBER_LITERAL.match(value):
+        return "'" + value
+    return value
+
+
+def _tdc_merged_export_csv(rows: Sequence[Mapping[str, Any]]) -> bytes:
+    """数模「多流水单号合并导出」的 CSV 字节（UTF-8 BOM，Excel 双击可开）。
+
+    列序沿用数模表契约（与预览一致）；列表接口不提供的官方导出列留空。
+    为什么不是 XLSX：上游没有流水单号查询参数，官方工作簿无法按单号过滤；
+    而公司 DLP 禁令（services/office_toolbox.py）禁止用 openpyxl/pandas 直接读写
+    Office 文件，改写官方工作簿必须走 Excel Worker(COM) 的新操作（另立任务）。
+    单元格经 ``_csv_cell`` 做公式注入缓解（数据来自上游报表，属不可信文本）。
+    """
+    table = table_payload("tdc_data_model", _safe_rows([dict(row) for row in rows]))
+    columns = cast(list[dict[str, Any]], table["columns"])
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\r\n")
+    writer.writerow([str(column.get("label") or "") for column in columns])
+    for row in cast(list[list[Any]], table["rows"]):
+        writer.writerow([_csv_cell(value) for value in row])
+    return buffer.getvalue().encode("utf-8-sig")
+
+
 def _tdc_export_cache_context(payload: Mapping[str, Any]) -> tuple[TDCExportCache, str] | None:
     """Return a cache and non-secret namespace for one safe local request."""
     if not has_app_context():
@@ -3272,6 +3307,111 @@ def _tdc_report_export(
         params,
         worker,
         error_context="TDC export",
+    )
+
+
+def _tdc_report_export_merged(allowed_hosts: Sequence[str]):
+    """数模「填多个流水单号 → 合并导出」：全量抓取 → 本地集合精确匹配 → 合并成一张 CSV。
+
+    官方导出（`_tdc_report_export`）只按其它筛选条件取数，**不读**顶层的
+    ``document_no``——多单号合并导出此前完全缺失（2026-10-10 用户反馈）。
+    本入口复用查询侧同一套解析与匹配（``_tdc_document_nos`` + ``match_serials``），
+    保证"预览里看到的合并行"与"导出的合并行"同源。
+    """
+    payload, error_response = _request_payload()
+    if error_response:
+        return error_response
+    assert payload is not None
+    try:
+        file_name = _tdc_file_name(payload.get("file_name")) or "tdc_data_model_merged.xlsx"
+        document_nos = _tdc_document_nos(payload)
+        if not document_nos:
+            raise _TDCRequestError("请先填写至少一个流水单号（多个用空格、逗号或换行分隔）")
+        # 与查询预览共用同一套筛选/分页参数构造，保证"预览命中的单号 = 导出命中的单号"。
+        filters = _tdc_data_model_filters(
+            _tdc_filters_from_payload(payload, _TDC_DATA_MODEL_FILTER_NAMES)
+        )
+        page_size = _tdc_positive_int(payload.get("page_size"), "page_size", 50, _TDC_PAGE_SIZE_MAX)
+        max_pages = _tdc_positive_int(payload.get("max_pages"), "max_pages", 100, _TDC_MAX_PAGES_MAX)
+        max_records = _tdc_positive_int(
+            payload.get("max_records"), "max_records", 10000, _TDC_MAX_RECORDS_MAX
+        )
+    except Exception as exc:
+        return _tdc_error_response(exc, "data_model", "export")
+
+    session, gate_error = _async_session_gate("tdc", payload)
+    if gate_error is not None:
+        return gate_error
+    try:
+        base_url = str(payload["base_url"]).strip()
+        _validate_tdc_base_url(base_url, allowed_hosts, require_https=False)
+    except Exception as exc:
+        return _tdc_error_response(exc, "data_model", "export")
+
+    def worker(ctx):
+        # 统一域会话是应用内存对象：worker 线程内复用，禁止关闭。
+        client = TDCCrawlerClient(
+            base_url, session=session, timeout=30.0, output_dir=ctx.downloads_dir
+        )
+        ctx.update_progress(percent=5, stage="全量抓取数模行（按单号本地匹配）")
+
+        def on_page(page: int, rows: int) -> None:
+            ctx.update_progress(
+                percent=min(85, 5 + page), stage=f"已抓取 {page} 页 / {rows} 行"
+            )
+
+        result = client.crawl_data_model_all(
+            filters,
+            page_size=page_size,
+            max_pages=max_pages,
+            max_records=max_records,
+            on_page=on_page,
+        )
+        if not _mapping_result_is_complete(result):
+            # 截断（stop_reason=max_records/max_pages）在这里必须判"无法判定"，
+            # 绝不能落到 SerialNotFound：否则会把"没抓全"说成"单号不存在"。
+            raise _TDCRequestError(
+                "抓取不完整，无法判定流水单号，请重试",
+                "IncompleteDiscovery",
+                422,
+                None,
+                _pagination_diagnostic(result, len(result.rows)),
+            )
+        matched, bookkeeping = match_serials(result.rows, document_nos)
+        # fail-closed：请求了 N 个单号就必须全部命中——静默少导出会被当成"导出成功"，
+        # 与查询预览"展示 missing"的语义不同（导出件是要带走的结果）。
+        missing = [str(item) for item in bookkeeping.get("missing", [])]
+        if missing or not matched:
+            shown = "、".join(missing[:5]) + (f"（共 {len(missing)} 个）" if len(missing) > 5 else "")
+            raise _TDCRequestError(
+                f"未找到以下流水单号：{shown}" if missing else "未找到任何匹配的流水单号",
+                "SerialNotFound",
+                422,
+            )
+        ctx.update_progress(percent=90, stage=f"命中 {len(matched)} 行，正在生成 CSV")
+        stem = Path(str(file_name)).stem or "tdc_data_model_merged"
+        out_path = ctx.downloads_dir / f"{stem}_合并_{ctx.task_id}.csv"
+        out_path.write_bytes(_tdc_merged_export_csv(matched))
+        ctx.set_artifact(out_path)
+        ctx.update_progress(
+            percent=100, stage=f"合并导出完成（{len(matched)} 行，列表接口列）"
+        )
+
+    params = {
+        "base_url": base_url,
+        "filters": asdict(filters),
+        "document_no_count": len(document_nos),
+        "page_size": page_size,
+        "max_pages": max_pages,
+        "max_records": max_records,
+    }
+    return _submit_background_task(
+        _crawl_runner_from_request(),
+        "tdc_data_model_export_merged",
+        "tdc",
+        params,
+        worker,
+        error_context="TDC merged export",
     )
 
 
@@ -5774,11 +5914,32 @@ def create_app(
             )
             return _json_error(409, block_type, block_reason)
         try:
+            payload = request.get_json(silent=True) or {}
+            raw_car_type = payload.get("carType") or payload.get("car_type") or payload.get("model")
+            if raw_car_type is not None and isinstance(raw_car_type, str):
+                if any(ord(c) < 32 or ord(c) == 127 for c in raw_car_type):
+                    raise ValueError("carType contains control characters")
+                car_type = raw_car_type.strip()
+                if car_type:
+                    if len(car_type) > 80:
+                        raise ValueError("carType is too long")
+                    runner = ProjectStatusSyncRunner(
+                        db,
+                        update_service,
+                        create_production_registry(),
+                        analysis_service=deliverable_analysis_service,
+                    )
+                    data = runner.sync_by_car_type(deliverable_id, car_type)
+                    response = jsonify({"ok": True, "data": data})
+                    response.headers["Cache-Control"] = "no-store"
+                    return response
+
             update_service.assert_sync_ready(deliverable_id)
             runner = ProjectStatusSyncRunner(
                 db,
                 update_service,
                 create_production_registry(),
+                analysis_service=deliverable_analysis_service,
             )
             result = runner.run_once(
                 deliverable_id=deliverable_id,
@@ -5807,9 +5968,63 @@ def create_app(
         except KeyError:
             return _json_error(404, "NotFound", "未找到交付物")
         except SyncBindingNotReadyError as exc:
+            # 必须先于 `except ValueError`：SyncBindingNotReadyError 是 ValueError 子类，
+            # 顺序反了会把 409 SyncNotReady 降级成 422 ValidationError。
             return _json_error(409, "SyncNotReady", _sanitize_error_message(exc))
+        except ValueError as exc:
+            return _json_error(422, "ValidationError", _sanitize_error_message(exc))
         except Exception as exc:
             logger.exception("project status sync-now failed")
+            return _json_error(500, "ServerError", _sanitize_error_message(exc))
+
+    @app.post("/api/project-status/deliverables/<deliverable_id>/sync-by-car-type")
+    def api_project_status_sync_by_car_type(deliverable_id: str):
+        local_error = _local_web_mutation_error()
+        if local_error is not None:
+            return local_error
+        _, _, sync_now_deliverable_rows = db.get_project_status("VPI-T2")
+        if deliverable_id not in {str(row["id"]) for row in sync_now_deliverable_rows}:
+            return _json_error(404, "NotFound", "未找到交付物")
+        sync_block = PROJECT_STATUS_SOURCE_CAPABILITIES.get(deliverable_id, {})
+        if not sync_block.get("syncCapable"):
+            block_type = str(sync_block.get("syncBlockType") or "ManualOnly")
+            block_reason = (
+                AFACE_CONTRACT_BLOCKER
+                if block_type == "ContractBlocked"
+                else str(sync_block.get("blockReason") or "该交付物仅允许手工维护")
+            )
+            return _json_error(409, block_type, block_reason)
+        payload = request.get_json(silent=True) or {}
+        raw_car_type = payload.get("carType") or payload.get("car_type") or payload.get("model")
+        if not raw_car_type or not isinstance(raw_car_type, str):
+            return _json_error(422, "ValidationError", "缺少车型参数 carType")
+        if any(ord(c) < 32 or ord(c) == 127 for c in raw_car_type):
+            return _json_error(422, "ValidationError", "车型参数包含非法控制字符")
+        car_type = raw_car_type.strip()
+        if not car_type:
+            return _json_error(422, "ValidationError", "车型参数不能为空")
+        if len(car_type) > 80:
+            return _json_error(422, "ValidationError", "车型参数不能超过 80 个字符")
+        try:
+            runner = ProjectStatusSyncRunner(
+                db,
+                update_service,
+                create_production_registry(),
+                analysis_service=deliverable_analysis_service,
+            )
+            data = runner.sync_by_car_type(deliverable_id, car_type)
+            response = jsonify({"ok": True, "data": data})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except KeyError:
+            return _json_error(404, "NotFound", "未找到交付物")
+        except SyncBindingNotReadyError as exc:
+            # 同 sync-now：子类必须先捕获，否则 409 被 422 吞掉。
+            return _json_error(409, "SyncNotReady", _sanitize_error_message(exc))
+        except ValueError as exc:
+            return _json_error(422, "ValidationError", _sanitize_error_message(exc))
+        except Exception as exc:
+            logger.exception("project status sync by car type failed")
             return _json_error(500, "ServerError", _sanitize_error_message(exc))
 
     @app.get("/api/project-status/scheduler")
@@ -6402,6 +6617,11 @@ def create_app(
             _TDC_DATA_MODEL_FILTER_NAMES,
             app.config["TDC_ALLOWED_HOSTS"],
         )
+
+    @app.post("/api/tdc/data-model/export-merged")
+    def api_tdc_data_model_export_merged():
+        """多流水单号合并导出（CSV）。官方导出不支持按单号过滤，见函数注释。"""
+        return _tdc_report_export_merged(app.config["TDC_ALLOWED_HOSTS"])
 
     @app.post("/api/tdc/sor/car-type-projects")
     def api_tdc_sor_car_type_projects():

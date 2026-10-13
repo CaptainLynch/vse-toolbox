@@ -212,6 +212,10 @@ export const TDC_MODES = {
     crawlAllEndpoint: "/api/tdc/data-model/crawl-all",
     exportEndpoint: "/api/tdc/data-model/export",
     exportLabel: "导出 XLSX",
+    // 多流水单号合并导出：官方 XLSX 导出不按单号过滤（上游无该查询参数），
+    // 这里走全量抓取 + 本地集合匹配 → 合并成一张 CSV。
+    mergedExportEndpoint: "/api/tdc/data-model/export-merged",
+    mergedExportLabel: "导出合并结果（CSV）",
     crawlAllLabel: "全量抓取",
     defaultFileName: "tdc_data_model.xlsx",
     submitLabel: "查询预览",

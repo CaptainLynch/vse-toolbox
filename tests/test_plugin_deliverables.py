@@ -91,6 +91,7 @@ _EXPECTED_METHODS = {
     "/api/tdc/data-model/query": "POST",
     "/api/tdc/data-model/crawl-all": "POST",
     "/api/tdc/data-model/export": "POST",
+    "/api/tdc/data-model/export-merged": "POST",
     "/api/tdc/sor/query": "POST",
     "/api/tdc/sor/crawl-all": "POST",
     "/api/tdc/sor/export": "POST",

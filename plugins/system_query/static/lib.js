@@ -128,6 +128,8 @@ function trimmed(values, name) {
  */
 export function buildPayload(modeId, values, connection, { operation = "query", includeXml = false } = {}) {
   const mode = MODES[modeId];
+  // 「导出合并结果」与「导出」同为导出类操作：带 file_name、不带 preview_source/分页参数。
+  const isExportLike = operation === "export" || operation === "export_merged";
   const payload = {
     base_url: trimmed(connection, "base_url"),
     headers: parseHeaders(connection.headers),
@@ -140,11 +142,11 @@ export function buildPayload(modeId, values, connection, { operation = "query", 
         ? value.split(",").map((item) => item.trim()).filter(Boolean)
         : value;
     });
-    const numberNames = operation === "export" ? (mode.exportNumberNames || []) : mode.numberNames;
+    const numberNames = isExportLike ? (mode.exportNumberNames || []) : mode.numberNames;
     numberNames.forEach((name) => {
       payload[name] = Number(trimmed(values, name) || 0);
     });
-    if (mode.xmlCapture && includeXml && operation !== "export") payload.include_xml = true;
+    if (mode.xmlCapture && includeXml && !isExportLike) payload.include_xml = true;
     if (mode.preview) payload.preview = true;
     return payload;
   }
@@ -166,11 +168,11 @@ export function buildPayload(modeId, values, connection, { operation = "query", 
     const value = Number(trimmed(values, name) || 0);
     if (value > 0) payload[name] = value;
   });
-  if (operation === "export") {
+  if (isExportLike) {
     const fileName = trimmed(values, "file_name") || mode.defaultFileName;
     if (fileName) payload.file_name = fileName;
   }
-  if (mode.previewSource && operation !== "export") {
+  if (mode.previewSource && !isExportLike) {
     payload.preview_source = trimmed(values, "preview_source") || "list_endpoint";
   }
   return payload;
@@ -226,6 +228,11 @@ export function validateForm(modeId, values, connection, operation = "query") {
   if (mode.system === "tdc" && operation === "export") {
     const fileName = trimmed(values, "file_name") || mode.defaultFileName;
     if (!/^[^<>:"/\\|?*\x00-\x1f]+\.xlsx$/i.test(fileName)) errors.file_name = "文件名须以 .xlsx 结尾且不含路径字符";
+  }
+  if (operation === "export_merged") {
+    if (!trimmed(values, "document_no")) {
+      errors.document_no = "请填写至少一个流水单号（多个用空格、逗号或换行分隔）";
+    }
   }
   return errors;
 }

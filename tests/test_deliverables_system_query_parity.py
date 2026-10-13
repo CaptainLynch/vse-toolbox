@@ -57,12 +57,30 @@ const samples = [
 const sqNotices = samples.map((d) => sqLib.serialMatchNotice(d));
 const dlvWarnings = samples.map((d) => dlvLib.serialMatchWarning(d));
 
+// 多流水单号合并导出：两个插件都必须把 document_no 与 file_name 放进导出类请求体，
+// 且不得带 preview_source（服务端 export-merged 只认顶层 document_no）。
+const dlvValues = {...sqValues, base_url: "https://tdc.sgmw.com.cn", file_name: "tdc_data_model.xlsx"};
+const dlvMerged = dlvLib.buildPayload(dmItem, dlvValues, "export_merged");
+const dlvMergedNoSerial = dlvLib.validateForm(dmItem, {...dlvValues, document_no: ""}, "export_merged");
+const sqMerged = sqLib.buildPayload("tdc-data-model", dlvValues, sqMode, {operation: "export_merged"});
+const sqMergedNoSerial = sqLib.validateForm("tdc-data-model", {...dlvValues, document_no: ""}, sqMode, "export_merged");
+
 console.log(JSON.stringify({
   sqPayload,
   dlvPayload,
   sqNotices,
   dlvWarnings,
   dlvSummary: dlvLib.formatFilterSummary(dmItem, dlvPayload.filters, dlvPayload.document_no),
+  dlvCrawlNotice: dlvLib.documentNoCrawlNotice(dmItem, sqValues),
+  dlvCrawlNoticeEmpty: dlvLib.documentNoCrawlNotice(dmItem, {document_no: ""}),
+  dlvCrawlNoticeOther: dlvLib.documentNoCrawlNotice({id: "tdc-sor"}, sqValues),
+  dlvMerged,
+  dlvMergedNoSerial,
+  sqMerged,
+  sqMergedNoSerial,
+  dlvMergedHint: dlvLib.mergedExportHint(dmItem, sqValues),
+  dlvMergedHintEmpty: dlvLib.mergedExportHint(dmItem, {document_no: ""}),
+  dlvMergedHintOther: dlvLib.mergedExportHint({id: "tdc-sor"}, sqValues),
 }));
 """
 
@@ -118,6 +136,38 @@ def test_filter_summary_includes_document_no(parity: dict) -> None:
     summary = parity["dlvSummary"]
     assert "document_no" in summary
     assert "3D-00001018" in summary
+
+
+def test_document_no_crawl_notice_explains_the_full_crawl(parity: dict) -> None:
+    """填了流水单号就必然全量抓取：发起前必须说明代价（2026-10-10 卡死反馈）。"""
+    assert "全量抓取" in parity["dlvCrawlNotice"]
+    assert "请勿重复点击" in parity["dlvCrawlNotice"]
+    assert parity["dlvCrawlNoticeEmpty"] == ""   # 没填单号不提示
+    assert parity["dlvCrawlNoticeOther"] == ""   # 只有数模走这条路径
+
+
+def test_merged_export_payload_carries_serial_and_file_name(parity: dict) -> None:
+    """多单号合并导出：两个插件都把 document_no/file_name 放顶层，且不带 preview_source。"""
+    for payload in (parity["dlvMerged"], parity["sqMerged"]):
+        assert payload["document_no"] == "3D-00001018 3D-00001193"
+        assert "document_no" not in payload["filters"]
+        assert payload["file_name"] == "tdc_data_model.xlsx"
+        assert "preview_source" not in payload
+    # 同一输入夹具 → 两份实现输出深相等（防漂移，而不是各写各的期望值）
+    keys = ("document_no", "file_name", "filters")
+    assert {key: parity["dlvMerged"][key] for key in keys} == {
+        key: parity["sqMerged"][key] for key in keys
+    }
+    # 没填单号时前后端都要拦（前端给出明确提示，服务端另有 400）
+    assert "至少一个流水单号" in parity["dlvMergedNoSerial"].get("document_no", "")
+    assert "至少一个流水单号" in parity["sqMergedNoSerial"].get("document_no", "")
+
+
+def test_merged_export_hint_warns_official_export_does_not_filter(parity: dict) -> None:
+    assert "不按流水单号过滤" in parity["dlvMergedHint"]
+    assert "导出合并结果" in parity["dlvMergedHint"]
+    assert parity["dlvMergedHintEmpty"] == ""
+    assert parity["dlvMergedHintOther"] == ""
 
 
 def test_catalog_field_set_matches_system_query_mode_fields() -> None:

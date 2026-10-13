@@ -231,11 +231,22 @@ def test_serial_match_notice_separates_incomplete_from_not_found(node_data) -> N
 
 def test_every_mode_endpoint_is_a_registered_post_route(app, node_data) -> None:
     rules = {rule.rule for rule in app.url_map.iter_rules() if "POST" in (rule.methods or set())}
-    keys = ("endpoint", "crawlAllEndpoint", "exportEndpoint", "downloadEndpoint", "carTypeProjectsEndpoint")
+    keys = ("endpoint", "crawlAllEndpoint", "exportEndpoint", "downloadEndpoint", "carTypeProjectsEndpoint",
+            "mergedExportEndpoint")
     for mode in [*node_data["aras"].values(), *node_data["tdc"].values()]:
         for key in keys:
             if key in mode:
                 assert mode[key] in rules, (key, mode[key])
+
+
+def test_merged_export_button_is_wired_in_the_system_query_page() -> None:
+    """多单号合并导出：模式声明端点 + 页面按钮存在（2026-10-10 用户需求，防静默丢失）。"""
+    modes = (STATIC_DIR / "modes.js").read_text(encoding="utf-8")
+    query = (STATIC_DIR / "query.js").read_text(encoding="utf-8")
+    assert 'mergedExportEndpoint: "/api/tdc/data-model/export-merged"' in modes
+    assert 'data-action="export_merged"' in query
+    assert "mode.mergedExportEndpoint" in query
+    assert 'm.mergedExportEndpoint' in query
 
 
 def test_payloads_follow_legacy_collectors(node_data) -> None:

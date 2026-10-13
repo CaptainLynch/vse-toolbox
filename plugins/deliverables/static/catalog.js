@@ -27,6 +27,8 @@ import {
   defaultFormValues,
   formatApiErrorMessage,
   formatFilterSummary,
+  documentNoCrawlNotice,
+  mergedExportHint,
   isArasTarget,
   isAuthError,
   isExecutableTdc,
@@ -408,7 +410,7 @@ function DeliverableDetail({ item, categories, runLock, onRecord }) {
       const summary = formatFilterSummary(item, payload.filters, payload.document_no);
       const endpoint = config.endpoints[op];
       if (!endpoint) throw messageError(`未配置操作端点: ${op}`);
-      if (op === "export") {
+      if (op === "export" || op === "export_merged") {
         await runExport(endpoint, payload, requestSeq, summary, isCurrent);
       } else {
         const { status: code, ok, body } = await postJson(endpoint, payload);
@@ -441,7 +443,7 @@ function DeliverableDetail({ item, categories, runLock, onRecord }) {
         showError(e, op);
       }
       record(op, "failed", isLocalGuardError(e) ? LOCAL_ONLY_MESSAGE : formatApiErrorMessage(e));
-      if (mounted.current) setStatus({ text: op === "export" ? "导出失败" : "操作失败", loading: false });
+      if (mounted.current) setStatus({ text: op === "export" || op === "export_merged" ? "导出失败" : "操作失败", loading: false });
     } finally {
       clearPayloadSecrets(payload);
       runLock.current = false;
@@ -691,7 +693,11 @@ function DeliverableDetail({ item, categories, runLock, onRecord }) {
           <div class="operation-buttons">
             <button type="submit" class=${`primary-btn${busy ? " is-running" : ""}`} data-deliverable-run disabled=${busy}>${label(operation)}</button>
             <button type="button" class="primary-btn" data-deliverable-download disabled=${busy} onClick=${() => run("export")}>下载 XLSX</button>
+            ${item.id === "tdc-data-model" && html`<button type="button" class="primary-btn" data-deliverable-run-merged
+              disabled=${busy} onClick=${() => run("export_merged")}>导出合并结果（CSV）</button>`}
           </div>
+          ${documentNoCrawlNotice(item, values) && html`<p class="result-meta result-warning" role="status">${documentNoCrawlNotice(item, values)}</p>`}
+          ${mergedExportHint(item, values) && html`<p class="result-meta result-warning" role="status">${mergedExportHint(item, values)}</p>`}
           <span class=${`deliverable-status${status.loading && status.text ? " loading" : ""}`} aria-live="polite">${status.text}</span>
         </section>
       </form>`}

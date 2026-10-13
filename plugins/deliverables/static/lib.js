@@ -47,6 +47,9 @@ export const TDC_ENDPOINTS = {
       query: "/api/tdc/data-model/query",
       crawl_all: "/api/tdc/data-model/crawl-all",
       export: "/api/tdc/data-model/export",
+      // 多流水单号合并导出：全量抓取 + 本地集合匹配 → 合并成一张 CSV
+      // （官方 XLSX 导出不支持按单号过滤，见 web/app.py _tdc_report_export_merged）。
+      export_merged: "/api/tdc/data-model/export-merged",
     },
   },
   "tdc-sor": {
@@ -253,7 +256,7 @@ export function buildPayload(item, values, operation) {
     const value = Number(trimmed(values, name) || 0);
     if (value > 0) payload[name] = value;
   });
-  if (operation === "export") {
+  if (operation === "export" || operation === "export_merged") {
     const fileName = trimmed(values, "file_name");
     if (fileName) payload.file_name = fileName;
   }
@@ -306,6 +309,11 @@ export function validateForm(item, values, operation) {
   if (operation === "export") {
     if (!trimmed(values, "output_format")) errors.output_format = "请选择输出格式";
     if (!trimmed(values, "file_name")) errors.file_name = "请填写 XLSX 文件名";
+  }
+  if (operation === "export_merged") {
+    if (!trimmed(values, "document_no")) {
+      errors.document_no = "请填写至少一个流水单号（多个用空格、逗号或换行分隔）";
+    }
   }
   return errors;
 }
@@ -360,6 +368,33 @@ export function serialMatchWarning(data) {
     return `未找到该流水单号（${coverage}，覆盖完整）`;
   }
   return "";
+}
+
+/**
+ * 数模「流水单号」查询的代价提示：上游没有该查询参数，填了单号就必须全量抓取
+ * （最多 max_pages 页），明显慢于查询预览。发起前把代价说清楚，避免用户以为界面卡死
+ * （2026-10-10 生产反馈）。
+ */
+export function documentNoCrawlNotice(item, values) {
+  if (!item || item.id !== "tdc-data-model") return "";
+  const serial = values && typeof values.document_no === "string" ? values.document_no.trim() : "";
+  if (!serial) return "";
+  const rawPages = values && values.max_pages !== undefined && values.max_pages !== null
+    ? String(values.max_pages).trim()
+    : "";
+  const pages = rawPages || "100";
+  return `流水单号不走上游查询：本次将全量抓取（最多 ${pages} 页），耗时较长，请勿重复点击。`;
+}
+
+/**
+ * 官方 XLSX 导出不支持按流水单号过滤（上游没有该查询参数，导出路径也不读 document_no）：
+ * 填了单号时提示用户改用「导出合并结果（CSV）」，否则拿到的会是全部行。
+ */
+export function mergedExportHint(item, values) {
+  if (!item || item.id !== "tdc-data-model") return "";
+  const serial = values && typeof values.document_no === "string" ? values.document_no.trim() : "";
+  if (!serial) return "";
+  return "官方 XLSX 导出不按流水单号过滤（会导出其它条件下的全部行）；只导出这些单号请用「导出合并结果（CSV）」。";
 }
 
 export function previewContextText(preview, suffix = "") {
