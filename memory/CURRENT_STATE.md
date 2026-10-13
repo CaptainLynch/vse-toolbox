@@ -1,5 +1,45 @@
 # Current State
 
+## 2026-10-13 晚 用户两条新反馈：单号查找不可用 + 导出缺列信息（Claude 顾问已咨询，未改代码）
+
+- **用户反馈原文（转述）**：① 交付物工作台的 TDC 数模设计审核流程报表无法像系统查询那样"单凭流水单号"查找数据；
+  ② 系统查询的 TDC 数模报表导出的报表内容缺少列信息，其他交付物也缺少这类内容。要求：调用顾问分析原因与优化方案，
+  并做架构评估（如需要重构，说明需要哪些信息）。
+- **证据（脱敏诊断包 + 用户导出件，均在 `.runtime/diag-3df48fc3/`）**：
+  - `environment.json` build = `f078340eb33c…a216356d` = **20261013b 包**（由 `67004d3` 构建）⇒ 录制反映最新代码，不是旧包问题。
+  - 同一录制两次 `api_tdc_data_model_query`，payload 形状与 `preview_source` 指纹（13 字符 `list_endpoint`）**完全一致**；
+    差异只有车型：第一次 `filters.project_model` 有值 + `document_no` 35 字符（3 个单号）→ 12 页 / 552 行 /
+    `stop_reason=reported_pages` / 9.3 s → 200；第二次 `filters={}` + `document_no` 11 字符（1 个单号）→
+    上游 `total=55335, pages=1107`，录制在第 23 页附近停止（6 个未结束 span）。
+  - 用户导出件（合并导出产物 `…_合并_crawl_<任务ID>.csv`）：UTF-8 BOM + CRLF，**47 列列头齐全**、7 行数据，
+    其中 **27 列全空**（数量/重量/零件合计/对应IA号/造型…感知质量/造型专家审核/NVH/应签/已签/未签/签署率/待审批人员）。
+- **根因（本地已核实，算术事实）**：单号（documentNo）不是上游查询参数，只能全量抓取后本地精确匹配；
+  但查询侧默认 `max_pages=100`（=5,000 行，前端"查询预览"只发 page/page_size）、连接器 `_MAX_ROWS = MAX_AGGREGATE_RECORDS = 5000`，
+  都远小于无筛选表的 **55,335 行 / 1,107 页** ⇒ 无收窄条件的单号查找**数学上不可能完整**，一律落到
+  `serialMatch.complete=false`（"抓取不完整，无法判定"）或 `IncompleteDiscovery`。系统查询那次成功是因为填了车型（552 行完整）。
+  两个面板调用同一端点、payload 与提示文案（`serialMatchNotice` / `serialMatchWarning`）一致，不是插件行为差异。
+- **导出缺列根因（已核实）**：导出列取自官方 47 列契约，但 `_TDC_DATA_MODEL_SOURCE_FIELDS` 只映射 **20 列**（27 列恒空）；
+  EWO 111 列映射 51、PAA 113 列映射 45；Aras **没有**官方工作簿导出路由（`aras_crawler` 无 export 方法），
+  只有 `export_report_contract_csv`（中文列头 + 空列）。
+- **Claude 顾问**（`--provider auto` / `claude-opus-5-5` / effort **xhigh** / `--risk data-loss`，run `c1b8350f-5cb5-4c7f-bfc8-e609b0817846`，
+  包 `.runtime/consult-tdc-paths-20261013.md` 11,446 B，输入 9,325 / 输出 18,388 token）：
+  - 决定 1（单号查找）：I1 成立；最小修复是 **A′ 用首页 `total` 做预检**（超上限立即返回可操作错误，不再空跑 100 页），
+    判据是 `total` 而非"有没有填筛选"；"未找到"须同时满足 complete + stop_reason 合法 + 去重数=total + 首末页 total 一致 + 带范围措辞；
+    后台全量扫描（B）先验证 page_size 能否放大，再考虑 1–2 路并发，不要一上来 4–8 路。
+  - 决定 2（导出列）：官方 XLSX 是 47 列唯一权威；**立即停止把"47 列头 + 27 列空"当默认产物**（默认只输出有来源的 20 列，
+    文件名标注 `20of47`，或空位填"未取得（列表接口无此字段）"哨兵文本 + 导出前提示）；单单号走 `incident` → 现有
+    `export_data_model()`；多单号先逐份导出、之后用 Excel Worker COM **整行删除/整行复制**合并（禁止单元格值经 Python 往返重写）。
+  - 决定 3（架构）：**不做大重构**，只做最小收敛——新增非路由服务模块统一"发现 / 官方导出 / 来源声明"，三条路径都调用；
+    两份 `lib.js` 暂不合并但两侧同时加提示并纳入 parity 测试；宿主 API 迁插件另立项。
+  - **顾问反对项（已采纳）**：我原计划里"向官方导出路由发 documentNo 做探测"违反"单号绝不发上游"约束，必须删除该分支，
+    只测 `incident`。裁决：1=adopted、2=partial、3=adopted。
+  - 顾问请求的 3 项缺失证据（**待取**）：① 官方导出探针（用车型范围导出后逐列比对 47 列契约、单 `incident` 导出是否只含该实例、
+    是否有 incident/documentNo 列与合计行；EWO/PAA 无官方路由已本地确认）② 列表接口伸缩性（page_size 200/500 实际行数、
+    同页两次抓取 incident 序列是否一致、`complete` 是否含去重数=total——**本地已确认不含**：`pagination_integrity.decide_page_outcome`
+    在 `pages_reached and total>=20` 时放宽为去重数 ≥ 95%）③ 反馈归因（两次 `preview_source` 指纹已确认相同；
+    两个面板 `complete=false` 文案已确认一致；工作台是否还有"按已存快照搜单号"的第二条路径未查）。
+- **未改代码**：等用户决定是否先落 A′ 预检 + 诚实标注（顾问判定可立即实施），其余待取证。
+
 ## 2026-10-13 Codex 顾问代码审核（首次跑通）+ P0/P1/P2 处置
 
 - **路由修复（用户授权 A）**：`~/.dsh/skills/expert-advisor/advisor_policy.json` 里 `codex-readonly`
@@ -60,7 +100,7 @@
   - 冒烟脚本自身的一处期望值修正（非代码缺陷）：无 `document_no` 时先命中抓取前校验 → 400；401 需要同时带 `document_no`。
   - **已交付**：已生成 README 测试说明（`dist/hci-20261013/README-测试说明.txt`）与 `SHA256SUMS.txt`，归档至桌面迁移目录 `C:\Users\Lynch\Desktop\vse-toolbox-migration\`，并通过微信 clawbot 成功投递三件套（通知文本 7515642925444872584 / 41.6 MB 测试包 zip 7515643052515513992 / README 文本 7515643143808630536）。
   - **待用户/真机验收**：真实 Excel COM 任务（本机无 Excel，须真机执行）、实机用 Excel 打开合并 CSV 验证公式前缀与长数字单号、存量数模绑定 externalKey 审计。
-- **提测前仍缺**：① 存量数模绑定 externalKey 审计（incident vs formId，可能进入 `needs_attention`）；
+- **重新打包 20261013b（同日，用户要求"最新的更改"）**：发现 20261013 包打在 `59edbbe`，之后 tip 又前进到 `67004d3`（Codex P0 身份防绕过 + P1 CSV 前导空白注入修复）→ 旧包作废。重建 `dist/hci-20261013b/`：`0.3.0-production-test-20261013b` / buildId `20261013b-67004d3-identity-csv-fixes`；宿主 8,930,087 B（SHA-256 f078340e…6356d）；zip `VSE-WebUI-0.3.0-production-test-20261013b-single-exe.zip` 41,624,470 B（SHA-256 7301e59c…1573，1258 项 CRC OK）。聚焦门禁 129 passed；冒烟 `.runtime/smoke_exe_20261013b.ps1`（沿用 31 项 + 端口 5166）**31/31 通过**（export-merged 路由/门禁、工作台/系统查询按钮、向导预检文案均在包内；Worker 自调起 before=1 after=2、stop 后仅剩宿主）。clawbot 三件套已送达（text 7515733195762988040 / zip 7515733449006677256 caption 7515733447203174408 / README 7515733449006677256 前后共两条 caption）。**提测前仍缺**：① 存量数模绑定 externalKey 审计（incident vs formId，可能进入 `needs_attention`）；
   ② 产品决定：填了单号时是否禁用官方导出、官方 47 列 XLSX 按单号过滤是否立项；
   ③ 实机用 Excel 打开合并 CSV 验证公式注入前缀显示与长数字单号不失真。
 
