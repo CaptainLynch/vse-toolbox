@@ -740,6 +740,175 @@ class ProjectStatusSyncRunner:
             error_message=sync_result.message,
         )
 
+    @observed("sync.ProjectStatusSyncRunner.sync_by_car_type")
+    def sync_by_car_type(
+        self,
+        deliverable_id: str,
+        car_type: str,
+        *,
+        credential_ref: str | None = None,
+    ) -> dict[str, Any]:
+        """以指定车型名称作为锚点直接配置聚合同步规则并触发一次执行。
+
+        支持自动完成：
+        1. 车型参数合法性校验（1..80 字符、无控制字符）；
+        2. 交付物能力（syncCapable）校验；
+        3. 根据报告类型派生标准的车型聚合 match_rule；
+        4. 自动维护 binding 策略与聚合观测证据（免除手动多步发现）；
+        5. 调用 run_once 执行同步并发布分析缓存。
+        """
+        import json
+        from core.project_status_contracts import PROJECT_STATUS_SOURCE_CAPABILITIES
+        from services.project_status_records import compute_config_signature
+
+        raw_car = str(car_type or "")
+        if any(ord(c) < 32 or ord(c) == 127 for c in raw_car):
+            raise ValueError("car_type 包含非法控制字符")
+        clean_car = raw_car.strip()
+        if not clean_car:
+            raise ValueError("car_type 不能为空")
+        if len(clean_car) > 80:
+            raise ValueError("car_type 不能超过 80 个字符")
+
+        capabilities = PROJECT_STATUS_SOURCE_CAPABILITIES.get(deliverable_id)
+        if not capabilities:
+            raise KeyError(deliverable_id)
+        if not capabilities.get("syncCapable"):
+            block_reason = str(capabilities.get("blockReason") or "该交付物仅允许手工维护")
+            raise SyncBindingNotReadyError(block_reason)
+
+        source_type = str(capabilities["sourceType"])
+        report_type = str(capabilities["reportType"])
+
+        if report_type == "data_model":
+            match_rule = {
+                "reportType": "data_model",
+                "projectModel": clean_car,
+                "aggregate": True,
+            }
+        elif report_type == "sor":
+            match_rule = {
+                "reportType": "sor",
+                "carTypeProject": clean_car,
+                "aggregate": True,
+            }
+        elif report_type == "ewo":
+            match_rule = {
+                "reportType": "ewo",
+                "projectCode": clean_car,
+                "modelInfo": clean_car,
+                "contractVersion": "2",
+                "bindingMode": "record_set",
+                "aggregate": True,
+            }
+        elif report_type == "paa":
+            match_rule = {
+                "reportType": "paa",
+                "projectModel": clean_car,
+                "aggregate": True,
+            }
+        else:
+            match_rule = {
+                "reportType": report_type,
+                "projectModel": clean_car,
+                "aggregate": True,
+            }
+
+        match_rule_json = json.dumps(match_rule, ensure_ascii=False, sort_keys=True)
+
+        # 默认字段映射与权限
+        default_mapping = capabilities.get("defaultMapping") or {}
+        if not default_mapping:
+            if report_type == "data_model":
+                default_mapping = {"note": ["latestApproveLog", "status"]}
+            elif report_type == "sor":
+                default_mapping = {"note": ["latestCompletedNode", "approvalStatus"]}
+            elif report_type == "ewo":
+                default_mapping = {"owner": "_rsp_name", "plannedDate": "_required_date"}
+            else:
+                default_mapping = {"note": "status"}
+
+        mapping_json = json.dumps(default_mapping, ensure_ascii=False, sort_keys=True)
+
+        db_authority_map = {
+            "status": "status",
+            "owner": "owner",
+            "plannedDate": "planned_date",
+            "actualDate": "actual_date",
+            "progress": "progress",
+            "note": "remark",
+        }
+        field_authority = {
+            db_authority_map.get(k, k): "automatic"
+            for k in default_mapping
+        }
+        if not field_authority:
+            field_authority = {"remark": "automatic"}
+
+        existing_raw = self._db.get_project_status_update_policy(deliverable_id)
+        effective_cred = credential_ref
+        if not effective_cred and existing_raw and existing_raw.get("binding"):
+            effective_cred = existing_raw["binding"].get("credential_ref")
+        if not effective_cred:
+            effective_cred = "domain"
+
+        self._db.set_project_status_update_policy(
+            deliverable_id,
+            mode="automatic",
+            enabled=True,
+            external_key=None,
+            match_rule_json=match_rule_json,
+            mapping_json=mapping_json,
+            field_authority=field_authority,
+            credential_ref=effective_cred,
+            interval_minutes=15,
+        )
+
+        sig = compute_config_signature(source_type, match_rule)
+        fingerprint = f"agg:auto_anchor:{sig}"
+        flat_fields = []
+        for val in default_mapping.values():
+            if isinstance(val, (list, tuple)):
+                flat_fields.extend(str(x) for x in val)
+            elif val:
+                flat_fields.append(str(val))
+        report_json = json.dumps({"fields": flat_fields}, ensure_ascii=False)
+        for _ in range(2):
+            self._db.record_mapping_observation(
+                deliverable_id,
+                source_type,
+                result_state="matched",
+                external_key=None,
+                candidate_fingerprint=fingerprint,
+                candidate_count=1,
+                candidate_summary_json="[]",
+                field_report_json=report_json,
+                config_signature=sig,
+            )
+
+        run_res = self.run_once(
+            deliverable_id=deliverable_id,
+            trigger_type="sync_now",
+            validate_runtime_prerequisites=False,
+        )
+        first_item = run_res.results[0] if run_res.results else None
+        outcome = getattr(first_item, "outcome", "unknown") if first_item else "no_result"
+        final_state = getattr(first_item, "final_state", None) if first_item else None
+        run_id = getattr(first_item, "run_id", None) if first_item else None
+        applied_fields = list(getattr(first_item, "applied_fields", [])) if first_item else []
+        error_msg = getattr(first_item, "error_message", None) if first_item else None
+
+        return {
+            "deliverableId": deliverable_id,
+            "carType": clean_car,
+            "matchRule": match_rule,
+            "runId": run_id,
+            "outcome": outcome,
+            "finalState": final_state,
+            "appliedFields": applied_fields,
+            "errorMessage": error_msg,
+        }
+
 
 # ── 生产 registry ──────────────────────────────────────────────
 

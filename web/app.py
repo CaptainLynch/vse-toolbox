@@ -5654,11 +5654,32 @@ def create_app(
             )
             return _json_error(409, block_type, block_reason)
         try:
+            payload = request.get_json(silent=True) or {}
+            raw_car_type = payload.get("carType") or payload.get("car_type") or payload.get("model")
+            if raw_car_type is not None and isinstance(raw_car_type, str):
+                if any(ord(c) < 32 or ord(c) == 127 for c in raw_car_type):
+                    raise ValueError("carType contains control characters")
+                car_type = raw_car_type.strip()
+                if car_type:
+                    if len(car_type) > 80:
+                        raise ValueError("carType is too long")
+                    runner = ProjectStatusSyncRunner(
+                        db,
+                        update_service,
+                        create_production_registry(),
+                        analysis_service=deliverable_analysis_service,
+                    )
+                    data = runner.sync_by_car_type(deliverable_id, car_type)
+                    response = jsonify({"ok": True, "data": data})
+                    response.headers["Cache-Control"] = "no-store"
+                    return response
+
             update_service.assert_sync_ready(deliverable_id)
             runner = ProjectStatusSyncRunner(
                 db,
                 update_service,
                 create_production_registry(),
+                analysis_service=deliverable_analysis_service,
             )
             result = runner.run_once(
                 deliverable_id=deliverable_id,
@@ -5687,9 +5708,63 @@ def create_app(
         except KeyError:
             return _json_error(404, "NotFound", "未找到交付物")
         except SyncBindingNotReadyError as exc:
+            # 必须先于 `except ValueError`：SyncBindingNotReadyError 是 ValueError 子类，
+            # 顺序反了会把 409 SyncNotReady 降级成 422 ValidationError。
             return _json_error(409, "SyncNotReady", _sanitize_error_message(exc))
+        except ValueError as exc:
+            return _json_error(422, "ValidationError", _sanitize_error_message(exc))
         except Exception as exc:
             logger.exception("project status sync-now failed")
+            return _json_error(500, "ServerError", _sanitize_error_message(exc))
+
+    @app.post("/api/project-status/deliverables/<deliverable_id>/sync-by-car-type")
+    def api_project_status_sync_by_car_type(deliverable_id: str):
+        local_error = _local_web_mutation_error()
+        if local_error is not None:
+            return local_error
+        _, _, sync_now_deliverable_rows = db.get_project_status("VPI-T2")
+        if deliverable_id not in {str(row["id"]) for row in sync_now_deliverable_rows}:
+            return _json_error(404, "NotFound", "未找到交付物")
+        sync_block = PROJECT_STATUS_SOURCE_CAPABILITIES.get(deliverable_id, {})
+        if not sync_block.get("syncCapable"):
+            block_type = str(sync_block.get("syncBlockType") or "ManualOnly")
+            block_reason = (
+                AFACE_CONTRACT_BLOCKER
+                if block_type == "ContractBlocked"
+                else str(sync_block.get("blockReason") or "该交付物仅允许手工维护")
+            )
+            return _json_error(409, block_type, block_reason)
+        payload = request.get_json(silent=True) or {}
+        raw_car_type = payload.get("carType") or payload.get("car_type") or payload.get("model")
+        if not raw_car_type or not isinstance(raw_car_type, str):
+            return _json_error(422, "ValidationError", "缺少车型参数 carType")
+        if any(ord(c) < 32 or ord(c) == 127 for c in raw_car_type):
+            return _json_error(422, "ValidationError", "车型参数包含非法控制字符")
+        car_type = raw_car_type.strip()
+        if not car_type:
+            return _json_error(422, "ValidationError", "车型参数不能为空")
+        if len(car_type) > 80:
+            return _json_error(422, "ValidationError", "车型参数不能超过 80 个字符")
+        try:
+            runner = ProjectStatusSyncRunner(
+                db,
+                update_service,
+                create_production_registry(),
+                analysis_service=deliverable_analysis_service,
+            )
+            data = runner.sync_by_car_type(deliverable_id, car_type)
+            response = jsonify({"ok": True, "data": data})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except KeyError:
+            return _json_error(404, "NotFound", "未找到交付物")
+        except SyncBindingNotReadyError as exc:
+            # 同 sync-now：子类必须先捕获，否则 409 被 422 吞掉。
+            return _json_error(409, "SyncNotReady", _sanitize_error_message(exc))
+        except ValueError as exc:
+            return _json_error(422, "ValidationError", _sanitize_error_message(exc))
+        except Exception as exc:
+            logger.exception("project status sync by car type failed")
             return _json_error(500, "ServerError", _sanitize_error_message(exc))
 
     @app.get("/api/project-status/scheduler")
