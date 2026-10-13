@@ -356,6 +356,11 @@ export function serialMatchWarning(data) {
   const match = data && data.serialMatch;
   if (!match || typeof match !== "object") return "";
   const coverage = `已扫描 ${match.scannedPages ?? "-"} 页 / ${match.scanned ?? "-"} 行`;
+  if (match.complete === false && match.reason === "range_too_large") {
+    // 范围预检（2026-10-13 生产反馈）：上游声明的总行数已超过本次抓取上限时，
+    // 不必空跑 max_pages 页再报"抓取不完整"——直接给出可操作结论。
+    return `当前条件命中 ${match.total ?? "-"} 行，超过单次上限 ${match.limit ?? "-"} 行：请补充车型/日期等条件后重试；只要这些流水单号请用「导出合并结果（CSV）」（走官方报表，含全部官方列）`;
+  }
   if (match.complete === false) {
     const reason = match.reason && match.reason !== "crawl_incomplete" ? `（原因：${match.reason}）` : "";
     return `抓取不完整，无法判定流水单号，请重试（${coverage}）${reason}`;
@@ -394,7 +399,7 @@ export function mergedExportHint(item, values) {
   if (!item || item.id !== "tdc-data-model") return "";
   const serial = values && typeof values.document_no === "string" ? values.document_no.trim() : "";
   if (!serial) return "";
-  return "官方 XLSX 导出不按流水单号过滤（会导出其它条件下的全部行）；只导出这些单号请用「导出合并结果（CSV）」。";
+  return "官方「导出 XLSX」不按流水单号过滤（会导出其它条件下的全部行）；只导出这些单号请用「导出合并结果（CSV）」——它从官方报表里按单号精确筛选，含全部官方列；范围过大时请先补充车型/日期等条件。";
 }
 
 export function previewContextText(preview, suffix = "") {

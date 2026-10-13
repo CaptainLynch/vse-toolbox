@@ -383,7 +383,7 @@ def test_tdc_truncated_preview_is_exposed_on_collection(
         truncated=True,
     )
     monkeypatch.setattr(
-        "services.scheduled_archive_connectors.read_xlsx_preview",
+        "services.tdc_official_rows.read_xlsx_preview",
         lambda *args, **kwargs: preview,
     )
     connector, _ = make_tdc_harness(tmp_path, FakeTDCCrawler)

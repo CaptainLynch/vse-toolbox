@@ -15,7 +15,6 @@ from typing import Any, Callable, Mapping, Sequence
 
 from core.archive_store import ArchiveArtifact, ArchiveStore
 from core.credential_provider import ResolvedCredential
-from core.report_contracts import report_contracts
 from core.redaction import redact_sensitive_text
 from services.aras_auth import ArasECMAuthClient
 from services.aras_crawler import (
@@ -38,9 +37,11 @@ from services.tdc_crawler import (
     TDCDataModelFilters,
     TDCSORFilters,
 )
-from services.xlsx_preview import (
-    XLSXPreviewError,
-    read_xlsx_preview,
+from services.tdc_official_rows import (
+    OfficialWorkbookContractError,
+    OfficialWorkbookTruncated,
+    OfficialWorkbookUnreadable,
+    read_official_tdc_rows,
 )
 
 _MAX_TEXT = 512
@@ -289,37 +290,19 @@ def _official_workbook_rows(path: Path, report_type: str) -> tuple[dict[str, obj
     readable XLSX; callers may then use the legacy list fallback.  A readable
     official workbook with a wrong header is a contract error and must not be
     silently replaced with list data.
+
+    读取语义单一来源于 `services.tdc_official_rows`（与「导出合并结果」共用），
+    本函数只做归档侧的错误映射：不可读 → ``None``（触发列表回退），
+    截断/契约不符 → 既有异常类型（runner 的闭集消息表不变）。
     """
     try:
-        preview = read_xlsx_preview(path, max_rows=_TDC_MAX_RECORDS + 1)
-    except XLSXPreviewError:
+        return read_official_tdc_rows(path, report_type, max_rows=_TDC_MAX_RECORDS + 1)
+    except OfficialWorkbookUnreadable:
         return None
-    if preview.truncated:
-        raise _WorkbookPreviewTruncatedError(
-            "official workbook preview truncated"
-        )
-    if not preview.rows:
-        return ()
-    raw_header = preview.rows[0]
-    headers = [str(value or "").strip() for value in raw_header]
-    if report_type in {"data_model", "sor"}:
-        contract_key = f"tdc_{report_type}"
-        expected = [
-            str(value or "").strip()
-            for value in report_contracts()[contract_key]["headerRows"][0]
-        ]
-        if headers[: len(expected)] != expected or any(headers[len(expected) :]):
-            raise ValueError(f"official TDC {report_type} export header does not match the approved contract")
-        headers = expected
-    else:
-        headers = [value or f"column_{index + 1}" for index, value in enumerate(headers)]
-    result: list[dict[str, object]] = []
-    for row in preview.rows[1:]:
-        if not row or not any(value not in (None, "") for value in row):
-            continue
-        values = list(row) + [None] * max(0, len(headers) - len(row))
-        result.append({headers[index]: values[index] for index in range(len(headers))})
-    return tuple(result)
+    except OfficialWorkbookTruncated as exc:
+        raise _WorkbookPreviewTruncatedError(str(exc)) from exc
+    except OfficialWorkbookContractError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 class TDCArchiveConnector:

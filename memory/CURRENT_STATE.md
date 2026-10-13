@@ -1,5 +1,36 @@
 # Current State
 
+## 2026-10-13 晚（续）合并导出改用官方工作簿 + 单号范围预检（已实现，门禁全绿）
+
+- **新证据**：用户把「内网官方版本」与「WebUI 合并导出」两份按同一流水单号导出的报表发来对比
+  （`数模设计审核流程报表 (23)-官方版本.csv` vs `tdc_data_model_合并_crawl_305fc7459398.csv`，
+  两份都是同样 3 行、同样 47 列列头）：官方版本 47 列全有值，我们的 27 列全空（数量/重量/
+  零件合计/对应IA号/各专业会签/造型专家审核/NVH/应签·已签·未签·签署率/待审批人员）。
+- **根因**：合并导出用**列表接口**行拼官方列；列表接口只覆盖契约 47 列中的 20 列。
+- **实现**：
+  1. 新增 `services/tdc_official_rows.py`：官方工作簿 → 「契约列标签 → 值」行；读取用仓库自有
+     `services/xlsx_preview`（zip+XML，**不违反 DLP**，官方预览与归档连接器一直在用）；
+     表头不符/行数超限/不可读分别抛专用异常，绝不产出部分行。
+  2. `services/scheduled_archive_connectors._official_workbook_rows` 改为委托该模块（归档语义不变：
+     不可读→列表回退；截断/契约不符→既有 projection_error 码）；测试 monkeypatch 目标随迁。
+  3. `web/app.py` 「导出合并结果」链路：范围预检（列表首页 `total`，`max_pages=1`）→
+     `export_data_model(filters)` 官方工作簿（落任务临时目录，结束即删）→ `read_official_tdc_rows`
+     → `match_serials` → 一张 CSV（**47 列全有值**）。fail-closed：超 `_TDC_MERGED_MAX_ROWS`（50,001）
+     → 422 提示补充车型/日期；不可解析/表头不符 → 502；缺单号 → 422 `SerialNotFound`；
+     **不再**回退成"列表列 + 27 列空"。`_tdc_merged_export_csv` → `_tdc_official_rows_csv`。
+  4. 查询预览范围预检：填了单号先取首页 `total`，超过 `min(max_pages×page_size, max_records)` 时
+     立即返回 `serialMatch.complete=false, reason="range_too_large"`（含 total/limit），不再空跑
+     100 页后报"抓取不完整"（诊断录制：不填车型时上游 55,335 行 / 1,107 页，默认上限 5,000 行）。
+  5. 前端：`mergedExportHint`（工作台）/`mergedExportNotice`（系统查询）说明"从官方报表按单号
+     精确筛选、含全部官方列、范围过大先补车型/日期"；`serialMatchWarning`/`serialMatchNotice`
+     新增 `range_too_large` 分支（两插件同文案，parity 测试覆盖）。
+- **门禁**：全量 `pytest tests` **3004 passed / 6 skipped / 0 failed**（324s；+12 即本次新增用例，
+  skip 数随环境可选依赖变化）；聚焦 190 + 85 passed；flake8 改动文件 0 告警；3 个 JS `node --check` 通过；
+  `PROJECT_MAP.md --write` 后 `--check` verified；文档 `docs/TDC_DM_MERGED_EXPORT_20261010.md` 加 §0 变更说明。
+- **未做/待实测**：合并结果写成 XLSX（需 Excel Worker COM 写操作，另立任务）；官方导出路由是否接受
+  `documentNo`（不把单号发上游，现场探针未做）；「实例号在官方 Excel 精确预览不可用」单独取证
+  （疑似上游导出路由不吃 `incident`，需现场探针）；新包实测（正在构建 `dist/hci-20261013c`）。
+
 ## 2026-10-13 晚 用户两条新反馈：单号查找不可用 + 导出缺列信息（Claude 顾问已咨询，未改代码）
 
 - **用户反馈原文（转述）**：① 交付物工作台的 TDC 数模设计审核流程报表无法像系统查询那样"单凭流水单号"查找数据；

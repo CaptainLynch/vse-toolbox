@@ -182,6 +182,13 @@ from services.tdc_crawler import (
     flatten_sor_value,
 )
 from services.tdc_export_cache import TDCExportCache
+from services.tdc_official_rows import (
+    OfficialWorkbookContractError,
+    OfficialWorkbookTruncated,
+    OfficialWorkbookUnreadable,
+    official_contract_headers,
+    read_official_tdc_rows,
+)
 from services.windows_http import WinHTTPError, WinHTTPTimeoutError
 
 logger = logging.getLogger("vse_toolbox.web")
@@ -364,6 +371,8 @@ _TDC_XLSX_NAME_RE = re.compile(r"^[^<>:\"/\\|?*\x00-\x1f]+\.xlsx$", re.IGNORECAS
 #: 合并导出产物是 CSV：同一套安全校验换扩展名（见 `_tdc_merged_file_name`）。
 _TDC_CSV_NAME_RE = re.compile(r"^[^<>:\"/\\|?*\x00-\x1f]+\.csv$", re.IGNORECASE)
 _TDC_OFFICIAL_PREVIEW_MAX_ROWS = 50_001
+#: 「导出合并结果」同样以官方工作簿为数据源：读取上限与官方预览一致（含表头行）。
+_TDC_MERGED_MAX_ROWS = _TDC_OFFICIAL_PREVIEW_MAX_ROWS
 
 _DELIVERABLE_CATEGORIES = [
     {"id": "aras", "name": "Aras 报告"},
@@ -1769,22 +1778,20 @@ def _csv_cell(value: Any) -> Any:
     return value
 
 
-def _tdc_merged_export_csv(rows: Sequence[Mapping[str, Any]]) -> bytes:
-    """数模「多流水单号合并导出」的 CSV 字节（UTF-8 BOM，Excel 双击可开）。
+def _tdc_official_rows_csv(rows: Sequence[Mapping[str, Any]]) -> bytes:
+    """官方工作簿行的 CSV 字节（UTF-8 BOM，Excel 双击可开）。
 
-    列序沿用数模表契约（与预览一致）；列表接口不提供的官方导出列留空。
-    为什么不是 XLSX：上游没有流水单号查询参数，官方工作簿无法按单号过滤；
-    而公司 DLP 禁令（services/office_toolbox.py）禁止用 openpyxl/pandas 直接读写
-    Office 文件，改写官方工作簿必须走 Excel Worker(COM) 的新操作（另立任务）。
+    列序与列头沿用官方 47 列契约，**逐列取值**：官方工作簿是全部官方列的唯一
+    来源，列表接口只有其中 20 列——用列表行拼官方列会把"官方才有"的 27 列
+    留空，用户会把空列读成"无人待签/数量为 0"（2026-10-13 生产反馈）。
     单元格经 ``_csv_cell`` 做公式注入缓解（数据来自上游报表，属不可信文本）。
     """
-    table = table_payload("tdc_data_model", _safe_rows([dict(row) for row in rows]))
-    columns = cast(list[dict[str, Any]], table["columns"])
+    labels = official_contract_headers("data_model")
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator="\r\n")
-    writer.writerow([str(column.get("label") or "") for column in columns])
-    for row in cast(list[list[Any]], table["rows"]):
-        writer.writerow([_csv_cell(value) for value in row])
+    writer.writerow(labels)
+    for row in rows:
+        writer.writerow([_csv_cell(row.get(label)) for label in labels])
     return buffer.getvalue().encode("utf-8-sig")
 
 
@@ -3034,15 +3041,44 @@ def _tdc_data_model_serial_query(
     fail-closed：抓取不完整时返回 200 + 空行 + ``serialMatch.complete=false``
     且 ``reason="crawl_incomplete"``——语义是"无法判定"，不是"未找到"；只有
     抓取完整且匹配 0 行才是真正的"未找到"。
+
+    范围预检（2026-10-13 生产反馈）：流水单号不是上游查询参数，只能全量抓取后
+    本地匹配；当上游声明的总行数已超过本次抓取上限（``max_pages × page_size``
+    与 ``max_records`` 的较小值）时，用首页 ``total`` 直接给出可操作结论
+    （``reason="range_too_large"``），不再空跑 max_pages 页后报"抓取不完整"
+    （现场表现为同步请求跑满数分钟仍无结论）。
     """
     page_size = _tdc_positive_int(payload.get("page_size"), "page_size", 50, _TDC_PAGE_SIZE_MAX)
     max_pages = _tdc_positive_int(payload.get("max_pages"), "max_pages", 100, _TDC_MAX_PAGES_MAX)
     max_records = _tdc_positive_int(
         payload.get("max_records"), "max_records", 10000, _TDC_MAX_RECORDS_MAX
     )
+    row_cap = min(max_pages * page_size, max_records)
     client: TDCCrawlerClient | None = None
     try:
         client = _build_tdc_client_from_payload(payload, allowed_hosts)
+        probe = client.crawl_data_model_all(
+            filters,
+            page_size=page_size,
+            max_pages=1,
+            max_records=max_records,
+        )
+        total = getattr(probe, "total", None)
+        if isinstance(total, int) and not isinstance(total, bool) and total > row_cap:
+            data = _tdc_result_data(
+                replace(probe, rows=[], unique_count=0, duplicate_count=0)
+            )
+            data["serialMatch"] = {
+                "requested": document_nos if len(document_nos) > 1 else document_nos[0],
+                "scanned": 0,
+                "matched": 0,
+                "scannedPages": int(getattr(probe, "fetched_pages", 0) or 0),
+                "complete": False,
+                "reason": "range_too_large",
+                "total": total,
+                "limit": row_cap,
+            }
+            return jsonify({"ok": True, "data": data})
         crawl_result = client.crawl_data_model_all(
             filters,
             page_size=page_size,
@@ -3377,52 +3413,82 @@ def _tdc_report_export_merged(allowed_hosts: Sequence[str]):
 
     def worker(ctx):
         # 统一域会话是应用内存对象：worker 线程内复用，禁止关闭。
-        client = TDCCrawlerClient(
-            base_url, session=session, timeout=30.0, output_dir=ctx.downloads_dir
-        )
-        ctx.update_progress(percent=5, stage="全量抓取数模行（按单号本地匹配）")
-
-        def on_page(page: int, rows: int) -> None:
+        work_dir = Path(tempfile.mkdtemp(prefix="tdc_merged_official_"))
+        try:
+            client = TDCCrawlerClient(
+                base_url, session=session, timeout=30.0, output_dir=work_dir
+            )
+            ctx.update_progress(percent=5, stage="正在核对范围（官方报表行数）")
+            # 范围预检：官方工作簿一次返回全部行，先用列表首页拿 total，避免为了
+            # 一个超大范围去下载整表（也避免把"没抓全"说成"单号不存在"）。
+            probe = client.crawl_data_model_all(
+                filters, page_size=page_size, max_pages=1, max_records=max_records
+            )
+            total = getattr(probe, "total", None)
+            if (
+                isinstance(total, int)
+                and not isinstance(total, bool)
+                and total > _TDC_MERGED_MAX_ROWS
+            ):
+                raise _TDCRequestError(
+                    f"当前条件命中 {total} 行，超过官方报表单次上限 "
+                    f"{_TDC_MERGED_MAX_ROWS} 行；请补充车型/日期等条件后重试",
+                    "RangeTooLarge",
+                    422,
+                )
+            ctx.update_progress(percent=20, stage="正在生成官方报表（含全部官方列）")
+            official = client.export_data_model(
+                filters, file_name=f"{Path(str(file_name)).stem}_官方报表.xlsx"
+            )
+            ctx.update_progress(percent=70, stage="正在按流水单号筛选官方报表行")
+            try:
+                official_rows = read_official_tdc_rows(
+                    Path(official.path), "data_model", max_rows=_TDC_MERGED_MAX_ROWS
+                )
+            except OfficialWorkbookTruncated:
+                raise _TDCRequestError(
+                    f"官方报表行数超过单次上限 {_TDC_MERGED_MAX_ROWS} 行，"
+                    "请补充车型/日期等条件后重试",
+                    "RangeTooLarge",
+                    422,
+                )
+            except OfficialWorkbookContractError:
+                raise _TDCRequestError(
+                    "官方报表表头与已批准契约不一致，无法安全导出（请联系维护人员）",
+                    "OfficialContractMismatch",
+                    502,
+                )
+            except OfficialWorkbookUnreadable:
+                raise _TDCRequestError(
+                    "官方报表无法解析（不是有效的 XLSX 工作簿），请重试或联系维护人员",
+                    "OfficialWorkbookUnreadable",
+                    502,
+                )
+            matched, bookkeeping = match_serials(official_rows, document_nos)
+            # fail-closed：请求了 N 个单号就必须全部命中——静默少导出会被当成"导出成功"，
+            # 与查询预览"展示 missing"的语义不同（导出件是要带走的结果）。
+            missing = [str(item) for item in bookkeeping.get("missing", [])]
+            if missing or not matched:
+                shown = "、".join(missing[:5]) + (f"（共 {len(missing)} 个）" if len(missing) > 5 else "")
+                raise _TDCRequestError(
+                    f"未找到以下流水单号：{shown}" if missing else "未找到任何匹配的流水单号",
+                    "SerialNotFound",
+                    422,
+                )
+            ctx.update_progress(percent=90, stage=f"命中 {len(matched)} 行，正在生成 CSV")
+            stem = Path(str(file_name)).stem or "tdc_data_model_merged"
+            out_path = ctx.downloads_dir / f"{stem}_合并_{ctx.task_id}.csv"
+            out_path.write_bytes(_tdc_official_rows_csv(matched))
+            ctx.set_artifact(out_path)
             ctx.update_progress(
-                percent=min(85, 5 + page), stage=f"已抓取 {page} 页 / {rows} 行"
+                percent=100,
+                stage=(
+                    f"合并导出完成（{len(matched)} 行，官方 "
+                    f"{len(official_contract_headers('data_model'))} 列）"
+                ),
             )
-
-        result = client.crawl_data_model_all(
-            filters,
-            page_size=page_size,
-            max_pages=max_pages,
-            max_records=max_records,
-            on_page=on_page,
-        )
-        if not _mapping_result_is_complete(result):
-            # 截断（stop_reason=max_records/max_pages）在这里必须判"无法判定"，
-            # 绝不能落到 SerialNotFound：否则会把"没抓全"说成"单号不存在"。
-            raise _TDCRequestError(
-                "抓取不完整，无法判定流水单号，请重试",
-                "IncompleteDiscovery",
-                422,
-                None,
-                _pagination_diagnostic(result, len(result.rows)),
-            )
-        matched, bookkeeping = match_serials(result.rows, document_nos)
-        # fail-closed：请求了 N 个单号就必须全部命中——静默少导出会被当成"导出成功"，
-        # 与查询预览"展示 missing"的语义不同（导出件是要带走的结果）。
-        missing = [str(item) for item in bookkeeping.get("missing", [])]
-        if missing or not matched:
-            shown = "、".join(missing[:5]) + (f"（共 {len(missing)} 个）" if len(missing) > 5 else "")
-            raise _TDCRequestError(
-                f"未找到以下流水单号：{shown}" if missing else "未找到任何匹配的流水单号",
-                "SerialNotFound",
-                422,
-            )
-        ctx.update_progress(percent=90, stage=f"命中 {len(matched)} 行，正在生成 CSV")
-        stem = Path(str(file_name)).stem or "tdc_data_model_merged"
-        out_path = ctx.downloads_dir / f"{stem}_合并_{ctx.task_id}.csv"
-        out_path.write_bytes(_tdc_merged_export_csv(matched))
-        ctx.set_artifact(out_path)
-        ctx.update_progress(
-            percent=100, stage=f"合并导出完成（{len(matched)} 行，列表接口列）"
-        )
+        finally:
+            shutil.rmtree(work_dir, ignore_errors=True)
 
     params = {
         "base_url": base_url,

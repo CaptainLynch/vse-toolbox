@@ -648,7 +648,15 @@ def test_tdc_data_model_query_password_mode(client) -> None:
     assert query_call["page_size"] == 25
 
 
-def _stub_data_model_crawl(monkeypatch, rows, *, complete=True, stop_reason="reported_pages", fetched_pages=2):
+def _stub_data_model_crawl(
+    monkeypatch,
+    rows,
+    *,
+    complete=True,
+    stop_reason="reported_pages",
+    fetched_pages=2,
+    total=None,
+):
     """把 /api/tdc/data-model/query 的全量抓取换成固定行集（本地匹配专用）。"""
     def crawl(self, filters, page_size=50, max_pages=100, max_records=10000, should_stop=None, on_page=None):  # type: ignore[no-untyped-def]
         FakeTDCWebClient.calls.append({
@@ -663,7 +671,7 @@ def _stub_data_model_crawl(monkeypatch, rows, *, complete=True, stop_reason="rep
             rows=list(rows),
             page=fetched_pages,
             page_size=page_size,
-            total=len(rows),
+            total=len(rows) if total is None else total,
             pages=1,
             fetched_pages=fetched_pages,
             unique_count=len(rows),
@@ -674,6 +682,35 @@ def _stub_data_model_crawl(monkeypatch, rows, *, complete=True, stop_reason="rep
         )
 
     monkeypatch.setattr(FakeTDCWebClient, "crawl_data_model_all", crawl)
+
+
+def test_tdc_data_model_query_document_no_range_precheck_stops_before_full_crawl(client, monkeypatch) -> None:
+    """范围预检（2026-10-13 生产反馈）：上游 total 超过本次上限时立即给出可操作结论。
+
+    现场表现：不填车型时上游 55,335 行 > 100 页上限，同步请求空跑数分钟后只报
+    "抓取不完整"。预检用首页 total 直接判定，并保留"无法判定"语义（绝不落到"未找到"）。
+    """
+    rows = [{"incident": "900001", "documentNo": "F610S-3D-0001", "partNumber": "P-1"}]
+    _stub_data_model_crawl(monkeypatch, rows, complete=True, total=55335)
+
+    resp = _document_no_query(client, "F610S-3D-0002", max_pages=100, max_records=10000)
+
+    assert resp.status_code == 200
+    data = resp.get_json()["data"]
+    assert data["rows"] == []
+    assert data["serialMatch"] == {
+        "requested": "F610S-3D-0002",
+        "scanned": 0,
+        "matched": 0,
+        "scannedPages": 2,
+        "complete": False,
+        "reason": "range_too_large",
+        "total": 55335,
+        "limit": 5000,
+    }
+    # 只发了预检那一次请求：不再空跑 max_pages 页
+    crawls = [call for call in FakeTDCWebClient.calls if call["method"] == "data_model_crawl"]
+    assert [call["max_pages"] for call in crawls] == [1]
 
 
 def _document_no_query(client, document_no, **extra):  # type: ignore[no-untyped-def]
@@ -713,9 +750,11 @@ def test_tdc_data_model_query_document_no_matches_locally(client, monkeypatch) -
         "scannedPages": 2,
         "complete": True,
     }
-    crawl = next(call for call in FakeTDCWebClient.calls if call["method"] == "data_model_crawl")
-    assert crawl["filters"].instance_no is None  # document_no 绝不作为 incident 发上游
-    assert crawl["max_pages"] == 7 and crawl["max_records"] == 500  # 复用既有上限
+    crawls = [call for call in FakeTDCWebClient.calls if call["method"] == "data_model_crawl"]
+    # 首次调用是范围预检（只取首页拿 total），随后才是真正的全量抓取。
+    assert crawls[0]["max_pages"] == 1
+    assert crawls[-1]["filters"].instance_no is None  # document_no 绝不作为 incident 发上游
+    assert crawls[-1]["max_pages"] == 7 and crawls[-1]["max_records"] == 500  # 复用既有上限
 
 
 def test_tdc_data_model_query_document_no_zero_match_is_empty_not_incomplete(client, monkeypatch) -> None:

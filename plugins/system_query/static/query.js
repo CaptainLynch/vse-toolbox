@@ -694,7 +694,7 @@ export default function SystemQueryPage({ plugin }) {
   // 官方 XLSX 导出不读顶层 document_no（上游无该查询参数）：填了单号时明确指向合并导出，
   // 否则用户会拿到"其它条件下的全部行"却以为已按单号过滤（2026-10-10 用户反馈）。
   const mergedExportNotice = modeId === "tdc-data-model" && String(values.document_no || "").trim()
-    ? "官方「导出 XLSX」不按流水单号过滤（会导出其它条件下的全部行）；只导出这些单号请用「导出合并结果（CSV）」。"
+    ? "官方「导出 XLSX」不按流水单号过滤（会导出其它条件下的全部行）；只导出这些单号请用「导出合并结果（CSV）」——它从官方报表里按单号精确筛选，含全部官方列；范围过大时请先补充车型/日期等条件。"
     : "";
   const deepLinkActive = deepLink.from === "overview";
 
