@@ -30,6 +30,14 @@
 - **未做/待实测**：合并结果写成 XLSX（需 Excel Worker COM 写操作，另立任务）；官方导出路由是否接受
   `documentNo`（不把单号发上游，现场探针未做）；「实例号在官方 Excel 精确预览不可用」单独取证
   （疑似上游导出路由不吃 `incident`，需现场探针）；新包实测（正在构建 `dist/hci-20261013c`）。
+- **提交与打包**：提交 `e1659d5`（本地 = `origin` 同名分支，含 PROJECT_MAP 重生成与文档 §0）；
+  重建 `dist/hci-20261013c/`：`0.3.0-production-test-20261013c` / buildId
+  `20261013c-official-columns-merged-export`；宿主 `VSE-WebUI.exe` 8,934,186 B
+  （SHA-256 `A1D97E3E…AB592`）、zip 41,633,561 B（SHA-256 `013636CE…4AF08`，1257 项）。
+  冒烟 `.runtime/smoke_exe_20261013c.ps1`（31 项 + 端口 5168）**31/31 通过**（首轮 2 项失败是构建时
+  env 名写错：应为 `VSE_TOOLBOX_CHANNEL` / `VSE_TOOLBOX_BUILD_ID`，不是 `CHANNEL`/`BUILD_ID`；
+  已用正确变量名重建并复跑）。三件套已复制到 `~/Desktop/vse-toolbox-migration/`（zip + README + SHA256SUMS）。
+  README 内含"3 步实测"与已知边界（CSV 而非 XLSX、`'` 前缀为公式注入防护、实例号官方预览待取证）。
 
 ## 2026-10-13 晚 用户两条新反馈：单号查找不可用 + 导出缺列信息（Claude 顾问已咨询，未改代码）
 
