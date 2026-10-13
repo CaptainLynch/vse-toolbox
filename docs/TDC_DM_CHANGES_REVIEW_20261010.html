@@ -1,0 +1,1376 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>数模同步修复 · 变更确认页（2026-10-10）</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --line:#e3e6ea; --ink:#1f2328; --muted:#5b636e;
+           --add:#e6ffec; --del:#ffebe9; --accent:#0b62d6; --warn:#b45309; --ok:#116329; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:15px/1.65 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif; }
+  header { background:#0d1b2a; color:#fff; padding:26px 28px 20px; }
+  header h1 { margin:0 0 6px; font-size:22px; }
+  header .sub { color:#b9c4d0; font-size:13px; }
+  nav { position:sticky; top:0; z-index:5; background:#132b45; padding:8px 28px;
+        display:flex; flex-wrap:wrap; gap:14px; font-size:13px; }
+  nav a { color:#cfe1f5; text-decoration:none; }
+  nav a:hover { color:#fff; text-decoration:underline; }
+  main { max-width:1180px; margin:0 auto; padding:22px 20px 60px; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:10px;
+            padding:18px 20px; margin:0 0 18px; }
+  h2 { font-size:17px; margin:0 0 12px; padding-bottom:8px; border-bottom:1px solid var(--line); }
+  h3 { font-size:14px; margin:16px 0 6px; color:var(--muted); }
+  table { border-collapse:collapse; width:100%; font-size:13.5px; }
+  th, td { border:1px solid var(--line); padding:7px 9px; text-align:left; vertical-align:top; }
+  th { background:#f1f3f6; font-weight:600; }
+  code { background:#f1f3f6; padding:1px 5px; border-radius:4px;
+         font:12.5px/1.5 Consolas,"Courier New",monospace; }
+  .pill { display:inline-block; padding:1px 8px; border-radius:999px; font-size:12px;
+          background:#e8eef7; color:#1b4f9c; }
+  .pill.ok { background:#e6f4ea; color:var(--ok); }
+  .pill.warn { background:#fdf3e3; color:var(--warn); }
+  .pill.bad { background:#fdecea; color:#b3261e; }
+  ul { margin:6px 0 6px 20px; padding:0; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:12px; }
+  .card { border:1px solid var(--line); border-radius:9px; padding:12px 14px; background:#fbfcfd; }
+  .card .k { font-size:12px; color:var(--muted); }
+  .card .v { font-size:19px; font-weight:600; margin-top:4px; }
+  details.file { border:1px solid var(--line); border-radius:9px; margin:10px 0; background:#fff; }
+  details.file > summary { cursor:pointer; padding:9px 12px; display:flex; justify-content:space-between;
+                           gap:10px; font:13.5px/1.4 Consolas,"Microsoft YaHei",monospace; }
+  details.file > summary em { color:var(--muted); font-style:normal; }
+  .stat .plus { color:var(--ok); } .stat .minus { color:#b3261e; }
+  .diff { border-top:1px solid var(--line); overflow-x:auto; padding:8px 0 10px; }
+  .dl { font:12.5px/1.5 Consolas,"Courier New",monospace; white-space:pre; padding:0 12px; }
+  .dl.add { background:var(--add); }
+  .dl.del { background:var(--del); }
+  .dl.hunk { background:#eef2f7; color:#3b4a5a; }
+  .dl.ctx { color:#3b4a5a; }
+  .note { margin:8px 12px 0; font-size:12.5px; color:var(--muted); }
+  .ok { color:var(--ok); font-weight:600; }
+  .bad { color:#b3261e; font-weight:600; }
+  footer { color:var(--muted); font-size:12.5px; padding:0 20px 40px; max-width:1180px; margin:0 auto; }
+</style>
+</head>
+<body>
+<header>
+  <h1>数模（TDC 数模审批流程）同步修复 · 变更确认页</h1>
+  <div class="sub">2026-10-10 · 任务 <code>TASK-20261010-TDC-DM-WIZARD-SERIAL</code> ·
+    生产构建 <code>20261009c-single-exe-excel-worker</code>（host <code>a26d4e1e…77fc</code>）·
+    <b>代码已改完，未提交、未打包</b></div>
+</header>
+<nav>
+  <a href="#summary">结论</a><a href="#before">修复前后</a><a href="#files">改动内容（diff）</a>
+  <a href="#tests">测试</a><a href="#gates">门禁</a><a href="#advisor">顾问复核</a>
+  <a href="#pending">待你决定</a>
+</nav>
+<main>
+
+<section id="summary">
+  <h2>一句话结论</h2>
+  <p>两次失败是<b>两个不同机制</b>：① 向导「流水单号」是单值字段，你第一次填了两个单号（<code>3D-…018 3D-…012</code>），
+  整串精确匹配必然 0 行；② 第二次只填一个单号时，上游行里多了一个身份字段（<code>formId</code>），
+  我们程序内部两处"认身份"的方式不一致——<b>明明查到了这条单据，却把命中行丢掉了</b>，于是报"命中 0 行、字段数 60"。
+  与你的操作无关，也不是上游没数据（系统查询已证明车型 <code>ar-n</code> 下两个单号共 4 行）。</p>
+  <div class="cards">
+    <div class="card"><div class="k">改动文件</div><div class="v">13 + 1 新增测试</div></div>
+    <div class="card"><div class="k">新增 / 修改行</div><div class="v">+456 / -25</div></div>
+    <div class="card"><div class="k">全量回归</div><div class="v">2966 passed</div></div>
+    <div class="card"><div class="k">已知失败</div><div class="v">1（既有 vendor 行尾）</div></div>
+  </div>
+</section>
+
+<section id="before">
+  <h2>修复前 → 修复后（实测）</h2>
+  <table>
+    <tr><th style="width:34%">场景</th><th style="width:33%">修复前</th><th>修复后</th></tr>
+    <tr>
+      <td>行含 <code>formId + incident + documentNo</code>，填<b>单个</b>单号（就是你的现场）</td>
+      <td class="bad">not_found / 命中 0 行 / 字段数 60</td>
+      <td class="ok">200 matched，externalKey = 50667733（实例号），身份字段 = incident，字段数 60</td>
+    </tr>
+    <tr>
+      <td>命中行只有中文键「流水单号」（没有任何身份字段）</td>
+      <td class="bad">500 崩溃（IndexError）</td>
+      <td class="ok">422 <code>IdentityMissing</code>，说明缺哪个权威字段</td>
+    </tr>
+    <tr>
+      <td>单号确实不在范围内</td>
+      <td>not_found（没有任何原因）</td>
+      <td class="ok">200 not_found + <code>reason=serial_no_match</code> + 已扫描行数</td>
+    </tr>
+    <tr>
+      <td>第一次那种「两个单号」输入</td>
+      <td class="bad">白跑一次全量抓取后才报未匹配</td>
+      <td class="ok">400，抓取次数 <b>0</b>（抓取前拒绝）</td>
+    </tr>
+  </table>
+  <p class="note">实测脚本：<code>.runtime/verify_identity_fix.py</code>；原始复现：<code>.runtime/repro_wizard_identity_mismatch.py</code>。</p>
+</section>
+
+<section id="files">
+  <h2>改动内容（逐文件 diff，来自 git diff HEAD）</h2>
+  <p class="note">点标题展开/收起。绿色为新增行，红色为删除行。
+    <code>web/app.py</code> 里另有一批<b>此前未提交</b>的车型锚点改动（非本次），单独折叠标注。</p>
+  
+    <details class="file" open>
+      <summary><span class="path">web/app.py <em>（本次改动）</em></span>
+        <span class="stat"><b class="plus">+126</b> <b class="minus">-6</b></span></summary>
+      <p class="note">本次改动：imports、发现入口单值校验、身份诊断 helper、
+      发现端点 document_no 分支（选中键同源 + fail-closed + 诊断 + reason）。</p>
+      <div class="diff"><div class="dl hunk">@@ -108,6 +108,10 @@ from services.project_status_discovery import MappingDiscoveryService</div>
+<div class="dl ctx"> from services.project_status_records import (</div>
+<div class="dl ctx">     COMPLETE_RESULT_STOP_REASONS,</div>
+<div class="dl ctx">     MAX_AGGREGATE_RECORDS,</div>
+<div class="dl add">+    authoritative_identity_field,</div>
+<div class="dl add">+    identity_field_name,</div>
+<div class="dl add">+    identity_fields,</div>
+<div class="dl add">+    record_identity,</div>
+<div class="dl ctx"> )</div>
+<div class="dl ctx"> from services.project_status_analytics import ProjectStatusAnalyticsService</div>
+<div class="dl ctx"> from services.project_status_deliverable_analysis import (</div><div class="dl hunk">@@ -128,7 +132,12 @@ from services.project_status_sync_runner import (</div>
+<div class="dl ctx">     create_production_registry,</div>
+<div class="dl ctx"> )</div>
+<div class="dl ctx"> from services.project_status_connectors import build_project_status_ewo_filters</div>
+<div class="dl del">-from services.data_model_watchlist import match_serial, match_serials</div>
+<div class="dl add">+from services.data_model_watchlist import (</div>
+<div class="dl add">+    WatchlistError,</div>
+<div class="dl add">+    match_serial,</div>
+<div class="dl add">+    match_serials,</div>
+<div class="dl add">+    normalize_single_serial,</div>
+<div class="dl add">+)</div>
+<div class="dl ctx"> from services.scheduled_archive_admin import (</div>
+<div class="dl ctx">     ArchiveAdminValidationError,</div>
+<div class="dl ctx">     ScheduledArchiveAdminService,</div><div class="dl hunk">@@ -1393,6 +1402,12 @@ def _mapping_discovery_query_identity(</div>
+<div class="dl ctx">         if str(rule.get("documentNo") or "").strip() and str(rule.get("incident") or "").strip():</div>
+<div class="dl ctx">             raise error_type("流水单号与实例号二选一：请只填写其中一项")</div>
+<div class="dl ctx">         if rule.get("documentNo"):</div>
+<div class="dl add">+            # 单值 fail-closed（2026-10-10）：向导这条路径是单值精确匹配，多值整串</div>
+<div class="dl add">+            # 必然 0 行；在抓取前拒绝，避免白跑一次全量抓取。</div>
+<div class="dl add">+            try:</div>
+<div class="dl add">+                rule["documentNo"] = normalize_single_serial(rule["documentNo"])</div>
+<div class="dl add">+            except WatchlistError as exc:</div>
+<div class="dl add">+                raise error_type(str(exc)) from None</div>
+<div class="dl ctx">             # 流水单号（documentNo）不是 TDC 查询参数（查询参数 incident 是第 0 列</div>
+<div class="dl ctx">             # 实例号）：该值绝不发给上游，改为全量抓取后由调用方本地精确匹配。</div>
+<div class="dl ctx">             values.pop("document_no", None)</div><div class="dl hunk">@@ -1421,6 +1436,39 @@ def _pagination_diagnostic(result: Any, row_count: int) -&gt; dict[str, Any]:</div>
+<div class="dl ctx">     }</div>
+<div class="dl ctx"> </div>
+<div class="dl ctx"> </div>
+<div class="dl add">+def _serial_identity_diagnostic(</div>
+<div class="dl add">+    rows: Sequence[Mapping[str, Any]],</div>
+<div class="dl add">+    report_type: str | None,</div>
+<div class="dl add">+    serial_match: Mapping[str, Any] | None,</div>
+<div class="dl add">+    *,</div>
+<div class="dl add">+    used_fields: Sequence[str] = (),</div>
+<div class="dl add">+    distinct_identities: int = 0,</div>
+<div class="dl add">+) -&gt; dict[str, Any]:</div>
+<div class="dl add">+    """流水单号本地匹配的身份事实（只给字段名与计数，不含业务值）。</div>
+<div class="dl add">+</div>
+<div class="dl add">+    2026-10-10 数模生产事故：命中行与选中键来自不同身份字段时，旧实现只回</div>
+<div class="dl add">+    「未匹配（命中 0 行）」，用户无法区分「上游没数据」「单号不在范围内」</div>
+<div class="dl add">+    「身份字段对不上」。这里把判别所需的最小事实一并返回。</div>
+<div class="dl add">+    """</div>
+<div class="dl add">+    present = sorted(</div>
+<div class="dl add">+        {</div>
+<div class="dl add">+            str(name)</div>
+<div class="dl add">+            for row in rows</div>
+<div class="dl add">+            for name in identity_fields(report_type)</div>
+<div class="dl add">+            if row.get(name) not in (None, "")</div>
+<div class="dl add">+        }</div>
+<div class="dl add">+    )</div>
+<div class="dl add">+    return {</div>
+<div class="dl add">+        "scanned": serial_match.get("scanned") if serial_match else None,</div>
+<div class="dl add">+        "matched": serial_match.get("matched") if serial_match else None,</div>
+<div class="dl add">+        "matchedRows": serial_match.get("matched") if serial_match else None,</div>
+<div class="dl add">+        "identityFieldsPresent": present,</div>
+<div class="dl add">+        "identityFieldUsed": sorted({str(name) for name in used_fields}),</div>
+<div class="dl add">+        "authoritativeField": authoritative_identity_field(report_type),</div>
+<div class="dl add">+        "distinctIdentities": distinct_identities,</div>
+<div class="dl add">+    }</div>
+<div class="dl add">+</div>
+<div class="dl add">+</div>
+<div class="dl ctx"> def _mapping_result_is_complete(result: Any) -&gt; bool:</div>
+<div class="dl ctx">     """抓取结果是否有显式终局证据（与 ``_require_complete_mapping_result`` 同源）。"""</div>
+<div class="dl ctx">     stop_reason = str(getattr(result, "stop_reason", "unknown") or "unknown")</div><div class="dl hunk">@@ -5095,12 +5143,73 @@ def create_app(</div>
+<div class="dl ctx">                         if cache_key:</div>
+<div class="dl ctx">                             _set_discovery_session_cache(cache_key, rows, upstream_declared_total)</div>
+<div class="dl ctx">                     serial_match: dict[str, Any] | None = None</div>
+<div class="dl add">+                    serial_diagnostic: dict[str, Any] | None = None</div>
+<div class="dl ctx">                     effective_selected = selected</div>
+<div class="dl ctx">                     if document_no:</div>
+<div class="dl del">-                        # 本地精确匹配是流水单号的唯一判定依据：恰好命中 1 行才放行，</div>
+<div class="dl del">-                        # 并把该行的实例号 incident 作为有效查询结果（线上参数语义）。</div>
+<div class="dl add">+                        # 本地精确匹配是流水单号的唯一判定依据（上游没有该查询参数）。</div>
+<div class="dl add">+                        # 选中键必须与 observe() 的候选过滤键同源——同一个身份函数、</div>
+<div class="dl add">+                        # 同一行——否则命中行会被 selected 过滤掉而误报「未匹配」</div>
+<div class="dl add">+                        # （2026-10-10 生产事故：行内含 formId 时身份 ≠ 实例号）。</div>
+<div class="dl ctx">                         matched, serial_match = match_serial(rows, document_no)</div>
+<div class="dl add">+                        report_type = str(</div>
+<div class="dl add">+                            PROJECT_STATUS_SOURCE_CAPABILITIES.get(deliverable_id, {}).get(</div>
+<div class="dl add">+                                "reportType"</div>
+<div class="dl add">+                            )</div>
+<div class="dl add">+                            or ""</div>
+<div class="dl add">+                        ) or None</div>
+<div class="dl add">+                        used_fields: list[str] = []</div>
+<div class="dl add">+                        identity_values: list[str] = []</div>
+<div class="dl add">+                        for row in matched:</div>
+<div class="dl add">+                            field_name = identity_field_name(row, report_type=report_type)</div>
+<div class="dl add">+                            value = record_identity(row, report_type=report_type)</div>
+<div class="dl add">+                            if field_name and value:</div>
+<div class="dl add">+                                used_fields.append(field_name)</div>
+<div class="dl add">+                                identity_values.append(value)</div>
+<div class="dl add">+                        distinct_identities = sorted(set(identity_values))</div>
+<div class="dl add">+                        authoritative_field = authoritative_identity_field(report_type)</div>
+<div class="dl add">+                        # 单记录绑定只认契约里的权威字段（数模 = 第 0 列实例号 incident）：</div>
+<div class="dl add">+                        # 上游一旦不再返回该列，绑定不得悄悄换成 formId 等候选键。</div>
+<div class="dl add">+                        missing_authoritative = bool(authoritative_field) and any(</div>
+<div class="dl add">+                            row.get(str(authoritative_field)) in (None, "") for row in matched</div>
+<div class="dl add">+                        )</div>
+<div class="dl add">+                        serial_diagnostic = _serial_identity_diagnostic(</div>
+<div class="dl add">+                            rows,</div>
+<div class="dl add">+                            report_type,</div>
+<div class="dl add">+                            serial_match,</div>
+<div class="dl add">+                            used_fields=used_fields,</div>
+<div class="dl add">+                            distinct_identities=len(distinct_identities),</div>
+<div class="dl add">+                        )</div>
+<div class="dl add">+                        if matched and not identity_values:</div>
+<div class="dl add">+                            # fail-closed：命中行没有任何可用身份字段，externalKey 无法成立。</div>
+<div class="dl add">+                            raise _TDCRequestError(</div>
+<div class="dl add">+                                "流水单号命中了行，但命中行没有可用的业务单号字段"</div>
+<div class="dl add">+                                "（实例号 incident / 流水单号 / formId 均为空）；"</div>
+<div class="dl add">+                                "上游结构可能已变化，请重新进行映射发现",</div>
+<div class="dl add">+                                "IdentityMissing",</div>
+<div class="dl add">+                                422,</div>
+<div class="dl add">+                                None,</div>
+<div class="dl add">+                                serial_diagnostic,</div>
+<div class="dl add">+                            )</div>
+<div class="dl add">+                        if matched and missing_authoritative:</div>
+<div class="dl add">+                            raise _TDCRequestError(</div>
+<div class="dl add">+                                f"流水单号命中了行，但命中行缺少权威业务单号字段"</div>
+<div class="dl add">+                                f"（{authoritative_field}），无法建立单记录绑定；"</div>
+<div class="dl add">+                                "上游结构可能已变化，请重新进行映射发现",</div>
+<div class="dl add">+                                "IdentityMissing",</div>
+<div class="dl add">+                                422,</div>
+<div class="dl add">+                                None,</div>
+<div class="dl add">+                                serial_diagnostic,</div>
+<div class="dl add">+                            )</div>
+<div class="dl add">+                        if len(distinct_identities) &gt; 1:</div>
+<div class="dl add">+                            raise _TDCRequestError(</div>
+<div class="dl add">+                                "该流水单号命中了多行且身份不唯一，请核对后重试",</div>
+<div class="dl add">+                                "IdentityAmbiguous",</div>
+<div class="dl add">+                                400,</div>
+<div class="dl add">+                                None,</div>
+<div class="dl add">+                                serial_diagnostic,</div>
+<div class="dl add">+                            )</div>
+<div class="dl ctx">                         if len(matched) &gt; 1:</div>
+<div class="dl add">+                            # 同一实例多行（part_detail 粒度）仍不能构成单记录绑定。</div>
+<div class="dl ctx">                             raise _TDCRequestError("该流水单号命中多行，请核对后重试")</div>
+<div class="dl ctx">                         if upstream_declared_total is None:</div>
+<div class="dl ctx">                             # 本地匹配不改变上游范围：基线总数仍是全量抓取的行数，</div><div class="dl hunk">@@ -5116,9 +5225,20 @@ def create_app(</div>
+<div class="dl ctx">                         upstream_total=upstream_declared_total,</div>
+<div class="dl ctx">                     )</div>
+<div class="dl ctx">                     if serial_match is not None:</div>
+<div class="dl del">-                        # 0 行时仍走既有「未匹配」路径（state=not_found），但附带</div>
+<div class="dl del">-                        # 覆盖范围，用户能看到抓了多少行/多少页，而不是只看到"未匹配"。</div>
+<div class="dl del">-                        observation = {**observation, "serialMatch": serial_match}</div>
+<div class="dl add">+                        # 0 行时仍走既有「未匹配」路径（state=not_found），但附带覆盖范围</div>
+<div class="dl add">+                        # 与身份事实，用户能看到抓了多少行、身份字段是哪个，而不是只看到</div>
+<div class="dl add">+                        # "未匹配"（2026-10-10：命中行身份 ≠ 选中键时曾静默变成未匹配）。</div>
+<div class="dl add">+                        observation = {</div>
+<div class="dl add">+                            **observation,</div>
+<div class="dl add">+                            "serialMatch": serial_match,</div>
+<div class="dl add">+                            "serialDiagnostic": serial_diagnostic,</div>
+<div class="dl add">+                        }</div>
+<div class="dl add">+                        if (</div>
+<div class="dl add">+                            not matched</div>
+<div class="dl add">+                            and observation.get("state") == "not_found"</div>
+<div class="dl add">+                            and not observation.get("reason")</div>
+<div class="dl add">+                        ):</div>
+<div class="dl add">+                            observation = {**observation, "reason": "serial_no_match"}</div>
+<div class="dl ctx">                     return observation</div>
+<div class="dl ctx">                 if cached_rows is not None:</div>
+<div class="dl ctx">                     rows = cached_rows</div></div>
+    </details>
+
+    <details class="file">
+      <summary><span class="path">web/app.py <em>（此前未提交的车型锚点改动，非本次；本次在其中修正了 except 顺序）</em></span>
+        <span class="stat"><b class="plus">+76</b> <b class="minus">-1</b></span></summary>
+      <p class="note">这批改动不是我本次做的（车型锚点同步）。本次只在其内部把
+      <code>except SyncBindingNotReadyError</code> 提到 <code>except ValueError</code> 之前，
+      否则 409 SyncNotReady 会被 422 吞掉。</p>
+      <div class="diff"><div class="dl hunk">@@ -5108,7 +5217,7 @@ def create_app(</div>
+<div class="dl ctx">                             upstream_declared_total = len(rows)</div>
+<div class="dl ctx">                         rows = matched</div>
+<div class="dl ctx">                         effective_selected = (</div>
+<div class="dl del">-                            serial_match["matched_instances"][0] if matched else None</div>
+<div class="dl add">+                            distinct_identities[0] if distinct_identities else None</div>
+<div class="dl ctx">                         )</div>
+<div class="dl ctx">                     observation = discovery_service.observe(</div>
+<div class="dl ctx">                         deliverable_id, "tdc", rows, effective_selected,</div><div class="dl hunk">@@ -5654,11 +5774,32 @@ def create_app(</div>
+<div class="dl ctx">             )</div>
+<div class="dl ctx">             return _json_error(409, block_type, block_reason)</div>
+<div class="dl ctx">         try:</div>
+<div class="dl add">+            payload = request.get_json(silent=True) or {}</div>
+<div class="dl add">+            raw_car_type = payload.get("carType") or payload.get("car_type") or payload.get("model")</div>
+<div class="dl add">+            if raw_car_type is not None and isinstance(raw_car_type, str):</div>
+<div class="dl add">+                if any(ord(c) &lt; 32 or ord(c) == 127 for c in raw_car_type):</div>
+<div class="dl add">+                    raise ValueError("carType contains control characters")</div>
+<div class="dl add">+                car_type = raw_car_type.strip()</div>
+<div class="dl add">+                if car_type:</div>
+<div class="dl add">+                    if len(car_type) &gt; 80:</div>
+<div class="dl add">+                        raise ValueError("carType is too long")</div>
+<div class="dl add">+                    runner = ProjectStatusSyncRunner(</div>
+<div class="dl add">+                        db,</div>
+<div class="dl add">+                        update_service,</div>
+<div class="dl add">+                        create_production_registry(),</div>
+<div class="dl add">+                        analysis_service=deliverable_analysis_service,</div>
+<div class="dl add">+                    )</div>
+<div class="dl add">+                    data = runner.sync_by_car_type(deliverable_id, car_type)</div>
+<div class="dl add">+                    response = jsonify({"ok": True, "data": data})</div>
+<div class="dl add">+                    response.headers["Cache-Control"] = "no-store"</div>
+<div class="dl add">+                    return response</div>
+<div class="dl add">+</div>
+<div class="dl ctx">             update_service.assert_sync_ready(deliverable_id)</div>
+<div class="dl ctx">             runner = ProjectStatusSyncRunner(</div>
+<div class="dl ctx">                 db,</div>
+<div class="dl ctx">                 update_service,</div>
+<div class="dl ctx">                 create_production_registry(),</div>
+<div class="dl add">+                analysis_service=deliverable_analysis_service,</div>
+<div class="dl ctx">             )</div>
+<div class="dl ctx">             result = runner.run_once(</div>
+<div class="dl ctx">                 deliverable_id=deliverable_id,</div><div class="dl hunk">@@ -5687,11 +5828,65 @@ def create_app(</div>
+<div class="dl ctx">         except KeyError:</div>
+<div class="dl ctx">             return _json_error(404, "NotFound", "未找到交付物")</div>
+<div class="dl ctx">         except SyncBindingNotReadyError as exc:</div>
+<div class="dl add">+            # 必须先于 `except ValueError`：SyncBindingNotReadyError 是 ValueError 子类，</div>
+<div class="dl add">+            # 顺序反了会把 409 SyncNotReady 降级成 422 ValidationError。</div>
+<div class="dl ctx">             return _json_error(409, "SyncNotReady", _sanitize_error_message(exc))</div>
+<div class="dl add">+        except ValueError as exc:</div>
+<div class="dl add">+            return _json_error(422, "ValidationError", _sanitize_error_message(exc))</div>
+<div class="dl ctx">         except Exception as exc:</div>
+<div class="dl ctx">             logger.exception("project status sync-now failed")</div>
+<div class="dl ctx">             return _json_error(500, "ServerError", _sanitize_error_message(exc))</div>
+<div class="dl ctx"> </div>
+<div class="dl add">+    @app.post("/api/project-status/deliverables/&lt;deliverable_id&gt;/sync-by-car-type")</div>
+<div class="dl add">+    def api_project_status_sync_by_car_type(deliverable_id: str):</div>
+<div class="dl add">+        local_error = _local_web_mutation_error()</div>
+<div class="dl add">+        if local_error is not None:</div>
+<div class="dl add">+            return local_error</div>
+<div class="dl add">+        _, _, sync_now_deliverable_rows = db.get_project_status("VPI-T2")</div>
+<div class="dl add">+        if deliverable_id not in {str(row["id"]) for row in sync_now_deliverable_rows}:</div>
+<div class="dl add">+            return _json_error(404, "NotFound", "未找到交付物")</div>
+<div class="dl add">+        sync_block = PROJECT_STATUS_SOURCE_CAPABILITIES.get(deliverable_id, {})</div>
+<div class="dl add">+        if not sync_block.get("syncCapable"):</div>
+<div class="dl add">+            block_type = str(sync_block.get("syncBlockType") or "ManualOnly")</div>
+<div class="dl add">+            block_reason = (</div>
+<div class="dl add">+                AFACE_CONTRACT_BLOCKER</div>
+<div class="dl add">+                if block_type == "ContractBlocked"</div>
+<div class="dl add">+                else str(sync_block.get("blockReason") or "该交付物仅允许手工维护")</div>
+<div class="dl add">+            )</div>
+<div class="dl add">+            return _json_error(409, block_type, block_reason)</div>
+<div class="dl add">+        payload = request.get_json(silent=True) or {}</div>
+<div class="dl add">+        raw_car_type = payload.get("carType") or payload.get("car_type") or payload.get("model")</div>
+<div class="dl add">+        if not raw_car_type or not isinstance(raw_car_type, str):</div>
+<div class="dl add">+            return _json_error(422, "ValidationError", "缺少车型参数 carType")</div>
+<div class="dl add">+        if any(ord(c) &lt; 32 or ord(c) == 127 for c in raw_car_type):</div>
+<div class="dl add">+            return _json_error(422, "ValidationError", "车型参数包含非法控制字符")</div>
+<div class="dl add">+        car_type = raw_car_type.strip()</div>
+<div class="dl add">+        if not car_type:</div>
+<div class="dl add">+            return _json_error(422, "ValidationError", "车型参数不能为空")</div>
+<div class="dl add">+        if len(car_type) &gt; 80:</div>
+<div class="dl add">+            return _json_error(422, "ValidationError", "车型参数不能超过 80 个字符")</div>
+<div class="dl add">+        try:</div>
+<div class="dl add">+            runner = ProjectStatusSyncRunner(</div>
+<div class="dl add">+                db,</div>
+<div class="dl add">+                update_service,</div>
+<div class="dl add">+                create_production_registry(),</div>
+<div class="dl add">+                analysis_service=deliverable_analysis_service,</div>
+<div class="dl add">+            )</div>
+<div class="dl add">+            data = runner.sync_by_car_type(deliverable_id, car_type)</div>
+<div class="dl add">+            response = jsonify({"ok": True, "data": data})</div>
+<div class="dl add">+            response.headers["Cache-Control"] = "no-store"</div>
+<div class="dl add">+            return response</div>
+<div class="dl add">+        except KeyError:</div>
+<div class="dl add">+            return _json_error(404, "NotFound", "未找到交付物")</div>
+<div class="dl add">+        except SyncBindingNotReadyError as exc:</div>
+<div class="dl add">+            # 同 sync-now：子类必须先捕获，否则 409 被 422 吞掉。</div>
+<div class="dl add">+            return _json_error(409, "SyncNotReady", _sanitize_error_message(exc))</div>
+<div class="dl add">+        except ValueError as exc:</div>
+<div class="dl add">+            return _json_error(422, "ValidationError", _sanitize_error_message(exc))</div>
+<div class="dl add">+        except Exception as exc:</div>
+<div class="dl add">+            logger.exception("project status sync by car type failed")</div>
+<div class="dl add">+            return _json_error(500, "ServerError", _sanitize_error_message(exc))</div>
+<div class="dl add">+</div>
+<div class="dl ctx">     @app.get("/api/project-status/scheduler")</div>
+<div class="dl ctx">     def api_project_status_scheduler_status():</div>
+<div class="dl ctx">         from services.project_status_scheduler import get_global_scheduler</div></div>
+    </details>
+  
+    <details class="file">
+      <summary><span class="path">services/project_status_records.py</span>
+        <span class="stat"><b class="plus">+64</b> <b class="minus">-6</b></span></summary>
+      
+      <div class="diff"><div class="dl hunk">@@ -33,6 +33,40 @@ IDENTITY_FIELDS: tuple[str, ...] = (</div>
+<div class="dl ctx">     "NCR编号", "ncrNo", "ncr_no",</div>
+<div class="dl ctx"> )</div>
+<div class="dl ctx"> </div>
+<div class="dl add">+#: 按**报表类型**覆盖身份字段优先顺序。只覆盖有契约依据的报表，其余报表</div>
+<div class="dl add">+#: 沿用 ``IDENTITY_FIELDS``（行为逐字不变，避免影响 ARAS/EWO/NCR/SOR）。</div>
+<div class="dl add">+#:</div>
+<div class="dl add">+#: `data_model`：externalKey 的权威字段是第 0 列实例号 ``incident``</div>
+<div class="dl add">+#: （core/report_contracts.py 第 0 列、向导/运行期绑定键语义）；``formId`` 只是</div>
+<div class="dl add">+#: TDC 候选键（services/tdc_contract_probe.py），不得抢占 externalKey 语义。</div>
+<div class="dl add">+#: 上游列表行一旦开始返回 ``formId``，旧顺序会让「本地匹配到的行」与</div>
+<div class="dl add">+#: 「选中键」指向不同字段 → 命中 0 行（2026-10-10 生产事故，见</div>
+<div class="dl add">+#: docs/TDC_DM_WIZARD_DISCOVERY_ROOTCAUSE_20261010.md）。</div>
+<div class="dl add">+IDENTITY_FIELD_ORDERS: dict[str, tuple[str, ...]] = {</div>
+<div class="dl add">+    "data_model": ("incident",) + tuple(</div>
+<div class="dl add">+        field for field in IDENTITY_FIELDS if field != "incident"</div>
+<div class="dl add">+    ),</div>
+<div class="dl add">+}</div>
+<div class="dl add">+</div>
+<div class="dl add">+</div>
+<div class="dl add">+def identity_fields(report_type: str | None = None) -&gt; tuple[str, ...]:</div>
+<div class="dl add">+    """报表类型 -&gt; 身份字段顺序；未覆盖的报表返回默认顺序。"""</div>
+<div class="dl add">+    key = str(report_type or "").strip().lower()</div>
+<div class="dl add">+    return IDENTITY_FIELD_ORDERS.get(key, IDENTITY_FIELDS)</div>
+<div class="dl add">+</div>
+<div class="dl add">+</div>
+<div class="dl add">+#: 各报表的**权威** externalKey 字段（契约列定义）。非 None 时，单记录绑定只接受</div>
+<div class="dl add">+#: 该字段；`IDENTITY_FIELD_ORDERS` 的回退序只用于聚合与展示——否则上游一旦不再</div>
+<div class="dl add">+#: 返回该列，绑定会悄悄换成另一个键（顾问复核 2026-10-10 A1）。</div>
+<div class="dl add">+AUTHORITATIVE_IDENTITY_FIELDS: dict[str, str] = {"data_model": "incident"}</div>
+<div class="dl add">+</div>
+<div class="dl add">+</div>
+<div class="dl add">+def authoritative_identity_field(report_type: str | None = None) -&gt; str | None:</div>
+<div class="dl add">+    """报表类型 -&gt; 权威 externalKey 字段；无契约声明的报表返回 None（沿用回退序）。"""</div>
+<div class="dl add">+    key = str(report_type or "").strip().lower()</div>
+<div class="dl add">+    return AUTHORITATIVE_IDENTITY_FIELDS.get(key)</div>
+<div class="dl add">+</div>
+<div class="dl add">+</div>
+<div class="dl ctx"> _AGGREGATE_FINGERPRINT_PREFIX = "agg:"</div>
+<div class="dl ctx"> _IDENTITY_MAX_LEN = 1000</div>
+<div class="dl ctx"> MAX_AGGREGATE_RECORDS = 5000</div>
+<div class="dl hunk">@@ -89,15 +123,34 @@ def clean_identity(value: Any) -&gt; str:</div>
+<div class="dl ctx">     return text</div>
+<div class="dl ctx"> </div>
+<div class="dl ctx"> </div>
+<div class="dl del">-def record_identity(row: Mapping[str, Any]) -&gt; str:</div>
+<div class="dl del">-    """提取行业务单号（无单号返回空串）。"""</div>
+<div class="dl del">-    for field in IDENTITY_FIELDS:</div>
+<div class="dl add">+def _identity_pair(</div>
+<div class="dl add">+    row: Mapping[str, Any],</div>
+<div class="dl add">+    report_type: str | None = None,</div>
+<div class="dl add">+) -&gt; tuple[str, str] | None:</div>
+<div class="dl add">+    """-&gt; (命中的身份字段名, 规范化单号)；无身份返回 None。"""</div>
+<div class="dl add">+    for field in identity_fields(report_type):</div>
+<div class="dl ctx">         value = row.get(field)</div>
+<div class="dl ctx">         if value:</div>
+<div class="dl ctx">             cleaned = clean_identity(value)</div>
+<div class="dl ctx">             if cleaned:</div>
+<div class="dl del">-                return cleaned</div>
+<div class="dl del">-    return ""</div>
+<div class="dl add">+                return field, cleaned</div>
+<div class="dl add">+    return None</div>
+<div class="dl add">+</div>
+<div class="dl add">+</div>
+<div class="dl add">+def record_identity(row: Mapping[str, Any], *, report_type: str | None = None) -&gt; str:</div>
+<div class="dl add">+    """提取行业务单号（无单号返回空串）。</div>
+<div class="dl add">+</div>
+<div class="dl add">+    ``report_type`` 只影响字段优先顺序（见 ``IDENTITY_FIELD_ORDERS``）；</div>
+<div class="dl add">+    不传时与历史行为逐字一致。</div>
+<div class="dl add">+    """</div>
+<div class="dl add">+    pair = _identity_pair(row, report_type)</div>
+<div class="dl add">+    return pair[1] if pair else ""</div>
+<div class="dl add">+</div>
+<div class="dl add">+</div>
+<div class="dl add">+def identity_field_name(row: Mapping[str, Any], *, report_type: str | None = None) -&gt; str | None:</div>
+<div class="dl add">+    """该行实际被采用的身份字段名（诊断用；只暴露字段名，不暴露值）。"""</div>
+<div class="dl add">+    pair = _identity_pair(row, report_type)</div>
+<div class="dl add">+    return pair[0] if pair else None</div>
+<div class="dl ctx"> </div>
+<div class="dl ctx"> </div>
+<div class="dl ctx"> _IDENTITY_DIGEST_LEN = 16</div>
+<div class="dl hunk">@@ -115,17 +168,22 @@ def identity_digest(value: str) -&gt; str:</div>
+<div class="dl ctx"> </div>
+<div class="dl ctx"> def identified_records(</div>
+<div class="dl ctx">     rows: Sequence[Mapping[str, Any]],</div>
+<div class="dl add">+    *,</div>
+<div class="dl add">+    report_type: str | None = None,</div>
+<div class="dl ctx"> ) -&gt; list[tuple[str, dict[str, Any]]]:</div>
+<div class="dl ctx">     """按单号识别记录：无单号行一致排除；按单号排序保证重排不变。</div>
+<div class="dl ctx"> </div>
+<div class="dl ctx">     重复单号不静默丢弃（保留全部内容，指纹与风险备注均可见）。</div>
+<div class="dl ctx">     超限（&gt;MAX_AGGREGATE_RECORDS）时 fail-closed 抛出 ValueError。</div>
+<div class="dl add">+    ``report_type`` 只影响身份字段优先顺序（与发现端/连接器同源）。</div>
+<div class="dl ctx">     """</div>
+<div class="dl ctx">     if len(rows) &gt; MAX_AGGREGATE_RECORDS:</div>
+<div class="dl ctx">         raise ValueError(</div>
+<div class="dl ctx">             f"record count {len(rows)} exceeds maximum {MAX_AGGREGATE_RECORDS}"</div>
+<div class="dl ctx">         )</div>
+<div class="dl del">-    identified = [(record_identity(row), dict(row)) for row in rows]</div>
+<div class="dl add">+    identified = [</div>
+<div class="dl add">+        (record_identity(row, report_type=report_type), dict(row)) for row in rows</div>
+<div class="dl add">+    ]</div>
+<div class="dl ctx">     identified = [(key, row) for key, row in identified if key]</div>
+<div class="dl ctx">     return sorted(identified, key=lambda item: item[0])</div>
+<div class="dl ctx"> </div></div>
+    </details>
+
+    <details class="file">
+      <summary><span class="path">services/project_status_discovery.py</span>
+        <span class="stat"><b class="plus">+34</b> <b class="minus">-10</b></span></summary>
+      
+      <div class="diff"><div class="dl hunk">@@ -53,11 +53,18 @@ def _scalar(value: Any) -&gt; str | None:</div>
+<div class="dl ctx">     return text or None</div>
+<div class="dl ctx"> </div>
+<div class="dl ctx"> </div>
+<div class="dl del">-def _key(row: Mapping[str, Any]) -&gt; str | None:</div>
+<div class="dl del">-    value = record_identity(row)</div>
+<div class="dl add">+def _key(row: Mapping[str, Any], report_type: str | None = None) -&gt; str | None:</div>
+<div class="dl add">+    value = record_identity(row, report_type=report_type)</div>
+<div class="dl ctx">     return value or None</div>
+<div class="dl ctx"> </div>
+<div class="dl ctx"> </div>
+<div class="dl add">+def _report_type(deliverable_id: str) -&gt; str | None:</div>
+<div class="dl add">+    """能力注册表的 reportType：身份字段顺序与聚合摘要口径的单一来源。"""</div>
+<div class="dl add">+    capabilities = PROJECT_STATUS_SOURCE_CAPABILITIES.get(str(deliverable_id), {})</div>
+<div class="dl add">+    report = str(capabilities.get("reportType") or "").strip()</div>
+<div class="dl add">+    return report or None</div>
+<div class="dl add">+</div>
+<div class="dl add">+</div>
+<div class="dl ctx"> def _aggregate_report(deliverable_id: str) -&gt; str | None:</div>
+<div class="dl ctx">     """多记录备注摘要的报表类型（与连接器聚合路径同源：能力注册表的 reportType）。</div>
+<div class="dl ctx"> </div>
+<div class="dl hunk">@@ -65,9 +72,7 @@ def _aggregate_report(deliverable_id: str) -&gt; str | None:</div>
+<div class="dl ctx">     因此取证/预览端也必须传同一类型，否则预览仍显示旧「单号：状态」明细而执行</div>
+<div class="dl ctx">     写入「共 N 条；状态计数」摘要。</div>
+<div class="dl ctx">     """</div>
+<div class="dl del">-    capabilities = PROJECT_STATUS_SOURCE_CAPABILITIES.get(str(deliverable_id), {})</div>
+<div class="dl del">-    report = str(capabilities.get("reportType") or "").strip()</div>
+<div class="dl del">-    return report or None</div>
+<div class="dl add">+    return _report_type(deliverable_id)</div>
+<div class="dl ctx"> </div>
+<div class="dl ctx"> </div>
+<div class="dl ctx"> class MappingDiscoveryService:</div>
+<div class="dl hunk">@@ -103,10 +108,11 @@ class MappingDiscoveryService:</div>
+<div class="dl ctx">             raise ValueError("upstream_total must be a non-negative integer or None")</div>
+<div class="dl ctx">         if selected_external_key is not None and not isinstance(selected_external_key, str):</div>
+<div class="dl ctx">             raise ValueError("selected_external_key must be a string or null")</div>
+<div class="dl add">+        report_type = _report_type(deliverable_id)</div>
+<div class="dl ctx">         safe_rows = [self._safe_row(row) for row in rows]</div>
+<div class="dl ctx">         full_rows = [self._candidate_row(row) for row in rows]</div>
+<div class="dl del">-        keyed = [(key, row) for row in safe_rows if (key := _key(row))]</div>
+<div class="dl del">-        full_keyed = [(key, row) for row in full_rows if (key := _key(row))]</div>
+<div class="dl add">+        keyed = [(key, row) for row in safe_rows if (key := _key(row, report_type))]</div>
+<div class="dl add">+        full_keyed = [(key, row) for row in full_rows if (key := _key(row, report_type))]</div>
+<div class="dl ctx">         selected = str(selected_external_key or "").strip() or None</div>
+<div class="dl ctx"> </div>
+<div class="dl ctx">         current_policy = self.db.get_project_status_update_policy(deliverable_id)</div>
+<div class="dl hunk">@@ -149,12 +155,19 @@ class MappingDiscoveryService:</div>
+<div class="dl ctx"> </div>
+<div class="dl ctx">         aggregated_candidate_values: dict[str, Any] | None = None</div>
+<div class="dl ctx">         cache_records: list[tuple[str, dict[str, Any]]] = []</div>
+<div class="dl add">+        reason: str | None = None</div>
+<div class="dl ctx">         if aggregate:</div>
+<div class="dl ctx">             # 聚合观测（用户 2026-09-13 确认：按车型聚合全部匹配记录）：</div>
+<div class="dl ctx">             # 不做单记录筛选/歧义判定；指纹为全部记录单号的集合哈希，</div>
+<div class="dl ctx">             # 连续两次指纹一致即视为报表范围稳定。</div>
+<div class="dl del">-            records = full_keyed if versioned_ewo else identified_records(full_rows)</div>
+<div class="dl del">-            display_records = keyed if versioned_ewo else identified_records(safe_rows)</div>
+<div class="dl add">+            records = (</div>
+<div class="dl add">+                full_keyed if versioned_ewo</div>
+<div class="dl add">+                else identified_records(full_rows, report_type=report_type)</div>
+<div class="dl add">+            )</div>
+<div class="dl add">+            display_records = (</div>
+<div class="dl add">+                keyed if versioned_ewo</div>
+<div class="dl add">+                else identified_records(safe_rows, report_type=report_type)</div>
+<div class="dl add">+            )</div>
+<div class="dl ctx">             candidates = display_records</div>
+<div class="dl ctx">             cache_records = records</div>
+<div class="dl ctx">             if not records:</div>
+<div class="dl hunk">@@ -177,6 +190,11 @@ class MappingDiscoveryService:</div>
+<div class="dl ctx">             cache_records = full_candidates</div>
+<div class="dl ctx">             if not candidates:</div>
+<div class="dl ctx">                 state, external_key, fingerprint = "not_found", selected, None</div>
+<div class="dl add">+                if selected is not None and keyed:</div>
+<div class="dl add">+                    # 不变量哨兵：选中键非空、行集非空，却没有候选 —— 只可能是</div>
+<div class="dl add">+                    # 「选中键」与「候选过滤键」来自不同身份字段（2026-10-10</div>
+<div class="dl add">+                    # 数模生产事故）。修复后不可达，保留作回归保护。</div>
+<div class="dl add">+                    reason = "selected_not_in_candidates"</div>
+<div class="dl ctx">             elif len(candidates) &gt; 1:</div>
+<div class="dl ctx">                 state, external_key, fingerprint = "ambiguous", selected, None</div>
+<div class="dl ctx">             else:</div>
+<div class="dl hunk">@@ -215,6 +233,7 @@ class MappingDiscoveryService:</div>
+<div class="dl ctx">             "observationId": observation_id, "state": state,</div>
+<div class="dl ctx">             "externalKey": external_key, "candidateCount": len(candidates),</div>
+<div class="dl ctx">             "candidates": summaries, "fieldReport": report,</div>
+<div class="dl add">+            "reason": reason,</div>
+<div class="dl ctx">             "stability": {"confirmed": progress, "required": 2, "ready": progress &gt;= 2},</div>
+<div class="dl ctx">         }</div>
+<div class="dl ctx"> </div>
+<div class="dl hunk">@@ -244,6 +263,7 @@ class MappingDiscoveryService:</div>
+<div class="dl ctx">                 "candidateCount": total_count,</div>
+<div class="dl ctx">                 "candidates": [],</div>
+<div class="dl ctx">                 "fieldReport": {"fields": []},</div>
+<div class="dl add">+                "reason": "stability_baseline_missing",</div>
+<div class="dl ctx">                 "stability": {"confirmed": 0, "required": 2, "ready": False},</div>
+<div class="dl ctx">                 "mismatch": None,</div>
+<div class="dl ctx">             }</div>
+<div class="dl hunk">@@ -260,7 +280,10 @@ class MappingDiscoveryService:</div>
+<div class="dl ctx">             baseline_payload = {}</div>
+<div class="dl ctx"> </div>
+<div class="dl ctx">         safe_samples = [self._safe_row(r) for r in sample_rows]</div>
+<div class="dl del">-        sample_keys = {k for r in safe_samples if (k := _key(r))}</div>
+<div class="dl add">+        sample_report_type = _report_type(deliverable_id)</div>
+<div class="dl add">+        sample_keys = {</div>
+<div class="dl add">+            k for r in safe_samples if (k := _key(r, sample_report_type))</div>
+<div class="dl add">+        }</div>
+<div class="dl ctx">         mismatch: dict[str, Any] | None = None</div>
+<div class="dl ctx"> </div>
+<div class="dl ctx">         # 1. 总数：上游声明总数对声明总数（legacy 回退：去重后候选数，不同源但保底）。</div>
+<div class="dl hunk">@@ -357,6 +380,7 @@ class MappingDiscoveryService:</div>
+<div class="dl ctx">             "candidateCount": total_count,</div>
+<div class="dl ctx">             "candidates": json.loads(summaries_json),</div>
+<div class="dl ctx">             "fieldReport": json.loads(report_json),</div>
+<div class="dl add">+            "reason": None,</div>
+<div class="dl ctx">             "stability": {"confirmed": progress, "required": 2, "ready": progress &gt;= 2},</div>
+<div class="dl ctx">             "mismatch": mismatch,</div>
+<div class="dl ctx">         }</div></div>
+    </details>
+
+    <details class="file">
+      <summary><span class="path">services/project_status_connectors.py</span>
+        <span class="stat"><b class="plus">+14</b> <b class="minus">-7</b></span></summary>
+      
+      <div class="diff"><div class="dl hunk">@@ -107,8 +107,10 @@ def _stable_version(row: Mapping[str, Any]) -&gt; str:</div>
+<div class="dl ctx">     return hashlib.sha256(payload.encode("utf-8")).hexdigest()</div>
+<div class="dl ctx"> </div>
+<div class="dl ctx"> </div>
+<div class="dl del">-def _identity(row: Mapping[str, Any]) -&gt; str:</div>
+<div class="dl del">-    return _record_identity(row)</div>
+<div class="dl add">+def _identity(row: Mapping[str, Any], report: str | None = None) -&gt; str:</div>
+<div class="dl add">+    """行身份（externalKey）。``report`` 只决定身份字段优先顺序，与发现端同源：</div>
+<div class="dl add">+    数模的权威键是第 0 列实例号 incident，上游行新增 formId 后不得改变绑定键。"""</div>
+<div class="dl add">+    return _record_identity(row, report_type=report)</div>
+<div class="dl ctx"> </div>
+<div class="dl ctx"> </div>
+<div class="dl ctx"> def _close_session(session: Any) -&gt; None:</div>
+<div class="dl hunk">@@ -135,7 +137,7 @@ def _snapshot(</div>
+<div class="dl ctx">         return _ewo_v2_snapshot(context, rows, artifacts, analysis_rows, report=report)</div>
+<div class="dl ctx">     if context.match_rule.get("aggregate") is True:</div>
+<div class="dl ctx">         return _aggregate_snapshot(context, rows, artifacts, analysis_rows, report=report)</div>
+<div class="dl del">-    matches = [dict(row) for row in rows if _identity(row) == context.external_key]</div>
+<div class="dl add">+    matches = [dict(row) for row in rows if _identity(row, report) == context.external_key]</div>
+<div class="dl ctx">     fetched = _now()</div>
+<div class="dl ctx">     if len(matches) != 1:</div>
+<div class="dl ctx">         marker = hashlib.sha256(f"{len(matches)}:{context.external_key}".encode()).hexdigest()</div>
+<div class="dl hunk">@@ -145,7 +147,7 @@ def _snapshot(</div>
+<div class="dl ctx">         )</div>
+<div class="dl ctx">     row = matches[0]</div>
+<div class="dl ctx">     version = _stable_version(row)</div>
+<div class="dl del">-    values = _mapping_values(row, context.mapping)</div>
+<div class="dl add">+    values = _mapping_values(row, context.mapping, report=report)</div>
+<div class="dl ctx">     candidate = ConnectorCandidate(context.external_key, version, values, fetched)</div>
+<div class="dl ctx">     return ConnectorSnapshot(</div>
+<div class="dl ctx">         "matched", (candidate,), version, fetched,</div>
+<div class="dl hunk">@@ -181,9 +183,14 @@ def _ewo_v2_snapshot(context, rows, artifacts, analysis_rows, report=None):</div>
+<div class="dl ctx">                              context.expected_deliverable_updated_at, artifacts, analysis_rows)</div>
+<div class="dl ctx"> </div>
+<div class="dl ctx"> </div>
+<div class="dl del">-def _mapping_values(row: Mapping[str, Any], mapping: Mapping[str, Any]) -&gt; dict[str, str | None]:</div>
+<div class="dl add">+def _mapping_values(</div>
+<div class="dl add">+    row: Mapping[str, Any],</div>
+<div class="dl add">+    mapping: Mapping[str, Any],</div>
+<div class="dl add">+    *,</div>
+<div class="dl add">+    report: str | None = None,</div>
+<div class="dl add">+) -&gt; dict[str, str | None]:</div>
+<div class="dl ctx">     """按绑定映射提取字段值；note 允许列表型来源字段（多列合并）。"""</div>
+<div class="dl del">-    identity = _record_identity(row)</div>
+<div class="dl add">+    identity = _record_identity(row, report_type=report)</div>
+<div class="dl ctx">     return build_aggregate_candidate_values([(identity, row)], mapping)</div>
+<div class="dl ctx"> </div>
+<div class="dl ctx"> </div>
+<div class="dl hunk">@@ -205,7 +212,7 @@ def _aggregate_snapshot(</div>
+<div class="dl ctx">     fetched = _now()</div>
+<div class="dl ctx">     # 与 discovery 口径一致（GPT 终审任务 3）：共享记录规范化——仅纳入</div>
+<div class="dl ctx">     # 有业务单号的记录、按单号排序（重排不变）；全部无单号 → not_found。</div>
+<div class="dl del">-    identified = identified_records(rows)</div>
+<div class="dl add">+    identified = identified_records(rows, report_type=report)</div>
+<div class="dl ctx">     if not identified:</div>
+<div class="dl ctx">         marker = hashlib.sha256(b"aggregate:empty").hexdigest()</div>
+<div class="dl ctx">         return ConnectorSnapshot(</div></div>
+    </details>
+
+    <details class="file">
+      <summary><span class="path">services/project_status_updates.py</span>
+        <span class="stat"><b class="plus">+28</b> <b class="minus">-0</b></span></summary>
+      
+      <div class="diff"><div class="dl hunk">@@ -23,6 +23,7 @@ from core.db_manager import (</div>
+<div class="dl ctx">     SyncBindingNotReadyError,</div>
+<div class="dl ctx"> )</div>
+<div class="dl ctx"> from core.redaction import redact_sensitive_text</div>
+<div class="dl add">+from services.data_model_watchlist import WatchlistError, normalize_single_serial</div>
+<div class="dl ctx"> from services.project_status_records import compute_config_signature, observation_is_aggregate</div>
+<div class="dl ctx"> </div>
+<div class="dl ctx"> _logger = logging.getLogger(__name__)</div>
+<div class="dl hunk">@@ -44,6 +45,15 @@ def _has_control_chars(val: str) -&gt; bool:</div>
+<div class="dl ctx">     return False</div>
+<div class="dl ctx"> </div>
+<div class="dl ctx"> </div>
+<div class="dl add">+def _single_serial_error(value: object) -&gt; str | None:</div>
+<div class="dl add">+    """数模流水单号必须是单个可精确匹配的原文单号；非法时返回提示文案。"""</div>
+<div class="dl add">+    try:</div>
+<div class="dl add">+        normalize_single_serial(value)</div>
+<div class="dl add">+    except WatchlistError as exc:</div>
+<div class="dl add">+        return str(exc)</div>
+<div class="dl add">+    return None</div>
+<div class="dl add">+</div>
+<div class="dl add">+</div>
+<div class="dl ctx"> def _valid_mapping_source(source_field: object) -&gt; bool:</div>
+<div class="dl ctx">     """映射来源字段：字符串，或字符串列表（风险备注多列组合）。"""</div>
+<div class="dl ctx">     if isinstance(source_field, str):</div>
+<div class="dl hunk">@@ -474,6 +484,16 @@ class ProjectStatusUpdateService:</div>
+<div class="dl ctx">             raise SyncBindingNotReadyError(</div>
+<div class="dl ctx">                 "流水单号与实例号二选一：请只保留其中一项后重新保存配置"</div>
+<div class="dl ctx">             )</div>
+<div class="dl add">+        if (</div>
+<div class="dl add">+            contract["reportType"] == "data_model"</div>
+<div class="dl add">+            and str(match_rule.get("documentNo") or "").strip()</div>
+<div class="dl add">+        ):</div>
+<div class="dl add">+            # 单值 fail-closed（2026-10-10）：单记录绑定按整串精确匹配，多值串</div>
+<div class="dl add">+            # 永远 0 行；保存入口与发现入口共用同一校验，避免造出「能存不能跑」的绑定。</div>
+<div class="dl add">+            try:</div>
+<div class="dl add">+                normalize_single_serial(match_rule.get("documentNo"))</div>
+<div class="dl add">+            except WatchlistError as exc:</div>
+<div class="dl add">+                raise SyncBindingNotReadyError(str(exc)) from None</div>
+<div class="dl ctx">         automatic_fields = {</div>
+<div class="dl ctx">             PROJECT_STATUS_FIELD_NAME_TO_API[row["field_name"]]</div>
+<div class="dl ctx">             for row in raw["authorities"]</div>
+<div class="dl hunk">@@ -1024,6 +1044,14 @@ class ProjectStatusUpdateService:</div>
+<div class="dl ctx">                 # 数模流水单号与实例号二选一（与 assert_sync_ready 落库校验同语义，</div>
+<div class="dl ctx">                 # 2026-10-09）：同填会在运行期取交集，指向不同行则永久 not_found。</div>
+<div class="dl ctx">                 fields["matchRule"] = "流水单号与实例号二选一：请只保留其中一项"</div>
+<div class="dl add">+            elif (</div>
+<div class="dl add">+                isinstance(match_rule, dict)</div>
+<div class="dl add">+                and match_rule.get("reportType") == "data_model"</div>
+<div class="dl add">+                and str(match_rule.get("documentNo") or "").strip()</div>
+<div class="dl add">+                and _single_serial_error(match_rule.get("documentNo"))</div>
+<div class="dl add">+            ):</div>
+<div class="dl add">+                # 单值 fail-closed（2026-10-10）：单记录绑定按整串精确匹配。</div>
+<div class="dl add">+                fields["matchRule"] = _single_serial_error(match_rule.get("documentNo"))</div>
+<div class="dl ctx">             elif len(_json_dumps(match_rule)) &gt; _TEXT_LIMITS["match_rule"]:</div>
+<div class="dl ctx">                 fields["matchRule"] = "匹配规则过长"</div>
+<div class="dl ctx"> </div></div>
+    </details>
+
+    <details class="file">
+      <summary><span class="path">services/data_model_watchlist.py</span>
+        <span class="stat"><b class="plus">+29</b> <b class="minus">-1</b></span></summary>
+      
+      <div class="diff"><div class="dl hunk">@@ -19,7 +19,7 @@ import json</div>
+<div class="dl ctx"> from typing import Any, Iterable, Mapping, Sequence</div>
+<div class="dl ctx"> </div>
+<div class="dl ctx"> from core.diagnostic_recording import emit</div>
+<div class="dl del">-from services.form_search import snapshot_schema</div>
+<div class="dl add">+from services.form_search import parse_terms, snapshot_schema</div>
+<div class="dl ctx"> </div>
+<div class="dl ctx"> JOB_KEY = "tdc_data_model"</div>
+<div class="dl ctx"> SCOPE_ALL = "all"</div>
+<div class="dl hunk">@@ -44,6 +44,34 @@ def normalize_serial(value: Any) -&gt; str:</div>
+<div class="dl ctx">     return text</div>
+<div class="dl ctx"> </div>
+<div class="dl ctx"> </div>
+<div class="dl add">+#: 零宽/方向控制类不可见字符：`strip()` 去不掉，但会让上游精确匹配必然失败。</div>
+<div class="dl add">+_INVISIBLE_SERIAL_CHARS = "\u200b\u200c\u200d\u2060\ufeff\u00ad"</div>
+<div class="dl add">+</div>
+<div class="dl add">+</div>
+<div class="dl add">+def normalize_single_serial(value: Any) -&gt; str:</div>
+<div class="dl add">+    """写入入口共用的**单值**流水单号校验（发现/启用/保存三处同源）。</div>
+<div class="dl add">+</div>
+<div class="dl add">+    fail-closed：多值（空格/逗号/分号/顿号/换行/制表符分隔）、空值、含不可见</div>
+<div class="dl add">+    字符、或经 NFKC 归一后与原值不同（全角/兼容字符）一律拒绝——绝不静默截断</div>
+<div class="dl add">+    成第一个。2026-10-10 生产事故：向导单值字段收到「两个单号 + 一个空格」的</div>
+<div class="dl add">+    整串，本地精确匹配必然 0 行，却只报「未匹配」。</div>
+<div class="dl add">+    """</div>
+<div class="dl add">+    text = str(value or "").strip()</div>
+<div class="dl add">+    if not text:</div>
+<div class="dl add">+        raise WatchlistError("流水单号不能为空")</div>
+<div class="dl add">+    if any(ord(ch) &lt; 32 or ch in _INVISIBLE_SERIAL_CHARS for ch in text):</div>
+<div class="dl add">+        raise WatchlistError("流水单号含不可见字符，请只填报表里的原文单号")</div>
+<div class="dl add">+    terms = parse_terms(text)</div>
+<div class="dl add">+    if len(terms) != 1 or terms[0] != text:</div>
+<div class="dl add">+        raise WatchlistError(</div>
+<div class="dl add">+            "流水单号一次只能填一个（检测到多个单号或全角字符）；"</div>
+<div class="dl add">+            "如需同步多个单号，请逐个配置绑定"</div>
+<div class="dl add">+        )</div>
+<div class="dl add">+    if len(text) &gt; MAX_SERIAL_LENGTH:</div>
+<div class="dl add">+        raise WatchlistError(f"流水单号不能超过 {MAX_SERIAL_LENGTH} 个字符")</div>
+<div class="dl add">+    return text</div>
+<div class="dl add">+</div>
+<div class="dl add">+</div>
+<div class="dl ctx"> def watchlist_settings(filters: Mapping[str, Any] | None) -&gt; tuple[str, tuple[str, ...]]:</div>
+<div class="dl ctx">     """filters_json -&gt; (同步范围, 关注清单)；校验并去重，保持顺序。"""</div>
+<div class="dl ctx">     filters = filters or {}</div></div>
+    </details>
+
+    <details class="file">
+      <summary><span class="path">plugins/project_overview/static/deliverable/policy-logic.js</span>
+        <span class="stat"><b class="plus">+57</b> <b class="minus">-1</b></span></summary>
+      
+      <div class="diff"><div class="dl hunk">@@ -55,6 +55,29 @@ export function normalizeTdcDepartment(dept) {</div>
+<div class="dl ctx">   return trimmed;</div>
+<div class="dl ctx"> }</div>
+<div class="dl ctx"> </div>
+<div class="dl add">+/** 与后端 services/form_search._SEPARATORS 同源：空格/逗号/分号/顿号/换行/制表符。 */</div>
+<div class="dl add">+const DOCUMENT_NO_SEPARATORS = /[\s,;、]+/;</div>
+<div class="dl add">+/** 零宽/方向控制类不可见字符：trim() 去不掉，但会让上游精确匹配必然失败。 */</div>
+<div class="dl add">+const INVISIBLE_SERIAL_CHARS = /[\u0000-\u001f\u007f-\u009f\u00ad\u200b\u200c\u200d\u2060\ufeff]/;</div>
+<div class="dl add">+</div>
+<div class="dl add">+/**</div>
+<div class="dl add">+ * 数模「流水单号」是单值精确匹配字段：多值整串永远 0 行（2026-10-10 生产事故）。</div>
+<div class="dl add">+ * 与后端 normalize_single_serial 同语义，前端先拦，避免白跑一次全量抓取。</div>
+<div class="dl add">+ */</div>
+<div class="dl add">+export function documentNoSingleError(value) {</div>
+<div class="dl add">+  const text = ewoPolicyString(value);</div>
+<div class="dl add">+  if (!text) return "";</div>
+<div class="dl add">+  if (INVISIBLE_SERIAL_CHARS.test(text)) {</div>
+<div class="dl add">+    return "流水单号含不可见字符，请只填报表里的原文单号。";</div>
+<div class="dl add">+  }</div>
+<div class="dl add">+  const normalized = typeof text.normalize === "function" ? text.normalize("NFKC") : text;</div>
+<div class="dl add">+  const terms = normalized.split(DOCUMENT_NO_SEPARATORS).filter(Boolean);</div>
+<div class="dl add">+  if (terms.length !== 1 || terms[0] !== normalized || normalized !== text) {</div>
+<div class="dl add">+    return "流水单号一次只能填一个（检测到多个单号或全角字符）；如需同步多个单号，请逐个配置绑定。";</div>
+<div class="dl add">+  }</div>
+<div class="dl add">+  return "";</div>
+<div class="dl add">+}</div>
+<div class="dl add">+</div>
+<div class="dl ctx"> export function capabilitiesOf(item) {</div>
+<div class="dl ctx">   return item &amp;&amp; item.sourceInfo &amp;&amp; typeof item.sourceInfo === "object"</div>
+<div class="dl ctx">     ? item.sourceInfo</div>
+<div class="dl hunk">@@ -244,6 +267,8 @@ export function wizardPrecheck(values, policy, capabilities, vaultConfigured) {</div>
+<div class="dl ctx">   if (documentNo &amp;&amp; specificNo) {</div>
+<div class="dl ctx">     return "流水单号与实例号二选一：请只填写其中一项（流水单号为 3D- 前缀，实例号为纯数字）。";</div>
+<div class="dl ctx">   }</div>
+<div class="dl add">+  const documentNoError = documentNoSingleError(documentNo);</div>
+<div class="dl add">+  if (documentNoError) return documentNoError;</div>
+<div class="dl ctx">   return "";</div>
+<div class="dl ctx"> }</div>
+<div class="dl ctx"> </div>
+<div class="dl hunk">@@ -329,10 +354,41 @@ export function dropDepartment(plan) {</div>
+<div class="dl ctx">   delete plan.matchRule.rspDepartment;</div>
+<div class="dl ctx"> }</div>
+<div class="dl ctx"> </div>
+<div class="dl add">+/** 0 命中时把「为什么没命中」讲清楚（只展示计数与字段名，不回显业务值）。 */</div>
+<div class="dl add">+export function wizardNotMatchedDetail(result) {</div>
+<div class="dl add">+  const source = result &amp;&amp; typeof result === "object" ? result : {};</div>
+<div class="dl add">+  const reason = ewoPolicyString(source.reason);</div>
+<div class="dl add">+  const match = source.serialMatch &amp;&amp; typeof source.serialMatch === "object" ? source.serialMatch : null;</div>
+<div class="dl add">+  const diagnostic = source.serialDiagnostic &amp;&amp; typeof source.serialDiagnostic === "object" ? source.serialDiagnostic : null;</div>
+<div class="dl add">+  const scanned = match &amp;&amp; Number.isFinite(Number(match.scanned)) ? Number(match.scanned) : null;</div>
+<div class="dl add">+  const matchedRows = diagnostic &amp;&amp; Number.isFinite(Number(diagnostic.matchedRows)) ? Number(diagnostic.matchedRows) : null;</div>
+<div class="dl add">+  if (reason === "serial_no_match") {</div>
+<div class="dl add">+    return `已完整扫描 ${scanned === null ? "全部" : scanned} 行，未找到该流水单号（单号须与报表第 2 列原文完全一致）`;</div>
+<div class="dl add">+  }</div>
+<div class="dl add">+  if (reason === "identity_missing") {</div>
+<div class="dl add">+    return "流水单号命中了行，但命中行没有可用的业务单号字段（实例号/流水单号/formId 均为空），上游结构可能已变化，请重新进行映射发现";</div>
+<div class="dl add">+  }</div>
+<div class="dl add">+  if (reason === "identity_ambiguous") {</div>
+<div class="dl add">+    return "该流水单号命中了多行且身份不唯一，请核对后重试";</div>
+<div class="dl add">+  }</div>
+<div class="dl add">+  if (reason === "selected_not_in_candidates") {</div>
+<div class="dl add">+    return "命中行的身份字段与选中键不一致（已记录诊断，请把此提示反馈给维护者）";</div>
+<div class="dl add">+  }</div>
+<div class="dl add">+  if (scanned === 0) {</div>
+<div class="dl add">+    return "上游按当前车型/筛选条件返回 0 行，请核对车型项目取值";</div>
+<div class="dl add">+  }</div>
+<div class="dl add">+  if (scanned !== null &amp;&amp; matchedRows !== null &amp;&amp; scanned &gt; 0) {</div>
+<div class="dl add">+    return `已扫描 ${scanned} 行，其中 ${matchedRows} 行命中但未构成有效候选，请核对筛选条件`;</div>
+<div class="dl add">+  }</div>
+<div class="dl add">+  return "";</div>
+<div class="dl add">+}</div>
+<div class="dl add">+</div>
+<div class="dl ctx"> export function wizardNotMatchedMessage(result) {</div>
+<div class="dl ctx">   const cCount = Number.isFinite(result.candidateCount) ? result.candidateCount : 0;</div>
+<div class="dl ctx">   const fCount = result.fieldReport &amp;&amp; Array.isArray(result.fieldReport.fields) ? result.fieldReport.fields.length : 0;</div>
+<div class="dl del">-  return `映射发现未匹配（${ewoPolicyDiscoveryStateLabel(result.state)}，命中行数：${cCount}，字段数：${fCount}），请核对车型与筛选条件后重试。`;</div>
+<div class="dl add">+  const detail = wizardNotMatchedDetail(result);</div>
+<div class="dl add">+  const base = `映射发现未匹配（${ewoPolicyDiscoveryStateLabel(result.state)}，命中行数：${cCount}，字段数：${fCount}）`;</div>
+<div class="dl add">+  return detail ? `${base}：${detail}。` : `${base}，请核对车型与筛选条件后重试。`;</div>
+<div class="dl ctx"> }</div>
+<div class="dl ctx"> </div>
+<div class="dl ctx"> /** Step 3: field mapping + authority. Throws Error with the legacy wording. */</div></div>
+    </details>
+
+    <details class="file">
+      <summary><span class="path">plugins/deliverables/static/lib.js</span>
+        <span class="stat"><b class="plus">+16</b> <b class="minus">-0</b></span></summary>
+      
+      <div class="diff"><div class="dl hunk">@@ -362,6 +362,22 @@ export function serialMatchWarning(data) {</div>
+<div class="dl ctx">   return "";</div>
+<div class="dl ctx"> }</div>
+<div class="dl ctx"> </div>
+<div class="dl add">+/**</div>
+<div class="dl add">+ * 数模「流水单号」查询的代价提示：上游没有该查询参数，填了单号就必须全量抓取</div>
+<div class="dl add">+ * （最多 max_pages 页），明显慢于查询预览。发起前把代价说清楚，避免用户以为界面卡死</div>
+<div class="dl add">+ * （2026-10-10 生产反馈）。</div>
+<div class="dl add">+ */</div>
+<div class="dl add">+export function documentNoCrawlNotice(item, values) {</div>
+<div class="dl add">+  if (!item || item.id !== "tdc-data-model") return "";</div>
+<div class="dl add">+  const serial = values &amp;&amp; typeof values.document_no === "string" ? values.document_no.trim() : "";</div>
+<div class="dl add">+  if (!serial) return "";</div>
+<div class="dl add">+  const rawPages = values &amp;&amp; values.max_pages !== undefined &amp;&amp; values.max_pages !== null</div>
+<div class="dl add">+    ? String(values.max_pages).trim()</div>
+<div class="dl add">+    : "";</div>
+<div class="dl add">+  const pages = rawPages || "100";</div>
+<div class="dl add">+  return `流水单号不走上游查询：本次将全量抓取（最多 ${pages} 页），耗时较长，请勿重复点击。`;</div>
+<div class="dl add">+}</div>
+<div class="dl add">+</div>
+<div class="dl ctx"> export function previewContextText(preview, suffix = "") {</div>
+<div class="dl ctx">   if (!preview) return "";</div>
+<div class="dl ctx">   if (!suffix) return `预览生成时间：${preview.queryTime} · 筛选条件：${preview.filterSummary}`;</div></div>
+    </details>
+
+    <details class="file">
+      <summary><span class="path">plugins/deliverables/static/catalog.js</span>
+        <span class="stat"><b class="plus">+2</b> <b class="minus">-0</b></span></summary>
+      
+      <div class="diff"><div class="dl hunk">@@ -27,6 +27,7 @@ import {</div>
+<div class="dl ctx">   defaultFormValues,</div>
+<div class="dl ctx">   formatApiErrorMessage,</div>
+<div class="dl ctx">   formatFilterSummary,</div>
+<div class="dl add">+  documentNoCrawlNotice,</div>
+<div class="dl ctx">   isArasTarget,</div>
+<div class="dl ctx">   isAuthError,</div>
+<div class="dl ctx">   isExecutableTdc,</div>
+<div class="dl hunk">@@ -692,6 +693,7 @@ function DeliverableDetail({ item, categories, runLock, onRecord }) {</div>
+<div class="dl ctx">             &lt;button type="submit" class=${`primary-btn${busy ? " is-running" : ""}`} data-deliverable-run disabled=${busy}&gt;${label(operation)}&lt;/button&gt;</div>
+<div class="dl ctx">             &lt;button type="button" class="primary-btn" data-deliverable-download disabled=${busy} onClick=${() =&gt; run("export")}&gt;下载 XLSX&lt;/button&gt;</div>
+<div class="dl ctx">           &lt;/div&gt;</div>
+<div class="dl add">+          ${documentNoCrawlNotice(item, values) &amp;&amp; html`&lt;p class="result-meta result-warning" role="status"&gt;${documentNoCrawlNotice(item, values)}&lt;/p&gt;`}</div>
+<div class="dl ctx">           &lt;span class=${`deliverable-status${status.loading &amp;&amp; status.text ? " loading" : ""}`} aria-live="polite"&gt;${status.text}&lt;/span&gt;</div>
+<div class="dl ctx">         &lt;/section&gt;</div>
+<div class="dl ctx">       &lt;/form&gt;`}</div></div>
+    </details>
+
+    <details class="file">
+      <summary><span class="path">tests/test_project_status_api.py</span>
+        <span class="stat"><b class="plus">+143</b> <b class="minus">-0</b></span></summary>
+      
+      <div class="diff"><div class="dl hunk">@@ -3,6 +3,7 @@</div>
+<div class="dl ctx"> </div>
+<div class="dl ctx"> from __future__ import annotations</div>
+<div class="dl ctx"> </div>
+<div class="dl add">+import json</div>
+<div class="dl ctx"> from types import SimpleNamespace</div>
+<div class="dl ctx"> </div>
+<div class="dl ctx"> import pytest</div>
+<div class="dl hunk">@@ -737,6 +738,7 @@ def test_document_no_discovery_zero_match_keeps_not_found_with_coverage(client,</div>
+<div class="dl ctx"> </div>
+<div class="dl ctx"> </div>
+<div class="dl ctx"> def test_document_no_discovery_rejects_multiple_matches(client, monkeypatch) -&gt; None:  # type: ignore[no-untyped-def]</div>
+<div class="dl add">+    """多行且**身份不同**：按身份不唯一 fail-closed（2026-10-10 起文案更精确）。"""</div>
+<div class="dl ctx">     rows = [</div>
+<div class="dl ctx">         {"incident": "FLOW-A", "documentNo": "F610S-3D-0001"},</div>
+<div class="dl ctx">         {"incident": "FLOW-B", "documentNo": "F610S-3D-0001"},</div>
+<div class="dl hunk">@@ -745,10 +747,151 @@ def test_document_no_discovery_rejects_multiple_matches(client, monkeypatch) -&gt;</div>
+<div class="dl ctx"> </div>
+<div class="dl ctx">     response = _post_document_no_discovery(client, "F610S-3D-0001")</div>
+<div class="dl ctx"> </div>
+<div class="dl add">+    assert response.status_code == 400</div>
+<div class="dl add">+    assert "该流水单号命中了多行且身份不唯一，请核对后重试" in response.get_json()["error"]["message"]</div>
+<div class="dl add">+</div>
+<div class="dl add">+</div>
+<div class="dl add">+def test_document_no_discovery_rejects_multiple_part_rows_of_one_workflow(client, monkeypatch) -&gt; None:  # type: ignore[no-untyped-def]</div>
+<div class="dl add">+    """同一实例多行（part_detail 粒度）：身份唯一但仍不能构成单记录绑定，保留旧文案。"""</div>
+<div class="dl add">+    rows = [</div>
+<div class="dl add">+        {"incident": "FLOW-A", "documentNo": "F610S-3D-0001", "partNumber": "P-1"},</div>
+<div class="dl add">+        {"incident": "FLOW-A", "documentNo": "F610S-3D-0001", "partNumber": "P-2"},</div>
+<div class="dl add">+    ]</div>
+<div class="dl add">+    _document_no_discovery(monkeypatch, rows)</div>
+<div class="dl add">+</div>
+<div class="dl add">+    response = _post_document_no_discovery(client, "F610S-3D-0001")</div>
+<div class="dl add">+</div>
+<div class="dl ctx">     assert response.status_code == 400</div>
+<div class="dl ctx">     assert "该流水单号命中多行，请核对后重试" in response.get_json()["error"]["message"]</div>
+<div class="dl ctx"> </div>
+<div class="dl ctx"> </div>
+<div class="dl add">+def test_document_no_discovery_matches_when_row_also_carries_form_id(client, monkeypatch) -&gt; None:  # type: ignore[no-untyped-def]</div>
+<div class="dl add">+    """生产事故回归（2026-10-10）：命中行含 formId 时选中键仍必须是实例号 incident。</div>
+<div class="dl add">+</div>
+<div class="dl add">+    旧实现取 matched_instances[0]（incident）当 selected，而候选过滤用 record_identity</div>
+<div class="dl add">+    （formId 优先）→ 命中行被过滤掉 → 「未匹配（命中 0 行，字段数 60）」。</div>
+<div class="dl add">+    """</div>
+<div class="dl add">+    rows = [</div>
+<div class="dl add">+        {"formId": "FORM-9", "incident": "50667733", "documentNo": "3D-00001018"},</div>
+<div class="dl add">+        {"formId": "FORM-8", "incident": "50738964", "documentNo": "3D-00001012"},</div>
+<div class="dl add">+    ]</div>
+<div class="dl add">+    seen = _document_no_discovery(monkeypatch, rows)</div>
+<div class="dl add">+</div>
+<div class="dl add">+    response = _post_document_no_discovery(client, "3D-00001018")</div>
+<div class="dl add">+</div>
+<div class="dl add">+    assert response.status_code == 200</div>
+<div class="dl add">+    assert seen == [None]</div>
+<div class="dl add">+    data = response.get_json()["data"]</div>
+<div class="dl add">+    assert data["state"] == "matched"</div>
+<div class="dl add">+    assert data["externalKey"] == "50667733"</div>
+<div class="dl add">+    assert data["serialDiagnostic"]["identityFieldUsed"] == ["incident"]</div>
+<div class="dl add">+    assert data["serialDiagnostic"]["distinctIdentities"] == 1</div>
+<div class="dl add">+</div>
+<div class="dl add">+</div>
+<div class="dl add">+def test_document_no_discovery_without_identity_field_is_fail_closed(client, monkeypatch) -&gt; None:  # type: ignore[no-untyped-def]</div>
+<div class="dl add">+    """命中行没有任何身份字段：显式 422 + 原因码，不再 500 也不再静默 not_found。"""</div>
+<div class="dl add">+    rows = [{"流水单号": "3D-00001018", "partNumber": "P-1"}]</div>
+<div class="dl add">+    _document_no_discovery(monkeypatch, rows)</div>
+<div class="dl add">+</div>
+<div class="dl add">+    response = _post_document_no_discovery(client, "3D-00001018")</div>
+<div class="dl add">+</div>
+<div class="dl add">+    assert response.status_code == 422</div>
+<div class="dl add">+    body = response.get_json()</div>
+<div class="dl add">+    assert body["error"]["type"] == "IdentityMissing"</div>
+<div class="dl add">+    assert "没有可用的业务单号字段" in body["error"]["message"]</div>
+<div class="dl add">+    assert body["error"]["diagnostic"]["identityFieldsPresent"] == []</div>
+<div class="dl add">+    assert body["error"]["diagnostic"]["matched"] == 1</div>
+<div class="dl add">+</div>
+<div class="dl add">+</div>
+<div class="dl add">+def test_document_no_discovery_zero_match_reports_reason_and_coverage(client, monkeypatch) -&gt; None:  # type: ignore[no-untyped-def]</div>
+<div class="dl add">+    rows = [{"incident": "FLOW-A", "documentNo": "F610S-3D-0001"}]</div>
+<div class="dl add">+    _document_no_discovery(monkeypatch, rows)</div>
+<div class="dl add">+</div>
+<div class="dl add">+    response = _post_document_no_discovery(client, "F610S-3D-9999")</div>
+<div class="dl add">+</div>
+<div class="dl add">+    data = response.get_json()["data"]</div>
+<div class="dl add">+    assert data["state"] == "not_found"</div>
+<div class="dl add">+    assert data["reason"] == "serial_no_match"</div>
+<div class="dl add">+    assert data["serialMatch"]["scanned"] == 1</div>
+<div class="dl add">+    assert data["serialDiagnostic"]["matchedRows"] == 0</div>
+<div class="dl add">+    assert data["serialDiagnostic"]["identityFieldsPresent"] == ["documentNo", "incident"]</div>
+<div class="dl add">+</div>
+<div class="dl add">+</div>
+<div class="dl add">+@pytest.mark.parametrize(</div>
+<div class="dl add">+    ("value", "expected"),</div>
+<div class="dl add">+    [</div>
+<div class="dl add">+        ("3D-00001018 3D-00001012", "一次只能填一个"),</div>
+<div class="dl add">+        ("3D-00001018\u200b", "不可见字符"),</div>
+<div class="dl add">+        ("３Ｄ-００００１０１８", "一次只能填一个"),</div>
+<div class="dl add">+    ],</div>
+<div class="dl add">+)</div>
+<div class="dl add">+def test_document_no_discovery_rejects_multi_value_before_crawl(client, monkeypatch, value, expected) -&gt; None:  # type: ignore[no-untyped-def]</div>
+<div class="dl add">+    """单值 fail-closed（2026-10-10）：多值/不可见字符/全角在抓取前拒绝，不白跑全量抓取。"""</div>
+<div class="dl add">+    seen = _document_no_discovery(monkeypatch, [])</div>
+<div class="dl add">+</div>
+<div class="dl add">+    response = _post_document_no_discovery(client, value)</div>
+<div class="dl add">+</div>
+<div class="dl add">+    assert response.status_code == 400</div>
+<div class="dl add">+    assert expected in response.get_json()["error"]["message"]</div>
+<div class="dl add">+    assert seen == []</div>
+<div class="dl add">+</div>
+<div class="dl add">+</div>
+<div class="dl add">+def test_document_no_discovery_requires_authoritative_incident_field(client, monkeypatch) -&gt; None:  # type: ignore[no-untyped-def]</div>
+<div class="dl add">+    """单记录绑定只认权威字段 incident：命中行缺它时 fail-closed，不悄悄改用 formId。"""</div>
+<div class="dl add">+    rows = [{"formId": "FORM-9", "documentNo": "3D-00001018", "partNumber": "P-1"}]</div>
+<div class="dl add">+    _document_no_discovery(monkeypatch, rows)</div>
+<div class="dl add">+</div>
+<div class="dl add">+    response = _post_document_no_discovery(client, "3D-00001018")</div>
+<div class="dl add">+</div>
+<div class="dl add">+    assert response.status_code == 422</div>
+<div class="dl add">+    body = response.get_json()</div>
+<div class="dl add">+    assert body["error"]["type"] == "IdentityMissing"</div>
+<div class="dl add">+    assert "权威业务单号字段" in body["error"]["message"]</div>
+<div class="dl add">+    assert body["error"]["diagnostic"]["authoritativeField"] == "incident"</div>
+<div class="dl add">+    assert body["error"]["diagnostic"]["identityFieldUsed"] == ["formId"]</div>
+<div class="dl add">+</div>
+<div class="dl add">+</div>
+<div class="dl add">+def test_document_no_discovery_incomplete_crawl_wins_over_zero_match(client, monkeypatch) -&gt; None:  # type: ignore[no-untyped-def]</div>
+<div class="dl add">+    """抓取不完整优先于「未找到」：serial_no_match 只在完整抓取时才允许出现。"""</div>
+<div class="dl add">+    rows = [{"incident": "FLOW-A", "documentNo": "F610S-3D-0001"}]</div>
+<div class="dl add">+    _document_no_discovery(monkeypatch, rows, complete=False, stop_reason="max_pages")</div>
+<div class="dl add">+</div>
+<div class="dl add">+    response = _post_document_no_discovery(client, "F610S-3D-9999")</div>
+<div class="dl add">+</div>
+<div class="dl add">+    assert response.status_code == 422</div>
+<div class="dl add">+    body = response.get_json()</div>
+<div class="dl add">+    assert body["error"]["type"] == "IncompleteDiscovery"</div>
+<div class="dl add">+    assert body["error"]["type"] != "IdentityMissing"  # 机器码可区分，供消费者分发</div>
+<div class="dl add">+</div>
+<div class="dl add">+</div>
+<div class="dl add">+def test_document_no_discovery_diagnostic_has_no_business_values(client, monkeypatch) -&gt; None:  # type: ignore[no-untyped-def]</div>
+<div class="dl add">+    """诊断只给字段名与计数；字段报告仍由行键构成（60 列不被新键污染）。"""</div>
+<div class="dl add">+    row = {"formId": "FORM-9", "incident": "50667733", "documentNo": "3D-00001018"}</div>
+<div class="dl add">+    for index in range(57):</div>
+<div class="dl add">+        row[f"extraField{index:02d}"] = f"v{index}"</div>
+<div class="dl add">+    _document_no_discovery(monkeypatch, [row])</div>
+<div class="dl add">+</div>
+<div class="dl add">+    response = _post_document_no_discovery(client, "3D-00001018")</div>
+<div class="dl add">+</div>
+<div class="dl add">+    assert response.status_code == 200</div>
+<div class="dl add">+    data = response.get_json()["data"]</div>
+<div class="dl add">+    assert data["state"] == "matched"</div>
+<div class="dl add">+    assert len(data["fieldReport"]["fields"]) == 60</div>
+<div class="dl add">+    diagnostic = data["serialDiagnostic"]</div>
+<div class="dl add">+    assert diagnostic["identityFieldUsed"] == ["incident"]</div>
+<div class="dl add">+    assert diagnostic["authoritativeField"] == "incident"  # 字段名，不是业务值</div>
+<div class="dl add">+    assert diagnostic["matchedRows"] == 1</div>
+<div class="dl add">+    assert all(</div>
+<div class="dl add">+        value is None or isinstance(value, (int, list))</div>
+<div class="dl add">+        for key, value in diagnostic.items()</div>
+<div class="dl add">+        if key != "authoritativeField"</div>
+<div class="dl add">+    )</div>
+<div class="dl add">+    serialized = json.dumps(diagnostic, ensure_ascii=False)</div>
+<div class="dl add">+    assert "3D-00001018" not in serialized</div>
+<div class="dl add">+    assert "50667733" not in serialized</div>
+<div class="dl add">+    assert "FORM-9" not in serialized</div>
+<div class="dl add">+</div>
+<div class="dl add">+</div>
+<div class="dl ctx"> def test_document_no_discovery_rejects_incomplete_crawl(client, monkeypatch) -&gt; None:  # type: ignore[no-untyped-def]</div>
+<div class="dl ctx">     rows = [{"incident": "FLOW-A", "documentNo": "F610S-3D-0001"}]</div>
+<div class="dl ctx">     _document_no_discovery(monkeypatch, rows, complete=False, stop_reason="max_pages")</div></div>
+    </details>
+
+    <details class="file">
+      <summary><span class="path">tests/test_project_status_admin_api.py</span>
+        <span class="stat"><b class="plus">+34</b> <b class="minus">-0</b></span></summary>
+      
+      <div class="diff"><div class="dl hunk">@@ -610,6 +610,40 @@ def test_sync_now_rejects_unconfigured_deliverables_with_409_sync_not_ready(</div>
+<div class="dl ctx">     registry_factory.assert_not_called()</div>
+<div class="dl ctx"> </div>
+<div class="dl ctx"> </div>
+<div class="dl add">+def test_sync_now_reports_legacy_multi_value_document_no_binding_as_not_ready(</div>
+<div class="dl add">+    client, test_db: DatabaseManager, registry_factory: MagicMock</div>
+<div class="dl add">+) -&gt; None:</div>
+<div class="dl add">+    """存量多值流水单号绑定（升级前落库）：运行期显式 409，不再静默 0 命中（顾问复核 A2）。"""</div>
+<div class="dl add">+    _configure_ready_d5_binding(test_db, external_key="FM-1")</div>
+<div class="dl add">+    with test_db.get_connection() as conn:</div>
+<div class="dl add">+        conn.execute(</div>
+<div class="dl add">+            "UPDATE project_status_update_bindings SET match_rule_json = ? "</div>
+<div class="dl add">+            "WHERE deliverable_id = 'VPI-T2-D5'",</div>
+<div class="dl add">+            (</div>
+<div class="dl add">+                json.dumps(</div>
+<div class="dl add">+                    {</div>
+<div class="dl add">+                        "reportType": "data_model",</div>
+<div class="dl add">+                        "aggregate": False,</div>
+<div class="dl add">+                        "documentNo": "3D-00001018 3D-00001012",</div>
+<div class="dl add">+                    }</div>
+<div class="dl add">+                ),</div>
+<div class="dl add">+            ),</div>
+<div class="dl add">+        )</div>
+<div class="dl add">+        conn.commit()</div>
+<div class="dl add">+</div>
+<div class="dl add">+    resp = client.post(</div>
+<div class="dl add">+        "/api/project-status/deliverables/VPI-T2-D5/sync-now",</div>
+<div class="dl add">+        headers=_loopback_headers(),</div>
+<div class="dl add">+        environ_base={"REMOTE_ADDR": "127.0.0.1"},</div>
+<div class="dl add">+    )</div>
+<div class="dl add">+</div>
+<div class="dl add">+    assert resp.status_code == 409</div>
+<div class="dl add">+    body = resp.get_json()</div>
+<div class="dl add">+    assert body["error"]["type"] == "SyncNotReady"</div>
+<div class="dl add">+    assert "一次只能填一个" in body["error"]["message"]</div>
+<div class="dl add">+    registry_factory.assert_not_called()  # 校验在连接器创建之前</div>
+<div class="dl add">+</div>
+<div class="dl add">+</div>
+<div class="dl ctx"> # ── 3. Ready D5 Sync-Now Success Contract and Secret Safety ────────────────────</div>
+<div class="dl ctx"> </div>
+<div class="dl ctx"> </div></div>
+    </details>
+
+    <details class="file">
+      <summary><span class="path">tests/test_plugin_overview_parity_logic.py</span>
+        <span class="stat"><b class="plus">+24</b> <b class="minus">-0</b></span></summary>
+      
+      <div class="diff"><div class="dl hunk">@@ -56,6 +56,14 @@ const initDmDoc = P.wizardInitialValues({matchRule: {documentNo: "3D-00001018"}}</div>
+<div class="dl ctx"> // 存量 incident 绑定：number 回填实例号，documentNo 框必须为空（不跨键转换）。</div>
+<div class="dl ctx"> const initDmLegacy = P.wizardInitialValues({matchRule: {incident: "51553863"}}, caps("data_model", "tdc"), true);</div>
+<div class="dl ctx"> const dmPrecheckBoth = P.wizardPrecheck({credential: "domain", model: "", number: "51553863", documentNo: "3D-00001018", status: "", sections: [], interval: "15", defaultDept: "车体工程"}, {}, caps("data_model", "tdc"), true);</div>
+<div class="dl add">+const dmValues = (documentNo) =&gt; ({credential: "domain", model: "F610S", number: "", documentNo, status: "", sections: [], interval: "15", defaultDept: "车体工程"});</div>
+<div class="dl add">+const dmPrecheckOk = P.wizardPrecheck(dmValues("3D-00001018"), {}, caps("data_model", "tdc"), true);</div>
+<div class="dl add">+const dmPrecheckMulti = P.wizardPrecheck(dmValues("3D-00001018 3D-00001012"), {}, caps("data_model", "tdc"), true);</div>
+<div class="dl add">+const dmPrecheckZeroWidth = P.wizardPrecheck(dmValues("3D-00001018\u200b"), {}, caps("data_model", "tdc"), true);</div>
+<div class="dl add">+const dmPrecheckFullWidth = P.wizardPrecheck(dmValues("３Ｄ-００００１０１８"), {}, caps("data_model", "tdc"), true);</div>
+<div class="dl add">+const notMatchedSerial = P.wizardNotMatchedMessage({state: "not_found", candidateCount: 0, fieldReport: {fields: []}, reason: "serial_no_match", serialMatch: {scanned: 4, matched: 0}});</div>
+<div class="dl add">+const notMatchedEmpty = P.wizardNotMatchedMessage({state: "not_found", candidateCount: 0, fieldReport: {fields: []}, serialMatch: {scanned: 0, matched: 0}});</div>
+<div class="dl add">+const notMatchedLegacy = P.wizardNotMatchedMessage({state: "not_found", candidateCount: 0, fieldReport: {fields: []}});</div>
+<div class="dl ctx"> const initNcr = P.wizardInitialValues({matchRule: {sectionScope: ["车身科", 7]}}, caps("ncr_detail"), true);</div>
+<div class="dl ctx"> const keep = P.buildPolicyPayload({id: "VPI-T2-D7"}, {reportType: "ncr_progress", sourceType: "aras", sectionScopePresets: ["车身科"], matchFields: [["projectModel", "车型项目"]]},</div>
+<div class="dl ctx">   {matchRule: {projectModel: "F610S", sectionScope: ["车身科", "内饰科"]}}, {mode: "automatic", enabled: false, match: {projectModel: "F610S"}, authority: {}, mapping: {}, interval: "15"});</div>
+<div class="dl hunk">@@ -74,6 +82,13 @@ console.log(JSON.stringify({</div>
+<div class="dl ctx">   initDmDoc: {documentNo: initDmDoc.documentNo, number: initDmDoc.number},</div>
+<div class="dl ctx">   initDmLegacy: {documentNo: initDmLegacy.documentNo, number: initDmLegacy.number},</div>
+<div class="dl ctx">   dmPrecheckBoth,</div>
+<div class="dl add">+  dmPrecheck: {</div>
+<div class="dl add">+    ok: dmPrecheckOk, multi: dmPrecheckMulti,</div>
+<div class="dl add">+    zeroWidth: dmPrecheckZeroWidth, fullWidth: dmPrecheckFullWidth,</div>
+<div class="dl add">+  },</div>
+<div class="dl add">+  notMatched: {</div>
+<div class="dl add">+    serial: notMatchedSerial, empty: notMatchedEmpty, legacy: notMatchedLegacy,</div>
+<div class="dl add">+  },</div>
+<div class="dl ctx">   gate: [</div>
+<div class="dl ctx">     P.stabilityGateFailureMessage({mismatch: {reason: "total_mismatch", expected: 100, actual: 101}}),</div>
+<div class="dl ctx">     P.stabilityGateFailureMessage({mismatch: {reason: "sample_not_in_baseline"}}),</div>
+<div class="dl hunk">@@ -113,6 +128,15 @@ def test_wizard_payloads_per_report_kind() -&gt; None:</div>
+<div class="dl ctx">     assert data["initDmLegacy"] == {"documentNo": "", "number": "51553863"}</div>
+<div class="dl ctx">     # 同填流水单号与实例号被 precheck 拦截。</div>
+<div class="dl ctx">     assert "二选一" in data["dmPrecheckBoth"]</div>
+<div class="dl add">+    # 单值 fail-closed（2026-10-10）：多值/不可见字符/全角在向导内先拦。</div>
+<div class="dl add">+    assert data["dmPrecheck"]["ok"] == ""</div>
+<div class="dl add">+    assert "一次只能填一个" in data["dmPrecheck"]["multi"]</div>
+<div class="dl add">+    assert "不可见字符" in data["dmPrecheck"]["zeroWidth"]</div>
+<div class="dl add">+    assert "一次只能填一个" in data["dmPrecheck"]["fullWidth"]</div>
+<div class="dl add">+    # 0 命中时给出可判别的原因（扫描行数 / 上游 0 行），旧后端缺字段时回退原文案。</div>
+<div class="dl add">+    assert "已完整扫描 4 行" in data["notMatched"]["serial"]</div>
+<div class="dl add">+    assert "上游按当前车型/筛选条件返回 0 行" in data["notMatched"]["empty"]</div>
+<div class="dl add">+    assert data["notMatched"]["legacy"].endswith("请核对车型与筛选条件后重试。")</div>
+<div class="dl ctx">     # PAA ignores the status field entirely</div>
+<div class="dl ctx">     assert "status" not in data["paa"]["filters"] and "approval_status" not in data["paa"]["filters"]</div>
+<div class="dl ctx">     assert data["initSor"] == "审批中" and data["initDm"] == "已完成" and data["initNcr"] == ["车身科", "7"]</div></div>
+    </details>
+
+    <details class="file">
+      <summary><span class="path">tests/test_deliverables_system_query_parity.py</span>
+        <span class="stat"><b class="plus">+11</b> <b class="minus">-0</b></span></summary>
+      
+      <div class="diff"><div class="dl hunk">@@ -63,6 +63,9 @@ console.log(JSON.stringify({</div>
+<div class="dl ctx">   sqNotices,</div>
+<div class="dl ctx">   dlvWarnings,</div>
+<div class="dl ctx">   dlvSummary: dlvLib.formatFilterSummary(dmItem, dlvPayload.filters, dlvPayload.document_no),</div>
+<div class="dl add">+  dlvCrawlNotice: dlvLib.documentNoCrawlNotice(dmItem, sqValues),</div>
+<div class="dl add">+  dlvCrawlNoticeEmpty: dlvLib.documentNoCrawlNotice(dmItem, {document_no: ""}),</div>
+<div class="dl add">+  dlvCrawlNoticeOther: dlvLib.documentNoCrawlNotice({id: "tdc-sor"}, sqValues),</div>
+<div class="dl ctx"> }));</div>
+<div class="dl ctx"> """</div>
+<div class="dl ctx"> </div>
+<div class="dl hunk">@@ -120,6 +123,14 @@ def test_filter_summary_includes_document_no(parity: dict) -&gt; None:</div>
+<div class="dl ctx">     assert "3D-00001018" in summary</div>
+<div class="dl ctx"> </div>
+<div class="dl ctx"> </div>
+<div class="dl add">+def test_document_no_crawl_notice_explains_the_full_crawl(parity: dict) -&gt; None:</div>
+<div class="dl add">+    """填了流水单号就必然全量抓取：发起前必须说明代价（2026-10-10 卡死反馈）。"""</div>
+<div class="dl add">+    assert "全量抓取" in parity["dlvCrawlNotice"]</div>
+<div class="dl add">+    assert "请勿重复点击" in parity["dlvCrawlNotice"]</div>
+<div class="dl add">+    assert parity["dlvCrawlNoticeEmpty"] == ""   # 没填单号不提示</div>
+<div class="dl add">+    assert parity["dlvCrawlNoticeOther"] == ""   # 只有数模走这条路径</div>
+<div class="dl add">+</div>
+<div class="dl add">+</div>
+<div class="dl ctx"> def test_catalog_field_set_matches_system_query_mode_fields() -&gt; None:</div>
+<div class="dl ctx">     """字段单源：目录下发（web/app.py）与 system_query modes 的数模键集一致。"""</div>
+<div class="dl ctx">     catalog_names = [f["name"] for f in web_app._TDC_DATA_MODEL_FIELDS]</div></div>
+    </details>
+</section>
+
+<section id="tests">
+  <h2>测试</h2>
+  <h3>新增：<code>tests/test_data_model_identity_contract.py</code></h3>
+  <ul><li><code>test_data_model_identity_prefers_incident_over_form_id</code></li>
+<li><code>test_identity_order_only_overrides_known_report_types</code></li>
+<li><code>test_data_model_identity_falls_back_when_incident_missing</code></li>
+<li><code>test_identified_records_uses_report_type_order</code></li>
+<li><code>test_connector_single_record_matches_incident_when_row_has_form_id</code></li>
+<li><code>test_connector_legacy_identity_order_would_have_missed_the_row</code></li>
+<li><code>test_observe_reports_selected_not_in_candidates</code></li>
+<li><code>test_observe_matches_when_selected_is_the_incident</code></li>
+<li><code>test_normalize_single_serial_rejects_non_single_values</code></li>
+<li><code>test_normalize_single_serial_accepts_one_serial</code></li>
+<li><code>test_authoritative_identity_field_is_declared_for_data_model</code></li>
+<li><code>test_config_signature_gold_values_are_unchanged</code></li>
+<li><code>test_every_identity_call_site_passes_report_type</code></li>
+<li><code>test_observation_payload_keeps_new_keys_out_of_persisted_shapes</code></li>
+<li><code>test_legacy_form_id_baseline_reports_mismatch_instead_of_matching</code></li></ul>
+  <h3>新增 / 修改的用例（其他文件）</h3>
+  <ul>
+    <li><code>test_project_status_api.py</code>：命中行含 formId 时 externalKey 仍为实例号；缺权威字段 → 422；
+      0 命中带 reason 与覆盖范围；抓取不完整优先于未找到；诊断不含业务值；多值/不可见字符/全角在抓取前拒绝；
+      同实例多行保留旧文案。</li>
+    <li><code>test_project_status_admin_api.py</code>：存量多值流水单号绑定 → sync-now 返回 409 SyncNotReady
+      （校验发生在连接器创建之前）。</li>
+    <li><code>test_plugin_overview_parity_logic.py</code>（Node）：向导 precheck 拦截多值/零宽/全角；
+      0 命中文案按 reason 分档；旧后端缺字段时回退原文案。</li>
+    <li><code>test_deliverables_system_query_parity.py</code>（Node）：工作台全量抓取提示只在数模且填了单号时出现。</li>
+  </ul>
+</section>
+
+<section id="gates">
+  <h2>门禁</h2>
+  <table>
+    <tr><th>检查</th><th>结果</th></tr>
+    <tr><td>全量 <code>pytest tests</code></td><td><span class="pill ok">2966 passed</span>
+      <span class="pill bad">1 failed</span> <span class="pill">48 skipped</span>（5:24）</td></tr>
+    <tr><td>唯一失败项</td><td><code>test_host_frontend.py::test_vendored_runtime_matches_recorded_checksum</code>
+      —— 既有 vendor 行尾问题：git 认为该文件未修改，仅工作区为 CRLF（HEAD blob <code>ED68A617…</code>
+      vs 工作区 <code>092DAAAF…</code>，CRLF=2/bareLF=0），与本次改动无关</td></tr>
+    <tr><td>聚焦套件（project_status 全家族 / deliverables / system_query / overview parity / scheduled_archive / diagnostics）</td>
+      <td><span class="pill ok">463 passed</span>，复核补测后 <span class="pill ok">185 passed</span></td></tr>
+    <tr><td>flake8（改动文件）</td><td><span class="pill ok">0 告警</span></td></tr>
+    <tr><td>前端模块 Node 导入</td><td><span class="pill ok">通过</span>（policy-logic.js / deliverables lib.js / catalog.js）</td></tr>
+    <tr><td>签名金值</td><td><span class="pill ok">与修复前 HEAD 逐字一致</span>
+      （<code>sig:28bf6d06…</code> / <code>sig:92c35790…</code> / <code>sig:ecead07f…</code>，实测比对）</td></tr>
+  </table>
+</section>
+
+<section id="advisor">
+  <h2>顾问复核（三轮，均为 Claude opus-5-5 / xhigh）</h2>
+  <table>
+    <tr><th>轮次</th><th>run</th><th>主题</th><th>裁决</th></tr>
+    <tr><td>1</td><td><code>9bdeac08…</code></td><td>多值输入 / 诊断集 / 漂移检测</td><td>1/2/3 = adopted</td></tr>
+    <tr><td>2（增量）</td><td><code>3b2e9629…</code></td><td>身份口径 / 越界 fail-closed / 优先级</td><td>1/2/3 = adopted</td></tr>
+    <tr><td>3（实施后复核）</td><td><code>4f5c21d1…</code></td><td>找回归、遗漏调用点与副作用</td><td>1=adopted 2=adopted 3=partial</td></tr>
+  </table>
+  <h3>实施后复核提出的 8 项「不补不能打包」，处置</h3>
+  <table>
+    <tr><th>#</th><th>顾问发现</th><th>处置</th></tr>
+    <tr><td>A1</td><td>缺权威字段时会回退到 formId，等于放行非契约键</td>
+      <td class="ok">已改为硬约束：数模单记录绑定缺 <code>incident</code> → 422 <code>IdentityMissing</code>；补用例</td></tr>
+    <tr><td>A2</td><td>存量多值绑定在运行期可能抛异常、中断整批</td>
+      <td class="ok">已核实 <code>assert_sync_ready</code> 在 <code>acquire_sync_lease</code> 路径上、逐绑定捕获：
+      定时/手动同步 → <code>needs_attention / binding_not_ready</code>，sync-now → 409，不中断整批；补用例</td></tr>
+    <tr><td>A3</td><td>漏改调用点会静默沿用旧序，全量测试不会红</td>
+      <td class="ok">已加源码级闭合哨兵：生产模块里每个 <code>record_identity(</code>/<code>identified_records(</code>
+      调用都必须显式传 <code>report_type=</code></td></tr>
+    <tr><td>A4</td><td>新键是否进稳定性/签名/缓存载荷没有断言</td>
+      <td class="ok">已加载荷洁净用例：<code>reason</code>/<code>serialDiagnostic</code> 不进
+      <code>aggregated_candidate_json</code>；<code>fieldReport.fields</code> 仍等于行键集合</td></tr>
+    <tr><td>A5</td><td>「已完整扫描」的完整性断言缺优先级用例</td>
+      <td class="ok">已加：抓取不完整 + 单号不匹配 → 422 <code>IncompleteDiscovery</code>，
+      <code>serial_no_match</code> 只在完整时出现</td></tr>
+    <tr><td>A6</td><td>需要签名金值，不能新旧互比</td>
+      <td class="ok">已钉死三个金值，并与 HEAD 版实现实测比对一致</td></tr>
+    <tr><td>A7/A8</td><td>混合行（一行有身份一行无）必须 fail-closed；诊断不得回显业务值</td>
+      <td class="ok">已由 A1 覆盖；诊断只含字段名与计数，已断言不含单号/实例号/formId 值</td></tr>
+    <tr><td>S10</td><td>「仅 CRLF 差异」是陈述不是证据</td>
+      <td class="ok">已实测取证（见门禁表）</td></tr>
+  </table>
+  <h3>未采纳 / 延后</h3>
+  <ul>
+    <li><b>SOR 身份顺序本批不动</b>（顾问 C）：没有 SOR 行字段与存量键的证据，贸然把 <code>processNo</code>
+      提前等于反向重演漂移风险 → 列为取证项。</li>
+    <li>错误体加 <code>retryable:false</code>、拆出独立原因码（顾问 B，非阻断）→ 登记待办。</li>
+    <li>本机修正顾问三处：S1（我上一版文档自相矛盾）属实并已澄清；S11 只是咨询包里的简写（实际代码是
+      keyword-only <code>report_type=</code>）；S10 的失败与本次无关。</li>
+  </ul>
+</section>
+
+<section id="pending">
+  <h2>待你决定</h2>
+  <ol>
+    <li><b>是否出新测试包</b>（本次未提交、未打包）。建议提交拆 4 个：
+      ① 车型锚点改动 + except 顺序修正；② 身份口径同源；③ 单值校验 + 前端；④ <code>reason</code> + 诊断。</li>
+    <li><b>存量只读审计</b>（需要你的生产库）：数模绑定的 <code>externalKey</code> 落在
+      <code>incident</code> 还是 <code>formId</code>；<code>documentNo</code> 含分隔符 / 全角字符的条数。
+      命中项应标「配置无效」，不要混进「未找到」。</li>
+    <li><b>SOR 同类风险取证</b>：只需确认 SOR 行是否含 <code>formId</code>（含则另立任务按
+      <code>processNo</code> 处理 + 存量审计）。</li>
+  </ol>
+  <p class="note">回滚点：身份口径修复可单独回滚（新绑定键仍是实例号）；若采用「基线失效重建」而非迁移，
+  回滚不产生数据类别差异。</p>
+</section>
+
+</main>
+<footer>
+  证据文件：<code>docs/TDC_DM_WIZARD_DISCOVERY_ROOTCAUSE_20261010.md</code>（第三版）·
+  <code>memory/CURRENT_STATE.md</code> ·
+  咨询包 <code>.runtime/consult-20261010-tdc-dm-identity-review.md</code> ·
+  实测 <code>.runtime/verify_identity_fix.py</code>、<code>.runtime/repro_wizard_identity_mismatch.py</code>。
+</footer>
+</body>
+</html>

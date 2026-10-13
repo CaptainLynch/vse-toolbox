@@ -1,5 +1,123 @@
 # Current State
 
+## 2026-10-10 数模「填多个流水单号 → 合并导出」实现（工作台 + 系统查询页，未提交）
+
+- **用户反馈**：「我要的就是填多个表单值合并导出来的功能，你没有修复」——上一轮把向导改成单值 fail-closed，
+  与用户目标相反。
+- **缺陷定位**：多单号**查询/合并预览**早已支持（`_tdc_document_nos` + `match_serials`，工作台与系统查询页共用）；
+  但**导出**路径 `_tdc_report_export`（`web/app.py`）只从 `filters` 建参数、**从不读顶层 `document_no`**
+  → 「下载 XLSX」导出的是"其它条件下的全部行"，合并导出此前完全缺失。
+- **为何是 CSV**：上游无单号查询参数，官方工作簿无法按单号过滤；DLP 禁令禁止 openpyxl/pandas 直接读写
+  Office 文件（`services/office_toolbox.py`），现有 Excel Worker 只有 merge_append/merge_overlay/diff_against_baseline
+  → 官方 47 列过滤需新增 COM 操作（另立任务）。本批交付合并 CSV（UTF-8 BOM，Excel 直接可开）。
+- **实现**：新路由 `POST /api/tdc/data-model/export-merged`（抓取前单值/多值校验 → 统一域会话准入 →
+  后台任务全量抓取 + 分页进度 → 抓取不完整 422 → `match_serials` → **任一单号缺失即整体失败**
+  `422 SerialNotFound` → `_tdc_merged_export_csv()`（契约列序、敏感键剔除、UTF-8 BOM）→ 任务下载）。
+  前端：工作台新增「导出合并结果（CSV）」按钮 + `mergedExportHint`（提示官方导出不按单号过滤）；
+  系统查询页 `modes.js/query.js/lib.js` 同步接线。
+- **测试**：新增 `tests/test_tdc_merged_export.py`（7 例：CSV 纯函数/无单号 400/多单号端到端合并/缺失单号整体失败/
+  不完整 fail-closed/流水单号不发上游）；前端 parity + 接线静态断言；聚焦 240 passed；flake8 0 告警。
+- **顾问实施后复核**：Claude opus-5-5/xhigh，run `1849bd83-2640-48f9-895e-be3126c851e5`，裁决 1=adopted、2=partial、3=adopted。
+  5 项「不补不能打包」全部处置：**B1** CSV 公式注入（`_csv_cell` 对 `= + - @ \t \r` 前导加 `'`，严格数字豁免）；
+  **B2** 截断必须判不完整（核实 `COMPLETE_STOP_REASONS` 不含 max_records → 422 IncompleteDiscovery，补用例）；
+  **B3** 路由级 guard 4 条用例（跨站 403/无会话 401/密码模式 400/allowlist 400）；**B4** `file_name` 202 前校验（已核实+补测）；
+  **B5** vendor CRLF 归一（crlf→lf 与 HEAD blob 逐字节相等，`git status` 干净）→ 门禁转绿。
+  另按 K2 把导出抓取参数与查询预览对齐（page_size 50/max_pages 100/max_records 10000）并加同源断言；
+  K7 系统查询页补 `mergedExportNotice`；K1 核实截断语义。偏差：27 个空列保留（与预览列序一致）+ 文件名 `_合并_` 后缀标注。
+- **门禁**：全量 `pytest tests` **2986 passed / 0 failed / 48 skipped**（vendor 门禁已转绿）。
+- **文档**：`docs/TDC_DM_MERGED_EXPORT_20261010.md`。
+- **待办**：①官方 47 列 XLSX 按单号过滤（需 Excel Worker 新 COM 操作，目标机须装 Excel）；
+  ②合并导出仍是全量抓取（上游限制，已有进度）；③是否在填了单号时禁用官方导出（待产品确认）。
+
+## 2026-10-10 数模身份键口径统一 + 0 命中归因 + 单值 fail-closed：实施完成并经顾问实施后复核（未提交、未打包）
+
+- **用户批准「改」并要求改完请顾问复核**。改动文件：`services/project_status_records.py`、
+  `project_status_discovery.py`、`project_status_connectors.py`、`project_status_updates.py`、
+  `data_model_watchlist.py`、`web/app.py`、`plugins/project_overview/static/deliverable/policy-logic.js`、
+  `plugins/deliverables/static/lib.js`、`catalog.js` + 5 个测试文件（新增
+  `tests/test_data_model_identity_contract.py`）。
+- **核心修复**：`IDENTITY_FIELD_ORDERS = {"data_model": ("incident", …原序)}` +
+  `record_identity(row, *, report_type=None)`（不传时行为逐字不变）；三处调用点同源（发现端选中键 /
+  `observe()` 候选过滤 / 连接器单记录与聚合）；新增 `AUTHORITATIVE_IDENTITY_FIELDS={"data_model":"incident"}`，
+  单记录绑定缺 `incident` → `IdentityMissing` 422（禁止回退到 formId）；删除
+  `matched_instances[0]` 越界 500；`observe()` 新增 `reason`；结果级 `serialDiagnostic`（字段名+计数）；
+  `reason="serial_no_match"`；`normalize_single_serial` 单值 fail-closed（发现/保存/`assert_sync_ready` 三处）；
+  前端 precheck + 0 命中原因文案 + 工作台全量抓取提示。
+- **顺带修复（此前未提交改动引入）**：`sync-now`/`sync-by-car-type` 的 `except` 顺序把 409 SyncNotReady
+  降级成 422（`SyncBindingNotReadyError` 是 ValueError 子类），已改回 409。
+- **门禁**：聚焦 463 passed → 复核补测后 185 passed（新增用例）；**全量 `pytest tests` 2966 passed /
+  1 failed / 48 skipped**（5:24）。唯一失败 `test_host_frontend.py::test_vendored_runtime_matches_recorded_checksum`
+  为既有 vendor CRLF 问题（git 视该文件未修改，仅行尾差异；已实测 worktree 092DAAAF… vs HEAD blob ED68A617…，
+  CRLF=2/bareLF=0）。flake8 改动文件 0 告警；Node 导入两份前端模块通过。
+- **顾问实施后复核**：Claude `claude-opus-5-5`/xhigh，run `4f5c21d1-db60-4187-8edd-43b1ca7041d0`
+  （意见 `~/.dsh/expert-advisor/runs/claude-20261009-224333-691e1fe9.advice.md`），裁决 1=adopted、2=adopted、3=partial。
+  其 A1–A8「不补不能打包」清单已全部补齐：权威字段硬约束+用例、存量多值绑定运行期行为
+  （`assert_sync_ready` 在 `acquire_sync_lease` 路径上，逐绑定捕获 → `needs_attention/binding_not_ready`，
+  sync-now 409，不中断整批）、源码级闭合哨兵（生产调用点必须显式传 `report_type=`）、载荷洁净
+  （新键不进 `aggregated_candidate_json`、`fieldReport.fields` 仍等于行键集）、完整性优先于未找到、
+  `config_signature` 金值（与 HEAD 实测逐字一致：`sig:28bf6d06…` / `sig:92c35790…` / `sig:ecead07f…`）。
+- **未采纳/延后**：SOR 身份顺序本批不动（无 SOR 行字段与存量键证据）；错误体 `retryable:false` 与
+  `identity_field_absent` 独立原因码（顾问 B，非阻断）。
+- **方案与复核全文**：`docs/TDC_DM_WIZARD_DISCOVERY_ROOTCAUSE_20261010.md`（第三版）；咨询包
+  `.runtime/consult-20261010-tdc-dm-identity-review.md`。
+- **下一步（待用户）**：①存量只读审计（数模绑定 externalKey 落在 incident / formId 集合的数量；
+  documentNo 含分隔符或非 NFKC 字符的数量）；②SOR 行是否含 `formId` 的最小取证；③是否要出新测试包
+  （提交建议拆 4 个提交：车型锚点+except 顺序 / 身份口径 / 单值校验+前端 / reason+serialDiagnostic）。
+
+## 2026-10-10 数模同步向导「映射发现未匹配」根因闭合（第二版）+ 两轮顾问复核（未改代码）
+
+- **现象**：生产 `20261009c`（host `a26d4e1e…77fc`）数模（VPI-T2-D5）「开始配置并启用」两次失败：
+  ① 双值单号 → 「命中行数 0，**字段数 0**」；② 单值单号 → 「命中行数 0，**字段数 60**」（用户打回第一版结论）。
+- **两次是两个机制**：
+  - ① 向导「流水单号」是单值精确匹配字段，填入 `3D-…018 3D-…012`（23 字符）→ 整串不等 → 收窄到 0 行 →
+    `observe` 空行集 → `fields=[]`。复现 `.runtime/repro_wizard_multivalue_serial.py`。
+  - ② **单号命中了行**（`fieldReport.fields` 取自行键并集，60 证明行集非空），但候选被 `selected` 过滤空：
+    `web/app.py:5099-5112` 用命中行 **incident** 作 selected，而 `observe()` 候选过滤用
+    `record_identity(row)`（`project_status_records.py:92-100`，顺序 `_no, formId, incident, …`）。
+    命中行含 `_no`/`formId` 时两者不等 → `not_found`/`candidateCount=0`/`fields=60`。
+    复现 `.runtime/repro_wizard_identity_mismatch.py`（含 `formId` 夹具与生产签名逐字一致；另暴露
+    `web/app.py:5111` `matched_instances[0]` 在命中行缺 incident 时 IndexError→500）。
+- **触发源**：上游列表行新增身份字段（最可能 `formId`）。本仓不写 `formId`（爬虫返回上游原始记录），
+  `git log -S formId` 无近期新增 → 与「最新分支更改数模审批流程内容」一致；字段名待字段报告确认。
+- **影响面（第一版漏掉）**：运行期单记录 externalKey 同为 `record_identity`（`project_status_connectors.py:177`），
+  而 `project_status_updates.py:637` 要求候选键 == 绑定键 → **存量按 incident 落库的绑定会开始
+  `external_key_mismatch`/`needs_attention`**，不只是向导建不了绑定。仓库本就不一致：爬虫去重 incident 优先
+  （`tdc_crawler.py:1715-1722`）vs `record_identity` formId 优先；`tdc_contract_probe.py:658` 自己把
+  「哪个是权威 external key」列为未决。
+- **顾问（两轮，均 Claude opus-5-5 / xhigh / risk public-protocol）**：
+  run `9bdeac08…`（多值校验 A、诊断集、共用纯函数）与增量 run `3b2e9629-866f-4c76-8b25-cb45acf4814f`
+  （`--follows`；身份口径、越界 fail-closed、D1 降 P1）。两轮 6 项裁决全部 adopted；
+  本地修正：F10 载荷为显式保留键（结果级新键安全，不得进 `fieldReport.fields`）；多值串在发现阶段即 0 命中。
+- **方案（P0，待批准）**：①`record_identity` 加可选源参数（默认行为逐字不变；TDC 仅把 incident 提到首位），
+  同一提交改三处调用点（`web/app.py:5099-5112`、`observe()` 过滤、`project_status_connectors.py:177`），
+  不改爬虫去重只加契约测试，运行期加「身份字段位移」护栏（不覆盖存量键只告警），存量不自动迁移；
+  ②越界/身份缺失 fail-closed（原因码 `serial_no_match`/`identity_missing`/`identity_ambiguous`/
+  `selected_not_in_candidates`，禁止 `selected=None` 下行）；③诊断披露身份字段名与 `serialMatch`（结果级新键）。
+  P1 = 多值输入 fail-closed（同批发布、独立提交）；P2 = 共用漂移纯函数、存量审计、多单号绑定。
+- **方案与证据全文**：`docs/TDC_DM_WIZARD_DISCOVERY_ROOTCAUSE_20261010.md`；咨询包
+  `.runtime/consult-20261010-tdc-dm-wizard-serial.md` / `-identity-followup.md`。
+- **未改任何产品代码**。**待用户取证（P0 闸门）**：①「外部同步与技术证据」面板里的身份字段名集合；
+  ②存量 TDC data_model 绑定/观测中 external_key 与当前行 incident 不等的数量；③一份生产列表样本的
+  distinct incident / distinct formId 数。
+
+## 2026-10-09 交付物车型锚点自动同步（Car Model Anchored Sync）实施完成并通过全量回归
+
+- **需求**：用户选定/输入车型（如 F610M / E262S 等），系统自动以车型作为锚点直接执行同步并发布分析缓存，彻底免除繁琐的手动 2 次映射发现和复杂的 JSON 策略配置。
+- **服务层实现**：
+  - `services/project_status_sync_runner.py`：新增 `sync_by_car_type(deliverable_id, car_type)`。
+  - 自动根据交付物源类型与报告类型映射上游过滤键（TDC 数模 -> `projectModel`，TDC SOR -> `carTypeProject`，ARAS EWO -> `projectCode`/`modelInfo`，ARAS PAA -> `projectModel`），自动装配聚合规则 `aggregate: True`。
+  - 自动设立/更新 binding（自动模式、凭据 domain、默认字段映射），并植入对应签名的聚合观测记录（解开 2 次手动发现门禁）。
+  - 执行 `run_once(trigger_type="sync_now")` 并发布分析缓存。
+- **接口层实现**：
+  - `web/app.py`：新增 `POST /api/project-status/deliverables/<id>/sync-by-car-type` 端点。
+  - 兼容改造：`POST /api/project-status/deliverables/<id>/sync-now` 支持请求体读取 `carType`，有车型时自动转入车型锚点同步。
+- **前端实现**：
+  - `plugins/project_overview/static/deliverable/analysis.js`：实现 `CarModelAnchorBar` 车型锚点控制条（显示当前车型、常用快捷胶囊 F610M / E262S / F710S / CF710P、自定义车型输入、一键同步按钮与状态反馈）；有无缓存均常驻，解决空态无法操作问题；纯 Preact/htm，无 `innerHTML`。
+  - `plugins/project_overview/static/deliverable.css`：追加样式，全部带 `.overview-deliverable-detail-view` 作用域前缀。
+- **验证与门禁**：
+  - 新增 `tests/test_car_type_anchor_sync.py`（7 项：参数校验 422、手动交付物 409、三大报表类型规则派生与发布、sync-now 兼容、前端静态无 innerHTML / 作用域 CSS 断言）。
+  - 运行交付物与同步回归套件 280 passed in 57.01s，零失败零回归；flake8 改动文件 CLEAN；`git diff --check` CLEAN；项目地图 verified。
+
 ## 2026-10-09 分支 feat/single-exe-excel-worker：方案 A 实施完成（Excel Worker 并入单 exe，冒烟 24/24）
 
 - **分支**：从 `refactor/plugin-host @ 819e56f` 新建 `feat/single-exe-excel-worker`。按顾问复核的方案 A 实施：**保进程、不保 exe**。
@@ -15,7 +133,7 @@
 - **门禁**：全量 `pytest tests/` → **2922 passed / 1 failed / 5 skipped**（唯一失败 `test_host_frontend.py::test_vendored_runtime_matches_recorded_checksum` 是既有 vendor CRLF 校验和问题，该文件未被本次触碰）；flake8 改动文件零告警；项目地图 verified。
 - **构建与出厂冒烟**：`0.3.0-production-test-20261009c` / buildId `20261009c-single-exe-excel-worker`；宿主 `VSE-WebUI.exe` 8,915,425 B（SHA-256 a26d4e1e…77fc）；`dist/hci-20261009c/VSE-WebUI.zip` 41,610,346 B（SHA-256 e5352b00…526f8）——**比 20261009b 的 63,323,084 B 小 21.7 MB**（不再重复打包 onefile 运行时）。冒烟 `.runtime/smoke_exe_20261009c.ps1` **24/24 通过**，含：哨兵在冻结包内可用、无独立 Worker exe、`_internal` 含 xlwings/win32com、9 插件 loaded、数模目录含 document_no、**`excel-worker/start` 返回 running 且宿主自调起第二个 VSE-WebUI 进程（before=1 after=2）**、Worker 日志落 `data/excel_worker.log`、stop 后 Worker 退出仅剩宿主、Worker 运行期间 WebUI 仍响应、端口释放、无残留进程。
 - **未验证（本机无 Excel，须真机执行，顾问列出的门禁）**：真实 COM 任务且无残留 `EXCEL.EXE`；清空 `%TEMP%\gen_py` 后首次运行；Worker 卡模态框时 terminate/kill 生效；宿主被强杀后 Worker 去向；安装路径含空格与非 ASCII；无控制台闪窗；旧版目录覆盖升级；杀软/白名单下自调起未被拦截。
-- **未做**：UPX；未合并进 `refactor/plugin-host`；未做 clawbot 投递；`VSE-ExcelWorker.spec` 与 `excel_worker_entry.py` 保留（仅开发机备用，已用防漂移测试钉住依赖子集关系）。
+- **交付与投递（同日）**：`dist/hci-20261009c/` 三件套经微信 clawbot 全部送达——text 7514488826561110152 / zip `VSE-WebUI-0.3.0-production-test-20261009c-single-exe.zip`（41,607,094 B，SHA-256 72a69d0c…a7db，CRC OK，1258 项）7514488969406474120（caption 7514488967766549256）/ README 7514489047131206408（caption 7514489045520528776）。README 含单 exe 行为说明（两个同名进程、excel_worker.log、VSE_EXCEL_ROOTS_JSON、旧 Worker 可删）。**未做**：UPX；未合并进 `refactor/plugin-host`；`VSE-ExcelWorker.spec` 与 `excel_worker_entry.py` 保留（仅开发机备用，已用防漂移测试钉住依赖子集关系）。
 
 ## 2026-10-09 Excel Worker 合包架构结论经顾问复核（有条件成立，未实施）
 
