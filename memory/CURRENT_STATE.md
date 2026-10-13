@@ -32,7 +32,8 @@
     工作台/系统查询页的新按钮与端点、向导 `documentNoSingleError` 都已打进包；
     Worker 自调起第二个 `VSE-WebUI.exe`、日志落盘、stop 后仅剩宿主、期间 WebUI 仍响应、端口释放、无残留进程。
   - 冒烟脚本自身的一处期望值修正（非代码缺陷）：无 `document_no` 时先命中抓取前校验 → 400；401 需要同时带 `document_no`。
-  - **未做**：真实 Excel COM 任务（本机无 Excel）、UPX、微信/clawbot 投递、README 测试说明。
+  - **已交付**：已生成 README 测试说明（`dist/hci-20261013/README-测试说明.txt`）与 `SHA256SUMS.txt`，归档至桌面迁移目录 `C:\Users\Lynch\Desktop\vse-toolbox-migration\`，并通过微信 clawbot 成功投递三件套（通知文本 7515642925444872584 / 41.6 MB 测试包 zip 7515643052515513992 / README 文本 7515643143808630536）。
+  - **待用户/真机验收**：真实 Excel COM 任务（本机无 Excel，须真机执行）、实机用 Excel 打开合并 CSV 验证公式前缀与长数字单号、存量数模绑定 externalKey 审计。
 - **提测前仍缺**：① 存量数模绑定 externalKey 审计（incident vs formId，可能进入 `needs_attention`）；
   ② 产品决定：填了单号时是否禁用官方导出、官方 47 列 XLSX 按单号过滤是否立项；
   ③ 实机用 Excel 打开合并 CSV 验证公式注入前缀显示与长数字单号不失真。
