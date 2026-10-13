@@ -19,10 +19,23 @@
   `4aadbe4` 取 diff，提交后页面仍显示本次改动）；`tests/test_plugin_deliverables.py:128` 既有 F541 修掉；
   文档补记架构偏差（新路由在 `web/app.py`，AGENTS.md 要求新功能进插件 → 本批接受为技术债，
   理由：TDC 数模 API 整族都在宿主、迁移需开放插件侧 TDC 客户端/域会话上下文）与 `plugin.json` 未升版本的说明。
-- **提测前仍缺**：① Windows 打包（`tools/build_excel_bundle.ps1`）+ 出厂冒烟（`.runtime/smoke_exe_*.ps1`）
-  尚未执行；② 存量数模绑定 externalKey 审计（incident vs formId，可能进入 `needs_attention`）；
-  ③ 产品决定：填了单号时是否禁用官方导出、官方 47 列 XLSX 按单号过滤是否立项；
-  ④ 实机用 Excel 打开合并 CSV 验证公式注入前缀显示与长数字单号不失真。
+- **Windows 打包 + 出厂冒烟（2026-10-13，本机，分支 tip `59edbbe`）**：
+  - 构建：`tools/build_excel_bundle.ps1 -OutputDir dist/hci-20261013 -PythonExecutable .runtime/pr3-review-venv/Scripts/python.exe -Clean`，
+    环境变量 `VSE_TOOLBOX_VERSION=0.3.0-production-test-20261013` / `CHANNEL=production-test` /
+    `BUILD_ID=20261013-tdc-dm-identity-merged-export`。onedir 单 exe（宿主自调起 Worker），
+    `VSE-WebUI.exe` 8,928,944 B（SHA-256 `580b7dd8d5fb3f477c2df92f2d31828fcf2e9fc7a350b59ad1f114560bff7817`），
+    `dist/hci-20261013/VSE-WebUI.zip` 41,629,056 B（SHA-256 `94147f7c3e1907ff4735c006a723a448ea4275fe8197d6f2894c40cd6ddc332e`，SHA256SUMS 1257 项）。
+  - **冒烟 31/31 PASS**（脚本 `.runtime/smoke_exe_20261013.ps1`，结果 `.runtime/smoke-exe-20261013-result.txt`，纯净目录 + 端口 5162）：
+    哨兵 `--excel-worker` 不启宿主、无独立 Worker exe、含 xlwings/win32com、首启自建库、版本/渠道/isFrozen/buildId 正确、
+    9 插件全 loaded、project-status/sign-daily/deliverables 200、数模目录含 `document_no`；
+    **本分支专项**：`export-merged` 路由在冻结包内注册（无 body → 400 ValidationError）、有单号无会话 → 401 DomainSessionRequired、
+    工作台/系统查询页的新按钮与端点、向导 `documentNoSingleError` 都已打进包；
+    Worker 自调起第二个 `VSE-WebUI.exe`、日志落盘、stop 后仅剩宿主、期间 WebUI 仍响应、端口释放、无残留进程。
+  - 冒烟脚本自身的一处期望值修正（非代码缺陷）：无 `document_no` 时先命中抓取前校验 → 400；401 需要同时带 `document_no`。
+  - **未做**：真实 Excel COM 任务（本机无 Excel）、UPX、微信/clawbot 投递、README 测试说明。
+- **提测前仍缺**：① 存量数模绑定 externalKey 审计（incident vs formId，可能进入 `needs_attention`）；
+  ② 产品决定：填了单号时是否禁用官方导出、官方 47 列 XLSX 按单号过滤是否立项；
+  ③ 实机用 Excel 打开合并 CSV 验证公式注入前缀显示与长数字单号不失真。
 
 ## 2026-10-10 数模「填多个流水单号 → 合并导出」实现（工作台 + 系统查询页，已提交）
 
