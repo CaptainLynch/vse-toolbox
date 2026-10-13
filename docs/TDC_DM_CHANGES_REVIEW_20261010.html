@@ -75,7 +75,7 @@
   与你的操作无关，也不是上游没数据（系统查询已证明车型 <code>ar-n</code> 下两个单号共 4 行）。</p>
   <div class="cards">
     <div class="card"><div class="k">改动文件</div><div class="v">13 + 1 新增测试</div></div>
-    <div class="card"><div class="k">新增 / 修改行</div><div class="v">+456 / -25</div></div>
+    <div class="card"><div class="k">新增 / 修改行</div><div class="v">+521 / -28</div></div>
     <div class="card"><div class="k">全量回归</div><div class="v">2966 passed</div></div>
     <div class="card"><div class="k">已知失败</div><div class="v">1（既有 vendor 行尾）</div></div>
   </div>
@@ -113,13 +113,13 @@
   <h2>改动内容（逐文件 diff，来自 git diff HEAD）</h2>
   <p class="note">点标题展开/收起。绿色为新增行，红色为删除行。
     <code>web/app.py</code> 里另有一批<b>此前未提交</b>的车型锚点改动（非本次），单独折叠标注。</p>
-  
+
     <details class="file" open>
       <summary><span class="path">web/app.py <em>（本次改动）</em></span>
-        <span class="stat"><b class="plus">+126</b> <b class="minus">-6</b></span></summary>
+        <span class="stat"><b class="plus">+231</b> <b class="minus">-6</b></span></summary>
       <p class="note">本次改动：imports、发现入口单值校验、身份诊断 helper、
       发现端点 document_no 分支（选中键同源 + fail-closed + 诊断 + reason）。</p>
-      <div class="diff"><div class="dl hunk">@@ -108,6 +108,10 @@ from services.project_status_discovery import MappingDiscoveryService</div>
+      <div class="diff"><div class="dl hunk">@@ -108,6 +109,10 @@ from services.project_status_discovery import MappingDiscoveryService</div>
 <div class="dl ctx"> from services.project_status_records import (</div>
 <div class="dl ctx">     COMPLETE_RESULT_STOP_REASONS,</div>
 <div class="dl ctx">     MAX_AGGREGATE_RECORDS,</div>
@@ -129,7 +129,7 @@
 <div class="dl add">+    record_identity,</div>
 <div class="dl ctx"> )</div>
 <div class="dl ctx"> from services.project_status_analytics import ProjectStatusAnalyticsService</div>
-<div class="dl ctx"> from services.project_status_deliverable_analysis import (</div><div class="dl hunk">@@ -128,7 +132,12 @@ from services.project_status_sync_runner import (</div>
+<div class="dl ctx"> from services.project_status_deliverable_analysis import (</div><div class="dl hunk">@@ -128,7 +133,12 @@ from services.project_status_sync_runner import (</div>
 <div class="dl ctx">     create_production_registry,</div>
 <div class="dl ctx"> )</div>
 <div class="dl ctx"> from services.project_status_connectors import build_project_status_ewo_filters</div>
@@ -142,7 +142,7 @@
 <div class="dl add">+)</div>
 <div class="dl ctx"> from services.scheduled_archive_admin import (</div>
 <div class="dl ctx">     ArchiveAdminValidationError,</div>
-<div class="dl ctx">     ScheduledArchiveAdminService,</div><div class="dl hunk">@@ -1393,6 +1402,12 @@ def _mapping_discovery_query_identity(</div>
+<div class="dl ctx">     ScheduledArchiveAdminService,</div><div class="dl hunk">@@ -1393,6 +1403,12 @@ def _mapping_discovery_query_identity(</div>
 <div class="dl ctx">         if str(rule.get("documentNo") or "").strip() and str(rule.get("incident") or "").strip():</div>
 <div class="dl ctx">             raise error_type("流水单号与实例号二选一：请只填写其中一项")</div>
 <div class="dl ctx">         if rule.get("documentNo"):</div>
@@ -154,10 +154,10 @@
 <div class="dl add">+                raise error_type(str(exc)) from None</div>
 <div class="dl ctx">             # 流水单号（documentNo）不是 TDC 查询参数（查询参数 incident 是第 0 列</div>
 <div class="dl ctx">             # 实例号）：该值绝不发给上游，改为全量抓取后由调用方本地精确匹配。</div>
-<div class="dl ctx">             values.pop("document_no", None)</div><div class="dl hunk">@@ -1421,6 +1436,39 @@ def _pagination_diagnostic(result: Any, row_count: int) -&gt; dict[str, Any]:</div>
+<div class="dl ctx">             values.pop("document_no", None)</div><div class="dl hunk">@@ -1421,6 +1437,39 @@ def _pagination_diagnostic(result: Any, row_count: int) -&gt; dict[str, Any]:</div>
 <div class="dl ctx">     }</div>
-<div class="dl ctx"> </div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
+<div class="dl ctx"></div>
 <div class="dl add">+def _serial_identity_diagnostic(</div>
 <div class="dl add">+    rows: Sequence[Mapping[str, Any]],</div>
 <div class="dl add">+    report_type: str | None,</div>
@@ -193,7 +193,118 @@
 <div class="dl add">+</div>
 <div class="dl ctx"> def _mapping_result_is_complete(result: Any) -&gt; bool:</div>
 <div class="dl ctx">     """抓取结果是否有显式终局证据（与 ``_require_complete_mapping_result`` 同源）。"""</div>
-<div class="dl ctx">     stop_reason = str(getattr(result, "stop_reason", "unknown") or "unknown")</div><div class="dl hunk">@@ -5095,12 +5143,73 @@ def create_app(</div>
+<div class="dl ctx">     stop_reason = str(getattr(result, "stop_reason", "unknown") or "unknown")</div><div class="dl hunk">@@ -3227,6 +3310,111 @@ def _tdc_report_export(</div>
+<div class="dl ctx">     )</div>
+<div class="dl ctx"></div>
+<div class="dl ctx"></div>
+<div class="dl add">+def _tdc_report_export_merged(allowed_hosts: Sequence[str]):</div>
+<div class="dl add">+    """数模「填多个流水单号 → 合并导出」：全量抓取 → 本地集合精确匹配 → 合并成一张 CSV。</div>
+<div class="dl add">+</div>
+<div class="dl add">+    官方导出（`_tdc_report_export`）只按其它筛选条件取数，**不读**顶层的</div>
+<div class="dl add">+    ``document_no``——多单号合并导出此前完全缺失（2026-10-10 用户反馈）。</div>
+<div class="dl add">+    本入口复用查询侧同一套解析与匹配（``_tdc_document_nos`` + ``match_serials``），</div>
+<div class="dl add">+    保证"预览里看到的合并行"与"导出的合并行"同源。</div>
+<div class="dl add">+    """</div>
+<div class="dl add">+    payload, error_response = _request_payload()</div>
+<div class="dl add">+    if error_response:</div>
+<div class="dl add">+        return error_response</div>
+<div class="dl add">+    assert payload is not None</div>
+<div class="dl add">+    try:</div>
+<div class="dl add">+        file_name = _tdc_file_name(payload.get("file_name")) or "tdc_data_model_merged.xlsx"</div>
+<div class="dl add">+        document_nos = _tdc_document_nos(payload)</div>
+<div class="dl add">+        if not document_nos:</div>
+<div class="dl add">+            raise _TDCRequestError("请先填写至少一个流水单号（多个用空格、逗号或换行分隔）")</div>
+<div class="dl add">+        # 与查询预览共用同一套筛选/分页参数构造，保证"预览命中的单号 = 导出命中的单号"。</div>
+<div class="dl add">+        filters = _tdc_data_model_filters(</div>
+<div class="dl add">+            _tdc_filters_from_payload(payload, _TDC_DATA_MODEL_FILTER_NAMES)</div>
+<div class="dl add">+        )</div>
+<div class="dl add">+        page_size = _tdc_positive_int(payload.get("page_size"), "page_size", 50, _TDC_PAGE_SIZE_MAX)</div>
+<div class="dl add">+        max_pages = _tdc_positive_int(payload.get("max_pages"), "max_pages", 100, _TDC_MAX_PAGES_MAX)</div>
+<div class="dl add">+        max_records = _tdc_positive_int(</div>
+<div class="dl add">+            payload.get("max_records"), "max_records", 10000, _TDC_MAX_RECORDS_MAX</div>
+<div class="dl add">+        )</div>
+<div class="dl add">+    except Exception as exc:</div>
+<div class="dl add">+        return _tdc_error_response(exc, "data_model", "export")</div>
+<div class="dl add">+</div>
+<div class="dl add">+    session, gate_error = _async_session_gate("tdc", payload)</div>
+<div class="dl add">+    if gate_error is not None:</div>
+<div class="dl add">+        return gate_error</div>
+<div class="dl add">+    try:</div>
+<div class="dl add">+        base_url = str(payload["base_url"]).strip()</div>
+<div class="dl add">+        _validate_tdc_base_url(base_url, allowed_hosts, require_https=False)</div>
+<div class="dl add">+    except Exception as exc:</div>
+<div class="dl add">+        return _tdc_error_response(exc, "data_model", "export")</div>
+<div class="dl add">+</div>
+<div class="dl add">+    def worker(ctx):</div>
+<div class="dl add">+        # 统一域会话是应用内存对象：worker 线程内复用，禁止关闭。</div>
+<div class="dl add">+        client = TDCCrawlerClient(</div>
+<div class="dl add">+            base_url, session=session, timeout=30.0, output_dir=ctx.downloads_dir</div>
+<div class="dl add">+        )</div>
+<div class="dl add">+        ctx.update_progress(percent=5, stage="全量抓取数模行（按单号本地匹配）")</div>
+<div class="dl add">+</div>
+<div class="dl add">+        def on_page(page: int, rows: int) -&gt; None:</div>
+<div class="dl add">+            ctx.update_progress(</div>
+<div class="dl add">+                percent=min(85, 5 + page), stage=f"已抓取 {page} 页 / {rows} 行"</div>
+<div class="dl add">+            )</div>
+<div class="dl add">+</div>
+<div class="dl add">+        result = client.crawl_data_model_all(</div>
+<div class="dl add">+            filters,</div>
+<div class="dl add">+            page_size=page_size,</div>
+<div class="dl add">+            max_pages=max_pages,</div>
+<div class="dl add">+            max_records=max_records,</div>
+<div class="dl add">+            on_page=on_page,</div>
+<div class="dl add">+        )</div>
+<div class="dl add">+        if not _mapping_result_is_complete(result):</div>
+<div class="dl add">+            # 截断（stop_reason=max_records/max_pages）在这里必须判"无法判定"，</div>
+<div class="dl add">+            # 绝不能落到 SerialNotFound：否则会把"没抓全"说成"单号不存在"。</div>
+<div class="dl add">+            raise _TDCRequestError(</div>
+<div class="dl add">+                "抓取不完整，无法判定流水单号，请重试",</div>
+<div class="dl add">+                "IncompleteDiscovery",</div>
+<div class="dl add">+                422,</div>
+<div class="dl add">+                None,</div>
+<div class="dl add">+                _pagination_diagnostic(result, len(result.rows)),</div>
+<div class="dl add">+            )</div>
+<div class="dl add">+        matched, bookkeeping = match_serials(result.rows, document_nos)</div>
+<div class="dl add">+        # fail-closed：请求了 N 个单号就必须全部命中——静默少导出会被当成"导出成功"，</div>
+<div class="dl add">+        # 与查询预览"展示 missing"的语义不同（导出件是要带走的结果）。</div>
+<div class="dl add">+        missing = [str(item) for item in bookkeeping.get("missing", [])]</div>
+<div class="dl add">+        if missing or not matched:</div>
+<div class="dl add">+            shown = "、".join(missing[:5]) + (f"（共 {len(missing)} 个）" if len(missing) &gt; 5 else "")</div>
+<div class="dl add">+            raise _TDCRequestError(</div>
+<div class="dl add">+                f"未找到以下流水单号：{shown}" if missing else "未找到任何匹配的流水单号",</div>
+<div class="dl add">+                "SerialNotFound",</div>
+<div class="dl add">+                422,</div>
+<div class="dl add">+            )</div>
+<div class="dl add">+        ctx.update_progress(percent=90, stage=f"命中 {len(matched)} 行，正在生成 CSV")</div>
+<div class="dl add">+        stem = Path(str(file_name)).stem or "tdc_data_model_merged"</div>
+<div class="dl add">+        out_path = ctx.downloads_dir / f"{stem}_合并_{ctx.task_id}.csv"</div>
+<div class="dl add">+        out_path.write_bytes(_tdc_merged_export_csv(matched))</div>
+<div class="dl add">+        ctx.set_artifact(out_path)</div>
+<div class="dl add">+        ctx.update_progress(</div>
+<div class="dl add">+            percent=100, stage=f"合并导出完成（{len(matched)} 行，列表接口列）"</div>
+<div class="dl add">+        )</div>
+<div class="dl add">+</div>
+<div class="dl add">+    params = {</div>
+<div class="dl add">+        "base_url": base_url,</div>
+<div class="dl add">+        "filters": asdict(filters),</div>
+<div class="dl add">+        "document_no_count": len(document_nos),</div>
+<div class="dl add">+        "page_size": page_size,</div>
+<div class="dl add">+        "max_pages": max_pages,</div>
+<div class="dl add">+        "max_records": max_records,</div>
+<div class="dl add">+    }</div>
+<div class="dl add">+    return _submit_background_task(</div>
+<div class="dl add">+        _crawl_runner_from_request(),</div>
+<div class="dl add">+        "tdc_data_model_export_merged",</div>
+<div class="dl add">+        "tdc",</div>
+<div class="dl add">+        params,</div>
+<div class="dl add">+        worker,</div>
+<div class="dl add">+        error_context="TDC merged export",</div>
+<div class="dl add">+    )</div>
+<div class="dl add">+</div>
+<div class="dl add">+</div>
+<div class="dl ctx"> def create_app(</div>
+<div class="dl ctx">     allowed_hosts: Sequence[str] | None = None,</div>
+<div class="dl ctx">     tdc_allowed_hosts: Sequence[str] | None = None,</div><div class="dl hunk">@@ -5095,12 +5283,73 @@ def create_app(</div>
 <div class="dl ctx">                         if cache_key:</div>
 <div class="dl ctx">                             _set_discovery_session_cache(cache_key, rows, upstream_declared_total)</div>
 <div class="dl ctx">                     serial_match: dict[str, Any] | None = None</div>
@@ -268,7 +379,7 @@
 <div class="dl add">+                            # 同一实例多行（part_detail 粒度）仍不能构成单记录绑定。</div>
 <div class="dl ctx">                             raise _TDCRequestError("该流水单号命中多行，请核对后重试")</div>
 <div class="dl ctx">                         if upstream_declared_total is None:</div>
-<div class="dl ctx">                             # 本地匹配不改变上游范围：基线总数仍是全量抓取的行数，</div><div class="dl hunk">@@ -5116,9 +5225,20 @@ def create_app(</div>
+<div class="dl ctx">                             # 本地匹配不改变上游范围：基线总数仍是全量抓取的行数，</div><div class="dl hunk">@@ -5116,9 +5365,20 @@ def create_app(</div>
 <div class="dl ctx">                         upstream_total=upstream_declared_total,</div>
 <div class="dl ctx">                     )</div>
 <div class="dl ctx">                     if serial_match is not None:</div>
@@ -296,11 +407,58 @@
 
     <details class="file">
       <summary><span class="path">web/app.py <em>（此前未提交的车型锚点改动，非本次；本次在其中修正了 except 顺序）</em></span>
-        <span class="stat"><b class="plus">+76</b> <b class="minus">-1</b></span></summary>
+        <span class="stat"><b class="plus">+116</b> <b class="minus">-1</b></span></summary>
       <p class="note">这批改动不是我本次做的（车型锚点同步）。本次只在其内部把
       <code>except SyncBindingNotReadyError</code> 提到 <code>except ValueError</code> 之前，
       否则 409 SyncNotReady 会被 422 吞掉。</p>
-      <div class="diff"><div class="dl hunk">@@ -5108,7 +5217,7 @@ def create_app(</div>
+      <div class="diff"><div class="dl hunk">@@ -9,6 +9,7 @@ web/app.py — WEB 适配层：Flask 应用工厂 + /api/overview 路由</div>
+<div class="dl ctx">     - service/core 层对 Flask 无感知</div>
+<div class="dl ctx"> """</div>
+<div class="dl ctx"></div>
+<div class="dl add">+import csv</div>
+<div class="dl ctx"> import io</div>
+<div class="dl ctx"> import hashlib</div>
+<div class="dl ctx"> import json</div><div class="dl hunk">@@ -1678,6 +1727,40 @@ def _tdc_result_data(result: Any) -&gt; dict[str, Any]:</div>
+<div class="dl ctx">     }</div>
+<div class="dl ctx"></div>
+<div class="dl ctx"></div>
+<div class="dl add">+#: CSV 公式注入缓解：危险前导字符（Excel 会当公式执行）。</div>
+<div class="dl add">+_CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")</div>
+<div class="dl add">+#: 严格数字字面量豁免：`-12.5` 这类文本必须保持数值语义，不能加 `'` 前缀。</div>
+<div class="dl add">+_STRICT_NUMBER_LITERAL = re.compile(r"^-?\d+(?:\.\d+)?$")</div>
+<div class="dl add">+</div>
+<div class="dl add">+</div>
+<div class="dl add">+def _csv_cell(value: Any) -&gt; Any:</div>
+<div class="dl add">+    """单元格输出前的公式注入缓解（只处理文本，严格数字豁免）。"""</div>
+<div class="dl add">+    if not isinstance(value, str) or not value:</div>
+<div class="dl add">+        return value</div>
+<div class="dl add">+    if value[0] in _CSV_FORMULA_PREFIXES and not _STRICT_NUMBER_LITERAL.match(value):</div>
+<div class="dl add">+        return "'" + value</div>
+<div class="dl add">+    return value</div>
+<div class="dl add">+</div>
+<div class="dl add">+</div>
+<div class="dl add">+def _tdc_merged_export_csv(rows: Sequence[Mapping[str, Any]]) -&gt; bytes:</div>
+<div class="dl add">+    """数模「多流水单号合并导出」的 CSV 字节（UTF-8 BOM，Excel 双击可开）。</div>
+<div class="dl add">+</div>
+<div class="dl add">+    列序沿用数模表契约（与预览一致）；列表接口不提供的官方导出列留空。</div>
+<div class="dl add">+    为什么不是 XLSX：上游没有流水单号查询参数，官方工作簿无法按单号过滤；</div>
+<div class="dl add">+    而公司 DLP 禁令（services/office_toolbox.py）禁止用 openpyxl/pandas 直接读写</div>
+<div class="dl add">+    Office 文件，改写官方工作簿必须走 Excel Worker(COM) 的新操作（另立任务）。</div>
+<div class="dl add">+    单元格经 ``_csv_cell`` 做公式注入缓解（数据来自上游报表，属不可信文本）。</div>
+<div class="dl add">+    """</div>
+<div class="dl add">+    table = table_payload("tdc_data_model", _safe_rows([dict(row) for row in rows]))</div>
+<div class="dl add">+    columns = cast(list[dict[str, Any]], table["columns"])</div>
+<div class="dl add">+    buffer = io.StringIO()</div>
+<div class="dl add">+    writer = csv.writer(buffer, lineterminator="\r\n")</div>
+<div class="dl add">+    writer.writerow([str(column.get("label") or "") for column in columns])</div>
+<div class="dl add">+    for row in cast(list[list[Any]], table["rows"]):</div>
+<div class="dl add">+        writer.writerow([_csv_cell(value) for value in row])</div>
+<div class="dl add">+    return buffer.getvalue().encode("utf-8-sig")</div>
+<div class="dl add">+</div>
+<div class="dl add">+</div>
+<div class="dl ctx"> def _tdc_export_cache_context(payload: Mapping[str, Any]) -&gt; tuple[TDCExportCache, str] | None:</div>
+<div class="dl ctx">     """Return a cache and non-secret namespace for one safe local request."""</div>
+<div class="dl ctx">     if not has_app_context():</div><div class="dl hunk">@@ -5108,7 +5357,7 @@ def create_app(</div>
 <div class="dl ctx">                             upstream_declared_total = len(rows)</div>
 <div class="dl ctx">                         rows = matched</div>
 <div class="dl ctx">                         effective_selected = (</div>
@@ -308,7 +466,7 @@
 <div class="dl add">+                            distinct_identities[0] if distinct_identities else None</div>
 <div class="dl ctx">                         )</div>
 <div class="dl ctx">                     observation = discovery_service.observe(</div>
-<div class="dl ctx">                         deliverable_id, "tdc", rows, effective_selected,</div><div class="dl hunk">@@ -5654,11 +5774,32 @@ def create_app(</div>
+<div class="dl ctx">                         deliverable_id, "tdc", rows, effective_selected,</div><div class="dl hunk">@@ -5654,11 +5914,32 @@ def create_app(</div>
 <div class="dl ctx">             )</div>
 <div class="dl ctx">             return _json_error(409, block_type, block_reason)</div>
 <div class="dl ctx">         try:</div>
@@ -340,7 +498,7 @@
 <div class="dl add">+                analysis_service=deliverable_analysis_service,</div>
 <div class="dl ctx">             )</div>
 <div class="dl ctx">             result = runner.run_once(</div>
-<div class="dl ctx">                 deliverable_id=deliverable_id,</div><div class="dl hunk">@@ -5687,11 +5828,65 @@ def create_app(</div>
+<div class="dl ctx">                 deliverable_id=deliverable_id,</div><div class="dl hunk">@@ -5687,11 +5968,65 @@ def create_app(</div>
 <div class="dl ctx">         except KeyError:</div>
 <div class="dl ctx">             return _json_error(404, "NotFound", "未找到交付物")</div>
 <div class="dl ctx">         except SyncBindingNotReadyError as exc:</div>
@@ -352,7 +510,7 @@
 <div class="dl ctx">         except Exception as exc:</div>
 <div class="dl ctx">             logger.exception("project status sync-now failed")</div>
 <div class="dl ctx">             return _json_error(500, "ServerError", _sanitize_error_message(exc))</div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
 <div class="dl add">+    @app.post("/api/project-status/deliverables/&lt;deliverable_id&gt;/sync-by-car-type")</div>
 <div class="dl add">+    def api_project_status_sync_by_car_type(deliverable_id: str):</div>
 <div class="dl add">+        local_error = _local_web_mutation_error()</div>
@@ -405,17 +563,28 @@
 <div class="dl add">+</div>
 <div class="dl ctx">     @app.get("/api/project-status/scheduler")</div>
 <div class="dl ctx">     def api_project_status_scheduler_status():</div>
-<div class="dl ctx">         from services.project_status_scheduler import get_global_scheduler</div></div>
+<div class="dl ctx">         from services.project_status_scheduler import get_global_scheduler</div><div class="dl hunk">@@ -6283,6 +6618,11 @@ def create_app(</div>
+<div class="dl ctx">             app.config["TDC_ALLOWED_HOSTS"],</div>
+<div class="dl ctx">         )</div>
+<div class="dl ctx"></div>
+<div class="dl add">+    @app.post("/api/tdc/data-model/export-merged")</div>
+<div class="dl add">+    def api_tdc_data_model_export_merged():</div>
+<div class="dl add">+        """多流水单号合并导出（CSV）。官方导出不支持按单号过滤，见函数注释。"""</div>
+<div class="dl add">+        return _tdc_report_export_merged(app.config["TDC_ALLOWED_HOSTS"])</div>
+<div class="dl add">+</div>
+<div class="dl ctx">     @app.post("/api/tdc/sor/car-type-projects")</div>
+<div class="dl ctx">     def api_tdc_sor_car_type_projects():</div>
+<div class="dl ctx">         payload, error_response = _request_payload()</div></div>
     </details>
-  
+
     <details class="file">
       <summary><span class="path">services/project_status_records.py</span>
         <span class="stat"><b class="plus">+64</b> <b class="minus">-6</b></span></summary>
-      
+
       <div class="diff"><div class="dl hunk">@@ -33,6 +33,40 @@ IDENTITY_FIELDS: tuple[str, ...] = (</div>
 <div class="dl ctx">     "NCR编号", "ncrNo", "ncr_no",</div>
 <div class="dl ctx"> )</div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
 <div class="dl add">+#: 按**报表类型**覆盖身份字段优先顺序。只覆盖有契约依据的报表，其余报表</div>
 <div class="dl add">+#: 沿用 ``IDENTITY_FIELDS``（行为逐字不变，避免影响 ARAS/EWO/NCR/SOR）。</div>
 <div class="dl add">+#:</div>
@@ -455,8 +624,8 @@
 <div class="dl ctx"> MAX_AGGREGATE_RECORDS = 5000</div>
 <div class="dl hunk">@@ -89,15 +123,34 @@ def clean_identity(value: Any) -&gt; str:</div>
 <div class="dl ctx">     return text</div>
-<div class="dl ctx"> </div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
+<div class="dl ctx"></div>
 <div class="dl del">-def record_identity(row: Mapping[str, Any]) -&gt; str:</div>
 <div class="dl del">-    """提取行业务单号（无单号返回空串）。"""</div>
 <div class="dl del">-    for field in IDENTITY_FIELDS:</div>
@@ -490,18 +659,18 @@
 <div class="dl add">+    """该行实际被采用的身份字段名（诊断用；只暴露字段名，不暴露值）。"""</div>
 <div class="dl add">+    pair = _identity_pair(row, report_type)</div>
 <div class="dl add">+    return pair[0] if pair else None</div>
-<div class="dl ctx"> </div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
+<div class="dl ctx"></div>
 <div class="dl ctx"> _IDENTITY_DIGEST_LEN = 16</div>
 <div class="dl hunk">@@ -115,17 +168,22 @@ def identity_digest(value: str) -&gt; str:</div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
 <div class="dl ctx"> def identified_records(</div>
 <div class="dl ctx">     rows: Sequence[Mapping[str, Any]],</div>
 <div class="dl add">+    *,</div>
 <div class="dl add">+    report_type: str | None = None,</div>
 <div class="dl ctx"> ) -&gt; list[tuple[str, dict[str, Any]]]:</div>
 <div class="dl ctx">     """按单号识别记录：无单号行一致排除；按单号排序保证重排不变。</div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
 <div class="dl ctx">     重复单号不静默丢弃（保留全部内容，指纹与风险备注均可见）。</div>
 <div class="dl ctx">     超限（&gt;MAX_AGGREGATE_RECORDS）时 fail-closed 抛出 ValueError。</div>
 <div class="dl add">+    ``report_type`` 只影响身份字段优先顺序（与发现端/连接器同源）。</div>
@@ -516,24 +685,24 @@
 <div class="dl add">+    ]</div>
 <div class="dl ctx">     identified = [(key, row) for key, row in identified if key]</div>
 <div class="dl ctx">     return sorted(identified, key=lambda item: item[0])</div>
-<div class="dl ctx"> </div></div>
+<div class="dl ctx"></div></div>
     </details>
 
     <details class="file">
       <summary><span class="path">services/project_status_discovery.py</span>
         <span class="stat"><b class="plus">+34</b> <b class="minus">-10</b></span></summary>
-      
+
       <div class="diff"><div class="dl hunk">@@ -53,11 +53,18 @@ def _scalar(value: Any) -&gt; str | None:</div>
 <div class="dl ctx">     return text or None</div>
-<div class="dl ctx"> </div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
+<div class="dl ctx"></div>
 <div class="dl del">-def _key(row: Mapping[str, Any]) -&gt; str | None:</div>
 <div class="dl del">-    value = record_identity(row)</div>
 <div class="dl add">+def _key(row: Mapping[str, Any], report_type: str | None = None) -&gt; str | None:</div>
 <div class="dl add">+    value = record_identity(row, report_type=report_type)</div>
 <div class="dl ctx">     return value or None</div>
-<div class="dl ctx"> </div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
+<div class="dl ctx"></div>
 <div class="dl add">+def _report_type(deliverable_id: str) -&gt; str | None:</div>
 <div class="dl add">+    """能力注册表的 reportType：身份字段顺序与聚合摘要口径的单一来源。"""</div>
 <div class="dl add">+    capabilities = PROJECT_STATUS_SOURCE_CAPABILITIES.get(str(deliverable_id), {})</div>
@@ -543,7 +712,7 @@
 <div class="dl add">+</div>
 <div class="dl ctx"> def _aggregate_report(deliverable_id: str) -&gt; str | None:</div>
 <div class="dl ctx">     """多记录备注摘要的报表类型（与连接器聚合路径同源：能力注册表的 reportType）。</div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
 <div class="dl hunk">@@ -65,9 +72,7 @@ def _aggregate_report(deliverable_id: str) -&gt; str | None:</div>
 <div class="dl ctx">     因此取证/预览端也必须传同一类型，否则预览仍显示旧「单号：状态」明细而执行</div>
 <div class="dl ctx">     写入「共 N 条；状态计数」摘要。</div>
@@ -552,8 +721,8 @@
 <div class="dl del">-    report = str(capabilities.get("reportType") or "").strip()</div>
 <div class="dl del">-    return report or None</div>
 <div class="dl add">+    return _report_type(deliverable_id)</div>
-<div class="dl ctx"> </div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
+<div class="dl ctx"></div>
 <div class="dl ctx"> class MappingDiscoveryService:</div>
 <div class="dl hunk">@@ -103,10 +108,11 @@ class MappingDiscoveryService:</div>
 <div class="dl ctx">             raise ValueError("upstream_total must be a non-negative integer or None")</div>
@@ -567,10 +736,10 @@
 <div class="dl add">+        keyed = [(key, row) for row in safe_rows if (key := _key(row, report_type))]</div>
 <div class="dl add">+        full_keyed = [(key, row) for row in full_rows if (key := _key(row, report_type))]</div>
 <div class="dl ctx">         selected = str(selected_external_key or "").strip() or None</div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
 <div class="dl ctx">         current_policy = self.db.get_project_status_update_policy(deliverable_id)</div>
 <div class="dl hunk">@@ -149,12 +155,19 @@ class MappingDiscoveryService:</div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
 <div class="dl ctx">         aggregated_candidate_values: dict[str, Any] | None = None</div>
 <div class="dl ctx">         cache_records: list[tuple[str, dict[str, Any]]] = []</div>
 <div class="dl add">+        reason: str | None = None</div>
@@ -610,7 +779,7 @@
 <div class="dl add">+            "reason": reason,</div>
 <div class="dl ctx">             "stability": {"confirmed": progress, "required": 2, "ready": progress &gt;= 2},</div>
 <div class="dl ctx">         }</div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
 <div class="dl hunk">@@ -244,6 +263,7 @@ class MappingDiscoveryService:</div>
 <div class="dl ctx">                 "candidateCount": total_count,</div>
 <div class="dl ctx">                 "candidates": [],</div>
@@ -621,7 +790,7 @@
 <div class="dl ctx">             }</div>
 <div class="dl hunk">@@ -260,7 +280,10 @@ class MappingDiscoveryService:</div>
 <div class="dl ctx">             baseline_payload = {}</div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
 <div class="dl ctx">         safe_samples = [self._safe_row(r) for r in sample_rows]</div>
 <div class="dl del">-        sample_keys = {k for r in safe_samples if (k := _key(r))}</div>
 <div class="dl add">+        sample_report_type = _report_type(deliverable_id)</div>
@@ -629,7 +798,7 @@
 <div class="dl add">+            k for r in safe_samples if (k := _key(r, sample_report_type))</div>
 <div class="dl add">+        }</div>
 <div class="dl ctx">         mismatch: dict[str, Any] | None = None</div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
 <div class="dl ctx">         # 1. 总数：上游声明总数对声明总数（legacy 回退：去重后候选数，不同源但保底）。</div>
 <div class="dl hunk">@@ -357,6 +380,7 @@ class MappingDiscoveryService:</div>
 <div class="dl ctx">             "candidateCount": total_count,</div>
@@ -644,19 +813,19 @@
     <details class="file">
       <summary><span class="path">services/project_status_connectors.py</span>
         <span class="stat"><b class="plus">+14</b> <b class="minus">-7</b></span></summary>
-      
+
       <div class="diff"><div class="dl hunk">@@ -107,8 +107,10 @@ def _stable_version(row: Mapping[str, Any]) -&gt; str:</div>
 <div class="dl ctx">     return hashlib.sha256(payload.encode("utf-8")).hexdigest()</div>
-<div class="dl ctx"> </div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
+<div class="dl ctx"></div>
 <div class="dl del">-def _identity(row: Mapping[str, Any]) -&gt; str:</div>
 <div class="dl del">-    return _record_identity(row)</div>
 <div class="dl add">+def _identity(row: Mapping[str, Any], report: str | None = None) -&gt; str:</div>
 <div class="dl add">+    """行身份（externalKey）。``report`` 只决定身份字段优先顺序，与发现端同源：</div>
 <div class="dl add">+    数模的权威键是第 0 列实例号 incident，上游行新增 formId 后不得改变绑定键。"""</div>
 <div class="dl add">+    return _record_identity(row, report_type=report)</div>
-<div class="dl ctx"> </div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
+<div class="dl ctx"></div>
 <div class="dl ctx"> def _close_session(session: Any) -&gt; None:</div>
 <div class="dl hunk">@@ -135,7 +137,7 @@ def _snapshot(</div>
 <div class="dl ctx">         return _ewo_v2_snapshot(context, rows, artifacts, analysis_rows, report=report)</div>
@@ -678,8 +847,8 @@
 <div class="dl ctx">         "matched", (candidate,), version, fetched,</div>
 <div class="dl hunk">@@ -181,9 +183,14 @@ def _ewo_v2_snapshot(context, rows, artifacts, analysis_rows, report=None):</div>
 <div class="dl ctx">                              context.expected_deliverable_updated_at, artifacts, analysis_rows)</div>
-<div class="dl ctx"> </div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
+<div class="dl ctx"></div>
 <div class="dl del">-def _mapping_values(row: Mapping[str, Any], mapping: Mapping[str, Any]) -&gt; dict[str, str | None]:</div>
 <div class="dl add">+def _mapping_values(</div>
 <div class="dl add">+    row: Mapping[str, Any],</div>
@@ -691,8 +860,8 @@
 <div class="dl del">-    identity = _record_identity(row)</div>
 <div class="dl add">+    identity = _record_identity(row, report_type=report)</div>
 <div class="dl ctx">     return build_aggregate_candidate_values([(identity, row)], mapping)</div>
-<div class="dl ctx"> </div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
+<div class="dl ctx"></div>
 <div class="dl hunk">@@ -205,7 +212,7 @@ def _aggregate_snapshot(</div>
 <div class="dl ctx">     fetched = _now()</div>
 <div class="dl ctx">     # 与 discovery 口径一致（GPT 终审任务 3）：共享记录规范化——仅纳入</div>
@@ -707,19 +876,19 @@
     <details class="file">
       <summary><span class="path">services/project_status_updates.py</span>
         <span class="stat"><b class="plus">+28</b> <b class="minus">-0</b></span></summary>
-      
+
       <div class="diff"><div class="dl hunk">@@ -23,6 +23,7 @@ from core.db_manager import (</div>
 <div class="dl ctx">     SyncBindingNotReadyError,</div>
 <div class="dl ctx"> )</div>
 <div class="dl ctx"> from core.redaction import redact_sensitive_text</div>
 <div class="dl add">+from services.data_model_watchlist import WatchlistError, normalize_single_serial</div>
 <div class="dl ctx"> from services.project_status_records import compute_config_signature, observation_is_aggregate</div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
 <div class="dl ctx"> _logger = logging.getLogger(__name__)</div>
 <div class="dl hunk">@@ -44,6 +45,15 @@ def _has_control_chars(val: str) -&gt; bool:</div>
 <div class="dl ctx">     return False</div>
-<div class="dl ctx"> </div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
+<div class="dl ctx"></div>
 <div class="dl add">+def _single_serial_error(value: object) -&gt; str | None:</div>
 <div class="dl add">+    """数模流水单号必须是单个可精确匹配的原文单号；非法时返回提示文案。"""</div>
 <div class="dl add">+    try:</div>
@@ -763,26 +932,26 @@
 <div class="dl add">+                fields["matchRule"] = _single_serial_error(match_rule.get("documentNo"))</div>
 <div class="dl ctx">             elif len(_json_dumps(match_rule)) &gt; _TEXT_LIMITS["match_rule"]:</div>
 <div class="dl ctx">                 fields["matchRule"] = "匹配规则过长"</div>
-<div class="dl ctx"> </div></div>
+<div class="dl ctx"></div></div>
     </details>
 
     <details class="file">
       <summary><span class="path">services/data_model_watchlist.py</span>
         <span class="stat"><b class="plus">+29</b> <b class="minus">-1</b></span></summary>
-      
+
       <div class="diff"><div class="dl hunk">@@ -19,7 +19,7 @@ import json</div>
 <div class="dl ctx"> from typing import Any, Iterable, Mapping, Sequence</div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
 <div class="dl ctx"> from core.diagnostic_recording import emit</div>
 <div class="dl del">-from services.form_search import snapshot_schema</div>
 <div class="dl add">+from services.form_search import parse_terms, snapshot_schema</div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
 <div class="dl ctx"> JOB_KEY = "tdc_data_model"</div>
 <div class="dl ctx"> SCOPE_ALL = "all"</div>
 <div class="dl hunk">@@ -44,6 +44,34 @@ def normalize_serial(value: Any) -&gt; str:</div>
 <div class="dl ctx">     return text</div>
-<div class="dl ctx"> </div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
+<div class="dl ctx"></div>
 <div class="dl add">+#: 零宽/方向控制类不可见字符：`strip()` 去不掉，但会让上游精确匹配必然失败。</div>
 <div class="dl add">+_INVISIBLE_SERIAL_CHARS = "\u200b\u200c\u200d\u2060\ufeff\u00ad"</div>
 <div class="dl add">+</div>
@@ -804,7 +973,7 @@
 <div class="dl add">+    if len(terms) != 1 or terms[0] != text:</div>
 <div class="dl add">+        raise WatchlistError(</div>
 <div class="dl add">+            "流水单号一次只能填一个（检测到多个单号或全角字符）；"</div>
-<div class="dl add">+            "如需同步多个单号，请逐个配置绑定"</div>
+<div class="dl add">+            "如需按多个单号合并导出，请到交付物工作台使用「导出合并结果」"</div>
 <div class="dl add">+        )</div>
 <div class="dl add">+    if len(text) &gt; MAX_SERIAL_LENGTH:</div>
 <div class="dl add">+        raise WatchlistError(f"流水单号不能超过 {MAX_SERIAL_LENGTH} 个字符")</div>
@@ -819,11 +988,11 @@
     <details class="file">
       <summary><span class="path">plugins/project_overview/static/deliverable/policy-logic.js</span>
         <span class="stat"><b class="plus">+57</b> <b class="minus">-1</b></span></summary>
-      
+
       <div class="diff"><div class="dl hunk">@@ -55,6 +55,29 @@ export function normalizeTdcDepartment(dept) {</div>
 <div class="dl ctx">   return trimmed;</div>
 <div class="dl ctx"> }</div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
 <div class="dl add">+/** 与后端 services/form_search._SEPARATORS 同源：空格/逗号/分号/顿号/换行/制表符。 */</div>
 <div class="dl add">+const DOCUMENT_NO_SEPARATORS = /[\s,;、]+/;</div>
 <div class="dl add">+/** 零宽/方向控制类不可见字符：trim() 去不掉，但会让上游精确匹配必然失败。 */</div>
@@ -842,7 +1011,7 @@
 <div class="dl add">+  const normalized = typeof text.normalize === "function" ? text.normalize("NFKC") : text;</div>
 <div class="dl add">+  const terms = normalized.split(DOCUMENT_NO_SEPARATORS).filter(Boolean);</div>
 <div class="dl add">+  if (terms.length !== 1 || terms[0] !== normalized || normalized !== text) {</div>
-<div class="dl add">+    return "流水单号一次只能填一个（检测到多个单号或全角字符）；如需同步多个单号，请逐个配置绑定。";</div>
+<div class="dl add">+    return "流水单号一次只能填一个（检测到多个单号或全角字符）；如需按多个单号合并导出，请到交付物工作台使用「导出合并结果」。";</div>
 <div class="dl add">+  }</div>
 <div class="dl add">+  return "";</div>
 <div class="dl add">+}</div>
@@ -858,11 +1027,11 @@
 <div class="dl add">+  if (documentNoError) return documentNoError;</div>
 <div class="dl ctx">   return "";</div>
 <div class="dl ctx"> }</div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
 <div class="dl hunk">@@ -329,10 +354,41 @@ export function dropDepartment(plan) {</div>
 <div class="dl ctx">   delete plan.matchRule.rspDepartment;</div>
 <div class="dl ctx"> }</div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
 <div class="dl add">+/** 0 命中时把「为什么没命中」讲清楚（只展示计数与字段名，不回显业务值）。 */</div>
 <div class="dl add">+export function wizardNotMatchedDetail(result) {</div>
 <div class="dl add">+  const source = result &amp;&amp; typeof result === "object" ? result : {};</div>
@@ -900,18 +1069,49 @@
 <div class="dl add">+  const base = `映射发现未匹配（${ewoPolicyDiscoveryStateLabel(result.state)}，命中行数：${cCount}，字段数：${fCount}）`;</div>
 <div class="dl add">+  return detail ? `${base}：${detail}。` : `${base}，请核对车型与筛选条件后重试。`;</div>
 <div class="dl ctx"> }</div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
 <div class="dl ctx"> /** Step 3: field mapping + authority. Throws Error with the legacy wording. */</div></div>
     </details>
 
     <details class="file">
       <summary><span class="path">plugins/deliverables/static/lib.js</span>
-        <span class="stat"><b class="plus">+16</b> <b class="minus">-0</b></span></summary>
-      
-      <div class="diff"><div class="dl hunk">@@ -362,6 +362,22 @@ export function serialMatchWarning(data) {</div>
+        <span class="stat"><b class="plus">+36</b> <b class="minus">-1</b></span></summary>
+
+      <div class="diff"><div class="dl hunk">@@ -47,6 +47,9 @@ export const TDC_ENDPOINTS = {</div>
+<div class="dl ctx">       query: "/api/tdc/data-model/query",</div>
+<div class="dl ctx">       crawl_all: "/api/tdc/data-model/crawl-all",</div>
+<div class="dl ctx">       export: "/api/tdc/data-model/export",</div>
+<div class="dl add">+      // 多流水单号合并导出：全量抓取 + 本地集合匹配 → 合并成一张 CSV</div>
+<div class="dl add">+      // （官方 XLSX 导出不支持按单号过滤，见 web/app.py _tdc_report_export_merged）。</div>
+<div class="dl add">+      export_merged: "/api/tdc/data-model/export-merged",</div>
+<div class="dl ctx">     },</div>
+<div class="dl ctx">   },</div>
+<div class="dl ctx">   "tdc-sor": {</div>
+<div class="dl hunk">@@ -253,7 +256,7 @@ export function buildPayload(item, values, operation) {</div>
+<div class="dl ctx">     const value = Number(trimmed(values, name) || 0);</div>
+<div class="dl ctx">     if (value &gt; 0) payload[name] = value;</div>
+<div class="dl ctx">   });</div>
+<div class="dl del">-  if (operation === "export") {</div>
+<div class="dl add">+  if (operation === "export" || operation === "export_merged") {</div>
+<div class="dl ctx">     const fileName = trimmed(values, "file_name");</div>
+<div class="dl ctx">     if (fileName) payload.file_name = fileName;</div>
+<div class="dl ctx">   }</div>
+<div class="dl hunk">@@ -307,6 +310,11 @@ export function validateForm(item, values, operation) {</div>
+<div class="dl ctx">     if (!trimmed(values, "output_format")) errors.output_format = "请选择输出格式";</div>
+<div class="dl ctx">     if (!trimmed(values, "file_name")) errors.file_name = "请填写 XLSX 文件名";</div>
+<div class="dl ctx">   }</div>
+<div class="dl add">+  if (operation === "export_merged") {</div>
+<div class="dl add">+    if (!trimmed(values, "document_no")) {</div>
+<div class="dl add">+      errors.document_no = "请填写至少一个流水单号（多个用空格、逗号或换行分隔）";</div>
+<div class="dl add">+    }</div>
+<div class="dl add">+  }</div>
+<div class="dl ctx">   return errors;</div>
+<div class="dl ctx"> }</div>
+<div class="dl ctx"></div>
+<div class="dl hunk">@@ -362,6 +370,33 @@ export function serialMatchWarning(data) {</div>
 <div class="dl ctx">   return "";</div>
 <div class="dl ctx"> }</div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
 <div class="dl add">+/**</div>
 <div class="dl add">+ * 数模「流水单号」查询的代价提示：上游没有该查询参数，填了单号就必须全量抓取</div>
 <div class="dl add">+ * （最多 max_pages 页），明显慢于查询预览。发起前把代价说清楚，避免用户以为界面卡死</div>
@@ -928,6 +1128,17 @@
 <div class="dl add">+  return `流水单号不走上游查询：本次将全量抓取（最多 ${pages} 页），耗时较长，请勿重复点击。`;</div>
 <div class="dl add">+}</div>
 <div class="dl add">+</div>
+<div class="dl add">+/**</div>
+<div class="dl add">+ * 官方 XLSX 导出不支持按流水单号过滤（上游没有该查询参数，导出路径也不读 document_no）：</div>
+<div class="dl add">+ * 填了单号时提示用户改用「导出合并结果（CSV）」，否则拿到的会是全部行。</div>
+<div class="dl add">+ */</div>
+<div class="dl add">+export function mergedExportHint(item, values) {</div>
+<div class="dl add">+  if (!item || item.id !== "tdc-data-model") return "";</div>
+<div class="dl add">+  const serial = values &amp;&amp; typeof values.document_no === "string" ? values.document_no.trim() : "";</div>
+<div class="dl add">+  if (!serial) return "";</div>
+<div class="dl add">+  return "官方 XLSX 导出不按流水单号过滤（会导出其它条件下的全部行）；只导出这些单号请用「导出合并结果（CSV）」。";</div>
+<div class="dl add">+}</div>
+<div class="dl add">+</div>
 <div class="dl ctx"> export function previewContextText(preview, suffix = "") {</div>
 <div class="dl ctx">   if (!preview) return "";</div>
 <div class="dl ctx">   if (!suffix) return `预览生成时间：${preview.queryTime} · 筛选条件：${preview.filterSummary}`;</div></div>
@@ -935,21 +1146,44 @@
 
     <details class="file">
       <summary><span class="path">plugins/deliverables/static/catalog.js</span>
-        <span class="stat"><b class="plus">+2</b> <b class="minus">-0</b></span></summary>
-      
-      <div class="diff"><div class="dl hunk">@@ -27,6 +27,7 @@ import {</div>
+        <span class="stat"><b class="plus">+8</b> <b class="minus">-2</b></span></summary>
+
+      <div class="diff"><div class="dl hunk">@@ -27,6 +27,8 @@ import {</div>
 <div class="dl ctx">   defaultFormValues,</div>
 <div class="dl ctx">   formatApiErrorMessage,</div>
 <div class="dl ctx">   formatFilterSummary,</div>
 <div class="dl add">+  documentNoCrawlNotice,</div>
+<div class="dl add">+  mergedExportHint,</div>
 <div class="dl ctx">   isArasTarget,</div>
 <div class="dl ctx">   isAuthError,</div>
 <div class="dl ctx">   isExecutableTdc,</div>
-<div class="dl hunk">@@ -692,6 +693,7 @@ function DeliverableDetail({ item, categories, runLock, onRecord }) {</div>
+<div class="dl hunk">@@ -408,7 +410,7 @@ function DeliverableDetail({ item, categories, runLock, onRecord }) {</div>
+<div class="dl ctx">       const summary = formatFilterSummary(item, payload.filters, payload.document_no);</div>
+<div class="dl ctx">       const endpoint = config.endpoints[op];</div>
+<div class="dl ctx">       if (!endpoint) throw messageError(`未配置操作端点: ${op}`);</div>
+<div class="dl del">-      if (op === "export") {</div>
+<div class="dl add">+      if (op === "export" || op === "export_merged") {</div>
+<div class="dl ctx">         await runExport(endpoint, payload, requestSeq, summary, isCurrent);</div>
+<div class="dl ctx">       } else {</div>
+<div class="dl ctx">         const { status: code, ok, body } = await postJson(endpoint, payload);</div>
+<div class="dl hunk">@@ -441,7 +443,7 @@ function DeliverableDetail({ item, categories, runLock, onRecord }) {</div>
+<div class="dl ctx">         showError(e, op);</div>
+<div class="dl ctx">       }</div>
+<div class="dl ctx">       record(op, "failed", isLocalGuardError(e) ? LOCAL_ONLY_MESSAGE : formatApiErrorMessage(e));</div>
+<div class="dl del">-      if (mounted.current) setStatus({ text: op === "export" ? "导出失败" : "操作失败", loading: false });</div>
+<div class="dl add">+      if (mounted.current) setStatus({ text: op === "export" || op === "export_merged" ? "导出失败" : "操作失败", loading: false });</div>
+<div class="dl ctx">     } finally {</div>
+<div class="dl ctx">       clearPayloadSecrets(payload);</div>
+<div class="dl ctx">       runLock.current = false;</div>
+<div class="dl hunk">@@ -691,7 +693,11 @@ function DeliverableDetail({ item, categories, runLock, onRecord }) {</div>
+<div class="dl ctx">           &lt;div class="operation-buttons"&gt;</div>
 <div class="dl ctx">             &lt;button type="submit" class=${`primary-btn${busy ? " is-running" : ""}`} data-deliverable-run disabled=${busy}&gt;${label(operation)}&lt;/button&gt;</div>
 <div class="dl ctx">             &lt;button type="button" class="primary-btn" data-deliverable-download disabled=${busy} onClick=${() =&gt; run("export")}&gt;下载 XLSX&lt;/button&gt;</div>
+<div class="dl add">+            ${item.id === "tdc-data-model" &amp;&amp; html`&lt;button type="button" class="primary-btn" data-deliverable-run-merged</div>
+<div class="dl add">+              disabled=${busy} onClick=${() =&gt; run("export_merged")}&gt;导出合并结果（CSV）&lt;/button&gt;`}</div>
 <div class="dl ctx">           &lt;/div&gt;</div>
 <div class="dl add">+          ${documentNoCrawlNotice(item, values) &amp;&amp; html`&lt;p class="result-meta result-warning" role="status"&gt;${documentNoCrawlNotice(item, values)}&lt;/p&gt;`}</div>
+<div class="dl add">+          ${mergedExportHint(item, values) &amp;&amp; html`&lt;p class="result-meta result-warning" role="status"&gt;${mergedExportHint(item, values)}&lt;/p&gt;`}</div>
 <div class="dl ctx">           &lt;span class=${`deliverable-status${status.loading &amp;&amp; status.text ? " loading" : ""}`} aria-live="polite"&gt;${status.text}&lt;/span&gt;</div>
 <div class="dl ctx">         &lt;/section&gt;</div>
 <div class="dl ctx">       &lt;/form&gt;`}</div></div>
@@ -958,27 +1192,27 @@
     <details class="file">
       <summary><span class="path">tests/test_project_status_api.py</span>
         <span class="stat"><b class="plus">+143</b> <b class="minus">-0</b></span></summary>
-      
+
       <div class="diff"><div class="dl hunk">@@ -3,6 +3,7 @@</div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
 <div class="dl ctx"> from __future__ import annotations</div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
 <div class="dl add">+import json</div>
 <div class="dl ctx"> from types import SimpleNamespace</div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
 <div class="dl ctx"> import pytest</div>
 <div class="dl hunk">@@ -737,6 +738,7 @@ def test_document_no_discovery_zero_match_keeps_not_found_with_coverage(client,</div>
-<div class="dl ctx"> </div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
+<div class="dl ctx"></div>
 <div class="dl ctx"> def test_document_no_discovery_rejects_multiple_matches(client, monkeypatch) -&gt; None:  # type: ignore[no-untyped-def]</div>
 <div class="dl add">+    """多行且**身份不同**：按身份不唯一 fail-closed（2026-10-10 起文案更精确）。"""</div>
 <div class="dl ctx">     rows = [</div>
 <div class="dl ctx">         {"incident": "FLOW-A", "documentNo": "F610S-3D-0001"},</div>
 <div class="dl ctx">         {"incident": "FLOW-B", "documentNo": "F610S-3D-0001"},</div>
 <div class="dl hunk">@@ -745,10 +747,151 @@ def test_document_no_discovery_rejects_multiple_matches(client, monkeypatch) -&gt;</div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
 <div class="dl ctx">     response = _post_document_no_discovery(client, "F610S-3D-0001")</div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
 <div class="dl add">+    assert response.status_code == 400</div>
 <div class="dl add">+    assert "该流水单号命中了多行且身份不唯一，请核对后重试" in response.get_json()["error"]["message"]</div>
 <div class="dl add">+</div>
@@ -995,8 +1229,8 @@
 <div class="dl add">+</div>
 <div class="dl ctx">     assert response.status_code == 400</div>
 <div class="dl ctx">     assert "该流水单号命中多行，请核对后重试" in response.get_json()["error"]["message"]</div>
-<div class="dl ctx"> </div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
+<div class="dl ctx"></div>
 <div class="dl add">+def test_document_no_discovery_matches_when_row_also_carries_form_id(client, monkeypatch) -&gt; None:  # type: ignore[no-untyped-def]</div>
 <div class="dl add">+    """生产事故回归（2026-10-10）：命中行含 formId 时选中键仍必须是实例号 incident。</div>
 <div class="dl add">+</div>
@@ -1132,11 +1366,11 @@
     <details class="file">
       <summary><span class="path">tests/test_project_status_admin_api.py</span>
         <span class="stat"><b class="plus">+34</b> <b class="minus">-0</b></span></summary>
-      
+
       <div class="diff"><div class="dl hunk">@@ -610,6 +610,40 @@ def test_sync_now_rejects_unconfigured_deliverables_with_409_sync_not_ready(</div>
 <div class="dl ctx">     registry_factory.assert_not_called()</div>
-<div class="dl ctx"> </div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
+<div class="dl ctx"></div>
 <div class="dl add">+def test_sync_now_reports_legacy_multi_value_document_no_binding_as_not_ready(</div>
 <div class="dl add">+    client, test_db: DatabaseManager, registry_factory: MagicMock</div>
 <div class="dl add">+) -&gt; None:</div>
@@ -1172,14 +1406,14 @@
 <div class="dl add">+</div>
 <div class="dl add">+</div>
 <div class="dl ctx"> # ── 3. Ready D5 Sync-Now Success Contract and Secret Safety ────────────────────</div>
-<div class="dl ctx"> </div>
-<div class="dl ctx"> </div></div>
+<div class="dl ctx"></div>
+<div class="dl ctx"></div></div>
     </details>
 
     <details class="file">
       <summary><span class="path">tests/test_plugin_overview_parity_logic.py</span>
         <span class="stat"><b class="plus">+24</b> <b class="minus">-0</b></span></summary>
-      
+
       <div class="diff"><div class="dl hunk">@@ -56,6 +56,14 @@ const initDmDoc = P.wizardInitialValues({matchRule: {documentNo: "3D-00001018"}}</div>
 <div class="dl ctx"> // 存量 incident 绑定：number 回填实例号，documentNo 框必须为空（不跨键转换）。</div>
 <div class="dl ctx"> const initDmLegacy = P.wizardInitialValues({matchRule: {incident: "51553863"}}, caps("data_model", "tdc"), true);</div>
@@ -1229,28 +1463,73 @@
 
     <details class="file">
       <summary><span class="path">tests/test_deliverables_system_query_parity.py</span>
-        <span class="stat"><b class="plus">+11</b> <b class="minus">-0</b></span></summary>
-      
-      <div class="diff"><div class="dl hunk">@@ -63,6 +63,9 @@ console.log(JSON.stringify({</div>
+        <span class="stat"><b class="plus">+50</b> <b class="minus">-0</b></span></summary>
+
+      <div class="diff"><div class="dl hunk">@@ -57,12 +57,30 @@ const samples = [</div>
+<div class="dl ctx"> const sqNotices = samples.map((d) =&gt; sqLib.serialMatchNotice(d));</div>
+<div class="dl ctx"> const dlvWarnings = samples.map((d) =&gt; dlvLib.serialMatchWarning(d));</div>
+<div class="dl ctx"></div>
+<div class="dl add">+// 多流水单号合并导出：两个插件都必须把 document_no 与 file_name 放进导出类请求体，</div>
+<div class="dl add">+// 且不得带 preview_source（服务端 export-merged 只认顶层 document_no）。</div>
+<div class="dl add">+const dlvValues = {...sqValues, base_url: "https://tdc.sgmw.com.cn", file_name: "tdc_data_model.xlsx"};</div>
+<div class="dl add">+const dlvMerged = dlvLib.buildPayload(dmItem, dlvValues, "export_merged");</div>
+<div class="dl add">+const dlvMergedNoSerial = dlvLib.validateForm(dmItem, {...dlvValues, document_no: ""}, "export_merged");</div>
+<div class="dl add">+const sqMerged = sqLib.buildPayload("tdc-data-model", dlvValues, sqMode, {operation: "export_merged"});</div>
+<div class="dl add">+const sqMergedNoSerial = sqLib.validateForm("tdc-data-model", {...dlvValues, document_no: ""}, sqMode, "export_merged");</div>
+<div class="dl add">+</div>
+<div class="dl ctx"> console.log(JSON.stringify({</div>
+<div class="dl ctx">   sqPayload,</div>
+<div class="dl ctx">   dlvPayload,</div>
 <div class="dl ctx">   sqNotices,</div>
 <div class="dl ctx">   dlvWarnings,</div>
 <div class="dl ctx">   dlvSummary: dlvLib.formatFilterSummary(dmItem, dlvPayload.filters, dlvPayload.document_no),</div>
 <div class="dl add">+  dlvCrawlNotice: dlvLib.documentNoCrawlNotice(dmItem, sqValues),</div>
 <div class="dl add">+  dlvCrawlNoticeEmpty: dlvLib.documentNoCrawlNotice(dmItem, {document_no: ""}),</div>
 <div class="dl add">+  dlvCrawlNoticeOther: dlvLib.documentNoCrawlNotice({id: "tdc-sor"}, sqValues),</div>
+<div class="dl add">+  dlvMerged,</div>
+<div class="dl add">+  dlvMergedNoSerial,</div>
+<div class="dl add">+  sqMerged,</div>
+<div class="dl add">+  sqMergedNoSerial,</div>
+<div class="dl add">+  dlvMergedHint: dlvLib.mergedExportHint(dmItem, sqValues),</div>
+<div class="dl add">+  dlvMergedHintEmpty: dlvLib.mergedExportHint(dmItem, {document_no: ""}),</div>
+<div class="dl add">+  dlvMergedHintOther: dlvLib.mergedExportHint({id: "tdc-sor"}, sqValues),</div>
 <div class="dl ctx"> }));</div>
 <div class="dl ctx"> """</div>
-<div class="dl ctx"> </div>
-<div class="dl hunk">@@ -120,6 +123,14 @@ def test_filter_summary_includes_document_no(parity: dict) -&gt; None:</div>
+<div class="dl ctx"></div>
+<div class="dl hunk">@@ -120,6 +138,38 @@ def test_filter_summary_includes_document_no(parity: dict) -&gt; None:</div>
 <div class="dl ctx">     assert "3D-00001018" in summary</div>
-<div class="dl ctx"> </div>
-<div class="dl ctx"> </div>
+<div class="dl ctx"></div>
+<div class="dl ctx"></div>
 <div class="dl add">+def test_document_no_crawl_notice_explains_the_full_crawl(parity: dict) -&gt; None:</div>
 <div class="dl add">+    """填了流水单号就必然全量抓取：发起前必须说明代价（2026-10-10 卡死反馈）。"""</div>
 <div class="dl add">+    assert "全量抓取" in parity["dlvCrawlNotice"]</div>
 <div class="dl add">+    assert "请勿重复点击" in parity["dlvCrawlNotice"]</div>
 <div class="dl add">+    assert parity["dlvCrawlNoticeEmpty"] == ""   # 没填单号不提示</div>
 <div class="dl add">+    assert parity["dlvCrawlNoticeOther"] == ""   # 只有数模走这条路径</div>
+<div class="dl add">+</div>
+<div class="dl add">+</div>
+<div class="dl add">+def test_merged_export_payload_carries_serial_and_file_name(parity: dict) -&gt; None:</div>
+<div class="dl add">+    """多单号合并导出：两个插件都把 document_no/file_name 放顶层，且不带 preview_source。"""</div>
+<div class="dl add">+    for payload in (parity["dlvMerged"], parity["sqMerged"]):</div>
+<div class="dl add">+        assert payload["document_no"] == "3D-00001018 3D-00001193"</div>
+<div class="dl add">+        assert "document_no" not in payload["filters"]</div>
+<div class="dl add">+        assert payload["file_name"] == "tdc_data_model.xlsx"</div>
+<div class="dl add">+        assert "preview_source" not in payload</div>
+<div class="dl add">+    # 同一输入夹具 → 两份实现输出深相等（防漂移，而不是各写各的期望值）</div>
+<div class="dl add">+    keys = ("document_no", "file_name", "filters")</div>
+<div class="dl add">+    assert {key: parity["dlvMerged"][key] for key in keys} == {</div>
+<div class="dl add">+        key: parity["sqMerged"][key] for key in keys</div>
+<div class="dl add">+    }</div>
+<div class="dl add">+    # 没填单号时前后端都要拦（前端给出明确提示，服务端另有 400）</div>
+<div class="dl add">+    assert "至少一个流水单号" in parity["dlvMergedNoSerial"].get("document_no", "")</div>
+<div class="dl add">+    assert "至少一个流水单号" in parity["sqMergedNoSerial"].get("document_no", "")</div>
+<div class="dl add">+</div>
+<div class="dl add">+</div>
+<div class="dl add">+def test_merged_export_hint_warns_official_export_does_not_filter(parity: dict) -&gt; None:</div>
+<div class="dl add">+    assert "不按流水单号过滤" in parity["dlvMergedHint"]</div>
+<div class="dl add">+    assert "导出合并结果" in parity["dlvMergedHint"]</div>
+<div class="dl add">+    assert parity["dlvMergedHintEmpty"] == ""</div>
+<div class="dl add">+    assert parity["dlvMergedHintOther"] == ""</div>
 <div class="dl add">+</div>
 <div class="dl add">+</div>
 <div class="dl ctx"> def test_catalog_field_set_matches_system_query_mode_fields() -&gt; None:</div>

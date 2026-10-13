@@ -125,7 +125,7 @@ def test_every_api_path_is_a_registered_route(app) -> None:
     assert "`/api/tasks/${encodeURIComponent(taskId)}${suffix}`" in lib
     catalog = (STATIC_DIR / "catalog.js").read_text(encoding="utf-8")
     for suffix in ('"/result"', '"/download"', '"/cancel"'):
-        assert f"taskUrl(task" in catalog and suffix in catalog
+        assert "taskUrl(task" in catalog and suffix in catalog
 
 
 def test_catalog_items_match_executable_tdc_endpoints(app, node_data) -> None:

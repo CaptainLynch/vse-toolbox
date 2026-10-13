@@ -1,6 +1,30 @@
 # Current State
 
-## 2026-10-10 数模「填多个流水单号 → 合并导出」实现（工作台 + 系统查询页，未提交）
+## 2026-10-13 分支 feat/tdc-dm-identity-and-merged-export 已推送 + Windows 门禁复跑
+
+- **分支**：`feat/tdc-dm-identity-and-merged-export` @ `7aeda8e`（4 个提交，本地 = `origin` 同名分支，
+  远端 head 已核对一致）。PR 链接：`https://github.com/CaptainLynch/vse-toolbox/pull/new/feat/tdc-dm-identity-and-merged-export`。
+  提交顺序：① `da6ce96` 车型锚点同步（工作区既有未提交工作，含 except 顺序修正）② `69318aa` 数模身份键口径统一 +
+  0 命中归因 + 单值 fail-closed ③ `4b6ba15` 多流水单号合并导出（新路由 + 两个前端入口 + PROJECT_MAP 重生成）
+  ④ `7aeda8e` 文档与 memory。共 31 文件 / +4486 −60。
+- **分支 tip 内容 = 已验收的工作树**：`git diff HEAD` 为空；`web/app.py` 用 hunk 拆三组补丁分批提交，
+  三组补丁能精确还原原文件（哈希实测一致）。
+- **Windows 门禁（本机，分支 tip）**：全量 `pytest tests` = **2986 passed / 0 failed / 48 skipped**（334s）；
+  `tools/generate_project_map.py --check` = verified；flake8 改动文件 0 告警（含修掉既有的 F541）。
+- **独立 Linux 复核（另一环境，同一提交 `7aeda8e`）**：2961 passed / 6 failed / 25 skipped；6 个失败在基线
+  `4aadbe4` 上同样失败 → **非本分支引入**，全部为 Linux 容器限制（PyInstaller spec ×2、tdc_probe 的
+  win32com/WinHTTP ×2、Excel Worker 的 `C:/vse` Windows 路径 ×1、codex relay 文案 ×1）。map check 通过；
+  node --check 7 个改动 JS 通过；`git diff --check` 当时只报了 review HTML 的尾随空格。
+- **按复核意见补的收尾（第 5 个提交）**：review HTML 重新生成并去掉尾随空白（生成器改为对基线
+  `4aadbe4` 取 diff，提交后页面仍显示本次改动）；`tests/test_plugin_deliverables.py:128` 既有 F541 修掉；
+  文档补记架构偏差（新路由在 `web/app.py`，AGENTS.md 要求新功能进插件 → 本批接受为技术债，
+  理由：TDC 数模 API 整族都在宿主、迁移需开放插件侧 TDC 客户端/域会话上下文）与 `plugin.json` 未升版本的说明。
+- **提测前仍缺**：① Windows 打包（`tools/build_excel_bundle.ps1`）+ 出厂冒烟（`.runtime/smoke_exe_*.ps1`）
+  尚未执行；② 存量数模绑定 externalKey 审计（incident vs formId，可能进入 `needs_attention`）；
+  ③ 产品决定：填了单号时是否禁用官方导出、官方 47 列 XLSX 按单号过滤是否立项；
+  ④ 实机用 Excel 打开合并 CSV 验证公式注入前缀显示与长数字单号不失真。
+
+## 2026-10-10 数模「填多个流水单号 → 合并导出」实现（工作台 + 系统查询页，已提交）
 
 - **用户反馈**：「我要的就是填多个表单值合并导出来的功能，你没有修复」——上一轮把向导改成单值 fail-closed，
   与用户目标相反。
@@ -29,7 +53,7 @@
 - **待办**：①官方 47 列 XLSX 按单号过滤（需 Excel Worker 新 COM 操作，目标机须装 Excel）；
   ②合并导出仍是全量抓取（上游限制，已有进度）；③是否在填了单号时禁用官方导出（待产品确认）。
 
-## 2026-10-10 数模身份键口径统一 + 0 命中归因 + 单值 fail-closed：实施完成并经顾问实施后复核（未提交、未打包）
+## 2026-10-10 数模身份键口径统一 + 0 命中归因 + 单值 fail-closed：实施完成并经顾问实施后复核（已提交：`69318aa`）
 
 - **用户批准「改」并要求改完请顾问复核**。改动文件：`services/project_status_records.py`、
   `project_status_discovery.py`、`project_status_connectors.py`、`project_status_updates.py`、

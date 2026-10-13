@@ -95,3 +95,13 @@
    已给分页进度与"全量抓取"提示。若数据量继续增长，可考虑按车型等条件先收窄再抓。
 3. 官方导出按钮在填了单号时仍会导出"全部行"——已用 `mergedExportHint` 明确提示；
    如需要可考虑在填了单号时禁用官方导出（需产品确认）。
+4. **架构偏差（已知并接受为本批技术债）**：AGENTS.md 规定「Do not add route bodies to `web/app.py`」，
+   而本批在 `web/app.py` 新增了路由 `POST /api/tdc/data-model/export-merged`
+   （车型锚点那批另新增了 `sync-by-car-type`）。理由与边界：
+   - TDC 数模的宿主 API（`/api/tdc/data-model/query|crawl-all|export`）本来就全部住在 `web/app.py`，
+     新路由与它们是同一族、共用 `_request_payload` 的本机/同源 guard、统一域会话准入、allowlist 与后台任务框架；
+   - 迁移到插件需要给插件开放「宿主 TDC 客户端/域会话」上下文（当前 `host.context` 没有这层），
+     属于更大的宿主契约变更，不宜塞进本批修复。
+   - 结论：本批接受为技术债；若产品决定后续把 TDC 数模 API 整体迁入插件，这条路由一并迁。
+5. `plugin.json` 版本号未升：本次改动走**宿主 zip**发布（宿主自带插件），不影响；
+   若将来要单独发 `.vsepkg`，需先升 `deliverables` / `system_query` / `project_overview` 的版本号。
