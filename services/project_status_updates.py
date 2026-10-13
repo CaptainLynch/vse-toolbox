@@ -23,6 +23,7 @@ from core.db_manager import (
     SyncBindingNotReadyError,
 )
 from core.redaction import redact_sensitive_text
+from services.data_model_watchlist import WatchlistError, normalize_single_serial
 from services.project_status_records import compute_config_signature, observation_is_aggregate
 
 _logger = logging.getLogger(__name__)
@@ -42,6 +43,15 @@ def _has_control_chars(val: str) -> bool:
         if ord(ch) < 32 or (127 <= ord(ch) <= 159):
             return True
     return False
+
+
+def _single_serial_error(value: object) -> str | None:
+    """数模流水单号必须是单个可精确匹配的原文单号；非法时返回提示文案。"""
+    try:
+        normalize_single_serial(value)
+    except WatchlistError as exc:
+        return str(exc)
+    return None
 
 
 def _valid_mapping_source(source_field: object) -> bool:
@@ -474,6 +484,16 @@ class ProjectStatusUpdateService:
             raise SyncBindingNotReadyError(
                 "流水单号与实例号二选一：请只保留其中一项后重新保存配置"
             )
+        if (
+            contract["reportType"] == "data_model"
+            and str(match_rule.get("documentNo") or "").strip()
+        ):
+            # 单值 fail-closed（2026-10-10）：单记录绑定按整串精确匹配，多值串
+            # 永远 0 行；保存入口与发现入口共用同一校验，避免造出「能存不能跑」的绑定。
+            try:
+                normalize_single_serial(match_rule.get("documentNo"))
+            except WatchlistError as exc:
+                raise SyncBindingNotReadyError(str(exc)) from None
         automatic_fields = {
             PROJECT_STATUS_FIELD_NAME_TO_API[row["field_name"]]
             for row in raw["authorities"]
@@ -1024,6 +1044,14 @@ class ProjectStatusUpdateService:
                 # 数模流水单号与实例号二选一（与 assert_sync_ready 落库校验同语义，
                 # 2026-10-09）：同填会在运行期取交集，指向不同行则永久 not_found。
                 fields["matchRule"] = "流水单号与实例号二选一：请只保留其中一项"
+            elif (
+                isinstance(match_rule, dict)
+                and match_rule.get("reportType") == "data_model"
+                and str(match_rule.get("documentNo") or "").strip()
+                and _single_serial_error(match_rule.get("documentNo"))
+            ):
+                # 单值 fail-closed（2026-10-10）：单记录绑定按整串精确匹配。
+                fields["matchRule"] = _single_serial_error(match_rule.get("documentNo"))
             elif len(_json_dumps(match_rule)) > _TEXT_LIMITS["match_rule"]:
                 fields["matchRule"] = "匹配规则过长"
 

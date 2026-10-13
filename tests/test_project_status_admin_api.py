@@ -610,6 +610,40 @@ def test_sync_now_rejects_unconfigured_deliverables_with_409_sync_not_ready(
     registry_factory.assert_not_called()
 
 
+def test_sync_now_reports_legacy_multi_value_document_no_binding_as_not_ready(
+    client, test_db: DatabaseManager, registry_factory: MagicMock
+) -> None:
+    """存量多值流水单号绑定（升级前落库）：运行期显式 409，不再静默 0 命中（顾问复核 A2）。"""
+    _configure_ready_d5_binding(test_db, external_key="FM-1")
+    with test_db.get_connection() as conn:
+        conn.execute(
+            "UPDATE project_status_update_bindings SET match_rule_json = ? "
+            "WHERE deliverable_id = 'VPI-T2-D5'",
+            (
+                json.dumps(
+                    {
+                        "reportType": "data_model",
+                        "aggregate": False,
+                        "documentNo": "3D-00001018 3D-00001012",
+                    }
+                ),
+            ),
+        )
+        conn.commit()
+
+    resp = client.post(
+        "/api/project-status/deliverables/VPI-T2-D5/sync-now",
+        headers=_loopback_headers(),
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+
+    assert resp.status_code == 409
+    body = resp.get_json()
+    assert body["error"]["type"] == "SyncNotReady"
+    assert "一次只能填一个" in body["error"]["message"]
+    registry_factory.assert_not_called()  # 校验在连接器创建之前
+
+
 # ── 3. Ready D5 Sync-Now Success Contract and Secret Safety ────────────────────
 
 

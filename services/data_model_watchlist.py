@@ -19,7 +19,7 @@ import json
 from typing import Any, Iterable, Mapping, Sequence
 
 from core.diagnostic_recording import emit
-from services.form_search import snapshot_schema
+from services.form_search import parse_terms, snapshot_schema
 
 JOB_KEY = "tdc_data_model"
 SCOPE_ALL = "all"
@@ -41,6 +41,34 @@ def normalize_serial(value: Any) -> str:
     text = str(value or "").strip()
     if not text or len(text) > MAX_SERIAL_LENGTH or any(ord(ch) < 32 for ch in text):
         raise WatchlistError("流水单号必须是 1–64 个可见字符")
+    return text
+
+
+#: 零宽/方向控制类不可见字符：`strip()` 去不掉，但会让上游精确匹配必然失败。
+_INVISIBLE_SERIAL_CHARS = "\u200b\u200c\u200d\u2060\ufeff\u00ad"
+
+
+def normalize_single_serial(value: Any) -> str:
+    """写入入口共用的**单值**流水单号校验（发现/启用/保存三处同源）。
+
+    fail-closed：多值（空格/逗号/分号/顿号/换行/制表符分隔）、空值、含不可见
+    字符、或经 NFKC 归一后与原值不同（全角/兼容字符）一律拒绝——绝不静默截断
+    成第一个。2026-10-10 生产事故：向导单值字段收到「两个单号 + 一个空格」的
+    整串，本地精确匹配必然 0 行，却只报「未匹配」。
+    """
+    text = str(value or "").strip()
+    if not text:
+        raise WatchlistError("流水单号不能为空")
+    if any(ord(ch) < 32 or ch in _INVISIBLE_SERIAL_CHARS for ch in text):
+        raise WatchlistError("流水单号含不可见字符，请只填报表里的原文单号")
+    terms = parse_terms(text)
+    if len(terms) != 1 or terms[0] != text:
+        raise WatchlistError(
+            "流水单号一次只能填一个（检测到多个单号或全角字符）；"
+            "如需按多个单号合并导出，请到交付物工作台使用「导出合并结果」"
+        )
+    if len(text) > MAX_SERIAL_LENGTH:
+        raise WatchlistError(f"流水单号不能超过 {MAX_SERIAL_LENGTH} 个字符")
     return text
 
 

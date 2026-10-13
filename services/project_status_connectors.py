@@ -107,8 +107,10 @@ def _stable_version(row: Mapping[str, Any]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _identity(row: Mapping[str, Any]) -> str:
-    return _record_identity(row)
+def _identity(row: Mapping[str, Any], report: str | None = None) -> str:
+    """行身份（externalKey）。``report`` 只决定身份字段优先顺序，与发现端同源：
+    数模的权威键是第 0 列实例号 incident，上游行新增 formId 后不得改变绑定键。"""
+    return _record_identity(row, report_type=report)
 
 
 def _close_session(session: Any) -> None:
@@ -135,7 +137,7 @@ def _snapshot(
         return _ewo_v2_snapshot(context, rows, artifacts, analysis_rows, report=report)
     if context.match_rule.get("aggregate") is True:
         return _aggregate_snapshot(context, rows, artifacts, analysis_rows, report=report)
-    matches = [dict(row) for row in rows if _identity(row) == context.external_key]
+    matches = [dict(row) for row in rows if _identity(row, report) == context.external_key]
     fetched = _now()
     if len(matches) != 1:
         marker = hashlib.sha256(f"{len(matches)}:{context.external_key}".encode()).hexdigest()
@@ -145,7 +147,7 @@ def _snapshot(
         )
     row = matches[0]
     version = _stable_version(row)
-    values = _mapping_values(row, context.mapping)
+    values = _mapping_values(row, context.mapping, report=report)
     candidate = ConnectorCandidate(context.external_key, version, values, fetched)
     return ConnectorSnapshot(
         "matched", (candidate,), version, fetched,
@@ -181,9 +183,14 @@ def _ewo_v2_snapshot(context, rows, artifacts, analysis_rows, report=None):
                              context.expected_deliverable_updated_at, artifacts, analysis_rows)
 
 
-def _mapping_values(row: Mapping[str, Any], mapping: Mapping[str, Any]) -> dict[str, str | None]:
+def _mapping_values(
+    row: Mapping[str, Any],
+    mapping: Mapping[str, Any],
+    *,
+    report: str | None = None,
+) -> dict[str, str | None]:
     """按绑定映射提取字段值；note 允许列表型来源字段（多列合并）。"""
-    identity = _record_identity(row)
+    identity = _record_identity(row, report_type=report)
     return build_aggregate_candidate_values([(identity, row)], mapping)
 
 
@@ -205,7 +212,7 @@ def _aggregate_snapshot(
     fetched = _now()
     # 与 discovery 口径一致（GPT 终审任务 3）：共享记录规范化——仅纳入
     # 有业务单号的记录、按单号排序（重排不变）；全部无单号 → not_found。
-    identified = identified_records(rows)
+    identified = identified_records(rows, report_type=report)
     if not identified:
         marker = hashlib.sha256(b"aggregate:empty").hexdigest()
         return ConnectorSnapshot(

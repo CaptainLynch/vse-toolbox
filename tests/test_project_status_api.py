@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -737,6 +738,7 @@ def test_document_no_discovery_zero_match_keeps_not_found_with_coverage(client, 
 
 
 def test_document_no_discovery_rejects_multiple_matches(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """多行且**身份不同**：按身份不唯一 fail-closed（2026-10-10 起文案更精确）。"""
     rows = [
         {"incident": "FLOW-A", "documentNo": "F610S-3D-0001"},
         {"incident": "FLOW-B", "documentNo": "F610S-3D-0001"},
@@ -746,7 +748,148 @@ def test_document_no_discovery_rejects_multiple_matches(client, monkeypatch) -> 
     response = _post_document_no_discovery(client, "F610S-3D-0001")
 
     assert response.status_code == 400
+    assert "该流水单号命中了多行且身份不唯一，请核对后重试" in response.get_json()["error"]["message"]
+
+
+def test_document_no_discovery_rejects_multiple_part_rows_of_one_workflow(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """同一实例多行（part_detail 粒度）：身份唯一但仍不能构成单记录绑定，保留旧文案。"""
+    rows = [
+        {"incident": "FLOW-A", "documentNo": "F610S-3D-0001", "partNumber": "P-1"},
+        {"incident": "FLOW-A", "documentNo": "F610S-3D-0001", "partNumber": "P-2"},
+    ]
+    _document_no_discovery(monkeypatch, rows)
+
+    response = _post_document_no_discovery(client, "F610S-3D-0001")
+
+    assert response.status_code == 400
     assert "该流水单号命中多行，请核对后重试" in response.get_json()["error"]["message"]
+
+
+def test_document_no_discovery_matches_when_row_also_carries_form_id(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """生产事故回归（2026-10-10）：命中行含 formId 时选中键仍必须是实例号 incident。
+
+    旧实现取 matched_instances[0]（incident）当 selected，而候选过滤用 record_identity
+    （formId 优先）→ 命中行被过滤掉 → 「未匹配（命中 0 行，字段数 60）」。
+    """
+    rows = [
+        {"formId": "FORM-9", "incident": "50667733", "documentNo": "3D-00001018"},
+        {"formId": "FORM-8", "incident": "50738964", "documentNo": "3D-00001012"},
+    ]
+    seen = _document_no_discovery(monkeypatch, rows)
+
+    response = _post_document_no_discovery(client, "3D-00001018")
+
+    assert response.status_code == 200
+    assert seen == [None]
+    data = response.get_json()["data"]
+    assert data["state"] == "matched"
+    assert data["externalKey"] == "50667733"
+    assert data["serialDiagnostic"]["identityFieldUsed"] == ["incident"]
+    assert data["serialDiagnostic"]["distinctIdentities"] == 1
+
+
+def test_document_no_discovery_without_identity_field_is_fail_closed(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """命中行没有任何身份字段：显式 422 + 原因码，不再 500 也不再静默 not_found。"""
+    rows = [{"流水单号": "3D-00001018", "partNumber": "P-1"}]
+    _document_no_discovery(monkeypatch, rows)
+
+    response = _post_document_no_discovery(client, "3D-00001018")
+
+    assert response.status_code == 422
+    body = response.get_json()
+    assert body["error"]["type"] == "IdentityMissing"
+    assert "没有可用的业务单号字段" in body["error"]["message"]
+    assert body["error"]["diagnostic"]["identityFieldsPresent"] == []
+    assert body["error"]["diagnostic"]["matched"] == 1
+
+
+def test_document_no_discovery_zero_match_reports_reason_and_coverage(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    rows = [{"incident": "FLOW-A", "documentNo": "F610S-3D-0001"}]
+    _document_no_discovery(monkeypatch, rows)
+
+    response = _post_document_no_discovery(client, "F610S-3D-9999")
+
+    data = response.get_json()["data"]
+    assert data["state"] == "not_found"
+    assert data["reason"] == "serial_no_match"
+    assert data["serialMatch"]["scanned"] == 1
+    assert data["serialDiagnostic"]["matchedRows"] == 0
+    assert data["serialDiagnostic"]["identityFieldsPresent"] == ["documentNo", "incident"]
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("3D-00001018 3D-00001012", "一次只能填一个"),
+        ("3D-00001018\u200b", "不可见字符"),
+        ("３Ｄ-００００１０１８", "一次只能填一个"),
+    ],
+)
+def test_document_no_discovery_rejects_multi_value_before_crawl(client, monkeypatch, value, expected) -> None:  # type: ignore[no-untyped-def]
+    """单值 fail-closed（2026-10-10）：多值/不可见字符/全角在抓取前拒绝，不白跑全量抓取。"""
+    seen = _document_no_discovery(monkeypatch, [])
+
+    response = _post_document_no_discovery(client, value)
+
+    assert response.status_code == 400
+    assert expected in response.get_json()["error"]["message"]
+    assert seen == []
+
+
+def test_document_no_discovery_requires_authoritative_incident_field(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """单记录绑定只认权威字段 incident：命中行缺它时 fail-closed，不悄悄改用 formId。"""
+    rows = [{"formId": "FORM-9", "documentNo": "3D-00001018", "partNumber": "P-1"}]
+    _document_no_discovery(monkeypatch, rows)
+
+    response = _post_document_no_discovery(client, "3D-00001018")
+
+    assert response.status_code == 422
+    body = response.get_json()
+    assert body["error"]["type"] == "IdentityMissing"
+    assert "权威业务单号字段" in body["error"]["message"]
+    assert body["error"]["diagnostic"]["authoritativeField"] == "incident"
+    assert body["error"]["diagnostic"]["identityFieldUsed"] == ["formId"]
+
+
+def test_document_no_discovery_incomplete_crawl_wins_over_zero_match(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """抓取不完整优先于「未找到」：serial_no_match 只在完整抓取时才允许出现。"""
+    rows = [{"incident": "FLOW-A", "documentNo": "F610S-3D-0001"}]
+    _document_no_discovery(monkeypatch, rows, complete=False, stop_reason="max_pages")
+
+    response = _post_document_no_discovery(client, "F610S-3D-9999")
+
+    assert response.status_code == 422
+    body = response.get_json()
+    assert body["error"]["type"] == "IncompleteDiscovery"
+    assert body["error"]["type"] != "IdentityMissing"  # 机器码可区分，供消费者分发
+
+
+def test_document_no_discovery_diagnostic_has_no_business_values(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """诊断只给字段名与计数；字段报告仍由行键构成（60 列不被新键污染）。"""
+    row = {"formId": "FORM-9", "incident": "50667733", "documentNo": "3D-00001018"}
+    for index in range(57):
+        row[f"extraField{index:02d}"] = f"v{index}"
+    _document_no_discovery(monkeypatch, [row])
+
+    response = _post_document_no_discovery(client, "3D-00001018")
+
+    assert response.status_code == 200
+    data = response.get_json()["data"]
+    assert data["state"] == "matched"
+    assert len(data["fieldReport"]["fields"]) == 60
+    diagnostic = data["serialDiagnostic"]
+    assert diagnostic["identityFieldUsed"] == ["incident"]
+    assert diagnostic["authoritativeField"] == "incident"  # 字段名，不是业务值
+    assert diagnostic["matchedRows"] == 1
+    assert all(
+        value is None or isinstance(value, (int, list))
+        for key, value in diagnostic.items()
+        if key != "authoritativeField"
+    )
+    serialized = json.dumps(diagnostic, ensure_ascii=False)
+    assert "3D-00001018" not in serialized
+    assert "50667733" not in serialized
+    assert "FORM-9" not in serialized
 
 
 def test_document_no_discovery_rejects_incomplete_crawl(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]

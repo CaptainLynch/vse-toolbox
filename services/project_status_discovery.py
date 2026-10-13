@@ -53,9 +53,16 @@ def _scalar(value: Any) -> str | None:
     return text or None
 
 
-def _key(row: Mapping[str, Any]) -> str | None:
-    value = record_identity(row)
+def _key(row: Mapping[str, Any], report_type: str | None = None) -> str | None:
+    value = record_identity(row, report_type=report_type)
     return value or None
+
+
+def _report_type(deliverable_id: str) -> str | None:
+    """能力注册表的 reportType：身份字段顺序与聚合摘要口径的单一来源。"""
+    capabilities = PROJECT_STATUS_SOURCE_CAPABILITIES.get(str(deliverable_id), {})
+    report = str(capabilities.get("reportType") or "").strip()
+    return report or None
 
 
 def _aggregate_report(deliverable_id: str) -> str | None:
@@ -65,9 +72,7 @@ def _aggregate_report(deliverable_id: str) -> str | None:
     因此取证/预览端也必须传同一类型，否则预览仍显示旧「单号：状态」明细而执行
     写入「共 N 条；状态计数」摘要。
     """
-    capabilities = PROJECT_STATUS_SOURCE_CAPABILITIES.get(str(deliverable_id), {})
-    report = str(capabilities.get("reportType") or "").strip()
-    return report or None
+    return _report_type(deliverable_id)
 
 
 class MappingDiscoveryService:
@@ -103,10 +108,11 @@ class MappingDiscoveryService:
             raise ValueError("upstream_total must be a non-negative integer or None")
         if selected_external_key is not None and not isinstance(selected_external_key, str):
             raise ValueError("selected_external_key must be a string or null")
+        report_type = _report_type(deliverable_id)
         safe_rows = [self._safe_row(row) for row in rows]
         full_rows = [self._candidate_row(row) for row in rows]
-        keyed = [(key, row) for row in safe_rows if (key := _key(row))]
-        full_keyed = [(key, row) for row in full_rows if (key := _key(row))]
+        keyed = [(key, row) for row in safe_rows if (key := _key(row, report_type))]
+        full_keyed = [(key, row) for row in full_rows if (key := _key(row, report_type))]
         selected = str(selected_external_key or "").strip() or None
 
         current_policy = self.db.get_project_status_update_policy(deliverable_id)
@@ -149,12 +155,19 @@ class MappingDiscoveryService:
 
         aggregated_candidate_values: dict[str, Any] | None = None
         cache_records: list[tuple[str, dict[str, Any]]] = []
+        reason: str | None = None
         if aggregate:
             # 聚合观测（用户 2026-09-13 确认：按车型聚合全部匹配记录）：
             # 不做单记录筛选/歧义判定；指纹为全部记录单号的集合哈希，
             # 连续两次指纹一致即视为报表范围稳定。
-            records = full_keyed if versioned_ewo else identified_records(full_rows)
-            display_records = keyed if versioned_ewo else identified_records(safe_rows)
+            records = (
+                full_keyed if versioned_ewo
+                else identified_records(full_rows, report_type=report_type)
+            )
+            display_records = (
+                keyed if versioned_ewo
+                else identified_records(safe_rows, report_type=report_type)
+            )
             candidates = display_records
             cache_records = records
             if not records:
@@ -177,6 +190,11 @@ class MappingDiscoveryService:
             cache_records = full_candidates
             if not candidates:
                 state, external_key, fingerprint = "not_found", selected, None
+                if selected is not None and keyed:
+                    # 不变量哨兵：选中键非空、行集非空，却没有候选 —— 只可能是
+                    # 「选中键」与「候选过滤键」来自不同身份字段（2026-10-10
+                    # 数模生产事故）。修复后不可达，保留作回归保护。
+                    reason = "selected_not_in_candidates"
             elif len(candidates) > 1:
                 state, external_key, fingerprint = "ambiguous", selected, None
             else:
@@ -215,6 +233,7 @@ class MappingDiscoveryService:
             "observationId": observation_id, "state": state,
             "externalKey": external_key, "candidateCount": len(candidates),
             "candidates": summaries, "fieldReport": report,
+            "reason": reason,
             "stability": {"confirmed": progress, "required": 2, "ready": progress >= 2},
         }
 
@@ -244,6 +263,7 @@ class MappingDiscoveryService:
                 "candidateCount": total_count,
                 "candidates": [],
                 "fieldReport": {"fields": []},
+                "reason": "stability_baseline_missing",
                 "stability": {"confirmed": 0, "required": 2, "ready": False},
                 "mismatch": None,
             }
@@ -260,7 +280,10 @@ class MappingDiscoveryService:
             baseline_payload = {}
 
         safe_samples = [self._safe_row(r) for r in sample_rows]
-        sample_keys = {k for r in safe_samples if (k := _key(r))}
+        sample_report_type = _report_type(deliverable_id)
+        sample_keys = {
+            k for r in safe_samples if (k := _key(r, sample_report_type))
+        }
         mismatch: dict[str, Any] | None = None
 
         # 1. 总数：上游声明总数对声明总数（legacy 回退：去重后候选数，不同源但保底）。
@@ -357,6 +380,7 @@ class MappingDiscoveryService:
             "candidateCount": total_count,
             "candidates": json.loads(summaries_json),
             "fieldReport": json.loads(report_json),
+            "reason": None,
             "stability": {"confirmed": progress, "required": 2, "ready": progress >= 2},
             "mismatch": mismatch,
         }

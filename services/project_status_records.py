@@ -33,6 +33,40 @@ IDENTITY_FIELDS: tuple[str, ...] = (
     "NCR编号", "ncrNo", "ncr_no",
 )
 
+#: 按**报表类型**覆盖身份字段优先顺序。只覆盖有契约依据的报表，其余报表
+#: 沿用 ``IDENTITY_FIELDS``（行为逐字不变，避免影响 ARAS/EWO/NCR/SOR）。
+#:
+#: `data_model`：externalKey 的权威字段是第 0 列实例号 ``incident``
+#: （core/report_contracts.py 第 0 列、向导/运行期绑定键语义）；``formId`` 只是
+#: TDC 候选键（services/tdc_contract_probe.py），不得抢占 externalKey 语义。
+#: 上游列表行一旦开始返回 ``formId``，旧顺序会让「本地匹配到的行」与
+#: 「选中键」指向不同字段 → 命中 0 行（2026-10-10 生产事故，见
+#: docs/TDC_DM_WIZARD_DISCOVERY_ROOTCAUSE_20261010.md）。
+IDENTITY_FIELD_ORDERS: dict[str, tuple[str, ...]] = {
+    "data_model": ("incident",) + tuple(
+        field for field in IDENTITY_FIELDS if field != "incident"
+    ),
+}
+
+
+def identity_fields(report_type: str | None = None) -> tuple[str, ...]:
+    """报表类型 -> 身份字段顺序；未覆盖的报表返回默认顺序。"""
+    key = str(report_type or "").strip().lower()
+    return IDENTITY_FIELD_ORDERS.get(key, IDENTITY_FIELDS)
+
+
+#: 各报表的**权威** externalKey 字段（契约列定义）。非 None 时，单记录绑定只接受
+#: 该字段；`IDENTITY_FIELD_ORDERS` 的回退序只用于聚合与展示——否则上游一旦不再
+#: 返回该列，绑定会悄悄换成另一个键（顾问复核 2026-10-10 A1）。
+AUTHORITATIVE_IDENTITY_FIELDS: dict[str, str] = {"data_model": "incident"}
+
+
+def authoritative_identity_field(report_type: str | None = None) -> str | None:
+    """报表类型 -> 权威 externalKey 字段；无契约声明的报表返回 None（沿用回退序）。"""
+    key = str(report_type or "").strip().lower()
+    return AUTHORITATIVE_IDENTITY_FIELDS.get(key)
+
+
 _AGGREGATE_FINGERPRINT_PREFIX = "agg:"
 _IDENTITY_MAX_LEN = 1000
 MAX_AGGREGATE_RECORDS = 5000
@@ -89,15 +123,34 @@ def clean_identity(value: Any) -> str:
     return text
 
 
-def record_identity(row: Mapping[str, Any]) -> str:
-    """提取行业务单号（无单号返回空串）。"""
-    for field in IDENTITY_FIELDS:
+def _identity_pair(
+    row: Mapping[str, Any],
+    report_type: str | None = None,
+) -> tuple[str, str] | None:
+    """-> (命中的身份字段名, 规范化单号)；无身份返回 None。"""
+    for field in identity_fields(report_type):
         value = row.get(field)
         if value:
             cleaned = clean_identity(value)
             if cleaned:
-                return cleaned
-    return ""
+                return field, cleaned
+    return None
+
+
+def record_identity(row: Mapping[str, Any], *, report_type: str | None = None) -> str:
+    """提取行业务单号（无单号返回空串）。
+
+    ``report_type`` 只影响字段优先顺序（见 ``IDENTITY_FIELD_ORDERS``）；
+    不传时与历史行为逐字一致。
+    """
+    pair = _identity_pair(row, report_type)
+    return pair[1] if pair else ""
+
+
+def identity_field_name(row: Mapping[str, Any], *, report_type: str | None = None) -> str | None:
+    """该行实际被采用的身份字段名（诊断用；只暴露字段名，不暴露值）。"""
+    pair = _identity_pair(row, report_type)
+    return pair[0] if pair else None
 
 
 _IDENTITY_DIGEST_LEN = 16
@@ -115,17 +168,22 @@ def identity_digest(value: str) -> str:
 
 def identified_records(
     rows: Sequence[Mapping[str, Any]],
+    *,
+    report_type: str | None = None,
 ) -> list[tuple[str, dict[str, Any]]]:
     """按单号识别记录：无单号行一致排除；按单号排序保证重排不变。
 
     重复单号不静默丢弃（保留全部内容，指纹与风险备注均可见）。
     超限（>MAX_AGGREGATE_RECORDS）时 fail-closed 抛出 ValueError。
+    ``report_type`` 只影响身份字段优先顺序（与发现端/连接器同源）。
     """
     if len(rows) > MAX_AGGREGATE_RECORDS:
         raise ValueError(
             f"record count {len(rows)} exceeds maximum {MAX_AGGREGATE_RECORDS}"
         )
-    identified = [(record_identity(row), dict(row)) for row in rows]
+    identified = [
+        (record_identity(row, report_type=report_type), dict(row)) for row in rows
+    ]
     identified = [(key, row) for key, row in identified if key]
     return sorted(identified, key=lambda item: item[0])
 

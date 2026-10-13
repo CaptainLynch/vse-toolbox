@@ -56,6 +56,14 @@ const initDmDoc = P.wizardInitialValues({matchRule: {documentNo: "3D-00001018"}}
 // 存量 incident 绑定：number 回填实例号，documentNo 框必须为空（不跨键转换）。
 const initDmLegacy = P.wizardInitialValues({matchRule: {incident: "51553863"}}, caps("data_model", "tdc"), true);
 const dmPrecheckBoth = P.wizardPrecheck({credential: "domain", model: "", number: "51553863", documentNo: "3D-00001018", status: "", sections: [], interval: "15", defaultDept: "车体工程"}, {}, caps("data_model", "tdc"), true);
+const dmValues = (documentNo) => ({credential: "domain", model: "F610S", number: "", documentNo, status: "", sections: [], interval: "15", defaultDept: "车体工程"});
+const dmPrecheckOk = P.wizardPrecheck(dmValues("3D-00001018"), {}, caps("data_model", "tdc"), true);
+const dmPrecheckMulti = P.wizardPrecheck(dmValues("3D-00001018 3D-00001012"), {}, caps("data_model", "tdc"), true);
+const dmPrecheckZeroWidth = P.wizardPrecheck(dmValues("3D-00001018\u200b"), {}, caps("data_model", "tdc"), true);
+const dmPrecheckFullWidth = P.wizardPrecheck(dmValues("３Ｄ-００００１０１８"), {}, caps("data_model", "tdc"), true);
+const notMatchedSerial = P.wizardNotMatchedMessage({state: "not_found", candidateCount: 0, fieldReport: {fields: []}, reason: "serial_no_match", serialMatch: {scanned: 4, matched: 0}});
+const notMatchedEmpty = P.wizardNotMatchedMessage({state: "not_found", candidateCount: 0, fieldReport: {fields: []}, serialMatch: {scanned: 0, matched: 0}});
+const notMatchedLegacy = P.wizardNotMatchedMessage({state: "not_found", candidateCount: 0, fieldReport: {fields: []}});
 const initNcr = P.wizardInitialValues({matchRule: {sectionScope: ["车身科", 7]}}, caps("ncr_detail"), true);
 const keep = P.buildPolicyPayload({id: "VPI-T2-D7"}, {reportType: "ncr_progress", sourceType: "aras", sectionScopePresets: ["车身科"], matchFields: [["projectModel", "车型项目"]]},
   {matchRule: {projectModel: "F610S", sectionScope: ["车身科", "内饰科"]}}, {mode: "automatic", enabled: false, match: {projectModel: "F610S"}, authority: {}, mapping: {}, interval: "15"});
@@ -74,6 +82,13 @@ console.log(JSON.stringify({
   initDmDoc: {documentNo: initDmDoc.documentNo, number: initDmDoc.number},
   initDmLegacy: {documentNo: initDmLegacy.documentNo, number: initDmLegacy.number},
   dmPrecheckBoth,
+  dmPrecheck: {
+    ok: dmPrecheckOk, multi: dmPrecheckMulti,
+    zeroWidth: dmPrecheckZeroWidth, fullWidth: dmPrecheckFullWidth,
+  },
+  notMatched: {
+    serial: notMatchedSerial, empty: notMatchedEmpty, legacy: notMatchedLegacy,
+  },
   gate: [
     P.stabilityGateFailureMessage({mismatch: {reason: "total_mismatch", expected: 100, actual: 101}}),
     P.stabilityGateFailureMessage({mismatch: {reason: "sample_not_in_baseline"}}),
@@ -113,6 +128,15 @@ def test_wizard_payloads_per_report_kind() -> None:
     assert data["initDmLegacy"] == {"documentNo": "", "number": "51553863"}
     # 同填流水单号与实例号被 precheck 拦截。
     assert "二选一" in data["dmPrecheckBoth"]
+    # 单值 fail-closed（2026-10-10）：多值/不可见字符/全角在向导内先拦。
+    assert data["dmPrecheck"]["ok"] == ""
+    assert "一次只能填一个" in data["dmPrecheck"]["multi"]
+    assert "不可见字符" in data["dmPrecheck"]["zeroWidth"]
+    assert "一次只能填一个" in data["dmPrecheck"]["fullWidth"]
+    # 0 命中时给出可判别的原因（扫描行数 / 上游 0 行），旧后端缺字段时回退原文案。
+    assert "已完整扫描 4 行" in data["notMatched"]["serial"]
+    assert "上游按当前车型/筛选条件返回 0 行" in data["notMatched"]["empty"]
+    assert data["notMatched"]["legacy"].endswith("请核对车型与筛选条件后重试。")
     # PAA ignores the status field entirely
     assert "status" not in data["paa"]["filters"] and "approval_status" not in data["paa"]["filters"]
     assert data["initSor"] == "审批中" and data["initDm"] == "已完成" and data["initNcr"] == ["车身科", "7"]

@@ -108,6 +108,10 @@ from services.project_status_discovery import MappingDiscoveryService
 from services.project_status_records import (
     COMPLETE_RESULT_STOP_REASONS,
     MAX_AGGREGATE_RECORDS,
+    authoritative_identity_field,
+    identity_field_name,
+    identity_fields,
+    record_identity,
 )
 from services.project_status_analytics import ProjectStatusAnalyticsService
 from services.project_status_deliverable_analysis import (
@@ -128,7 +132,12 @@ from services.project_status_sync_runner import (
     create_production_registry,
 )
 from services.project_status_connectors import build_project_status_ewo_filters
-from services.data_model_watchlist import match_serial, match_serials
+from services.data_model_watchlist import (
+    WatchlistError,
+    match_serial,
+    match_serials,
+    normalize_single_serial,
+)
 from services.scheduled_archive_admin import (
     ArchiveAdminValidationError,
     ScheduledArchiveAdminService,
@@ -1393,6 +1402,12 @@ def _mapping_discovery_query_identity(
         if str(rule.get("documentNo") or "").strip() and str(rule.get("incident") or "").strip():
             raise error_type("流水单号与实例号二选一：请只填写其中一项")
         if rule.get("documentNo"):
+            # 单值 fail-closed（2026-10-10）：向导这条路径是单值精确匹配，多值整串
+            # 必然 0 行；在抓取前拒绝，避免白跑一次全量抓取。
+            try:
+                rule["documentNo"] = normalize_single_serial(rule["documentNo"])
+            except WatchlistError as exc:
+                raise error_type(str(exc)) from None
             # 流水单号（documentNo）不是 TDC 查询参数（查询参数 incident 是第 0 列
             # 实例号）：该值绝不发给上游，改为全量抓取后由调用方本地精确匹配。
             values.pop("document_no", None)
@@ -1418,6 +1433,39 @@ def _pagination_diagnostic(result: Any, row_count: int) -> dict[str, Any]:
         "declaredTotal": _bounded_int("total"),
         "declaredPages": _bounded_int("pages"),
         "fetchedPages": _bounded_int("fetched_pages"),
+    }
+
+
+def _serial_identity_diagnostic(
+    rows: Sequence[Mapping[str, Any]],
+    report_type: str | None,
+    serial_match: Mapping[str, Any] | None,
+    *,
+    used_fields: Sequence[str] = (),
+    distinct_identities: int = 0,
+) -> dict[str, Any]:
+    """流水单号本地匹配的身份事实（只给字段名与计数，不含业务值）。
+
+    2026-10-10 数模生产事故：命中行与选中键来自不同身份字段时，旧实现只回
+    「未匹配（命中 0 行）」，用户无法区分「上游没数据」「单号不在范围内」
+    「身份字段对不上」。这里把判别所需的最小事实一并返回。
+    """
+    present = sorted(
+        {
+            str(name)
+            for row in rows
+            for name in identity_fields(report_type)
+            if row.get(name) not in (None, "")
+        }
+    )
+    return {
+        "scanned": serial_match.get("scanned") if serial_match else None,
+        "matched": serial_match.get("matched") if serial_match else None,
+        "matchedRows": serial_match.get("matched") if serial_match else None,
+        "identityFieldsPresent": present,
+        "identityFieldUsed": sorted({str(name) for name in used_fields}),
+        "authoritativeField": authoritative_identity_field(report_type),
+        "distinctIdentities": distinct_identities,
     }
 
 
@@ -5095,12 +5143,73 @@ def create_app(
                         if cache_key:
                             _set_discovery_session_cache(cache_key, rows, upstream_declared_total)
                     serial_match: dict[str, Any] | None = None
+                    serial_diagnostic: dict[str, Any] | None = None
                     effective_selected = selected
                     if document_no:
-                        # 本地精确匹配是流水单号的唯一判定依据：恰好命中 1 行才放行，
-                        # 并把该行的实例号 incident 作为有效查询结果（线上参数语义）。
+                        # 本地精确匹配是流水单号的唯一判定依据（上游没有该查询参数）。
+                        # 选中键必须与 observe() 的候选过滤键同源——同一个身份函数、
+                        # 同一行——否则命中行会被 selected 过滤掉而误报「未匹配」
+                        # （2026-10-10 生产事故：行内含 formId 时身份 ≠ 实例号）。
                         matched, serial_match = match_serial(rows, document_no)
+                        report_type = str(
+                            PROJECT_STATUS_SOURCE_CAPABILITIES.get(deliverable_id, {}).get(
+                                "reportType"
+                            )
+                            or ""
+                        ) or None
+                        used_fields: list[str] = []
+                        identity_values: list[str] = []
+                        for row in matched:
+                            field_name = identity_field_name(row, report_type=report_type)
+                            value = record_identity(row, report_type=report_type)
+                            if field_name and value:
+                                used_fields.append(field_name)
+                                identity_values.append(value)
+                        distinct_identities = sorted(set(identity_values))
+                        authoritative_field = authoritative_identity_field(report_type)
+                        # 单记录绑定只认契约里的权威字段（数模 = 第 0 列实例号 incident）：
+                        # 上游一旦不再返回该列，绑定不得悄悄换成 formId 等候选键。
+                        missing_authoritative = bool(authoritative_field) and any(
+                            row.get(str(authoritative_field)) in (None, "") for row in matched
+                        )
+                        serial_diagnostic = _serial_identity_diagnostic(
+                            rows,
+                            report_type,
+                            serial_match,
+                            used_fields=used_fields,
+                            distinct_identities=len(distinct_identities),
+                        )
+                        if matched and not identity_values:
+                            # fail-closed：命中行没有任何可用身份字段，externalKey 无法成立。
+                            raise _TDCRequestError(
+                                "流水单号命中了行，但命中行没有可用的业务单号字段"
+                                "（实例号 incident / 流水单号 / formId 均为空）；"
+                                "上游结构可能已变化，请重新进行映射发现",
+                                "IdentityMissing",
+                                422,
+                                None,
+                                serial_diagnostic,
+                            )
+                        if matched and missing_authoritative:
+                            raise _TDCRequestError(
+                                f"流水单号命中了行，但命中行缺少权威业务单号字段"
+                                f"（{authoritative_field}），无法建立单记录绑定；"
+                                "上游结构可能已变化，请重新进行映射发现",
+                                "IdentityMissing",
+                                422,
+                                None,
+                                serial_diagnostic,
+                            )
+                        if len(distinct_identities) > 1:
+                            raise _TDCRequestError(
+                                "该流水单号命中了多行且身份不唯一，请核对后重试",
+                                "IdentityAmbiguous",
+                                400,
+                                None,
+                                serial_diagnostic,
+                            )
                         if len(matched) > 1:
+                            # 同一实例多行（part_detail 粒度）仍不能构成单记录绑定。
                             raise _TDCRequestError("该流水单号命中多行，请核对后重试")
                         if upstream_declared_total is None:
                             # 本地匹配不改变上游范围：基线总数仍是全量抓取的行数，
@@ -5108,7 +5217,7 @@ def create_app(
                             upstream_declared_total = len(rows)
                         rows = matched
                         effective_selected = (
-                            serial_match["matched_instances"][0] if matched else None
+                            distinct_identities[0] if distinct_identities else None
                         )
                     observation = discovery_service.observe(
                         deliverable_id, "tdc", rows, effective_selected,
@@ -5116,9 +5225,20 @@ def create_app(
                         upstream_total=upstream_declared_total,
                     )
                     if serial_match is not None:
-                        # 0 行时仍走既有「未匹配」路径（state=not_found），但附带
-                        # 覆盖范围，用户能看到抓了多少行/多少页，而不是只看到"未匹配"。
-                        observation = {**observation, "serialMatch": serial_match}
+                        # 0 行时仍走既有「未匹配」路径（state=not_found），但附带覆盖范围
+                        # 与身份事实，用户能看到抓了多少行、身份字段是哪个，而不是只看到
+                        # "未匹配"（2026-10-10：命中行身份 ≠ 选中键时曾静默变成未匹配）。
+                        observation = {
+                            **observation,
+                            "serialMatch": serial_match,
+                            "serialDiagnostic": serial_diagnostic,
+                        }
+                        if (
+                            not matched
+                            and observation.get("state") == "not_found"
+                            and not observation.get("reason")
+                        ):
+                            observation = {**observation, "reason": "serial_no_match"}
                     return observation
                 if cached_rows is not None:
                     rows = cached_rows
@@ -5654,32 +5774,11 @@ def create_app(
             )
             return _json_error(409, block_type, block_reason)
         try:
-            payload = request.get_json(silent=True) or {}
-            raw_car_type = payload.get("carType") or payload.get("car_type") or payload.get("model")
-            if raw_car_type is not None and isinstance(raw_car_type, str):
-                if any(ord(c) < 32 or ord(c) == 127 for c in raw_car_type):
-                    raise ValueError("carType contains control characters")
-                car_type = raw_car_type.strip()
-                if car_type:
-                    if len(car_type) > 80:
-                        raise ValueError("carType is too long")
-                    runner = ProjectStatusSyncRunner(
-                        db,
-                        update_service,
-                        create_production_registry(),
-                        analysis_service=deliverable_analysis_service,
-                    )
-                    data = runner.sync_by_car_type(deliverable_id, car_type)
-                    response = jsonify({"ok": True, "data": data})
-                    response.headers["Cache-Control"] = "no-store"
-                    return response
-
             update_service.assert_sync_ready(deliverable_id)
             runner = ProjectStatusSyncRunner(
                 db,
                 update_service,
                 create_production_registry(),
-                analysis_service=deliverable_analysis_service,
             )
             result = runner.run_once(
                 deliverable_id=deliverable_id,
@@ -5708,63 +5807,9 @@ def create_app(
         except KeyError:
             return _json_error(404, "NotFound", "未找到交付物")
         except SyncBindingNotReadyError as exc:
-            # 必须先于 `except ValueError`：SyncBindingNotReadyError 是 ValueError 子类，
-            # 顺序反了会把 409 SyncNotReady 降级成 422 ValidationError。
             return _json_error(409, "SyncNotReady", _sanitize_error_message(exc))
-        except ValueError as exc:
-            return _json_error(422, "ValidationError", _sanitize_error_message(exc))
         except Exception as exc:
             logger.exception("project status sync-now failed")
-            return _json_error(500, "ServerError", _sanitize_error_message(exc))
-
-    @app.post("/api/project-status/deliverables/<deliverable_id>/sync-by-car-type")
-    def api_project_status_sync_by_car_type(deliverable_id: str):
-        local_error = _local_web_mutation_error()
-        if local_error is not None:
-            return local_error
-        _, _, sync_now_deliverable_rows = db.get_project_status("VPI-T2")
-        if deliverable_id not in {str(row["id"]) for row in sync_now_deliverable_rows}:
-            return _json_error(404, "NotFound", "未找到交付物")
-        sync_block = PROJECT_STATUS_SOURCE_CAPABILITIES.get(deliverable_id, {})
-        if not sync_block.get("syncCapable"):
-            block_type = str(sync_block.get("syncBlockType") or "ManualOnly")
-            block_reason = (
-                AFACE_CONTRACT_BLOCKER
-                if block_type == "ContractBlocked"
-                else str(sync_block.get("blockReason") or "该交付物仅允许手工维护")
-            )
-            return _json_error(409, block_type, block_reason)
-        payload = request.get_json(silent=True) or {}
-        raw_car_type = payload.get("carType") or payload.get("car_type") or payload.get("model")
-        if not raw_car_type or not isinstance(raw_car_type, str):
-            return _json_error(422, "ValidationError", "缺少车型参数 carType")
-        if any(ord(c) < 32 or ord(c) == 127 for c in raw_car_type):
-            return _json_error(422, "ValidationError", "车型参数包含非法控制字符")
-        car_type = raw_car_type.strip()
-        if not car_type:
-            return _json_error(422, "ValidationError", "车型参数不能为空")
-        if len(car_type) > 80:
-            return _json_error(422, "ValidationError", "车型参数不能超过 80 个字符")
-        try:
-            runner = ProjectStatusSyncRunner(
-                db,
-                update_service,
-                create_production_registry(),
-                analysis_service=deliverable_analysis_service,
-            )
-            data = runner.sync_by_car_type(deliverable_id, car_type)
-            response = jsonify({"ok": True, "data": data})
-            response.headers["Cache-Control"] = "no-store"
-            return response
-        except KeyError:
-            return _json_error(404, "NotFound", "未找到交付物")
-        except SyncBindingNotReadyError as exc:
-            # 同 sync-now：子类必须先捕获，否则 409 被 422 吞掉。
-            return _json_error(409, "SyncNotReady", _sanitize_error_message(exc))
-        except ValueError as exc:
-            return _json_error(422, "ValidationError", _sanitize_error_message(exc))
-        except Exception as exc:
-            logger.exception("project status sync by car type failed")
             return _json_error(500, "ServerError", _sanitize_error_message(exc))
 
     @app.get("/api/project-status/scheduler")

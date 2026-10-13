@@ -55,6 +55,29 @@ export function normalizeTdcDepartment(dept) {
   return trimmed;
 }
 
+/** 与后端 services/form_search._SEPARATORS 同源：空格/逗号/分号/顿号/换行/制表符。 */
+const DOCUMENT_NO_SEPARATORS = /[\s,;、]+/;
+/** 零宽/方向控制类不可见字符：trim() 去不掉，但会让上游精确匹配必然失败。 */
+const INVISIBLE_SERIAL_CHARS = /[\u0000-\u001f\u007f-\u009f\u00ad\u200b\u200c\u200d\u2060\ufeff]/;
+
+/**
+ * 数模「流水单号」是单值精确匹配字段：多值整串永远 0 行（2026-10-10 生产事故）。
+ * 与后端 normalize_single_serial 同语义，前端先拦，避免白跑一次全量抓取。
+ */
+export function documentNoSingleError(value) {
+  const text = ewoPolicyString(value);
+  if (!text) return "";
+  if (INVISIBLE_SERIAL_CHARS.test(text)) {
+    return "流水单号含不可见字符，请只填报表里的原文单号。";
+  }
+  const normalized = typeof text.normalize === "function" ? text.normalize("NFKC") : text;
+  const terms = normalized.split(DOCUMENT_NO_SEPARATORS).filter(Boolean);
+  if (terms.length !== 1 || terms[0] !== normalized || normalized !== text) {
+    return "流水单号一次只能填一个（检测到多个单号或全角字符）；如需按多个单号合并导出，请到交付物工作台使用「导出合并结果」。";
+  }
+  return "";
+}
+
 export function capabilitiesOf(item) {
   return item && item.sourceInfo && typeof item.sourceInfo === "object"
     ? item.sourceInfo
@@ -244,6 +267,8 @@ export function wizardPrecheck(values, policy, capabilities, vaultConfigured) {
   if (documentNo && specificNo) {
     return "流水单号与实例号二选一：请只填写其中一项（流水单号为 3D- 前缀，实例号为纯数字）。";
   }
+  const documentNoError = documentNoSingleError(documentNo);
+  if (documentNoError) return documentNoError;
   return "";
 }
 
@@ -329,10 +354,41 @@ export function dropDepartment(plan) {
   delete plan.matchRule.rspDepartment;
 }
 
+/** 0 命中时把「为什么没命中」讲清楚（只展示计数与字段名，不回显业务值）。 */
+export function wizardNotMatchedDetail(result) {
+  const source = result && typeof result === "object" ? result : {};
+  const reason = ewoPolicyString(source.reason);
+  const match = source.serialMatch && typeof source.serialMatch === "object" ? source.serialMatch : null;
+  const diagnostic = source.serialDiagnostic && typeof source.serialDiagnostic === "object" ? source.serialDiagnostic : null;
+  const scanned = match && Number.isFinite(Number(match.scanned)) ? Number(match.scanned) : null;
+  const matchedRows = diagnostic && Number.isFinite(Number(diagnostic.matchedRows)) ? Number(diagnostic.matchedRows) : null;
+  if (reason === "serial_no_match") {
+    return `已完整扫描 ${scanned === null ? "全部" : scanned} 行，未找到该流水单号（单号须与报表第 2 列原文完全一致）`;
+  }
+  if (reason === "identity_missing") {
+    return "流水单号命中了行，但命中行没有可用的业务单号字段（实例号/流水单号/formId 均为空），上游结构可能已变化，请重新进行映射发现";
+  }
+  if (reason === "identity_ambiguous") {
+    return "该流水单号命中了多行且身份不唯一，请核对后重试";
+  }
+  if (reason === "selected_not_in_candidates") {
+    return "命中行的身份字段与选中键不一致（已记录诊断，请把此提示反馈给维护者）";
+  }
+  if (scanned === 0) {
+    return "上游按当前车型/筛选条件返回 0 行，请核对车型项目取值";
+  }
+  if (scanned !== null && matchedRows !== null && scanned > 0) {
+    return `已扫描 ${scanned} 行，其中 ${matchedRows} 行命中但未构成有效候选，请核对筛选条件`;
+  }
+  return "";
+}
+
 export function wizardNotMatchedMessage(result) {
   const cCount = Number.isFinite(result.candidateCount) ? result.candidateCount : 0;
   const fCount = result.fieldReport && Array.isArray(result.fieldReport.fields) ? result.fieldReport.fields.length : 0;
-  return `映射发现未匹配（${ewoPolicyDiscoveryStateLabel(result.state)}，命中行数：${cCount}，字段数：${fCount}），请核对车型与筛选条件后重试。`;
+  const detail = wizardNotMatchedDetail(result);
+  const base = `映射发现未匹配（${ewoPolicyDiscoveryStateLabel(result.state)}，命中行数：${cCount}，字段数：${fCount}）`;
+  return detail ? `${base}：${detail}。` : `${base}，请核对车型与筛选条件后重试。`;
 }
 
 /** Step 3: field mapping + authority. Throws Error with the legacy wording. */
