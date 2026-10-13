@@ -52,6 +52,7 @@ from services.project_status_records import (
     MAX_AGGREGATE_RECORDS,
     aggregate_content_version,
     aggregate_fingerprint,
+    authoritative_record_identity,
     build_aggregate_candidate_values,
     identified_records,
     record_identity as _record_identity,
@@ -108,9 +109,12 @@ def _stable_version(row: Mapping[str, Any]) -> str:
 
 
 def _identity(row: Mapping[str, Any], report: str | None = None) -> str:
-    """行身份（externalKey）。``report`` 只决定身份字段优先顺序，与发现端同源：
-    数模的权威键是第 0 列实例号 incident，上游行新增 formId 后不得改变绑定键。"""
-    return _record_identity(row, report_type=report)
+    """行身份（externalKey）。``report`` 只决定身份字段优先顺序，与发现端同源。
+
+    单记录路径只接受**权威字段**（数模 = 第 0 列实例号 incident）：权威字段空白/缺失时
+    不得回退到 formId 等候选键（Codex 复核 2026-10-13 P0）。
+    """
+    return authoritative_record_identity(row, report_type=report)
 
 
 def _close_session(session: Any) -> None:

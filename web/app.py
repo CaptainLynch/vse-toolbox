@@ -110,9 +110,9 @@ from services.project_status_records import (
     COMPLETE_RESULT_STOP_REASONS,
     MAX_AGGREGATE_RECORDS,
     authoritative_identity_field,
+    authoritative_record_identity,
     identity_field_name,
     identity_fields,
-    record_identity,
 )
 from services.project_status_analytics import ProjectStatusAnalyticsService
 from services.project_status_deliverable_analysis import (
@@ -361,6 +361,8 @@ _TDC_MAX_PAGES_MAX = 10000
 _TDC_MAX_RECORDS_MAX = 1_000_000
 _TDC_XLSX_MIMETYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 _TDC_XLSX_NAME_RE = re.compile(r"^[^<>:\"/\\|?*\x00-\x1f]+\.xlsx$", re.IGNORECASE)
+#: 合并导出产物是 CSV：同一套安全校验换扩展名（见 `_tdc_merged_file_name`）。
+_TDC_CSV_NAME_RE = re.compile(r"^[^<>:\"/\\|?*\x00-\x1f]+\.csv$", re.IGNORECASE)
 _TDC_OFFICIAL_PREVIEW_MAX_ROWS = 50_001
 
 _DELIVERABLE_CATEGORIES = [
@@ -1632,7 +1634,12 @@ def _build_tdc_client_from_payload(
     return TDCCrawlerClient(base_url, headers=headers, timeout=30.0, output_dir=output_dir)
 
 
-def _tdc_file_name(value: Any) -> str | None:
+def _tdc_file_name(value: Any, *, pattern: re.Pattern[str] | None = None) -> str | None:
+    """校验用户提供的导出文件名（默认要求安全 `.xlsx` basename）。
+
+    ``pattern`` 允许合并导出这类产物扩展名不同的路径复用同一套安全校验
+    （长度/纯 basename/无穿越/无非法字符），避免为 `.csv` 另写一份校验。
+    """
     if value is None or (isinstance(value, str) and not value.strip()):
         return None
     if not isinstance(value, str):
@@ -1642,9 +1649,22 @@ def _tdc_file_name(value: Any) -> str | None:
         raise _TDCRequestError("file_name is too long")
     if Path(name).name != name or ".." in Path(name).parts:
         raise _TDCRequestError("file_name must be a plain basename without traversal")
-    if not _TDC_XLSX_NAME_RE.fullmatch(name):
+    if not (pattern or _TDC_XLSX_NAME_RE).fullmatch(name):
         raise _TDCRequestError("file_name must be a safe .xlsx basename")
     return name
+
+
+def _tdc_merged_file_name(value: Any) -> str | None:
+    """合并导出的文件名：接受 `.xlsx`（用户看到的是「XLSX 文件名」框）或 `.csv`。
+
+    Codex 复核 P2：产物是 CSV，但请求里的名字按 `.xlsx` 校验会让填 `.csv` 的用户
+    拿到「must be a safe .xlsx basename」。两种扩展名都放行，产物统一改写为 `.csv`。
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, str) and value.strip().lower().endswith(".csv"):
+        return _tdc_file_name(value, pattern=_TDC_CSV_NAME_RE)
+    return _tdc_file_name(value)
 
 
 def _tdc_query(
@@ -1734,10 +1754,17 @@ _STRICT_NUMBER_LITERAL = re.compile(r"^-?\d+(?:\.\d+)?$")
 
 
 def _csv_cell(value: Any) -> Any:
-    """单元格输出前的公式注入缓解（只处理文本，严格数字豁免）。"""
+    """单元格输出前的公式注入缓解（只处理文本，严格数字豁免）。
+
+    Codex 复核 P1：只检查首字符会漏掉"前导空白/控制字符 + 公式"的形态，
+    因此按**去掉前导空白后的首字符**判定；严格数字字面量（含前导空白）保持原样。
+    """
     if not isinstance(value, str) or not value:
         return value
-    if value[0] in _CSV_FORMULA_PREFIXES and not _STRICT_NUMBER_LITERAL.match(value):
+    probe = value.lstrip()
+    if not probe:
+        return value
+    if probe[0] in _CSV_FORMULA_PREFIXES and not _STRICT_NUMBER_LITERAL.match(probe):
         return "'" + value
     return value
 
@@ -3323,7 +3350,7 @@ def _tdc_report_export_merged(allowed_hosts: Sequence[str]):
         return error_response
     assert payload is not None
     try:
-        file_name = _tdc_file_name(payload.get("file_name")) or "tdc_data_model_merged.xlsx"
+        file_name = _tdc_merged_file_name(payload.get("file_name")) or "tdc_data_model_merged.xlsx"
         document_nos = _tdc_document_nos(payload)
         if not document_nos:
             raise _TDCRequestError("请先填写至少一个流水单号（多个用空格、逗号或换行分隔）")
@@ -5300,17 +5327,20 @@ def create_app(
                         used_fields: list[str] = []
                         identity_values: list[str] = []
                         for row in matched:
-                            field_name = identity_field_name(row, report_type=report_type)
-                            value = record_identity(row, report_type=report_type)
-                            if field_name and value:
-                                used_fields.append(field_name)
-                                identity_values.append(value)
+                            # 单记录绑定只认契约里的权威字段（数模 = 第 0 列实例号 incident）：
+                            # 权威字段空白/缺失时**不得**回退到 formId 等候选键（Codex 复核 P0）。
+                            value = authoritative_record_identity(row, report_type=report_type)
+                            if not value:
+                                continue
+                            identity_values.append(value)
+                            used_fields.append(
+                                identity_field_name(row, report_type=report_type) or ""
+                            )
                         distinct_identities = sorted(set(identity_values))
                         authoritative_field = authoritative_identity_field(report_type)
-                        # 单记录绑定只认契约里的权威字段（数模 = 第 0 列实例号 incident）：
-                        # 上游一旦不再返回该列，绑定不得悄悄换成 formId 等候选键。
-                        missing_authoritative = bool(authoritative_field) and any(
-                            row.get(str(authoritative_field)) in (None, "") for row in matched
+                        # 权威字段缺失（含空白值）：命中行数 > 可用权威身份数即 fail-closed。
+                        missing_authoritative = bool(authoritative_field) and (
+                            len(identity_values) != len(matched)
                         )
                         serial_diagnostic = _serial_identity_diagnostic(
                             rows,
@@ -5320,11 +5350,10 @@ def create_app(
                             distinct_identities=len(distinct_identities),
                         )
                         if matched and not identity_values:
-                            # fail-closed：命中行没有任何可用身份字段，externalKey 无法成立。
+                            # fail-closed：命中行没有可用的**权威**身份字段，externalKey 无法成立。
                             raise _TDCRequestError(
-                                "流水单号命中了行，但命中行没有可用的业务单号字段"
-                                "（实例号 incident / 流水单号 / formId 均为空）；"
-                                "上游结构可能已变化，请重新进行映射发现",
+                                "流水单号命中了行，但命中行没有可用的权威业务单号字段"
+                                "（实例号 incident）；上游结构可能已变化，请重新进行映射发现",
                                 "IdentityMissing",
                                 422,
                                 None,
@@ -5332,7 +5361,7 @@ def create_app(
                             )
                         if matched and missing_authoritative:
                             raise _TDCRequestError(
-                                f"流水单号命中了行，但命中行缺少权威业务单号字段"
+                                f"流水单号命中了行，但部分命中行缺少权威业务单号字段"
                                 f"（{authoritative_field}），无法建立单记录绑定；"
                                 "上游结构可能已变化，请重新进行映射发现",
                                 "IdentityMissing",

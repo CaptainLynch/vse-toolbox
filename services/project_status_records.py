@@ -153,6 +153,27 @@ def identity_field_name(row: Mapping[str, Any], *, report_type: str | None = Non
     return pair[0] if pair else None
 
 
+def authoritative_record_identity(
+    row: Mapping[str, Any],
+    *,
+    report_type: str | None = None,
+) -> str:
+    """**单记录绑定**用的身份：只接受权威字段（数模 = `incident`）清洗后非空的值。
+
+    `record_identity` 会按回退序取"第一个可用字段"，因此当权威字段是空白/缺失而
+    `formId` 等候选键有值时，它会回退到候选键——单记录绑定绝不允许这种回退
+    （Codex 复核 2026-10-13 P0：`incident=" "` + `formId` 非空可绕过权威字段约束）。
+    无契约声明的报表沿用 `record_identity`（行为不变）。
+    """
+    pair = _identity_pair(row, report_type)
+    if pair is None:
+        return ""
+    authoritative = authoritative_identity_field(report_type)
+    if authoritative is not None and pair[0] != authoritative:
+        return ""
+    return pair[1]
+
+
 _IDENTITY_DIGEST_LEN = 16
 
 

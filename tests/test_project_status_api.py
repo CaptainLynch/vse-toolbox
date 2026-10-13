@@ -798,7 +798,7 @@ def test_document_no_discovery_without_identity_field_is_fail_closed(client, mon
     assert response.status_code == 422
     body = response.get_json()
     assert body["error"]["type"] == "IdentityMissing"
-    assert "没有可用的业务单号字段" in body["error"]["message"]
+    assert "没有可用的权威业务单号字段" in body["error"]["message"]
     assert body["error"]["diagnostic"]["identityFieldsPresent"] == []
     assert body["error"]["diagnostic"]["matched"] == 1
 
@@ -848,7 +848,22 @@ def test_document_no_discovery_requires_authoritative_incident_field(client, mon
     assert body["error"]["type"] == "IdentityMissing"
     assert "权威业务单号字段" in body["error"]["message"]
     assert body["error"]["diagnostic"]["authoritativeField"] == "incident"
-    assert body["error"]["diagnostic"]["identityFieldUsed"] == ["formId"]
+    # 权威字段不可用 → 不产生"已用身份"；行里实际存在哪些身份字段看 identityFieldsPresent
+    assert body["error"]["diagnostic"]["identityFieldUsed"] == []
+    assert "formId" in body["error"]["diagnostic"]["identityFieldsPresent"]
+
+
+def test_document_no_discovery_rejects_whitespace_incident_without_form_id_fallback(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Codex 复核 P0：`incident` 只有空白时不得回退到 formId 建立绑定。"""
+    rows = [{"formId": "FORM-9", "incident": "   ", "documentNo": "3D-00001018"}]
+    _document_no_discovery(monkeypatch, rows)
+
+    response = _post_document_no_discovery(client, "3D-00001018")
+
+    assert response.status_code == 422
+    body = response.get_json()
+    assert body["error"]["type"] == "IdentityMissing"
+    assert body["error"]["diagnostic"]["identityFieldUsed"] == []
 
 
 def test_document_no_discovery_incomplete_crawl_wins_over_zero_match(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]

@@ -1,5 +1,31 @@
 # Current State
 
+## 2026-10-13 Codex 顾问代码审核（首次跑通）+ P0/P1/P2 处置
+
+- **路由修复（用户授权 A）**：`~/.dsh/skills/expert-advisor/advisor_policy.json` 里 `codex-readonly`
+  的 `binary_sha256` 由 `70bcb05f…` 更新为 `0e2a4cd6…`、`version` `codex-cli 0.156.1` → `0.159.0`
+  （实际二进制 mtime 2026-09-29，即升级后预检一直失败；这也是 10-10 那次 `--provider auto` exit 8 的原因）。
+  备份：`.runtime/advisor_policy.backup-20261013.json`（sha256 `2f7f0dd6…`）。strict `codex`（disabled）未改。
+- **Codex 顾问**：`codex-readonly` / `sol-xhigh` / `gpt-6-sol` / effort xhigh，run `6faacc6b58334bf18c25cca10f226396`，
+  包 `.runtime/consult-20261013-codex-code-review.md`（54,954 B，含 25 段代码摘录）。裁决 1=adopted、2=adopted、3=partial。
+- **P0（adopted，已修）**：`incident=" "`（清洗后为空）+ `formId` 非空时，`record_identity` 会回退到 `formId`，
+  而权威字段检查用原值判断 → 可绕过"单记录绑定必须 incident"。修法：新增
+  `services/project_status_records.authoritative_record_identity()`（只接受权威字段清洗后非空的值，否则返回空串），
+  **发现端**（`web/app.py` document_no 分支：`identity_values` 改用它，
+  `missing_authoritative = len(identity_values) != len(matched)`）与**运行期连接器**（`_identity()` 改用它）两处同源；
+  消息区分为"全部无权威字段"/"部分命中行缺权威字段"。用例：空白/空串/None/缺失 incident + formId →
+  发现端 422、连接器 not_found、`authoritative_record_identity` 单元断言。
+- **P1（adopted，已加固）**：`_csv_cell` 原只检查首字符，漏掉"前导空白/控制字符 + 公式"。
+  改为按**去掉前导空白后的首字符**判定（严格数字字面量含前导空白仍豁免）。用例：`"  =1+1"`、`"\t@SUM(A1)"` 转义；
+  `" -12.5"` 保持原样；内嵌换行经 `csv.reader` 回读完整且不产生额外数据行；500 字符单元格保留。
+- **P2（partial）**：新增 `_tdc_merged_file_name()`（`.xlsx` / `.csv` 都接受，复用
+  `_tdc_file_name(pattern=...)` 的同一套长度/basename/穿越/非法字符校验），合并导出改用它；
+  `.csv` 文件名用例 + 仍拒 `..\evil.csv`。顾问要求的"新结果键是否进入持久化载荷"本地已由既有用例锁定
+  （`reason`/`serialDiagnostic` 不进 `aggregated_candidate_json`、`fieldReport.fields` 仍等于行键集合）；
+  "重复点击并发"按顾问意见留给任务框架评估，前端两处按钮忙时禁用，记录为已知边界。
+- **门禁（本次修复后）**：聚焦 295 passed / 105 passed；flake8 改动文件 0 告警；项目地图重新生成并 verified；
+  全量 `pytest tests` 在提交后复跑（见下方/提交记录）。
+
 ## 2026-10-13 分支 feat/tdc-dm-identity-and-merged-export 已推送 + Windows 门禁复跑
 
 - **分支**：`feat/tdc-dm-identity-and-merged-export` @ `7aeda8e`（4 个提交，本地 = `origin` 同名分支，

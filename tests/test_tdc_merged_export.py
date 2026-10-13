@@ -125,12 +125,59 @@ def test_merged_export_csv_neutralizes_formula_prefixes() -> None:
     assert rows[0][index["流水单号"]] == "'+cmd|'/c calc'!A0"
     assert rows[0][index["零件号"]] == "'@SUM(A1)"
     assert rows[0][index["数模号"]] == "'-2+3"
-    assert rows[0][index["申请人"]] == "'\tTAB-START"
+    # 只以制表符开头的普通文本不是公式（Codex P1 起按"去掉前导空白后的首字符"判定）
+    assert rows[0][index["申请人"]] == "\tTAB-START"
     # 严格数字字面量必须保持原样（否则 Excel 会把它当文本，数值语义丢失）
     assert rows[1][index["零件号"]] == "-12.5"
     assert rows[1][index["数模号"]] == "普通文本"
     assert rows[1][index["流水单号"]] == "3D-00001018"
     assert b"\r\r\n" not in raw
+
+
+def test_merged_export_csv_handles_leading_whitespace_and_multiline_cells() -> None:
+    """Codex 复核 P1：前导空白/控制字符后的公式同样要转义；内嵌换行不得破坏行结构。"""
+    raw = web_app._tdc_merged_export_csv([
+        {
+            "incident": "  =1+1",
+            "documentNo": "\t@SUM(A1)",
+            "partNumber": " -12.5",
+            "modelNumber": "第一行\n第二行",
+            "applicant": "x" * 500,
+        },
+    ])
+    header, rows = _read_csv_rows(raw)
+    index = {label: position for position, label in enumerate(header)}
+    data = rows[0]
+
+    assert data[index["实例号"]] == "'  =1+1"
+    assert data[index["流水单号"]] == "'\t@SUM(A1)"
+    assert data[index["零件号"]] == " -12.5"          # 前导空白的严格数字仍保持数值语义
+    assert data[index["数模号"]] == "第一行\n第二行"   # 内嵌换行被正确引用，回读后完整
+    assert data[index["申请人"]] == "x" * 500
+    assert len(rows) == 1                              # 没有因为换行多出数据行
+
+
+def test_merged_export_accepts_csv_file_name(env, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Codex 复核 P2：产物是 CSV，请求里填 `.csv` 也应当被接受（同一套安全校验）。"""
+    monkeypatch.setattr(web_app, "TDCCrawlerClient", _fake_client())
+    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+
+    response = _post(env["client"], "3D-00001018", file_name="合并导出.csv")
+
+    assert response.status_code == 202
+    task = _wait(env["client"], response.get_json()["data"]["taskId"])
+    assert task["status"] == "succeeded", task.get("error_message")
+    artifacts = sorted((env["tmp"] / "downloads").glob("*.csv"))
+    assert artifacts and artifacts[0].name.startswith("合并导出")
+
+
+def test_merged_export_still_rejects_unsafe_csv_file_name(env, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr(web_app, "TDCCrawlerClient", _fake_client())
+    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+
+    response = _post(env["client"], "3D-00001018", file_name="..\\evil.csv")
+
+    assert response.status_code == 400
 
 
 def _read_csv_rows(raw: bytes) -> tuple[list[str], list[list[str]]]:

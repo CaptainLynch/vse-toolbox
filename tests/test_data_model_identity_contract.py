@@ -169,6 +169,33 @@ def test_authoritative_identity_field_is_declared_for_data_model() -> None:
     assert authoritative_identity_field(None) is None
 
 
+def test_authoritative_record_identity_never_falls_back_to_candidate_keys() -> None:
+    """Codex 复核 P0：权威字段空白/缺失时不得回退到 formId 等候选键。"""
+    from services.project_status_records import authoritative_record_identity
+
+    assert authoritative_record_identity(
+        {"incident": "50667733", "formId": "FORM-9"}, report_type="data_model"
+    ) == "50667733"
+    for row in (
+        {"incident": "   ", "formId": "FORM-9"},
+        {"incident": "", "formId": "FORM-9"},
+        {"incident": None, "formId": "FORM-9"},
+        {"formId": "FORM-9"},
+    ):
+        assert authoritative_record_identity(row, report_type="data_model") == ""
+    # 无契约声明的报表沿用 record_identity（回退序允许，行为不变）
+    assert authoritative_record_identity({"formId": "FORM-9"}, report_type="sor") == "FORM-9"
+
+
+def test_connector_does_not_match_by_fallback_identity() -> None:
+    """运行期单记录匹配同样不得用回退身份（否则会与 formId 键的绑定悄悄匹配）。"""
+    rows = [{"formId": "FORM-9", "incident": "   ", "documentNo": "3D-1"}]
+
+    snapshot = _snapshot(_context("FORM-9"), rows, [], report="data_model")
+
+    assert snapshot.match_state == "not_found"
+
+
 # ── 6. 签名金值：本次改动不得改变 matchRule 的签名字节（顾问复核 A6） ──────────
 
 def test_config_signature_gold_values_are_unchanged() -> None:
