@@ -501,7 +501,7 @@ class ProjectStatusUpdateService:
         }
         try:
             _validate_ewo_v2_policy(match_rule, mapping, external_key,
-                                    {key: 'automatic' for key in automatic_fields})
+                                    {field_name: 'automatic' for field_name in automatic_fields})
         except ValueError as exc:
             raise SyncBindingNotReadyError(str(exc)) from None
         if (
