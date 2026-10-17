@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -104,19 +105,71 @@ def test_sync_settings_lists_real_sources_and_audits_binding_edits(client):  # t
     snapshot_driven = [item for item in items.values() if item["kind"] == "archive"]
     assert snapshot_driven and all(item["jobKey"] for item in snapshot_driven)
 
-    # 列表里改间隔走宿主既有 update-policy 接口，并写进关联归档任务的配置审计（S14、S21）
+    before_binding = db.get_project_status_update_policy("VPI-T2-D5")["binding"]
+    before_revision = int(before_binding["sync_config_revision"] or 0)
+    assert before_binding["interval_minutes"] is None
+    assert "sectionScope" not in json.loads(before_binding["match_rule_json"])
+    with db.get_connection() as conn:
+        before_audit_id = int(conn.execute(
+            "SELECT COALESCE(MAX(id), 0) FROM project_status_binding_config_audit "
+            "WHERE deliverable_id = ?", ("VPI-T2-D5",),
+        ).fetchone()[0])
+        before_snapshots = [dict(row) for row in conn.execute(
+            "SELECT * FROM project_status_analysis_snapshots "
+            "WHERE deliverable_id = ? ORDER BY snapshot_at, id", ("VPI-T2-D5",),
+        ).fetchall()]
+        before_items = [dict(row) for row in conn.execute(
+            "SELECT * FROM project_status_analysis_items "
+            "WHERE deliverable_id = ? ORDER BY item_key", ("VPI-T2-D5",),
+        ).fetchall()]
+        before_cursor = conn.execute(
+            "SELECT cursor_json FROM project_status_update_bindings "
+            "WHERE deliverable_id = ?", ("VPI-T2-D5",),
+        ).fetchone()[0]
+    # 列表里改间隔走宿主既有 update-policy 接口，并写入专用绑定配置审计（S14、S21）
     response = http.patch("/api/project-status/deliverables/VPI-T2-D5/update-policy", json={"intervalMinutes": 30})
     assert response.get_json()["ok"] is True, response.get_json()
     after = {item["deliverableId"]: item for item in _ok(http.get(f"{API}/sync-settings"))["items"]}
     assert after["VPI-T2-D5"]["intervalMinutes"] == 30
     with db.get_connection() as conn:
-        row = conn.execute(
-            "SELECT a.changes_json FROM scheduled_archive_config_audit a JOIN scheduled_archive_jobs j ON j.id = a.job_id "
-            "WHERE j.project_status_deliverable_id = 'VPI-T2-D5' ORDER BY a.id DESC LIMIT 1"
-        ).fetchone()
-    assert row is not None
-    # from null：此前没有自己的间隔，跟随调度器频率
-    assert '"intervalMinutes":{"from":null,"to":30}' in row["changes_json"]
+        rows = conn.execute(
+            "SELECT * FROM project_status_binding_config_audit "
+            "WHERE deliverable_id = ? AND id > ? ORDER BY id",
+            ("VPI-T2-D5", before_audit_id),
+        ).fetchall()
+        after_snapshots = [dict(row) for row in conn.execute(
+            "SELECT * FROM project_status_analysis_snapshots "
+            "WHERE deliverable_id = ? ORDER BY snapshot_at, id", ("VPI-T2-D5",),
+        ).fetchall()]
+        after_items = [dict(row) for row in conn.execute(
+            "SELECT * FROM project_status_analysis_items "
+            "WHERE deliverable_id = ? ORDER BY item_key", ("VPI-T2-D5",),
+        ).fetchall()]
+        after_cursor = conn.execute(
+            "SELECT cursor_json FROM project_status_update_bindings "
+            "WHERE deliverable_id = ?", ("VPI-T2-D5",),
+        ).fetchone()[0]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["deliverable_id"] == "VPI-T2-D5"
+    assert row["actor"] == "local_web"
+    assert row["event_type"] == "configuration_updated"
+    assert row["config_revision"] == before_revision
+    assert isinstance(row["created_at"], str) and row["created_at"]
+    assert json.loads(row["changes_json"]) == {
+        "payloadVersion": 2, "source": "deliverable_sync_settings", "deliverableId": "VPI-T2-D5",
+        "beforeRevision": before_revision, "afterRevision": before_revision,
+        "scope": None,
+        "changes": {
+            "intervalMinutes": {"from": None, "to": 30, "changed": True}
+        },
+    }
+    after_binding = db.get_project_status_update_policy("VPI-T2-D5")["binding"]
+    assert after_binding["interval_minutes"] == 30
+    assert after_binding["sync_config_revision"] == before_revision
+    assert after_cursor == before_cursor
+    assert after_snapshots == before_snapshots
+    assert after_items == before_items
 
     # 关注清单范围但清单为空：同步设置写明缺「关注清单」（S15、S9）
     _ok(http.post(f"{API}/watchlist", json={"action": "scope", "scope": "watchlist"}))

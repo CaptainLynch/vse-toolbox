@@ -124,7 +124,7 @@ def test_policy_concurrent_before_state_is_current(bprime_audit_case):
     p1_authority = {row["field_name"]: row["authority"] for row in p1["authorities"]}
     assert p1_authority["owner"] == "automatic"
     assert json.loads(rows[-1]["changes_json"]) == {
-        "payloadVersion": 1, "source": "deliverable_sync_settings", "deliverableId": deliverable_id,
+        "payloadVersion": 2, "source": "deliverable_sync_settings", "deliverableId": deliverable_id,
         "beforeRevision": case["revision"] + 1, "afterRevision": case["revision"] + 2, "scope": None,
         "changes": {
             "externalKey": {"from": "SYNTHETIC_MARKER_1", "to": request["external_key"], "changed": True},

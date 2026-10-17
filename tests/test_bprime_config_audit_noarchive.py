@@ -57,7 +57,7 @@ def test_policy_audit_without_archive_job(bprime_audit_case):
     assert audit["event_type"] == "configuration_updated"
     assert isinstance(audit["created_at"], str) and audit["created_at"]
     assert json.loads(audit["changes_json"]) == {
-        "payloadVersion": 1, "source": "deliverable_sync_settings",
+        "payloadVersion": 2, "source": "deliverable_sync_settings",
         "deliverableId": deliverable_id, "beforeRevision": case["revision"],
         "afterRevision": expected_revision, "scope": None,
         "changes": {"externalKey": {"from": old, "to": new, "changed": True}}}

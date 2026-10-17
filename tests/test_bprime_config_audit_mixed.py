@@ -77,9 +77,12 @@ def test_policy_audit_mixed_sanitized(bprime_audit_case):
         "externalKey": {"from": binding["external_key"], "to": masked, "changed": True},
         "mapping": {"from": old_mapping, "to": dict(old_mapping, owner=masked), "changed": True},
         "fieldAuthority": {"from": old_authority, "to": new_authority, "changed": True},
-        "matchRule": {"from": sanitized_rule, "to": sanitized_rule, "changed": True}}
+        "matchRule": {
+            "from": {k: v for k, v in sanitized_rule.items() if k != "sectionScope"},
+            "to": {k: v for k, v in sanitized_rule.items() if k != "sectionScope"},
+            "changed": True}}
     assert json.loads(audit["changes_json"]) == {
-        "payloadVersion": 1, "source": "deliverable_sync_settings",
+        "payloadVersion": 2, "source": "deliverable_sync_settings",
         "deliverableId": deliverable_id, "beforeRevision": case["revision"],
         "afterRevision": expected_revision, "scope": None, "changes": expected_changes}
     assert all(marker not in audit["changes_json"] for marker in markers)

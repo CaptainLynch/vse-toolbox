@@ -36,7 +36,7 @@ def test_recorder_failure_rolls_back_all_related_state(bprime_audit_case, monkey
     assert binding["external_key"] != target["externalKey"]
     assert old_mapping != new_mapping
     expected = {
-        "payloadVersion": 1, "source": "deliverable_sync_settings", "deliverableId": deliverable_id,
+        "payloadVersion": 2, "source": "deliverable_sync_settings", "deliverableId": deliverable_id,
         "beforeRevision": case["revision"], "afterRevision": case["revision"] + 1, "scope": None,
         "changes": {
             "externalKey": {"from": binding["external_key"], "to": target["externalKey"], "changed": True},

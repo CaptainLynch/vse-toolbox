@@ -23,6 +23,7 @@ from core.db_common import (  # noqa: F401
 from core.project_status_config_audit import (
     BindingConfigAuditError,
     build_binding_config_audit_payload,
+    project_binding_config_audit_scope,
 )
 
 
@@ -870,8 +871,25 @@ class ProjectStatusRepo:
                     (deliverable_id,),
                 )
 
+            audit_diffs = dict(diffs)
+            audit_diffs.pop("matchRule", None)
+            old_scope = project_binding_config_audit_scope(old_rule)
+            new_scope = project_binding_config_audit_scope(new_rule)
+            if old_scope != new_scope:
+                audit_diffs["scope"] = (old_scope, new_scope)
+            old_audit_rule = (
+                {key: value for key, value in old_rule.items() if key != "sectionScope"}
+                if isinstance(old_rule, dict) else old_rule
+            )
+            new_audit_rule = (
+                {key: value for key, value in new_rule.items() if key != "sectionScope"}
+                if isinstance(new_rule, dict) else new_rule
+            )
+            if old_audit_rule != new_audit_rule:
+                audit_diffs["matchRule"] = (old_audit_rule, new_audit_rule)
             payload = build_binding_config_audit_payload(
-                deliverable_id, old_revision, new_revision, diffs,
+                deliverable_id, old_revision, new_revision, audit_diffs,
+                after_rule=new_rule,
             )
             last_id = int(conn.execute(
                 "SELECT COALESCE(MAX(id), 0) FROM project_status_binding_config_audit"

@@ -15,7 +15,7 @@ from core.redaction import redact_sensitive_text
 BINDING_CONFIG_AUDIT_TABLE = "project_status_binding_config_audit"
 BINDING_CONFIG_AUDIT_EVENT = "configuration_updated"
 BINDING_CONFIG_AUDIT_ACTORS = frozenset({"local_web", "cli"})
-BINDING_CONFIG_AUDIT_PAYLOAD_VERSION = 1
+BINDING_CONFIG_AUDIT_PAYLOAD_VERSION = 2
 BINDING_CONFIG_AUDIT_SOURCE = "deliverable_sync_settings"
 
 _CREATE_TABLE_SQL = """
@@ -65,11 +65,25 @@ def sanitize_audit_value(value: Any) -> Any:
     return value
 
 
+def project_binding_config_audit_scope(rule: Any) -> Any:
+    """返回未脱敏的说明性 scope 投影；不改变规则或服务校验。"""
+    items = rule.get("sectionScope") if isinstance(rule, dict) else None
+    if not isinstance(items, list) or not items:
+        return None
+    return {
+        "source": "matchRule.sectionScope",
+        "declarationOnly": True,
+        "items": items,
+    }
+
+
 def build_binding_config_audit_payload(
     deliverable_id: str,
     before_revision: int,
     after_revision: int,
     changes: Mapping[str, tuple[Any, Any]],
+    *,
+    after_rule: Any = None,
 ) -> dict[str, Any]:
     """按原始值判定差异后构造载荷；from/to 脱敏，changed 恒为 True（脱敏后相等也保留）。"""
     return {
@@ -78,7 +92,7 @@ def build_binding_config_audit_payload(
         "deliverableId": deliverable_id,
         "beforeRevision": int(before_revision),
         "afterRevision": int(after_revision),
-        "scope": None,
+        "scope": sanitize_audit_value(project_binding_config_audit_scope(after_rule)),
         "changes": {
             name: {
                 "from": sanitize_audit_value(old),
