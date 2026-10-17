@@ -20,6 +20,20 @@ from core.db_common import (  # noqa: F401
     Sequence,
     sqlite3,
 )
+from core.project_status_config_audit import (
+    BindingConfigAuditError,
+    build_binding_config_audit_payload,
+)
+
+
+def _parse_policy_json(value: Any) -> Any:
+    """解析绑定 JSON 列用于语义比较（键序无关）；空值或坏 JSON 视为 {}。"""
+    if not isinstance(value, str) or not value:
+        return {}
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return {}
 
 
 class ProjectStatusRepo:
@@ -534,25 +548,37 @@ class ProjectStatusRepo:
         capabilities = PROJECT_STATUS_SOURCE_CAPABILITIES.get(deliverable_id, {})
         source_type = str(capabilities.get("sourceType") or "none")
         mode = "automatic" if capabilities.get("syncCapable") else "manual"
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO project_status_update_bindings
-                (deliverable_id, mode, source_type, enabled, sync_state)
-            VALUES (?, ?, ?, 0, 'idle')
-            """,
-            (deliverable_id, mode, source_type),
-        )
-        conn.executemany(
-            """
-            INSERT OR IGNORE INTO project_status_field_authority
-                (deliverable_id, field_name, authority, source_type)
-            VALUES (?, ?, 'manual', ?)
-            """,
-            [
-                (deliverable_id, field_name, source_type)
-                for field_name in PROJECT_STATUS_EDITABLE_FIELDS
-            ],
-        )
+        # 先读后写：已齐备时不发任何 DML（B′ P1a 无差异保存零写入）。
+        has_binding = conn.execute(
+            "SELECT 1 FROM project_status_update_bindings WHERE deliverable_id = ?",
+            (deliverable_id,),
+        ).fetchone() is not None
+        if not has_binding:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO project_status_update_bindings
+                    (deliverable_id, mode, source_type, enabled, sync_state)
+                VALUES (?, ?, ?, 0, 'idle')
+                """,
+                (deliverable_id, mode, source_type),
+            )
+        present = {
+            row[0]
+            for row in conn.execute(
+                "SELECT field_name FROM project_status_field_authority WHERE deliverable_id = ?",
+                (deliverable_id,),
+            ).fetchall()
+        }
+        missing = [name for name in PROJECT_STATUS_EDITABLE_FIELDS if name not in present]
+        if missing:
+            conn.executemany(
+                """
+                INSERT OR IGNORE INTO project_status_field_authority
+                    (deliverable_id, field_name, authority, source_type)
+                VALUES (?, ?, 'manual', ?)
+                """,
+                [(deliverable_id, field_name, source_type) for field_name in missing],
+            )
 
     @staticmethod
     def _prune_project_status_audit(
@@ -702,12 +728,21 @@ class ProjectStatusRepo:
         credential_ref: str | None = None,
         interval_minutes: int | None = 60,
         expected_sync_config_revision: int | None = None,
+        *,
+        actor: str = "local_web",
+        audit_field_names: Mapping[str, str] | None = None,
     ) -> int:
-        """原子写入绑定与字段归属，自动归属同时解除人工锁。
+        """原子写入绑定、字段归属与绑定配置审计，自动归属同时解除人工锁。
 
         同步配置修订号（GPT 终审任务 2）：匹配规则、稳定键、映射或模式变化时
         在本事务内 +1 并清空分析快照/明细缓存（旧车型数据隔离）；仅改
-        interval/credential 不递增、不清缓存。返回递增后的修订号。
+        interval/credential/enabled/字段归属不递增、不清缓存。
+
+        B′ P1a：变更前状态在 BEGIN IMMEDIATE 内读取；与请求无差异时零写入、不审计；
+        有差异时在同一连接、同一事务内调用 ``record_deliverable_config_audit(..., conn=conn)``，
+        并核对恰好新增一行匹配的审计记录，否则抛出 ``BindingConfigAuditError`` 整笔回滚。
+        ``audit_field_names`` 把字段归属的列名翻译成审计载荷里的字段名（服务层传 API 名）。
+        返回保存后的修订号。
         """
         unknown = set(field_authority) - set(PROJECT_STATUS_EDITABLE_FIELDS)
         if unknown:
@@ -723,39 +758,92 @@ class ProjectStatusRepo:
             self._ensure_project_status_policy(conn, deliverable_id)
             old_binding = conn.execute(
                 """
-                SELECT mode, external_key, match_rule_json, mapping_json,
-                       sync_config_revision
+                SELECT mode, enabled, external_key, match_rule_json, mapping_json,
+                       credential_ref, interval_minutes, sync_config_revision
                 FROM project_status_update_bindings
                 WHERE deliverable_id = ?
                 """,
                 (deliverable_id,),
             ).fetchone()
+            old_revision = int(old_binding['sync_config_revision'] or 0)
             if (expected_sync_config_revision is not None
-                    and int(old_binding['sync_config_revision'] or 0) != expected_sync_config_revision):
+                    and old_revision != expected_sync_config_revision):
                 raise ProjectStatusConcurrentUpdateError('Binding changed while validating the policy')
-            target_changed = (
-                old_binding["match_rule_json"] != match_rule_json
-                or old_binding["mapping_json"] != mapping_json
-                or old_binding["external_key"] != external_key
-                or old_binding["mode"] != mode
+            old_authority = {
+                str(row["field_name"]): str(row["authority"])
+                for row in conn.execute(
+                    """
+                    SELECT field_name, authority FROM project_status_field_authority
+                    WHERE deliverable_id = ? ORDER BY field_name
+                    """,
+                    (deliverable_id,),
+                ).fetchall()
+            }
+            new_authority = dict(old_authority)
+            new_authority.update({str(k): str(v) for k, v in field_authority.items()})
+            changed_authority = [
+                name for name, value in new_authority.items()
+                if old_authority.get(name) != value
+            ]
+
+            old_rule = _parse_policy_json(old_binding["match_rule_json"])
+            new_rule = _parse_policy_json(match_rule_json)
+            old_mapping = _parse_policy_json(old_binding["mapping_json"])
+            new_mapping = _parse_policy_json(mapping_json)
+            old_credential = old_binding["credential_ref"]
+            diffs: dict[str, tuple[Any, Any]] = {}
+            if old_binding["mode"] != mode:
+                diffs["mode"] = (old_binding["mode"], mode)
+            if bool(old_binding["enabled"]) != bool(enabled):
+                diffs["enabled"] = (bool(old_binding["enabled"]), bool(enabled))
+            if old_binding["external_key"] != external_key:
+                diffs["externalKey"] = (old_binding["external_key"], external_key)
+            if old_rule != new_rule:
+                diffs["matchRule"] = (old_rule, new_rule)
+            if old_mapping != new_mapping:
+                diffs["mapping"] = (old_mapping, new_mapping)
+            if old_binding["interval_minutes"] != interval_minutes:
+                diffs["intervalMinutes"] = (old_binding["interval_minutes"], interval_minutes)
+            if old_credential != credential_ref:
+                # 凭据别名不进审计，只记是否已配置。
+                diffs["credentialConfigured"] = (
+                    bool(str(old_credential or "").strip()),
+                    bool(str(credential_ref or "").strip()),
+                )
+            binding_changed = bool(diffs)
+            if changed_authority:
+                names = audit_field_names or {}
+                diffs["fieldAuthority"] = (
+                    {names.get(k, k): v for k, v in old_authority.items()},
+                    {names.get(k, k): v for k, v in new_authority.items()},
+                )
+            if not diffs:
+                return old_revision
+
+            recorder = getattr(self, "record_deliverable_config_audit", None)
+            if not callable(recorder):
+                raise BindingConfigAuditError("binding config audit recorder is unavailable")
+            target_changed = any(
+                name in diffs for name in ("mode", "externalKey", "matchRule", "mapping")
             )
-            new_revision = int(old_binding["sync_config_revision"] or 0) + (
-                1 if target_changed else 0
-            )
-            conn.execute(
-                """
-                UPDATE project_status_update_bindings
-                SET mode = ?, enabled = ?, external_key = ?, match_rule_json = ?,
-                    mapping_json = ?, credential_ref = ?, interval_minutes = ?,
-                    sync_config_revision = ?,
-                    cursor_json = CASE WHEN ? THEN '{}' ELSE cursor_json END,
-                    updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now', 'localtime')
-                WHERE deliverable_id = ?
-                """,
-                (mode, int(enabled), external_key, match_rule_json, mapping_json,
-                 credential_ref, interval_minutes, new_revision, int(target_changed), deliverable_id),
-            )
-            for field_name, authority in field_authority.items():
+            new_revision = old_revision + (1 if target_changed else 0)
+            if binding_changed:
+                conn.execute(
+                    """
+                    UPDATE project_status_update_bindings
+                    SET mode = ?, enabled = ?, external_key = ?, match_rule_json = ?,
+                        mapping_json = ?, credential_ref = ?, interval_minutes = ?,
+                        sync_config_revision = ?,
+                        cursor_json = CASE WHEN ? THEN '{}' ELSE cursor_json END,
+                        updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now', 'localtime')
+                    WHERE deliverable_id = ?
+                    """,
+                    (mode, int(enabled), external_key, match_rule_json, mapping_json,
+                     credential_ref, interval_minutes, new_revision, int(target_changed),
+                     deliverable_id),
+                )
+            for field_name in changed_authority:
+                authority = new_authority[field_name]
                 conn.execute(
                     """
                     INSERT INTO project_status_field_authority
@@ -781,6 +869,35 @@ class ProjectStatusRepo:
                     "DELETE FROM project_status_analysis_items WHERE deliverable_id = ?",
                     (deliverable_id,),
                 )
+
+            payload = build_binding_config_audit_payload(
+                deliverable_id, old_revision, new_revision, diffs,
+            )
+            last_id = int(conn.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM project_status_binding_config_audit"
+            ).fetchone()[0])
+            try:
+                recorded = recorder(deliverable_id, payload, actor, conn=conn)
+            except Exception as exc:
+                raise BindingConfigAuditError("binding config audit recorder failed") from exc
+            inserted = conn.execute(
+                """
+                SELECT deliverable_id, actor, event_type, config_revision, changes_json
+                FROM project_status_binding_config_audit
+                WHERE id > ? ORDER BY id
+                """,
+                (last_id,),
+            ).fetchall()
+            if (
+                recorded is not True
+                or len(inserted) != 1
+                or inserted[0]["deliverable_id"] != deliverable_id
+                or inserted[0]["actor"] != actor
+                or inserted[0]["event_type"] != "configuration_updated"
+                or inserted[0]["config_revision"] != new_revision
+                or _parse_policy_json(inserted[0]["changes_json"]) != payload
+            ):
+                raise BindingConfigAuditError("binding config audit row was not recorded")
         return new_revision
 
     def list_project_status_update_audit(

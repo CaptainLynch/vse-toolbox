@@ -903,6 +903,8 @@ class ProjectStatusUpdateService:
         self,
         deliverable_id: str,
         payload: dict[str, Any],
+        *,
+        actor: str = "local_web",
     ) -> dict[str, Any]:
         raw = self._db.get_project_status_update_policy(deliverable_id)
         if raw is None:
@@ -1152,44 +1154,15 @@ class ProjectStatusUpdateService:
                     if project_status_supports_record_set(deliverable_id)
                     else None
                 ),
+                # 绑定配置审计在保存事务内写入（B′ P1a）；字段归属用 API 字段名记审计。
+                actor=actor,
+                audit_field_names=PROJECT_STATUS_FIELD_NAME_TO_API,
             )
         except ProjectStatusConcurrentUpdateError:
             raise ProjectStatusPolicyError({'request': '绑定已发生变化，请刷新配置后重试'}) from None
         raw = self._db.get_project_status_update_policy(deliverable_id)
         assert raw is not None
-        self._audit_policy_change(deliverable_id, binding, raw["binding"])
         return self._policy_to_api(raw)
-
-    def _audit_policy_change(
-        self,
-        deliverable_id: str,
-        before: Mapping[str, Any],
-        after: Mapping[str, Any],
-    ) -> None:
-        """同步设置改动写进关联归档任务的配置审计（§9 S21）；凭据只记是否配置。"""
-        def view(binding: Mapping[str, Any]) -> dict[str, Any]:
-            return {
-                "enabled": bool(binding.get("enabled")),
-                # None = 没有自己的间隔，跟随调度器频率（services/project_status_scheduler.py _is_fresh）。
-                "intervalMinutes": binding.get("interval_minutes"),
-                "mode": binding.get("mode"),
-                "matchRule": _json_loads(binding.get("match_rule_json")),
-                "credentialConfigured": bool(str(binding.get("credential_ref") or "").strip()),
-            }
-
-        old, new = view(before), view(after)
-        changes = {key: {"from": old[key], "to": new[key]} for key in old if old[key] != new[key]}
-        if not changes:
-            return
-        recorder = getattr(self._db, "record_deliverable_config_audit", None)
-        if recorder is None:
-            return
-        try:
-            recorder(deliverable_id, {"source": "deliverable_sync_settings", "deliverableId": deliverable_id,
-                                      "changes": changes})
-        except Exception as exc:  # noqa: BLE001 - 设置已保存，审计失败只记日志
-            _logger.warning("deliverable sync settings audit failed for %s: %s",
-                            deliverable_id, redact_sensitive_text(str(exc), limit=200))
 
     def list_updates(
         self,

@@ -85,6 +85,7 @@ from core.db_common import (  # noqa: F401
     SyncLeaseLostError,
     TABLE_DEFINITIONS,
 )
+from core.project_status_config_audit import ensure_binding_config_audit_schema
 from core.repos.archive_jobs import ArchiveRepo
 from core.repos.crawl_tasks import CrawlTaskRepo
 from core.repos.form_snapshots import FormSnapshotRepo
@@ -165,6 +166,10 @@ class DatabaseManager(
                 self._seed_archive_jobs(conn)
 
                 conn.commit()
+
+            # B′ 绑定配置审计表：在上面的初始化事务结束后单独建表（自带 BEGIN IMMEDIATE/COMMIT）。
+            with self.get_connection() as conn:
+                ensure_binding_config_audit_schema(conn)
 
             logger.info("数据库初始化完成")
 
