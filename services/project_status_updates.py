@@ -22,6 +22,9 @@ from core.db_manager import (
     ProjectStatusConcurrentUpdateError,
     SyncBindingNotReadyError,
 )
+from core.repos.project_status import (
+    KEEP_CURRENT, ProjectStatusConfigDigestMismatchError, compute_policy_config_digest,
+)
 from core.redaction import redact_sensitive_text
 from services.data_model_watchlist import WatchlistError, normalize_single_serial
 from services.project_status_records import compute_config_signature, observation_is_aggregate
@@ -906,7 +909,7 @@ class ProjectStatusUpdateService:
         *,
         actor: str = "local_web",
     ) -> dict[str, Any]:
-        raw = self._db.get_project_status_update_policy(deliverable_id)
+        raw = self._db.read_project_status_update_policy_snapshot(deliverable_id)
         if raw is None:
             raise KeyError(deliverable_id)
         binding = raw["binding"]
@@ -923,6 +926,7 @@ class ProjectStatusUpdateService:
             "fieldAuthority",
             "credentialRef",
             "intervalMinutes",
+            "expectedConfigDigest",
         }
         if unknown:
             fields["request"] = "包含不允许修改的字段"
@@ -1144,25 +1148,34 @@ class ProjectStatusUpdateService:
             for key, value in field_authority.items()
         }
 
+        expected_digest = payload.get('expectedConfigDigest')
+        if expected_digest is not None and (not isinstance(expected_digest, str)
+                or len(expected_digest) != 70 or not expected_digest.startswith('cfgd1:')
+                or any(ch not in '0123456789abcdef' for ch in expected_digest[6:])):
+            raise ProjectStatusPolicyError({'expectedConfigDigest': '配置摘要格式无效'}) from None
+        if expected_digest is not None and 'credentialRef' not in payload:
+            credential_ref = KEEP_CURRENT
         try:
-            self._db.set_project_status_update_policy(
-                deliverable_id, mode, enabled, external_key,
-                _json_dumps(match_rule), _json_dumps(mapping), normalized_authority,
-                credential_ref=credential_ref, interval_minutes=interval_minutes,
-                expected_sync_config_revision=(
-                    int(binding.get('sync_config_revision') or 0)
-                    if project_status_supports_record_set(deliverable_id)
-                    else None
-                ),
-                # 绑定配置审计在保存事务内写入（B′ P1a）；字段归属用 API 字段名记审计。
-                actor=actor,
-                audit_field_names=PROJECT_STATUS_FIELD_NAME_TO_API,
-            )
+            with self._db.get_connection() as conn:
+                result = self._db._save_policy_txn(
+                    conn, deliverable_id, mode, enabled, external_key,
+                    _json_dumps(match_rule), _json_dumps(mapping), normalized_authority,
+                    credential_ref=credential_ref, interval_minutes=interval_minutes,
+                    expected_sync_config_revision=(
+                        int(binding.get('sync_config_revision') or 0)
+                        if project_status_supports_record_set(deliverable_id)
+                        else None
+                    ),
+                    # 绑定配置审计在保存事务内写入（B′ P1a）；字段归属用 API 字段名记审计。
+                    actor=actor,
+                    audit_field_names=PROJECT_STATUS_FIELD_NAME_TO_API,
+                    expected_config_digest=expected_digest,
+                )
+        except ProjectStatusConfigDigestMismatchError:
+            raise ProjectStatusPolicyError({'expectedConfigDigest': '绑定已发生变化，请刷新配置后重试'}) from None
         except ProjectStatusConcurrentUpdateError:
             raise ProjectStatusPolicyError({'request': '绑定已发生变化，请刷新配置后重试'}) from None
-        raw = self._db.get_project_status_update_policy(deliverable_id)
-        assert raw is not None
-        return self._policy_to_api(raw)
+        return self._policy_to_api(result.raw)
 
     def list_updates(
         self,
@@ -1236,4 +1249,6 @@ class ProjectStatusUpdateService:
                 if latest is not None
                 else None
             ),
+            "configDigest": compute_policy_config_digest(
+                binding["deliverable_id"], binding, raw["authorities"]),
         }

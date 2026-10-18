@@ -5,6 +5,8 @@
 本类依赖 ``get_connection`` 等由 DatabaseManager 提供的方法，不单独实例化。
 """
 
+from hashlib import sha256
+from typing import NamedTuple
 from core.db_common import (  # noqa: F401
     _dump_extra_fields,
     _LOCAL_NOW_SQL,
@@ -25,6 +27,96 @@ from core.project_status_config_audit import (
     build_binding_config_audit_payload,
     project_binding_config_audit_scope,
 )
+
+
+POLICY_BINDING_DEFAULTS = {
+    "mode": "manual", "enabled": 0, "external_key": None,
+    "interval_minutes": None, "credential_ref": None,
+    "mapping_json": "{}", "match_rule_json": "{}", "sync_config_revision": 0,
+}
+POLICY_AUTHORITY_DEFAULT = "manual"
+
+
+def _policy_binding_defaults(deliverable_id):
+    row = dict(POLICY_BINDING_DEFAULTS)
+    cap = PROJECT_STATUS_SOURCE_CAPABILITIES.get(deliverable_id, {})
+    row["mode"] = "automatic" if cap.get("syncCapable") else "manual"
+    return row
+
+
+def compute_policy_config_digest(deliverable_id, binding, authorities) -> str:
+    """Hash raw stored policy values without I/O or input mutation."""
+    row = _policy_binding_defaults(deliverable_id) if binding is None else dict(binding)
+    projected = {key: row[key] for key in POLICY_BINDING_DEFAULTS
+                 if key != "credential_ref"}
+    projected["has_credential_ref"] = (
+        row["credential_ref"] is not None and row["credential_ref"] != "")
+    by_name = {name: POLICY_AUTHORITY_DEFAULT for name in PROJECT_STATUS_EDITABLE_FIELDS}
+    by_name.update({item["field_name"]: item["authority"] for item in authorities})
+    payload = {
+        "v": 1, "binding": projected,
+        "field_authority": [{"field_name": name, "authority": by_name[name]}
+                            for name in sorted(by_name)],
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"),
+                           ensure_ascii=True, allow_nan=False).encode("utf-8")
+    return "cfgd1:" + sha256(canonical).hexdigest()
+
+
+KEEP_CURRENT = object()
+
+
+class ProjectStatusConfigDigestMismatchError(ProjectStatusConcurrentUpdateError):
+    """The stored policy no longer matches the expected configuration digest."""
+
+
+class _PolicySaveResult(NamedTuple):
+    revision: int
+    raw: dict
+
+
+def _read_policy_rows(conn, deliverable_id):
+    """Read the same three projections as GET, without seeding any rows."""
+    binding = conn.execute(
+        "SELECT id, deliverable_id, mode, source_type, external_key, "
+        "match_rule_json, mapping_json, enabled, interval_minutes, "
+        "last_attempt_at, last_success_at, sync_state, sync_config_revision, "
+        "last_error_type, last_error_message, credential_ref, created_at, updated_at "
+        "FROM project_status_update_bindings WHERE deliverable_id = ?",
+        (deliverable_id,)).fetchone()
+    authorities = conn.execute(
+        "SELECT field_name, authority, source_type, locked_at, updated_at "
+        "FROM project_status_field_authority WHERE deliverable_id = ? ORDER BY field_name",
+        (deliverable_id,)).fetchall()
+    latest = conn.execute(
+        "SELECT id, trigger_type, source_type, external_version, result, error_summary, created_at "
+        "FROM project_status_update_audit WHERE deliverable_id = ? ORDER BY id DESC LIMIT 1",
+        (deliverable_id,)).fetchone()
+    return {
+        "binding": dict(binding) if binding is not None else None,
+        "authorities": [dict(row) for row in authorities],
+        "latest_audit": dict(latest) if latest is not None else None,
+    }
+
+
+def _normalize_policy_rows(deliverable_id, raw):
+    """Fill missing policy rows in memory; synthetic database metadata stays None."""
+    source_type = str(PROJECT_STATUS_SOURCE_CAPABILITIES.get(deliverable_id, {}).get("sourceType") or "none")
+    if raw["binding"] is None:
+        raw["binding"] = dict(
+            _policy_binding_defaults(deliverable_id),
+            id=None, deliverable_id=deliverable_id, source_type=source_type, sync_state="idle",
+            last_attempt_at=None, last_success_at=None, last_error_type=None,
+            last_error_message=None, created_at=None, updated_at=None,
+        )
+    by_name = {row["field_name"]: row for row in raw["authorities"]}
+    for name in PROJECT_STATUS_EDITABLE_FIELDS:
+        by_name.setdefault(name, dict(
+            field_name=name, authority=POLICY_AUTHORITY_DEFAULT,
+            source_type=source_type, locked_at=None, updated_at=None,
+        ))
+    raw["authorities"] = [by_name[name] for name in sorted(by_name)]
+    return raw
 
 
 def _parse_policy_json(value: Any) -> Any:
@@ -541,15 +633,11 @@ class ProjectStatusRepo:
 
     @staticmethod
     def _ensure_project_status_policy(conn: sqlite3.Connection, deliverable_id: str) -> None:
-        """Idempotently seed the confirmed authoritative source assignment.
-
-        契约内交付物（syncCapable）新库默认 automatic（enabled=0，待配置）；
-        其余交付物保持 manual。存量库由 INSERT OR IGNORE 保护，不受影响。
-        """
+        """Seed missing rows from the same defaults used by the digest."""
         capabilities = PROJECT_STATUS_SOURCE_CAPABILITIES.get(deliverable_id, {})
         source_type = str(capabilities.get("sourceType") or "none")
-        mode = "automatic" if capabilities.get("syncCapable") else "manual"
-        # 先读后写：已齐备时不发任何 DML（B′ P1a 无差异保存零写入）。
+        defaults = _policy_binding_defaults(deliverable_id)
+        # Preserve the no-DML path when both tables are complete.
         has_binding = conn.execute(
             "SELECT 1 FROM project_status_update_bindings WHERE deliverable_id = ?",
             (deliverable_id,),
@@ -558,10 +646,15 @@ class ProjectStatusRepo:
             conn.execute(
                 """
                 INSERT OR IGNORE INTO project_status_update_bindings
-                    (deliverable_id, mode, source_type, enabled, sync_state)
-                VALUES (?, ?, ?, 0, 'idle')
+                    (deliverable_id, mode, source_type, enabled, sync_state,
+                     external_key, interval_minutes, credential_ref,
+                     mapping_json, match_rule_json, sync_config_revision)
+                VALUES (?, ?, ?, ?, 'idle', ?, ?, ?, ?, ?, ?)
                 """,
-                (deliverable_id, mode, source_type),
+                (deliverable_id, defaults["mode"], source_type, defaults["enabled"],
+                 defaults["external_key"], defaults["interval_minutes"],
+                 defaults["credential_ref"], defaults["mapping_json"],
+                 defaults["match_rule_json"], defaults["sync_config_revision"]),
             )
         present = {
             row[0]
@@ -576,9 +669,10 @@ class ProjectStatusRepo:
                 """
                 INSERT OR IGNORE INTO project_status_field_authority
                     (deliverable_id, field_name, authority, source_type)
-                VALUES (?, ?, 'manual', ?)
+                VALUES (?, ?, ?, ?)
                 """,
-                [(deliverable_id, field_name, source_type) for field_name in missing],
+                [(deliverable_id, field_name, POLICY_AUTHORITY_DEFAULT, source_type)
+                 for field_name in missing],
             )
 
     @staticmethod
@@ -679,43 +773,20 @@ class ProjectStatusRepo:
             if deliverable is None:
                 return None
             self._ensure_project_status_policy(conn, deliverable_id)
-            binding = conn.execute(
-                """
-                SELECT id, deliverable_id, mode, source_type, external_key,
-                       match_rule_json, mapping_json, enabled, interval_minutes,
-                       last_attempt_at, last_success_at, sync_state, sync_config_revision,
-                        last_error_type, last_error_message, credential_ref,
-                        created_at, updated_at
-                FROM project_status_update_bindings
-                WHERE deliverable_id = ?
-                """,
+            return _read_policy_rows(conn, deliverable_id)
+
+    def read_project_status_update_policy_snapshot(
+        self, deliverable_id: str
+    ) -> dict[str, object] | None:
+        """Read policy rows without seeding missing rows."""
+        with self.get_connection() as conn:
+            deliverable = conn.execute(
+                "SELECT id FROM project_status_deliverables WHERE id = ?",
                 (deliverable_id,),
             ).fetchone()
-            assert binding is not None
-            authorities = conn.execute(
-                """
-                SELECT field_name, authority, source_type, locked_at, updated_at
-                FROM project_status_field_authority
-                WHERE deliverable_id = ?
-                ORDER BY field_name
-                """,
-                (deliverable_id,),
-            ).fetchall()
-            latest = conn.execute(
-                """
-                SELECT id, trigger_type, source_type, external_version, result,
-                       error_summary, created_at
-                FROM project_status_update_audit
-                WHERE deliverable_id = ?
-                ORDER BY id DESC LIMIT 1
-                """,
-                (deliverable_id,),
-            ).fetchone()
-            return {
-                "binding": dict(binding),
-                "authorities": [dict(row) for row in authorities],
-                "latest_audit": dict(latest) if latest is not None else None,
-            }
+            if deliverable is None:
+                return None
+            return _normalize_policy_rows(deliverable_id, _read_policy_rows(conn, deliverable_id))
 
     def set_project_status_update_policy(
         self,
@@ -745,10 +816,39 @@ class ProjectStatusRepo:
         ``audit_field_names`` 把字段归属的列名翻译成审计载荷里的字段名（服务层传 API 名）。
         返回保存后的修订号。
         """
+        with self.get_connection() as conn:
+            return self._save_policy_txn(
+                conn, deliverable_id, mode, enabled, external_key, match_rule_json,
+                mapping_json, field_authority, credential_ref, interval_minutes,
+                expected_sync_config_revision, actor=actor,
+                audit_field_names=audit_field_names,
+            ).revision
+
+    def _save_policy_txn(
+        self,
+        conn: sqlite3.Connection,
+        deliverable_id: str,
+        mode: str,
+        enabled: bool,
+        external_key: str | None,
+        match_rule_json: str,
+        mapping_json: str,
+        field_authority: dict[str, str],
+        credential_ref: Any = None,
+        interval_minutes: int | None = 60,
+        expected_sync_config_revision: int | None = None,
+        *,
+        actor: str = "local_web",
+        audit_field_names: Mapping[str, str] | None = None,
+        expected_config_digest: str | None = None,
+    ) -> _PolicySaveResult:
+        """Save and return a transaction-owned snapshot after a successful commit."""
+        if conn.in_transaction:
+            raise ValueError("policy save requires a connection without an active transaction")
         unknown = set(field_authority) - set(PROJECT_STATUS_EDITABLE_FIELDS)
         if unknown:
             raise ValueError(f"unknown project status field: {sorted(unknown)}")
-        with self.get_connection() as conn:
+        with conn:
             conn.execute('BEGIN IMMEDIATE')
             deliverable = conn.execute(
                 "SELECT id FROM project_status_deliverables WHERE id = ?",
@@ -756,29 +856,21 @@ class ProjectStatusRepo:
             ).fetchone()
             if deliverable is None:
                 raise KeyError(deliverable_id)
-            self._ensure_project_status_policy(conn, deliverable_id)
-            old_binding = conn.execute(
-                """
-                SELECT mode, enabled, external_key, match_rule_json, mapping_json,
-                       credential_ref, interval_minutes, sync_config_revision
-                FROM project_status_update_bindings
-                WHERE deliverable_id = ?
-                """,
-                (deliverable_id,),
-            ).fetchone()
+            raw = _normalize_policy_rows(deliverable_id, _read_policy_rows(conn, deliverable_id))
+            old_binding = raw["binding"]
             old_revision = int(old_binding['sync_config_revision'] or 0)
             if (expected_sync_config_revision is not None
                     and old_revision != expected_sync_config_revision):
                 raise ProjectStatusConcurrentUpdateError('Binding changed while validating the policy')
+            if (expected_config_digest is not None
+                    and compute_policy_config_digest(
+                        deliverable_id, old_binding, raw["authorities"]) != expected_config_digest):
+                raise ProjectStatusConfigDigestMismatchError("Policy configuration digest changed")
+            if credential_ref is KEEP_CURRENT:
+                credential_ref = old_binding["credential_ref"]
             old_authority = {
                 str(row["field_name"]): str(row["authority"])
-                for row in conn.execute(
-                    """
-                    SELECT field_name, authority FROM project_status_field_authority
-                    WHERE deliverable_id = ? ORDER BY field_name
-                    """,
-                    (deliverable_id,),
-                ).fetchall()
+                for row in raw["authorities"]
             }
             new_authority = dict(old_authority)
             new_authority.update({str(k): str(v) for k, v in field_authority.items()})
@@ -819,8 +911,9 @@ class ProjectStatusRepo:
                     {names.get(k, k): v for k, v in new_authority.items()},
                 )
             if not diffs:
-                return old_revision
+                return _PolicySaveResult(old_revision, raw)
 
+            self._ensure_project_status_policy(conn, deliverable_id)
             recorder = getattr(self, "record_deliverable_config_audit", None)
             if not callable(recorder):
                 raise BindingConfigAuditError("binding config audit recorder is unavailable")
@@ -916,7 +1009,8 @@ class ProjectStatusRepo:
                 or _parse_policy_json(inserted[0]["changes_json"]) != payload
             ):
                 raise BindingConfigAuditError("binding config audit row was not recorded")
-        return new_revision
+            raw = _normalize_policy_rows(deliverable_id, _read_policy_rows(conn, deliverable_id))
+        return _PolicySaveResult(new_revision, raw)
 
     def list_project_status_update_audit(
         self,
