@@ -76,7 +76,10 @@ def _probe(db, writes=False, no_begin=False):
         dml = [verb for verb in verbs if verb in {"INSERT", "UPDATE", "DELETE", "REPLACE"}]
         assert bool(dml) == writes
         if no_begin:
-            assert "BEGIN" not in verbs
+            assert not any(
+                " ".join(event["sql"].upper().split()).startswith("BEGIN IMMEDIATE")
+                for item in connections for event in item["sql"]
+            )
         if writes:
             assert any(item["total_changes_after"] > item["total_changes_before"] for item in connections)
         else:

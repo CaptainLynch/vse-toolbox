@@ -75,6 +75,12 @@ class _PolicySaveResult(NamedTuple):
     raw: dict
 
 
+def _begin_read_snapshot(conn: sqlite3.Connection) -> None:
+    """A77: 让后续多段 SELECT 共享同一 DEFERRED 读事务快照；连接已在事务中则复用。"""
+    if not conn.in_transaction:
+        conn.execute("BEGIN DEFERRED")
+
+
 def _read_policy_rows(conn, deliverable_id):
     """Read the same three projections as GET, without seeding any rows."""
     binding = conn.execute(
@@ -773,6 +779,7 @@ class ProjectStatusRepo:
             if deliverable is None:
                 return None
             self._ensure_project_status_policy(conn, deliverable_id)
+            _begin_read_snapshot(conn)
             return _read_policy_rows(conn, deliverable_id)
 
     def read_project_status_update_policy_snapshot(
@@ -786,6 +793,7 @@ class ProjectStatusRepo:
             ).fetchone()
             if deliverable is None:
                 return None
+            _begin_read_snapshot(conn)
             return _normalize_policy_rows(deliverable_id, _read_policy_rows(conn, deliverable_id))
 
     def set_project_status_update_policy(
