@@ -735,3 +735,140 @@ def test_aggregate_rebind_clears_stale_snapshot_and_returns_to_pending(client) -
     assert d5_after["syncDisplay"]["state"] == "pending_first_sync"
     assert d5_after["updatePolicy"]["aggregate"] is True
     assert db.list_project_status_analysis_snapshots("VPI-T2-D5", 5) == []
+
+
+from core.repos.project_status import compute_policy_config_digest as _p1d_digest
+
+
+def _p1d_case(client, did='VPI-T2-D5'):
+    url = f'/api/project-status/deliverables/{did}/update-policy'
+    response = client.get(url)
+    assert response.status_code == 200
+    return url, web_app.DatabaseManager(), response.get_json()['data']
+
+
+def _p1d_snapshot(db, did):
+    tables = (
+        ('project_status_update_bindings', 'deliverable_id'),
+        ('project_status_field_authority', 'field_name'),
+        ('project_status_binding_config_audit', 'id'),
+        ('project_status_update_audit', 'id'),
+    )
+    with db.get_connection() as conn:
+        return tuple(
+            [tuple(row) for row in conn.execute(
+                f'SELECT * FROM {table} WHERE deliverable_id = ? ORDER BY {key}', (did,))]
+            for table, key in tables
+        )
+
+
+def test_p1d_stale_digest_422(client):
+    did = 'VPI-T2-D5'
+    url, db, policy = _p1d_case(client, did)
+    raw = db.read_project_status_update_policy_snapshot(did)
+    stale = policy['configDigest']
+    assert stale == _p1d_digest(did, raw['binding'], raw['authorities'])
+    with db.get_connection() as conn:
+        changed = conn.execute(
+            'UPDATE project_status_update_bindings '
+            'SET interval_minutes = COALESCE(interval_minutes, 0) + 1 WHERE deliverable_id = ?', (did,))
+        assert changed.rowcount == 1
+    before = _p1d_snapshot(db, did)
+    current = db.read_project_status_update_policy_snapshot(did)
+    assert current['binding']['sync_config_revision'] == raw['binding']['sync_config_revision']
+    assert _p1d_digest(did, current['binding'], current['authorities']) != stale
+    response = client.patch(url, json={'intervalMinutes': 47, 'expectedConfigDigest': stale})
+    assert response.status_code == 422
+    fields = response.get_json()['error']['fields']
+    assert isinstance(fields, dict) and set(fields) == {'expectedConfigDigest'}
+    after = _p1d_snapshot(db, did)
+    assert after == before
+    assert tuple(map(len, after[2:])) == tuple(map(len, before[2:]))
+
+
+def test_p1d_invalid_digest_422(client):
+    url, db, _ = _p1d_case(client)
+    before = _p1d_snapshot(db, 'VPI-T2-D5')
+    response = client.patch(url, json={'intervalMinutes': 47, 'expectedConfigDigest': 'cfgd1:BAD'})
+    assert response.status_code == 422
+    fields = response.get_json()['error']['fields']
+    assert isinstance(fields, dict) and set(fields) == {'expectedConfigDigest'}
+    after = _p1d_snapshot(db, 'VPI-T2-D5')
+    assert after == before
+    assert tuple(map(len, after[2:])) == tuple(map(len, before[2:]))
+
+
+def test_p1d_unknown_field_request_error(client):
+    url, db, _ = _p1d_case(client)
+    before = _p1d_snapshot(db, 'VPI-T2-D5')
+    response = client.patch(url, json={'intervalMinutes': 47, 'p1dUnknown': True})
+    assert response.status_code == 422
+    fields = response.get_json()['error']['fields']
+    assert isinstance(fields, dict) and set(fields) == {'request'}
+    assert fields['request'] == '包含不允许修改的字段'
+    after = _p1d_snapshot(db, 'VPI-T2-D5')
+    assert after == before
+    assert tuple(map(len, after[2:])) == tuple(map(len, before[2:]))
+
+
+def test_p1d_revision_conflict_request_error(client, monkeypatch):
+    did = 'VPI-T2-D3'
+    url, db, policy = _p1d_case(client, did)
+    raw = db.read_project_status_update_policy_snapshot(did)
+    revision = raw['binding']['sync_config_revision']
+    save = type(db)._save_policy_txn
+    seen = []
+
+    def race(self, conn, target, *args, **kwargs):
+        assert target == did and not conn.in_transaction
+        assert kwargs['expected_sync_config_revision'] == revision
+        assert kwargs['expected_config_digest'] == policy['configDigest']
+        assert not seen
+        with db.get_connection() as writer:
+            changed = writer.execute(
+                'UPDATE project_status_update_bindings '
+                'SET sync_config_revision = sync_config_revision + 1 WHERE deliverable_id = ?', (did,))
+            assert changed.rowcount == 1
+        current = db.read_project_status_update_policy_snapshot(did)
+        assert current['binding']['sync_config_revision'] == revision + 1
+        assert _p1d_digest(did, current['binding'], current['authorities']) != policy['configDigest']
+        seen.append(_p1d_snapshot(db, did))
+        changes = conn.total_changes
+        try:
+            return save(self, conn, target, *args, **kwargs)
+        finally:
+            assert conn.total_changes == changes
+
+    monkeypatch.setattr(type(db), '_save_policy_txn', race)
+    response = client.patch(url, json={'intervalMinutes': 47, 'expectedConfigDigest': policy['configDigest']})
+    assert len(seen) == 1
+    assert response.status_code == 422
+    fields = response.get_json()['error']['fields']
+    assert isinstance(fields, dict) and set(fields) == {'request'}
+    assert fields['request'] == '绑定已发生变化，请刷新配置后重试'
+    after = _p1d_snapshot(db, did)
+    assert after == seen[0]
+    assert tuple(map(len, after[2:])) == tuple(map(len, seen[0][2:]))
+
+
+def test_p1d_patch_response_digest_reusable(client):
+    did = 'VPI-T2-D5'
+    url, db, policy = _p1d_case(client, did)
+    before = _p1d_snapshot(db, did)
+    token = policy['configDigest']
+    assert isinstance(token, str) and len(token) == 70 and token.startswith('cfgd1:')
+    for interval in (17, 23):
+        response = client.patch(url, json={'intervalMinutes': interval, 'expectedConfigDigest': token})
+        assert response.status_code == 200
+        data = response.get_json()['data']
+        assert data['intervalMinutes'] == interval
+        new_token = data.get('configDigest')
+        assert isinstance(new_token, str) and len(new_token) == 70
+        assert new_token != token
+        raw = db.read_project_status_update_policy_snapshot(did)
+        assert new_token == _p1d_digest(did, raw['binding'], raw['authorities'])
+        token = new_token
+    after = _p1d_snapshot(db, did)
+    assert len(after[2]) == len(before[2]) + 2
+    assert after[3] == before[3]
+
