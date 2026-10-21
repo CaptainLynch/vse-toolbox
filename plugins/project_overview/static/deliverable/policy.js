@@ -6,6 +6,7 @@
 // readiness, save, update history).
 import { html, useEffect, useRef, useState } from "/static/host/vendor/preact-htm.js";
 import { apiRequest, enc } from "./api.js";
+import { attachPolicyDigest } from "./policy-digest-logic.js";
 import { newWizardSessionId, postMappingDiscovery } from "./discovery.js";
 import { SearchMultiSelect } from "./multi-select.js";
 import { deliverableSyncDisplay, syncResultText } from "./display.js";
@@ -32,11 +33,13 @@ import {
   ewoPolicyErrorMessage,
   ewoPolicyString,
   mappingText,
+  parseSerialSet,
   stabilityGateFailureMessage,
   stabilityText,
   wizardInitialValues,
   wizardKind,
   wizardMapping,
+  wizardMultiSerialHint,
   wizardNotMatchedMessage,
   wizardPolicyPatch,
   wizardPrecheck,
@@ -202,6 +205,12 @@ function SyncSummaryCard({ item, policy, capabilities, settings, advancedOpen, o
       : kind.isNcr ? "NCR 编号（选填，留空则整车聚合）"
         : kind.isDataModel ? "实例号 incident（选填，纯数字；与流水单号二选一）"
           : (primary ? `${primary.label}（选填）` : "外部编号（选填）");
+  // 多单号（documentNos）是独立输入：功能开关关闭时（缺省）不渲染、不引导——
+  // 后端保存/发现/运行期都会 fail-closed。单值框继续 fail-closed，绝不接受多值整串。
+  const multiSerialAvailable = kind.isDataModel && capabilities && capabilities.multiSerialSyncEnabled === true;
+  const multiSerialCount = multiSerialAvailable ? parseSerialSet(values.documentNos).length : 0;
+  const multiSerialHint = multiSerialAvailable ? wizardMultiSerialHint(values) : "";
+  const singleSerialFilled = Boolean(ewoPolicyString(values.documentNo) || ewoPolicyString(values.number));
 
   return html`<section class="policy-sync-summary" aria-label=${`${item.name} 数据同步`}>
     <div class="policy-sync-summary-head">
@@ -278,8 +287,15 @@ function SyncSummaryCard({ item, policy, capabilities, settings, advancedOpen, o
           </label>`}
           ${kind.isDataModel && html`<label class="policy-ewo-field policy-wizard-field">
             <span>流水单号（选填，与下方实例号二选一）</span>
-            <input type="text" maxlength="200" placeholder="例如 3D-00001018；填写后走全量抓取+本地精确匹配，较慢" value=${values.documentNo} onInput=${set("documentNo")} />
-            <small class="policy-field-note">流水单号是 3D- 前缀的流程编号（报表第 2 列）。TDC 不支持按它直接查询，同步会先全量抓取再本地精确匹配，耗时较长；与实例号（纯数字）只能填其一。</small>
+            <input type="text" data-wizard-field="documentNo" maxlength="200" placeholder="例如 3D-00001018；填写后走全量抓取+本地精确匹配，较慢" value=${values.documentNo} onInput=${set("documentNo")} disabled=${multiSerialCount > 0} />
+            <small class="policy-field-note">流水单号是 3D- 前缀的流程编号（报表第 2 列）。TDC 不支持按它直接查询，同步会先全量抓取再本地精确匹配，耗时较长；与实例号（纯数字）只能填其一。此框只接受单个单号，多个单号请用下方「流水单号（多个，合并统计）」。</small>
+          </label>`}
+          ${multiSerialAvailable && html`<label class="policy-ewo-field policy-wizard-field">
+            <span>流水单号（多个，合并统计）</span>
+            <input type="text" data-wizard-field="documentNos" data-wizard-hint=${multiSerialHint} maxlength="4000"
+              placeholder="空格或逗号分隔，如 3D-00001018 3D-00001193；与实例号二选一"
+              value=${values.documentNos} onInput=${set("documentNos")} disabled=${singleSerialFilled} />
+            <small class="policy-field-note">${multiSerialHint ? `${multiSerialHint}。` : ""}多个单号按空格或逗号分隔，本地精确匹配后合并统计写入同一交付物；与单值流水单号、实例号三选一。多单号不走候选预览（预览暂不支持多单号），就绪以保存后的后端校验为准。</small>
           </label>`}
           <label class="policy-ewo-field policy-wizard-field">
             <span>定时自动同步周期</span>
@@ -287,7 +303,7 @@ function SyncSummaryCard({ item, policy, capabilities, settings, advancedOpen, o
           </label>
           <label class="policy-ewo-field policy-wizard-field">
             <span>${numberText}</span>
-            <input type="text" maxlength="200" placeholder="选填，留空将对整车项目全部单据进行聚合统计" value=${values.number} onInput=${set("number")} />
+            <input type="text" data-wizard-field="number" maxlength="200" placeholder="选填，留空将对整车项目全部单据进行聚合统计" value=${values.number} onInput=${set("number")} disabled=${multiSerialCount > 0} />
           </label>
           <button type="button" class="policy-wizard-start-btn" disabled=${running} onClick=${start}>${current.enabled === true ? "保存配置并同步" : "开始配置并启用"}</button>`}
     </div>
@@ -409,7 +425,7 @@ function BindingEditor({ item, policy, capabilities, settings, discovery: initia
     setSaving(true);
     setStatus({ text: "正在保存...", error: false });
     try {
-      await apiRequest(policyPath(item.id), { method: "PATCH", body: payload });
+      await apiRequest(policyPath(item.id), { method: "PATCH", body: attachPolicyDigest(payload, current.configDigest) });
       const failure = await onSaved();
       if (failure) {
         setStatus({ text: failure, error: false });

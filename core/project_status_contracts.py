@@ -639,8 +639,8 @@ PROJECT_STATUS_SOURCE_CAPABILITIES: dict[str, dict[str, object]] = {
         "syncNote": None,
         "matchKeys": (
             # documentNos：多单号集合键（list[str]，与单值 documentNo 互斥）。
-            # 本批只加契约键与 discovery 过滤名映射；UI 输入项与运行期接线分别由
-            # Task 11 功能开关、Task 8-10 上线（避免中间状态出现无后端支持的字段）。
+            # 契约键、discovery 过滤名映射、UI 输入项与运行期接线现由同一批交付
+            # （保存/发现/运行期 fail-closed 由 VSE_TDC_MULTI_SERIAL_SYNC 兜底）。
             "incident", "documentNo", "documentNos", "applicant", "department", "section",
             "applicationStart", "applicationEnd", "projectModel",
             "partNumber", "modelNumber", "status", "aggregate", "reportType",
@@ -649,6 +649,9 @@ PROJECT_STATUS_SOURCE_CAPABILITIES: dict[str, dict[str, object]] = {
             # 流水单号（documentNo）不是 TDC 查询参数：填写后走全量抓取+本地精确
             # 匹配，与实例号（incident）二选一，不得同时填写。
             ("documentNo", "流水单号（选填）", "document_no", "例如 3D-00001018；填写后走全量抓取+本地匹配，较慢"),
+            # 多单号（documentNos）是独立输入：单值框继续 fail-closed，绝不接受
+            # 多值整串；集合在本地精确匹配后合并统计，同样与实例号二选一。
+            ("documentNos", "流水单号（多个，合并统计）", "document_nos", "空格或逗号分隔，如 3D-00001018 3D-00001193；与实例号二选一"),
             ("incident", "实例号(incident)（选填）", "serial_number", "纯数字实例号；与流水单号二选一"),
             ("applicant", "申请人", "applicant", "可选"),
             ("department", "部门", "department", "可选"),

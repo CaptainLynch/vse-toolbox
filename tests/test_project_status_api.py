@@ -1129,6 +1129,22 @@ def test_multi_serial_discovery_flag_disabled_fails_closed(client, monkeypatch) 
     assert seen == []
 
 
+def test_source_info_exposes_the_multi_serial_flag(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """开关状态必须由后端能力下发：前端据此决定是否引导用户使用多单号。
+
+    缺省关闭，因此向导不得渲染多单号输入（后端仍会 fail-closed 兜底）。
+    """
+    monkeypatch.delenv("VSE_TDC_MULTI_SERIAL_SYNC", raising=False)
+    caps = {item["id"]: item["sourceInfo"] for item in _status(client)["deliverables"]}
+    assert caps["VPI-T2-D5"]["multiSerialSyncEnabled"] is False
+
+    monkeypatch.setenv("VSE_TDC_MULTI_SERIAL_SYNC", "1")
+    caps = {item["id"]: item["sourceInfo"] for item in _status(client)["deliverables"]}
+    assert caps["VPI-T2-D5"]["multiSerialSyncEnabled"] is True
+    # 只有数模 D5 支持多单号：其它交付物一律为 False（不是 None）。
+    assert caps["VPI-T2-D2"]["multiSerialSyncEnabled"] is False
+
+
 def test_multi_serial_discovery_incomplete_crawl_is_fail_closed(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """抓取不完整不能判定单号集合缺失：422 + 精确文案（与单值同一条 fail-closed）。"""
     _enable_multi_serial(monkeypatch)

@@ -39,6 +39,10 @@ Exported API
 ``ScenarioResult`` / ``Panel``
     Result objects exposing the request log, render history and save trigger.
     ``Panel.patches[-1].body`` is the exact JSON body the panel sent.
+    ``Panel.elements("documentNos")`` returns the rendered elements tagged
+    ``data-wizard-field="documentNos"`` with their scalar attribute values
+    (``disabled`` / ``value`` / ``data-*``), so a test can assert control state
+    without a DOM.
 
 Typical use in an EDITOR/WIZARD test::
 
@@ -93,11 +97,14 @@ POLICY_LOGIC_EXPORTS = (
     "ewoPolicyErrorMessage",
     "ewoPolicyString",
     "mappingText",
+    "parseSerialSet",
     "stabilityGateFailureMessage",
     "stabilityText",
     "wizardInitialValues",
     "wizardKind",
     "wizardMapping",
+    "wizardMultiSerialError",
+    "wizardMultiSerialHint",
     "wizardNotMatchedMessage",
     "wizardPolicyPatch",
     "wizardPrecheck",
@@ -417,6 +424,17 @@ class Panel:
     def inputs(self) -> list[dict[str, Any]]:
         return [r for r in self.result.renders if r.get("kind") == "input"]
 
+    def elements(self, wizard_field: str | None = None) -> list[dict[str, Any]]:
+        """Rendered elements that carry ``data-*`` attributes.
+
+        ``elements("documentNos")`` returns the elements tagged
+        ``data-wizard-field="documentNos"``; ``elements()`` returns them all.
+        """
+        rows = [r for r in self.result.renders if r.get("kind") == "element"]
+        if wizard_field is None:
+            return rows
+        return [r for r in rows if r["attrs"].get("data-wizard-field") == wizard_field]
+
 
 def load_policy_panel(scenario: Scenario | None = None, *, timeout: int = 60) -> Panel:
     """Load ``PolicyPanel`` with the scenario's props and return a handle."""
@@ -604,6 +622,57 @@ function walkProps(template, visit) {
   }
 }
 
+// Rendered-control state without a DOM: flatten one template to text (scalar
+// interpolations inlined, handlers/nested templates replaced by a marker), then
+// record every element carrying at least one data-* attribute. Tests assert on
+// data-wizard-field / disabled / value this way instead of re-parsing templates.
+const DYNAMIC_MARK = "\u0001";
+const VALUE_MARK = "\u0002";
+const ELEMENT_RE = /<([A-Za-z][A-Za-z0-9-]*)((?:[^<>"]|"[^"]*")*?)\/?>/g;
+const ATTRIBUTE_RE = /([A-Za-z_][A-Za-z0-9_-]*)\s*=\s*(?:"([^"]*)"|\u0002([^\u0002]*)\u0002|\u0001)/g;
+
+function flattenTemplate(template) {
+  let out = "";
+  for (let index = 0; index < template.strings.length; index += 1) {
+    out += String(template.strings[index] || "");
+    if (index >= template.values.length) break;
+    const value = template.values[index];
+    const scalar = typeof value !== "function" && (value === null || typeof value !== "object");
+    out += scalar ? VALUE_MARK + String(value) + VALUE_MARK : DYNAMIC_MARK;
+  }
+  return out;
+}
+
+// Boolean interpolations arrive as the strings "true"/"false"; they are restored
+// to booleans so a test can assert `disabled is True`.
+function attributeValue(text) {
+  if (text === "true") return true;
+  if (text === "false") return false;
+  return text;
+}
+
+function recordElement(template, depth) {
+  const flat = flattenTemplate(template);
+  if (flat.indexOf("data-") === -1) return;
+  ELEMENT_RE.lastIndex = 0;
+  let element;
+  while ((element = ELEMENT_RE.exec(flat)) !== null) {
+    const body = element[2];
+    const attrs = {};
+    let hasData = false;
+    ATTRIBUTE_RE.lastIndex = 0;
+    let attribute;
+    while ((attribute = ATTRIBUTE_RE.exec(body)) !== null) {
+      const name = attribute[1];
+      const value = attribute[2] !== undefined ? attribute[2]
+        : (attribute[3] !== undefined ? attributeValue(attribute[3]) : "<dynamic>");
+      attrs[name] = value;
+      if (name.indexOf("data-") === 0) hasData = true;
+    }
+    if (hasData) renders.push({ kind: "element", tag: element[1].toLowerCase(), attrs, depth });
+  }
+}
+
 // ---- synthetic module factories
 function syntheticModule(name, exportsMap) {
   const names = Object.keys(exportsMap);
@@ -649,15 +718,39 @@ function logicStub() {
     ewoPolicyErrorMessage: (error) => String((error && error.message) || error || ""),
     ewoPolicyString: (value) => (value === null || value === undefined ? "" : String(value)),
     mappingText: () => "",
+    parseSerialSet: (value) => (typeof value === "string" && value.trim() ? value.split(",").map((v) => v.trim()).filter(Boolean) : []),
     stabilityGateFailureMessage: () => "",
     stabilityText: () => "0/2",
-    wizardInitialValues: () => ({}),
-    wizardKind: () => "ewo",
+    wizardInitialValues: () => ({
+      credential: "", model: "", department: "", status: "", sections: [],
+      interval: "15", number: "", documentNo: "", documentNos: "", defaultDept: "",
+    }),
+    // The real module returns the kind OBJECT and a nullable primary field; the
+    // stub mirrors those shapes so the wizard branches render as they do in the
+    // browser (a string would silently disable every kind-specific field).
+    wizardKind: (caps) => {
+      const reportType = (caps && caps.reportType) || "";
+      return {
+        isEwo: reportType === "ewo",
+        isSor: reportType === "sor",
+        isDataModel: reportType === "data_model",
+        isPaa: reportType === "paa",
+        isNcr: reportType === "ncr_progress" || reportType === "ncr_detail",
+        isTdc: reportType === "sor" || reportType === "data_model" || (caps && caps.sourceType) === "tdc",
+      };
+    },
     wizardMapping: () => ({}),
+    wizardMultiSerialError: () => "",
+    wizardMultiSerialHint: (values) => {
+      const parsed = typeof values.documentNos === "string" && values.documentNos.trim()
+        ? values.documentNos.split(",").map((v) => v.trim()).filter(Boolean)
+        : [];
+      return parsed.length ? "识别到 " + parsed.length + " 个单号（合并统计）" : "";
+    },
     wizardNotMatchedMessage: () => "",
     wizardPolicyPatch: (_plan, _values, _result, _mapping, _vault) => ({}),
     wizardPrecheck: () => ({ ok: true }),
-    wizardPrimaryMatchField: () => "ewoNo",
+    wizardPrimaryMatchField: () => null,
     wizardRetryWithoutDepartment: () => ({}),
   };
   const merged = Object.assign({}, base);
@@ -838,6 +931,7 @@ function inspect(node, depth) {
   if (node === null || node === undefined || node === false) return;
   if (Array.isArray(node)) { for (const child of node) inspect(child, depth); return; }
   if (isTemplate(node)) {
+    recordElement(node, depth);
     walkProps(node, (name, value) => {
       if (name === "onSubmit" && typeof value === "function") {
         renders.push({ kind: "form-submit", depth });
@@ -928,13 +1022,18 @@ if (scenario.inputs && Object.keys(scenario.inputs).length) {
   tree = PolicyPanel(props);
   await commitEffects(PolicyPanel);
   inspect(tree, 0);
-  for (const entry of components) {
+  // Snapshot: inspect() appends the components it discovers, and this loop must
+  // visit each component of THIS render exactly once.
+  for (const entry of components.slice()) {
     const entryProps = propsFor(entry.fn);
     if (!entryProps) continue;
     resetCursor(entry.fn);
     let out2;
     try { out2 = entry.fn(entryProps); } catch (error) { fail("component " + entry.name + " threw: " + String(error && error.message)); continue; }
     await commitEffects(entry.fn);
+    // Same inspection as the pre-inputs pass, so data-* element records describe
+    // the state the save closures actually see.
+    inspect(out2, 1);
     walkProps(out2, (propName, propValue) => {
       if (propName === "onSubmit" && typeof propValue === "function") {
         renders.push({ kind: "form-submit", component: entry.name, index: saveHandlers.length });

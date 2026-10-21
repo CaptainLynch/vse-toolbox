@@ -563,9 +563,8 @@ def test_sync_display_states_across_binding_lifecycle(client) -> None:
 def test_d5_contract_exposes_multi_serial_key() -> None:
     """D5 绑定契约新增多单号键 documentNos（与 documentNo 互斥）。
 
-    R3 裁定：本批**只**加契约 matchKeys 与 discovery 过滤名映射；matchFields
-    的 UI 输入项留给 Task 11 与功能开关一起上线，避免中间状态出现「前端能填、
-    后端不支持」的字段。
+    R3 裁定：Task 11 补上 matchFields 的多值输入项（显示名 / discovery 过滤名 /
+    placeholder 说明），与功能开关一起上线。
     """
     from core.project_status_contracts import PROJECT_STATUS_SOURCE_CAPABILITIES
 
@@ -573,12 +572,27 @@ def test_d5_contract_exposes_multi_serial_key() -> None:
     assert "documentNos" in caps["matchKeys"]
     assert "documentNo" in caps["matchKeys"]
     names = [item[2] for item in caps["matchFields"]]
-    assert "document_nos" not in names
+    assert "document_nos" in names
     # 其它交付物不得出现该键（多单号只对 D5 数模开放）。
     assert all(
         "documentNos" not in PROJECT_STATUS_SOURCE_CAPABILITIES[key]["matchKeys"]
         for key in ("VPI-T2-D2", "VPI-T2-D3")
     )
+
+
+def test_d5_multi_serial_match_field_is_actionable() -> None:
+    """多值输入项必须自解释：显示名点明合并统计，placeholder 说明分隔符与二选一。"""
+    from core.project_status_contracts import PROJECT_STATUS_SOURCE_CAPABILITIES
+
+    fields = {
+        item[0]: item for item in PROJECT_STATUS_SOURCE_CAPABILITIES["VPI-T2-D5"]["matchFields"]
+    }
+    key, label, filter_name, placeholder = fields["documentNos"]
+    assert key == "documentNos"
+    assert filter_name == "document_nos"
+    assert label == "流水单号（多个，合并统计）"
+    assert "空格" in placeholder and "逗号" in placeholder
+    assert "二选一" in placeholder
 
 
 def test_d5_discovery_maps_multi_serial_filter_name() -> None:
@@ -818,12 +832,14 @@ def test_match_fields_use_real_discovery_filter_names() -> None:
         ("VPI-T2-D5", _TDC_DATA_MODEL_FILTER_NAMES),
     ):
         capabilities = project_status_source_capabilities(deliverable_id)
+        local_only = web_app._MAPPING_DISCOVERY_RULE_FIELDS[("tdc", "data_model")]
         for field in capabilities["matchFields"]:
-            # document_no（流水单号）是唯一的例外：它不是 TDC 查询参数，发现端按
-            # _MAPPING_DISCOVERY_RULE_FIELDS 键收口为 matchRule.documentNo 本地匹配，
-            # 绝不发上游（2026-10-09 数模流水单号绑定）。
-            if field[2] == "document_no":
-                assert "document_no" in web_app._MAPPING_DISCOVERY_RULE_FIELDS[("tdc", "data_model")]
+            # document_no / document_nos（流水单号单值与多值集合）是唯一的例外：
+            # 它们不是 TDC 查询参数，发现端按 _MAPPING_DISCOVERY_RULE_FIELDS 键
+            # 收口为 matchRule.documentNo / documentNos 本地匹配，绝不发上游
+            # （2026-10-09 数模流水单号绑定、2026-10-21 多单号合并统计）。
+            if field[2] in {"document_no", "document_nos"}:
+                assert field[2] in local_only
                 continue
             assert field[2] in allowed, (deliverable_id, field)
 

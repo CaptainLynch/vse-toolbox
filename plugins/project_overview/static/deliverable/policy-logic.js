@@ -57,6 +57,8 @@ export function normalizeTdcDepartment(dept) {
 
 /** 与后端 services/form_search._SEPARATORS 同源：空格/逗号/分号/顿号/换行/制表符。 */
 const DOCUMENT_NO_SEPARATORS = /[\s,;、]+/;
+/** 同上，另含全角逗号/分号：只用于「按原文逐项检查」，不用于产出单号。 */
+const RAW_SERIAL_SEPARATORS = /[\s,;、，；]+/;
 /** 零宽/方向控制类不可见字符：trim() 去不掉，但会让上游精确匹配必然失败。 */
 const INVISIBLE_SERIAL_CHARS = /[\u0000-\u001f\u007f-\u009f\u00ad\u200b\u200c\u200d\u2060\ufeff]/;
 
@@ -80,6 +82,56 @@ export function documentNoSingleError(value) {
   const terms = normalized.split(DOCUMENT_NO_SEPARATORS).filter(Boolean);
   if (terms.length !== 1 || terms[0] !== normalized) return MULTI_SERIAL_MESSAGE;
   return "";
+}
+
+/**
+ * 多单号（documentNos）文本 → 规范化集合：与后端 normalize_serial_set 同源
+ * （去重 + 排序，排序是签名契约的一部分）。
+ *
+ * NFKC 归一在这里的作用是把全角分隔符（，；　）也当分隔符；但集合里的单号本身
+ * 必须是报表里的半角原文——全角单号由 wizardMultiSerialError 单独拦截，绝不
+ * 静默改写成半角（那会变成上游查不到、本地 0 命中的「幽灵单号」）。
+ */
+export function parseSerialSet(text) {
+  const raw = ewoPolicyString(text);
+  if (!raw) return [];
+  const terms = raw.normalize("NFKC").split(DOCUMENT_NO_SEPARATORS).map((item) => item.trim()).filter(Boolean);
+  return Array.from(new Set(terms)).sort();
+}
+
+/** 逐项原文单号（不做 NFKC）：用于识别全角/不可见字符，避免静默改写。 */
+function rawSerialTerms(text) {
+  return ewoPolicyString(text).split(RAW_SERIAL_SEPARATORS).map((item) => item.trim()).filter(Boolean);
+}
+
+/**
+ * 多单号输入的三类拦截（与后端保存侧同一组不变量，前端先拦避免白跑一次全量
+ * 抓取）：全角/不可见字符按原因分流（R17），上限 500 个，且与单值流水单号 /
+ * 实例号三选一。
+ */
+export function wizardMultiSerialError(values) {
+  const source = values && typeof values === "object" ? values : {};
+  const rawTerms = rawSerialTerms(source.documentNos);
+  if (!rawTerms.length) return "";
+  if (rawTerms.some((term) => INVISIBLE_SERIAL_CHARS.test(term))) {
+    return "流水单号含不可见字符，请只填报表里的原文单号。";
+  }
+  if (rawTerms.some((term) => typeof term.normalize === "function" && term.normalize("NFKC") !== term)) {
+    return FULL_WIDTH_SERIAL_MESSAGE;
+  }
+  const serials = parseSerialSet(source.documentNos);
+  if (serials.length > 500) return "流水单号一次最多 500 个，请分批处理。";
+  if (ewoPolicyString(source.documentNo) || ewoPolicyString(source.number)) {
+    return "多单号与单个流水单号/实例号三选一：请只保留一种匹配方式。";
+  }
+  return "";
+}
+
+/** 向导多单号输入下方的说明文案（识别到 N 个单号时给出实时计数）。 */
+export function wizardMultiSerialHint(values) {
+  const serials = parseSerialSet(values && values.documentNos);
+  if (!serials.length) return "";
+  return `识别到 ${serials.length} 个单号（合并统计）`;
 }
 
 export function capabilitiesOf(item) {
@@ -255,6 +307,8 @@ export function wizardInitialValues(policy, capabilities, vaultConfigured) {
     // 数模流水单号（documentNo）与实例号并存二选一：回填只按各自键取值，
     // 不做跨键转换（存量 incident 绑定打开后不填流水单号框，反之亦然）。
     documentNo: ewoPolicyString(rule.documentNo || ""),
+    // 多单号集合（documentNos，list[str]）：回填成空格分隔的文本，供多值输入框编辑。
+    documentNos: Array.isArray(rule.documentNos) ? rule.documentNos.map((value) => String(value)).join(" ") : "",
     defaultDept,
   };
 }
@@ -271,6 +325,10 @@ export function wizardPrecheck(values, policy, capabilities, vaultConfigured) {
   if (documentNo && specificNo) {
     return "流水单号与实例号二选一：请只填写其中一项（流水单号为 3D- 前缀，实例号为纯数字）。";
   }
+  // 多单号是独立输入：单值框的 fail-closed 检查只管单值框本身，多值集合走
+  // wizardMultiSerialError（全角/不可见/上限/三选一）。
+  const multiError = wizardMultiSerialError(values);
+  if (multiError) return multiError;
   const documentNoError = documentNoSingleError(documentNo);
   if (documentNoError) return documentNoError;
   return "";
@@ -285,8 +343,10 @@ export function buildWizardDiscovery(values, capabilities) {
   const deptVal = kind.isTdc ? normalizeTdcDepartment(rawDept) : rawDept;
   const specificNo = ewoPolicyString(values.number);
   // 聚合 = 未指定单号；数模流水单号也是"指定单号"（绑定到命中行的 incident 作为
-  // externalKey），只填流水单号时同样按单记录取证。
+  // externalKey），只填流水单号时同样按单记录取证。多单号集合恒为聚合绑定
+  // （没有单记录外部键），与单值流水单号/实例号三选一。
   const documentNoVal = ewoPolicyString(values.documentNo);
+  const documentNosVal = kind.isDataModel ? parseSerialSet(values.documentNos) : [];
   const aggregate = !specificNo && !(kind.isDataModel && documentNoVal);
   const filters = {};
   const matchRule = { reportType: capabilities.reportType || (kind.isEwo ? "ewo" : ""), aggregate };
@@ -317,6 +377,13 @@ export function buildWizardDiscovery(values, capabilities) {
     // 仍是线上参数 incident。互不覆写，存量绑定回填不跨键转换。
     set("documentNo", "document_no", ewoPolicyString(values.documentNo));
     set("incident", "serial_number", specificNo);
+    // 多单号集合（documentNos）：独立输入，list[str] 进 filters.document_nos，
+    // 发现端按 _MAPPING_DISCOVERY_RULE_FIELDS 收口为 matchRule.documentNos 并在
+    // 本地精确匹配后合并统计；集合本身绝不作为上游查询参数。
+    if (documentNosVal.length) {
+      matchRule.documentNos = documentNosVal;
+      filters.document_nos = documentNosVal;
+    }
   } else if (kind.isPaa) {
     set("projectModel", "project_model", modelVal);
     set("department", "department", deptVal);
@@ -471,7 +538,10 @@ export function bindingInitialValues(item, policy, capabilities) {
   const match = {};
   matchFields.forEach((def) => {
     const key = Array.isArray(def) ? def[0] : def;
-    match[key] = ewoPolicyString(rule[key]);
+    // documentNos 落库是 list[str]：编辑框里回填成空格分隔文本，保存时再解析。
+    match[key] = key === "documentNos" && Array.isArray(rule[key])
+      ? rule[key].map((value) => String(value)).join(" ")
+      : ewoPolicyString(rule[key]);
   });
   const evidence = {};
   evidenceFields.forEach((def) => {
@@ -562,6 +632,14 @@ export function buildPolicyPayload(item, capabilities, storedPolicy, values) {
   }
   const isTdcMatch = capabilities.reportType === "sor" || capabilities.reportType === "data_model" || capabilities.sourceType === "tdc";
   Object.entries(values.match || {}).forEach(([key, raw]) => {
+    // 多单号集合（documentNos）：编辑框是文本，落库必须是 list[str]（后端只接受
+    // 非空字符串数组）；空集合省略该键，绝不写入 null/空串。
+    if (key === "documentNos") {
+      const serials = parseSerialSet(raw);
+      if (serials.length) payload.matchRule.documentNos = serials;
+      else delete payload.matchRule.documentNos;
+      return;
+    }
     let value = ewoPolicyString(raw);
     if (value && isTdcMatch && (key === "department" || key === "superDepartment")) value = normalizeTdcDepartment(value);
     if (value) payload.matchRule[key] = value;
@@ -636,6 +714,13 @@ export function buildEvidencePayload(capabilities, values, payload) {
   matchFields.forEach((def) => {
     const [key, , filterName] = Array.isArray(def) ? def : [def, def, def];
     const value = ewoPolicyString(values.match && values.match[key]);
+    // 多单号集合：discovery 过滤名 document_nos 收的是字符串数组（本地匹配键，
+    // 绝不进上游查询参数）；空集合不进 filters。
+    if (key === "documentNos") {
+      const serials = parseSerialSet(value);
+      if (serials.length) filters[filterName || key] = serials;
+      return;
+    }
     if ((filterName || key) && value) filters[filterName || key] = value;
   });
   if (Object.keys(filters).length === 0 && payload.externalKey) {

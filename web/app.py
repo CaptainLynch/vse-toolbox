@@ -2518,6 +2518,13 @@ def _project_status_payload(
                         else None
                     ),
                     "syncNote": capabilities.get("syncNote"),
+                    # 多单号同步功能开关（缺省关闭）随能力下发：前端据此决定是否
+                    # 引导用户使用多单号（开关关闭时后端保存/发现/运行期一律
+                    # fail-closed）。只有契约声明 documentNos 的交付物可能为 True。
+                    "multiSerialSyncEnabled": bool(
+                        multi_serial_enabled()
+                        and "documentNos" in (capabilities.get("matchKeys") or ())
+                    ),
                     "matchFields": [list(field) for field in capabilities.get("matchFields", ())],
                     "evidenceFields": [dict(field) for field in capabilities.get("evidenceFields", ())],
                     "defaultMapping": capabilities.get("defaultMapping") or {},

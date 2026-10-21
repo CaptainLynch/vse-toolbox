@@ -69,6 +69,47 @@ const serialErrors = {
   ok: P.documentNoSingleError("3D-00001018"),
   constants: [P.MULTI_SERIAL_MESSAGE, P.FULL_WIDTH_SERIAL_MESSAGE],
 };
+// 多单号（documentNos）：解析、互斥/上限校验、聚合发现载荷、存量回填。
+const multiParse = {
+  basic: P.parseSerialSet("3D-2, 3D-1 3D-2"),
+  separators: P.parseSerialSet("3D-2；3D-1、3D-3"),
+  empty: P.parseSerialSet("   "),
+  nonString: P.parseSerialSet(null),
+};
+const dmMulti = P.buildWizardDiscovery(
+  {model: "F610S", department: "车体工程", number: "", status: "", documentNo: "", documentNos: "3D-2, 3D-1 3D-2"},
+  caps("data_model", "tdc"));
+const multiErrors = {
+  ok: P.wizardMultiSerialError({documentNos: "", documentNo: "", number: ""}),
+  withDocumentNo: P.wizardMultiSerialError({documentNos: "3D-1", documentNo: "3D-2", number: ""}),
+  withIncident: P.wizardMultiSerialError({documentNos: "3D-1", documentNo: "", number: "51553863"}),
+  tooMany: P.wizardMultiSerialError({
+    documentNos: Array.from({length: 501}, (_, i) => "3D-" + i).join(" "), documentNo: "", number: ""}),
+  fullWidth: P.wizardMultiSerialError({documentNos: "３Ｄ-００００１０１８", documentNo: "", number: ""}),
+  invisible: P.wizardMultiSerialError({documentNos: "3D-00001018\u200b", documentNo: "", number: ""}),
+};
+const dmMultiPrecheck = P.wizardPrecheck(
+  {credential: "domain", model: "F610S", number: "", documentNo: "", documentNos: "3D-1 3D-2",
+   status: "", sections: [], interval: "15", defaultDept: "车体工程"},
+  {}, caps("data_model", "tdc"), true);
+const initMulti = P.wizardInitialValues({matchRule: {documentNos: ["3D-1", "3D-2"]}}, caps("data_model", "tdc"), true);
+const multiHints = {
+  empty: P.wizardMultiSerialHint({documentNos: "   "}),
+  two: P.wizardMultiSerialHint({documentNos: "3D-2, 3D-1 3D-2"}),
+};
+// 高级设置（绑定编辑器）里的多单号输入框：文本 -> list[str]（后端只接受数组）。
+const dmCaps = {reportType: "data_model", sourceType: "tdc", evidenceFields: [],
+  matchFields: [["documentNos", "流水单号（多个，合并统计）", "document_nos", "空格或逗号分隔"]]};
+const editorValues = (documentNos) => ({mode: "automatic", enabled: false, match: {documentNos},
+  authority: {}, mapping: {}, interval: "15", externalKey: ""});
+const editorMulti = P.buildPolicyPayload({id: "VPI-T2-D5"}, dmCaps,
+  {matchRule: {reportType: "data_model", aggregate: true, documentNos: ["3D-9"]}}, editorValues("3D-2, 3D-1 3D-2"));
+const editorMultiEmpty = P.buildPolicyPayload({id: "VPI-T2-D5"}, dmCaps,
+  {matchRule: {reportType: "data_model", aggregate: true, documentNos: ["3D-9"]}}, editorValues("   "));
+const editorMultiEvidence = P.buildEvidencePayload(dmCaps,
+  {match: {documentNos: "3D-2, 3D-1"}, evidence: {}}, {matchRule: {aggregate: true}, externalKey: ""});
+const editorInitMulti = P.bindingInitialValues({id: "VPI-T2-D5"},
+  {matchRule: {documentNos: ["3D-1", "3D-2"]}}, dmCaps).match.documentNos;
 const notMatchedSerial = P.wizardNotMatchedMessage({state: "not_found", candidateCount: 0, fieldReport: {fields: []}, reason: "serial_no_match", serialMatch: {scanned: 4, matched: 0}});
 const notMatchedEmpty = P.wizardNotMatchedMessage({state: "not_found", candidateCount: 0, fieldReport: {fields: []}, serialMatch: {scanned: 0, matched: 0}});
 const notMatchedLegacy = P.wizardNotMatchedMessage({state: "not_found", candidateCount: 0, fieldReport: {fields: []}});
@@ -95,6 +136,15 @@ console.log(JSON.stringify({
     zeroWidth: dmPrecheckZeroWidth, fullWidth: dmPrecheckFullWidth,
   },
   serialErrors,
+  multiParse,
+  multiErrors,
+  dmMultiPrecheck,
+  dmMulti: {filters: dmMulti.filters, rule: dmMulti.matchRule, aggregate: dmMulti.aggregate,
+            selected: dmMulti.payload.selectedExternalKey},
+  initMulti: {documentNos: initMulti.documentNos, documentNo: initMulti.documentNo, number: initMulti.number},
+  multiHints,
+  editorMulti: {rule: editorMulti.matchRule, empty: editorMultiEmpty.matchRule,
+                evidence: editorMultiEvidence.filters, init: editorInitMulti},
   notMatched: {
     serial: notMatchedSerial, empty: notMatchedEmpty, legacy: notMatchedLegacy,
   },
@@ -166,6 +216,57 @@ def test_serial_error_wording_matches_backend_exactly() -> None:
     assert errors["ok"] == ""
     # 两句文案各自只有一处定义（导出的常量即返回值），避免将来复制出第二份漂移文案。
     assert errors["constants"] == [errors["multi"], errors["fullWidth"]]
+
+
+def test_wizard_multi_serial_parses_and_builds_aggregate_payload() -> None:
+    """多单号：解析去重排序 → 发现载荷 filters.document_nos（list）+ 聚合取证。
+
+    多单号是本地匹配键，绝不变成上游查询参数（与单值 document_no 同一条红线）。
+    """
+    data = _run(_WIZARD)
+    parse = data["multiParse"]
+    assert parse["basic"] == ["3D-1", "3D-2"]
+    assert parse["separators"] == ["3D-1", "3D-2", "3D-3"]   # 全角分号/顿号同样切分
+    assert parse["empty"] == [] and parse["nonString"] == []
+
+    multi = data["dmMulti"]
+    assert multi["filters"]["document_nos"] == ["3D-1", "3D-2"]
+    assert multi["rule"]["documentNos"] == ["3D-1", "3D-2"]
+    assert multi["aggregate"] is True and multi["rule"]["aggregate"] is True
+    assert multi["selected"] is None
+    # 三选一：多单号分支绝不夹带单值键（单值框继续 fail-closed）。
+    assert "document_no" not in multi["filters"] and "documentNo" not in multi["rule"]
+    assert "serial_number" not in multi["filters"] and "incident" not in multi["rule"]
+    assert data["dmMultiPrecheck"] == ""
+    assert data["initMulti"] == {"documentNos": "3D-1 3D-2", "documentNo": "", "number": ""}
+
+
+def test_wizard_multi_serial_error_messages_are_actionable() -> None:
+    """互斥/上限/全角三类输入在向导内先拦，文案指向可执行动作。"""
+    errors = _run(_WIZARD)["multiErrors"]
+    assert errors["ok"] == ""
+    assert "三选一" in errors["withDocumentNo"]
+    assert "三选一" in errors["withIncident"]
+    assert "最多 500 个" in errors["tooMany"]
+    # 全角/兼容字符按 R17 单独一句（不得把用户推向合并导出之外的无效动作）。
+    assert "全角" in errors["fullWidth"]
+    assert "不可见字符" in errors["invisible"]
+
+
+def test_advanced_editor_payload_keeps_multi_serial_as_a_list() -> None:
+    """高级设置的文本输入落库必须是 list[str]；空集合省略键（不写 null/空串）。"""
+    data = _run(_WIZARD)
+    editor = data["editorMulti"]
+    assert editor["rule"]["documentNos"] == ["3D-1", "3D-2"]
+    assert "documentNos" not in editor["empty"]
+    assert editor["evidence"] == {"document_nos": ["3D-1", "3D-2"]}
+    assert editor["init"] == "3D-1 3D-2"
+
+
+def test_wizard_multi_serial_hint_reports_the_parsed_count() -> None:
+    hints = _run(_WIZARD)["multiHints"]
+    assert hints["empty"] == ""
+    assert hints["two"] == "识别到 2 个单号（合并统计）"
 
 
 def test_advanced_editor_keeps_the_ncr_scope_declaration() -> None:
