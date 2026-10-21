@@ -130,9 +130,9 @@ def test_wizard_payloads_per_report_kind() -> None:
     assert "二选一" in data["dmPrecheckBoth"]
     # 单值 fail-closed（2026-10-10）：多值/不可见字符/全角在向导内先拦。
     assert data["dmPrecheck"]["ok"] == ""
-    assert "一次只能填一个" in data["dmPrecheck"]["multi"]
+    assert "合并统计同步暂不支持" in data["dmPrecheck"]["multi"]
     assert "不可见字符" in data["dmPrecheck"]["zeroWidth"]
-    assert "一次只能填一个" in data["dmPrecheck"]["fullWidth"]
+    assert "合并统计同步暂不支持" in data["dmPrecheck"]["fullWidth"]
     # 0 命中时给出可判别的原因（扫描行数 / 上游 0 行），旧后端缺字段时回退原文案。
     assert "已完整扫描 4 行" in data["notMatched"]["serial"]
     assert "上游按当前车型/筛选条件返回 0 行" in data["notMatched"]["empty"]

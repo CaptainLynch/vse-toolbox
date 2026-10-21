@@ -73,7 +73,7 @@ export function documentNoSingleError(value) {
   const normalized = typeof text.normalize === "function" ? text.normalize("NFKC") : text;
   const terms = normalized.split(DOCUMENT_NO_SEPARATORS).filter(Boolean);
   if (terms.length !== 1 || terms[0] !== normalized || normalized !== text) {
-    return "流水单号一次只能填一个（检测到多个单号或全角字符）；如需按多个单号合并导出，请到交付物工作台使用「导出合并结果」。";
+    return "多单号合并统计同步暂不支持（开发中）；当前可用「导出合并结果」按多个单号取数。";
   }
   return "";
 }

@@ -640,7 +640,7 @@ def test_sync_now_reports_legacy_multi_value_document_no_binding_as_not_ready(
     assert resp.status_code == 409
     body = resp.get_json()
     assert body["error"]["type"] == "SyncNotReady"
-    assert "一次只能填一个" in body["error"]["message"]
+    assert "合并统计同步暂不支持" in body["error"]["message"]
     registry_factory.assert_not_called()  # 校验在连接器创建之前
 
 

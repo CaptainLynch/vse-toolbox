@@ -159,6 +159,31 @@ def test_normalize_single_serial_accepts_one_serial(value: str) -> None:
     assert normalize_single_serial(value) == value.strip()
 
 
+# ── 4b. 多单号同步的诚实文案（用户口径是「合并统计」） ─────────────────────────
+
+_STATIC = Path(__file__).resolve().parent.parent / "plugins" / "project_overview" / "static"
+
+
+def test_multi_serial_message_is_actionable() -> None:
+    with pytest.raises(WatchlistError) as excinfo:
+        normalize_single_serial("3D-00001020 3D-00001018")
+    text = str(excinfo.value)
+    assert "合并统计同步暂不支持" in text
+    assert "导出合并结果" in text
+
+
+def test_multi_serial_message_matches_frontend_wording() -> None:
+    """后端与前端逐字同一句（前端只多一个句末句号）；不把「拆交付物」写成答案。"""
+    with pytest.raises(WatchlistError) as excinfo:
+        normalize_single_serial("3D-00001020 3D-00001018")
+    message = str(excinfo.value)
+
+    source = (_STATIC / "deliverable" / "policy-logic.js").read_text(encoding="utf-8")
+
+    assert f'"{message}。"' in source
+    assert "逐张单据" not in message and "各建一个交付物" not in message
+
+
 # ── 5. 权威字段：单记录绑定不得回退到候选键（顾问复核 A1） ────────────────────
 
 def test_authoritative_identity_field_is_declared_for_data_model() -> None:
