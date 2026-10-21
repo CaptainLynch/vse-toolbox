@@ -616,6 +616,62 @@ def test_observe_aggregate_mode_fingerprint_semantics(tmp_db: DatabaseManager) -
     assert result_c["state"] == "not_found"
 
 
+def test_observe_member_identity_baseline_ignores_row_set_growth(tmp_db: DatabaseManager) -> None:
+    """多单号绑定：证据基线是「配置单号成员身份」，行内容与行数不参与。
+
+    上游新增零件行/实例行会让行身份集合变化；若仍按行身份算聚合指纹，
+    「连续两次指纹一致」永不可达 ⇒ 绑定永远无法启用（Astra 排查结论）。
+    """
+    service = MappingDiscoveryService(tmp_db)
+    rule = {"reportType": "data_model", "aggregate": True, "documentNos": ["3D-1"]}
+    first = service.observe(
+        "VPI-T2-D5", "tdc",
+        [{"incident": "FLOW-A", "documentNo": "3D-1", "partNumber": "P-1"}],
+        None, aggregate=True, match_rule=rule, fingerprint_identities=["3D-1"],
+    )
+    second = service.observe(
+        "VPI-T2-D5", "tdc",
+        [
+            {"incident": "FLOW-A", "documentNo": "3D-1", "partNumber": "P-1"},
+            {"incident": "FLOW-A2", "documentNo": "3D-1", "partNumber": "P-2"},
+        ],
+        None, aggregate=True, match_rule=rule, fingerprint_identities=["3D-1"],
+    )
+    assert first["state"] == "matched" and second["state"] == "matched"
+    observations = tmp_db.list_mapping_observations("VPI-T2-D5", 2)
+    assert observations[0]["candidate_fingerprint"] == observations[1]["candidate_fingerprint"]
+    # 成员身份口径 = 单号集合指纹（行内容不参与），与共享算法逐字同源。
+    assert observations[0]["candidate_fingerprint"] == aggregate_fingerprint([("3D-1", {})])
+    assert second["stability"] == {"confirmed": 2, "required": 2, "ready": True}
+
+
+def test_observe_default_aggregate_fingerprint_keeps_row_identities(
+    tmp_db: DatabaseManager,
+) -> None:
+    """存量口径逐字不变：不传 fingerprint_identities 时指纹仍是行身份集合。"""
+    service = MappingDiscoveryService(tmp_db)
+    rows = [
+        {"incident": "FLOW-A", "documentNo": "3D-1", "partNumber": "P-1"},
+        {"incident": "FLOW-A2", "documentNo": "3D-1", "partNumber": "P-2"},
+    ]
+    service.observe("VPI-T2-D5", "tdc", rows, aggregate=True)
+    stored = tmp_db.list_mapping_observations("VPI-T2-D5", 1)[0]
+    assert stored["candidate_fingerprint"] == aggregate_fingerprint(
+        identified_records(rows, report_type="data_model")
+    )
+
+
+def test_observe_rejects_member_identity_baseline_without_aggregate(
+    tmp_db: DatabaseManager,
+) -> None:
+    """成员身份基线只对聚合观测成立：单记录路径传值必须立刻暴露，不得静默忽略。"""
+    with pytest.raises(ValueError):
+        MappingDiscoveryService(tmp_db).observe(
+            "VPI-T2-D5", "tdc", [{"incident": "FLOW-A"}], "FLOW-A",
+            fingerprint_identities=["3D-1"],
+        )
+
+
 def test_candidate_preview_with_note_list_mapping(tmp_path):
     """candidate_preview 支持 note 来源字段为列表并用 ｜ 拼接。"""
     db = DatabaseManager(tmp_path / "db.sqlite")

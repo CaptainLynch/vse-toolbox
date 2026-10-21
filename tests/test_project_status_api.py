@@ -961,6 +961,189 @@ def test_document_no_discovery_stability_sample_uses_same_local_match(client, mo
     assert seen == [None, None]  # 两次都不把流水单号发上游
 
 
+# ===== 多单号（documentNos）：聚合观测 + 成员身份证据 + 部分命中归因 =====
+
+_MULTI_SERIAL_DISCOVERY_URL = "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery"
+
+
+def _enable_multi_serial(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """多单号功能开关缺省关闭；本组用例显式开启（R26 开关语义另有用例）。"""
+    monkeypatch.setenv("VSE_TDC_MULTI_SERIAL_SYNC", "1")
+
+
+def _stub(monkeypatch, rows, *, complete=True, stop_reason="reported_pages"):  # type: ignore[no-untyped-def]
+    """桩掉 D5 全量抓取；返回上游实际收到的查询参数（断言单号绝不外发）。"""
+    seen: list[dict] = []
+
+    class FakeTDCClient:
+        def crawl_data_model_all(self, filters, max_records=5000, should_stop=None):  # type: ignore[no-untyped-def]
+            seen.append(filters.to_params())
+            return SimpleNamespace(rows=list(rows), complete=complete, stop_reason=stop_reason)
+
+    monkeypatch.setattr(
+        web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient()
+    )
+    return seen
+
+
+def _post_multi_serial_discovery(client, document_nos, **extra):  # type: ignore[no-untyped-def]
+    payload = {
+        "base_url": "https://tdc.sgmw.com.cn",
+        "filters": {"document_nos": document_nos},
+        "aggregate": True,
+    }
+    payload.update(extra)
+    return client.post(_MULTI_SERIAL_DISCOVERY_URL, json=payload)
+
+
+def test_multi_serial_discovery_matches_union_as_aggregate(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """全部命中：并集行按聚合观测落证据，无单记录外部键，单号绝不发上游。"""
+    _enable_multi_serial(monkeypatch)
+    rows = [
+        {"incident": "FLOW-A", "documentNo": "3D-1", "partNumber": "P-1"},
+        {"incident": "FLOW-B", "documentNo": "3D-2", "partNumber": "P-1"},
+        {"incident": "FLOW-C", "documentNo": "3D-3", "partNumber": "P-1"},
+    ]
+    seen = _stub(monkeypatch, rows, complete=True)
+
+    response = _post_multi_serial_discovery(client, ["3D-1", "3D-2"])
+
+    assert response.status_code == 200
+    body = response.get_json()["data"]
+    assert body["serialMatch"] == {
+        "requested": ["3D-1", "3D-2"],
+        "found": ["3D-1", "3D-2"],
+        "missing": [],
+        "scanned": 3,
+        "matched": 2,
+        "complete": True,
+    }
+    assert body["state"] == "matched"
+    assert body["externalKey"] is None  # 聚合绑定没有单记录稳定键
+    assert body["candidateCount"] == 2
+    # 流水单号集合绝不作为上游查询参数（与单值同一条红线）。
+    assert seen and all("3D-1" not in repr(params) for params in seen)
+
+
+def test_multi_serial_discovery_partial_match_is_not_found(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """部分命中：not_found + serial_set_partial，不得静默按已命中子集建绑定。"""
+    _enable_multi_serial(monkeypatch)
+    rows = [{"incident": "FLOW-A", "documentNo": "3D-1", "partNumber": "P-1"}]
+    _stub(monkeypatch, rows, complete=True)
+
+    response = _post_multi_serial_discovery(client, ["3D-1", "3D-9"])
+
+    assert response.status_code == 200
+    body = response.get_json()["data"]
+    assert body["serialMatch"]["found"] == ["3D-1"]
+    assert body["serialMatch"]["missing"] == ["3D-9"]
+    assert body["state"] == "not_found"
+    assert body["reason"] == "serial_set_partial"
+    # 部分命中不得为「少算」的范围背书：候选与外部键都不得成立。
+    assert body["externalKey"] is None
+    assert body["candidateCount"] == 0
+
+
+def test_multi_serial_discovery_all_missing_is_not_found(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """全部缺失：同样是 serial_set_partial（归因指向单号集合，而不是「未匹配」）。"""
+    _enable_multi_serial(monkeypatch)
+    _stub(monkeypatch, [{"incident": "FLOW-A", "documentNo": "3D-1"}], complete=True)
+
+    response = _post_multi_serial_discovery(client, ["3D-9"])
+
+    body = response.get_json()["data"]
+    assert body["state"] == "not_found"
+    assert body["reason"] == "serial_set_partial"
+    assert body["serialMatch"]["missing"] == ["3D-9"]
+    assert body["serialMatch"]["found"] == []
+
+
+def test_multi_serial_evidence_survives_new_part_rows(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """同一批单号，上游多出一行零件行，证据指纹必须不变（否则永远无法启用）。"""
+    _enable_multi_serial(monkeypatch)
+    first = [
+        {"incident": "FLOW-A", "documentNo": "3D-1", "partNumber": "P-1", "applicant": "张三"}
+    ]
+    second = [
+        {"incident": "FLOW-A", "documentNo": "3D-1", "partNumber": "P-1", "applicant": "张三"},
+        {"incident": "FLOW-A2", "documentNo": "3D-1", "partNumber": "P-2", "applicant": "张三"},
+    ]
+    _stub(monkeypatch, first, complete=True)
+    assert _post_multi_serial_discovery(client, ["3D-1"]).get_json()["data"]["state"] == "matched"
+    _stub(monkeypatch, second, complete=True)
+    assert _post_multi_serial_discovery(client, ["3D-1"]).get_json()["data"]["state"] == "matched"
+    # 两次观测指纹一致 ⇒ 允许启用
+    response = client.patch(
+        "/api/project-status/deliverables/VPI-T2-D5/update-policy",
+        json={
+            "matchRule": {"reportType": "data_model", "aggregate": True, "documentNos": ["3D-1"]},
+            "enabled": True,
+            "credentialRef": "alias",
+            "mapping": {"owner": "applicant"},
+            "fieldAuthority": {"owner": "automatic"},
+        },
+    )
+    assert response.status_code == 200
+
+
+def test_multi_serial_discovery_rejects_selected_key_before_crawl(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """R27.3：与保存侧对齐——多单号绑定不接受单记录外部键，抓取前就拒绝。"""
+    _enable_multi_serial(monkeypatch)
+    seen = _stub(monkeypatch, [])
+
+    response = _post_multi_serial_discovery(client, ["3D-1"], selectedExternalKey="FLOW-A")
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["message"] == "多单号绑定不接受单记录外部键"
+    assert seen == []  # 不白跑一次全量抓取
+
+
+def test_multi_serial_discovery_rejects_oversized_set_before_crawl(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """R27.1：发现侧单号集合字节上限对齐保存侧 match_rule 的 4000 字符上限。"""
+    _enable_multi_serial(monkeypatch)
+    seen = _stub(monkeypatch, [])
+    serials = [f"3D-{index:017d}" for index in range(200)]  # 约 4.6 KB > 4000 字节
+
+    response = _post_multi_serial_discovery(client, serials)
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["message"] == "多单号集合过长，请分批处理（单次最多 4000 字节）"
+    assert seen == []
+
+
+def test_multi_serial_discovery_flag_disabled_fails_closed(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """R26：功能开关默认关闭，发现路径命中 documentNos 时必须在抓取前 fail-closed。"""
+    monkeypatch.delenv("VSE_TDC_MULTI_SERIAL_SYNC", raising=False)
+    seen = _stub(monkeypatch, [])
+
+    response = _post_multi_serial_discovery(client, ["3D-1"])
+
+    assert response.status_code == 400
+    assert (
+        response.get_json()["error"]["message"]
+        == "多单号同步已被功能开关关闭：请改为单值绑定或联系维护人员开启"
+    )
+    assert seen == []
+
+
+def test_multi_serial_discovery_incomplete_crawl_is_fail_closed(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """抓取不完整不能判定单号集合缺失：422 + 精确文案（与单值同一条 fail-closed）。"""
+    _enable_multi_serial(monkeypatch)
+    _stub(
+        monkeypatch,
+        [{"incident": "FLOW-A", "documentNo": "3D-1"}],
+        complete=False,
+        stop_reason="max_pages",
+    )
+
+    response = _post_multi_serial_discovery(client, ["3D-1", "3D-9"])
+
+    assert response.status_code == 422
+    body = response.get_json()
+    assert body["error"]["type"] == "IncompleteDiscovery"
+    assert body["error"]["message"] == "抓取不完整，无法判定流水单号集合，请重试"
+
+
 # ===== 映射取证的协作式取消（前端 abort 必须让服务端真的停下来） =====
 
 

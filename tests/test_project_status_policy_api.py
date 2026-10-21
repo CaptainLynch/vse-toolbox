@@ -701,7 +701,23 @@ def test_multi_serial_rule_rejects_oversized_set(client, monkeypatch) -> None:
         json={"matchRule": {"reportType": "data_model", "aggregate": True, "documentNos": serials}},
     )
     assert response.status_code == 422
-    assert "过长" in response.get_json()["error"]["fields"]["matchRule"]
+    # R27.1：上限用例断言精确文案（不只用「过长」子串）。
+    assert (
+        response.get_json()["error"]["fields"]["matchRule"]
+        == "多单号集合过长，请分批处理（单次最多 12 KB）"
+    )
+
+
+def test_multi_serial_rule_rejects_over_match_rule_text_limit(client, monkeypatch) -> None:
+    """R27.1：集合字节预算之内、但整条 match_rule 超过 4000 字符时按规则上限拒绝。"""
+    _enable_multi_serial(monkeypatch)
+    serials = [f"3D-{index:017d}" for index in range(200)]  # 约 4.6 KB：未过 12 KB
+    response = client.patch(
+        _D5_POLICY_URL,
+        json={"matchRule": {"reportType": "data_model", "aggregate": True, "documentNos": serials}},
+    )
+    assert response.status_code == 422
+    assert response.get_json()["error"]["fields"]["matchRule"] == "匹配规则过长"
 
 
 def test_discovery_identity_derives_multi_serial_set(monkeypatch) -> None:
@@ -736,12 +752,26 @@ def test_multi_serial_rule_rejects_single_record_external_key(client, monkeypatc
 
 
 def test_discovery_identity_rejects_oversized_multi_serial_set(monkeypatch) -> None:
-    """R15 同样约束发现入口：超 12 KB 的集合在抓取前就拒绝，避免白跑一次全量。"""
+    """R27.1：发现侧预算对齐保存侧（4000 字节），超限在抓取前拒绝，避免白跑一次全量。"""
     _enable_multi_serial(monkeypatch)
     serials = [f"3D-{index:058d}" for index in range(300)]
     with pytest.raises(web_app._TDCRequestError) as info:
         web_app._mapping_discovery_query_identity({"filters": {"document_nos": serials}}, "VPI-T2-D5")
-    assert "过长" in str(info.value)
+    assert str(info.value) == "多单号集合过长，请分批处理（单次最多 4000 字节）"
+
+
+def test_discovery_serial_set_budget_aligns_with_save_side() -> None:
+    """R27.1 防漂移：发现侧集合预算 = min(12 KB 关注清单预算, match_rule 4000 字符)。
+
+    两边不一致就会出现「能发现不能存」：发现侧放行、保存侧 422。
+    """
+    from services.data_model_watchlist import MAX_WATCHLIST_BYTES
+    from services.project_status_updates import MATCH_RULE_TEXT_LIMIT
+
+    assert MATCH_RULE_TEXT_LIMIT == 4000
+    assert web_app._DISCOVERY_SERIAL_SET_MAX_BYTES == min(
+        MAX_WATCHLIST_BYTES, MATCH_RULE_TEXT_LIMIT
+    )
 
 
 def test_discovery_identity_rejects_non_string_multi_serial_filter(monkeypatch) -> None:

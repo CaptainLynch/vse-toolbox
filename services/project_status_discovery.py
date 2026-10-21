@@ -89,7 +89,19 @@ class MappingDiscoveryService:
         aggregate: bool = False,
         match_rule: Mapping[str, Any] | None = None,
         upstream_total: int | None = None,
+        fingerprint_identities: Sequence[str] | None = None,
     ) -> dict[str, Any]:
+        """落一条映射发现观测（证据指纹 = 稳定性判定的唯一基线）。
+
+        ``fingerprint_identities``（多单号绑定专用，默认 None）：
+        聚合指纹默认口径是**行身份集合**（数模 = incident，见
+        ``aggregate_fingerprint``）。多单号场景下上游行集会随新增零件行/新增
+        实例变化，行身份口径会让「连续两次指纹一致」永不可达 ⇒ 绑定永远无法
+        启用。因此多单号绑定改传**配置单号成员身份**（``serial_match["found"]``）：
+        只对「这批单号是否都在」敏感，行内容与行数不参与。
+        默认 None 时行为与传入前逐字一致（存量路径不得传值）；非聚合观测传值
+        直接 ValueError（单记录绑定没有成员身份语义）。
+        """
         if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes, bytearray)):
             raise ValueError("rows must be a sequence of objects")
         if any(not isinstance(row, Mapping) for row in rows):
@@ -100,6 +112,17 @@ class MappingDiscoveryService:
             )
         if not isinstance(aggregate, bool):
             raise ValueError("aggregate must be a boolean")
+        if fingerprint_identities is not None:
+            if not aggregate:
+                raise ValueError(
+                    "fingerprint_identities is only valid for aggregate observations"
+                )
+            if isinstance(fingerprint_identities, (str, bytes, bytearray)) or not isinstance(
+                fingerprint_identities, Sequence
+            ):
+                raise ValueError("fingerprint_identities must be a sequence of strings")
+            if any(not isinstance(item, str) for item in fingerprint_identities):
+                raise ValueError("fingerprint_identities must be a sequence of strings")
         if upstream_total is not None and (
             isinstance(upstream_total, bool)
             or not isinstance(upstream_total, int)
@@ -174,7 +197,15 @@ class MappingDiscoveryService:
                 state, external_key, fingerprint = "not_found", None, None
             else:
                 state, external_key = "matched", None
-                fingerprint = aggregate_fingerprint(records)
+                if fingerprint_identities is None:
+                    # 默认口径（存量逐字不变）：行身份集合（数模 = incident）。
+                    fingerprint = aggregate_fingerprint(records)
+                else:
+                    # 多单号绑定：基线是「配置单号成员身份」，行内容/行数不参与
+                    # （上游新增零件行不会让连续两次观测永远不一致）。
+                    fingerprint = aggregate_fingerprint(
+                        [(identity, {}) for identity in fingerprint_identities]
+                    )
                 if versioned_ewo:
                     from services.ewo_binding_records import ewo_v2_candidate_values
                     aggregated_candidate_values = ewo_v2_candidate_values(records, current_mapping, effective_rule, report=_aggregate_report(deliverable_id))

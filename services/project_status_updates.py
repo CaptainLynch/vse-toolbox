@@ -128,13 +128,16 @@ def _multi_serial_rule_error(
     *,
     external_key: str | None,
     aggregate: bool,
-    sync_scope: str | None = None,
+    sync_scope: str | None,
 ) -> str | None:
     """多单号集合绑定的规则不变量（保存与运行期同源，避免「能存不能跑」）。
 
     ``documentNos`` 存在 ⇒ 功能开关开启、集合合法且不超 12 KB 字节预算、
     ``aggregate is True``、无单记录外部键，且不与单值 ``documentNo``/``incident``
     或关注清单范围（``syncScope=watchlist``）叠加——叠加会静默取交集、少算。
+
+    ``sync_scope`` 是必填关键字参数（R27）：互斥判定依赖调用方显式提供当前
+    同步范围，漏传在调用点即暴露，而不是默认成「非关注清单」静默放行。
     """
     serials = match_rule.get("documentNos")
     if not serials:
@@ -372,6 +375,10 @@ _TEXT_LIMITS = {
     "mapping": 4000,
     "error_summary": 1000,
 }
+
+#: 匹配规则落库的字符上限（发现入口的单号集合字节预算对齐这一条，避免
+#: 「能发现不能存」：发现侧放行、保存侧 422）。单一来源，勿在别处重写字面量。
+MATCH_RULE_TEXT_LIMIT = _TEXT_LIMITS["match_rule"]
 
 
 class ProjectStatusPolicyError(Exception):
@@ -1175,7 +1182,7 @@ class ProjectStatusUpdateService:
                 fields["matchRule"] = _single_serial_error(match_rule.get("documentNo"))
             elif multi_serial_error:
                 fields["matchRule"] = multi_serial_error
-            elif len(_json_dumps(match_rule)) > _TEXT_LIMITS["match_rule"]:
+            elif len(_json_dumps(match_rule)) > MATCH_RULE_TEXT_LIMIT:
                 fields["matchRule"] = "匹配规则过长"
 
         if not isinstance(mapping, dict):

@@ -99,6 +99,7 @@ from core.excel_tasks import (
 )
 from core.excel_worker import ExcelTaskWorker
 from services.project_status_updates import (
+    MATCH_RULE_TEXT_LIMIT,
     ProjectStatusPolicyError,
     ProjectStatusUpdateService,
 )
@@ -1317,12 +1318,23 @@ _MAPPING_DISCOVERY_RULE_FIELDS: dict[tuple[str, str], dict[str, str]] = {
 }
 
 
+#: 发现侧多单号集合的字节预算：与保存侧 ``match_rule`` 的 4000 字符上限取更严的一侧
+#: （关注清单预算 12 KB 更宽）。两侧不一致就会出现「能发现不能存」。
+_DISCOVERY_SERIAL_SET_MAX_BYTES = min(MAX_WATCHLIST_BYTES, MATCH_RULE_TEXT_LIMIT)
+_DISCOVERY_SERIAL_SET_TOO_LONG_MESSAGE = (
+    f"多单号集合过长，请分批处理（单次最多 {_DISCOVERY_SERIAL_SET_MAX_BYTES} 字节）"
+)
+#: 多单号绑定没有单记录稳定键（与保存侧 ``_multi_serial_rule_error`` 同一条文案）。
+_MULTI_SERIAL_EXTERNAL_KEY_MESSAGE = "多单号绑定不接受单记录外部键"
+
+
 def _mapping_discovery_serial_set(value: Any, error_type: Any) -> list[str]:
     """discovery 过滤名 ``document_nos`` 的值 -> 规范化单号集合（空值 = 未配置）。
 
     多单号是本地匹配键，绝不进上游查询参数（``_tdc_data_model_filters`` 不读该键）。
     开关关闭时 fail-closed（R22/R4：与保存/运行期同一个 ``multi_serial_enabled``）；
-    集合超 12 KB 字节预算时同样在抓取前拒绝（R15：这条规则后面要落进 match_rule_json）。
+    集合超字节预算时同样在抓取前拒绝（R15/R27：这条规则后面要落进 match_rule_json，
+    预算与保存侧 ``_TEXT_LIMITS["match_rule"]`` 对齐，避免「能发现不能存」）。
     """
     if isinstance(value, str):
         if not value.strip():
@@ -1338,8 +1350,8 @@ def _mapping_discovery_serial_set(value: Any, error_type: Any) -> list[str]:
         serials = normalize_serial_set(value)
     except WatchlistError as exc:
         raise error_type(str(exc)) from None
-    if len(json.dumps(serials, ensure_ascii=False).encode("utf-8")) > MAX_WATCHLIST_BYTES:
-        raise error_type("多单号集合过长，请分批处理（单次最多 12 KB）")
+    if len(json.dumps(serials, ensure_ascii=False).encode("utf-8")) > _DISCOVERY_SERIAL_SET_MAX_BYTES:
+        raise error_type(_DISCOVERY_SERIAL_SET_TOO_LONG_MESSAGE)
     return serials
 
 
@@ -1386,7 +1398,6 @@ def _mapping_discovery_query_identity(
         if name == "document_nos":
             # 多单号集合：规范化后进匹配规则，值不进上游查询参数（与 document_no 同处理）。
             serials = _mapping_discovery_serial_set(value, error_type)
-            values.pop(name, None)
             if serials:
                 rule[rule_name] = serials
             continue
@@ -1396,6 +1407,11 @@ def _mapping_discovery_query_identity(
         values[name] = clean
         if clean is not None:
             rule[rule_name] = clean
+    if rule.get("documentNos") and selected_external_key:
+        # R27.3：与保存侧（_multi_serial_rule_error）对齐——多单号集合没有单记录
+        # 稳定键。带 selectedExternalKey 的请求在抓取前就拒绝，不先白跑一次全量
+        # 抓取再 422，也不把 selected 混进聚合观测。
+        raise error_type(_MULTI_SERIAL_EXTERNAL_KEY_MESSAGE)
     if source_type == "aras" and report_type in {"ncr_progress", "ncr_detail"}:
         # NCR 科室代码：配置保存/探测与同步 collect 共用同一解析器（fail-closed，
         # 非法输入 422 并列出合法代码；空 = 不限科室）。
@@ -5358,6 +5374,13 @@ def create_app(
             # 数模流水单号（documentNo）不是 TDC 查询参数：规则里带它时只做本地
             # 精确匹配，绝不发给上游（见 _mapping_discovery_query_identity）。
             document_no = str(match_rule.get("documentNo") or "").strip()
+            # 多单号集合（documentNos）同理：只做本地精确匹配，且没有单记录稳定键。
+            _raw_document_nos = match_rule.get("documentNos")
+            document_nos = (
+                [str(item) for item in _raw_document_nos]
+                if isinstance(_raw_document_nos, (list, tuple))
+                else None
+            ) or None
             cache_key = None
             if wizard_session_id and not is_stability_check:
                 base_query_params = {
@@ -5417,6 +5440,15 @@ def create_app(
                                 None,
                                 _pagination_diagnostic(crawl_result, len(crawl_result.rows)),
                             )
+                        if document_nos and not _mapping_result_is_complete(crawl_result):
+                            # 同一条 fail-closed：抓不全就分不清「单号不存在」与「没抓到」。
+                            raise _TDCRequestError(
+                                "抓取不完整，无法判定流水单号集合，请重试",
+                                "IncompleteDiscovery",
+                                422,
+                                None,
+                                _pagination_diagnostic(crawl_result, len(crawl_result.rows)),
+                            )
                         rows = _require_complete_mapping_result(crawl_result, _TDCRequestError)
                         crawl_total = getattr(crawl_result, "total", None)
                         if (
@@ -5429,8 +5461,31 @@ def create_app(
                             _set_discovery_session_cache(cache_key, rows, upstream_declared_total)
                     serial_match: dict[str, Any] | None = None
                     serial_diagnostic: dict[str, Any] | None = None
+                    serial_partial = False
                     effective_selected = selected
-                    if document_no:
+                    if document_nos:
+                        # 多单号集合：与单值同一条本地精确匹配（上游没有该查询参数），
+                        # 但集合没有单记录稳定键 ⇒ 聚合观测 + 无选中键。
+                        matched, bookkeeping = match_serials(rows, document_nos)
+                        serial_match = {
+                            "requested": list(document_nos),
+                            "found": bookkeeping["found"],
+                            "missing": bookkeeping["missing"],
+                            "scanned": bookkeeping["scanned"],
+                            "matched": bookkeeping["matched"],
+                            "complete": True,
+                        }
+                        if upstream_declared_total is None:
+                            # 本地匹配不改变上游范围（与单值分支同一口径）：
+                            # 基线总数仍是全量抓取的行数。
+                            upstream_declared_total = len(rows)
+                        serial_partial = bool(serial_match["missing"])
+                        # 部分/全部缺失：绝不按已命中子集建绑定——否则证据会为一个
+                        # 「少算」的范围背书。这里只落一条 not_found 观测，命中情况
+                        # 全部由 serialMatch 归因（missing 逐项可见）。
+                        rows = [] if serial_partial else matched
+                        effective_selected = None
+                    elif document_no:
                         # 本地精确匹配是流水单号的唯一判定依据（上游没有该查询参数）。
                         # 选中键必须与 observe() 的候选过滤键同源——同一个身份函数、
                         # 同一行——否则命中行会被 selected 过滤掉而误报「未匹配」
@@ -5506,20 +5561,34 @@ def create_app(
                         effective_selected = (
                             distinct_identities[0] if distinct_identities else None
                         )
+                    observe_kwargs: dict[str, Any] = {}
+                    if document_nos:
+                        # 多单号证据基线 = 配置单号成员身份（行身份口径在上游行集
+                        # 变化时永不稳定，见 MappingDiscoveryService.observe）。
+                        observe_kwargs["fingerprint_identities"] = serial_match["found"]
                     observation = discovery_service.observe(
                         deliverable_id, "tdc", rows, effective_selected,
                         aggregate=bool(match_rule["aggregate"]), match_rule=match_rule,
                         upstream_total=upstream_declared_total,
+                        **observe_kwargs,
                     )
+                    if serial_partial:
+                        # 部分/全部缺失：归因到单号集合，且绝不静默按已命中子集建绑定。
+                        observation = {
+                            **observation,
+                            "state": "not_found",
+                            "reason": "serial_set_partial",
+                        }
                     if serial_match is not None:
                         # 0 行时仍走既有「未匹配」路径（state=not_found），但附带覆盖范围
                         # 与身份事实，用户能看到抓了多少行、身份字段是哪个，而不是只看到
                         # "未匹配"（2026-10-10：命中行身份 ≠ 选中键时曾静默变成未匹配）。
-                        observation = {
-                            **observation,
-                            "serialMatch": serial_match,
-                            "serialDiagnostic": serial_diagnostic,
-                        }
+                        observation = {**observation, "serialMatch": serial_match}
+                        if serial_diagnostic is not None:
+                            observation = {
+                                **observation,
+                                "serialDiagnostic": serial_diagnostic,
+                            }
                         if (
                             not matched
                             and observation.get("state") == "not_found"
