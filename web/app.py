@@ -3153,7 +3153,10 @@ def _tdc_report_query(
             # 静默忽略 document_no 会让用户拿到"全部行"当成匹配结果。
             if preview_source != "list_endpoint":
                 raise _TDCRequestError(
-                    "document_no 本地匹配只支持 list_endpoint 数据源"
+                    "填了流水单号时，查询预览只能用「快速查询（list 接口）」：请把查询模式切回快速查询；"
+                    "需要官方 47 列全量请到交付物工作台使用「导出合并结果」，或清空流水单号后再用官方 Excel 预览。",
+                    "SerialRequiresListSource",
+                    400,
                 )
             return _tdc_data_model_serial_query(payload, filters, allowed_hosts, document_nos)
         if preview_source == "official_export":

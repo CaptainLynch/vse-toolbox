@@ -799,9 +799,63 @@ def test_tdc_data_model_query_document_no_incomplete_is_fail_closed(client, monk
 def test_tdc_data_model_query_document_no_rejects_official_export_source(client) -> None:
     """官方导出预览是另一种数据源：不能静默忽略 document_no 后把全量行当结果。"""
     resp = _document_no_query(client, "F610S-3D-0001", preview_source="official_export")
-
     assert resp.status_code == 400
-    assert resp.get_json()["error"]["type"] == "ValidationError"
+    body = resp.get_json()
+    assert body["error"]["type"] == "SerialRequiresListSource"
+    assert "快速查询" in body["error"]["message"]
+    assert "导出合并结果" in body["error"]["message"]
+
+
+def test_tdc_data_model_official_preview_without_serial_skips_guard(client, monkeypatch) -> None:
+    """缺省/空白单号不是本地匹配请求：官方预览必须照常可用。"""
+    seen = []
+
+    def fake_preview(payload, filters, allowed_hosts, **kwargs):
+        seen.append(kwargs["operation"])
+        return {"report_type": "data_model", "data_source": "official_export", "rows": []}
+
+    monkeypatch.setattr(web_app, "_tdc_official_data_model_preview", fake_preview)
+    for extra in ({}, {"document_no": ""}, {"document_no": "   "}):
+        payload = {
+            "base_url": "https://tdc.example", "auth_mode": "password",
+            "username": "fictional-user", "password": "fictional-password-secret",
+            "filters": {"project_model": "F610S"}, "preview_source": "official_export",
+            **extra,
+        }
+        resp = client.post("/api/tdc/data-model/query", json=payload)
+        assert resp.status_code == 200
+    assert seen == ["query", "query", "query"]
+
+
+def test_crawl_all_ignores_document_no_and_reports_full_scope(client, monkeypatch) -> None:
+    """全量抓取按定义忽略流水单号（两种数据源都是），返回的是条件范围内的全部行。"""
+    rows = [{"incident": "900001", "documentNo": "F610S-3D-0001"}]
+    _stub_data_model_crawl(monkeypatch, rows, complete=True)
+    payload = {
+        "base_url": "https://tdc.example", "auth_mode": "browser",
+        "filters": {"project_model": "F610S"}, "document_no": "F610S-3D-0002",
+    }
+
+    # list 接口：后台全量抓取，单号不参与过滤也不进结果簿记。
+    resp = client.post("/api/tdc/data-model/crawl-all", json=payload)
+    assert resp.status_code == 202
+    task_id = resp.get_json()["data"]["taskId"]
+    assert _wait_for_tdc_background_task(client, task_id)["status"] == "succeeded"
+    data = client.get(f"/api/tasks/{task_id}/result").get_json()["data"]
+    assert len(data["rows"]) == 1
+    assert "F610S-3D-0001" in data["rows"][0]  # 未按单号过滤：非请求单号的行照常返回
+    assert "serialMatch" not in data
+
+    # 官方导出预览：同步 200，同样不读单号。
+    def fake_preview(payload, filters, allowed_hosts, **kwargs):
+        return {"report_type": "data_model", "data_source": "official_export", "rows": []}
+
+    monkeypatch.setattr(web_app, "_tdc_official_data_model_preview", fake_preview)
+    official = client.post(
+        "/api/tdc/data-model/crawl-all", json={**payload, "preview_source": "official_export"}
+    )
+    assert official.status_code == 200
+    assert "serialMatch" not in official.get_json()["data"]
 
 
 def test_tdc_data_model_query_document_no_in_filters_rejected_not_dropped(client) -> None:
