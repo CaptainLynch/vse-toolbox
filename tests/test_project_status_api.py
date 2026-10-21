@@ -1021,8 +1021,11 @@ def test_multi_serial_discovery_matches_union_as_aggregate(client, monkeypatch) 
     assert body["state"] == "matched"
     assert body["externalKey"] is None  # 聚合绑定没有单记录稳定键
     assert body["candidateCount"] == 2
-    # 流水单号集合绝不作为上游查询参数（与单值同一条红线）。
-    assert seen and all("3D-1" not in repr(params) for params in seen)
+    # 流水单号集合绝不作为上游查询参数（与单值同一条红线）：集合里每个单号都要断言。
+    assert seen
+    for params in seen:
+        for serial in ("3D-1", "3D-2"):
+            assert serial not in repr(params)
 
 
 def test_multi_serial_discovery_partial_match_is_not_found(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -1140,6 +1143,148 @@ def test_multi_serial_discovery_incomplete_crawl_is_fail_closed(client, monkeypa
 
     assert response.status_code == 422
     body = response.get_json()
+    assert body["error"]["type"] == "IncompleteDiscovery"
+    assert body["error"]["message"] == "抓取不完整，无法判定流水单号集合，请重试"
+
+
+# ----- F10 多单号稳定性（R28）：全量抓取 + match_serials + 成员身份比对 -----
+
+_MULTI_SERIAL_HITS = [
+    {"incident": "FLOW-A", "documentNo": "3D-1", "partNumber": "P-1", "applicant": "张三"},
+    {"incident": "FLOW-B", "documentNo": "3D-2", "partNumber": "P-1", "applicant": "张三"},
+]
+
+
+def _multi_serial_stability_stub(monkeypatch, snapshots, *, complete=True):  # type: ignore[no-untyped-def]
+    """桩掉 D5 全量抓取（按调用顺序取快照）与第 1 页查询（记录是否被调用）。
+
+    第 1 页查询保留在桩里，是为了让「拿全量第 1 页去比命中并集」的旧实现
+    真的跑出错误结果，而不是因为桩缺方法而崩成 500。
+    """
+    actions: list[str] = []
+    pending = [list(snapshot) for snapshot in snapshots]
+
+    class FakeTDCClient:
+        def crawl_data_model_all(self, filters, max_records=5000, should_stop=None):  # type: ignore[no-untyped-def]
+            actions.append("crawl_all")
+            rows = pending.pop(0) if len(pending) > 1 else pending[0]
+            return SimpleNamespace(
+                rows=list(rows), total=len(rows), complete=complete, stop_reason="reported_pages"
+            )
+
+        def query_data_model_page(self, filters, page=1, page_size=50):  # type: ignore[no-untyped-def]
+            actions.append("query_page")
+            rows = pending[0]
+            return SimpleNamespace(
+                rows=list(rows)[:page_size], total=len(rows), page=page, page_size=page_size
+            )
+
+    monkeypatch.setattr(
+        web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient()
+    )
+    return actions
+
+
+def test_multi_serial_stability_check_uses_member_identity(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """F10 多单号：采样必须与首次观测同源（全量抓取 + match_serials）。
+
+    拿「全量第 1 页」去比「命中并集」必然报 sample_not_in_baseline，卡在两条
+    matched 之间让多单号绑定永远无法就绪（R28）。
+    """
+    _enable_multi_serial(monkeypatch)
+    others = [
+        {"incident": f"INC-{index:04d}", "documentNo": f"9D-{index:04d}", "partNumber": "P-9"}
+        for index in range(60)
+    ]
+    actions = _multi_serial_stability_stub(
+        monkeypatch, [others[:20] + _MULTI_SERIAL_HITS + others[20:]]
+    )
+
+    first = _post_multi_serial_discovery(client, ["3D-1", "3D-2"])
+    assert first.status_code == 200
+    assert first.get_json()["data"]["stability"]["confirmed"] == 1
+
+    second = _post_multi_serial_discovery(client, ["3D-1", "3D-2"], stabilityCheck=True)
+    assert second.status_code == 200
+    data = second.get_json()["data"]
+    assert data["state"] == "matched"
+    assert data["mismatch"] is None
+    assert data["stability"] == {"confirmed": 2, "required": 2, "ready": True}
+    # 采样走全量抓取 + 本地匹配，绝不拿全量第 1 页当样本。
+    assert actions == ["crawl_all", "crawl_all"]
+
+    # 验收面：两条一致证据之后绑定必须能启用（旧实现永远卡在 key_changed）。
+    enabled = client.patch(
+        "/api/project-status/deliverables/VPI-T2-D5/update-policy",
+        json={
+            "matchRule": {
+                "reportType": "data_model",
+                "aggregate": True,
+                "documentNos": ["3D-1", "3D-2"],
+            },
+            "enabled": True,
+            "credentialRef": "alias",
+            "mapping": {"owner": "applicant"},
+            "fieldAuthority": {"owner": "automatic"},
+        },
+    )
+    assert enabled.status_code == 200
+
+
+def test_multi_serial_stability_check_tolerates_new_part_rows(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """上游多出一行零件行（总体总数变化）不得让成员身份比对误报不稳定。"""
+    _enable_multi_serial(monkeypatch)
+    base = _MULTI_SERIAL_HITS + [
+        {"incident": "OTHER-1", "documentNo": "9D-1", "partNumber": "P-9"}
+    ]
+    grown = base + [
+        {"incident": "FLOW-A2", "documentNo": "3D-1", "partNumber": "P-2", "applicant": "张三"}
+    ]
+    actions = _multi_serial_stability_stub(monkeypatch, [base, grown])
+
+    assert _post_multi_serial_discovery(client, ["3D-1", "3D-2"]).status_code == 200
+    second = _post_multi_serial_discovery(client, ["3D-1", "3D-2"], stabilityCheck=True)
+
+    assert second.status_code == 200
+    data = second.get_json()["data"]
+    assert data["state"] == "matched"
+    assert data["mismatch"] is None
+    assert data["stability"] == {"confirmed": 2, "required": 2, "ready": True}
+    assert actions == ["crawl_all", "crawl_all"]
+
+
+def test_multi_serial_stability_check_reports_serial_set_changed(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """成员集合真的变化（某个配置单号消失）时必须明确归因，而不是静默通过。"""
+    _enable_multi_serial(monkeypatch)
+    base = _MULTI_SERIAL_HITS + [
+        {"incident": "OTHER-1", "documentNo": "9D-1", "partNumber": "P-9"}
+    ]
+    shrunk = [
+        {"incident": "FLOW-A", "documentNo": "3D-1", "partNumber": "P-1", "applicant": "张三"},
+        {"incident": "OTHER-1", "documentNo": "9D-1", "partNumber": "P-9"},
+    ]
+    _multi_serial_stability_stub(monkeypatch, [base, shrunk])
+
+    assert _post_multi_serial_discovery(client, ["3D-1", "3D-2"]).status_code == 200
+    second = _post_multi_serial_discovery(client, ["3D-1", "3D-2"], stabilityCheck=True)
+
+    assert second.status_code == 200
+    data = second.get_json()["data"]
+    assert data["state"] == "key_changed"
+    assert data["mismatch"] == {"reason": "serial_set_changed", "expected": 2, "actual": 1}
+    assert data["stability"]["confirmed"] == 0
+
+
+def test_multi_serial_stability_check_incomplete_crawl_is_fail_closed(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """采样抓取不完整不能判定单号集合：422 + 精确文案（与首次观测同一条 fail-closed）。"""
+    _enable_multi_serial(monkeypatch)
+    _multi_serial_stability_stub(monkeypatch, [_MULTI_SERIAL_HITS], complete=False)
+
+    assert _post_multi_serial_discovery(client, ["3D-1", "3D-2"]).status_code == 422
+    second = _post_multi_serial_discovery(client, ["3D-1", "3D-2"], stabilityCheck=True)
+
+    assert second.status_code == 422
+    body = second.get_json()
     assert body["error"]["type"] == "IncompleteDiscovery"
     assert body["error"]["message"] == "抓取不完整，无法判定流水单号集合，请重试"
 

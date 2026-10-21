@@ -137,6 +137,7 @@ from services.project_status_connectors import build_project_status_ewo_filters
 from services.data_model_watchlist import (
     MAX_WATCHLIST_BYTES,
     MULTI_SERIAL_DISABLED_MESSAGE,
+    MULTI_SERIAL_EXTERNAL_KEY_MESSAGE,
     WatchlistError,
     match_serial,
     match_serials,
@@ -1324,8 +1325,6 @@ _DISCOVERY_SERIAL_SET_MAX_BYTES = min(MAX_WATCHLIST_BYTES, MATCH_RULE_TEXT_LIMIT
 _DISCOVERY_SERIAL_SET_TOO_LONG_MESSAGE = (
     f"多单号集合过长，请分批处理（单次最多 {_DISCOVERY_SERIAL_SET_MAX_BYTES} 字节）"
 )
-#: 多单号绑定没有单记录稳定键（与保存侧 ``_multi_serial_rule_error`` 同一条文案）。
-_MULTI_SERIAL_EXTERNAL_KEY_MESSAGE = "多单号绑定不接受单记录外部键"
 
 
 def _mapping_discovery_serial_set(value: Any, error_type: Any) -> list[str]:
@@ -1411,7 +1410,7 @@ def _mapping_discovery_query_identity(
         # R27.3：与保存侧（_multi_serial_rule_error）对齐——多单号集合没有单记录
         # 稳定键。带 selectedExternalKey 的请求在抓取前就拒绝，不先白跑一次全量
         # 抓取再 422，也不把 selected 混进聚合观测。
-        raise error_type(_MULTI_SERIAL_EXTERNAL_KEY_MESSAGE)
+        raise error_type(MULTI_SERIAL_EXTERNAL_KEY_MESSAGE)
     if source_type == "aras" and report_type in {"ncr_progress", "ncr_detail"}:
         # NCR 科室代码：配置保存/探测与同步 collect 共用同一解析器（fail-closed，
         # 非法输入 422 并列出合法代码；空 = 不限科室）。
@@ -5566,19 +5565,16 @@ def create_app(
                         # 多单号证据基线 = 配置单号成员身份（行身份口径在上游行集
                         # 变化时永不稳定，见 MappingDiscoveryService.observe）。
                         observe_kwargs["fingerprint_identities"] = serial_match["found"]
+                        if serial_partial:
+                            # 归因交给 observe 落库（``_reason``）：历史/DB 读者看到的
+                            # 不能只是一条裸的 not_found（与响应里的 reason 同源）。
+                            observe_kwargs["state_reason"] = "serial_set_partial"
                     observation = discovery_service.observe(
                         deliverable_id, "tdc", rows, effective_selected,
                         aggregate=bool(match_rule["aggregate"]), match_rule=match_rule,
                         upstream_total=upstream_declared_total,
                         **observe_kwargs,
                     )
-                    if serial_partial:
-                        # 部分/全部缺失：归因到单号集合，且绝不静默按已命中子集建绑定。
-                        observation = {
-                            **observation,
-                            "state": "not_found",
-                            "reason": "serial_set_partial",
-                        }
                     if serial_match is not None:
                         # 0 行时仍走既有「未匹配」路径（state=not_found），但附带覆盖范围
                         # 与身份事实，用户能看到抓了多少行、身份字段是哪个，而不是只看到
@@ -5742,6 +5738,7 @@ def create_app(
                     client = _build_tdc_client_from_payload(
                         payload, app.config["TDC_ALLOWED_HOSTS"]
                     )
+                    stability_kwargs: dict[str, Any] = {}
                     if deliverable_id == "VPI-T2-D2":
                         paged_result = client.query_sor_page(
                             _tdc_sor_filters(values), page=1, page_size=50
@@ -5772,6 +5769,44 @@ def create_app(
                             if isinstance(full_total, int) and not isinstance(full_total, bool)
                             else len(crawl_result.rows)
                         )
+                    elif document_nos:
+                        # R28：多单号稳定性必须与首次观测同源（全量抓取 + 本地匹配），
+                        # 且按「配置单号成员身份」比对——拿全量第 1 页去比「已命中并集」
+                        # 必然报 sample_not_in_baseline，卡在两条 matched 之间永远无法就绪。
+                        if not match_rule["aggregate"]:
+                            # 成员身份比对只对聚合绑定成立；非聚合多单号是非法组合
+                            # （保存侧同一条不变量），这里明确拒绝而不是静默误报。
+                            raise _TDCRequestError(
+                                "多单号稳定性校验只支持聚合绑定（aggregate=true）",
+                                "UnsupportedStabilityCheck",
+                                400,
+                            )
+                        crawl_result = client.crawl_data_model_all(
+                            _tdc_data_model_filters(values),
+                            max_records=MAX_AGGREGATE_RECORDS,
+                        )
+                        if not _mapping_result_is_complete(crawl_result):
+                            raise _TDCRequestError(
+                                "抓取不完整，无法判定流水单号集合，请重试",
+                                "IncompleteDiscovery",
+                                422,
+                                None,
+                                _pagination_diagnostic(crawl_result, len(crawl_result.rows)),
+                            )
+                        matched_rows, bookkeeping = match_serials(
+                            crawl_result.rows, document_nos
+                        )
+                        # 样本侧是「本次全量抓取里命中的单号集合」（全集，不是采样），
+                        # 与基线按集合相等比对；声明总数与单值分支同一口径，但成员模式
+                        # 不参与比对（上游零件行会让总体总数增长）。
+                        sample_rows = matched_rows
+                        full_total = getattr(crawl_result, "total", None)
+                        sample_total = (
+                            full_total
+                            if isinstance(full_total, int) and not isinstance(full_total, bool)
+                            else len(crawl_result.rows)
+                        )
+                        stability_kwargs["member_identities"] = bookkeeping["found"]
                     else:
                         paged_result = client.query_data_model_page(
                             _tdc_data_model_filters(values), page=1, page_size=50
@@ -5782,6 +5817,7 @@ def create_app(
                     result = discovery_service.observe_stability_sample(
                         deliverable_id, "tdc", sample_rows, sample_total,
                         aggregate=bool(match_rule["aggregate"]), match_rule=match_rule,
+                        **stability_kwargs,
                     )
                     mismatch = result.get("mismatch") if isinstance(result, dict) else None
                     if mismatch:

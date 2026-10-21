@@ -29,6 +29,7 @@ from core.redaction import redact_sensitive_text
 from services.data_model_watchlist import (
     MAX_WATCHLIST_BYTES,
     MULTI_SERIAL_DISABLED_MESSAGE,
+    MULTI_SERIAL_EXTERNAL_KEY_MESSAGE,
     SCOPE_WATCHLIST,
     WatchlistError,
     load_watchlist,
@@ -159,7 +160,7 @@ def _multi_serial_rule_error(
     if not aggregate:
         return "多单号绑定必须是聚合绑定（aggregate=true）"
     if external_key:
-        return "多单号绑定不接受单记录外部键"
+        return MULTI_SERIAL_EXTERNAL_KEY_MESSAGE
     if sync_scope == SCOPE_WATCHLIST:
         return "多单号绑定与关注清单同步范围互斥：请先把同步范围改回全部表单，或取消多单号"
     return None

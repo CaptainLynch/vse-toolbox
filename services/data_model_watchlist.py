@@ -66,6 +66,10 @@ _MULTI_SERIAL_TRUTHY = frozenset({"1", "true", "yes"})
 MULTI_SERIAL_DISABLED_MESSAGE = (
     "多单号同步已被功能开关关闭：请改为单值绑定或联系维护人员开启"
 )
+#: 多单号集合没有单记录稳定键：保存侧（``_multi_serial_rule_error``）与发现侧
+#: （``web/app.py`` 的 ``_mapping_discovery_query_identity``）共用这一条文案，
+#: 单一来源，禁止各处另写一份。
+MULTI_SERIAL_EXTERNAL_KEY_MESSAGE = "多单号绑定不接受单记录外部键"
 
 
 def multi_serial_enabled(env: Mapping[str, str] | None = None) -> bool:
