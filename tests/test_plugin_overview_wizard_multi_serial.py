@@ -69,6 +69,21 @@ def test_wizard_multi_serial_hint_counts_parsed_serials() -> None:
     assert panel.elements("documentNo")[0]["attrs"]["disabled"] is True
 
 
+def test_wizard_multi_serial_disables_the_incident_input() -> None:
+    """多值框有内容时实例号（number）同样必须禁用：三选一是双向互斥。"""
+    panel = _panel(documentNos="3D-1, 3D-2")
+    panel.result.assert_ok()
+    assert panel.elements("documentNos")[0]["attrs"]["disabled"] is False
+    assert panel.elements("number")[0]["attrs"]["disabled"] is True
+
+
+def test_wizard_multi_serial_input_cap_matches_the_backend_limit() -> None:
+    """maxlength 与后端 500 × 64 同口径：合法粘贴不会被静默截断（旧值 4000 会）。"""
+    panel = _panel()
+    panel.result.assert_ok()
+    assert panel.elements("documentNos")[0]["attrs"]["maxlength"] == str(500 * 64 + 499)
+
+
 def test_wizard_multi_serial_input_hidden_when_flag_off() -> None:
     """开关关闭时不得引导用户使用多单号（后端会 fail-closed）。"""
     panel = _panel(multi_enabled=False)

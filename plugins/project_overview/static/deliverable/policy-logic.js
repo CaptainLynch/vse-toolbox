@@ -67,6 +67,16 @@ export const MULTI_SERIAL_MESSAGE = "多单号合并统计同步暂不支持（�
 export const FULL_WIDTH_SERIAL_MESSAGE = "流水单号含全角或兼容字符，请改成报表里的半角原文单号。";
 
 /**
+ * 多单号文本框的字符上限：与后端同口径——500 个单号
+ * （``services/data_model_watchlist.MAX_WATCHLIST``）× 每个 64 字符
+ * （``MAX_SERIAL_LENGTH``），外加 499 个分隔符。
+ *
+ * 旧值 4000 只够约 330 个典型单号，浏览器粘贴会在 maxlength 处**静默截断**，
+ * 甚至把最后一个单号切成半截落库；合法输入永远不该被截断。
+ */
+export const SERIAL_SET_TEXT_MAX = 500 * 64 + 499;
+
+/**
  * 数模「流水单号」是单值精确匹配字段：多值整串永远 0 行（2026-10-10 生产事故）。
  * 与后端 normalize_single_serial 同语义，前端先拦，避免白跑一次全量抓取。
  * 文案按原因分流（R17）：全角/兼容字符单独一句，不把用户推向对他无效的合并导出。
@@ -104,6 +114,32 @@ function rawSerialTerms(text) {
   return ewoPolicyString(text).split(RAW_SERIAL_SEPARATORS).map((item) => item.trim()).filter(Boolean);
 }
 
+/** 原文集合（不做 NFKC）：命中原文拦截时用它把原文交给后端拒绝，绝不洗白。 */
+function parseSerialSetRaw(text) {
+  return Array.from(new Set(rawSerialTerms(text))).sort();
+}
+
+/**
+ * 多单号**原文**拦截（R32）：任何入口（向导预检、高级设置保存、映射取证）都必须
+ * 先过这一关再调 ``parseSerialSet``。原因是 ``parseSerialSet`` 的 NFKC 归一会把
+ * ``３Ｄ-…`` 静默改写成 ``3D-…``，落库成一个上游永远查不到的「幽灵单号」，也永远
+ * 触发不到后端自己的全角拒绝（``services/data_model_watchlist``）。
+ *
+ * 返回 "" 表示原文可安全交给 ``parseSerialSet``；文案复用既有常量（不新增第三份
+ * 字面量），按原因分流（R17）。
+ */
+export function serialSetError(rawText) {
+  const terms = rawSerialTerms(rawText);
+  if (!terms.length) return "";
+  if (terms.some((term) => INVISIBLE_SERIAL_CHARS.test(term))) {
+    return "流水单号含不可见字符，请只填报表里的原文单号。";
+  }
+  if (terms.some((term) => typeof term.normalize === "function" && term.normalize("NFKC") !== term)) {
+    return FULL_WIDTH_SERIAL_MESSAGE;
+  }
+  return "";
+}
+
 /**
  * 多单号输入的三类拦截（与后端保存侧同一组不变量，前端先拦避免白跑一次全量
  * 抓取）：全角/不可见字符按原因分流（R17），上限 500 个，且与单值流水单号 /
@@ -111,15 +147,10 @@ function rawSerialTerms(text) {
  */
 export function wizardMultiSerialError(values) {
   const source = values && typeof values === "object" ? values : {};
-  const rawTerms = rawSerialTerms(source.documentNos);
-  if (!rawTerms.length) return "";
-  if (rawTerms.some((term) => INVISIBLE_SERIAL_CHARS.test(term))) {
-    return "流水单号含不可见字符，请只填报表里的原文单号。";
-  }
-  if (rawTerms.some((term) => typeof term.normalize === "function" && term.normalize("NFKC") !== term)) {
-    return FULL_WIDTH_SERIAL_MESSAGE;
-  }
+  const rawError = serialSetError(source.documentNos);
+  if (rawError) return rawError;
   const serials = parseSerialSet(source.documentNos);
+  if (!serials.length) return "";
   if (serials.length > 500) return "流水单号一次最多 500 个，请分批处理。";
   if (ewoPolicyString(source.documentNo) || ewoPolicyString(source.number)) {
     return "多单号与单个流水单号/实例号三选一：请只保留一种匹配方式。";
@@ -425,7 +456,11 @@ export function dropDepartment(plan) {
   delete plan.matchRule.rspDepartment;
 }
 
-/** 0 命中时把「为什么没命中」讲清楚（只展示计数与字段名，不回显业务值）。 */
+/**
+ * 0 命中时把「为什么没命中」讲清楚：只展示计数与字段名，不回显上游业务值；
+ * 唯一例外是多单号的 ``serial_set_partial``——那里回显的是**用户自己填的**
+ * 缺失单号（有界展示），否则用户只能被告知去改车型/筛选。
+ */
 export function wizardNotMatchedDetail(result) {
   const source = result && typeof result === "object" ? result : {};
   const reason = ewoPolicyString(source.reason);
@@ -433,6 +468,18 @@ export function wizardNotMatchedDetail(result) {
   const diagnostic = source.serialDiagnostic && typeof source.serialDiagnostic === "object" ? source.serialDiagnostic : null;
   const scanned = match && Number.isFinite(Number(match.scanned)) ? Number(match.scanned) : null;
   const matchedRows = diagnostic && Number.isFinite(Number(diagnostic.matchedRows)) ? Number(diagnostic.matchedRows) : null;
+  const missing = match && Array.isArray(match.missing)
+    ? match.missing.map((value) => ewoPolicyString(value)).filter(Boolean)
+    : [];
+  if (reason === "serial_set_partial") {
+    // 多单号部分/全部缺失：后端 fail-closed 不按已命中子集建绑定，所以这里必须
+    // 把**缺哪几个单号**说出来（只说「请核对车型/筛选」会让人白改筛选条件）。
+    // 展示有界：最多 5 个 + 总数，避免一次贴 500 个单号撑爆提示。
+    if (!missing.length) return "多单号中有单号未在报表中找到，请核对单号原文与筛选条件";
+    const shown = missing.slice(0, 5).join("、");
+    const tail = missing.length > 5 ? ` 等（共 ${missing.length} 个）` : "";
+    return `已扫描 ${scanned === null ? "全部" : scanned} 行，以下 ${missing.length} 个单号未找到：${shown}${tail}，请核对单号原文与筛选条件`;
+  }
   if (reason === "serial_no_match") {
     return `已完整扫描 ${scanned === null ? "全部" : scanned} 行，未找到该流水单号（单号须与报表第 2 列原文完全一致）`;
   }
@@ -634,8 +681,10 @@ export function buildPolicyPayload(item, capabilities, storedPolicy, values) {
   Object.entries(values.match || {}).forEach(([key, raw]) => {
     // 多单号集合（documentNos）：编辑框是文本，落库必须是 list[str]（后端只接受
     // 非空字符串数组）；空集合省略该键，绝不写入 null/空串。
+    // R32：先过原文拦截——命中全角/不可见字符时**不做 NFKC**（那会把 `３Ｄ-…`
+    // 洗成 `3D-…` 落库成幽灵单号），而是把原文交给后端用同一句文案拒绝。
     if (key === "documentNos") {
-      const serials = parseSerialSet(raw);
+      const serials = serialSetError(raw) ? parseSerialSetRaw(raw) : parseSerialSet(raw);
       if (serials.length) payload.matchRule.documentNos = serials;
       else delete payload.matchRule.documentNos;
       return;
@@ -716,8 +765,9 @@ export function buildEvidencePayload(capabilities, values, payload) {
     const value = ewoPolicyString(values.match && values.match[key]);
     // 多单号集合：discovery 过滤名 document_nos 收的是字符串数组（本地匹配键，
     // 绝不进上游查询参数）；空集合不进 filters。
+    // R32：与保存侧同一道原文拦截——全角/不可见字符不归一，原文交给后端拒绝。
     if (key === "documentNos") {
-      const serials = parseSerialSet(value);
+      const serials = serialSetError(value) ? parseSerialSetRaw(value) : parseSerialSet(value);
       if (serials.length) filters[filterName || key] = serials;
       return;
     }

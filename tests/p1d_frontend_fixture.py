@@ -74,7 +74,7 @@ API_JS = DELIVERABLE_DIR / "api.js"
 #: Minimum Node major that ships ``vm.SourceTextModule`` behind the flag.
 MIN_NODE_MAJOR = 22
 
-#: The 31 named imports ``policy.js`` takes from ``./policy-logic.js``.
+#: Every named import ``policy.js`` takes from ``./policy-logic.js``.
 POLICY_LOGIC_EXPORTS = (
     "EWO_POLICY_AUTOMATIC_FIELDS",
     "EWO_POLICY_MATCH_FIELDS",
@@ -82,6 +82,7 @@ POLICY_LOGIC_EXPORTS = (
     "EWO_POLICY_RECOMMENDED_MODE",
     "INTERVAL_OPTIONS",
     "POLICY_SYNC_HINTS",
+    "SERIAL_SET_TEXT_MAX",
     "applyBindingMode",
     "bindingInitialValues",
     "bindingModeView",
@@ -691,6 +692,8 @@ function logicStub() {
     EWO_POLICY_RECOMMENDED_MODE: "auto",
     INTERVAL_OPTIONS: [5, 15, 30, 60],
     POLICY_SYNC_HINTS: { manual: "手动维护", auto: "按间隔自动同步" },
+    // 多单号文本框的字符上限（与后端 500 × 64 + 分隔符同口径）。
+    SERIAL_SET_TEXT_MAX: 500 * 64 + 499,
     applyBindingMode: (values) => values,
     bindingInitialValues: () => ({
       mode: "manual", credential: "", externalKey: "", bindingMode: "",
@@ -749,7 +752,9 @@ function logicStub() {
     },
     wizardNotMatchedMessage: () => "",
     wizardPolicyPatch: (_plan, _values, _result, _mapping, _vault) => ({}),
-    wizardPrecheck: () => ({ ok: true }),
+    // 真实实现返回**字符串**（"" = 通过，否则是可直接展示的中文拦截文案）；
+    // 桩返回对象会掩盖「precheck 永远为真」这类缺陷。
+    wizardPrecheck: () => "",
     wizardPrimaryMatchField: () => null,
     wizardRetryWithoutDepartment: () => ({}),
   };

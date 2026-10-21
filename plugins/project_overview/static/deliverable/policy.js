@@ -18,6 +18,7 @@ import {
   EWO_POLICY_RECOMMENDED_MODE,
   INTERVAL_OPTIONS,
   POLICY_SYNC_HINTS,
+  SERIAL_SET_TEXT_MAX,
   applyBindingMode,
   bindingInitialValues,
   bindingModeView,
@@ -292,7 +293,7 @@ function SyncSummaryCard({ item, policy, capabilities, settings, advancedOpen, o
           </label>`}
           ${multiSerialAvailable && html`<label class="policy-ewo-field policy-wizard-field">
             <span>流水单号（多个，合并统计）</span>
-            <input type="text" data-wizard-field="documentNos" data-wizard-hint=${multiSerialHint} maxlength="4000"
+            <input type="text" data-wizard-field="documentNos" data-wizard-hint=${multiSerialHint} maxlength=${SERIAL_SET_TEXT_MAX}
               placeholder="空格或逗号分隔，如 3D-00001018 3D-00001193；与实例号二选一"
               value=${values.documentNos} onInput=${set("documentNos")} disabled=${singleSerialFilled} />
             <small class="policy-field-note">${multiSerialHint ? `${multiSerialHint}。` : ""}多个单号按空格或逗号分隔，本地精确匹配后合并统计写入同一交付物；与单值流水单号、实例号三选一。多单号不走候选预览（预览暂不支持多单号），就绪以保存后的后端校验为准。</small>

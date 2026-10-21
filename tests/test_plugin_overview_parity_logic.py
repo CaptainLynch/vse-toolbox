@@ -110,6 +110,26 @@ const editorMultiEvidence = P.buildEvidencePayload(dmCaps,
   {match: {documentNos: "3D-2, 3D-1"}, evidence: {}}, {matchRule: {aggregate: true}, externalKey: ""});
 const editorInitMulti = P.bindingInitialValues({id: "VPI-T2-D5"},
   {matchRule: {documentNos: ["3D-1", "3D-2"]}}, dmCaps).match.documentNos;
+// R32：原文拦截是三个入口（向导预检 / 高级设置保存 / 映射取证）共享的一道关。
+const rawGate = {
+  ok: P.serialSetError("3D-00001018"),
+  fullWidth: P.serialSetError("３Ｄ-００００１０１８"),
+  invisible: P.serialSetError("3D-00001018\u200b"),
+  empty: P.serialSetError("   "),
+};
+const editorMultiFullWidth = P.buildPolicyPayload({id: "VPI-T2-D5"}, dmCaps,
+  {matchRule: {reportType: "data_model", aggregate: true}}, editorValues("３Ｄ-００００１０１８"));
+const evidenceMultiFullWidth = P.buildEvidencePayload(dmCaps,
+  {match: {documentNos: "３Ｄ-００００１０１８"}, evidence: {}}, {matchRule: {aggregate: true}, externalKey: ""});
+// 多单号部分缺失：提示必须点名缺哪几个（有界：最多 5 个 + 总数）。
+const partialSome = P.wizardNotMatchedMessage({state: "not_found", candidateCount: 0, fieldReport: {fields: []},
+  reason: "serial_set_partial",
+  serialMatch: {requested: ["3D-1", "3D-2", "3D-3"], found: ["3D-1"], missing: ["3D-2", "3D-3"],
+                scanned: 12, matched: 1, complete: true}});
+const partialMany = P.wizardNotMatchedMessage({state: "not_found", candidateCount: 0, fieldReport: {fields: []},
+  reason: "serial_set_partial",
+  serialMatch: {missing: ["3D-1", "3D-2", "3D-3", "3D-4", "3D-5", "3D-6", "3D-7"],
+                scanned: 12, matched: 0, complete: true}});
 const notMatchedSerial = P.wizardNotMatchedMessage({state: "not_found", candidateCount: 0, fieldReport: {fields: []}, reason: "serial_no_match", serialMatch: {scanned: 4, matched: 0}});
 const notMatchedEmpty = P.wizardNotMatchedMessage({state: "not_found", candidateCount: 0, fieldReport: {fields: []}, serialMatch: {scanned: 0, matched: 0}});
 const notMatchedLegacy = P.wizardNotMatchedMessage({state: "not_found", candidateCount: 0, fieldReport: {fields: []}});
@@ -145,6 +165,11 @@ console.log(JSON.stringify({
   multiHints,
   editorMulti: {rule: editorMulti.matchRule, empty: editorMultiEmpty.matchRule,
                 evidence: editorMultiEvidence.filters, init: editorInitMulti},
+  rawGate,
+  editorMultiFullWidth: editorMultiFullWidth.matchRule,
+  evidenceMultiFullWidth: evidenceMultiFullWidth.filters,
+  notMatchedPartial: {some: partialSome, many: partialMany},
+  textMax: P.SERIAL_SET_TEXT_MAX,
   notMatched: {
     serial: notMatchedSerial, empty: notMatchedEmpty, legacy: notMatchedLegacy,
   },
@@ -267,6 +292,37 @@ def test_wizard_multi_serial_hint_reports_the_parsed_count() -> None:
     hints = _run(_WIZARD)["multiHints"]
     assert hints["empty"] == ""
     assert hints["two"] == "识别到 2 个单号（合并统计）"
+
+
+def test_multi_serial_raw_gate_blocks_full_width_on_every_entry() -> None:
+    """R32：全角/不可见字符在三个入口都被**原文**拦截，绝不 NFKC 洗成半角落库。"""
+    data = _run(_WIZARD)
+    gate = data["rawGate"]
+    assert gate["ok"] == "" and gate["empty"] == ""
+    assert "全角" in gate["fullWidth"]
+    assert "不可见字符" in gate["invisible"]
+    # 高级设置保存：原文透传，交给后端 normalize_serial_set 用同一句文案拒绝；
+    # 绝不能变成上游查不到的半角「幽灵单号」。
+    assert data["editorMultiFullWidth"]["documentNos"] == ["３Ｄ-００００１０１８"]
+    assert "3D-00001018" not in data["editorMultiFullWidth"]["documentNos"]
+    # 映射取证：同一道关，同样不洗白。
+    assert data["evidenceMultiFullWidth"]["document_nos"] == ["３Ｄ-００００１０１８"]
+    # 文本框上限与后端 500 × 64 同口径（旧 4000 会静默截断合法粘贴）。
+    assert data["textMax"] == 500 * 64 + 499
+
+
+def test_wizard_not_matched_detail_lists_missing_serials() -> None:
+    """多单号部分缺失：点名缺失单号（有界：最多 5 个 + 总数）。"""
+    data = _run(_WIZARD)["notMatchedPartial"]
+    some = data["some"]
+    assert "3D-2" in some and "3D-3" in some
+    assert "2 个单号未找到" in some and "已扫描 12 行" in some
+    assert "请核对单号原文与筛选条件" in some
+    many = data["many"]
+    assert "3D-1" in many and "3D-5" in many
+    assert "共 7 个" in many
+    # 有界：第 6/7 个不展示（避免一次贴 500 个单号撑爆提示）。
+    assert "3D-6" not in many and "3D-7" not in many
 
 
 def test_advanced_editor_keeps_the_ncr_scope_declaration() -> None:
