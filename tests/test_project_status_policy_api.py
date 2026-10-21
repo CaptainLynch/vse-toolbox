@@ -6,6 +6,7 @@ from __future__ import annotations
 import pytest
 
 import web.app as web_app
+from core.repos.project_status import compute_policy_config_digest as _p1d_digest
 from services.project_status_records import compute_config_signature
 
 
@@ -559,6 +560,40 @@ def test_sync_display_states_across_binding_lifecycle(client) -> None:
     assert d3["syncDisplay"]["label"] == "同步中"
 
 
+def test_d5_contract_exposes_multi_serial_key() -> None:
+    """D5 绑定契约新增多单号键 documentNos（与 documentNo 互斥）。
+
+    R3 裁定：本批**只**加契约 matchKeys 与 discovery 过滤名映射；matchFields
+    的 UI 输入项留给 Task 11 与功能开关一起上线，避免中间状态出现「前端能填、
+    后端不支持」的字段。
+    """
+    from core.project_status_contracts import PROJECT_STATUS_SOURCE_CAPABILITIES
+
+    caps = PROJECT_STATUS_SOURCE_CAPABILITIES["VPI-T2-D5"]
+    assert "documentNos" in caps["matchKeys"]
+    assert "documentNo" in caps["matchKeys"]
+    names = [item[2] for item in caps["matchFields"]]
+    assert "document_nos" not in names
+    # 其它交付物不得出现该键（多单号只对 D5 数模开放）。
+    assert all(
+        "documentNos" not in PROJECT_STATUS_SOURCE_CAPABILITIES[key]["matchKeys"]
+        for key in ("VPI-T2-D2", "VPI-T2-D3")
+    )
+
+
+def test_d5_discovery_maps_multi_serial_filter_name() -> None:
+    """discovery 过滤名 document_nos 必须落到契约白名单内的键。"""
+    from core.project_status_contracts import PROJECT_STATUS_SOURCE_CAPABILITIES
+    from web.app import _MAPPING_DISCOVERY_RULE_FIELDS
+
+    mapping = _MAPPING_DISCOVERY_RULE_FIELDS[("tdc", "data_model")]
+    assert mapping["document_no"] == "documentNo"
+    assert mapping["document_nos"] == "documentNos"
+    assert set(mapping.values()) <= set(
+        PROJECT_STATUS_SOURCE_CAPABILITIES["VPI-T2-D5"]["matchKeys"]
+    )
+
+
 def test_match_fields_use_real_discovery_filter_names() -> None:
     """GPT 终审 P1 回归：matchFields 的 discovery 过滤名必须是后端实际
     接受的过滤键（process_no 臆造键会让 SOR 证据抓取直接报 unsupported）。"""
@@ -737,9 +772,6 @@ def test_aggregate_rebind_clears_stale_snapshot_and_returns_to_pending(client) -
     assert db.list_project_status_analysis_snapshots("VPI-T2-D5", 5) == []
 
 
-from core.repos.project_status import compute_policy_config_digest as _p1d_digest
-
-
 def _p1d_case(client, did='VPI-T2-D5'):
     url = f'/api/project-status/deliverables/{did}/update-policy'
     response = client.get(url)
@@ -871,4 +903,3 @@ def test_p1d_patch_response_digest_reusable(client):
     after = _p1d_snapshot(db, did)
     assert len(after[2]) == len(before[2]) + 2
     assert after[3] == before[3]
-

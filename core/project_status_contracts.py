@@ -638,7 +638,10 @@ PROJECT_STATUS_SOURCE_CAPABILITIES: dict[str, dict[str, object]] = {
         },
         "syncNote": None,
         "matchKeys": (
-            "incident", "documentNo", "applicant", "department", "section",
+            # documentNos：多单号集合键（list[str]，与单值 documentNo 互斥）。
+            # 本批只加契约键与 discovery 过滤名映射；UI 输入项与运行期接线分别由
+            # Task 11 功能开关、Task 8-10 上线（避免中间状态出现无后端支持的字段）。
+            "incident", "documentNo", "documentNos", "applicant", "department", "section",
             "applicationStart", "applicationEnd", "projectModel",
             "partNumber", "modelNumber", "status", "aggregate", "reportType",
         ),

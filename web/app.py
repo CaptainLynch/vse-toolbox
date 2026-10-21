@@ -1251,6 +1251,10 @@ _MAPPING_DISCOVERY_RULE_FIELDS: dict[tuple[str, str], dict[str, str]] = {
         "status": "status",
         # 流水单号不是 TDC 查询参数：该值不发上游，改为全量抓取后本地精确匹配。
         "document_no": "documentNo",
+        # 多单号集合键（契约 matchKeys 内）。这里只做「过滤名 -> 契约键」映射；
+        # 值同样不进上游查询参数（_tdc_data_model_filters 不读取该键），
+        # 运行期多号匹配与保存校验由 Task 8-10 接线。
+        "document_nos": "documentNos",
     },
     ("tdc", "sor"): {
         "serial_number": "processNo",
