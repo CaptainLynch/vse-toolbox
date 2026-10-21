@@ -26,7 +26,16 @@ from core.repos.project_status import (
     KEEP_CURRENT, ProjectStatusConfigDigestMismatchError, compute_policy_config_digest,
 )
 from core.redaction import redact_sensitive_text
-from services.data_model_watchlist import WatchlistError, normalize_single_serial
+from services.data_model_watchlist import (
+    MAX_WATCHLIST_BYTES,
+    MULTI_SERIAL_DISABLED_MESSAGE,
+    SCOPE_WATCHLIST,
+    WatchlistError,
+    load_watchlist,
+    multi_serial_enabled,
+    normalize_serial_set,
+    normalize_single_serial,
+)
 from services.project_status_records import compute_config_signature, observation_is_aggregate
 
 _logger = logging.getLogger(__name__)
@@ -89,16 +98,87 @@ def _valid_section_scope(value: Any) -> bool:
 def _valid_match_rule_values(match_rule: Mapping[str, Any]) -> bool:
     """Query rules contain only boolean aggregate and nonblank strings.
 
-    ``sectionScope`` is the one declaration-only list (NCR wizard section presets).
+    ``sectionScope`` is the one declaration-only list (NCR wizard section presets);
+    ``documentNos`` is the multi-serial set（``list[str]``，与单值 documentNo 互斥）。
+    分支写显式 ``if/elif``：嵌套条件表达式读不出「哪个键要求哪种类型」。
     """
-    return all(
-        isinstance(value, bool)
-        if key == "aggregate"
-        else _valid_section_scope(value)
-        if key == "sectionScope"
-        else isinstance(value, str) and bool(value.strip()) and not _has_control_chars(value)
-        for key, value in match_rule.items()
-    )
+    for key, value in match_rule.items():
+        if key == "aggregate":
+            if not isinstance(value, bool):
+                return False
+        elif key == "sectionScope":
+            if not _valid_section_scope(value):
+                return False
+        elif key == "documentNos":
+            # 空集合/None 由调用方在写入前省略（R19），这里只接受非空字符串列表。
+            if not isinstance(value, list) or not value:
+                return False
+            if not all(
+                isinstance(item, str) and bool(item.strip()) and not _has_control_chars(item)
+                for item in value
+            ):
+                return False
+        elif not (isinstance(value, str) and bool(value.strip()) and not _has_control_chars(value)):
+            return False
+    return True
+
+
+def _multi_serial_rule_error(
+    match_rule: Mapping[str, Any],
+    *,
+    external_key: str | None,
+    aggregate: bool,
+    sync_scope: str | None = None,
+) -> str | None:
+    """多单号集合绑定的规则不变量（保存与运行期同源，避免「能存不能跑」）。
+
+    ``documentNos`` 存在 ⇒ 功能开关开启、集合合法且不超 12 KB 字节预算、
+    ``aggregate is True``、无单记录外部键，且不与单值 ``documentNo``/``incident``
+    或关注清单范围（``syncScope=watchlist``）叠加——叠加会静默取交集、少算。
+    """
+    serials = match_rule.get("documentNos")
+    if not serials:
+        return None
+    if not multi_serial_enabled():
+        return MULTI_SERIAL_DISABLED_MESSAGE
+    try:
+        normalized = normalize_serial_set(serials)
+    except WatchlistError as exc:
+        return str(exc)
+    # R15：写入 match_rule_json 前校验字节上限（与关注清单同一 12 KB 预算）。
+    # 落库的是规范化后的集合，所以按规范化结果计字节。
+    if len(_json_dumps(normalized).encode("utf-8")) > MAX_WATCHLIST_BYTES:
+        return "多单号集合过长，请分批处理（单次最多 12 KB）"
+    if str(match_rule.get("documentNo") or "").strip() or str(
+        match_rule.get("incident") or ""
+    ).strip():
+        return "多单号与单个流水单号/实例号三选一：请只保留一种匹配方式"
+    if not aggregate:
+        return "多单号绑定必须是聚合绑定（aggregate=true）"
+    if external_key:
+        return "多单号绑定不接受单记录外部键"
+    if sync_scope == SCOPE_WATCHLIST:
+        return "多单号绑定与关注清单同步范围互斥：请先把同步范围改回全部表单，或取消多单号"
+    return None
+
+
+def _normalize_multi_serial_rule(match_rule: dict[str, Any]) -> dict[str, Any]:
+    """R19：``documentNos`` 为空/None 时省略该键（签名侧对 null 会 raise）。
+
+    非空集合按与签名/discovery 同源的规范化（去重排序）落库，保证同一组单号
+    的不同输入顺序得到同一条存储规则。
+    """
+    serials = match_rule.get("documentNos")
+    if not serials:
+        if "documentNos" in match_rule:
+            match_rule = {key: value for key, value in match_rule.items() if key != "documentNos"}
+        return match_rule
+    try:
+        match_rule["documentNos"] = normalize_serial_set(serials)
+    except WatchlistError:
+        # 非法集合留给校验分支给出可执行文案，不在这里改写。
+        return match_rule
+    return match_rule
 
 
 def _validate_ewo_v2_policy(rule, mapping, external_key, authorities=None):
@@ -344,6 +424,14 @@ class ProjectStatusUpdateService:
     def __init__(self, db: DatabaseManager) -> None:
         self._db = db
 
+    def _data_model_sync_scope(self) -> str:
+        """数模归档任务的同步范围（多单号与关注清单互斥判定用）。
+
+        与 ``data_model_watchlist.load_watchlist`` 同源：它已对「读不到/配置非法」
+        做了有界诊断并回退为全部，这里不重复实现回退逻辑。
+        """
+        return load_watchlist(self._db)[0]
+
     @observed("policy.ProjectStatusUpdateService.apply_manual_update")
     def apply_manual_update(
         self,
@@ -497,6 +585,17 @@ class ProjectStatusUpdateService:
                 normalize_single_serial(match_rule.get("documentNo"))
             except WatchlistError as exc:
                 raise SyncBindingNotReadyError(str(exc)) from None
+        multi_serial_error = _multi_serial_rule_error(
+            match_rule,
+            external_key=external_key,
+            aggregate=aggregate_mode,
+            # 关注清单范围只在多单号规则下才需要读（互斥判定）。
+            sync_scope=self._data_model_sync_scope() if match_rule.get("documentNos") else None,
+        )
+        if multi_serial_error:
+            # 运行期与保存同源：开关关闭时停跑但不停用（存量绑定保持 enabled，
+            # 人工改规则或重新开启开关后自愈）。
+            raise SyncBindingNotReadyError(multi_serial_error)
         automatic_fields = {
             PROJECT_STATUS_FIELD_NAME_TO_API[row["field_name"]]
             for row in raw["authorities"]
@@ -935,6 +1034,10 @@ class ProjectStatusUpdateService:
         enabled = payload.get("enabled", bool(binding["enabled"]))
         external_key = payload.get("externalKey", binding["external_key"])
         match_rule = payload.get("matchRule", _json_loads(binding["match_rule_json"]))
+        if isinstance(match_rule, dict):
+            # R19：空 documentNos 一律省略该键（绝不持久化 null/空集合）；
+            # 非空集合按签名同源规则去重排序后落库。
+            match_rule = _normalize_multi_serial_rule(dict(match_rule))
         mapping = payload.get("mapping", _json_loads(binding["mapping_json"]))
         credential_ref = payload.get("credentialRef", binding.get("credential_ref"))
         # 没传就保留原值；原值为空表示跟随调度器频率，不能被部分更新悄悄改成 60 分钟。
@@ -1035,6 +1138,18 @@ class ProjectStatusUpdateService:
                 contract["matchKeys"] if contract else ALLOWED_TDC_MATCH_KEYS
             )
             bad_keys = set(match_rule) - set(allowed_match_keys)
+            # 多单号集合的不变量（与 assert_sync_ready 同源，抽同一私有函数）：
+            # 只在规则真的带 documentNos 时才读关注清单范围（互斥判定）。
+            multi_serial_error = (
+                _multi_serial_rule_error(
+                    match_rule,
+                    external_key=external_key,
+                    aggregate=match_rule.get("aggregate") is True,
+                    sync_scope=self._data_model_sync_scope(),
+                )
+                if match_rule.get("documentNos")
+                else None
+            )
             if bad_keys:
                 fields["matchRule"] = "包含不允许的匹配键"
             elif "matchRule" not in fields and not _valid_match_rule_values(match_rule):
@@ -1058,6 +1173,8 @@ class ProjectStatusUpdateService:
             ):
                 # 单值 fail-closed（2026-10-10）：单记录绑定按整串精确匹配。
                 fields["matchRule"] = _single_serial_error(match_rule.get("documentNo"))
+            elif multi_serial_error:
+                fields["matchRule"] = multi_serial_error
             elif len(_json_dumps(match_rule)) > _TEXT_LIMITS["match_rule"]:
                 fields["matchRule"] = "匹配规则过长"
 
@@ -1149,9 +1266,12 @@ class ProjectStatusUpdateService:
         }
 
         expected_digest = payload.get('expectedConfigDigest')
-        if expected_digest is not None and (not isinstance(expected_digest, str)
-                or len(expected_digest) != 70 or not expected_digest.startswith('cfgd1:')
-                or any(ch not in '0123456789abcdef' for ch in expected_digest[6:])):
+        if expected_digest is not None and (
+            not isinstance(expected_digest, str)
+            or len(expected_digest) != 70
+            or not expected_digest.startswith('cfgd1:')
+            or any(ch not in '0123456789abcdef' for ch in expected_digest[6:])
+        ):
             raise ProjectStatusPolicyError({'expectedConfigDigest': '配置摘要格式无效'}) from None
         if expected_digest is not None and 'credentialRef' not in payload:
             credential_ref = KEEP_CURRENT

@@ -601,6 +601,176 @@ def test_multi_serial_filter_never_reaches_upstream_query() -> None:
     assert not any("3D-00001018" in value for value in filters.to_params().values())
 
 
+# ── 多单号绑定保存校验（Task 8：互斥、聚合、功能开关、字节上限） ──────────────
+
+_D5_POLICY_URL = "/api/project-status/deliverables/VPI-T2-D5/update-policy"
+
+
+def _enable_multi_serial(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("VSE_TDC_MULTI_SERIAL_SYNC", "1")
+
+
+@pytest.mark.parametrize(("rule", "field"), [
+    ({"reportType": "data_model", "aggregate": True, "documentNos": ["3D-1"], "documentNo": "3D-2"}, "matchRule"),
+    ({"reportType": "data_model", "aggregate": True, "documentNos": ["3D-1"], "incident": "900001"}, "matchRule"),
+    ({"reportType": "data_model", "aggregate": False, "documentNos": ["3D-1"]}, "matchRule"),
+    ({"reportType": "data_model", "aggregate": True, "documentNos": ["3D-1", 42]}, "matchRule"),
+])
+def test_multi_serial_rule_rejects_invalid_combinations(client, monkeypatch, rule, field) -> None:
+    _enable_multi_serial(monkeypatch)
+    response = client.patch(_D5_POLICY_URL, json={"matchRule": rule})
+    assert response.status_code == 422
+    assert field in response.get_json()["error"]["fields"]
+
+
+def test_multi_serial_rule_rejects_single_serial_key_with_explicit_message(client, monkeypatch) -> None:
+    """互斥文案必须指向「三选一」，且指明多单号绑定不接受单记录键。"""
+    _enable_multi_serial(monkeypatch)
+    response = client.patch(
+        _D5_POLICY_URL,
+        json={"matchRule": {"reportType": "data_model", "aggregate": True,
+                            "documentNos": ["3D-1"], "incident": "900001"}},
+    )
+    assert response.status_code == 422
+    assert "三选一" in response.get_json()["error"]["fields"]["matchRule"]
+
+
+def test_multi_serial_rule_rejected_when_flag_disabled(client, monkeypatch) -> None:
+    """R22/R4：开关关闭时 documentNos 一律 fail-closed（保存入口）。"""
+    monkeypatch.delenv("VSE_TDC_MULTI_SERIAL_SYNC", raising=False)
+    response = client.patch(
+        _D5_POLICY_URL,
+        json={"matchRule": {"reportType": "data_model", "aggregate": True, "documentNos": ["3D-1"]}},
+    )
+    assert response.status_code == 422
+    assert "功能开关关闭" in response.get_json()["error"]["fields"]["matchRule"]
+
+
+def test_multi_serial_draft_saves_normalized_set(client, monkeypatch) -> None:
+    """合法多单号草稿：去重排序后落库，聚合标志保留，单值键不出现。"""
+    _enable_multi_serial(monkeypatch)
+    response = client.patch(
+        _D5_POLICY_URL,
+        json={"matchRule": {"reportType": "data_model", "aggregate": True,
+                            "documentNos": ["3D-2", " 3D-1 ", "3D-2"]}},
+    )
+    assert response.status_code == 200
+    rule = response.get_json()["data"]["matchRule"]
+    assert rule["documentNos"] == ["3D-1", "3D-2"]
+    assert rule["aggregate"] is True
+    assert "documentNo" not in rule
+
+
+@pytest.mark.parametrize("empty", [None, []])
+def test_multi_serial_empty_set_omits_key(client, monkeypatch, empty) -> None:
+    """R19：空集合/None 省略该键，绝不持久化 null（签名侧对 null 会 raise）。"""
+    _enable_multi_serial(monkeypatch)
+    response = client.patch(
+        _D5_POLICY_URL,
+        json={"matchRule": {"reportType": "data_model", "aggregate": True, "documentNos": empty}},
+    )
+    assert response.status_code == 200
+    rule = response.get_json()["data"]["matchRule"]
+    assert "documentNos" not in rule
+
+
+def test_multi_serial_rule_rejects_watchlist_scope_overlap(client, monkeypatch) -> None:
+    """与关注清单同步范围叠加会静默取交集（少算），保存入口拒绝。"""
+    _enable_multi_serial(monkeypatch)
+    db = web_app.DatabaseManager()
+    job = next(j for j in db.list_archive_jobs() if j["job_key"] == "tdc_data_model")
+    db.update_archive_job_config(
+        "tdc_data_model", enabled=False, credential_ref="ref",
+        filters={"syncScope": "watchlist", "watchlist": ["3D-1"]},
+        output_subdir="", expected_updated_at=job["updated_at"], actor="cli",
+    )
+    response = client.patch(
+        _D5_POLICY_URL,
+        json={"matchRule": {"reportType": "data_model", "aggregate": True, "documentNos": ["3D-1"]}},
+    )
+    assert response.status_code == 422
+    assert "关注清单" in response.get_json()["error"]["fields"]["matchRule"]
+
+
+def test_multi_serial_rule_rejects_oversized_set(client, monkeypatch) -> None:
+    """R15：写入 match_rule_json 前校验 12 KB 字节上限（复用关注清单预算）。"""
+    _enable_multi_serial(monkeypatch)
+    serials = [f"3D-{index:058d}" for index in range(300)]  # 约 18 KB，超过 12 KB 预算
+    response = client.patch(
+        _D5_POLICY_URL,
+        json={"matchRule": {"reportType": "data_model", "aggregate": True, "documentNos": serials}},
+    )
+    assert response.status_code == 422
+    assert "过长" in response.get_json()["error"]["fields"]["matchRule"]
+
+
+def test_discovery_identity_derives_multi_serial_set(monkeypatch) -> None:
+    """discovery 身份：document_nos 规范化为 documentNos，强制聚合，绝不进上游参数。"""
+    _enable_multi_serial(monkeypatch)
+    rule, values = web_app._mapping_discovery_query_identity(
+        {"filters": {"document_nos": ["3D-2", " 3D-1 ", "3D-2"]}}, "VPI-T2-D5",
+    )
+    assert rule["documentNos"] == ["3D-1", "3D-2"]
+    assert rule["aggregate"] is True
+    assert "document_nos" not in values
+    assert "3D-1" not in repr(values)
+
+    empty_rule, _ = web_app._mapping_discovery_query_identity(
+        {"filters": {"document_nos": []}}, "VPI-T2-D5",
+    )
+    assert "documentNos" not in empty_rule
+
+
+def test_multi_serial_rule_rejects_single_record_external_key(client, monkeypatch) -> None:
+    """多单号集合没有单记录稳定键：带上单记录外部键必须拒绝（与运行期同源）。"""
+    _enable_multi_serial(monkeypatch)
+    response = client.patch(
+        _D5_POLICY_URL,
+        json={
+            "matchRule": {"reportType": "data_model", "aggregate": True, "documentNos": ["3D-1"]},
+            "externalKey": "FM-1",
+        },
+    )
+    assert response.status_code == 422
+    assert "外部键" in response.get_json()["error"]["fields"]["matchRule"]
+
+
+def test_discovery_identity_rejects_oversized_multi_serial_set(monkeypatch) -> None:
+    """R15 同样约束发现入口：超 12 KB 的集合在抓取前就拒绝，避免白跑一次全量。"""
+    _enable_multi_serial(monkeypatch)
+    serials = [f"3D-{index:058d}" for index in range(300)]
+    with pytest.raises(web_app._TDCRequestError) as info:
+        web_app._mapping_discovery_query_identity({"filters": {"document_nos": serials}}, "VPI-T2-D5")
+    assert "过长" in str(info.value)
+
+
+def test_discovery_identity_rejects_non_string_multi_serial_filter(monkeypatch) -> None:
+    _enable_multi_serial(monkeypatch)
+    with pytest.raises(web_app._TDCRequestError) as info:
+        web_app._mapping_discovery_query_identity(
+            {"filters": {"document_nos": {"3D-1": True}}}, "VPI-T2-D5",
+        )
+    assert "字符串" in str(info.value)
+
+
+def test_discovery_identity_rejects_multi_serial_when_flag_disabled(monkeypatch) -> None:
+    monkeypatch.delenv("VSE_TDC_MULTI_SERIAL_SYNC", raising=False)
+    with pytest.raises(web_app._TDCRequestError) as info:
+        web_app._mapping_discovery_query_identity(
+            {"filters": {"document_nos": "3D-1 3D-2"}}, "VPI-T2-D5",
+        )
+    assert "功能开关关闭" in str(info.value)
+
+
+def test_discovery_identity_rejects_multi_serial_with_single_serial(monkeypatch) -> None:
+    _enable_multi_serial(monkeypatch)
+    with pytest.raises(web_app._TDCRequestError) as info:
+        web_app._mapping_discovery_query_identity(
+            {"filters": {"document_nos": "3D-1", "document_no": "3D-2"}}, "VPI-T2-D5",
+        )
+    assert "三选一" in str(info.value)
+
+
 def test_match_fields_use_real_discovery_filter_names() -> None:
     """GPT 终审 P1 回归：matchFields 的 discovery 过滤名必须是后端实际
     接受的过滤键（process_no 臆造键会让 SOR 证据抓取直接报 unsupported）。"""

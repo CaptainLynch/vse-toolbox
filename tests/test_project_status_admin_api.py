@@ -644,6 +644,91 @@ def test_sync_now_reports_legacy_multi_value_document_no_binding_as_not_ready(
     registry_factory.assert_not_called()  # 校验在连接器创建之前
 
 
+def _write_d5_match_rule(db: DatabaseManager, rule: dict[str, Any], *, external_key: str | None = None) -> None:
+    """直接改写已就绪 D5 绑定的匹配规则（模拟存量/手工落库，绕过 PATCH 校验）。"""
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE project_status_update_bindings SET match_rule_json = ?, external_key = ? "
+            "WHERE deliverable_id = 'VPI-T2-D5'",
+            (json.dumps(rule), external_key),
+        )
+        conn.commit()
+
+
+def test_sync_now_rejects_multi_serial_binding_when_flag_disabled(
+    client, test_db: DatabaseManager, registry_factory: MagicMock, monkeypatch
+) -> None:
+    """R22/R4：开关关闭时运行期同样 fail-closed——停跑但不停用（绑定保持 enabled）。"""
+    _configure_ready_d5_binding(test_db, external_key="FM-1")
+    _write_d5_match_rule(
+        test_db, {"reportType": "data_model", "aggregate": True, "documentNos": ["3D-1"]}
+    )
+    monkeypatch.delenv("VSE_TDC_MULTI_SERIAL_SYNC", raising=False)
+
+    resp = client.post(
+        "/api/project-status/deliverables/VPI-T2-D5/sync-now",
+        headers=_loopback_headers(),
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+
+    assert resp.status_code == 409
+    body = resp.get_json()
+    assert body["error"]["type"] == "SyncNotReady"
+    assert "功能开关关闭" in body["error"]["message"]
+    assert test_db.get_sync_binding_by_deliverable("VPI-T2-D5")["enabled"] == 1
+    registry_factory.assert_not_called()
+
+
+def test_sync_now_rejects_multi_serial_binding_with_single_serial_key(
+    client, test_db: DatabaseManager, registry_factory: MagicMock, monkeypatch
+) -> None:
+    """运行期互斥：多单号与实例号同存会在上游取交集（静默少算），必须 409。"""
+    _configure_ready_d5_binding(test_db, external_key="FM-1")
+    _write_d5_match_rule(
+        test_db,
+        {
+            "reportType": "data_model",
+            "aggregate": True,
+            "documentNos": ["3D-1"],
+            "incident": "900001",
+        },
+    )
+    monkeypatch.setenv("VSE_TDC_MULTI_SERIAL_SYNC", "1")
+
+    resp = client.post(
+        "/api/project-status/deliverables/VPI-T2-D5/sync-now",
+        headers=_loopback_headers(),
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+
+    assert resp.status_code == 409
+    assert "三选一" in resp.get_json()["error"]["message"]
+    registry_factory.assert_not_called()
+
+
+def test_sync_now_rejects_multi_serial_binding_that_is_not_aggregate(
+    client, test_db: DatabaseManager, registry_factory: MagicMock, monkeypatch
+) -> None:
+    """运行期聚合门禁：多单号集合没有单记录稳定键，aggregate 必须为 true。"""
+    _configure_ready_d5_binding(test_db, external_key="FM-1")
+    _write_d5_match_rule(
+        test_db,
+        {"reportType": "data_model", "aggregate": False, "documentNos": ["3D-1"]},
+        external_key="FM-1",
+    )
+    monkeypatch.setenv("VSE_TDC_MULTI_SERIAL_SYNC", "1")
+
+    resp = client.post(
+        "/api/project-status/deliverables/VPI-T2-D5/sync-now",
+        headers=_loopback_headers(),
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+
+    assert resp.status_code == 409
+    assert "聚合" in resp.get_json()["error"]["message"]
+    registry_factory.assert_not_called()
+
+
 # ── 3. Ready D5 Sync-Now Success Contract and Secret Safety ────────────────────
 
 

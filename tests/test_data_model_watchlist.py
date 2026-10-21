@@ -285,6 +285,29 @@ def test_normalize_serial_set_caps_at_max_watchlist():
         W.normalize_serial_set([f"S{i}" for i in range(W.MAX_WATCHLIST + 1)])
 
 
+# ── 多单号同步功能开关（Task 8，R22/R4：单一实现，服务与 Web 共用） ─────────────
+
+
+def test_multi_serial_enabled_defaults_to_off(monkeypatch):
+    """缺省关闭：未设置、空串、非真值都视为关闭（第 2 批能力默认不开放）。"""
+    monkeypatch.delenv(W.MULTI_SERIAL_SYNC_ENV, raising=False)
+    assert W.multi_serial_enabled() is False
+    for raw in ("", "0", "no", "off", "enabled"):
+        assert W.multi_serial_enabled({W.MULTI_SERIAL_SYNC_ENV: raw}) is False
+
+
+def test_multi_serial_enabled_accepts_truthy_values():
+    for raw in ("1", "true", "yes", " TRUE ", "Yes"):
+        assert W.multi_serial_enabled({W.MULTI_SERIAL_SYNC_ENV: raw}) is True
+
+
+def test_multi_serial_enabled_reads_process_env(monkeypatch):
+    monkeypatch.setenv(W.MULTI_SERIAL_SYNC_ENV, "1")
+    assert W.multi_serial_enabled() is True
+    monkeypatch.setenv(W.MULTI_SERIAL_SYNC_ENV, "0")
+    assert W.multi_serial_enabled() is False
+
+
 def test_normalize_serial_set_string_cap_is_500_after_dedupe():
     """字符串形式与数组同一上限 500，且按去重后计数（不再沿用 parse_terms 的 100 词上限）。"""
     assert len(W.normalize_serial_set(" ".join(f"S{i}" for i in range(150)))) == 150

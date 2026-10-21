@@ -134,9 +134,13 @@ from services.project_status_sync_runner import (
 )
 from services.project_status_connectors import build_project_status_ewo_filters
 from services.data_model_watchlist import (
+    MAX_WATCHLIST_BYTES,
+    MULTI_SERIAL_DISABLED_MESSAGE,
     WatchlistError,
     match_serial,
     match_serials,
+    multi_serial_enabled,
+    normalize_serial_set,
     normalize_single_serial,
 )
 from services.scheduled_archive_admin import (
@@ -1313,6 +1317,32 @@ _MAPPING_DISCOVERY_RULE_FIELDS: dict[tuple[str, str], dict[str, str]] = {
 }
 
 
+def _mapping_discovery_serial_set(value: Any, error_type: Any) -> list[str]:
+    """discovery 过滤名 ``document_nos`` 的值 -> 规范化单号集合（空值 = 未配置）。
+
+    多单号是本地匹配键，绝不进上游查询参数（``_tdc_data_model_filters`` 不读该键）。
+    开关关闭时 fail-closed（R22/R4：与保存/运行期同一个 ``multi_serial_enabled``）；
+    集合超 12 KB 字节预算时同样在抓取前拒绝（R15：这条规则后面要落进 match_rule_json）。
+    """
+    if isinstance(value, str):
+        if not value.strip():
+            return []
+    elif isinstance(value, (list, tuple)):
+        if not value:
+            return []
+    else:
+        raise error_type("document_nos 必须是字符串或字符串数组")
+    if not multi_serial_enabled():
+        raise error_type(MULTI_SERIAL_DISABLED_MESSAGE)
+    try:
+        serials = normalize_serial_set(value)
+    except WatchlistError as exc:
+        raise error_type(str(exc)) from None
+    if len(json.dumps(serials, ensure_ascii=False).encode("utf-8")) > MAX_WATCHLIST_BYTES:
+        raise error_type("多单号集合过长，请分批处理（单次最多 12 KB）")
+    return serials
+
+
 def _mapping_discovery_query_identity(
     payload: dict[str, Any],
     deliverable_id: str,
@@ -1352,6 +1382,13 @@ def _mapping_discovery_query_identity(
         value = filters.get(name)
         if value is None:
             values[name] = None
+            continue
+        if name == "document_nos":
+            # 多单号集合：规范化后进匹配规则，值不进上游查询参数（与 document_no 同处理）。
+            serials = _mapping_discovery_serial_set(value, error_type)
+            values.pop(name, None)
+            if serials:
+                rule[rule_name] = serials
             continue
         if not isinstance(value, str):
             raise error_type(f"{name} filter must be a string")
@@ -1413,6 +1450,14 @@ def _mapping_discovery_query_identity(
         if not aggregate and selected_external_key != rule['sourceItemId']:
             raise error_type('Selected EWO source ID mismatch')
     if source_type == "tdc" and report_type == "data_model":
+        # 多单号集合（documentNos）：与单值流水单号/实例号三选一，且必须是聚合绑定
+        # （集合没有单记录稳定键；保存校验同源，见 _multi_serial_rule_error）。
+        if rule.get("documentNos"):
+            if str(rule.get("documentNo") or "").strip() or str(
+                rule.get("incident") or ""
+            ).strip():
+                raise error_type("多单号与单个流水单号/实例号三选一：请只保留一种匹配方式")
+            rule["aggregate"] = True
         # 流水单号与实例号二选一（与 updates 落库校验同语义，2026-10-09）：同填时
         # 运行期会按两键取交集，指向不同行则永久 not_found 且无从提示。
         if str(rule.get("documentNo") or "").strip() and str(rule.get("incident") or "").strip():
@@ -5318,7 +5363,7 @@ def create_app(
                 base_query_params = {
                     k: v for k, v in values.items()
                     if k not in {"serial_number", "incident", "processNo", "ewo_no",
-                                 "paa_no", "ncr_no", "document_no"}
+                                 "paa_no", "ncr_no", "document_no", "document_nos"}
                 }
                 base_query_params["aggregate"] = match_rule.get("aggregate")
                 if "contractVersion" in match_rule:

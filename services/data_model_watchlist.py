@@ -16,6 +16,7 @@ TDC 查询参数里没有流水单号：``incident`` 对应的是第 0 列「实
 from __future__ import annotations
 
 import json
+import os
 import re
 import unicodedata
 from typing import Any, Iterable, Mapping, Sequence
@@ -56,6 +57,25 @@ MULTI_SERIAL_MESSAGE = (
     "多单号合并统计同步暂不支持（开发中）；当前可用「导出合并结果」按多个单号取数"
 )
 FULL_WIDTH_SERIAL_MESSAGE = "流水单号含全角或兼容字符，请改成报表里的半角原文单号"
+
+#: 多单号合并统计同步的功能开关（第 2 批能力，缺省关闭）。
+#: 单一实现：``services/project_status_updates``（保存 + 运行期）与 ``web/app.py``
+#: （发现入口）都导入这里的判定，禁止各处另写一份。
+MULTI_SERIAL_SYNC_ENV = "VSE_TDC_MULTI_SERIAL_SYNC"
+_MULTI_SERIAL_TRUTHY = frozenset({"1", "true", "yes"})
+MULTI_SERIAL_DISABLED_MESSAGE = (
+    "多单号同步已被功能开关关闭：请改为单值绑定或联系维护人员开启"
+)
+
+
+def multi_serial_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """多单号同步是否已开启（``VSE_TDC_MULTI_SERIAL_SYNC`` = 1/true/yes）。
+
+    缺省关闭：开关关闭时 ``documentNos`` 在保存与运行期一律 fail-closed
+    （停跑但不停用存量绑定，人工改规则或重新开启后自愈）。
+    """
+    source: Mapping[str, str] = os.environ if env is None else env
+    return str(source.get(MULTI_SERIAL_SYNC_ENV) or "").strip().lower() in _MULTI_SERIAL_TRUTHY
 
 
 def normalize_single_serial(value: Any) -> str:
