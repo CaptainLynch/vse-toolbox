@@ -237,3 +237,39 @@ def test_project_status_connector_filters_rows_before_progress(tmp_path: Path): 
     assert len(full.analysis_rows) == 2 and full.coverage is None
     assert [row["documentNo"] for row in watched.analysis_rows] == ["B-2"]
     assert watched.coverage == {"kind": "watchlist", "serials": ["B-2"], "missing": []}
+
+
+# ── 多值流水单号规范化（合并统计绑定共用，Task 5） ─────────────────────────────
+
+
+def test_normalize_serial_set_dedupes_and_sorts():
+    assert W.normalize_serial_set("3D-2, 3D-1 3D-2") == ["3D-1", "3D-2"]
+    assert W.normalize_serial_set(["3D-2", "3D-1"]) == ["3D-1", "3D-2"]
+    # 签名稳定性依赖排序：同一集合不同输入顺序必须得到同一结果。
+    assert W.normalize_serial_set(["3D-3", "3D-1", "3D-2"]) == W.normalize_serial_set("3D-2 3D-3 3D-1")
+
+
+def test_normalize_serial_set_rejects_bad_members():
+    for bad in ([], "", ["3D-1", "3D-1 3D-2"], ["3D-1", "  "]):
+        with pytest.raises(W.WatchlistError):
+            W.normalize_serial_set(bad)
+
+
+def test_normalize_serial_set_reuses_single_value_rules():
+    """逐项走 normalize_single_serial：全角/不可见字符/非字符串容器同样 fail-closed。"""
+    for bad in (["３Ｄ-００００１０１８"], ["3D-1\u200b"], ["x" * 65], None, 7, {"3D-1"}):
+        with pytest.raises(W.WatchlistError):
+            W.normalize_serial_set(bad)
+    assert W.normalize_serial_set([" 3D-1 ", "3D-1"]) == ["3D-1"]
+
+
+def test_normalize_serial_set_caps_at_max_watchlist():
+    assert len(W.normalize_serial_set([f"S{i}" for i in range(W.MAX_WATCHLIST)])) == W.MAX_WATCHLIST
+    with pytest.raises(W.WatchlistError):
+        W.normalize_serial_set([f"S{i}" for i in range(W.MAX_WATCHLIST + 1)])
+
+
+def test_normalize_serial_set_never_silently_truncates_long_string():
+    """parse_terms 有 100 词上限：超限必须报错，绝不静默丢掉后面的单号（合并统计会少算）。"""
+    with pytest.raises(W.WatchlistError):
+        W.normalize_serial_set(" ".join(f"S{i}" for i in range(150)))

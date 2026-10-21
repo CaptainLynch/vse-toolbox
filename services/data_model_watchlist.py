@@ -19,7 +19,7 @@ import json
 from typing import Any, Iterable, Mapping, Sequence
 
 from core.diagnostic_recording import emit
-from services.form_search import parse_terms, snapshot_schema
+from services.form_search import MAX_TERMS, parse_terms, snapshot_schema
 
 JOB_KEY = "tdc_data_model"
 SCOPE_ALL = "all"
@@ -70,6 +70,31 @@ def normalize_single_serial(value: Any) -> str:
     if len(text) > MAX_SERIAL_LENGTH:
         raise WatchlistError(f"流水单号不能超过 {MAX_SERIAL_LENGTH} 个字符")
     return text
+
+
+def normalize_serial_set(value: Any) -> list[str]:
+    """多值流水单号（合并统计绑定）：逐项走单值校验，去重后排序保证签名稳定。
+
+    字符串按检索词同一套分隔符（空格/逗号/分号/顿号/换行/制表符）拆开，数组逐项
+    校验；任一项不是合法单值就整体拒绝——绝不静默丢掉某一项。排序是契约的一部分：
+    ``compute_config_signature`` 逐字比对 matchRule，同一组单号的不同输入顺序必须
+    得到同一个签名。
+    """
+    if isinstance(value, str):
+        terms = parse_terms(value)
+        # parse_terms 自带 100 词上限（form_search.MAX_TERMS）：解析到上限说明原文里
+        # 还有更多单号，静默截断会让合并统计少算单据，因此同样 fail-closed。
+        if len(terms) >= MAX_TERMS:
+            raise WatchlistError(f"流水单号一次最多 {MAX_TERMS} 个，请分批处理")
+    elif isinstance(value, (list, tuple)):
+        terms = [str(item) for item in value]
+    else:
+        raise WatchlistError("流水单号必须是字符串或字符串数组")
+    if not terms:
+        raise WatchlistError("流水单号不能为空")
+    if len(terms) > MAX_WATCHLIST:
+        raise WatchlistError(f"流水单号一次最多 {MAX_WATCHLIST} 个，请分批处理")
+    return sorted({normalize_single_serial(term) for term in terms})
 
 
 def watchlist_settings(filters: Mapping[str, Any] | None) -> tuple[str, tuple[str, ...]]:
