@@ -92,6 +92,26 @@ def test_wizard_multi_serial_input_hidden_when_flag_off() -> None:
     assert panel.elements("documentNo")[0]["attrs"]["disabled"] is False
 
 
+def test_wizard_multi_serial_input_visible_when_flag_off_but_stored() -> None:
+    """开关关闭但配置里仍存着多单号：必须照常渲染输入框，否则向导里清不掉它。
+
+    ``wizardInitialValues`` 会把 ``matchRule.documentNos`` 回填成文本，而开关关闭时
+    旧实现整块不渲染 → 用户无法清空这个隐藏值，保存必然被后端以「三选一」拒绝
+    （flag-off 向导死路）。
+    """
+    panel = _panel(multi_enabled=False, documentNos="3D-1, 3D-2")
+    panel.result.assert_ok()
+    multi = panel.elements("documentNos")
+    assert len(multi) == 1, multi
+    assert multi[0]["attrs"]["value"] == "3D-1, 3D-2"
+    # 可编辑 = 可清空；即便单值框已填也不能锁死，否则又是死路。
+    assert multi[0]["attrs"]["disabled"] is False
+    # 单值框同时有值：仍不得禁用多值框，否则同样清不掉。
+    panel = _panel(multi_enabled=False, documentNos="3D-1", documentNo="3D-9")
+    panel.result.assert_ok()
+    assert panel.elements("documentNos")[0]["attrs"]["disabled"] is False
+
+
 def test_wizard_multi_serial_input_only_for_the_data_model_wizard() -> None:
     """多单号只属于数模交付物：其它报表类型的向导不渲染该输入。"""
     panel = _panel(report_type="ewo")

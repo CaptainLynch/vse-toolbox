@@ -206,11 +206,20 @@ function SyncSummaryCard({ item, policy, capabilities, settings, advancedOpen, o
       : kind.isNcr ? "NCR 编号（选填，留空则整车聚合）"
         : kind.isDataModel ? "实例号 incident（选填，纯数字；与流水单号二选一）"
           : (primary ? `${primary.label}（选填）` : "外部编号（选填）");
-  // 多单号（documentNos）是独立输入：功能开关关闭时（缺省）不渲染、不引导——
+  // 多单号（documentNos）是独立输入：功能开关关闭时（缺省）默认不渲染、不引导——
   // 后端保存/发现/运行期都会 fail-closed。单值框继续 fail-closed，绝不接受多值整串。
   const multiSerialAvailable = kind.isDataModel && capabilities && capabilities.multiSerialSyncEnabled === true;
-  const multiSerialCount = multiSerialAvailable ? parseSerialSet(values.documentNos).length : 0;
-  const multiSerialHint = multiSerialAvailable ? wizardMultiSerialHint(values) : "";
+  const storedSerialSet = kind.isDataModel ? parseSerialSet(values.documentNos) : [];
+  // 开关关闭但存量配置里仍有多单号时必须照常渲染输入框：否则这个隐藏值在向导里
+  // 清不掉，保存必然被后端以「三选一」拒绝，用户没有任何出路（wizardInitialValues
+  // 会把 matchRule.documentNos 回填进来，所以这条路径真实存在）。
+  const multiSerialStale = !multiSerialAvailable && storedSerialSet.length > 0;
+  const multiSerialVisible = multiSerialAvailable || multiSerialStale;
+  const multiSerialCount = multiSerialVisible ? storedSerialSet.length : 0;
+  const multiSerialHint = multiSerialVisible ? wizardMultiSerialHint(values) : "";
+  const multiSerialNote = multiSerialStale
+    ? "多单号合并统计功能当前未开启，但这份配置里仍存着多单号；请清空此框（改用单个流水单号或实例号），否则保存会被后端拒绝。"
+    : `${multiSerialHint ? `${multiSerialHint}。` : ""}多个单号按空格或逗号分隔，本地精确匹配后合并统计写入同一交付物；与单值流水单号、实例号三选一。多单号不走候选预览（预览暂不支持多单号），就绪以保存后的后端校验为准。`;
   const singleSerialFilled = Boolean(ewoPolicyString(values.documentNo) || ewoPolicyString(values.number));
 
   return html`<section class="policy-sync-summary" aria-label=${`${item.name} 数据同步`}>
@@ -291,12 +300,12 @@ function SyncSummaryCard({ item, policy, capabilities, settings, advancedOpen, o
             <input type="text" data-wizard-field="documentNo" maxlength="200" placeholder="例如 3D-00001018；填写后走全量抓取+本地精确匹配，较慢" value=${values.documentNo} onInput=${set("documentNo")} disabled=${multiSerialCount > 0} />
             <small class="policy-field-note">流水单号是 3D- 前缀的流程编号（报表第 2 列）。TDC 不支持按它直接查询，同步会先全量抓取再本地精确匹配，耗时较长；与实例号（纯数字）只能填其一。此框只接受单个单号，多个单号请用下方「流水单号（多个，合并统计）」。</small>
           </label>`}
-          ${multiSerialAvailable && html`<label class="policy-ewo-field policy-wizard-field">
-            <span>流水单号（多个，合并统计）</span>
+          ${multiSerialVisible && html`<label class="policy-ewo-field policy-wizard-field">
+            <span>流水单号（多个，合并统计）${multiSerialStale ? "（功能已关闭，可清空）" : ""}</span>
             <input type="text" data-wizard-field="documentNos" data-wizard-hint=${multiSerialHint} maxlength=${SERIAL_SET_TEXT_MAX}
-              placeholder="空格或逗号分隔，如 3D-00001018 3D-00001193；与实例号二选一"
-              value=${values.documentNos} onInput=${set("documentNos")} disabled=${singleSerialFilled} />
-            <small class="policy-field-note">${multiSerialHint ? `${multiSerialHint}。` : ""}多个单号按空格或逗号分隔，本地精确匹配后合并统计写入同一交付物；与单值流水单号、实例号三选一。多单号不走候选预览（预览暂不支持多单号），就绪以保存后的后端校验为准。</small>
+              placeholder="空格或逗号分隔，如 3D-00001018 3D-00001193；与单个流水单号/实例号三选一"
+              value=${values.documentNos} onInput=${set("documentNos")} disabled=${singleSerialFilled && !multiSerialStale} />
+            <small class="policy-field-note">${multiSerialNote}</small>
           </label>`}
           <label class="policy-ewo-field policy-wizard-field">
             <span>定时自动同步周期</span>
