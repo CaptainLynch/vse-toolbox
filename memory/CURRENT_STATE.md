@@ -1,5 +1,245 @@
 # Current State
 
+## 2026-10-22 生产测试包 20261022 出厂：查询模式止血 + 多单号合并统计同步（HEAD `dd011bd`，21 提交）
+
+- **触发**：用户反馈 20261021 包上两问题（① 查询模式切官方预览后查询预览失败；② 数模审批同步不支持多单号），
+  要求查原因并咨询顾问评估方案 → Claude（run `89d0f5f1`）与 codex-readonly/gpt-6-astra（run `66ddbb59`）两轮顾问，
+  用户裁决 U1=合并统计、执行方式=subagent-driven，随后按 `docs/PLAN_20261021_TDC_QUERYMODE_MULTISERIAL.md` 执行 11 个 Task。
+- **交付（代码）**：`6c5b822..dd011bd` 共 21 提交。
+  - 第 1 批止血：`SerialRequiresListSource` 结构化错误码（400 不变）；两插件同源 `serialSourceConflict` 守卫
+    （按钮 disabled + 主区域提示 + run() 短路）；多单号诚实文案并按 R17 拆分全角/多值两种诊断。
+  - 第 2 批（D）：契约 `matchRule.documentNos`（与单值/实例号/关注清单三选一）；`normalize_serial_set`
+    （逐项单值校验、去重排序、上限 500、非 str 元素拒绝）；签名规范化（存量 golden 逐字节不变）；
+    保存/运行期校验（开关、12KB/4000 预算、聚合、无 externalKey）；发现路径（全命中才 matched、
+    部分命中 `serial_set_partial`、成员身份证据指纹、stabilityCheck 成员基线）；运行期收窄
+    （部分缺失 fail-closed、保留快照、自愈）；向导多值输入 + `multiSerialSyncEnabled` 可见性 + 契约 matchFields。
+  - 开关 `VSE_TDC_MULTI_SERIAL_SYNC` 默认关闭，保存/发现/运行期/能力位五处 fail-closed。
+- **关键 ruling（R1–R34，台账已随工作区删除，核心如下）**：
+  - 不建 worktree（工作树有他人未提交 P1d 接线）；subagent 工具无 model 参数。
+  - R3：契约 `matchFields` UI 条目推迟到最后一个 Task，避免中间态出现无后端支持的字段。
+  - R4/R22：开关判定单一实现 `data_model_watchlist.multi_serial_enabled()`。
+  - R17：全角与多值拆成两句文案；R18：字符串形上限统一 500（去重后计数），不再依赖 parse_terms 的 100 词上限。
+  - R19：`documentNos` 空/None 省略键不落 null；R23：签名拒绝非字符串元素（禁止 str() 强转）。
+  - R24/R26：契约键先于运行期接线打开白名单 → 用「开关默认关闭 + Task 8 起 fail-closed + 接线完成前不发版」兜底。
+  - R28：多单号 stabilityCheck 必须用成员身份基线（原实现必然误报 key_changed）。
+  - R30：部分缺失的 run 分类沿用既有 `failed`（不改 runner）；R31：诊断只用白名单键。
+  - R33/R34：终审修复波 6 提交；残留 Minor（deliverables previewSource 断言只钉键不钉值、incident 占位文案仍写二选一）留待后续。
+- **门禁**：全量 `pytest tests` **3175 passed / 48 skipped / 0 failed**（`.runtime/pytest-full-20261022.log`）；
+  改动 .py flake8 exit 0；改动 .js `node --check` 通过；`generate_project_map.py --check` verified（已提交 dd011bd 内的地图刷新）。
+- **构建**：`tools/build_excel_bundle.ps1 -OutputDir dist/hci-20261022 -PythonExecutable .runtime/pr3-review-venv/Scripts/python.exe -Clean`，
+  env `VSE_TOOLBOX_VERSION=0.3.0-production-test-20261022` / `VSE_TOOLBOX_CHANNEL=production-test` /
+  `VSE_TOOLBOX_BUILD_ID=20261022-dd011bd-tdc-multi-serial-sync`；日志 `.runtime/build-webui-20261022.log`。
+  构建仍须用 `cmd /c "powershell -NoProfile -File tools\build_excel_bundle.ps1 ... > log 2>&1"`（PS 5.1 会把 PyInstaller 的
+  stderr INFO 当 NativeCommandError 终止）。
+- **出厂冒烟**：`.runtime/smoke_exe_20261021b.ps1 -Src dist\hci-20261022\VSE-WebUI -ExpectedVersion 0.3.0-production-test-20261022`
+  （端口 5176、纯净目录），**66/66 PASS**。首轮 2 项 FAIL 均为**冒烟脚本自身缺陷**（buildId 日期写死 20261021；
+  开关文案 marker 少一个「关」字 0x5173），修脚本后 66/66；产品侧无需改动。覆盖新增：
+  多单号开关关闭时保存 422（fields.matchRule + 开关文案）、sourceInfo.multiSerialSyncEnabled 两态、
+  开关开启后多单号草稿 200、摘要轮换、matchRule 保留规范化 documentNos 且仍为聚合无单值键。
+- **交付物**：`dist/hci-20261022/` — 宿主 `VSE-WebUI.exe` 8,955,175 B
+  （SHA-256 `A140E634961136399EA977FEA4BE0522914E79E2D1159824E1E75C2DE87A9639`）、
+  `VSE-WebUI.zip` 41,659,486 B（SHA-256 `F35A411FAE63442242161362FA57FA112DA1ED39E3405B32C3625F6BD653BB48`，1277 项 CRC 全通过）、
+  `README-测试说明.txt`、`SHA256SUMS.txt`。三件套已复制到 `C:\Users\Lynch\Desktop\vse-toolbox-migration\`
+  （`README-测试说明-20261022.txt` / `SHA256SUMS-20261022.txt` / `VSE-WebUI-0.3.0-production-test-20261022-single-exe.zip`）。
+- **未做/待办**：① 未走微信 clawbot 投递（本轮未要求）；② 多单号「预览就绪」信号 `candidate_preview` 对列表
+  `documentNos` 仍判 invalid_configuration（单独立项，R29）；③ 开关关闭时已有多单号绑定只能整体替换 matchRule
+  才能改（运维说明已写入 README）；④ 真机 Excel COM 验收仍待有 Excel 的机器；⑤ 终审残留 Minor 待清理。
+
+## 2026-10-21 生产测试包 20261021 出厂（HEAD `6c5b822` + 工作区 P1d 前端接线，未提交）
+
+- **触发**：用户要求「最新的项目更改内容打包成一个无依赖EXE文件用于生产环境测试」。
+- **最新改动确认**：分支 `feat/tdc-dm-identity-and-merged-export` 自 `ea61e4c` 前进 2 个提交
+  （`4d58668` B' P1d 摘要逻辑模块 + API 路由测试；`6c5b822` B' P1d 前端 VM 夹具），
+  且工作区有**未提交的产品代码改动**：`plugins/project_overview/static/deliverable/policy.js`
+  保存时改为 `attachPolicyDigest(payload, current.configDigest)`、`tests/test_p1d_frontend_fixture_selfcheck.py`
+  断言翻转为「必须携带 expectedConfigDigest」、新增未跟踪 `tests/test_plugin_policy_digest_editor.py`。
+  ⇒ 本包是「HEAD + 工作区」，buildId 标注 `-wip`；改动仍待用户决定是否提交。
+- **门禁（本机，`.runtime/pr3-review-venv`）**：
+  - `generate_project_map.py --write` 后 `--check` verified（工作区 map 曾漂移，已刷新）。
+  - P1d/摘要聚焦套件 `test_plugin_policy_digest_{logic,editor}.py` + `test_project_status_policy_api.py`
+    + `test_p1d_frontend_fixture_selfcheck.py` + `test_bprime_config_{digest_spec,concurrency_digest}.py`
+    → **69 passed**。
+  - 打包契约（worker packaging / bundle build script / winhttp / sentinel）**23 passed**。
+  - 全量 `pytest tests` → **3077 passed / 48 skipped / 0 failed**（343.9s），日志 `.runtime/pytest-full-20261021.log`。
+- **构建**：`tools/build_excel_bundle.ps1 -OutputDir dist/hci-20261021 -PythonExecutable .runtime/pr3-review-venv/Scripts/python.exe -Clean`，
+  env `VSE_TOOLBOX_VERSION=0.3.0-production-test-20261021` / `VSE_TOOLBOX_CHANNEL=production-test` /
+  `VSE_TOOLBOX_BUILD_ID=20261021-6c5b822-p1d-policy-digest-editor-wip`；日志 `.runtime/build-webui-20261021.log`。
+  onedir 单 exe（宿主自调起 Worker，包内无独立 `VSE-ExcelWorker.exe`）。
+- **构建坑（新，可复用）**：本机 `pwsh -Command` 实际是 **Windows PowerShell 5.1**，构建脚本内
+  `$ErrorActionPreference="Stop"` 会把 PyInstaller 的 stderr INFO 行当成 `NativeCommandError` 终止
+  （外层 `2>&1 | Tee-Object` 或 `1>log 2>err` 都会触发）。**正确做法**：用 `cmd /c "powershell -NoProfile
+  -ExecutionPolicy Bypass -File tools\build_excel_bundle.ps1 ... > log 2>&1"`，由 cmd 在 OS 层重定向。
+- **出厂冒烟**：`.runtime/smoke_exe_20261021.ps1`（ASCII-only，端口 5174，纯净目录），**50/50 PASS**，
+  结果 `.runtime/smoke-exe-20261021-result.txt`。较 20261019 的 38 项新增 12 项 P1d 覆盖：
+  - 资产：`policy-digest-logic.js` 打进包并导出 `attachPolicyDigest`/`isPolicyDigestConflict`；
+    `policy.js` 导入该模块且保存调用 `attachPolicyDigest(payload, current.configDigest)`。
+  - 链路（冻结 exe 实测）：GET 返回 70 字符 `cfgd1:` 摘要 → PATCH 带当前摘要 200 且**摘要轮换** →
+    旧摘要 422（fields 仅 `expectedConfigDigest`）→ `cfgd1:BAD` 422 → 未知字段 422（fields 仅 `request`）→
+    轮换后新摘要可复用 200 → `project_status_binding_config_audit` 落 2 行（事务审计生效）。
+  - 其余沿用：哨兵不启宿主、含 xlwings/win32com、首启自建库、9 插件全 loaded、版本/渠道/isFrozen/buildId、
+    三个 GET 200、数模目录含 `document_no`、合并导出 400/401/400 三门禁、前端 8 项资产、
+    Worker 自调起 before=1→after=2、stop 后仅剩宿主、期间 WebUI 仍响应、端口释放、无残留进程。
+- **交付物**：`dist/hci-20261021/` — 宿主 `VSE-WebUI.exe` 8,943,783 B
+  （SHA-256 `6A3BD2CCC5F541DB1499F3FF47FC8C76A3DE19C2A4E7E27C1B5B2FDAA779DDEC`）、
+  `VSE-WebUI.zip` 41,644,863 B（SHA-256 `799D68D93399050D964604633EA37C453CB42A318C415C04C172403E2C049569`，
+  1277 项，`zipfile.testzip()` 全通过）、`README-测试说明.txt`、`SHA256SUMS.txt`（UTF-8；PS 5.1 `-Encoding ascii`
+  会把中文文件名写成 `?`，勿用）。三件套已复制到 `C:\Users\Lynch\Desktop\vse-toolbox-migration\`：
+  `README-测试说明-20261021.txt` / `SHA256SUMS-20261021.txt` / `VSE-WebUI-0.3.0-production-test-20261021-single-exe.zip`。
+- **未做**：未提交工作区改动（等用户决定）；未走微信 clawbot 投递（本轮用户未要求）；
+  真机 Excel COM 实际任务仍待装有 Excel 的机器验收。
+
+### 2026-10-21 用户两条新反馈：查询模式切换后预览失败 + 数模同步不支持多单号（已咨询顾问，未改代码）
+
+- **用户反馈**：① 把「查询模式」从快速查询切到「官方 Excel 精确预览（较慢）」后点「查询预览」失败；
+  ② 数模审批同步里把两个流水单号粘进「流水单号」框仍无法多单号同步。要求查原因并咨询顾问评估方案。
+- **根因（本地已核实）**：
+  - ① `web/app.py:3150-3158`：有 `document_no` 且 `preview_source != "list_endpoint"` 时直接抛
+    `_TDCRequestError("document_no 本地匹配只支持 list_endpoint 数据源")`（单测
+    `test_tdc_data_model_query_document_no_rejects_official_export_source` 钉住）。前端两个控件
+    （`modes.js:134-137`/`lib.js:74-77` 的模式下拉 vs `document_no` 文本框）无任何交叉校验或提示，
+    错误只显示在「技术详情」。**不是打包问题**：该 400 是 2026-10-10 的防呆（当时"官方工作簿+本地单号
+    匹配"只存在于导出侧）。**空值不受影响**：前端只在非空时发 `document_no`（`lib.js:155-159`），
+    `_tdc_document_no` 对缺省/空白返回 None，故空单号+官方模式正常。
+  - ② `services/data_model_watchlist.normalize_single_serial:51-72` 三处同源 fail-closed
+    （`web/app.py:1420` 发现、`project_status_updates.py:497` 保存、`:1057` 请求校验），前端
+    `policy-logic.js:67-79` 同语义预拦；同步期只支持单值收窄（`project_status_connectors.py:447-490`）。
+    多单号能力底层已存在但作用域是**全局关注清单**（`data_model_watchlist:75-100` +
+    `sync_runner:410-425` + `connector:397-401`），缺的是「按绑定配置的多个单号」这一层。
+- **顾问**（Claude `claude-opus-5-5` / xhigh / `--risk public-protocol`，run
+  `89d0f5f1-9908-42aa-a98e-86873a782f10`，包 `.runtime/consult-20261021-querymode-multiserial.md`
+  12,682 B，输入 8,605 / 输出 12,340 token，意见
+  `~/.dsh/expert-advisor/runs/claude-20261021-193228-4a3a5ad4.advice.md`）：
+  - 决定 1 = A 增强版先行（两插件统一禁用/提示 + 后端改结构化错误码如 `SerialRequiresListSource`，
+    前端主区域显示；B「官方工作簿+单号」有条件、暂缓，因返回 47 列口径与快速查询不同源，
+    且做时必须加「扫描完整才可报 missing」门禁；反对后端静默改走 list）。
+  - 决定 2 = 有条件选 D（新增 `matchRule.documentNos`，与单值 `documentNo` 互斥，≥2 才用多值键，
+    逐项 `normalize_single_serial` + 去重排序、抽共享 `normalize_serial_set`；存量绑定**不自动升级**；
+    全命中才可启用、部分命中只存草稿；运行期先判抓取完整性再断言零命中；`documentNos` 与
+    `syncScope=watchlist` 同存直接拒绝；写路径挂功能开关）。E（复用全局关注清单）只算临时绕行，
+    F（每单号一绑定）否决。
+  - 决定 3 = 分两批：第 1 批 A 增强版 + 诚实文案 + 「运行期未知 matchRule 键 fail-closed」前置补丁；
+    第 2 批 D（开关默认关）；B 视 U2 再定。
+  - 裁决：1=adopted、2=partial（D 待 U1 确认）、3=partial。
+- **顾问两项缺失证据本地已补（推翻/简化其条件项）**：
+  1. 空值解析不是根因（见上，前端不发空 `document_no`；后端缺省/空白→None）⇒ A 足够止血。
+  2. 签名与摘要口径：`compute_config_signature`（`project_status_records.py:247-275`）只纳入
+     **已存在**且在白名单内的键，不按契约展开默认值、不含契约版本 ⇒ 契约新增键不会让存量签名失配；
+     `compute_policy_config_digest`（`core/repos/project_status.py:47-63`）哈希**已存储**的
+     `match_rule_json` 原串 ⇒ 不重写存量规则则摘要不变。
+     运行期**已经**拒绝契约外键：`assert_sync_ready`（`project_status_updates.py:428` 起，:473-479
+     `issubset(contract["matchKeys"])` → `SyncBindingNotReadyError`），调用点
+     `sync_runner.py:368`、`web/app.py:6032`、内部 :413 ⇒ **顾问的前置补丁已存在**，
+     按顾问自列推翻条件可省掉，第 2 批可提前。
+- **待用户决定（U1）**：多单号同步的产品语义是「把这几张单据合并统计进进度/分析」还是「逐张核对」
+  （后者不需要 D，改为每张单据各建一个交付物）；以及第 1 批是否立即实施。
+- **未改任何产品代码**。
+- **2026-10-21 用户裁决（已定）**：U1 = **合并统计**（⇒ 走 D：`matchRule.documentNos` 聚合绑定）；
+  第 1 批「先只出方案，等用户看完再动」⇒ 已产出
+  `docs/PLAN_20261021_TDC_QUERYMODE_MULTISERIAL.md`（第 1 批 Task 1–4 止血：后端
+  `SerialRequiresListSource` 结构化错误码 + 两插件同源守卫/文案 + parity；第 2 批 Task 5–11：
+  `normalize_serial_set`、D5 契约加 `documentNos`、签名列表规范化（golden
+  `sig:28bf6d069facde729ee1fe06bf56` / `sig:5da94c0257977e70332cc3eaf9eb` 实测记录）、
+  保存/发现/运行期/前端/功能开关 `VSE_TDC_MULTI_SERIAL_SYNC`）。
+  **下一步**：等用户批准执行方式（subagent-driven 或 inline）后再改代码。
+- **2026-10-21 第二轮顾问（用户指定 codex astra）**：`--provider codex-readonly --profile astra-high`
+  → 实际 `gpt-6-astra` / effort high，run `66ddbb59952442568d8f1a1dcb580533`，包
+  `.runtime/consult-20261021-astra-second-opinion.md`（10,889 B，输入 15,447 / 输出 1,198 token），
+  意见 `~/.dsh/expert-advisor/runs/codex-readonly-20261021-204515-e6f60e20.advice.md`。裁决 1/2/3 = partial。
+  其三项修正**已取证并并入方案**：
+  1. **相邻未防护路径（新发现）**：`/api/tdc/data-model/crawl-all`（`web/app.py:3230-3255`）在
+     `preview_source=official_export` 时同样**不读** `document_no`（全仓只有 `_tdc_report_query` 与
+     `_tdc_report_export_merged` 读单号）。语义上「全量抓取」就是抓全部，故不拒绝，但加用例钉住
+     （`test_crawl_all_ignores_document_no_and_reports_full_scope`）。
+  2. **聚合证据可达性（真缺口）**：`aggregate_fingerprint`（`project_status_records.py:213-222`）只哈希
+     **行身份集合**（数模=incident），多单号绑定遇到上游新增零件行/实例时两次指纹永不一致 ⇒
+     「全命中才可启用」实际不可达。改为多单号证据基线用**配置单号成员身份**（`found` 集合），
+     `observe()` 增可选 `fingerprint_identities`，存量路径不传值、行为逐字不变。
+  3. **回退与自愈**：失败只置 run `needs_attention`、不改绑定 `enabled`；`list_eligible_sync_bindings`
+     只取 `enabled=1`，调度器仅按 `last_success_at` 新鲜度跳过（`project_status_scheduler.py:8-12`，
+     默认 900 s）⇒ 单号补齐后自动自愈（加回归用例）。开关关闭时已有多单号绑定按「停跑不停用」，
+     `assert_sync_ready` 给可执行原因。
+  其另两项经证据消解：签名 payload 含键名（`{"source_type","rule"}` + `sort_keys`）⇒ 不跨键撞车；
+  `normalize_single_serial` 禁止单号内含分隔符 ⇒ 空格连接无歧义。第 1 批文案按 Astra 意见改为
+  「多单号合并统计同步暂不支持（开发中）；当前可用『导出合并结果』」，不再把「拆交付物」当答案。
+
+## 2026-10-19 生产测试包 20261019 出厂（HEAD `ea61e4c`，包含 B' P1a/b/c 事务审计与防并发改动）
+
+- **触发**：用户要求「最新的更改打包一个无依赖EXE测试」。
+- **最新改动确认**：分支 `feat/tdc-dm-identity-and-merged-export` 自 `50feb39` 前进了 5 个新提交：
+  1. `3a270a5` 修复列表推导变量名防密钥误报
+  2. `cb3141e`（B' P1a）：事务性绑定配置审计（新增 `core/project_status_config_audit.py`，审计写入与策略更新同事务原子保存并支持错误回滚）
+  3. `35dee0a`（B' P1b）：作用域感知审计 v2 与断言迁移（细化审计作用域至字段级/规则级）
+  4. `e62966f`（B' P1c 后端）：策略配置摘要令牌 `configDigest`（70 字符 `cfgd1:...`）、事务保存核心与预读快照支持，PATCH 端点增加 `expectedConfigDigest` 防并发冲突覆盖
+  5. `ea61e4c`（B' P1c 读取）：GET / preread 读取快照采用 `BEGIN DEFERRED` 读事务，杜绝多表交错读取时的脏读/撕裂，经交错测试验证
+- **门禁（本机）**：
+  - `python tools/generate_project_map.py --write` 刷新并 `--check` verified（新增 `core/project_status_config_audit.py` 与 B' 测试）。
+  - B' 专用套件 `pytest tests/test_bprime*.py` 42/42 全绿。
+  - 项目状态与交付物套件 `tests/test_project_status*.py tests/test_plugin_project_overview*.py` 637 passed / 0 failed。
+  - 打包契约 `tests/test_excel_worker_packaging.py` 等 40 passed。
+  - TDC 合并导出与 parity 套件 52 passed。
+- **构建**：`tools/build_excel_bundle.ps1 -OutputDir dist/hci-20261019 -PythonExecutable .runtime/pr3-review-venv/Scripts/python.exe -Clean`，
+  env `VSE_TOOLBOX_VERSION=0.3.0-production-test-20261019` / `VSE_TOOLBOX_CHANNEL=production-test` /
+  `VSE_TOOLBOX_BUILD_ID=20261019-ea61e4c-bprime-transactional-audit`。onedir 单 exe 架构（宿主自调起 Worker 子进程，包内无独立 `VSE-ExcelWorker.exe`）。
+- **出厂冒烟**：`.runtime/smoke_exe_20261019.ps1`（ASCII-only，端口 5172，纯净目录），**38/38 PASS**，
+  结果 `.runtime/smoke-exe-20261019-result.txt`。覆盖：
+  - 哨兵 `--excel-worker` 不启宿主、含 xlwings/win32com、首启自建库、9 插件全 loaded。
+  - 版本/渠道/isFrozen/buildId 正确。
+  - `/api/project-status`、`/api/p/sign-daily/state`、`/api/deliverables/catalog` 均 200。
+  - TDC 数模合并导出路由注册（400 校验）、会话门禁（401）、文件名穿越拦截（400）。
+  - 前端改动组件全部在包内（工作台合并导出按钮与提示、系统查询 notice 与端点、向导单号预检）。
+  - **B' 专项验证**：`GET /api/project-status/deliverables/VPI-T2-D5/update-policy` 成功返回 `configDigest`（70 字符 `cfgd1:...`）；`PATCH` 带格式非法 `expectedConfigDigest` 正确被 422 拦截拒绝。
+  - Worker 自调起 before=1 after=2、stop 后退出仅剩宿主、运行期间 WebUI 仍响应、端口释放干净、无残留进程。
+- **交付物**：`dist/hci-20261019/` — 宿主 `VSE-WebUI.exe` 8,943,783 B（SHA-256 `A439A6EEDAF65275EC861B8A210B17189CD343D41A418DEA3A7D3AF031150A96`）、
+  `VSE-WebUI.zip` 41,644,127 B（SHA-256 `7D70BD80A0DAA3EE8E376B9366F6C8EABCFED65496B09E13E08072B7AB79AC64`，1276 项 CRC 全通过）、
+  `README-测试说明.txt`、`SHA256SUMS.txt`。
+  三件套已同步复制至桌面迁移目录 `C:\Users\Lynch\Desktop\vse-toolbox-migration\`：
+  - `README-测试说明-20261019.txt`
+  - `SHA256SUMS-20261019.txt`
+  - `VSE-WebUI-0.3.0-production-test-20261019-single-exe.zip`
+- **投递**：已按用户要求经微信 clawbot 送达三件套 —— 通知文本 `7517926667001652488` /
+  zip（`VSE-WebUI-0.3.0-production-test-20261019-single-exe.zip`）caption `7517926766112996104` +
+  文件 `7517926767698418696` / 测试说明文本 `7517926822006352648`。
+- **下一步**：真机 Excel COM 实际自动化任务仍待装有 Excel 的机器上验证。
+
+## 2026-10-15 生产测试包 20261015 出厂（HEAD `50feb39`；与 20261013c 内容等价）
+
+- **触发**：用户要求「确认项目最新的更改内容，打包一个无依赖 EXE 用于生产环境测试」。
+- **最新改动确认**：工作区干净——`git diff` / `git diff --cached` 均为空，仅有未跟踪文件
+  （`VSE-WebUI-compact.spec`、`docs/ADVISOR_*`、`docs/BRANCH_REFACTOR_PARITY_AUDIT_*`、`docs/PR3_*`、
+  `docs/TIR_AND_SIGN_DAILY_*`、`docs/dsh-remote-control/`、`dsh-remote-bridge.mjs`、`pelican-bicycle*.html`，
+  均非产品代码）；HEAD `50feb39` == `origin/feat/tdc-dm-identity-and-merged-export`；
+  `50feb39` 相对上一包基线 `e1659d5` **只改 `memory/CURRENT_STATE.md`**（+8 行）⇒ 应用代码与 20261013c 完全相同。
+- **门禁（本机）**：项目地图 `--check` verified；打包契约 **40 passed**（worker / bundle build script / winhttp /
+  sentinel / version / diagnostic）；功能聚焦 **79 passed**（merged export / identity contract / parity /
+  car-type anchor / system query）。**未重跑全量**：代码零改动，`e1659d5` 的全量 3004 passed 记录仍然有效。
+- **构建**：`tools/build_excel_bundle.ps1 -OutputDir dist/hci-20261015 -PythonExecutable
+  .runtime/pr3-review-venv/Scripts/python.exe -Clean`，env `VSE_TOOLBOX_VERSION=0.3.0-production-test-20261015` /
+  `VSE_TOOLBOX_CHANNEL=production-test` / `VSE_TOOLBOX_BUILD_ID=20261015-50feb39-official-columns-merged-export`；
+  日志 `.runtime/build-webui-20261015.log`。onedir 单 exe（宿主自调起 Worker），构建脚本断言无独立 `VSE-ExcelWorker.exe`。
+- **内容等价性实测（新方法，可复用）**：对 `dist/hci-20261013c/VSE-WebUI` 与 `dist/hci-20261015/VSE-WebUI`
+  逐文件 SHA-256 比对 → **1254 个文件相同，仅 4 个不同**：`VSE-WebUI.exe`（嵌入 buildId）、
+  `_internal/version.json`、`_internal/base_library.zip`（PyInstaller 重建产物）、`SHA256SUMS.txt`；
+  两份 zip 的条目清单 1276 = 1276 完全一致。⇒ 本包是同一份代码换版本戳，不是新代码包。
+- **出厂冒烟**：`.runtime/smoke_exe_20261015.ps1`（ASCII-only，端口 5170，纯净目录），**36/36 PASS**，
+  结果 `.runtime/smoke-exe-20261015-result.txt`。较 20261013c 的 31 项新增 5 项：`export-merged` 拒绝
+  `..\evil.csv`（400 ValidationError；已核实 file_name 校验在会话门禁之前）、工作台 `mergedExportHint`、
+  deliverables `range_too_large` 分支、系统查询 `mergedExportNotice`、系统查询 `range_too_large` 分支。
+  其余覆盖：哨兵 `--excel-worker` 不启宿主、含 xlwings/win32com、首启自建库、9 插件全 loaded、
+  版本/渠道/isFrozen/buildId、`/api/project-status`+`sign-daily/state`+`deliverables/catalog` 200、
+  数模目录含 `document_no`、Worker 自调起 before=1 after=2、stop 后仅剩宿主、Worker 运行期间 WebUI 仍响应、
+  端口释放、无残留进程。
+- **产物**：`dist/hci-20261015/` — 宿主 `VSE-WebUI.exe` 8,934,186 B（SHA-256 `7844b7a3…9e08`）、
+  `VSE-WebUI.zip` 41,634,943 B（SHA-256 `7a29c0bd…d7ce`，1276 项 CRC 全通过）、`README-测试说明.txt`
+  （已写明「与 20261013c 内容等价，测试机已有 20261013c 则无需复测」）、顶层 `SHA256SUMS.txt`。
+  三件套已复制到 `~/Desktop/vse-toolbox-migration/`：`README-测试说明-20261015.txt` /
+  `SHA256SUMS-20261015.txt` / `VSE-WebUI-0.3.0-production-test-20261015-single-exe.zip`。
+- **投递**：已按用户要求经微信 clawbot 送达三件套 —— 通知文本 `7516345550146439048` /
+  zip（`VSE-WebUI-0.3.0-production-test-20261015-single-exe.zip`，带 SHA-256 说明）caption
+  `7516345654551085192` + 文件 `7516345656195163656` / 测试说明文本 `7516345727129310344`。
+  发送期间两次 `getupdates` 读超时（工具按空处理，不影响发送），`context_token` 复用 10-13 缓存仍然有效。
+- **未做**：未重跑全量 pytest（代码零改动，`e1659d5` 的 3004 passed 记录仍有效）；
+  真机 Excel COM 验收仍待用户（本机无 Excel）。
+
 ## 2026-10-13 晚（续）合并导出改用官方工作簿 + 单号范围预检（已实现，门禁全绿）
 
 - **新证据**：用户把「内网官方版本」与「WebUI 合并导出」两份按同一流水单号导出的报表发来对比
