@@ -76,6 +76,21 @@ export const PREVIEW_SOURCES = [
   { value: "official_export", label: "官方 Excel 精确预览（较慢）" },
 ];
 
+// ── 查询模式守卫（与 plugins/system_query 逐字同源，不跨插件 import）──────
+// 单号 + 官方 Excel 预览：上游查询接口不接受流水单号，后端必然拒绝
+// （SerialRequiresListSource）。前端先拦一次，并给出可执行的替代路径。
+
+export const SERIAL_REQUIRES_LIST_NOTICE =
+  "填了流水单号时，查询预览只能用「快速查询（list 接口）」：请把查询模式切回快速查询；"
+  + "需要官方 47 列全量请到交付物工作台使用「导出合并结果」。";
+
+export function serialSourceConflict(values, mode) {
+  if (!mode || !mode.previewSource) return false;
+  const hasSerial = Boolean(String((values && values.document_no) || "").trim());
+  if (!hasSerial) return false;
+  return String((values && values.preview_source) || "list_endpoint") === "official_export";
+}
+
 /** Operation-control fields: which operation shows (and validates) each. */
 export const OPERATION_FIELDS = [
   { name: "page", label: "页码", type: "number", defaultValue: "1", operations: ["query"] },

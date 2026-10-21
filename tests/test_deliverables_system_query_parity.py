@@ -65,6 +65,10 @@ const dlvMergedNoSerial = dlvLib.validateForm(dmItem, {...dlvValues, document_no
 const sqMerged = sqLib.buildPayload("tdc-data-model", dlvValues, sqMode, {operation: "export_merged"});
 const sqMergedNoSerial = sqLib.validateForm("tdc-data-model", {...dlvValues, document_no: ""}, sqMode, "export_merged");
 
+// 单号 + 官方 Excel 预览守卫：两个插件各自实现（不跨插件 import），必须同名同语义。
+const guardValues = {document_no: "3D-1", preview_source: "official_export"};
+const guardMode = {previewSource: true};
+
 console.log(JSON.stringify({
   sqPayload,
   dlvPayload,
@@ -81,6 +85,12 @@ console.log(JSON.stringify({
   dlvMergedHint: dlvLib.mergedExportHint(dmItem, sqValues),
   dlvMergedHintEmpty: dlvLib.mergedExportHint(dmItem, {document_no: ""}),
   dlvMergedHintOther: dlvLib.mergedExportHint({id: "tdc-sor"}, sqValues),
+  dlvNotice: dlvLib.SERIAL_REQUIRES_LIST_NOTICE,
+  sqNotice: sqLib.SERIAL_REQUIRES_LIST_NOTICE,
+  dlvConflict: dlvLib.serialSourceConflict(guardValues, guardMode),
+  sqConflict: sqLib.serialSourceConflict(guardValues, guardMode),
+  dlvConflictNoMode: dlvLib.serialSourceConflict(guardValues, null),
+  sqConflictNoMode: sqLib.serialSourceConflict(guardValues, null),
 }));
 """
 
@@ -168,6 +178,35 @@ def test_merged_export_hint_warns_official_export_does_not_filter(parity: dict) 
     assert "导出合并结果" in parity["dlvMergedHint"]
     assert parity["dlvMergedHintEmpty"] == ""
     assert parity["dlvMergedHintOther"] == ""
+
+
+def test_serial_source_guard_is_identical(parity: dict) -> None:
+    """单号 + 官方 Excel 预览：两个插件文案逐字相同、判定同语义（R6 / R10）。"""
+    assert parity["dlvNotice"] == parity["sqNotice"]
+    assert parity["dlvConflict"] is True and parity["sqConflict"] is True
+    assert parity["dlvConflictNoMode"] is False and parity["sqConflictNoMode"] is False
+
+
+def _guard_block(path: Path) -> str:
+    """抽出 lib.js 里「守卫常量 + 判定函数」的原文，用于钉住逐字复制（插件间不得 import）。"""
+    source = path.read_text(encoding="utf-8")
+    start = source.index("export const SERIAL_REQUIRES_LIST_NOTICE")
+    end = source.index("}", source.index("export function serialSourceConflict")) + 1
+    return source[start:end]
+
+
+def test_serial_source_guard_source_is_byte_identical() -> None:
+    assert _guard_block(SQ_STATIC / "lib.js") == _guard_block(DLV_STATIC / "lib.js")
+
+
+def test_serial_source_guard_is_wired_into_the_deliverables_page() -> None:
+    """守卫必须真的接到交付物工作台上（禁用查询预览 + 主区域提示 + 执行前短路）。"""
+    catalog = (DLV_STATIC / "catalog.js").read_text(encoding="utf-8")
+    assert "serialSourceConflict(values, mode)" in catalog
+    assert "disabled=${busy || serialSourceBlocked}" in catalog
+    assert '${serialSourceBlocked && html`<div class="error-msg sq-warning" role="status">' in catalog
+    assert 'if (op === "query" && serialSourceConflict(current, mode))' in catalog
+    assert "setStatus({ text: SERIAL_REQUIRES_LIST_NOTICE, loading: false })" in catalog
 
 
 def test_catalog_field_set_matches_system_query_mode_fields() -> None:

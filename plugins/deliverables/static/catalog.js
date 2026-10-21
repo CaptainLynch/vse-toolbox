@@ -16,6 +16,7 @@ import {
   OPERATION_LABELS,
   PAGE_HASH,
   PREVIEW_SOURCES,
+  SERIAL_REQUIRES_LIST_NOTICE,
   STATUS_LABELS,
   STATUS_TONE_CLASS,
   TDC_ENDPOINTS,
@@ -45,6 +46,7 @@ import {
   redactSensitiveText,
   resultMetaText,
   serialMatchWarning,
+  serialSourceConflict,
   statusOptions,
   systemQueryHash,
   taskPercent,
@@ -244,6 +246,8 @@ function DeliverableDetail({ item, categories, runLock, onRecord }) {
   useEffect(() => () => { mounted.current = false; }, []);
 
   const operation = values.operation_mode || "query";
+  // 与 system_query 同源的守卫入参：只有数模/SOR 有「查询模式」选择（同 PREVIEW_SOURCES 的显示条件）。
+  const mode = { previewSource: item.id === "tdc-data-model" || item.id === "tdc-sor" };
   const label = (op) => OPERATION_LABELS[op] || op;
   const record = (op, runStatus, summary) => onRecord({
     id: item.id, name: item.name, operation: op, status: runStatus, summary, time: new Date().toLocaleTimeString(),
@@ -382,6 +386,11 @@ function DeliverableDetail({ item, categories, runLock, onRecord }) {
       return;
     }
     const current = valuesRef.current;
+    // 单号 + 官方 Excel 预览：后端必然 400（SerialRequiresListSource），入口先短路。
+    if (op === "query" && serialSourceConflict(current, mode)) {
+      setStatus({ text: SERIAL_REQUIRES_LIST_NOTICE, loading: false });
+      return;
+    }
     const errors = validateForm(item, current, op);
     const invalid = Object.entries(errors).filter(([, msg]) => msg);
     if (invalid.length) {
@@ -583,6 +592,9 @@ function DeliverableDetail({ item, categories, runLock, onRecord }) {
   }
 
   const busy = Boolean(running);
+  // 填了单号还选官方 Excel 预览：查询预览必然被后端拒绝（SerialRequiresListSource）。
+  // 导出走独立端点、不受该守卫影响，所以只在「查询预览」操作下拦截。
+  const serialSourceBlocked = operation === "query" && serialSourceConflict(values, mode);
   const cat = categoryName(categories, item.category);
   const links = item.links && typeof item.links === "object" ? item.links : null;
   const showField = (field) => field.operations.includes(operation);
@@ -691,11 +703,13 @@ function DeliverableDetail({ item, categories, runLock, onRecord }) {
             </label>`}
           </div>
           <div class="operation-buttons">
-            <button type="submit" class=${`primary-btn${busy ? " is-running" : ""}`} data-deliverable-run disabled=${busy}>${label(operation)}</button>
+            <button type="submit" class=${`primary-btn${busy ? " is-running" : ""}`} data-deliverable-run
+              disabled=${busy || serialSourceBlocked}>${label(operation)}</button>
             <button type="button" class="primary-btn" data-deliverable-download disabled=${busy} onClick=${() => run("export")}>下载 XLSX</button>
             ${item.id === "tdc-data-model" && html`<button type="button" class="primary-btn" data-deliverable-run-merged
               disabled=${busy} onClick=${() => run("export_merged")}>导出合并结果（CSV）</button>`}
           </div>
+          ${serialSourceBlocked && html`<div class="error-msg sq-warning" role="status">${SERIAL_REQUIRES_LIST_NOTICE}</div>`}
           ${documentNoCrawlNotice(item, values) && html`<p class="result-meta result-warning" role="status">${documentNoCrawlNotice(item, values)}</p>`}
           ${mergedExportHint(item, values) && html`<p class="result-meta result-warning" role="status">${mergedExportHint(item, values)}</p>`}
           <span class=${`deliverable-status${status.loading && status.text ? " loading" : ""}`} aria-live="polite">${status.text}</span>
