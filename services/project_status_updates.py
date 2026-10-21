@@ -1148,6 +1148,9 @@ class ProjectStatusUpdateService:
             bad_keys = set(match_rule) - set(allowed_match_keys)
             # 多单号集合的不变量（与 assert_sync_ready 同源，抽同一私有函数）：
             # 只在规则真的带 documentNos 时才读关注清单范围（互斥判定）。
+            # 回滚可执行（R28）：本次未提交 matchRule、也没有把 enabled 置为 true 时，
+            # 只改间隔/映射或停用绑定不得被存量 documentNos 拦下（开关关闭时更要
+            # 允许停用）；存量规则原样落库，绝不被这次 PATCH 改写。
             multi_serial_error = (
                 _multi_serial_rule_error(
                     match_rule,
@@ -1156,6 +1159,7 @@ class ProjectStatusUpdateService:
                     sync_scope=self._data_model_sync_scope(),
                 )
                 if match_rule.get("documentNos")
+                and ("matchRule" in payload or payload.get("enabled") is True)
                 else None
             )
             if bad_keys:

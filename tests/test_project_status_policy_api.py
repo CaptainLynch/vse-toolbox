@@ -1127,3 +1127,98 @@ def test_p1d_patch_response_digest_reusable(client):
     after = _p1d_snapshot(db, did)
     assert len(after[2]) == len(before[2]) + 2
     assert after[3] == before[3]
+
+# ── 开关关闭时的回滚 PATCH（停用/调间隔不改写存量规则） ─────────────────────
+
+
+def _raw_match_rule(db) -> str:  # type: ignore[no-untyped-def]
+    with db.get_connection() as conn:
+        return str(
+            conn.execute(
+                "SELECT match_rule_json FROM project_status_update_bindings "
+                "WHERE deliverable_id='VPI-T2-D5'"
+            ).fetchone()["match_rule_json"]
+        )
+
+
+def _enable_multi_serial_binding(client, monkeypatch):  # type: ignore[no-untyped-def]
+    """开关开启时落一条启用中的多单号绑定，返回 (db, match_rule_json 原文)。"""
+    import json
+
+    monkeypatch.setenv("VSE_TDC_MULTI_SERIAL_SYNC", "1")
+    db = web_app.DatabaseManager()
+    rule = {"reportType": "data_model", "aggregate": True, "documentNos": ["3D-1", "3D-2"]}
+    report = {
+        "fields": ["currentApprover", "incident", "reportType"],
+        "statusOrApprovalFields": [],
+        "suggestedStatusMapping": [],
+        "suggestedAutomaticFields": [],
+        "requiresConfirmation": True,
+    }
+    signature = compute_config_signature("tdc", rule)
+    for _ in range(2):
+        db.record_mapping_observation(
+            deliverable_id="VPI-T2-D5",
+            source_type="tdc",
+            result_state="matched",
+            external_key=None,
+            candidate_fingerprint="agg:members-3d-1-3d-2",
+            candidate_count=2,
+            candidate_summary_json=json.dumps(
+                [{"externalKey": "FLOW-A", "fields": {}}, {"externalKey": "FLOW-B", "fields": {}}]
+            ),
+            field_report_json=json.dumps(report),
+            config_signature=signature,
+        )
+    response = client.patch(
+        _D5_POLICY_URL,
+        json={
+            "mode": "hybrid",
+            "enabled": True,
+            "externalKey": None,
+            "matchRule": rule,
+            "mapping": {"owner": "currentApprover"},
+            "fieldAuthority": {"owner": "automatic"},
+            "credentialRef": "test-credential-ref",
+        },
+    )
+    assert response.status_code == 200, response.get_json()
+    return db, _raw_match_rule(db)
+
+
+def test_flag_off_allows_disabling_existing_multi_serial_binding(client, monkeypatch) -> None:
+    """回滚可执行：开关关闭后仍能把存量多单号绑定停用，且不改写规则。"""
+    db, raw_before = _enable_multi_serial_binding(client, monkeypatch)
+    monkeypatch.delenv("VSE_TDC_MULTI_SERIAL_SYNC", raising=False)
+
+    response = client.patch(_D5_POLICY_URL, json={"enabled": False})
+
+    assert response.status_code == 200, response.get_json()
+    assert response.get_json()["data"]["enabled"] is False
+    assert _raw_match_rule(db) == raw_before
+    assert db.get_sync_binding_by_deliverable("VPI-T2-D5")["enabled"] == 0
+
+
+def test_flag_off_allows_interval_patch_without_rewriting_rule(client, monkeypatch) -> None:
+    """开关关闭后仍可调同步间隔；存量规则逐字保留。"""
+    db, raw_before = _enable_multi_serial_binding(client, monkeypatch)
+    monkeypatch.delenv("VSE_TDC_MULTI_SERIAL_SYNC", raising=False)
+
+    response = client.patch(_D5_POLICY_URL, json={"intervalMinutes": 30})
+
+    assert response.status_code == 200, response.get_json()
+    assert response.get_json()["data"]["intervalMinutes"] == 30
+    assert _raw_match_rule(db) == raw_before
+
+
+def test_flag_off_still_rejects_reenabling_multi_serial_binding(client, monkeypatch) -> None:
+    """开关关闭时不允许把含 documentNos 的绑定重新置为 enabled。"""
+    _db, _raw = _enable_multi_serial_binding(client, monkeypatch)
+    monkeypatch.delenv("VSE_TDC_MULTI_SERIAL_SYNC", raising=False)
+    assert client.patch(_D5_POLICY_URL, json={"enabled": False}).status_code == 200
+
+    response = client.patch(_D5_POLICY_URL, json={"enabled": True})
+
+    assert response.status_code == 422
+    fields = response.get_json()["error"]["fields"]
+    assert "matchRule" in fields or "enabled" in fields
