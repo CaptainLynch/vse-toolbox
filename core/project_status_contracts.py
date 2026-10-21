@@ -647,13 +647,13 @@ PROJECT_STATUS_SOURCE_CAPABILITIES: dict[str, dict[str, object]] = {
         ),
         "matchFields": (
             # 流水单号（documentNo）不是 TDC 查询参数：填写后走全量抓取+本地精确
-            # 匹配，与实例号（incident）二选一，不得同时填写。
+            # 匹配；与实例号（incident）、多单号（documentNos）三选一，不得同时填写。
             ("documentNo", "流水单号（选填）", "document_no", "例如 3D-00001018；填写后走全量抓取+本地匹配，较慢"),
             # 多单号（documentNos）是独立输入：单值框继续 fail-closed，绝不接受
             # 多值整串；集合在本地精确匹配后合并统计。与单值流水单号、实例号
             # 三选一（三者互斥，后端保存/发现/运行期同一判定）。
             ("documentNos", "流水单号（多个，合并统计）", "document_nos", "空格或逗号分隔，如 3D-00001018 3D-00001193；与单个流水单号/实例号三选一"),
-            ("incident", "实例号(incident)（选填）", "serial_number", "纯数字实例号；与流水单号二选一"),
+            ("incident", "实例号(incident)（选填）", "serial_number", "纯数字实例号；与单个流水单号/多单号三选一"),
             ("applicant", "申请人", "applicant", "可选"),
             ("department", "部门", "department", "可选"),
             ("section", "科室", "section", "可选"),

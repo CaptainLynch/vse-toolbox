@@ -204,7 +204,7 @@ function SyncSummaryCard({ item, policy, capabilities, settings, advancedOpen, o
   const numberText = kind.isEwo ? "EWO 编号（选填，留空则整车聚合）"
     : kind.isPaa ? "PAA 编号（选填，留空则整车聚合）"
       : kind.isNcr ? "NCR 编号（选填，留空则整车聚合）"
-        : kind.isDataModel ? "实例号 incident（选填，纯数字；与流水单号二选一）"
+        : kind.isDataModel ? "实例号 incident（选填，纯数字；与单个流水单号/多单号三选一）"
           : (primary ? `${primary.label}（选填）` : "外部编号（选填）");
   // 多单号（documentNos）是独立输入：功能开关关闭时（缺省）默认不渲染、不引导——
   // 后端保存/发现/运行期都会 fail-closed。单值框继续 fail-closed，绝不接受多值整串。

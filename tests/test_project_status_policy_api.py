@@ -594,6 +594,10 @@ def test_d5_multi_serial_match_field_is_actionable() -> None:
     assert "空格" in placeholder and "逗号" in placeholder
     # 三选一：多单号与单值流水单号、实例号三者互斥（不只是与实例号）。
     assert "三选一" in placeholder
+    # incident 的占位文案必须同口径：不能再写「与流水单号二选一」。
+    incident_placeholder = fields["incident"][3]
+    assert "三选一" in incident_placeholder
+    assert "二选一" not in incident_placeholder
 
 
 def test_d5_discovery_maps_multi_serial_filter_name() -> None:
