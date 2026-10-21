@@ -581,7 +581,7 @@ def test_d5_contract_exposes_multi_serial_key() -> None:
 
 
 def test_d5_multi_serial_match_field_is_actionable() -> None:
-    """多值输入项必须自解释：显示名点明合并统计，placeholder 说明分隔符与二选一。"""
+    """多值输入项必须自解释：显示名点明合并统计，placeholder 说明分隔符与三选一。"""
     from core.project_status_contracts import PROJECT_STATUS_SOURCE_CAPABILITIES
 
     fields = {
@@ -592,7 +592,8 @@ def test_d5_multi_serial_match_field_is_actionable() -> None:
     assert filter_name == "document_nos"
     assert label == "流水单号（多个，合并统计）"
     assert "空格" in placeholder and "逗号" in placeholder
-    assert "二选一" in placeholder
+    # 三选一：多单号与单值流水单号、实例号三者互斥（不只是与实例号）。
+    assert "三选一" in placeholder
 
 
 def test_d5_discovery_maps_multi_serial_filter_name() -> None:

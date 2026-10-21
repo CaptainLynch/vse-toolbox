@@ -67,12 +67,12 @@ export const MULTI_SERIAL_MESSAGE = "多单号合并统计同步暂不支持（�
 export const FULL_WIDTH_SERIAL_MESSAGE = "流水单号含全角或兼容字符，请改成报表里的半角原文单号。";
 
 /**
- * 多单号文本框的字符上限：与后端同口径——500 个单号
- * （``services/data_model_watchlist.MAX_WATCHLIST``）× 每个 64 字符
- * （``MAX_SERIAL_LENGTH``），外加 499 个分隔符。
+ * 多单号文本框的字符上限：**只用于防止浏览器粘贴时在 maxlength 处静默截断**
+ * （按 500 个单号 × 每个 64 字符 + 499 个分隔符的最宽形态留足余量），
+ * 不是契约上限，也与后端预算不同口径。
  *
- * 旧值 4000 只够约 330 个典型单号，浏览器粘贴会在 maxlength 处**静默截断**，
- * 甚至把最后一个单号切成半截落库；合法输入永远不该被截断。
+ * 真正的预算在后端：保存侧 ``match_rule`` 4000 字符，发现侧多单号集合
+ * 4000 字节；超限由后端 422 明确拒绝，前端不做同口径换算。
  */
 export const SERIAL_SET_TEXT_MAX = 500 * 64 + 499;
 
