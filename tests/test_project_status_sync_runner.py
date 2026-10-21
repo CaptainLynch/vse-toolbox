@@ -1460,3 +1460,48 @@ def test_partial_missing_keeps_binding_enabled_and_recovers_next_run(
                 ("VPI-T2-D5",),
             ).fetchone()
         ) == before
+
+
+def test_all_configured_serials_missing_keeps_last_good_snapshot(
+    tmp_path,
+    monkeypatch,
+    runner: ProjectStatusSyncRunner,
+    db: DatabaseManager,
+    service: ProjectStatusUpdateService,
+    registry: ConnectorRegistry,
+) -> None:
+    """全部未命中 fail-closed：本次 run 失败，上次良好快照逐字保留、绑定仍启用。
+
+    旧实现把「全部未命中」当成空行集返回，运行期按零行结果继续走成功路径，
+    会把上次的良好分析快照覆盖成 0 行；现在与部分缺失同一条停跑路径。
+    """
+    _enable_multi_serial_pilot(db, service, monkeypatch)
+    upstream: dict[str, list[dict[str, object]]] = {
+        "rows": [
+            {"incident": "FLOW-A", "documentNo": "3D-1", "currentApprover": "张三"},
+            {"incident": "FLOW-B", "documentNo": "3D-2", "currentApprover": "李四"},
+        ]
+    }
+    registry.register("tdc", _multi_serial_connector(tmp_path, upstream))
+
+    first = runner.run_once(deliverable_id="VPI-T2-D5", trigger_type="scheduled")
+    assert first.results[0].final_state == "success"
+    snapshots_before = db.list_project_status_analysis_snapshots("VPI-T2-D5")
+    items_before = db.list_project_status_analysis_items("VPI-T2-D5")
+    assert len(snapshots_before) == 1
+    assert snapshots_before[0]["total_count"] == 2
+    assert len(items_before) == 2
+
+    # 上游仍有行，但配置的两个单号全部消失（例如单号被改号）。
+    upstream["rows"] = [
+        {"incident": "FLOW-C", "documentNo": "3D-9", "currentApprover": "王五"}
+    ]
+    second = runner.run_once(deliverable_id="VPI-T2-D5", trigger_type="scheduled")
+
+    assert second.results[0].final_state == "failed"
+    binding = db.get_sync_binding_by_deliverable("VPI-T2-D5")
+    assert binding["enabled"] == 1
+    assert binding["sync_state"] != "success"
+    # 上次良好快照/明细逐字保留，绝不被 0 行结果覆盖。
+    assert db.list_project_status_analysis_snapshots("VPI-T2-D5") == snapshots_before
+    assert db.list_project_status_analysis_items("VPI-T2-D5") == items_before

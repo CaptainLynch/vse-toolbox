@@ -1482,23 +1482,42 @@ def test_multi_serial_diagnostic_payload_is_bounded_counts(monkeypatch) -> None:
     assert safe_metadata(payload, "salt") == payload
 
 
-def test_multi_serial_all_missing_returns_empty_and_emits_zero_match(monkeypatch) -> None:
-    """全部缺失：与既有单值零命中同风格——有界诊断 + 空行集（落 not_found）。"""
+def test_multi_serial_all_missing_raises_fail_closed_and_emits_zero_match(monkeypatch) -> None:
+    """全部缺失：有界诊断 + 停跑 raise（与部分缺失同一条 fail-closed 路径）。
+
+    零命中若只返回空行集，运行期会按「本次没有结果」继续走成功/needs_attention
+    路径并可能覆盖上次良好快照；因此必须显式停跑，保留上次结果。
+    """
     from core.diagnostic_recording import safe_metadata
 
     rows = [{"incident": "FLOW-A", "documentNo": "3D-1"}]
     events: list[tuple[str, dict]] = []
     monkeypatch.setattr(connectors, "emit", lambda kind, payload, **kw: events.append((kind, payload)))
-    matched = connectors.TDCProjectStatusConnector._narrow_by_document_no(
-        rows, _multi_serial_rule("3D-8", "3D-9")
-    )
-    assert matched == []
+    with pytest.raises(ValueError) as excinfo:
+        connectors.TDCProjectStatusConnector._narrow_by_document_no(
+            rows, _multi_serial_rule("3D-8", "3D-9")
+        )
+    message = str(excinfo.value)
+    assert "全部未命中" in message
+    assert "保留上次结果" in message
     assert [kind for kind, _ in events] == ["tdc_document_nos_zero_match"]
     payload = events[0][1]
     assert payload["record_count"] == 1
     assert payload["expected_count"] == 2
     assert "3D-" not in repr(payload)
     assert safe_metadata(payload, "salt") == payload
+
+
+def test_single_serial_zero_match_still_returns_empty_rows(monkeypatch) -> None:
+    """单值路径零命中仍返回空行集（既有约定，不随多单号 fail-closed 改变）。"""
+    rows = [{"incident": "FLOW-A", "documentNo": "3D-1"}]
+    events: list[str] = []
+    monkeypatch.setattr(connectors, "emit", lambda kind, payload, **kw: events.append(kind))
+    matched = connectors.TDCProjectStatusConnector._narrow_by_document_no(
+        rows, {"reportType": "data_model", "documentNo": "3D-9"}
+    )
+    assert matched == []
+    assert events == ["tdc_document_no_zero_match"]
 
 
 def test_multi_serial_full_match_returns_union_in_target_order(monkeypatch) -> None:

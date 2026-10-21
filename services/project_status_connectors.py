@@ -490,10 +490,11 @@ class TDCProjectStatusConnector:
         多单号集合（``documentNos``，聚合绑定）按「键存在即多号语义」判定：空集/
         非法集由 ``normalize_serial_set`` 抛出可执行中文错误（``WatchlistError``
         是 ``ValueError`` 子类，这里统一转成 ``ValueError``），**绝不**因为集合为
-        空就跳过收窄、把全表当成聚合结果（少算/多算都不允许）。**部分缺失 →
-        停跑 raise**，绝不把已命中子集当作本次结果，因此也不写入部分结果、保留
-        上次快照，缺失单号补齐后下一次 tick 自愈。诊断 payload 只放有界计数
-        （不落单号明文）。
+        空就跳过收窄、把全表当成聚合结果（少算/多算都不允许）。集合内**全部未
+        命中**与**部分缺失**走同一条 fail-closed 路径：先发有界零命中诊断，再
+        raise 停跑——不写入本次结果、保留上次快照；已命中子集也绝不当作本次结果
+        （少算比停跑更糟）。缺失单号补齐后下一次 tick 自愈。诊断 payload 只放
+        有界计数（不落单号明文）。单值路径的零命中仍返回空行集（既有约定）。
         """
         if "documentNos" in rule:
             try:
@@ -517,7 +518,10 @@ class TDCProjectStatusConnector:
                     },
                     name="sync_connector.TDCProjectStatusConnector.collect",
                 )
-                return []
+                raise ValueError(
+                    "配置的流水单号全部未命中：本次不写入、保留上次结果，"
+                    "请核对单号或筛选条件后重试"
+                )
             missing = [str(item) for item in bookkeeping.get("missing", [])]
             if missing:
                 emit(
