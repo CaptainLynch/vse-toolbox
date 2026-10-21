@@ -113,17 +113,6 @@ POLICY_LOGIC_EXPORTS = (
     "wizardRetryWithoutDepartment",
 )
 
-#: Every specifier ``policy.js`` imports, in source order.
-POLICY_IMPORTS = (
-    "/static/host/vendor/preact-htm.js",
-    "./api.js",
-    "./discovery.js",
-    "./multi-select.js",
-    "./display.js",
-    "./format.js",
-    "./policy-logic.js",
-)
-
 #: Specifiers loaded as REAL source (the rest are synthetic).
 REAL_MODULES = ("./api.js",)
 

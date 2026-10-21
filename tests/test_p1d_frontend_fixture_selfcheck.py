@@ -126,20 +126,14 @@ def test_save_callback_patches_once_with_the_edited_values():
     assert patch.body["intervalMinutes"] == 47
 
 
-def test_save_body_has_no_digest_until_policy_js_is_wired():
-    """The fixture reports only what policy.js actually sent.
-
-    policy.js does not import the digest helper yet, so the body carries no
-    digest. When the EDITOR card wires it, this assertion must be replaced by
-    one that requires the key to be present and equal to policy.configDigest.
-    """
-    panel = load_policy_panel(_scenario())
+def test_save_body_has_digest_after_policy_js_is_wired():
+    """The real PATCH body carries the loaded policy digest."""
+    policy = _policy()
+    panel = load_policy_panel(_scenario(policy=policy))
     panel.result.assert_ok()
     assert panel.patches, "a save must have happened"
-    assert "expectedConfigDigest" not in panel.patches[-1].body, (
-        "policy.js 已接线：请由 EDITOR 卡将本断言改为 "
-        "panel.patches[-1].body['expectedConfigDigest'] == policy['configDigest']"
-    )
+    assert "expectedConfigDigest" in panel.patches[-1].body
+    assert panel.patches[-1].body["expectedConfigDigest"] == policy["configDigest"]
 
 
 def test_linker_loads_the_real_digest_module():
