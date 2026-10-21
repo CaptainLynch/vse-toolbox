@@ -85,6 +85,12 @@ const ncrData = {
   headerRows: [["组", "组", "组"], ["NCR号", "项目", "token"]],
   rows: [["N-2", "B", "t"], ["N-10", "A", "t"]],
 };
+
+// 单号 + 官方 Excel 预览：后端必然 400（SerialRequiresListSource），前端同源守卫判定。
+const guardMode = {previewSource: true};
+const guardOfficial = {document_no: " 3D-1 ", preview_source: "official_export"};
+const guardOfficialEmpty = {document_no: "", preview_source: "official_export"};
+const guardList = {document_no: "3D-1", preview_source: "list_endpoint"};
 const objData = {rows: [{_no: "E-2", cookie: "c=1", state: "Open"}, {_no: "E-10", cookie: "c=2", state: "Closed"}]};
 const objGrid = lib.buildGridColumns(objData, objData.rows, ["_no"], "ewo");
 const objCols = lib.candidateColumns(objGrid);
@@ -136,6 +142,13 @@ console.log(JSON.stringify({
   accepted: [lib.isTaskAccepted(202, {ok: true, data: {taskId: "t1"}}), lib.isTaskAccepted(200, {ok: true, data: {taskId: "t1"}})],
   filename: lib.parseContentDispositionFilename("attachment; filename*=UTF-8''ncr%20detail.xlsx"),
   traversal: lib.parseContentDispositionFilename('attachment; filename="a/../b\\c.csv"'),
+  serialSourceConflict: {
+    officialWithSerial: lib.serialSourceConflict(guardOfficial, guardMode),
+    officialEmpty: lib.serialSourceConflict(guardOfficialEmpty, guardMode),
+    listWithSerial: lib.serialSourceConflict(guardList, guardMode),
+    noMode: lib.serialSourceConflict(guardOfficial, null),
+  },
+  serialSourceNotice: lib.SERIAL_REQUIRES_LIST_NOTICE,
 }));
 """
 
@@ -247,6 +260,27 @@ def test_merged_export_button_is_wired_in_the_system_query_page() -> None:
     assert 'data-action="export_merged"' in query
     assert "mode.mergedExportEndpoint" in query
     assert 'm.mergedExportEndpoint' in query
+
+
+def test_serial_source_conflict_predicate_and_notice(node_data) -> None:
+    """单号 + 官方 Excel 预览 = 后端必然拒绝（SerialRequiresListSource）：前端同源判定。"""
+    conflict = node_data["serialSourceConflict"]
+    assert conflict["officialWithSerial"] is True   # 单号（含首尾空白）trim 后非空
+    assert conflict["officialEmpty"] is False       # 没填单号不拦
+    assert conflict["listWithSerial"] is False      # 快速查询（list 接口）不拦
+    assert conflict["noMode"] is False              # 没有查询模式选择的模式不拦
+    notice = node_data["serialSourceNotice"]
+    assert "快速查询" in notice and "导出合并结果" in notice
+
+
+def test_serial_source_guard_is_wired_into_the_system_query_page() -> None:
+    """守卫必须真的接到页面上（禁用查询预览 + 主区域提示 + 执行前短路），防静默丢失。"""
+    query = (STATIC_DIR / "query.js").read_text(encoding="utf-8")
+    assert "serialSourceConflict(values, mode)" in query
+    assert "disabled=${busy || serialSourceBlocked}" in query
+    assert '${serialSourceBlocked && html`<div class="error-msg sq-warning" role="status">' in query
+    assert 'if (operation === "query" && serialSourceConflict(values, mode))' in query
+    assert "setStatusText(SERIAL_REQUIRES_LIST_NOTICE)" in query
 
 
 def test_payloads_follow_legacy_collectors(node_data) -> None:

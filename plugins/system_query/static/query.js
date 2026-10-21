@@ -21,6 +21,8 @@ import {
   resultRowCount,
   safeDisplayValue,
   serialMatchNotice,
+  serialSourceConflict,
+  SERIAL_REQUIRES_LIST_NOTICE,
   SENSITIVE_COLUMNS,
   taskPercent,
   taskProgressText,
@@ -495,6 +497,11 @@ export default function SystemQueryPage({ plugin }) {
   // ── 操作 ──
   const run = async (operation) => {
     if (running) return;
+    // 单号 + 官方 Excel 预览：后端必然 400（SerialRequiresListSource），入口先短路。
+    if (operation === "query" && serialSourceConflict(values, mode)) {
+      setStatusText(SERIAL_REQUIRES_LIST_NOTICE);
+      return;
+    }
     const errors = validateForm(modeId, values, connections[mode.system], operation);
     const invalid = Object.entries(errors).filter(([, msg]) => msg);
     if (invalid.length) {
@@ -696,6 +703,8 @@ export default function SystemQueryPage({ plugin }) {
   const mergedExportNotice = modeId === "tdc-data-model" && String(values.document_no || "").trim()
     ? "官方「导出 XLSX」不按流水单号过滤（会导出其它条件下的全部行）；只导出这些单号请用「导出合并结果（CSV）」——它从官方报表里按单号精确筛选，含全部官方列；范围过大时请先补充车型/日期等条件。"
     : "";
+  // 填了单号还选官方 Excel 预览：查询预览必然被后端拒绝，直接禁用并给出可执行引导。
+  const serialSourceBlocked = serialSourceConflict(values, mode);
   const deepLinkActive = deepLink.from === "overview";
 
   return html`<div class="aras-workbench sq-page">
@@ -772,7 +781,8 @@ export default function SystemQueryPage({ plugin }) {
       </section>
 
       <section class="form-block actions-block">
-        <button class="primary-btn" type="submit" data-action="query" disabled=${busy}>${mode.submitLabel || "执行查询"}</button>
+        <button class="primary-btn" type="submit" data-action="query" disabled=${busy || serialSourceBlocked}>${mode.submitLabel || "执行查询"}</button>
+        ${serialSourceBlocked && html`<div class="error-msg sq-warning" role="status">${SERIAL_REQUIRES_LIST_NOTICE}</div>`}
         ${mode.crawlAllEndpoint && html`<button class="primary-btn" type="button" data-action="crawl_all" disabled=${busy}
           onClick=${() => run("crawl_all")}>${mode.crawlAllLabel || "获取全部结果"}</button>`}
         ${(mode.exportEndpoint || mode.downloadEndpoint) && html`<button class="primary-btn" type="button" data-action="export"
