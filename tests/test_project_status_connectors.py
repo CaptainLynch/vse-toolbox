@@ -7,6 +7,8 @@ import pytest
 
 from core.archive_store import ArchiveStore
 from core.credential_provider import MemoryCredentialProvider
+from services import data_model_watchlist
+from services import project_status_connectors as connectors
 from services.aras_crawler import EWOReportFilters
 from services.aras_ncr_workbook import (
     NcrWorkbookError,
@@ -1374,3 +1376,154 @@ def test_aras_paa_collect_excludes_cancel_rows_and_keeps_raw_json(tmp_path: Path
     exclusion = [event["data"] for event in events if event["kind"] == "aras_scope_exclusion"]
     assert len(exclusion) == 1
     assert exclusion[0] == {"report_type": "paa", "kept_count": 3, "dropped_count": 3}
+
+
+# ── 运行期多单号收窄（Task 10）───────────────────────────────────
+
+
+def _multi_serial_rule(*serials: str) -> dict[str, object]:
+    return {
+        "reportType": "data_model",
+        "aggregate": True,
+        "documentNos": list(serials),
+    }
+
+
+def test_multi_serial_partial_missing_raises_and_emits_diagnostic(monkeypatch) -> None:
+    rows = [{"incident": "FLOW-A", "documentNo": "3D-1"}, {"incident": "FLOW-B", "documentNo": "3D-3"}]
+    events = []
+    monkeypatch.setattr(connectors, "emit", lambda kind, payload, **kw: events.append(kind))
+    with pytest.raises(ValueError) as excinfo:
+        connectors.TDCProjectStatusConnector._narrow_by_document_no(
+            rows, {"reportType": "data_model", "aggregate": True, "documentNos": ["3D-1", "3D-2"]})
+    assert "3D-2" in str(excinfo.value)
+    assert "tdc_document_nos_partial_missing" in events
+
+
+def test_multi_serial_partial_missing_never_returns_partial_rows(monkeypatch) -> None:
+    """部分缺失必须停跑：绝不把已命中子集当作本次结果（少算比停跑更糟）。"""
+    rows = [
+        {"incident": "FLOW-A", "documentNo": "3D-1"},
+        {"incident": "FLOW-B", "documentNo": "3D-3"},
+    ]
+    monkeypatch.setattr(connectors, "emit", lambda kind, payload, **kw: None)
+    with pytest.raises(ValueError):
+        connectors.TDCProjectStatusConnector._narrow_by_document_no(
+            rows, _multi_serial_rule("3D-1", "3D-2", "3D-3")
+        )
+
+
+def test_multi_serial_partial_missing_message_is_bounded(monkeypatch) -> None:
+    """异常文案最多点名 5 个缺失单号（有界），其余用计数收口。"""
+    rows = [{"incident": "FLOW-A", "documentNo": "3D-1"}]
+    monkeypatch.setattr(connectors, "emit", lambda kind, payload, **kw: None)
+    with pytest.raises(ValueError) as excinfo:
+        connectors.TDCProjectStatusConnector._narrow_by_document_no(
+            rows, _multi_serial_rule("3D-1", "3D-2", "3D-3", "3D-4", "3D-5", "3D-6", "3D-7")
+        )
+    message = str(excinfo.value)
+    assert "3D-7" not in message  # 第 6 个缺失单号不再逐项点名
+    assert message.count("3D-") == 5
+    assert "不写入部分结果" in message
+
+
+def test_multi_serial_diagnostic_payload_is_bounded_counts(monkeypatch) -> None:
+    """诊断 payload 只放有界计数：无单号明文，且键在诊断白名单内（落库后可读）。"""
+    from core.diagnostic_recording import safe_metadata
+
+    rows = [
+        {"incident": "FLOW-A", "documentNo": "3D-1"},
+        {"incident": "FLOW-B", "documentNo": "3D-3"},
+    ]
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(connectors, "emit", lambda kind, payload, **kw: events.append((kind, payload)))
+    with pytest.raises(ValueError):
+        connectors.TDCProjectStatusConnector._narrow_by_document_no(
+            rows, _multi_serial_rule("3D-1", "3D-2", "3D-3")
+        )
+    kind, payload = events[-1]
+    assert kind == "tdc_document_nos_partial_missing"
+    assert "3D-" not in repr(payload)
+    assert payload["expected_count"] == 3
+    assert payload["actual_count"] == 2
+    assert payload["failed_count"] == 1
+    # 键必须在诊断白名单内，否则落库时会被整段丢弃（等于记录了但读不到）。
+    assert safe_metadata(payload, "salt") == payload
+
+
+def test_multi_serial_all_missing_returns_empty_and_emits_zero_match(monkeypatch) -> None:
+    """全部缺失：与既有单值零命中同风格——有界诊断 + 空行集（落 not_found）。"""
+    from core.diagnostic_recording import safe_metadata
+
+    rows = [{"incident": "FLOW-A", "documentNo": "3D-1"}]
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(connectors, "emit", lambda kind, payload, **kw: events.append((kind, payload)))
+    matched = connectors.TDCProjectStatusConnector._narrow_by_document_no(
+        rows, _multi_serial_rule("3D-8", "3D-9")
+    )
+    assert matched == []
+    assert [kind for kind, _ in events] == ["tdc_document_nos_zero_match"]
+    payload = events[0][1]
+    assert payload["record_count"] == 1
+    assert payload["expected_count"] == 2
+    assert "3D-" not in repr(payload)
+    assert safe_metadata(payload, "salt") == payload
+
+
+def test_multi_serial_full_match_returns_union_in_target_order(monkeypatch) -> None:
+    rows = [
+        {"incident": "FLOW-A", "documentNo": "3D-2"},
+        {"incident": "FLOW-B", "documentNo": "3D-1"},
+        {"incident": "FLOW-C", "documentNo": "3D-3"},
+    ]
+    events: list[str] = []
+    monkeypatch.setattr(connectors, "emit", lambda kind, payload, **kw: events.append(kind))
+    matched = connectors.TDCProjectStatusConnector._narrow_by_document_no(
+        rows, _multi_serial_rule("3D-1", "3D-2")
+    )
+    # 规范化后按单号升序合并，集合外的行（3D-3）不收窄进来。
+    assert [row["incident"] for row in matched] == ["FLOW-B", "FLOW-A"]
+    assert events == []
+
+
+def test_multi_serial_rows_without_serial_column_raise_structure_drift(monkeypatch) -> None:
+    """行缺单号列沿用既有结构漂移归因（不落「未匹配」）。"""
+    rows = [{"incident": "FLOW-A", "currentApprover": "张三"}]
+    events: list[str] = []
+    monkeypatch.setattr(connectors, "emit", lambda kind, payload, **kw: events.append(kind))
+    with pytest.raises(ValueError, match="流水单号列"):
+        connectors.TDCProjectStatusConnector._narrow_by_document_no(
+            rows, _multi_serial_rule("3D-1")
+        )
+    assert events == ["tdc_document_no_structure_drift"]
+
+
+def test_multi_serial_switch_disabled_fails_closed_before_upstream(tmp_path: Path, monkeypatch):
+    """R26：运行期遇到 documentNos 而功能开关关闭 → 停跑，且绝不发上游请求。"""
+    monkeypatch.delenv(data_model_watchlist.MULTI_SERIAL_SYNC_ENV, raising=False)
+    crawled: list[object] = []
+
+    class CountingTDC(FakeTDC):
+        def crawl_data_model_all(self, filters, max_records):
+            crawled.append(filters)
+            return SimpleNamespace(
+                rows=[{"incident": "FLOW-A", "documentNo": "3D-1"}],
+                complete=True, stop_reason="reported_pages",
+            )
+
+    archive = ArchiveStore({"default": tmp_path}, reserve_bytes=0)
+    connector = TDCProjectStatusConnector(
+        MemoryCredentialProvider({"ref": ("user", "pass")}), archive,
+        auth_factory=FakeAuth, crawler_factory=CountingTDC,
+    )
+    ctx = SyncBindingContext(
+        binding_id=30, deliverable_id="VPI-T2-D5", phase_id="VPI-T2",
+        source_type="tdc", external_key="",
+        match_rule=_multi_serial_rule("3D-1", "3D-2"),
+        mapping={"owner": "currentApprover"}, cursor={},
+        expected_deliverable_updated_at="v1", run_id=31, credential_ref="ref",
+    )
+    with pytest.raises(ValueError) as excinfo:
+        connector.collect(ctx)
+    assert str(excinfo.value) == data_model_watchlist.MULTI_SERIAL_DISABLED_MESSAGE
+    assert crawled == []

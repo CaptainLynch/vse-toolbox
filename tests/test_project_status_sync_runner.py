@@ -4,11 +4,15 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
-from core.credential_provider import CredentialProviderError
+from core.archive_store import ArchiveStore
+from core.credential_provider import CredentialProviderError, MemoryCredentialProvider
 from core.db_manager import DatabaseManager
+from services import data_model_watchlist
+from services.project_status_connectors import TDCProjectStatusConnector
 from services.aras_auth import ArasAuthError
 from services.aras_crawler import ArasAuthenticationError, ArasCrawlerError
 from services.project_status_updates import (
@@ -1298,3 +1302,161 @@ def test_run_once_rejects_unsupported_trigger_type_without_writes(
 
     assert _count_runs(db) == runs_before
     assert _count_audit(db) == audit_before
+
+
+# ── 多单号运行期：部分缺失停跑 → 绑定保持启用 → 补齐后自愈 ─────────
+
+
+_MULTI_SERIAL_RULE: dict[str, object] = {
+    "reportType": "data_model",
+    "aggregate": True,
+    "documentNos": ["3D-1", "3D-2"],
+}
+
+
+def _enable_multi_serial_pilot(
+    db: DatabaseManager,
+    service: ProjectStatusUpdateService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """开启多单号开关，并按发现路径的落库形态补齐聚合证据后启用 D5 绑定。"""
+    monkeypatch.setenv(data_model_watchlist.MULTI_SERIAL_SYNC_ENV, "1")
+    report = {
+        "fields": ["currentApprover", "approvalComment", "documentNo", "incident", "reportType"],
+        "statusOrApprovalFields": [],
+        "suggestedStatusMapping": [],
+        "suggestedAutomaticFields": [],
+        "requiresConfirmation": True,
+    }
+    signature = compute_config_signature("tdc", _MULTI_SERIAL_RULE)
+    for _ in range(2):
+        # 聚合观测：无单记录外部键，指纹为成员身份基线（Task 9 发现路径同源）。
+        db.record_mapping_observation(
+            deliverable_id="VPI-T2-D5",
+            source_type="tdc",
+            result_state="matched",
+            external_key=None,
+            candidate_fingerprint="agg:members-3d-1-3d-2",
+            candidate_count=2,
+            candidate_summary_json=json.dumps(
+                [{"externalKey": "FLOW-A", "fields": {}}, {"externalKey": "FLOW-B", "fields": {}}]
+            ),
+            field_report_json=json.dumps(report),
+            config_signature=signature,
+        )
+    service.update_update_policy(
+        "VPI-T2-D5",
+        {
+            "mode": "hybrid",
+            "enabled": True,
+            "externalKey": None,
+            "matchRule": dict(_MULTI_SERIAL_RULE),
+            # 聚合绑定的多记录分支只写聚合备注：note 也必须是自动字段，
+            # 否则恢复运行会落 partial（字段被锁而跳过），与自愈语义混淆。
+            "mapping": {"owner": "currentApprover", "note": "approvalComment"},
+            "fieldAuthority": {"owner": "automatic", "note": "automatic"},
+            "credentialRef": "test-credential-ref",
+        },
+    )
+
+
+def _multi_serial_connector(
+    tmp_path, upstream: dict[str, list[dict[str, object]]]
+) -> TDCProjectStatusConnector:
+    """最小桩：真实 TDC 连接器 + 可变上游行集（模拟「缺单号 → 补齐」）。"""
+
+    class _Auth:
+        base_url = "https://fixed.example"
+
+        def __init__(self, **kwargs) -> None:
+            pass
+
+        def login(self, username, password):
+            return SimpleNamespace(session=SimpleNamespace(close=lambda: None))
+
+    class _Crawler:
+        def __init__(self, **kwargs) -> None:
+            pass
+
+        def crawl_data_model_all(self, filters, max_records):
+            # 流水单号绝不作为上游查询参数发送（红线）。
+            assert filters.instance_no is None
+            return SimpleNamespace(
+                rows=[dict(row) for row in upstream["rows"]],
+                complete=True,
+                stop_reason="reported_pages",
+            )
+
+        def export_data_model(self, filters):
+            raise RuntimeError("官方导出在自愈回归用例中不可用")
+
+    return TDCProjectStatusConnector(
+        MemoryCredentialProvider({"test-credential-ref": ("user", "pass")}),
+        ArchiveStore({"default": tmp_path}, reserve_bytes=0),
+        auth_factory=_Auth,
+        crawler_factory=_Crawler,
+    )
+
+
+def test_partial_missing_keeps_binding_enabled_and_recovers_next_run(
+    tmp_path,
+    monkeypatch,
+    runner: ProjectStatusSyncRunner,
+    db: DatabaseManager,
+    service: ProjectStatusUpdateService,
+    registry: ConnectorRegistry,
+) -> None:
+    """部分缺失停跑不清 enabled；上游补齐后下一次 run_once 恢复 success。"""
+    _enable_multi_serial_pilot(db, service, monkeypatch)
+    upstream: dict[str, list[dict[str, object]]] = {
+        "rows": [{"incident": "FLOW-A", "documentNo": "3D-1", "currentApprover": "张三"}]
+    }
+    registry.register("tdc", _multi_serial_connector(tmp_path, upstream))
+
+    first = runner.run_once(deliverable_id="VPI-T2-D5", trigger_type="scheduled")
+    assert first.results[0].final_state != "success"  # 停跑，不写部分结果
+    assert first.results[0].run_id is not None  # 停跑仍留下一次可归因的 run
+    with db.get_connection() as conn:
+        run_state = conn.execute(
+            "SELECT run_state FROM project_status_sync_runs WHERE id=?",
+            (first.results[0].run_id,),
+        ).fetchone()["run_state"]
+    assert run_state != "success"
+    binding = db.get_sync_binding_by_deliverable("VPI-T2-D5")
+    assert binding["enabled"] == 1  # 失败绝不停用绑定
+    assert binding["sync_state"] != "success"
+    assert binding["last_success_at"] is None
+    assert _count_audit(db) == 0  # 未写业务表
+
+    upstream["rows"].append(
+        {"incident": "FLOW-B", "documentNo": "3D-2", "currentApprover": "李四"}
+    )
+    second = runner.run_once(deliverable_id="VPI-T2-D5", trigger_type="scheduled")
+    assert second.results[0].final_state == "success"
+    assert db.get_sync_binding_by_deliverable("VPI-T2-D5")["sync_state"] == "success"
+
+    # 再次缺失：停跑但保留上次成功快照（不推进 last_success_at、不改业务行）。
+    succeeded = db.get_sync_binding_by_deliverable("VPI-T2-D5")
+    with db.get_connection() as conn:
+        before = dict(
+            conn.execute(
+                "SELECT owner, remark, updated_at FROM project_status_deliverables WHERE id=?",
+                ("VPI-T2-D5",),
+            ).fetchone()
+        )
+    assert str(before["remark"] or "").startswith("共 2 条")  # 补齐后的聚合结果已落库
+    upstream["rows"] = [
+        row for row in upstream["rows"] if row.get("documentNo") != "3D-2"
+    ]
+    third = runner.run_once(deliverable_id="VPI-T2-D5", trigger_type="scheduled")
+    assert third.results[0].final_state != "success"
+    after = db.get_sync_binding_by_deliverable("VPI-T2-D5")
+    assert after["enabled"] == 1
+    assert after["last_success_at"] == succeeded["last_success_at"]
+    with db.get_connection() as conn:
+        assert dict(
+            conn.execute(
+                "SELECT owner, remark, updated_at FROM project_status_deliverables WHERE id=?",
+                ("VPI-T2-D5",),
+            ).fetchone()
+        ) == before

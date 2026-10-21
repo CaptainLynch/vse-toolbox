@@ -102,6 +102,24 @@ def _require_complete_result(result: Any) -> None:
         raise ValueError(f"external query is incomplete ({reason})")
 
 
+def _raise_if_serial_column_missing(rows: Sequence[Mapping[str, Any]]) -> None:
+    """行集完全没有流水单号列时按「结构漂移」归因并 raise（不落「未匹配」）。
+
+    单值与多单号收窄共用：两者都靠上游行里的流水单号列本地精确匹配，列整体
+    消失时继续走下去只会得到误导性的 not_found。
+    """
+    if rows and not any(data_model_watchlist.row_serial(row) for row in rows):
+        emit(
+            "tdc_document_no_structure_drift",
+            {"report_type": "data_model", "row_count": len(rows)},
+            name="sync_connector.TDCProjectStatusConnector.collect",
+        )
+        raise ValueError(
+            "同步行缺少流水单号列（documentNo/流水单号），无法按流水单号匹配；"
+            "上游结构可能已变化，请重新进行映射发现"
+        )
+
+
 def _stable_version(row: Mapping[str, Any]) -> str:
     normalized = {str(key): _clean_scalar(value) for key, value in sorted(row.items())}
     payload = json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -329,6 +347,14 @@ class TDCProjectStatusConnector:
         ))
         if report not in {"data_model", "sor"}:
             raise ValueError("TDC reportType must be data_model or sor")
+        if (
+            context.match_rule.get("documentNos")
+            and not data_model_watchlist.multi_serial_enabled()
+        ):
+            # R26：多单号功能开关缺省关闭，运行期遇到 documentNos 一律 fail-closed。
+            # 与保存/发现入口同一判定与文案（不另写一份），且在解析凭据、发上游
+            # 请求之前停跑：开关关闭时绝不以多单号语义少算。
+            raise ValueError(data_model_watchlist.MULTI_SERIAL_DISABLED_MESSAGE)
         with self.credentials.resolve(context.credential_ref) as secret:
             login = self.auth_factory(timeout=self.timeout).login(secret.username, secret.password)
             try:
@@ -374,8 +400,9 @@ class TDCProjectStatusConnector:
         application_rows = (
             flatten_sor_rows(list(result.rows)) if report == "sor" else list(result.rows)
         )
-        # 绑定带流水单号（documentNo）时按其本地精确收窄（爬虫完整性已在
-        # _require_complete_result 把关；原始归档行 result.rows 不收窄——取证职责）。
+        # 绑定带流水单号（documentNo）或多单号集合（documentNos）时按其本地精确
+        # 收窄（爬虫完整性已在 _require_complete_result 把关；原始归档行
+        # result.rows 不收窄——取证职责）。
         application_rows = self._narrow_by_document_no(application_rows, context.match_rule)
         # F3（2026-09-29 生产反馈）：同步范围剔除已废弃/已撤回表单（用户口径，
         # docs/PLAN_20260929_R5_SIX_ISSUES.md）。只剔"已证实映射"的状态文本——
@@ -449,7 +476,7 @@ class TDCProjectStatusConnector:
         rows: Sequence[Mapping[str, Any]],
         rule: Mapping[str, Any],
     ) -> list[Mapping[str, Any]]:
-        """绑定带流水单号（documentNo）时按其本地精确收窄行集。
+        """绑定带流水单号（documentNo/documentNos）时按其本地精确收窄行集。
 
         流水单号不是 TDC 查询参数（查询参数 incident 是第 0 列实例号）：同步
         路径与映射发现（web/app.py run_observation）同走「全量抓取 → 本地精确
@@ -459,24 +486,57 @@ class TDCProjectStatusConnector:
         空集归因（顾问复核 2026-10-09）：输入非空而输出为空时区分「行集完全
         没有流水单号列（结构漂移，raise 不落 not_found）」与「有列但无匹配
         （真正的 not_found）」；命中 0 行时发一次有界诊断。
+
+        多单号集合（``documentNos``，聚合绑定）的完整性口径：全部缺失 → 与
+        单值零命中同风格（有界诊断 + 空行集）；**部分缺失 → 停跑 raise**，
+        绝不把已命中子集当作本次结果（少算比停跑更糟），因此也不写入部分结果、
+        保留上次快照，缺失单号补齐后下一次 tick 自愈。诊断 payload 只放有界
+        计数（不落单号明文）。
         """
+        serials = rule.get("documentNos")
+        if serials:
+            normalized = data_model_watchlist.normalize_serial_set(serials)
+            _raise_if_serial_column_missing(rows)
+            matched, bookkeeping = data_model_watchlist.match_serials(rows, normalized)
+            if not matched:
+                emit(
+                    "tdc_document_nos_zero_match",
+                    {
+                        "report_type": "data_model",
+                        "record_count": bookkeeping["scanned"],
+                        "expected_count": len(normalized),
+                        "actual_count": 0,
+                    },
+                    name="sync_connector.TDCProjectStatusConnector.collect",
+                )
+                return []
+            missing = [str(item) for item in bookkeeping.get("missing", [])]
+            if missing:
+                emit(
+                    "tdc_document_nos_partial_missing",
+                    {
+                        "report_type": "data_model",
+                        "expected_count": len(normalized),
+                        "actual_count": len(normalized) - len(missing),
+                        "failed_count": len(missing),
+                    },
+                    name="sync_connector.TDCProjectStatusConnector.collect",
+                )
+                # 异常文案点名最多 5 个缺失单号：其余用「等」收口，保持有界。
+                listed = "、".join(missing[:5])
+                if len(missing) > 5:
+                    listed += f" 等 {len(missing)} 个单号"
+                raise ValueError(
+                    "部分流水单号未命中：" + listed
+                    + "；本次不写入部分结果，请核对单号或补充车型/日期后重试"
+                )
+            return list(matched)
         document_no = str(rule.get("documentNo") or "").strip()
         if not document_no:
             return list(rows)
         matched, bookkeeping = data_model_watchlist.match_serial(rows, document_no)
         if not matched:
-            from services.data_model_watchlist import row_serial
-
-            if rows and not any(row_serial(row) for row in rows):
-                emit(
-                    "tdc_document_no_structure_drift",
-                    {"report_type": "data_model", "row_count": len(rows)},
-                    name="sync_connector.TDCProjectStatusConnector.collect",
-                )
-                raise ValueError(
-                    "同步行缺少流水单号列（documentNo/流水单号），无法按流水单号匹配；"
-                    "上游结构可能已变化，请重新进行映射发现"
-                )
+            _raise_if_serial_column_missing(rows)
             emit(
                 "tdc_document_no_zero_match",
                 {"report_type": "data_model", "scanned": bookkeeping["scanned"]},
