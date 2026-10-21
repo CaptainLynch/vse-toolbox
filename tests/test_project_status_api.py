@@ -822,7 +822,7 @@ def test_document_no_discovery_zero_match_reports_reason_and_coverage(client, mo
     [
         ("3D-00001018 3D-00001012", "合并统计同步暂不支持"),
         ("3D-00001018\u200b", "不可见字符"),
-        ("３Ｄ-００００１０１８", "合并统计同步暂不支持"),
+        ("３Ｄ-００００１０１８", "含全角或兼容字符"),
     ],
 )
 def test_document_no_discovery_rejects_multi_value_before_crawl(client, monkeypatch, value, expected) -> None:  # type: ignore[no-untyped-def]

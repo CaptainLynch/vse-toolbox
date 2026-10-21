@@ -60,9 +60,14 @@ const DOCUMENT_NO_SEPARATORS = /[\s,;、]+/;
 /** 零宽/方向控制类不可见字符：trim() 去不掉，但会让上游精确匹配必然失败。 */
 const INVISIBLE_SERIAL_CHARS = /[\u0000-\u001f\u007f-\u009f\u00ad\u200b\u200c\u200d\u2060\ufeff]/;
 
+/** 与后端 services/data_model_watchlist 逐字同源（前端只多句末句号，parity 用例钉住）。 */
+export const MULTI_SERIAL_MESSAGE = "多单号合并统计同步暂不支持（开发中）；当前可用「导出合并结果」按多个单号取数。";
+export const FULL_WIDTH_SERIAL_MESSAGE = "流水单号含全角或兼容字符，请改成报表里的半角原文单号。";
+
 /**
  * 数模「流水单号」是单值精确匹配字段：多值整串永远 0 行（2026-10-10 生产事故）。
  * 与后端 normalize_single_serial 同语义，前端先拦，避免白跑一次全量抓取。
+ * 文案按原因分流（R17）：全角/兼容字符单独一句，不把用户推向对他无效的合并导出。
  */
 export function documentNoSingleError(value) {
   const text = ewoPolicyString(value);
@@ -71,10 +76,9 @@ export function documentNoSingleError(value) {
     return "流水单号含不可见字符，请只填报表里的原文单号。";
   }
   const normalized = typeof text.normalize === "function" ? text.normalize("NFKC") : text;
+  if (normalized !== text) return FULL_WIDTH_SERIAL_MESSAGE;
   const terms = normalized.split(DOCUMENT_NO_SEPARATORS).filter(Boolean);
-  if (terms.length !== 1 || terms[0] !== normalized || normalized !== text) {
-    return "多单号合并统计同步暂不支持（开发中）；当前可用「导出合并结果」按多个单号取数。";
-  }
+  if (terms.length !== 1 || terms[0] !== normalized) return MULTI_SERIAL_MESSAGE;
   return "";
 }
 

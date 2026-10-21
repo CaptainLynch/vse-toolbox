@@ -255,6 +255,22 @@ def test_normalize_serial_set_rejects_bad_members():
             W.normalize_serial_set(bad)
 
 
+def test_normalize_serial_set_rejects_non_string_members():
+    """JSON null / 数字不得被 str() 强转成 "None" / "123" 这类幽灵单号（与 watchlist_settings 同严格度）。"""
+    for bad in ([None], [123], ["3D-1", None], ["3D-1", 7], [True]):
+        with pytest.raises(W.WatchlistError) as excinfo:
+            W.normalize_serial_set(bad)
+        assert "必须是字符串" in str(excinfo.value)
+
+
+def test_normalize_serial_set_splits_on_every_search_separator():
+    """字符串分支与 parse_terms 同一组分隔符：空白/逗号/分号/顿号/换行/制表符。"""
+    assert W.normalize_serial_set("3D-1、3D-2;3D-3\n3D-4\t3D-5 3D-6") == [
+        "3D-1", "3D-2", "3D-3", "3D-4", "3D-5", "3D-6",
+    ]
+    assert W.normalize_serial_set("  3D-1  ") == ["3D-1"]
+
+
 def test_normalize_serial_set_reuses_single_value_rules():
     """逐项走 normalize_single_serial：全角/不可见字符/非字符串容器同样 fail-closed。"""
     for bad in (["３Ｄ-００００１０１８"], ["3D-1\u200b"], ["x" * 65], None, 7, {"3D-1"}):
@@ -269,7 +285,15 @@ def test_normalize_serial_set_caps_at_max_watchlist():
         W.normalize_serial_set([f"S{i}" for i in range(W.MAX_WATCHLIST + 1)])
 
 
-def test_normalize_serial_set_never_silently_truncates_long_string():
-    """parse_terms 有 100 词上限：超限必须报错，绝不静默丢掉后面的单号（合并统计会少算）。"""
-    with pytest.raises(W.WatchlistError):
-        W.normalize_serial_set(" ".join(f"S{i}" for i in range(150)))
+def test_normalize_serial_set_string_cap_is_500_after_dedupe():
+    """字符串形式与数组同一上限 500，且按去重后计数（不再沿用 parse_terms 的 100 词上限）。"""
+    assert len(W.normalize_serial_set(" ".join(f"S{i}" for i in range(150)))) == 150
+    assert len(W.normalize_serial_set(" ".join(f"S{i}" for i in range(W.MAX_WATCHLIST)))) == W.MAX_WATCHLIST
+    assert W.normalize_serial_set(" ".join(["3D-1"] * 600)) == ["3D-1"]  # 去重后只有 1 个，不占额度
+    for bad in (
+        " ".join(f"S{i}" for i in range(W.MAX_WATCHLIST + 1)),
+        [f"S{i}" for i in range(W.MAX_WATCHLIST + 1)],
+    ):
+        with pytest.raises(W.WatchlistError) as excinfo:
+            W.normalize_serial_set(bad)
+        assert str(W.MAX_WATCHLIST) in str(excinfo.value)

@@ -9,13 +9,21 @@
 
 from __future__ import annotations
 
+import json
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from core.db_manager import DatabaseManager
-from services.data_model_watchlist import WatchlistError, normalize_single_serial
+from services.data_model_watchlist import (
+    FULL_WIDTH_SERIAL_MESSAGE,
+    MULTI_SERIAL_MESSAGE,
+    WatchlistError,
+    normalize_single_serial,
+)
 from services.project_status_connectors import _snapshot
 from services.project_status_discovery import MappingDiscoveryService
 from services.project_status_records import (
@@ -159,7 +167,7 @@ def test_normalize_single_serial_accepts_one_serial(value: str) -> None:
     assert normalize_single_serial(value) == value.strip()
 
 
-# ── 4b. 多单号同步的诚实文案（用户口径是「合并统计」） ─────────────────────────
+# ── 4b. 多单号/全角同步的诚实文案（用户口径是「合并统计」；R17 拆成两句） ────────
 
 _STATIC = Path(__file__).resolve().parent.parent / "plugins" / "project_overview" / "static"
 
@@ -168,20 +176,58 @@ def test_multi_serial_message_is_actionable() -> None:
     with pytest.raises(WatchlistError) as excinfo:
         normalize_single_serial("3D-00001020 3D-00001018")
     text = str(excinfo.value)
+    assert text == MULTI_SERIAL_MESSAGE
     assert "合并统计同步暂不支持" in text
     assert "导出合并结果" in text
 
 
-def test_multi_serial_message_matches_frontend_wording() -> None:
-    """后端与前端逐字同一句（前端只多一个句末句号）；不把「拆交付物」写成答案。"""
+def test_full_width_serial_gets_its_own_message() -> None:
+    """R17：全角/兼容字符不再误诊为多单号（对这类输入「导出合并结果」不是解法）。"""
     with pytest.raises(WatchlistError) as excinfo:
-        normalize_single_serial("3D-00001020 3D-00001018")
-    message = str(excinfo.value)
+        normalize_single_serial("３Ｄ-００００１０１８")
+    text = str(excinfo.value)
 
-    source = (_STATIC / "deliverable" / "policy-logic.js").read_text(encoding="utf-8")
+    assert text == FULL_WIDTH_SERIAL_MESSAGE
+    assert "全角" in text and "半角原文" in text
+    assert "合并统计" not in text and "导出合并结果" not in text
+    assert FULL_WIDTH_SERIAL_MESSAGE != MULTI_SERIAL_MESSAGE
 
-    assert f'"{message}。"' in source
-    assert "逐张单据" not in message and "各建一个交付物" not in message
+
+# 前端真实返回值探针（node 夹具，与 test_plugin_overview_parity_logic.py 同一模式）。
+_FRONTEND_PROBE = r"""
+const base = process.argv[1];
+const P = await import(base + "/deliverable/policy-logic.js");
+console.log(JSON.stringify({
+  multi: P.documentNoSingleError("3D-00001020 3D-00001018"),
+  fullWidth: P.documentNoSingleError("３Ｄ-００００１０１８"),
+}));
+"""
+
+
+def _node_major() -> int:
+    node = shutil.which("node")
+    if node is None:
+        return 0
+    out = subprocess.run([node, "--version"], capture_output=True, text=True, check=False).stdout
+    match = re.match(r"v(\d+)", out.strip())
+    return int(match.group(1)) if match else 0
+
+
+@pytest.mark.skipif(_node_major() < 22, reason="needs Node 22+ to import ES modules")
+def test_frontend_returns_the_same_two_messages() -> None:
+    """parity 锁改用真实返回值：插件对「多值」「全角」两种输入的文案 == 后端文案 + 句号。"""
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", _FRONTEND_PROBE, _STATIC.as_uri()],
+        capture_output=True, text=True, encoding="utf-8", check=False,
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+    messages = json.loads(result.stdout.strip().splitlines()[-1])
+
+    assert messages["multi"] == f"{MULTI_SERIAL_MESSAGE}。"
+    assert messages["fullWidth"] == f"{FULL_WIDTH_SERIAL_MESSAGE}。"
+    assert messages["multi"] != messages["fullWidth"]
+    # 不把「拆交付物」写成答案（用户口径是合并统计）。
+    assert "逐张单据" not in messages["multi"] and "各建一个交付物" not in messages["multi"]
 
 
 # ── 5. 权威字段：单记录绑定不得回退到候选键（顾问复核 A1） ────────────────────

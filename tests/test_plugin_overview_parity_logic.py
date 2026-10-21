@@ -61,6 +61,14 @@ const dmPrecheckOk = P.wizardPrecheck(dmValues("3D-00001018"), {}, caps("data_mo
 const dmPrecheckMulti = P.wizardPrecheck(dmValues("3D-00001018 3D-00001012"), {}, caps("data_model", "tdc"), true);
 const dmPrecheckZeroWidth = P.wizardPrecheck(dmValues("3D-00001018\u200b"), {}, caps("data_model", "tdc"), true);
 const dmPrecheckFullWidth = P.wizardPrecheck(dmValues("３Ｄ-００００１０１８"), {}, caps("data_model", "tdc"), true);
+// R17：文案按原因分流（多值 / 全角各一句），前端真实返回值供 parity 断言。
+const serialErrors = {
+  multi: P.documentNoSingleError("3D-00001018 3D-00001012"),
+  fullWidth: P.documentNoSingleError("３Ｄ-００００１０１８"),
+  invisible: P.documentNoSingleError("3D-00001018\u200b"),
+  ok: P.documentNoSingleError("3D-00001018"),
+  constants: [P.MULTI_SERIAL_MESSAGE, P.FULL_WIDTH_SERIAL_MESSAGE],
+};
 const notMatchedSerial = P.wizardNotMatchedMessage({state: "not_found", candidateCount: 0, fieldReport: {fields: []}, reason: "serial_no_match", serialMatch: {scanned: 4, matched: 0}});
 const notMatchedEmpty = P.wizardNotMatchedMessage({state: "not_found", candidateCount: 0, fieldReport: {fields: []}, serialMatch: {scanned: 0, matched: 0}});
 const notMatchedLegacy = P.wizardNotMatchedMessage({state: "not_found", candidateCount: 0, fieldReport: {fields: []}});
@@ -86,6 +94,7 @@ console.log(JSON.stringify({
     ok: dmPrecheckOk, multi: dmPrecheckMulti,
     zeroWidth: dmPrecheckZeroWidth, fullWidth: dmPrecheckFullWidth,
   },
+  serialErrors,
   notMatched: {
     serial: notMatchedSerial, empty: notMatchedEmpty, legacy: notMatchedLegacy,
   },
@@ -128,11 +137,13 @@ def test_wizard_payloads_per_report_kind() -> None:
     assert data["initDmLegacy"] == {"documentNo": "", "number": "51553863"}
     # 同填流水单号与实例号被 precheck 拦截。
     assert "二选一" in data["dmPrecheckBoth"]
-    # 单值 fail-closed（2026-10-10）：多值/不可见字符/全角在向导内先拦。
+    # 单值 fail-closed（2026-10-10）：多值/不可见字符/全角在向导内先拦；
+    # 文案按原因分流（R17）：全角不再被误诊为多单号。
     assert data["dmPrecheck"]["ok"] == ""
     assert "合并统计同步暂不支持" in data["dmPrecheck"]["multi"]
     assert "不可见字符" in data["dmPrecheck"]["zeroWidth"]
-    assert "合并统计同步暂不支持" in data["dmPrecheck"]["fullWidth"]
+    assert "全角" in data["dmPrecheck"]["fullWidth"]
+    assert "合并统计" not in data["dmPrecheck"]["fullWidth"]
     # 0 命中时给出可判别的原因（扫描行数 / 上游 0 行），旧后端缺字段时回退原文案。
     assert "已完整扫描 4 行" in data["notMatched"]["serial"]
     assert "上游按当前车型/筛选条件返回 0 行" in data["notMatched"]["empty"]
@@ -140,6 +151,21 @@ def test_wizard_payloads_per_report_kind() -> None:
     # PAA ignores the status field entirely
     assert "status" not in data["paa"]["filters"] and "approval_status" not in data["paa"]["filters"]
     assert data["initSor"] == "审批中" and data["initDm"] == "已完成" and data["initNcr"] == ["车身科", "7"]
+
+
+def test_serial_error_wording_matches_backend_exactly() -> None:
+    """R17：多值/全角两句文案前后端逐字一致（前端只多句末句号），且两句必须不同。"""
+    from services.data_model_watchlist import FULL_WIDTH_SERIAL_MESSAGE, MULTI_SERIAL_MESSAGE
+
+    errors = _run(_WIZARD)["serialErrors"]
+
+    assert errors["multi"] == f"{MULTI_SERIAL_MESSAGE}。"
+    assert errors["fullWidth"] == f"{FULL_WIDTH_SERIAL_MESSAGE}。"
+    assert errors["multi"] != errors["fullWidth"]
+    assert errors["invisible"] == "流水单号含不可见字符，请只填报表里的原文单号。"
+    assert errors["ok"] == ""
+    # 两句文案各自只有一处定义（导出的常量即返回值），避免将来复制出第二份漂移文案。
+    assert errors["constants"] == [errors["multi"], errors["fullWidth"]]
 
 
 def test_advanced_editor_keeps_the_ncr_scope_declaration() -> None:

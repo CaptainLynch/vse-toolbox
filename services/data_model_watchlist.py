@@ -16,10 +16,12 @@ TDC 查询参数里没有流水单号：``incident`` 对应的是第 0 列「实
 from __future__ import annotations
 
 import json
+import re
+import unicodedata
 from typing import Any, Iterable, Mapping, Sequence
 
 from core.diagnostic_recording import emit
-from services.form_search import MAX_TERMS, parse_terms, snapshot_schema
+from services.form_search import snapshot_schema
 
 JOB_KEY = "tdc_data_model"
 SCOPE_ALL = "all"
@@ -46,6 +48,14 @@ def normalize_serial(value: Any) -> str:
 
 #: 零宽/方向控制类不可见字符：`strip()` 去不掉，但会让上游精确匹配必然失败。
 _INVISIBLE_SERIAL_CHARS = "\u200b\u200c\u200d\u2060\ufeff\u00ad"
+#: 多值分隔符：与 ``services/form_search._SEPARATORS`` 同一组（空白/逗号/分号/顿号）。
+_SERIAL_SEPARATORS = re.compile(r"[\s,;、]+")
+
+#: 用户可见文案（前端 ``policy-logic.js`` 逐字同源，只多句末句号；parity 用例钉住）。
+MULTI_SERIAL_MESSAGE = (
+    "多单号合并统计同步暂不支持（开发中）；当前可用「导出合并结果」按多个单号取数"
+)
+FULL_WIDTH_SERIAL_MESSAGE = "流水单号含全角或兼容字符，请改成报表里的半角原文单号"
 
 
 def normalize_single_serial(value: Any) -> str:
@@ -55,18 +65,19 @@ def normalize_single_serial(value: Any) -> str:
     字符、或经 NFKC 归一后与原值不同（全角/兼容字符）一律拒绝——绝不静默截断
     成第一个。2026-10-10 生产事故：向导单值字段收到「两个单号 + 一个空格」的
     整串，本地精确匹配必然 0 行，却只报「未匹配」。
+
+    诊断文案按原因分流（R17）：全角/兼容字符单独一句——对这类输入，用户要做的是
+    换回报表里的半角原文，而不是去看合并导出；只有真正的多值才引导到导出合并结果。
     """
     text = str(value or "").strip()
     if not text:
         raise WatchlistError("流水单号不能为空")
     if any(ord(ch) < 32 or ch in _INVISIBLE_SERIAL_CHARS for ch in text):
         raise WatchlistError("流水单号含不可见字符，请只填报表里的原文单号")
-    terms = parse_terms(text)
-    if len(terms) != 1 or terms[0] != text:
-        raise WatchlistError(
-            "多单号合并统计同步暂不支持（开发中）；"
-            "当前可用「导出合并结果」按多个单号取数"
-        )
+    if unicodedata.normalize("NFKC", text) != text:
+        raise WatchlistError(FULL_WIDTH_SERIAL_MESSAGE)
+    if _SERIAL_SEPARATORS.search(text):
+        raise WatchlistError(MULTI_SERIAL_MESSAGE)
     if len(text) > MAX_SERIAL_LENGTH:
         raise WatchlistError(f"流水单号不能超过 {MAX_SERIAL_LENGTH} 个字符")
     return text
@@ -75,26 +86,28 @@ def normalize_single_serial(value: Any) -> str:
 def normalize_serial_set(value: Any) -> list[str]:
     """多值流水单号（合并统计绑定）：逐项走单值校验，去重后排序保证签名稳定。
 
-    字符串按检索词同一套分隔符（空格/逗号/分号/顿号/换行/制表符）拆开，数组逐项
-    校验；任一项不是合法单值就整体拒绝——绝不静默丢掉某一项。排序是契约的一部分：
-    ``compute_config_signature`` 逐字比对 matchRule，同一组单号的不同输入顺序必须
-    得到同一个签名。
+    字符串按与检索词同一套分隔符（空格/逗号/分号/顿号/换行/制表符）拆开，数组逐项
+    校验；任一项不是合法单值就整体拒绝——绝不静默丢掉某一项。上限与数组形式统一为
+    ``MAX_WATCHLIST``，且**去重之后**才计数（重复单号不占额度，也不沿用检索框
+    100 词上限）。排序是契约的一部分：``compute_config_signature`` 逐字比对
+    matchRule，同一组单号的不同输入顺序必须得到同一个签名。
     """
     if isinstance(value, str):
-        terms = parse_terms(value)
-        # parse_terms 自带 100 词上限（form_search.MAX_TERMS）：解析到上限说明原文里
-        # 还有更多单号，静默截断会让合并统计少算单据，因此同样 fail-closed。
-        if len(terms) >= MAX_TERMS:
-            raise WatchlistError(f"流水单号一次最多 {MAX_TERMS} 个，请分批处理")
+        tokens = [token.strip() for token in _SERIAL_SEPARATORS.split(value)]
+        terms = list(dict.fromkeys(token for token in tokens if token))
     elif isinstance(value, (list, tuple)):
-        terms = [str(item) for item in value]
+        for item in value:
+            if not isinstance(item, str):
+                # 不做 str() 强转：JSON null/数字会变成 "None"/"123" 这类幽灵单号。
+                raise WatchlistError("流水单号数组里的每一项都必须是字符串")
+        terms = list(dict.fromkeys(item.strip() for item in value))
     else:
         raise WatchlistError("流水单号必须是字符串或字符串数组")
     if not terms:
         raise WatchlistError("流水单号不能为空")
     if len(terms) > MAX_WATCHLIST:
         raise WatchlistError(f"流水单号一次最多 {MAX_WATCHLIST} 个，请分批处理")
-    return sorted({normalize_single_serial(term) for term in terms})
+    return sorted(normalize_single_serial(term) for term in terms)
 
 
 def watchlist_settings(filters: Mapping[str, Any] | None) -> tuple[str, tuple[str, ...]]:
