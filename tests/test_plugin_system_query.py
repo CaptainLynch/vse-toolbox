@@ -281,6 +281,14 @@ def test_serial_source_guard_is_wired_into_the_system_query_page() -> None:
     assert '${serialSourceBlocked && html`<div class="error-msg sq-warning" role="status">' in query
     assert 'if (operation === "query" && serialSourceConflict(values, mode))' in query
     assert "setStatusText(SERIAL_REQUIRES_LIST_NOTICE)" in query
+    # 激活位：previewSource 决定预览来源字段与守卫是否生效，删掉它守卫会静默失效。
+    modes = (STATIC_DIR / "modes.js").read_text(encoding="utf-8")
+    tdc_modes = modes[modes.index("export const TDC_MODES = {") :]
+    for mode_id in ("tdc-data-model", "tdc-sor"):
+        start = tdc_modes.index(f'"{mode_id}": {{')
+        block = tdc_modes[start : tdc_modes.index("\n  },", start)]
+        assert "previewSource: true" in block, f"{mode_id} 缺少 previewSource 激活位，止血守卫会静默失效"
+    assert "mode.previewSource &&" in query
 
 
 def test_payloads_follow_legacy_collectors(node_data) -> None:

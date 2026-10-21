@@ -207,6 +207,9 @@ def test_serial_source_guard_is_wired_into_the_deliverables_page() -> None:
     assert '${serialSourceBlocked && html`<div class="error-msg sq-warning" role="status">' in catalog
     assert 'if (op === "query" && serialSourceConflict(current, mode))' in catalog
     assert "setStatus({ text: SERIAL_REQUIRES_LIST_NOTICE, loading: false })" in catalog
+    # 激活位：previewSource 决定守卫是否生效，删掉它整条止血守卫会静默失效。
+    assert "const mode = { previewSource:" in catalog
+    assert 'item.id === "tdc-data-model" || item.id === "tdc-sor"' in catalog
 
 
 def test_catalog_field_set_matches_system_query_mode_fields() -> None:
