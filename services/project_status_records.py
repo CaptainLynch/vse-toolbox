@@ -276,8 +276,19 @@ def compute_config_signature(source_type: str, match_rule: Mapping[str, Any] | N
                     {item.strip() for item in re.split(r"[\s,;、\r\n]+", v) if item.strip()}
                 )
             elif isinstance(v, (list, tuple)):
-                items = sorted({str(item).strip() for item in v if str(item).strip()})
+                # 元素必须是字符串，且绝不 str() 强转：[None] / [True] / [{}] / [1, 2]
+                # 一旦被强转就会伪装成合法单号集合，甚至让 [1, 2] 与 ["1", "2"]
+                # 撞上同一签名——正是本函数下方「不要 stringify」规则禁止的事。
+                if not all(isinstance(item, str) for item in v):
+                    raise ValueError(
+                        "match_rule documentNos must be a list of strings"
+                    )
+                items = sorted({item.strip() for item in v if item.strip()})
             else:
+                # 这里与下方其它键的 None 处理（None 被丢弃）刻意不对称：
+                # 空值必须由保存路径「省略该键」而不是持久化 null（R19 / Task 8），
+                # 若把 null 静默丢弃，一条「单号为空」的无效绑定就会与「没有单号
+                # 条件」的规则共享同一签名。故 None 与非法类型一律 fail-closed。
                 raise ValueError("match_rule documentNos must be a string or a list of strings")
             if not items:
                 raise ValueError("match_rule documentNos must not be empty")

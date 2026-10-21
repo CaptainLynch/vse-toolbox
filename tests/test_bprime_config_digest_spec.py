@@ -2,7 +2,6 @@ import hashlib
 
 import pytest
 import core.repos.project_status as repo
-from tests.conftest import bprime_audit_case  # noqa: F401  (pytest fixture 参数注入)
 
 
 def _binding(**changes):
@@ -85,7 +84,7 @@ def test_digest_authority_projection_and_order():
     assert _digest(binding, [rows[0], dict(rows[1], field_name="另一字段")]) != actual
 
 
-def test_digest_missing_rows_equal_ensured_rows(bprime_audit_case):  # noqa: F811
+def test_digest_missing_rows_equal_ensured_rows(bprime_audit_case):
     case = bprime_audit_case
     db = case["db"]
     cases = (("VPI-T2-D1", "manual"), (case["deliverable_id"], "automatic"))
@@ -163,6 +162,30 @@ def test_signature_rejects_malformed_document_nos():
     for bad in ([], "   ", " ,; ", {"a": 1}, 5, True):
         with pytest.raises(ValueError):
             compute_config_signature("tdc", {**base, "documentNos": bad})
+
+
+def test_signature_rejects_non_string_document_nos_elements():
+    """列表元素必须是字符串：不得 str() 强转，否则 [None]/[True]/[{}]/[1, 2]
+    会伪装成合法单号集合，且 [1, 2] 会与 ["1", "2"] 撞同一签名。"""
+    from services.project_status_records import compute_config_signature
+    base = {"reportType": "data_model", "aggregate": True}
+    for bad in ([None], [1], [True], [{}], [1, 2], ["3D-1", None], ("3D-1", 2)):
+        with pytest.raises(ValueError, match="must be a list of strings"):
+            compute_config_signature("tdc", {**base, "documentNos": bad})
+    # 强转被禁止后，数字列表与同形字符串列表不再共享签名（前者已 fail-closed）。
+    strings = compute_config_signature("tdc", {**base, "documentNos": ["1", "2"]})
+    assert strings != compute_config_signature("tdc", base)
+
+
+def test_signature_rejects_null_document_nos():
+    """None 与其它键的 None 处理刻意不对称：保存路径必须省略该键（R19 /
+    Task 8），持久化的 null 属于无效绑定，必须 fail-closed 而不是静默丢弃
+    ——丢弃会让「单号为空」的规则与「没有单号条件」的规则共享同一签名。"""
+    from services.project_status_records import compute_config_signature
+    with pytest.raises(ValueError):
+        compute_config_signature(
+            "tdc", {"reportType": "data_model", "aggregate": True,
+                    "documentNos": None})
 
 
 def test_signature_of_legacy_single_serial_rule_is_unchanged():

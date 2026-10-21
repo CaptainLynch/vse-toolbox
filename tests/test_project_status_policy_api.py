@@ -594,6 +594,13 @@ def test_d5_discovery_maps_multi_serial_filter_name() -> None:
     )
 
 
+def test_multi_serial_filter_never_reaches_upstream_query() -> None:
+    """多单号只在本地匹配：构造函数不得把 document_nos 变成 TDC 上游查询参数。"""
+    filters = web_app._tdc_data_model_filters({"document_nos": "3D-00001018 3D-00001193"})
+    assert "3D-00001018" not in repr(filters)
+    assert not any("3D-00001018" in value for value in filters.to_params().values())
+
+
 def test_match_fields_use_real_discovery_filter_names() -> None:
     """GPT 终审 P1 回归：matchFields 的 discovery 过滤名必须是后端实际
     接受的过滤键（process_no 臆造键会让 SOR 证据抓取直接报 unsupported）。"""
