@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import datetime
 from typing import Any, Mapping, Sequence
 
@@ -80,7 +81,8 @@ MAX_AGGREGATE_RECORDS = 5000
 _QUERY_RULE_KEYS_BY_SOURCE: dict[str, frozenset[str]] = {
     "tdc": frozenset(
         {
-            "reportType", "aggregate", "incident", "documentNo", "applicant",
+            "reportType", "aggregate", "incident", "documentNo", "documentNos",
+            "applicant",
             "department", "section", "applicationStart", "applicationEnd",
             "projectModel", "partNumber", "modelNumber", "processNo",
             "processType", "carTypeProject", "carTypeProjectId", "title",
@@ -264,6 +266,23 @@ def compute_config_signature(source_type: str, match_rule: Mapping[str, Any] | N
         if key_str == "aggregate":
             if not isinstance(v, bool):
                 raise ValueError("match_rule aggregate must be a boolean")
+        elif key_str == "documentNos":
+            # 多单号集合键：列表与「空格/逗号分隔的字符串」统一规范化为
+            # 「去重排序后空格连接」的标量，保证同一集合的任意书写顺序、任意
+            # 分隔符得到同一签名。空集合 fail-closed（不做静默丢弃，避免
+            # 无效规则获得一个看起来合法的身份）。
+            if isinstance(v, str):
+                items = sorted(
+                    {item.strip() for item in re.split(r"[\s,;、\r\n]+", v) if item.strip()}
+                )
+            elif isinstance(v, (list, tuple)):
+                items = sorted({str(item).strip() for item in v if str(item).strip()})
+            else:
+                raise ValueError("match_rule documentNos must be a string or a list of strings")
+            if not items:
+                raise ValueError("match_rule documentNos must not be empty")
+            cleaned[key_str] = " ".join(items)
+            continue
         elif v is not None and not isinstance(v, str):
             # Query builders and persisted bindings use strings for every
             # source-side filter.  Do not stringify lists/dicts/numbers here:
