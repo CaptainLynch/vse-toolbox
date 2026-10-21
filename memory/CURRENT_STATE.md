@@ -1,5 +1,42 @@
 # Current State
 
+## 2026-10-22 顾问复核后硬化并重新出包：20261022b（HEAD `4346159`；**取代**同日 20261022 包）
+
+- **触发**：用户要求「调用顾问做审查」。Claude `claude-opus-5-5` / xhigh / `--risk public-protocol`，
+  run `0d3d36fd-292f-494c-abda-61e9365519d1`，包 `.runtime/consult-20261022-postimpl-review.md`（11,832 B，
+  输入 8,450 / 输出 18,328 token），意见 `~/.dsh/expert-advisor/runs/claude-20261022-011945-cf34f934.advice.md`；
+  裁决 1/2/3 = partial。
+- **顾问结论**：功能代码无行为缺陷，但提出 3 项必须先取证的可疑入口（空集退化、零命中下游语义、回滚安全）与
+  4 项 P1（回滚开关不可用、README 能力声明、previewSource 断言、二选一/三选一文案）。
+- **本地取证（关键）**：
+  1. `normalize_serial_set([]/''/None/[' ']/['A B']/[None])` 全部抛错；保存侧 `_normalize_multi_serial_rule`
+     会先删空键 ⇒ 正常 API 存不进空集绑定；但**连接器 `if serials:` 用真值判断**，手工改库的
+     `documentNos: []` 会跳过收窄、聚合全表 ⇒ 真入口，已修（改为「键存在即进入多号分支」）。
+  2. 「全部未命中 → 0 行快照覆盖上次结果」**未能复现**：现有 runner 对空行结果走 `not_found/needs_attention`
+     且不发布分析快照。真实缺陷是「未 fail-closed（软分类）」，仍按裁定改为与部分缺失同路径 raise
+     （一致性 + 保留快照），端到端断言 run 失败、快照逐字不变、绑定仍 enabled。
+  3. 回滚安全已由代码证实：旧包（`6c5b822`）`assert_sync_ready` 的 `set(match_rule) ⊆ contract["matchKeys"]`
+     会拒 `documentNos` ⇒ 回滚后绑定停跑，不会算错；但旧包下这类绑定无法停用，故补「开关关闭时允许
+     只置 enabled:false / 只改间隔的 PATCH」，并把回滚顺序写进 README。
+- **修复波（6 提交，`e8172b2..4346159`）**：
+  `386dd9d` 连接器按键存在进入多号分支（空集 raise）；`e3b3572` 全部未命中 fail-closed；
+  `b21e7df` 开关关闭时允许停用/调间隔；`d3bdc48` 二选一/三选一文案统一；
+  `8d85b98` deliverables previewSource 断言钉值；`4346159` 地图刷新。
+- **门禁**：全量 `pytest tests` **3184 passed / 48 skipped / 0 failed**（`.runtime/advisor-fixwave/full-pytest.log`）；
+  聚焦 293 passed；flake8 改动文件 0 告警；`node --check` 通过；地图 `--check` verified。
+- **构建**：`dist/hci-20261022b`，版本 `0.3.0-production-test-20261022b`，buildId
+  `20261022b-4346159-tdc-multi-serial-sync-hardened`；日志 `.runtime/build-webui-20261022b.log`。
+- **出厂冒烟**：同一脚本（`.runtime/smoke_exe_20261021b.ps1 -Src dist\hci-20261022b\VSE-WebUI`）**66/66 PASS**。
+- **交付物**：宿主 `VSE-WebUI.exe` 8,955,588 B（SHA-256 `99731AD3…F3819C77`）、
+  `VSE-WebUI.zip` 41,661,754 B（SHA-256 `5EB6DB5E…ACC088EF`，1277 项 CRC 全通过）、README（含**回滚顺序**与
+  已知限制）、`SHA256SUMS.txt`；三件套已复制到 `C:\Users\Lynch\Desktop\vse-toolbox-migration\`
+  （`README-测试说明-20261022b.txt` / `SHA256SUMS-20261022b.txt` / `VSE-WebUI-0.3.0-production-test-20261022b-single-exe.zip`）。
+- **作废**：同日 `dist/hci-20261022`（HEAD `dd011bd`，无本硬化）**已被本包取代**，不要投递；其桌面副本仍在
+  `vse-toolbox-migration`，需按文件名区分（`...-20261022-...` vs `...-20261022b-...`）。
+- **未做/待办**：① 未走微信 clawbot 投递（本轮未要求）；② 顾问建议的「行级守卫」（重复行身份 → needs_attention、
+  未匹配行 NFKC 后能命中配置单号 → raise）与 `candidate_preview` 列表形支持仍待立项；
+  ③ 真机 Excel COM 验收。
+
 ## 2026-10-22 生产测试包 20261022 出厂：查询模式止血 + 多单号合并统计同步（HEAD `dd011bd`，21 提交）
 
 - **触发**：用户反馈 20261021 包上两问题（① 查询模式切官方预览后查询预览失败；② 数模审批同步不支持多单号），
