@@ -1389,6 +1389,37 @@ def _multi_serial_rule(*serials: str) -> dict[str, object]:
     }
 
 
+@pytest.mark.parametrize("empty", [[], "", None])
+def test_multi_serial_empty_set_raises_instead_of_aggregating_all(monkeypatch, empty) -> None:
+    """R28：``documentNos`` 键存在即进入多号分支——空集绝不退化成不过滤、聚合全表。
+
+    正常保存路径会省略空集（R19），但手工改库可造出 ``[]``/``""``/``null``；
+    旧实现按真值判断直接跳过收窄，等于把单号静默丢掉、聚合全表。
+    """
+    rows = [
+        {"incident": "FLOW-A", "documentNo": "3D-1"},
+        {"incident": "FLOW-B", "documentNo": "3D-2"},
+    ]
+    monkeypatch.setattr(connectors, "emit", lambda kind, payload, **kw: None)
+    with pytest.raises(ValueError):
+        connectors.TDCProjectStatusConnector._narrow_by_document_no(
+            rows, {"reportType": "data_model", "aggregate": True, "documentNos": empty}
+        )
+
+
+def test_multi_serial_blank_set_raises_instead_of_aggregating_all(monkeypatch) -> None:
+    """空白单号集合（``[" "]``）同样不得退化为全量。"""
+    rows = [
+        {"incident": "FLOW-A", "documentNo": "3D-1"},
+        {"incident": "FLOW-B", "documentNo": "3D-2"},
+    ]
+    monkeypatch.setattr(connectors, "emit", lambda kind, payload, **kw: None)
+    with pytest.raises(ValueError):
+        connectors.TDCProjectStatusConnector._narrow_by_document_no(
+            rows, {"reportType": "data_model", "aggregate": True, "documentNos": [" "]}
+        )
+
+
 def test_multi_serial_partial_missing_raises_and_emits_diagnostic(monkeypatch) -> None:
     rows = [{"incident": "FLOW-A", "documentNo": "3D-1"}, {"incident": "FLOW-B", "documentNo": "3D-3"}]
     events = []

@@ -487,15 +487,23 @@ class TDCProjectStatusConnector:
         没有流水单号列（结构漂移，raise 不落 not_found）」与「有列但无匹配
         （真正的 not_found）」；命中 0 行时发一次有界诊断。
 
-        多单号集合（``documentNos``，聚合绑定）的完整性口径：全部缺失 → 与
-        单值零命中同风格（有界诊断 + 空行集）；**部分缺失 → 停跑 raise**，
-        绝不把已命中子集当作本次结果（少算比停跑更糟），因此也不写入部分结果、
-        保留上次快照，缺失单号补齐后下一次 tick 自愈。诊断 payload 只放有界
-        计数（不落单号明文）。
+        多单号集合（``documentNos``，聚合绑定）按「键存在即多号语义」判定：空集/
+        非法集由 ``normalize_serial_set`` 抛出可执行中文错误（``WatchlistError``
+        是 ``ValueError`` 子类，这里统一转成 ``ValueError``），**绝不**因为集合为
+        空就跳过收窄、把全表当成聚合结果（少算/多算都不允许）。**部分缺失 →
+        停跑 raise**，绝不把已命中子集当作本次结果，因此也不写入部分结果、保留
+        上次快照，缺失单号补齐后下一次 tick 自愈。诊断 payload 只放有界计数
+        （不落单号明文）。
         """
-        serials = rule.get("documentNos")
-        if serials:
-            normalized = data_model_watchlist.normalize_serial_set(serials)
+        if "documentNos" in rule:
+            try:
+                normalized = data_model_watchlist.normalize_serial_set(
+                    rule.get("documentNos")
+                )
+            except data_model_watchlist.WatchlistError as exc:
+                # 与部分缺失同一条 fail-closed 路径：键存在就是多号绑定，
+                # 空集/非法集必须停跑，不得退化成不过滤。
+                raise ValueError(str(exc)) from None
             _raise_if_serial_column_missing(rows)
             matched, bookkeeping = data_model_watchlist.match_serials(rows, normalized)
             if not matched:
