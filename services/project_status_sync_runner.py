@@ -551,6 +551,12 @@ class ProjectStatusSyncRunner:
                             source="project_status_sync",
                             artifacts=snapshot.artifacts,
                             coverage=getattr(snapshot, "coverage", None),
+                            # 官方 47 列（connector 已降级解析）：只补齐缺失列，
+                            # 不影响同步成败；逐行合并状态由快照记录。
+                            official_rows=getattr(snapshot, "official_rows", ()),
+                            official_status=getattr(
+                                snapshot, "official_status", "not_requested"
+                            ),
                         )
                         form_published = self._db.publish_deliverable_form_snapshot(
                             form_snapshot,

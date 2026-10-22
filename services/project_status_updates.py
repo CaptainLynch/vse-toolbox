@@ -274,6 +274,13 @@ class ConnectorSnapshot:
     analysis_rows: Sequence[Mapping[str, Any]] = field(default=(), repr=False)
     #: 表单快照覆盖范围（数模关注清单，services/data_model_watchlist.py）；None 表示全部。
     coverage: Mapping[str, Any] | None = field(default=None, repr=False)
+    #: 官方导出工作簿投影的契约行（只读；仅 data_model 请求）。
+    #: 键是已批准的中文表头标签（47 列），值可能为空——空值是官方真实空值。
+    #: 解析失败时为空元组，具体原因见 official_status（本字段绝不触发 raise）。
+    official_rows: Sequence[Mapping[str, Any]] = field(default=(), repr=False)
+    #: 官方列取得状态（闭集）：ok / unavailable / truncated /
+    #: contract_mismatch / export_failed / not_requested（未请求或非数模报表）。
+    official_status: str = "not_requested"
 
 
 @dataclass(frozen=True)

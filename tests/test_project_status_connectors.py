@@ -1577,3 +1577,234 @@ def test_multi_serial_switch_disabled_fails_closed_before_upstream(tmp_path: Pat
         connector.collect(ctx)
     assert str(excinfo.value) == data_model_watchlist.MULTI_SERIAL_DISABLED_MESSAGE
     assert crawled == []
+
+
+# ── 官方 47 列解析与状态分类（docs/PLAN_20261022_OFFICIAL_COLUMNS_SYNC.md 设计 v2） ──
+
+
+def _cell_ref(column: int, row: int) -> str:
+    result = ""
+    while column:
+        column, remainder = divmod(column - 1, 26)
+        result = chr(65 + remainder) + result
+    return f"{result}{row}"
+
+
+def _write_official_workbook(path: Path, rows: list[list[object]]) -> None:
+    """写一个最小 XLSX（zip + XML，无第三方依赖），供官方导出解析用例使用。"""
+    from xml.sax.saxutils import escape
+    from zipfile import ZipFile
+
+    def row_xml(values: list[object], row_number: int) -> str:
+        cells = []
+        for index, value in enumerate(values, 1):
+            if value in (None, ""):
+                continue
+            cells.append(
+                f'<c r="{_cell_ref(index, row_number)}" t="inlineStr">'
+                f"<is><t>{escape(str(value))}</t></is></c>"
+            )
+        return f'<row r="{row_number}">{"".join(cells)}</row>'
+
+    workbook = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>'
+    )
+    relationships = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+        'Target="worksheets/sheet1.xml"/></Relationships>'
+    )
+    sheet = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'
+        + "".join(row_xml(values, index) for index, values in enumerate(rows, 1))
+        + "</sheetData></worksheet>"
+    )
+    with ZipFile(path, "w") as archive:
+        archive.writestr("xl/workbook.xml", workbook)
+        archive.writestr("xl/_rels/workbook.xml.rels", relationships)
+        archive.writestr("xl/worksheets/sheet1.xml", sheet)
+
+
+def _official_headers() -> list[str]:
+    from services.tdc_official_rows import official_contract_headers
+
+    return official_contract_headers("data_model")
+
+
+def _official_data_row(
+    serial: str,
+    part: str,
+    values: dict[str, object] | None = None,
+) -> list[object]:
+    headers = _official_headers()
+    row: list[object] = [""] * len(headers)
+    row[headers.index("流水单号")] = serial
+    row[headers.index("零件号")] = part
+    for label, value in (values or {}).items():
+        row[headers.index(label)] = value
+    return row
+
+
+class OfficialExportTDC(FakeTDC):
+    """导出真实官方 XLSX 工作簿的 TDC 假体（表头/数据行可配置）。"""
+
+    headers_override: list[str] | None = None
+    data_rows: list[list[object]] = []
+
+    def export_data_model(self, filters):
+        path = self.output_dir / "official.xlsx"
+        headers = self.headers_override or _official_headers()
+        _write_official_workbook(path, [list(headers), *self.data_rows])
+        return SimpleNamespace(
+            path=path, file_name="official.xlsx", byte_count=path.stat().st_size
+        )
+
+
+def _collect(tmp_path: Path, crawler_factory, ctx=None):
+    archive = ArchiveStore({"default": tmp_path}, reserve_bytes=0)
+    connector = TDCProjectStatusConnector(
+        MemoryCredentialProvider({"ref": ("user", "pass")}),
+        archive,
+        auth_factory=FakeAuth,
+        crawler_factory=crawler_factory,
+    )
+    return connector.collect(ctx or context())
+
+
+def test_tdc_official_columns_ok_status_and_rows(tmp_path: Path):
+    """官方工作簿可读 → 47 列契约行随快照返回，同步与归档照旧成功。"""
+
+    class OkTDC(OfficialExportTDC):
+        data_rows = [
+            _official_data_row(
+                "3D-00001018",
+                "27000001",
+                {"实例号": "90000101", "数量": "3", "NVH": "通过"},
+            )
+        ]
+
+    snapshot = _collect(tmp_path, OkTDC)
+
+    assert snapshot.match_state == "matched"
+    assert snapshot.official_status == "ok"
+    assert len(snapshot.official_rows) == 1
+    assert list(snapshot.official_rows[0]) == _official_headers()
+    assert snapshot.official_rows[0]["实例号"] == "90000101"
+    assert snapshot.official_rows[0]["流水单号"] == "3D-00001018"
+    assert snapshot.official_rows[0]["NVH"] == "通过"
+    assert {item["artifact_type"] for item in snapshot.artifacts} == {"xlsx", "csv", "json"}
+
+
+def test_tdc_official_columns_truncated_status(tmp_path: Path, monkeypatch):
+    """超出行上限 → truncated：本次不补齐，绝不返回部分行。"""
+
+    class BigTDC(OfficialExportTDC):
+        data_rows = [
+            _official_data_row("3D-00001001", "27000001"),
+            _official_data_row("3D-00001002", "27000002"),
+            _official_data_row("3D-00001003", "27000003"),
+        ]
+
+    monkeypatch.setattr(connectors, "_MAX_ROWS", 2)
+
+    snapshot = _collect(tmp_path, BigTDC)
+
+    assert snapshot.official_status == "truncated"
+    assert snapshot.official_rows == ()
+    assert snapshot.match_state == "matched"
+
+
+def test_tdc_official_columns_contract_mismatch_drops_whole_batch(tmp_path: Path):
+    """表头与已批准契约不符 → contract_mismatch，官方行整批丢弃。"""
+
+    class WrongHeaderTDC(OfficialExportTDC):
+        headers_override = ["错误表头"] + _official_headers()[1:]
+        data_rows = [_official_data_row("3D-00001018", "27000001", {"数量": "3"})]
+
+    snapshot = _collect(tmp_path, WrongHeaderTDC)
+
+    assert snapshot.official_status == "contract_mismatch"
+    assert snapshot.official_rows == ()
+    assert snapshot.match_state == "matched"
+    assert {item["artifact_type"] for item in snapshot.artifacts} == {"xlsx", "csv", "json"}
+
+
+def test_tdc_official_columns_unavailable_when_workbook_unreadable(tmp_path: Path):
+    """工作簿读不出来（假字节）→ unavailable，不阻断同步。"""
+    snapshot = _collect(tmp_path, FakeTDC)
+
+    assert snapshot.official_status == "unavailable"
+    assert snapshot.official_rows == ()
+    assert snapshot.match_state == "matched"
+    assert snapshot.candidates[0].field_values == {"owner": "审批人"}
+
+
+def test_tdc_official_columns_export_failed_status(tmp_path: Path):
+    """官方导出本身失败 → export_failed（沿用既有 best-effort 归档降级）。"""
+
+    class ExportFailing(OfficialExportTDC):
+        def export_data_model(self, filters):
+            raise RuntimeError("TDC 导出服务瞬时不可用 (503)")
+
+    snapshot = _collect(tmp_path, ExportFailing)
+
+    assert snapshot.official_status == "export_failed"
+    assert snapshot.official_rows == ()
+    assert snapshot.match_state == "matched"
+
+
+def test_tdc_sor_collect_does_not_request_official_columns(tmp_path: Path):
+    """仅数模报表请求官方列；SOR 保持 not_requested（不解析、不新增上游请求）。"""
+
+    class SorTDC(FakeTDC):
+        def crawl_sor_all(self, filters, max_records):
+            return SimpleNamespace(
+                rows=[{"processNo": "SOR-1"}], complete=True, stop_reason="reported_pages"
+            )
+
+        def export_sor(self, filters):
+            path = self.output_dir / "official-sor.xlsx"
+            path.write_bytes(b"PK\x03\x04fake")
+            return SimpleNamespace(path=path, file_name="official-sor.xlsx", byte_count=8)
+
+    ctx = SyncBindingContext(
+        binding_id=41, deliverable_id="VPI-T2-D2", phase_id="VPI-T2",
+        source_type="tdc", external_key="SOR-1",
+        match_rule={"reportType": "sor"},
+        mapping={"owner": "processNo"}, cursor={},
+        expected_deliverable_updated_at="v1", run_id=42, credential_ref="ref",
+    )
+
+    snapshot = _collect(tmp_path, SorTDC, ctx)
+
+    assert snapshot.official_status == "not_requested"
+    assert snapshot.official_rows == ()
+
+
+def test_tdc_official_rows_diagnostics_are_bounded_counts(tmp_path: Path, monkeypatch):
+    """官方列诊断只落有界计数与报表名：无单号明文，键在诊断白名单内。"""
+    from core.diagnostic_recording import safe_metadata
+
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        connectors, "emit", lambda kind, payload, **kw: events.append((kind, payload))
+    )
+
+    class WrongHeaderTDC(OfficialExportTDC):
+        headers_override = ["错误表头"] + _official_headers()[1:]
+        data_rows = [_official_data_row("3D-00001018", "27000001")]
+
+    _collect(tmp_path, WrongHeaderTDC)
+
+    kinds = [kind for kind, _ in events]
+    assert "tdc_official_rows_contract_mismatch" in kinds
+    payload = next(p for kind, p in events if kind == "tdc_official_rows_contract_mismatch")
+    assert payload == {"report_type": "data_model"}
+    assert "3D-" not in repr(payload)
+    assert safe_metadata(payload, "salt") == payload

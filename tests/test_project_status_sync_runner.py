@@ -531,6 +531,101 @@ def test_successful_ewo_sync_also_publishes_unified_form_snapshot(
     assert db.list_deliverable_form_rows("VPI-T2-D3")["total"] == 1
 
 
+def test_official_columns_reach_the_published_form_snapshot(
+    db: DatabaseManager,
+    service: ProjectStatusUpdateService,
+    registry: ConnectorRegistry,
+) -> None:
+    """官方 47 列全链路透传：connector 快照 → build_form_snapshot → 表单快照。"""
+    from services.deliverable_form_analysis import form_definition
+
+    _enable_pilot(service)
+    base = _matched_snapshot(db, owner="负责人", note="ok")
+    headers = [str(label) for label in form_definition("tdc_data_model")["headerRows"][0]]
+    official_row: dict[str, object] = {label: None for label in headers}
+    official_row.update(
+        {"流水单号": "3D-00001018", "零件号": "27000001", "数量": "3", "NVH": "通过"}
+    )
+    snapshot = ConnectorSnapshot(
+        match_state=base.match_state,
+        candidates=base.candidates,
+        external_version=base.external_version,
+        fetched_at=base.fetched_at,
+        expected_deliverable_updated_at=base.expected_deliverable_updated_at,
+        analysis_rows=(
+            {
+                "incident": "90000101",
+                "documentNo": "3D-00001018",
+                "partNumber": "27000001",
+                "projectModel": "F999X",
+                "status": "2",
+                "currentApprover": "张三",
+            },
+        ),
+        official_rows=(official_row,),
+        official_status="ok",
+    )
+    registry.register("tdc", FakeConnector(snapshot=snapshot))
+
+    result = ProjectStatusSyncRunner(db, service, registry).run_once()
+
+    assert result.exit_code == EXIT_OK
+    stored = db.get_latest_deliverable_form_snapshot("tdc_data_model")
+    assert stored is not None
+    official_columns = stored["schema"]["officialColumns"]
+    assert official_columns["status"] == "ok"
+    assert official_columns["rowStatus"] == {
+        "joined": 1,
+        "ambiguous": 0,
+        "unmatched": 0,
+        "unavailable": 0,
+    }
+    assert len(official_columns["missingIndexes"]) == 27
+    rows = db.list_deliverable_form_rows("tdc_data_model")["items"]
+    assert len(rows) == 1
+    assert rows[0]["values"][headers.index("NVH")] == "通过"
+    assert rows[0]["values"][headers.index("数量")] == "3"
+
+
+def test_official_columns_absent_keeps_sync_success(
+    db: DatabaseManager,
+    service: ProjectStatusUpdateService,
+    registry: ConnectorRegistry,
+) -> None:
+    """旧快照/无官方列：同步照旧 success，快照状态为 not_requested。"""
+    from services.deliverable_form_analysis import form_definition
+
+    _enable_pilot(service)
+    base = _matched_snapshot(db, owner="负责人", note="ok")
+    headers = [str(label) for label in form_definition("tdc_data_model")["headerRows"][0]]
+    snapshot = ConnectorSnapshot(
+        match_state=base.match_state,
+        candidates=base.candidates,
+        external_version=base.external_version,
+        fetched_at=base.fetched_at,
+        expected_deliverable_updated_at=base.expected_deliverable_updated_at,
+        analysis_rows=(
+            {
+                "incident": "90000101",
+                "documentNo": "3D-00001018",
+                "partNumber": "27000001",
+                "projectModel": "F999X",
+                "status": "2",
+            },
+        ),
+    )
+    registry.register("tdc", FakeConnector(snapshot=snapshot))
+
+    result = ProjectStatusSyncRunner(db, service, registry).run_once()
+
+    assert result.exit_code == EXIT_OK
+    stored = db.get_latest_deliverable_form_snapshot("tdc_data_model")
+    assert stored is not None
+    assert stored["schema"]["officialColumns"]["status"] == "not_requested"
+    rows = db.list_deliverable_form_rows("tdc_data_model")["items"]
+    assert rows[0]["values"][headers.index("数量")] is None
+
+
 # ── 5. fake connector 返回 not_found/ambiguous ──────────────────
 
 

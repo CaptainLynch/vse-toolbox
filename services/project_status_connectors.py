@@ -37,6 +37,11 @@ from services.project_status_deliverable_analysis import (
 )
 from services.scope_exclusion import exclude_paa_cancel_rows, exclude_tdc_scope_rows
 from services.tdc_auth import TDCPasswordAuthClient
+from services.tdc_official_rows import (
+    OfficialWorkbookContractError,
+    OfficialWorkbookTruncated,
+    read_official_tdc_rows,
+)
 from services.tdc_crawler import (
     TDCCrawlerClient,
     TDCDataModelFilters,
@@ -295,6 +300,52 @@ def _has_transient_cause(exc: BaseException) -> bool:
 _exclude_tdc_scope_rows = exclude_tdc_scope_rows
 
 
+#: 官方列取得状态（ConnectorSnapshot.official_status 的闭集）。
+#: 只描述"官方 47 列补齐"这一步，绝不改变列表同步本身的成败。
+OFFICIAL_STATUS_NOT_REQUESTED = "not_requested"
+OFFICIAL_STATUS_OK = "ok"
+OFFICIAL_STATUS_UNAVAILABLE = "unavailable"
+OFFICIAL_STATUS_TRUNCATED = "truncated"
+OFFICIAL_STATUS_CONTRACT_MISMATCH = "contract_mismatch"
+OFFICIAL_STATUS_EXPORT_FAILED = "export_failed"
+
+
+def _read_official_snapshot_rows(
+    path: Path,
+    report: str,
+) -> tuple[tuple[Mapping[str, Any], ...], str]:
+    """把官方导出工作簿投影为契约行；任何失败只降级状态，绝不 raise。
+
+    官方工作簿是本轮唯一能提供全部 47 列的数据源（列表接口只覆盖 20 列），
+    但它只是"补齐"：解析失败不得阻断同步，也不得让部分行冒充完整结果。
+
+    - 行数超上限 → ``truncated``：本次不补齐（不返回部分行）；
+    - 表头与已批准契约不符 → ``contract_mismatch``：官方行**整批丢弃**；
+    - 工作簿读不出来（非 XLSX/超限/无表）→ ``unavailable``。
+
+    诊断只落报表名与有界计数，不含单号明文（``core.diagnostic_recording``
+    的白名单口径）。
+    """
+    try:
+        rows = read_official_tdc_rows(path, report, max_rows=_MAX_ROWS + 1)
+    except Exception as exc:  # noqa: BLE001 — 官方列只作补齐，读取故障一律降级
+        if isinstance(exc, OfficialWorkbookTruncated):
+            kind, status = "tdc_official_rows_truncated", OFFICIAL_STATUS_TRUNCATED
+        elif isinstance(exc, OfficialWorkbookContractError):
+            kind = "tdc_official_rows_contract_mismatch"
+            status = OFFICIAL_STATUS_CONTRACT_MISMATCH
+        else:
+            kind, status = "tdc_official_rows_unavailable", OFFICIAL_STATUS_UNAVAILABLE
+        emit(kind, {"report_type": report}, name="sync_connector.TDCProjectStatusConnector.collect")
+        return (), status
+    emit(
+        "tdc_official_rows_ok",
+        {"report_type": report, "row_count": len(rows)},
+        name="sync_connector.TDCProjectStatusConnector.collect",
+    )
+    return tuple(rows), OFFICIAL_STATUS_OK
+
+
 _TDC_KNOWN_DATA_MODEL_CODES = frozenset({"2", "4"}) | TDC_SYNC_EXCLUDED_STATUSES
 
 
@@ -355,6 +406,9 @@ class TDCProjectStatusConnector:
             # 与保存/发现入口同一判定与文案（不另写一份），且在解析凭据、发上游
             # 请求之前停跑：开关关闭时绝不以多单号语义少算。
             raise ValueError(data_model_watchlist.MULTI_SERIAL_DISABLED_MESSAGE)
+        # 官方 47 列补齐结果（只读）：默认不请求，解析失败只降级状态。
+        official_rows: tuple[Mapping[str, Any], ...] = ()
+        official_status = OFFICIAL_STATUS_NOT_REQUESTED
         with self.credentials.resolve(context.credential_ref) as secret:
             login = self.auth_factory(timeout=self.timeout).login(secret.username, secret.password)
             try:
@@ -368,12 +422,14 @@ class TDCProjectStatusConnector:
                         result = crawler.crawl_sor_all(filters, max_records=_MAX_ROWS)
                     _require_complete_result(result)
                     xlsx_artifact = None
+                    official_path = None
                     try:
                         official = (
                             crawler.export_data_model(filters)
                             if report == "data_model"
                             else crawler.export_sor(filters)
                         )
+                        official_path = official.path
                         with official.path.open("rb") as handle:
                             xlsx = self.archive.write_stream(
                                 handle, source="tdc", report=report, run_id=context.run_id,
@@ -391,6 +447,16 @@ class TDCProjectStatusConnector:
                             {"report_type": report, "outcome": "failed"},
                             name="sync_connector.TDCProjectStatusConnector.collect",
                         )
+                    if report == "data_model":
+                        # 归档写失败不影响解析（工作簿仍在临时目录里）；只有导出
+                        # 本身没产出文件才归为 export_failed。解析在临时目录销毁
+                        # 之前完成，绝不新增上游请求。
+                        if official_path is None:
+                            official_status = OFFICIAL_STATUS_EXPORT_FAILED
+                        else:
+                            official_rows, official_status = _read_official_snapshot_rows(
+                                official_path, report
+                            )
             finally:
                 _close_session(login.session)
         # SOR 行形状边界（docs/PLAN_20260926_SOR_ROWS_RING_CLICK_NCR_SECTION_DATAMODEL_STATUS.md F1）：
@@ -441,7 +507,15 @@ class TDCProjectStatusConnector:
             )
         )
         snapshot = _snapshot(context, application_rows, artifacts, report=report)
-        return dataclasses.replace(snapshot, coverage=coverage) if coverage else snapshot
+        # 官方列结果与覆盖范围一并并入既有返回值（dataclasses.replace）：
+        # 快照形状只增不改，同步成败与候选匹配语义完全不变。
+        updates: dict[str, Any] = {
+            "official_rows": official_rows,
+            "official_status": official_status,
+        }
+        if coverage:
+            updates["coverage"] = coverage
+        return dataclasses.replace(snapshot, **updates)
 
     def _normalized(
         self,
