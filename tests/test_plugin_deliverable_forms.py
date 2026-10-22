@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 import core.db_manager as db_manager
+import plugins.deliverable_forms.backend as deliverable_forms
 import services.deliverable_form_analysis as form_analysis
 import web.app as web_app
 from core import form_registry
@@ -148,14 +149,18 @@ def test_every_form_has_a_schema_page_using_flattened_fields(client) -> None:
     manifest = json.loads((PLUGIN_DIR / "plugin.json").read_text(encoding="utf-8"))
     page_ids = {page["id"] for page in manifest["pages"]}
     forms = http.get("/api/p/deliverable-forms/forms").get_json()["data"]
-    meta_fields = {"id", "_status", "_completed", "_overdue", "_submitted"} | {
-        "_" + dimension for dimension in ("department", "section", "model", "stage")
-    }
+    base_meta_fields = {"id", "_status", "_completed", "_overdue", "_submitted"}
     for form in forms:
         spec = form_registry.get_form(form["formKey"])
         assert form["page"] in page_ids
         schema = json.loads((PLUGIN_DIR / "static" / "pages" / f"{form['page']}.json").read_text(encoding="utf-8"))
         assert schema["source"] == f"forms/{spec.form_key}/rows"
+        # 展平字段以插件自身的维度声明为准（D5 额外展平归集维度与 _group）。
+        meta_fields = base_meta_fields | {
+            "_" + dimension for dimension in deliverable_forms._dimensions_for(spec.form_key)
+        }
+        if spec.form_key == deliverable_forms.DATA_MODEL_FORM_KEY:
+            meta_fields.add("_group")
         allowed = meta_fields | set(spec.page_columns)
         used = {f["key"] for f in schema["filters"]} | {c["key"] for c in schema["columns"]}
         used |= {chart["groupBy"] for chart in schema["charts"]}

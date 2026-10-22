@@ -1880,6 +1880,92 @@ def _selected_sections(section_filter: object) -> frozenset[str] | None:
     return frozenset(str(value) for value in values)
 
 
+# ── D5（数模设计审核流程）归集：读取侧补齐与复合分组筛选 ──────────────────
+# 阶段图把「项目件/架构件」并列后，柱条 label 是 ``F620S · 项目件`` 这类复合
+# 标签，不能直接当 ``stage`` 值查库（库里 ``stage_key`` 存的是原始
+# ``项目/车型``）。因此复合标签在 SQL 层剔除，改为读取侧按同一套归集原语
+# 精确过滤；与 ``_filter_rows_by_section_rollup`` 是同一模式。
+_DATA_MODEL_ATTRIBUTION_KEYS = ("dataSource", "vehicle", "attribution", "archPlatform")
+_GROUP_LABEL_SEPARATOR = " · "
+
+
+def _enrich_data_model_dimensions(
+    form_key: str,
+    rows: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """旧快照缺归集键时，用保留的原始 47 列值重算（只补缺失键，不覆盖已存值）。
+
+    本分支之前的快照没有 ``dataSource``/``vehicle`` 等键，但 ``values`` 里
+    仍保留 ``EWO/SOR号`` 与 ``流水单号``。不补这一步，历史架构件行会被读成
+    平台池，与新快照口径不一致。
+    """
+    if _report_type(form_key) != "tdc_data_model" or not rows:
+        return list(rows)
+    definition = form_definition(form_key)
+    for row in rows:
+        dimensions = row.get("dimensions")
+        if not isinstance(dimensions, dict):
+            continue
+        if all(key in dimensions for key in ("dataSource", "vehicle", "attribution")):
+            continue
+        values = row.get("values")
+        if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
+            continue
+        positional = list(values)
+        dimensions.update(
+            _attribution.dimension_fields(
+                _positional_value(positional, definition, "项目/车型"),
+                _positional_value(positional, definition, "EWO/SOR号"),
+                _positional_value(positional, definition, "流水单号"),
+            )
+        )
+    return list(rows)
+
+
+def _split_data_model_group_filters(
+    report: str,
+    filters: Mapping[str, object] | None,
+) -> tuple[dict[str, object], tuple[str, ...]]:
+    """把 D5 的复合分组标签从 ``stage`` 筛选里拆出来，返回 (SQL 筛选, 标签集)。
+
+    只有 ``tdc_data_model`` 生效：原始 ``项目/车型`` 值（``F620S``、``Ar-L``）
+    不含 `` · ``，因此用分隔符判定不会误伤。
+    """
+    if report != "tdc_data_model" or not filters:
+        return dict(filters or {}), ()
+    raw = filters.get("stage")
+    if raw in (None, "", ()):
+        return dict(filters), ()
+    values = raw if isinstance(raw, (list, tuple, set)) else [raw]
+    cleaned = [str(value).strip() for value in values]
+    cleaned = [value for value in cleaned if value]
+    labels = tuple(value for value in cleaned if _GROUP_LABEL_SEPARATOR in value)
+    plain = [value for value in cleaned if _GROUP_LABEL_SEPARATOR not in value]
+    if not labels:
+        return dict(filters), ()
+    updated = dict(filters)
+    if plain:
+        updated["stage"] = plain
+    else:
+        updated.pop("stage", None)
+    return updated, labels
+
+
+def _filter_rows_by_group_label(
+    rows: Sequence[Mapping[str, Any]],
+    labels: Sequence[str],
+) -> list[Mapping[str, Any]]:
+    """按 D5 复合分组标签逐行过滤（与阶段图同一套 ``group_label`` 原语）。"""
+    wanted = frozenset(labels)
+    if not wanted:
+        return list(rows)
+    return [
+        row
+        for row in rows
+        if _attribution.group_label(row.get("dimensions") or {}) in wanted
+    ]
+
+
 def _filter_rows_by_section_rollup(
     rows: Sequence[Mapping[str, Any]],
     section_filter: object,
@@ -2466,7 +2552,12 @@ class DeliverableFormAnalysisService:
         section_selected = (
             _selected_sections(normalized.get("section")) if rollup is not None else None
         )
-        if thresholds is None and section_selected is None:
+        # D5 复合分组标签（``F620S · 项目件``）不是 stage 值：必须退出 SQL 分页
+        # 快路径，改在读取侧按同一套归集原语过滤。
+        sql_filters, group_labels = _split_data_model_group_filters(
+            _report_type(key), normalized
+        )
+        if thresholds is None and section_selected is None and not group_labels:
             result = self.db.list_deliverable_form_rows(
                 key,
                 normalized,
@@ -2489,7 +2580,6 @@ class DeliverableFormAnalysisService:
                 "limit": bounded_limit,
             }
         # 归集筛选（或阈值重算）要求分页发生在 Python 层过滤之后。
-        sql_filters = dict(normalized)
         if thresholds:
             sql_filters.pop("overdueState", None)
         if rollup is not None:
@@ -2499,6 +2589,9 @@ class DeliverableFormAnalysisService:
             int(latest["id"]),
             sql_filters,
         )
+        all_rows = _enrich_data_model_dimensions(key, all_rows)
+        if group_labels:
+            all_rows = _filter_rows_by_group_label(all_rows, group_labels)
         if thresholds:
             all_rows = self._apply_overdue_thresholds(
                 key,
@@ -2592,6 +2685,10 @@ class DeliverableFormAnalysisService:
             for name, value in normalized_filters.items()
             if not (rollup is not None and name == "section")
         }
+        # D5 复合分组标签不是 stage 值：SQL 层剔除，读取侧按归集原语过滤。
+        sql_filters, group_labels = _split_data_model_group_filters(
+            _report_type(key), sql_filters
+        )
         effective_filters = dict(sql_filters)
         if thresholds:
             # 阈值覆盖时逾期状态在读取侧重算，SQL 层不再按存储口径过滤。
@@ -2601,6 +2698,9 @@ class DeliverableFormAnalysisService:
                 int(latest["id"]),
                 effective_filters,
             )
+            latest_rows = _enrich_data_model_dimensions(key, latest_rows)
+            if group_labels:
+                latest_rows = _filter_rows_by_group_label(latest_rows, group_labels)
             snapshot_at = str(latest.get("snapshot_at") or "")
             if thresholds:
                 latest_rows = self._apply_overdue_thresholds(
@@ -2657,6 +2757,9 @@ class DeliverableFormAnalysisService:
                     int(item["id"]),
                     sql_filters,
                 )
+                item_rows = _enrich_data_model_dimensions(key, item_rows)
+                if group_labels:
+                    item_rows = _filter_rows_by_group_label(item_rows, group_labels)
                 if rollup is not None:
                     item_rows = _filter_rows_by_section_rollup(
                         item_rows,

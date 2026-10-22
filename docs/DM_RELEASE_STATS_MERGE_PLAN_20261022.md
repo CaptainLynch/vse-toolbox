@@ -1,25 +1,37 @@
 # 数模设计审核流程（D5）：项目件与架构件状态合并展示方案
 
-- 版本：2026-10-22（第三版：已实施，含实测回归数字）
+- 版本：2026-10-23（第四版：已实施 + 评审 R1–R4 已修复）
 - 分支：`feat/d5-arch-part-attribution`
 - **范围：仅「数模设计审核流程」这一个交付物（`tdc_data_model` / VPI-T2-D5）。其他交付物（EWO / PAA / NCR / SOR / A面）一律不改动、不新增维度、不共用逻辑。**
 - 数据源：TDC《数模设计审核流程报表》导出两份（项目件 746 行 / 架构件 291 行，同为 47 列）
-- 状态：**第 1 步已实施并通过全量回归（3244 passed）**；待「平台→车型适用清单」补齐后做第 3 步
+- 状态：**第 1、2 步已实施**；待「平台→车型适用清单」补齐后做第 3 步
 
-## 实施状态（2026-10-22）
+## 实施状态（2026-10-23）
 
 | 步骤 | 内容 | 状态 |
 | --- | --- | --- |
 | 1 | 归集规则 + 维度提取 + D5 专属分组 | ✅ 已实施 |
-| 2 | 前端三行渲染与「数据来源」筛选下拉 | 待做（当前分组标签已可在现有图表直接呈现） |
+| 2 | 两个入口都体现归集：交付物详情页图表分组 + 独立表单页新增「归集车型状态（含架构件）」图表与「数据来源/归集车型」筛选 | ✅ 已实施 |
 | 3 | `platform_vehicle_map` 配置表 + 平台池归位 | 待「平台→车型适用清单」 |
 
 已改动文件：
 
 - 新增 `services/data_model_attribution.py`（归集规则、实例级统一、汇总）
-- `services/deliverable_form_analysis.py`：`_dimensions_from_tdc` 增加归集维度；`_dimensions_from_mapping` 的 D5 分支同步（JSON 快照同口径）；新增 `_data_model_group_status`；`_stage_status_summary` 对 D5 走专属分组；`normalize_form_rows` 末尾对 D5 做实例级统一
-- `core/form_registry.py`：`tdc_data_model` 的 `dimension_labels` 登记三个新维度（未放进全局默认值，确保不外溢）
-- 新增 `tests/test_data_model_attribution.py`（22 项）
+- `services/deliverable_form_analysis.py`：`_dimensions_from_tdc` 增加归集维度；`_dimensions_from_mapping` 的 D5 分支同步（JSON 快照同口径）；新增 `_data_model_group_status`；`_stage_status_summary` 对 D5 走专属分组；`normalize_form_rows` 末尾对 D5 做实例级统一；新增读取侧 `_enrich_data_model_dimensions`（旧快照补键）与 `_split_data_model_group_filters` / `_filter_rows_by_group_label`（复合分组筛选）
+- `core/form_registry.py`：`tdc_data_model` 的 `dimension_labels` 登记四个新维度（未放进全局默认值，确保不外溢）
+- `plugins/deliverable_forms/backend.py` + `static/pages/tdc_data_model.json`：D5 展平归集维度与 `_group`，新增归集图表与筛选
+- 新增 `tests/test_data_model_attribution.py`（34 项，含评审四项发现的回归测试）
+
+## 评审响应（`docs/CODE_REVIEW_D5_20261023.md`，R1–R4 全部修复）
+
+| # | 发现 | 处理 |
+| --- | --- | --- |
+| R1 [P1] | 复合分组标签被当 `stage` 值查库，点柱条后明细归零 | **已修复**：`_split_data_model_group_filters` 把复合标签从 SQL 层剔除，改在读取侧用同一个 `group_label` 原语精确过滤；`rows()` 的 SQL 分页快路径同步退出。新增端到端回归：柱条 `total` 必须等于点击后 `summary.total` |
+| R2 [P2] | 独立表单页只展平旧维度，仍把 F620S 与 Ar-L 分开 | **已修复**：`flatten_rows` 为 D5 展平 `_dataSource/_vehicle/_attribution/_archPlatform/_group`；页面新增「归集车型状态（含架构件）」图表与两个筛选。原 `_stage` 图表保留 |
+| R3 [P2] | 旧快照读取兜底只用 `stage`，不读 `values` 里的 SOR/流水证据 | **已修复**：`_enrich_data_model_dimensions` 在读取侧从保留的 47 列值重算缺失键（已有键不覆盖），`rows()`/`view()`/趋势链路均已接入 |
+| R4 [P2] | `summarize_instances` 分组键缺平台维度，`Ar-L` 与 `Ar-L+` 被合并 | **已修复**：分组键改为 `(车型, 来源, 平台池平台)`；实测平台池 58 = Ar-L 54 + Ar-L+ 4 |
+
+评审中"非回归架构观察"一节的两点也一并澄清：`summarize_instances` 目前确无生产调用点（主口径仍是行级 `_data_model_group_status`），文档不再暗示实例级指标已交付。
 
 ## 一、结论先说
 
@@ -95,10 +107,11 @@ dimension_labels = {"section": "部门", "model": "发布属性", "stage": "项�
 | **★** | **F620S 车型合计** | **230** | **98** | **108** | **24** | **47.57%** |
 | 3 | F710S · 架构件 | 34 | 28 | 0 | 6 | 100.00% |
 | **★** | **F710S 车型合计** | **34** | **28** | **0** | **6** | **100.00%** |
-| 4 | 待归属 Ar-L · 架构件 | 58 | 43 | 5 | 10 | 89.58% |
+| 4 | 待归属 Ar-L · 架构件 | 54 | 42 | 5 | 7 | 89.36% |
+| 4b | 待归属 Ar-L+ · 架构件 | 4 | 1 | 0 | 3 | 100.00% |
 | — | 全量对照（去重） | 322 | 169 | 113 | 40 | 59.93% |
 
-228 + 2 + 34 + 58 = 322 ✓（项目件 228 + 架构件 94）。
+228 + 2 + 34 + 54 + 4 = 322 ✓（项目件 228 + 架构件 94；平台池 58 = Ar-L 54 + Ar-L+ 4）。
 
 阶段图实际输出（行级聚合，`departmentStatus.stages`）：
 

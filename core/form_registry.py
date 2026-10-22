@@ -168,6 +168,7 @@ FORMS: tuple[FormSpec, ...] = (
             "dataSource": "数据来源",
             "vehicle": "归集车型",
             "attribution": "归属方式",
+            "archPlatform": "架构平台",
         }),
     ),
     FormSpec(

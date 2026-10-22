@@ -20,6 +20,16 @@
       "optionsFromRows": true
     },
     {
+      "key": "_dataSource",
+      "label": "数据来源",
+      "optionsFromRows": true
+    },
+    {
+      "key": "_vehicle",
+      "label": "归集车型",
+      "optionsFromRows": true
+    },
+    {
       "key": "_section",
       "label": "部门",
       "optionsFromRows": true
@@ -42,6 +52,13 @@
     }
   ],
   "charts": [
+    {
+      "type": "doneBars",
+      "id": "group",
+      "title": "归集车型状态（含架构件）",
+      "groupBy": "_group",
+      "doneField": "_completed"
+    },
     {
       "type": "doneBars",
       "id": "stage",
@@ -73,6 +90,10 @@
     {
       "key": "项目/车型",
       "title": "项目/车型"
+    },
+    {
+      "key": "_group",
+      "title": "归集分组"
     },
     {
       "key": "发布属性",

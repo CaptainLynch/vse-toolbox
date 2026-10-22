@@ -299,8 +299,9 @@ def summarize_instances(
     ``rows`` 每项需含 ``dimensions``（或已归集字段）、``status`` 与
     ``instance``（实例号）。同一实例只计一次（实测实例内状态唯一）。
 
-    分组键是 ``(归集车型, 数据来源)``——同一车型下项目件与架构件并列两行；
-    平台池单独成组，不并入任何车型合计。
+    分组键是 ``(归集车型, 数据来源, 平台池平台)``——同一车型下项目件与架构件
+    并列两行；平台池按平台分桶（``Ar-L`` 与 ``Ar-L+`` 是不同平台，合并会丢掉
+    "哪个平台还有多少待归属"这一层解释力），且不并入任何车型合计。
 
     * 计数：``total`` / ``completed`` / ``active`` / ``discarded``
     * ``completionRate``：``completed / (completed + active)``，已废弃不进分母
@@ -320,10 +321,15 @@ def summarize_instances(
         if not bucket["status"]:
             bucket["status"] = _text(row.get("status"))
 
-    groups: dict[tuple[str, str], dict[str, Any]] = {}
+    groups: dict[tuple[str, str, str], dict[str, Any]] = {}
     for bucket in instances.values():
         resolved = resolve_instance_dimensions(bucket["dims"])
-        key = (resolved["vehicle"], resolved["dataSource"])
+        pool_platform = (
+            resolved["archPlatform"]
+            if resolved["attribution"] == ATTRIBUTION_POOL
+            else ""
+        )
+        key = (resolved["vehicle"], resolved["dataSource"], pool_platform)
         group = groups.get(key)
         if group is None:
             group = {
@@ -372,6 +378,7 @@ def summarize_instances(
             item["attribution"] == ATTRIBUTION_POOL,
             item["vehicle"],
             _SOURCE_ORDER.get(item["dataSource"], 9),
+            item.get("archPlatform") or "",
         )
     )
     return result
