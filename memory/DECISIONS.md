@@ -5,6 +5,55 @@ delete. Per-plan rulings stay in their SDD ledger (`.superpowers/sdd/…`, local
 and get promoted here once they prove durable. Newest first. Keep entries
 short: decision, why, cost if violated, source pointer.
 
+## 2026-10-22 — D5 项目件/架构件归集口径（仅 tdc_data_model）
+
+- 决定：架构件（`项目/车型` 以 `Ar-` 开头）按「SOR 号车型码 > 流水单号车型前缀 > 平台池」
+  归集到车型；**平台池不并入任何车型合计**；实例内多行证据不一致时按「证据优先 → 行数多数 →
+  SOR 号优先 → 车型码最小」统一；同一实例 `项目/车型` 原值不一致时不做归并。
+- 决定：归集结果只写进 D5 的 `dimensions_json`（新增 `dataSource/vehicle/attribution/archPlatform`），
+  **不改写 `stage`**，不新增 `deliverable_form_rows` 索引列；旧快照由 `resolve_dimensions`
+  用同一套纯函数兜底，免回填。
+- 决定：D5 的阶段图走专属 `_data_model_group_status`（提前返回），`tdc_sor` 及其余报表
+  继续走原 `_stage_rows` 分支。归集维度标签只登记在 `tdc_data_model` 的 FormSpec，
+  不放进 `DEFAULT_DIMENSION_LABELS`（否则外溢到所有交付物）。
+- 为什么：两份导出的零件号交集仅 3 个，不能按零件合并；且报表车型 ≠ 数据真实服务车型
+  （架构件报表 34 个实例 SOR 指向 F710S、仅 2 个指向 F620S）。
+- 违反代价：改写 `stage` 或把维度标签放进全局默认值会污染其他交付物的分组与展示；
+  平台池并入车型合计会静默错算完成率。
+- 来源：`docs/DM_RELEASE_STATS_MERGE_PLAN_20261022.md`；顾问 run `e634b47c…` / `1812448a…`。
+## 2026-10-22 — 多任务批次默认走 DSH Team（spawn_teammate + wait_agent + team_task_*），标记文件等待降为兜底
+
+- **决策**：多任务批次用共享任务板 + 持久成员：`team_task_create`（`blocked_by` 依赖、
+  `write_scopes`）→ `spawn_teammate(context=fresh)` → 有本地活就不等待（完成消息随下一轮到达）
+  → 真正空闲时 `wait_agent` 单次 300–600s 长等待 → 唤醒后 `list_agents` + `team_task_list` 对账。
+  **修复轮用 `send_message` 续跑原实现者**，不新开"Fix round N"代理；评审角色另开 fresh 成员。
+  上一条"标记文件 + 自建等待器"降级为不启用 Team 时的兜底。
+- **为什么**：本机实测（同日两轮探针）——两名成员同时 `running`、标记写入同一秒（真并行）；
+  `wait_agent` 靠活动唤醒返回 `{"timedOut":false}`（事件订阅，非轮询）；普通 `subagent` 的结束消息
+  也会自动推入主上下文；`send_message` 唤醒 inactive 成员后它能逐字复述上一轮内容（持久上下文）。
+  旧会话 27 次 300s 轮询与 `wait_agent` 报 `no-active-peer` 的根因是当时用 `subagent` 而非 team 成员。
+- **违反代价**：继续用 `subagent` + shell 轮询会把同类批次锁在 6.8h，并让修复者每轮从零重读；
+  把 `write_scopes` 当互斥会静默覆盖（它只给 `writeScopeWarnings`，不阻断），
+  路径级互斥仍须过 `dispatch_wait_protocol plan`。
+- **来源**：`docs/AGENT_DISPATCH_PROTOCOL_20261022.md` §6（含探针表）；探针证据
+  `.runtime/team-probe/a.json`、`b.json`（本地，不入库）。
+
+## 2026-10-22 — 多任务批次：标记文件等待 + 写入清单互斥并行 + 门禁分级
+
+- **决策**：子代理完成以 `<repo>/.agent/status/<task_id>.<role>.json` 标记文件为准，主代理用
+  `tools/agents/dispatch_wait_protocol.py` 的多路等待器一次监视全部在途标记（任一终态即返回，
+  stall 600s、硬上限 1800s）；禁止再用固定 300s `Start-Sleep` shell 轮询。并行只从"只读评审 ×
+  下一任务实现"开始，写通道默认上限 2，派发前必须通过 `plan` 校验（写入清单两两互斥、
+  禁全仓副作用命令、子代理不 commit）。
+- **为什么**：2026-10-21/22 长会话实测——子代理串行关键路径 19,296s 占墙钟 79%，
+  固定 300s 轮询 48 次中 27 次撞满上限；顾问仅占 1.9%。模型步时延与上下文长度无显著相关
+  （中位 9.5s vs 15.4s），所以墙钟只能靠并行与减少回合，上下文治理只服务于成本与质量。
+- **违反代价**：串行派发继续让同类批次停在 6.8h；并行写同一文件会产生静默覆盖与
+  `index.lock` 冲突，因此写入清单互斥与 git 串行不可省；迭代期跑全量会把约 6 分钟/次的
+  等待乘上 12 次。
+- **来源**：`docs/AGENT_DISPATCH_PROTOCOL_20261022.md`；顾问 run `8af70612-9fc2-423c-ae51-7b167f599990`
+  （claude-opus-5-5 / xhigh / `--risk concurrency`，裁决 1=adopted、2=partial、3=adopted）。
+
 ## 2026-10-03 — 签署日报 v2.0 与数模关注清单的几条长期约定
 
 - 插件 id 保持 `sign-daily`（规格叫 signing_report）：改名会让 v1 的配置表成孤表。表前缀 `p_sign_daily_`。
