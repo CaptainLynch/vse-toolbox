@@ -1,5 +1,54 @@
 # Current State
 
+## 2026-10-23 D5 归集评审 R1–R4 已全部修复（分支 `feat/d5-arch-part-attribution`）
+
+- **背景**：`docs/CODE_REVIEW_D5_20261023.md` 对 2 个本地提交给出"建议暂不合并"，
+  四条发现经本地逐条核实**全部成立**，已全部修复并补回归测试。
+- **R1 [P1] 复合标签当 stage 值查库 → 点柱条明细归零**：根因是阶段图 label 从原始
+  `stage` 值变成 `F620S · 项目件` 复合标签，而 `stage` 筛选下推 SQL 比对 `stage_key`。
+  修复：`_split_data_model_group_filters` 把复合标签从 SQL 层剔除（原始值仍下推），
+  改在读取侧用同一个 `group_label` 原语过滤；`rows()` 的 SQL 分页快路径同步退出。
+  新增端到端回归：柱条 `total` 必须等于点击后 `summary.total`。
+- **R2 [P2] 独立表单页仍分开 F620S 与 Ar-L**：`flatten_rows` 为 D5 展平
+  `_dataSource/_vehicle/_attribution/_archPlatform/_group`；页面新增
+  「归集车型状态（含架构件）」图表 + 「数据来源/归集车型」筛选；原 `_stage` 图表保留。
+- **R3 [P2] 旧快照兜底不读 values**：新增 `_enrich_data_model_dimensions`，读取侧用保留的
+  47 列值重算缺失键（已有键不覆盖），`rows()`/`view()`/趋势链路都接入。
+- **R4 [P2] 平台池被合并**：`summarize_instances` 分组键改为 `(车型, 来源, 平台池平台)`；
+  实测平台池 58 = Ar-L 54 + Ar-L+ 4。
+- **验证**：`tests/test_data_model_attribution.py` 34 项；全量 pytest **3256 passed / 6 skipped**；
+  真实导出数字未变（F620S 230 / F710S 34 / 平台池 58 / 合计 322）。
+- **仍未做**：第 3 步 `platform_vehicle_map`（等平台→车型清单）；
+  `summarize_instances`/`summarize_vehicles` 仍无生产调用点，仅测试与演示工作簿使用，
+  文档已不再暗示实例级指标已交付。
+
+## 2026-10-23 D5 归集代码/架构评审检查点（TASK-REVIEW-D5-REPORT-20261023，只记录不修复）
+
+- **评审范围**：仅本地分支 `feat/d5-arch-part-attribution` 的 2 个提交
+  （base `fe12ed6f` → HEAD `4f4dca3d`，9 文件 +1154/−10）。未 fetch，未审 `main..HEAD` 其余提交，
+  未审工作区既有 dirty/未跟踪文件；未改生产/测试代码。报告：`docs/CODE_REVIEW_D5_20261023.md`。
+- **4 项未修复发现**：
+  - **R1 [P1] 新回归**：D5 图表复合 label（如 `F620S · 架构件`）被
+    `form-analysis.js:218,570` 作为 `stage` 筛选值，`db_common.py:366-378` 按原 `stage_key`
+    （`Ar-L`/`F620S`）过滤 ⇒ 点击 D5 柱条返回 0 行（项目件同样受影响）。
+  - **R2 [P2]** 独立 `deliverable_forms` 页仍只展平旧 `DIMENSIONS`（`backend.py:36,60-61`）、
+    `tdc_data_model.json` 仍 `groupBy=_stage`，F620S 与 Ar-L 继续分开；实施文档所称
+    “现有图表直接呈现”不适用于该生产入口。
+  - **R3 [P2]** 旧快照读取兜底只按 `stage` 推导（`data_model_attribution.py:176-177`），
+    不读保留的 `values` 中 SOR/流水证据 ⇒ 同一行新写归 F620S、旧快照读永远平台池；
+    `_metric_rows`/`view()` 不重算。
+  - **R4 [P2]** 辅助 `summarize_instances` 分组键只有 `(vehicle, dataSource)`
+    （`data_model_attribution.py:325-326`），无证据的 Ar-L/Ar-L+ 两个平台池实例合并为一组
+    `待归属 Ar-L · 架构件 total=2`；生产逐行 `_data_model_group_status` 不受影响。
+- **验证证据（本轮实跑）**：聚焦 pytest **105 passed / 0 failed / 0 skipped，0.95s，exit 0**
+  （仅两个 D5 测试文件，非全量）；`git diff --check fe12ed6..4f4dca3` exit 0；
+  `generate_project_map.py --check` verified exit 0；系统临时目录合成 D5 数据 + SQLite：
+  复合 label 筛选 `total=0`、原 stage 各 `total=1`，`flatten_rows` 仅输出 `_stage=F620S/Ar-L`
+  且无归集字段，旧快照读为平台池，`summarize_instances` 两平台实例合并 `total=2`。
+  历史 3244 全绿是既有记录，**不是本轮执行结果**。
+- **结论/下一动作**：建议**暂不合并**（R1 为本次新回归）；等待主控/用户安排修复
+  （R1 优先，R2 修正交付范围或补页面，R3/R4 修复或明确口径限制）。本轮不修代码。
+
 ## 2026-10-22 D5 交付物项目件/架构件归集（已实施，分支 `feat/d5-arch-part-attribution`）
 
 - **用户诉求**：统计数模设计审核流程（D5）数据发布状态时，把架构件（`项目/车型` 为 `Ar-XX` 平台代号）

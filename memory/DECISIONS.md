@@ -5,6 +5,21 @@ delete. Per-plan rulings stay in their SDD ledger (`.superpowers/sdd/…`, local
 and get promoted here once they prove durable. Newest first. Keep entries
 short: decision, why, cost if violated, source pointer.
 
+## 2026-10-23 — 展示标签与筛选值必须分离（D5 复合分组教训）
+
+- 决定：阶段图/图表下发的分组 label 只作**展示**；凡是 label 由多个维度合成的，
+  必须同时提供机器可读的筛选路径，或在筛选层识别并改写该 label。
+  D5 采用后者：`_split_data_model_group_filters` 把含 ` · ` 的复合标签从 `stage`
+  下推里剔除，改在读取侧用同一个 `group_label` 原语过滤（原始 `项目/车型` 值仍下推 SQL）。
+- 决定：同一份统计若有多个入口（交付物详情页 / 独立表单页），**两个入口都要接同一套
+  归集原语**，不得只在其中一个入口生效后在文档里声称"已呈现"。
+- 决定：读取侧遇到缺维度键的旧快照，用保留的 `values` 重算（`_enrich_data_model_dimensions`），
+  已有键不覆盖；不做批量回填，也不让新旧快照在同一图表里按不同口径混算。
+- 为什么：评审 R1–R4 实测证明——合成 label 直接回灌 `stage` 筛选会让明细归零（用户可见回归）；
+  只改一个入口会造成两个页面数字打架；只按 `stage` 兜底会让历史架构件全被读成平台池。
+- 违反代价：静默的"图表有数、点开为零"或"两个页面分组不同"，都属于用户无法自行察觉的口径错误。
+- 来源：`docs/CODE_REVIEW_D5_20261023.md`、`docs/DM_RELEASE_STATS_MERGE_PLAN_20261022.md`。
+
 ## 2026-10-22 — D5 项目件/架构件归集口径（仅 tdc_data_model）
 
 - 决定：架构件（`项目/车型` 以 `Ar-` 开头）按「SOR 号车型码 > 流水单号车型前缀 > 平台池」
