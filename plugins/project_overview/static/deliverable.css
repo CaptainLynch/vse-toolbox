@@ -820,6 +820,11 @@
 .overview-deliverable-detail-view .form-row-table td.form-cell-absent, .overview-deliverable-detail-view .form-row-field-grid dd.form-cell-absent { color: var(--muted-soft); font-style: italic; }
 /* 流程名/零件名称等长文本列截断成单行，行高不再被撑爆；完整值经 title 悬浮与「查看全部字段」明细仍可见。 */
 .overview-deliverable-detail-view .form-row-table td.form-cell-truncate { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 官方工作簿列本次未取得（该行没合上官方行）：弱化斜体灰字，与真实空值「-」区分。 */
+.overview-deliverable-detail-view .form-row-table td.form-cell-official-missing,
+.overview-deliverable-detail-view .form-row-field-grid dd.form-cell-official-missing { color: var(--muted-soft); font-style: italic; }
+/* 快照级官方列状态说明（unavailable / truncated / contract_mismatch / export_failed）。 */
+.overview-deliverable-detail-view .form-row-official-note { margin: 0; color: var(--warning); font-size: 12px; }
 /* 「其他状态」桶移除后，未注册阶段的行数在总数旁显式披露。 */
 .overview-deliverable-detail-view .form-chart-unrecognized { margin: 0; color: var(--muted-soft); font-size: 11px; }
 

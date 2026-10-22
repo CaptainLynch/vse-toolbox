@@ -375,6 +375,81 @@ export function formDisplayColumns(data, visibleColumns) {
   return display;
 }
 
+// ---- official workbook columns (snapshot schema.officialColumns) --------------
+// 官方工作簿 47 列按 (流水单号, 零件号) 合并进表单快照后，未合并的行在官方列位置上
+// 没有任何值。这类「本次未取得」必须与「源端不提供」、真实空值三者互不混淆：
+// 只有快照下发 officialColumns 时才判定，旧快照（无该键）行为逐字不变。
+
+/** 官方工作簿列本次未取得时的单元格文案。 */
+export const FORM_OFFICIAL_MISSING_TEXT = "本次未取得官方列";
+
+/** officialColumns.status 的闭集（服务端契约，见 services/deliverable_form_analysis）。 */
+export const FORM_OFFICIAL_COLUMN_STATUSES = new Set([
+  "ok",
+  "unavailable",
+  "truncated",
+  "contract_mismatch",
+  "export_failed",
+  "not_requested",
+]);
+
+/** 逐行 officialJoin 的闭集；只有后三个表示「本次未取得该行的官方列」。 */
+export const FORM_OFFICIAL_JOIN_STATUSES = new Set(["joined", "ambiguous", "unmatched", "unavailable"]);
+
+const FORM_OFFICIAL_JOIN_MISSING = new Set(["ambiguous", "unmatched", "unavailable"]);
+
+/**
+ * status !== "ok" 时表格上方的说明文案。`not_requested`（该报表根本不申请官方列）
+ * 与 `ok` 一样不提示，避免把「本来就没有」说成「本次未取得」。
+ */
+export const FORM_OFFICIAL_STATUS_NOTES = {
+  unavailable: "本次未取得官方工作簿",
+  truncated: "官方工作簿行数超出上限，本次未补齐官方列",
+  contract_mismatch: "官方工作簿表头与契约不一致，本次未采用官方列",
+  export_failed: "官方报表导出失败，本次未取得官方列",
+};
+
+/**
+ * 解析 /view 载荷里的 `officialColumns` → {status, missingIndexes: Set<number>, rowStatus}。
+ * 键缺失或非法（旧快照）→ null，调用方据此逐字沿用升级前的渲染。
+ */
+export function formOfficialColumns(data) {
+  const raw = data && typeof data === "object" ? data.officialColumns : null;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const status = String(raw.status === null || raw.status === undefined ? "" : raw.status).trim();
+  if (!FORM_OFFICIAL_COLUMN_STATUSES.has(status)) return null;
+  const missingIndexes = new Set(
+    (Array.isArray(raw.missingIndexes) ? raw.missingIndexes : [])
+      .filter((index) => index !== null && index !== "" && typeof index !== "boolean")
+      .map((index) => Number(index))
+      .filter((index) => Number.isFinite(index)),
+  );
+  const source = raw.rowStatus && typeof raw.rowStatus === "object" && !Array.isArray(raw.rowStatus)
+    ? raw.rowStatus
+    : {};
+  const rowStatus = {};
+  FORM_OFFICIAL_JOIN_STATUSES.forEach((key) => {
+    const count = Number(source[key]);
+    rowStatus[key] = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  });
+  return { status, missingIndexes, rowStatus };
+}
+
+/**
+ * 该行的官方列是否「本次未取得」。`''`/缺失/`joined` → false：空串是「未知」
+ * （旧快照、未标注），绝不等于未取得；`joined` 行的真实空值仍是真实空值。
+ */
+export function formOfficialMissingRow(item) {
+  const marker = String((item && item.officialJoin) || "").trim();
+  return FORM_OFFICIAL_JOIN_MISSING.has(marker);
+}
+
+/** 表格上方的官方列状态说明；`ok` / `not_requested` / 旧快照 → ""（不提示）。 */
+export function formOfficialStatusNote(official) {
+  if (!official || official.status === "ok") return "";
+  return FORM_OFFICIAL_STATUS_NOTES[official.status] || "";
+}
+
 /** One body cell: {text, className, title}. */
 export function formRowCell(column, item, absent) {
   if (column && column.derivedStatus) {
