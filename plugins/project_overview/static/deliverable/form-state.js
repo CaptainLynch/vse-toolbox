@@ -438,8 +438,13 @@ export function formOfficialColumns(data) {
 /**
  * 该行的官方列是否「本次未取得」。`''`/缺失/`joined` → false：空串是「未知」
  * （旧快照、未标注），绝不等于未取得；`joined` 行的真实空值仍是真实空值。
+ *
+ * 纵深防御：`official`（`formOfficialColumns` 的解析结果）缺失，或快照状态是
+ * `not_requested`（本次根本没申请官方列，例如归档快照的行本来就是官方 47 列）
+ * 时一律 false——不得用「本次未取得官方列」遮住行里的真实值。
  */
-export function formOfficialMissingRow(item) {
+export function formOfficialMissingRow(item, official) {
+  if (!official || official.status === "not_requested") return false;
   const marker = String((item && item.officialJoin) || "").trim();
   return FORM_OFFICIAL_JOIN_MISSING.has(marker);
 }

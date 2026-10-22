@@ -125,6 +125,38 @@ class TdcSnapshotConnector(FakeConnector):
         )
 
 
+class OfficialShapedTdcSnapshotConnector(FakeConnector):
+    """Fake TDC connector returning rows in the real archive shape.
+
+    归档连接器把官方工作簿投影成「契约列标签 → 值」的 47 键行
+    （services/tdc_official_rows.read_official_tdc_rows），这里如实复刻该形状。
+    """
+
+    def collect(self, context: ArchiveJobContext, credential: ResolvedCredential) -> ArchiveCollection:
+        base = super().collect(context, credential)
+        headers = form_definition("tdc_data_model")["headerRows"][0]
+        row: dict[str, object] = {str(label): None for label in headers}
+        row.update(
+            {
+                "实例号": "90000101",
+                "流水单号": "F999X-3D-0001",
+                "发布属性": "T2发布",
+                "部门": "内饰科",
+                "申请日期": "2026-08-30",
+                "项目/车型": "F999X",
+                "零件号": "27000001",
+                "数量": 3,
+                "NVH": "通过",
+                "状态": "审批中",
+            }
+        )
+        return ArchiveCollection(
+            record_count=base.record_count,
+            artifacts=base.artifacts,
+            form_rows=(row,),
+        )
+
+
 def _tdc_form_values(status: str, request_date: str) -> list[object | None]:
     """One synthetic 47-column TDC data-model row (all values fabricated)."""
     headers = form_definition("tdc_data_model")["headerRows"][0]
@@ -427,6 +459,43 @@ def test_successful_tdc_collection_publishes_data_model_snapshot(
     serialized = str(snapshot) + str(rows)
     assert "tdc-password" not in serialized
     assert "tdc-user" not in serialized
+
+
+def test_archive_snapshot_keeps_official_values_without_missing_marker(
+    db: DatabaseManager,
+    registry: ArchiveConnectorRegistry,
+) -> None:
+    """归档形状快照（行=官方 47 列）不得被标成「本次未取得官方列」。
+
+    runner 调 build_form_snapshot 时不传官方参数 → official_status 为
+    not_requested；归档行本身就是官方 47 列的真实值，因此快照不得写
+    schema.officialColumns、行不得带 unavailable 标记（前端据此不遮真实值）。
+    """
+    job_id = _enable_job(db, "tdc_data_model", credential_ref="alias_tdc_model")
+    connector = OfficialShapedTdcSnapshotConnector(record_count=1)
+    runner, _ = _setup_runner(
+        db,
+        registry,
+        credentials={"alias_tdc_model": ("tdc-user", "tdc-password")},
+        connectors={"tdc_data_model": connector},
+    )
+
+    result = runner.run_job(job_id)
+
+    assert result.outcome == "completed"
+    snapshot = db.get_latest_deliverable_form_snapshot("tdc_data_model")
+    assert snapshot is not None
+    assert "officialColumns" not in snapshot["schema"]
+    headers = form_definition("tdc_data_model")["headerRows"][0]
+    rows = db.list_deliverable_form_rows("tdc_data_model")["items"]
+    assert len(rows) == 1
+    row = rows[0]
+    # 逐行无 unavailable 标记（'' = 未知），真实官方值原样保留。
+    assert row["officialJoin"] == ""
+    assert row["values"][headers.index("数量")] == 3
+    assert row["values"][headers.index("NVH")] == "通过"
+    assert row["values"][headers.index("部门")] == "内饰科"
+    assert row["values"][headers.index("申请日期")] == "2026-08-30"
 
 
 def test_runner_passes_task_output_directory_to_connector(

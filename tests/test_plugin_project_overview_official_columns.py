@@ -91,6 +91,7 @@ const ok = S.formOfficialColumns({
 const dirty = S.formOfficialColumns({
   officialColumns: {status: "truncated", missingIndexes: [3, "7", null, true, "x"]},
 });
+const notRequested = S.formOfficialColumns({officialColumns: {status: "not_requested"}});
 console.log(JSON.stringify({
   text: S.FORM_OFFICIAL_MISSING_TEXT,
   statuses: [...S.FORM_OFFICIAL_COLUMN_STATUSES],
@@ -107,16 +108,20 @@ console.log(JSON.stringify({
   legacyStringPayload: S.formOfficialColumns({officialColumns: "ok"}),
   badStatus: S.formOfficialColumns({officialColumns: {status: "bogus"}}),
   emptyStatus: S.formOfficialColumns({officialColumns: {}}),
-  notRequested: S.formOfficialColumns({officialColumns: {status: "not_requested"}}).status,
+  notRequested: notRequested.status,
   rows: {
-    joined: S.formOfficialMissingRow({officialJoin: "joined"}),
-    ambiguous: S.formOfficialMissingRow({officialJoin: "ambiguous"}),
-    unmatched: S.formOfficialMissingRow({officialJoin: "unmatched"}),
-    unavailable: S.formOfficialMissingRow({officialJoin: "unavailable"}),
-    unknownEmpty: S.formOfficialMissingRow({officialJoin: ""}),
-    unknownMissing: S.formOfficialMissingRow({}),
-    unknownNullItem: S.formOfficialMissingRow(null),
-    bogus: S.formOfficialMissingRow({officialJoin: "bogus"}),
+    joined: S.formOfficialMissingRow({officialJoin: "joined"}, ok),
+    ambiguous: S.formOfficialMissingRow({officialJoin: "ambiguous"}, ok),
+    unmatched: S.formOfficialMissingRow({officialJoin: "unmatched"}, ok),
+    unavailable: S.formOfficialMissingRow({officialJoin: "unavailable"}, ok),
+    unknownEmpty: S.formOfficialMissingRow({officialJoin: ""}, ok),
+    unknownMissing: S.formOfficialMissingRow({}, ok),
+    unknownNullItem: S.formOfficialMissingRow(null, ok),
+    bogus: S.formOfficialMissingRow({officialJoin: "bogus"}, ok),
+    noOfficialArg: S.formOfficialMissingRow({officialJoin: "unmatched"}),
+    legacyOfficialNull: S.formOfficialMissingRow({officialJoin: "unmatched"}, null),
+    notRequestedOfficial: S.formOfficialMissingRow({officialJoin: "unmatched"}, notRequested),
+    notRequestedUnavailable: S.formOfficialMissingRow({officialJoin: "unavailable"}, notRequested),
   },
   notes: {
     ok: S.formOfficialStatusNote(ok),
@@ -167,6 +172,11 @@ def test_form_official_missing_row_treats_empty_string_as_unknown() -> None:
         "unknownMissing": False,
         "unknownNullItem": False,
         "bogus": False,
+        # 纵深防御：没有 officialColumns / status == not_requested → 一律 false。
+        "noOfficialArg": False,
+        "legacyOfficialNull": False,
+        "notRequestedOfficial": False,
+        "notRequestedUnavailable": False,
     }
 
 
@@ -408,5 +418,37 @@ def test_rows_table_shows_status_note_above_the_table(status: str, note: str) ->
         assert text.index(note) < text.index("form-row-table-wrap")
     else:
         assert "form-row-official-note" not in text
-    # 行级标记与快照级状态互不影响：未合并行仍逐格明示。
-    assert MISSING_TEXT in text
+    if status == "not_requested":
+        # 本次根本没申请官方列 → 行级标记也不生效（纵深防御），不得遮住真实值。
+        assert MISSING_TEXT not in text
+    else:
+        # 行级标记与快照级状态互不影响：未合并行仍逐格明示。
+        assert MISSING_TEXT in text
+
+
+@needs_node
+def test_rows_table_archive_shape_snapshot_shows_real_official_values() -> None:
+    """归档形状快照（无 officialColumns、行无标记）：官方列真实值必须可见。
+
+    归档连接器的行本来就是官方 47 列；只要快照不带 officialColumns（服务端
+    ``not_requested`` 不写该键），渲染就与升级前逐字一致——不得出现
+    「本次未取得官方列」。
+    """
+    rendered = _render(
+        _data(),
+        [
+            {
+                "sheetName": "清单",
+                "rowNumber": 2,
+                "values": ["DM-1", "P-1", None, None, None, "审批中"],
+                "officialJoin": "",
+            }
+        ],
+    )
+    text = rendered["text"]
+    assert MISSING_TEXT not in text
+    assert "form-cell-official-missing" not in text
+    assert "form-row-official-note" not in text
+    # 官方列位置的真实值照常渲染（正文 <td> + 「查看全部字段」的 <dd>）。
+    shown = [cell for cell in rendered["cells"] if cell["text"] == "审批中"]
+    assert shown, rendered["cells"]

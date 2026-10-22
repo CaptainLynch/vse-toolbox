@@ -1102,6 +1102,11 @@ def _ncr_header_mapping_values(
 _OFFICIAL_JOIN_STATUSES = ("joined", "ambiguous", "unmatched", "unavailable")
 _OFFICIAL_JOIN_UNAVAILABLE = "unavailable"
 _OFFICIAL_STATUS_OK = "ok"
+#: 本次根本没有申请官方列（归档快照、旧调用方）：等价「旧快照」，不标注、不写 schema。
+_OFFICIAL_STATUS_NOT_REQUESTED = "not_requested"
+#: 诊断录制（core/diagnostic_recording）的 report_type 值词表用连接器口径
+#: ``data_model``；表单报表键 ``tdc_data_model`` 不在白名单内，写进去会被指纹化。
+_TDC_DATA_MODEL_DIAGNOSTIC_TYPE = "data_model"
 #: 复合键的两种命名：官方工作簿用中文表头标签，列表接口用 API 键。
 _OFFICIAL_SERIAL_KEYS = ("流水单号", "documentNo")
 _OFFICIAL_PART_KEYS = ("零件号", "partNumber")
@@ -1138,9 +1143,36 @@ def _tdc_data_model_missing_indexes() -> tuple[int, ...]:
 
 
 def _official_join_marker(source: Mapping[str, Any]) -> str:
-    """逐行官方列取得状态；缺失或未知取值（旧快照、其他报表）按 unavailable。"""
+    """逐行官方列取得状态；缺失或未知取值（旧快照、其他报表）返回 ``""``（未知）。
+
+    ``""`` 是「未知」而不是「未取得」：与 DB/读取侧 ``official_join = ''`` 的口径
+    一致，前端 ``formOfficialMissingRow`` 只把闭集里的三个值当作未取得。
+    """
     text = str(source.get("officialJoin") or "").strip()
-    return text if text in _OFFICIAL_JOIN_STATUSES else _OFFICIAL_JOIN_UNAVAILABLE
+    return text if text in _OFFICIAL_JOIN_STATUSES else ""
+
+
+def _official_merged_value(
+    list_row: Mapping[str, Any],
+    official_row: Mapping[str, Any],
+    index: int,
+    label: str,
+) -> object | None:
+    """合并行逐列取值：已映射列优先列表侧，未映射列取官方值。
+
+    官方工作簿会把**已映射**的列写成空值或 Excel 日期序列号（实测「申请日期」
+    = 46296），若一律以官方标签键为准，就会抹掉列表侧的真实值：部门/发布属性/
+    项目车型/状态变空 → ``dimensions`` 全空、``submittedDate`` 丢失、逾期统计漂移。
+
+    因此已映射列（``_TDC_DATA_MODEL_SOURCE_FIELDS``）只在列表侧为 ``None``/``""``
+    时才回退官方值——用 ``_source_value`` 判定而非 ``or``，0 / False 是真实值。
+    """
+    candidates = _TDC_DATA_MODEL_SOURCE_FIELDS.get(index)
+    if candidates:
+        list_value = _source_value(list_row, *candidates)
+        if list_value is not None:
+            return list_value
+    return official_row.get(label)
 
 
 def _merge_official_columns(
@@ -1151,11 +1183,16 @@ def _merge_official_columns(
 ) -> tuple[list[dict[str, Any]], dict[str, int], int]:
     """把官方 47 列合并进列表行；保守 join，绝不猜测。
 
-    - 官方状态非 ``ok``（unavailable/truncated/contract_mismatch/export_failed/
-      not_requested）→ 所有行标 ``unavailable``，不添加任何标签键；
+    - ``not_requested``（本次没有申请官方列：归档快照、旧调用方）→ **完全不合并**：
+      行不加 ``officialJoin`` 标记、不加任何标签键，调用方也不写
+      ``schema["officialColumns"]``。归档行本身就是官方 47 列，标成 ``unavailable``
+      会把真实值遮成「本次未取得官方列」。
+    - 官方状态非 ``ok``（unavailable/truncated/contract_mismatch/export_failed）
+      → 所有行标 ``unavailable``，不添加任何标签键；
     - 复合键缺失/任一侧不唯一 → 不合并，标 ``unmatched``（键缺失或官方无此行）
       或 ``ambiguous``（重复键）；
-    - 合并成功 → ``dict(列表行)`` 叠加官方行，标记 ``officialJoin="joined"``。
+    - 合并成功 → ``dict(列表行)`` 按列取值（已映射列优先列表侧、未映射列取官方值，
+      见 ``_official_merged_value``），标记 ``officialJoin="joined"``。
 
     **硬约束**：``_tdc_header_mapping_values`` 只要行里出现任一中文表头标签就
     整行走标签映射、忽略 API 键。因此合并行必须 47 个标签键齐全（官方缺列补
@@ -1165,7 +1202,15 @@ def _merge_official_columns(
     """
     merged_rows = [dict(row) for row in rows if isinstance(row, Mapping)]
     row_status = {"joined": 0, "ambiguous": 0, "unmatched": 0, "unavailable": 0}
-    if report != "tdc_data_model" or official_status != _OFFICIAL_STATUS_OK:
+    if report != "tdc_data_model":
+        for row in merged_rows:
+            row["officialJoin"] = _OFFICIAL_JOIN_UNAVAILABLE
+        row_status[_OFFICIAL_JOIN_UNAVAILABLE] = len(merged_rows)
+        return merged_rows, row_status, 0
+    if official_status == _OFFICIAL_STATUS_NOT_REQUESTED:
+        # 旧快照口径：行原样返回（不加标记、不加标签键），零 UI 差异。
+        return merged_rows, row_status, 0
+    if official_status != _OFFICIAL_STATUS_OK:
         for row in merged_rows:
             row["officialJoin"] = _OFFICIAL_JOIN_UNAVAILABLE
         row_status[_OFFICIAL_JOIN_UNAVAILABLE] = len(merged_rows)
@@ -1202,7 +1247,10 @@ def _merge_official_columns(
         else:
             source = official_by_key[key]
             joined = dict(row)
-            joined.update({label: source.get(label) for label in labels if label})
+            for index, label in enumerate(labels):
+                if not label:
+                    continue
+                joined[label] = _official_merged_value(row, source, index, label)
             joined["officialJoin"] = "joined"
             row = joined
         row_status[row["officialJoin"]] += 1
@@ -1213,7 +1261,7 @@ def _merge_official_columns(
     emit(
         "forms.official_columns_merge",
         {
-            "report_type": report,
+            "report_type": _TDC_DATA_MODEL_DIAGNOSTIC_TYPE,
             "count": row_status["joined"],
             "failed_count": row_status["ambiguous"] + row_status["unmatched"],
             "dropped_count": unjoined_official_rows,
@@ -1984,8 +2032,9 @@ def build_form_snapshot(
     # 覆盖范围随快照持久化（全部 / 关注清单）；没写的旧快照按全部处理。
     if coverage and coverage.get("kind") == "watchlist":
         schema["coverage"] = dict(coverage)
-    if report == "tdc_data_model":
-        # 官方列取得状态（快照级事实）：旧快照没有该键 → 读取侧视为 not_requested。
+    if report == "tdc_data_model" and official_status != _OFFICIAL_STATUS_NOT_REQUESTED:
+        # 官方列取得状态（快照级事实）：旧快照 / 未申请官方列没有该键 → 读取侧视为
+        # not_requested。未申请时整块不写，避免前端把归档快照的官方列判成「未取得」。
         schema["officialColumns"] = {
             "status": official_status,
             "rowStatus": official_row_status,
@@ -1994,7 +2043,10 @@ def build_form_snapshot(
         if unjoined_official_rows:
             emit(
                 "forms.official_columns_unjoined",
-                {"report_type": report, "row_count": unjoined_official_rows},
+                {
+                    "report_type": _TDC_DATA_MODEL_DIAGNOSTIC_TYPE,
+                    "row_count": unjoined_official_rows,
+                },
                 name="forms.build_form_snapshot",
             )
     charts = {

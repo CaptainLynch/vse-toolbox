@@ -1956,10 +1956,20 @@ def test_official_merge_requires_unique_composite_key_on_both_sides() -> None:
     assert unjoined == 0
     assert joined["officialJoin"] == "joined"
     assert unmatched["officialJoin"] == "unmatched"
-    # 硬约束一：合并行 47 个标签键齐全，值取自官方行。
-    assert [joined[label] for label in headers] == [official[0][label] for label in headers]
+    # 硬约束一：合并行 47 个标签键齐全（一个都不少）。
+    assert [label for label in headers if label not in joined] == []
+    # 已映射的 20 列取列表侧（官方行在这些列上是空值，不得覆盖）。
+    assert joined["实例号"] == "90000101"
+    assert joined["流水单号"] == "F999X-3D-0001"
+    assert joined["零件号"] == "27000001"
+    assert joined["项目/车型"] == "F999X"
+    assert joined["状态"] == "2"
+    # 未映射的 27 列取官方值。
     assert joined["数量"] == 3
     assert joined["NVH"] == "通过"
+    for index, label in enumerate(headers):
+        if index not in _TDC_DATA_MODEL_SOURCE_FIELDS:
+            assert joined[label] == official[0][label], label
     # 硬约束二：未合并行不得出现任何中文标签键——_tdc_header_mapping_values 只要
     # 命中任一标签就整行改走标签映射，半套标签会把列表 20 列一起塌成空值。
     assert [label for label in headers if label in unmatched] == []
@@ -2019,10 +2029,10 @@ def test_official_merge_never_falls_back_to_serial_only() -> None:
 
 @pytest.mark.parametrize(
     "status",
-    ["unavailable", "truncated", "contract_mismatch", "export_failed", "not_requested"],
+    ["unavailable", "truncated", "contract_mismatch", "export_failed"],
 )
 def test_official_merge_degrades_uniformly_when_status_is_not_ok(status: str) -> None:
-    """官方状态非 ok → 所有行统一 unavailable，且不添加任何标签键。"""
+    """官方状态非 ok（且非 not_requested）→ 所有行统一 unavailable，不加标签键。"""
     rows = [_list_api_row("90000101", "F999X-3D-0001", "27000001")]
     official = [_official_projection("F999X-3D-0001", "27000001", {"数量": 3})]
 
@@ -2034,6 +2044,33 @@ def test_official_merge_degrades_uniformly_when_status_is_not_ok(status: str) ->
     assert "数量" not in merged[0]
     assert row_status == {"joined": 0, "ambiguous": 0, "unmatched": 0, "unavailable": 1}
     assert unjoined == 0
+
+
+def test_official_merge_skips_not_requested_entirely() -> None:
+    """not_requested（本次没申请官方列）→ 完全不合并：不加标记、不加标签键。
+
+    归档快照的行本来就是官方 47 列，标成 unavailable 会把真实值遮成「本次未取得」。
+    """
+    headers = _official_headers()
+    archive_rows = [
+        _official_projection(
+            "F999X-3D-0001", "27000001", {"数量": 3, "NVH": "通过", "部门": "内饰科"}
+        )
+    ]
+
+    merged, row_status, unjoined = _merge_official_columns(
+        "tdc_data_model", archive_rows, archive_rows, "not_requested"
+    )
+
+    assert "officialJoin" not in merged[0]
+    assert row_status == {"joined": 0, "ambiguous": 0, "unmatched": 0, "unavailable": 0}
+    assert unjoined == 0
+    # 行保持原样：47 个标签键与真实值一个不少。
+    assert [label for label in headers if label not in merged[0]] == []
+    assert merged[0]["数量"] == 3
+    assert merged[0]["部门"] == "内饰科"
+    # 原行不被就地改写。
+    assert "officialJoin" not in archive_rows[0]
 
 
 def test_official_merge_leaves_other_reports_untouched() -> None:
@@ -2100,9 +2137,10 @@ def test_build_form_snapshot_records_official_columns_schema() -> None:
     ):
         assert joined["values"][headers.index(label)] == expected
         assert unmatched["values"][headers.index(label)] is None
-    # 20 个列表列在两侧都保留；合并行的状态取官方行（标签映射优先于 API 键）。
+    # 20 个列表列在两侧都保留；合并行的已映射列取列表侧（标签键值 = 列表值）。
     assert joined["values"][headers.index("流水单号")] == "F999X-3D-0001"
     assert unmatched["values"][headers.index("流水单号")] == "F999X-3D-0002"
+    # 列表状态码 "2" 归一为「审批中」，与官方行同一文本。
     assert joined["dimensions"]["status"] == "审批中"
     assert unmatched["dimensions"]["status"] == "审批中"
 
@@ -2132,8 +2170,131 @@ def test_build_form_snapshot_marks_rows_unavailable_when_status_not_ok() -> None
     assert snapshot.summary["total"] == 1
 
 
+def test_build_form_snapshot_not_requested_keeps_archive_shape_untouched() -> None:
+    """归档形状快照（不传 official 参数）：等价旧快照，真实官方值不被遮住。
+
+    归档连接器的行**本来就是官方 47 列**（scheduled_archive_connectors 的
+    `_official_workbook_rows`），而 runner 不传官方参数 → ``not_requested``。
+    此时若逐行标 ``unavailable`` 并写 ``officialColumns``，前端就会把 27 列真实值
+    替换成「本次未取得官方列」。
+    """
+    headers = _official_headers()
+    archive_row = _official_projection(
+        "F999X-3D-0001",
+        "27000001",
+        {
+            "实例号": "90000101",
+            "发布属性": "T2发布",
+            "部门": "内饰科",
+            "申请日期": "2026-08-30",
+            "项目/车型": "F999X",
+            "状态": "审批中",
+            "数量": 3,
+            "NVH": "通过",
+            "应签人数": 13,
+        },
+    )
+
+    snapshot = build_form_snapshot(
+        "tdc_data_model",
+        [archive_row],
+        snapshot_at="2026-10-22T00:00:00Z",
+        source_run_id=23,
+        source="scheduled_archive",
+    )
+
+    # 快照级：不写 officialColumns（读取侧 → 前端 official 为 null，零 UI 差异）。
+    assert "officialColumns" not in snapshot.schema
+    row = snapshot.rows[0]
+    # 行级：无 unavailable 标记（'' = 未知），47 列真实值全部可见。
+    assert row["officialJoin"] == ""
+    assert len(row["values"]) == 47
+    for label in ("数量", "NVH", "应签人数", "部门", "申请日期", "状态"):
+        assert row["values"][headers.index(label)] == archive_row[label], label
+    assert row["submittedDate"] == "2026-08-30"
+    assert row["dimensions"]["section"] == "内饰科"
+    assert row["dimensions"]["status"] == "审批中"
+    assert snapshot.summary["total"] == 1
+
+
+def test_official_merge_prefers_list_values_for_mapped_columns() -> None:
+    """已映射列优先列表侧：官方空值/Excel 日期序列号不得抹掉列表数据。
+
+    实测（评审 2026-10-22）：官方「申请日期」是 Excel 序列号 46296，部门/发布属性/
+    项目车型/状态为空。若合并时一律以官方标签键为准，``submittedDate`` 变 None、
+    ``dimensions`` 全空、逾期统计漂移。
+    """
+    headers = _official_headers()
+    list_row = {
+        **_list_api_row("90000101", "F999X-3D-0001", "27000001"),
+        "requestDate": "2026-08-30",
+        "department": "内饰科",
+        "publishProperty": "T2发布",
+        "applicant": "李四",
+        # 数量列（11）在列表侧没有候选字段 → 只能取官方值。
+    }
+    official = [
+        _official_projection(
+            "F999X-3D-0001",
+            "27000001",
+            {
+                "申请日期": 46296,  # Excel 日期序列号
+                "部门": "",
+                "发布属性": None,
+                "项目/车型": None,
+                "状态": "",
+                "版本号": "V2",  # 列表侧无 versionNumber → 回退官方值
+                "数量": 3,
+                "NVH": "通过",
+            },
+        )
+    ]
+
+    merged, row_status, _ = _merge_official_columns(
+        "tdc_data_model", [list_row], official, "ok"
+    )
+
+    joined = merged[0]
+    assert row_status["joined"] == 1
+    assert joined["officialJoin"] == "joined"
+    # 已映射列：列表侧有值就用列表侧（官方为空/序列号都不得覆盖）。
+    assert joined["申请日期"] == "2026-08-30"
+    assert joined["部门"] == "内饰科"
+    assert joined["发布属性"] == "T2发布"
+    assert joined["项目/车型"] == "F999X"
+    assert joined["申请人"] == "李四"
+    assert joined["状态"] == "2"
+    # 已映射列列表侧为空 → 回退官方值。
+    assert joined["版本号"] == "V2"
+    # 未映射列：取官方值。
+    assert joined["数量"] == 3
+    assert joined["NVH"] == "通过"
+    # 仍然是完整 47 个标签键。
+    assert [label for label in headers if label not in joined] == []
+
+    snapshot = build_form_snapshot(
+        "tdc_data_model",
+        [list_row],
+        snapshot_at="2026-10-22T00:00:00Z",
+        source_run_id=24,
+        source="project_status_sync",
+        official_rows=tuple(official),
+        official_status="ok",
+    )
+    row = snapshot.rows[0]
+    assert row["values"][headers.index("申请日期")] == "2026-08-30"
+    assert row["values"][headers.index("数量")] == 3
+    assert row["submittedDate"] == "2026-08-30"
+    assert row["dimensions"]["section"] == "内饰科"
+    assert row["dimensions"]["model"] == "T2发布"
+    assert row["dimensions"]["stage"] == "F999X"
+    assert row["dimensions"]["status"] == "审批中"
+    # 申请日期来自列表侧 → 逾期可判定（官方序列号会让它变成 unknown）。
+    assert row["overdueState"] == "overdue"
+
+
 def test_normalize_form_rows_persists_official_join_marker() -> None:
-    """逐行取得状态进入规范化行（快照行持久化字段），非法值按 unavailable。"""
+    """逐行取得状态进入规范化行；缺失/非法值一律 ``""``（未知，不是未取得）。"""
     rows = normalize_form_rows(
         "tdc_data_model",
         [
@@ -2151,7 +2312,8 @@ def test_normalize_form_rows_persists_official_join_marker() -> None:
         [_list_api_row("90000102", "F999X-3D-0002", "27000002")],
         snapshot_at="2026-10-22T00:00:00Z",
     )
-    assert legacy[0]["officialJoin"] == "unavailable"
+    # 与 DB/读取侧 official_join = '' 口径一致：'' 是未知，不是 unavailable。
+    assert legacy[0]["officialJoin"] == ""
 
     bogus = normalize_form_rows(
         "tdc_data_model",
@@ -2163,7 +2325,7 @@ def test_normalize_form_rows_persists_official_join_marker() -> None:
         ],
         snapshot_at="2026-10-22T00:00:00Z",
     )
-    assert bogus[0]["officialJoin"] == "unavailable"
+    assert bogus[0]["officialJoin"] == ""
 
 
 def test_view_payload_exposes_official_columns(tmp_path: Path) -> None:

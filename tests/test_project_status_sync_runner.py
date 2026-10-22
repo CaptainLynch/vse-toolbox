@@ -592,7 +592,7 @@ def test_official_columns_absent_keeps_sync_success(
     service: ProjectStatusUpdateService,
     registry: ConnectorRegistry,
 ) -> None:
-    """旧快照/无官方列：同步照旧 success，快照状态为 not_requested。"""
+    """旧快照/无官方列：同步照旧 success，快照不写 officialColumns（等价旧快照）。"""
     from services.deliverable_form_analysis import form_definition
 
     _enable_pilot(service)
@@ -621,7 +621,9 @@ def test_official_columns_absent_keeps_sync_success(
     assert result.exit_code == EXIT_OK
     stored = db.get_latest_deliverable_form_snapshot("tdc_data_model")
     assert stored is not None
-    assert stored["schema"]["officialColumns"]["status"] == "not_requested"
+    # 未申请官方列 → 不写 schema.officialColumns（读取侧视为 not_requested，
+    # 前端 official 为 null，渲染与升级前逐字一致）。
+    assert "officialColumns" not in stored["schema"]
     rows = db.list_deliverable_form_rows("tdc_data_model")["items"]
     assert rows[0]["values"][headers.index("数量")] is None
 

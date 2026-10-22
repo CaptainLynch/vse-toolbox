@@ -644,7 +644,7 @@ export function FormRowsTable({ data, rowsData, state, onReload }) {
                   // 该行没合上官方行 + 该列是官方列 → 明示「本次未取得官方列」。
                   const officialMissing = Boolean(official) && !(column && column.derivedStatus)
                     && official.missingIndexes.has(formColumnIndex(column))
-                    && formOfficialMissingRow(row);
+                    && formOfficialMissingRow(row, official);
                   if (officialMissing) {
                     return html`<td key=${`c${index}`} class="form-cell-official-missing"
                       title="本次未取得官方工作簿，无法展示该官方列">${FORM_OFFICIAL_MISSING_TEXT}</td>`;
@@ -666,7 +666,7 @@ export function FormRowsTable({ data, rowsData, state, onReload }) {
                       const physical = formColumnIndex(column);
                       // 「查看全部字段」同样区分「本次未取得官方列」与真实空值。
                       const officialMissing = Boolean(official) && Number.isFinite(physical)
-                        && official.missingIndexes.has(physical) && formOfficialMissingRow(row);
+                        && official.missingIndexes.has(physical) && formOfficialMissingRow(row, official);
                       return html`
                         <dt key=${`t${index}`}>${column && column.label ? String(column.label) : `列 ${index + 1}`}</dt>
                         ${officialMissing
