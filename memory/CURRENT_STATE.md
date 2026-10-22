@@ -1,6 +1,37 @@
 # Current State
 
-## 2026-10-22 顾问复核后硬化并重新出包：20261022b（HEAD `4346159`；**取代**同日 20261022 包）
+## 2026-10-22 数模同步补齐官方 47 列并出包 20261022c（HEAD `70b7338`；**取代** 20261022b）
+
+- **触发**：用户反馈「多单号可以同步，但内容不完整」——表单明细里 27 列显示 `-`。
+- **根因（已核实）**：同步的表单快照来自列表接口行，只覆盖官方 47 列中的 **20 列**
+  （`core/report_contracts.py:132` `_TDC_DATA_MODEL_SOURCE_FIELDS`；实测缺 27 列，含数量/重量/零件合计/
+  对应IA号/各专业会签/造型专家审核/NVH/加签人员/应签·已签·未签/签署率/待审批人员）；
+  官方工作簿**每次同步都已下载**（`project_status_connectors.py:373-392`）但只归档未解析。
+- **方案**：`docs/PLAN_20261022_OFFICIAL_COLUMNS_SYNC.md`（v2）。经 **codex-readonly / gpt-6-astra / high**
+  评审（run `80614167430b4bfdb27e243233a310dd`，裁决 1/2/3 = adopted）：只认非空
+  `(流水单号, 零件号)` 复合键、两侧唯一、不做单号回退；逐行 `officialJoin` 状态；`contract_mismatch` 整批丢弃；
+  取不到时逐行标注「本次未取得官方列」。
+- **实现（7 提交 + 2 修复）**：`f2e8d9d` 官方导出解析 + 五类状态；`734332d` 复合键合并 + `officialColumns` schema +
+  `/view` 透出；`c5a875b` DB 列 `official_join`（纯增量迁移）；`2413329` 前端逐行标注 + 顶部说明；
+  `91d1274` 修复评审 C1/I1；其余为地图刷新。
+- **评审发现并修复**：C1 `not_requested` 把每行标 `unavailable` → 归档快照的真实官方值被「未取得」遮蔽
+  （修：`not_requested` 完全不合并、不写 schema 键，前端 `formOfficialMissingRow` 纵深防御）；
+  I1 合并行官方值覆盖已映射 20 列（官方空白/Excel 序列号抹掉列表数据）→ 修：已映射列优先列表侧、
+  列表为空才回退官方、未映射 27 列取官方。
+- **门禁**：全量 `pytest tests` **3227 passed / 48 skipped / 0 failed**（`.runtime/pytest-full-20261022c-final.log`）；
+  flake8 改动文件 0 告警；`node --check` 通过；地图 `--check` verified。
+- **构建/冒烟**：`dist/hci-20261022c`，版本 `0.3.0-production-test-20261022c`，
+  buildId `20261022c-70b7338-official-47-columns`；66/66 冒烟 PASS（`.runtime/smoke_exe_20261021b.ps1`），
+  并核对包内含 `formOfficialColumns` / `FORM_OFFICIAL_MISSING_TEXT` / `form-row-official-note` / `form-cell-official-missing`。
+- **交付物**：`VSE-WebUI.exe` 8,962,614 B（SHA-256 `1A9FDFEC…CC51C67`）、`VSE-WebUI.zip` 41,670,794 B
+  （SHA-256 `66C932F6…B4B0A0A65`，1277 项 CRC 全通过）、README（含开关与回滚顺序）、`SHA256SUMS.txt`；
+  三件套已复制到 `C:\Users\Lynch\Desktop\vse-toolbox-migration\`（`...-20261022c-...`）。
+- **已知限制**：① 官方表超 5000 行 → 本次不补齐（页面说明）；② 复合键不唯一 → 不合并并标注；
+  ③ 列表侧为空且官方给 Excel 日期序列号时该日期仍为空（未做序列号解析）；④ 归档 runner 未传官方行，
+  该路径快照不补 27 列（不在本轮范围）。
+- **未做**：微信投递（未要求）；真机 Excel COM 验收。
+
+## 2026-10-22 顾问复核后硬化并重新出包：20261022b（HEAD `4346159`；已被 20261022c 取代）
 
 - **触发**：用户要求「调用顾问做审查」。Claude `claude-opus-5-5` / xhigh / `--risk public-protocol`，
   run `0d3d36fd-292f-494c-abda-61e9365519d1`，包 `.runtime/consult-20261022-postimpl-review.md`（11,832 B，
