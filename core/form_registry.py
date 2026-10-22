@@ -159,7 +159,16 @@ FORMS: tuple[FormSpec, ...] = (
             "流水单号", "状态", "项目/车型", "发布属性", "部门", "申请人", "零件号",
             "零件名称", "申请日期", "最新审批记录", "签署率", "待审批人员",
         ),
-        dimension_labels=MappingProxyType({"section": "部门", "model": "发布属性", "stage": "项目 / 车型"}),
+        dimension_labels=MappingProxyType({
+            "section": "部门",
+            "model": "发布属性",
+            "stage": "项目 / 车型",
+            # D5 专属归集维度（项目件/架构件），见 services/data_model_attribution.py。
+            # 只登记在本表单，其他交付物不受影响。
+            "dataSource": "数据来源",
+            "vehicle": "归集车型",
+            "attribution": "归属方式",
+        }),
     ),
     FormSpec(
         form_key="tdc_sor",

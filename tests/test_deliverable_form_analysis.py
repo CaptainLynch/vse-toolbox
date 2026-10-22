@@ -929,6 +929,11 @@ def test_tdc_positional_rows_extract_dimensions_and_overdue_integration() -> Non
         "model": "T2发布",
         "status": "审批中",
         "stage": "F999X",
+        # D5 专属归集维度（项目件/架构件），见 services/data_model_attribution.py。
+        "dataSource": "项目件",
+        "vehicle": "F999X",
+        "attribution": "自身车型",
+        "archPlatform": "",
     }
     assert row["submittedDate"] == "2026-08-20"
     assert row["stageStart"] == "2026-08-20"
@@ -1007,7 +1012,7 @@ def test_tdc_overdue_does_not_depend_on_project_value(
 
 
 def test_tdc_summary_aggregates_observed_stages_and_section_buckets() -> None:
-    """数模汇总按观察到的项目/车型聚合阶段；已废弃行不落入逾期或按期桶。"""
+    """数模汇总按车型+来源分组（项目件/架构件并列）；已废弃行不落入逾期或按期桶。"""
     rows = normalize_form_rows(
         "tdc_data_model",
         [
@@ -1032,8 +1037,8 @@ def test_tdc_summary_aggregates_observed_stages_and_section_buckets() -> None:
     assert summary["incomplete"] == 1
     assert summary["overdue"] == 1
     assert summary["departmentStatus"]["stages"] == [
-        {"label": "F888Y", "onTime": 0, "overdue": 1, "unknown": 0},
-        {"label": "F999X", "onTime": 1, "overdue": 0, "unknown": 1},
+        {"label": "F888Y · 项目件", "onTime": 0, "overdue": 1, "unknown": 0, "total": 1},
+        {"label": "F999X · 项目件", "onTime": 1, "overdue": 0, "unknown": 1, "total": 2},
     ]
     assert summary["sectionStatus"] == [
         {"label": "内饰科", "onTime": 1, "overdue": 1, "unknown": 1, "total": 3},
@@ -1066,6 +1071,11 @@ def test_tdc_dict_rows_extract_dimensions_and_incident_identity() -> None:
         "model": "T2发布",
         "status": "审批中",
         "stage": "F888Y",
+        # JSON 快照与位置行同口径：同样带 D5 归集维度。
+        "dataSource": "项目件",
+        "vehicle": "F888Y",
+        "attribution": "自身车型",
+        "archPlatform": "",
     }
     assert row["submittedDate"] == "2026-08-30"
     assert row["stageStart"] == "2026-08-30"
@@ -1131,6 +1141,10 @@ def test_tdc_official_header_mapping_rows_preserve_values_and_dimensions() -> No
         "model": "T2发布",
         "status": "审批中",
         "stage": "F999X",
+        "dataSource": "项目件",
+        "vehicle": "F999X",
+        "attribution": "自身车型",
+        "archPlatform": "",
     }
     assert rows[0]["submittedDate"] == "2026-08-30"
     assert rows[0]["values"][6] == "2026-08-30 09:30:00"

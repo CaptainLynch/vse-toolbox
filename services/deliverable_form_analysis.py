@@ -35,6 +35,8 @@ from core.project_status_contracts import (
     find_deliverable_id_by_form_key,
     find_job_key_by_deliverable_id,
 )
+# 数模设计审核流程（D5）专属：项目件/架构件归集。其他交付物不引用本模块。
+from services import data_model_attribution as _attribution
 
 # 表单静态定义的唯一来源是 core/form_registry.py；以下旧变量名由它推导，
 # 保持对既有调用方与测试的兼容。新增或调整表单只改 registry。
@@ -748,6 +750,15 @@ def _dimensions_from_mapping(
         "status": _safe_text(status, 120),
         "stage": stage,
     }
+    if report == "tdc_data_model":
+        # 与位置行口径保持一致：JSON 快照同样带项目件/架构件归集维度。
+        dimensions.update(
+            _attribution.dimension_fields(
+                _source_value(row, "projectModel"),
+                _source_value(row, "ewosorNumber", "ewoSorNumber"),
+                _source_value(row, "documentNo"),
+            )
+        )
     if report in {"ncr_progress", "ncr_detail"}:
         normalized_ncr_number = _safe_text(ncr_number, 200)
         if normalized_ncr_number:
@@ -834,6 +845,11 @@ def _dimensions_from_tdc(
     维度口径：项目状态页签 ← 项目/车型（stage），部门状态页签 ← 部门
     （section），发布属性仅作筛选（model）；申请日期同时作为提交日期
     与逾期判定起点。
+
+    另追加 D5 专属的归集维度（``dataSource`` / ``vehicle`` / ``attribution``
+    / ``archPlatform``）：架构件的「项目/车型」是架构平台代号，必须借
+    SOR 号或流水单号才能落回车型；落不回时进平台池。``stage`` 保持原值
+    不变，旧筛选与历史对照继续可用。
     """
     submitted = _positional_value(values, definition, "申请日期")
     raw_status = _positional_value_any(
@@ -846,6 +862,12 @@ def _dimensions_from_tdc(
         raw_str in _TDC_DATA_MODEL_COMPLETED_STATUSES
         or norm_str in _TDC_DATA_MODEL_COMPLETED_STATUSES
     )
+    project_model = _positional_value(values, definition, "项目/车型")
+    attribution = _attribution.dimension_fields(
+        project_model,
+        _positional_value(values, definition, "EWO/SOR号"),
+        _positional_value(values, definition, "流水单号"),
+    )
     return (
         {
             "department": "",
@@ -856,9 +878,8 @@ def _dimensions_from_tdc(
                 _positional_value(values, definition, "发布属性"), 160
             ),
             "status": status,
-            "stage": _normalize_stage(
-                _positional_value(values, definition, "项目/车型")
-            ),
+            "stage": _normalize_stage(project_model),
+            **attribution,
         },
         {
             "submittedDate": _date_text(submitted),
@@ -1440,6 +1461,16 @@ def normalize_form_rows(
             },
             name="forms.normalize_form_rows",
         )
+    if report == "tdc_data_model":
+        # 同一流程实例内可能只有部分行带 SOR 号/车型前缀；统一到实例级口径，
+        # 避免阶段图（行级聚合）与实例汇总给出互相矛盾的数字。
+        _attribution.unify_rows(
+            normalized,
+            lambda row: _safe_text(
+                _positional_value(list(row.get("values") or ()), definition, "实例号"),
+                80,
+            ),
+        )
     return normalized
 
 
@@ -1582,6 +1613,34 @@ def _distinct_ncr_rows(
     return list(representatives.values())
 
 
+def _data_model_group_status(
+    rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """D5 专属分组：同一车型下并列项目件与架构件。
+
+    分组标签形如 ``F620S · 项目件`` / ``F620S · 架构件``；无车型证据的
+    架构件聚合为 ``待归属 Ar-L · 架构件``，排在车型分组之后。载荷结构与
+    通用阶段行一致（label/onTime/overdue/unknown），前端无需改渲染。
+    """
+    buckets: dict[str, dict[str, int]] = {}
+    for row in rows:
+        dimensions = row.get("dimensions")
+        if not isinstance(dimensions, Mapping):
+            dimensions = {}
+        label = _attribution.group_label(dimensions)
+        counts = buckets.setdefault(label, {"onTime": 0, "overdue": 0, "unknown": 0})
+        bucket = _status_bucket(row)
+        counts[{"on_time": "onTime", "overdue": "overdue", "unknown": "unknown"}[bucket]] += 1
+    labels = sorted(buckets, key=_attribution.group_sort_key)
+    return {
+        "stages": [
+            {"label": label, **buckets[label], "total": sum(buckets[label].values())}
+            for label in labels
+        ],
+        "unrecognizedStageCount": 0,
+    }
+
+
 def _stage_status_summary(
     report: str,
     rows: Sequence[Mapping[str, Any]],
@@ -1593,7 +1652,13 @@ def _stage_status_summary(
     ``unrecognizedStageCount`` = stage 非空但不在官方阶段词表的行数（全报表
     统一口径）：PAA 不再产出「其他状态」桶（G34），这些行只经本计数披露；
     EWO/NCR进度 仍聚合为「其他状态」行，本计数与其行数一致（等价披露）。
+
+    数模设计审核流程（D5）走专属分组（``_data_model_group_status``）：
+    该项目/车型列既可能是车型代号也可能是架构平台代号，按原值分组会把
+    架构件与项目件割裂。``tdc_sor`` 等其余报表的既有分支不受影响。
     """
+    if report == "tdc_data_model":
+        return _data_model_group_status(rows)
     result_rows: list[dict[str, Any]] = []
     stages = _STAGES_BY_REPORT[report]
     if report in {"tdc_data_model", "tdc_sor"}:
