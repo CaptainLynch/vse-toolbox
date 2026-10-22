@@ -26,7 +26,11 @@ from services.deliverable_form_analysis import (
     source_absent_indexes,
     summarize_form_rows,
 )
-from services.deliverable_form_analysis import _filter_rows_by_section_rollup
+from services.deliverable_form_analysis import (
+    _filter_rows_by_section_rollup,
+    _merge_official_columns,
+)
+from core.report_contracts import _TDC_DATA_MODEL_SOURCE_FIELDS
 from core.report_cost_values import sum_cost_metrics
 from services.xlsx_preview import read_xlsx_workbook_preview
 
@@ -1886,3 +1890,351 @@ def test_core_cost_sum_matches_section_costs_aggregate() -> None:
         ), metric
     # 有值/无值口径逐位一致：批准单件成本变化 全体无值 → core 侧 sum=None。
     assert core_totals["vehicleChangeApproved"] == {"sum": None, "count": 0}
+
+
+# ── 官方 47 列合并（docs/PLAN_20261022_OFFICIAL_COLUMNS_SYNC.md 设计 v2） ──────
+
+
+def _official_headers() -> list[str]:
+    """官方工作簿/契约的 47 列中文表头（与 _tdc_header_mapping_values 同一来源）。"""
+    return [str(label) for label in form_definition("tdc_data_model")["headerRows"][0]]
+
+
+def _expected_missing_indexes() -> list[int]:
+    """列表接口不返回、只能由官方工作簿补齐的列下标（契约现场计算，非硬编码）。"""
+    return [
+        index
+        for index in range(len(_official_headers()))
+        if index not in _TDC_DATA_MODEL_SOURCE_FIELDS
+    ]
+
+
+def _official_projection(
+    serial: str,
+    part: str,
+    values: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """官方工作簿投影行：47 个中文表头标签键齐全（未给值的列为 None）。"""
+    row: dict[str, object] = {label: None for label in _official_headers()}
+    row["流水单号"] = serial
+    row["零件号"] = part
+    row.update(values or {})
+    return row
+
+
+def _list_api_row(incident: str, serial: str, part: str) -> dict[str, object]:
+    """列表接口行：只有 API 键，没有任何中文表头标签。"""
+    return {
+        "incident": incident,
+        "documentNo": serial,
+        "partNumber": part,
+        "projectModel": "F999X",
+        "status": "2",
+        "currentApprover": "张三",
+    }
+
+
+def test_official_merge_requires_unique_composite_key_on_both_sides() -> None:
+    """唯一非空复合键 → 合并；合并行 47 个标签键齐全，未合并行一个都不加。"""
+    headers = _official_headers()
+    rows = [
+        _list_api_row("90000101", "F999X-3D-0001", "27000001"),
+        _list_api_row("90000102", "F999X-3D-0002", "27000002"),
+    ]
+    official = [
+        _official_projection(
+            "F999X-3D-0001", "27000001", {"数量": 3, "NVH": "通过", "状态": "审批中"}
+        )
+    ]
+
+    merged, row_status, unjoined = _merge_official_columns(
+        "tdc_data_model", rows, official, "ok"
+    )
+
+    joined, unmatched = merged
+    assert row_status == {"joined": 1, "ambiguous": 0, "unmatched": 1, "unavailable": 0}
+    assert unjoined == 0
+    assert joined["officialJoin"] == "joined"
+    assert unmatched["officialJoin"] == "unmatched"
+    # 硬约束一：合并行 47 个标签键齐全，值取自官方行。
+    assert [joined[label] for label in headers] == [official[0][label] for label in headers]
+    assert joined["数量"] == 3
+    assert joined["NVH"] == "通过"
+    # 硬约束二：未合并行不得出现任何中文标签键——_tdc_header_mapping_values 只要
+    # 命中任一标签就整行改走标签映射，半套标签会把列表 20 列一起塌成空值。
+    assert [label for label in headers if label in unmatched] == []
+    # 原列表行不被就地改写（归档/分析口径不受合并影响）。
+    assert "officialJoin" not in rows[0]
+    assert "数量" not in rows[0]
+
+
+def test_official_merge_marks_ambiguous_composite_keys_without_merging() -> None:
+    """两侧任一出现重复复合键 → 不合并（绝不猜哪一行才是对的）。"""
+    rows = [
+        _list_api_row("90000101", "F999X-3D-0001", "27000001"),
+        _list_api_row("90000102", "F999X-3D-0001", "27000001"),
+    ]
+    official = [_official_projection("F999X-3D-0001", "27000001", {"数量": 3})]
+
+    merged, row_status, _ = _merge_official_columns("tdc_data_model", rows, official, "ok")
+
+    assert [row["officialJoin"] for row in merged] == ["ambiguous", "ambiguous"]
+    assert row_status == {"joined": 0, "ambiguous": 2, "unmatched": 0, "unavailable": 0}
+    assert all("数量" not in row for row in merged)
+
+    rows = [_list_api_row("90000101", "F999X-3D-0001", "27000001")]
+    official = [
+        _official_projection("F999X-3D-0001", "27000001", {"数量": 3}),
+        _official_projection("F999X-3D-0001", "27000001", {"数量": 9}),
+    ]
+
+    merged, row_status, _ = _merge_official_columns("tdc_data_model", rows, official, "ok")
+
+    assert merged[0]["officialJoin"] == "ambiguous"
+    assert row_status["ambiguous"] == 1
+    assert "数量" not in merged[0]
+
+
+def test_official_merge_never_falls_back_to_serial_only() -> None:
+    """零件号为空不算有效键；同单号不同零件号也不合并（不做单号回退）。"""
+    rows = [_list_api_row("90000101", "F999X-3D-0001", "")]
+    official = [_official_projection("F999X-3D-0001", "27000001", {"数量": 3})]
+
+    merged, row_status, _ = _merge_official_columns("tdc_data_model", rows, official, "ok")
+
+    assert merged[0]["officialJoin"] == "unmatched"
+    assert "数量" not in merged[0]
+    assert row_status == {"joined": 0, "ambiguous": 0, "unmatched": 1, "unavailable": 0}
+
+    rows = [_list_api_row("90000101", "F999X-3D-0001", "27000001")]
+    official = [_official_projection("F999X-3D-0001", "27000999", {"数量": 3})]
+
+    merged, _, unjoined = _merge_official_columns("tdc_data_model", rows, official, "ok")
+
+    assert merged[0]["officialJoin"] == "unmatched"
+    assert "数量" not in merged[0]
+    # 官方侧多出的行只计数（不新增行、不扩行）。
+    assert unjoined == 1
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["unavailable", "truncated", "contract_mismatch", "export_failed", "not_requested"],
+)
+def test_official_merge_degrades_uniformly_when_status_is_not_ok(status: str) -> None:
+    """官方状态非 ok → 所有行统一 unavailable，且不添加任何标签键。"""
+    rows = [_list_api_row("90000101", "F999X-3D-0001", "27000001")]
+    official = [_official_projection("F999X-3D-0001", "27000001", {"数量": 3})]
+
+    merged, row_status, unjoined = _merge_official_columns(
+        "tdc_data_model", rows, official, status
+    )
+
+    assert merged[0]["officialJoin"] == "unavailable"
+    assert "数量" not in merged[0]
+    assert row_status == {"joined": 0, "ambiguous": 0, "unmatched": 0, "unavailable": 1}
+    assert unjoined == 0
+
+
+def test_official_merge_leaves_other_reports_untouched() -> None:
+    """非数模表单没有官方 47 列口径：一律 unavailable，不加标签键。"""
+    rows = [{"processNo": "S-1", "sorNo": "SGMW-F610S-SOR0153"}]
+
+    merged, row_status, _ = _merge_official_columns("tdc_sor", rows, [], "ok")
+
+    assert merged[0]["officialJoin"] == "unavailable"
+    assert row_status["unavailable"] == 1
+
+
+def test_build_form_snapshot_records_official_columns_schema() -> None:
+    """快照携带 officialColumns（状态 + 逐行计数 + 契约计算的缺失列）。"""
+    headers = _official_headers()
+    snapshot = build_form_snapshot(
+        "tdc_data_model",
+        [
+            _list_api_row("90000101", "F999X-3D-0001", "27000001"),
+            _list_api_row("90000102", "F999X-3D-0002", "27000002"),
+        ],
+        snapshot_at="2026-10-22T00:00:00Z",
+        source_run_id=21,
+        source="project_status_sync",
+        official_rows=(
+            _official_projection(
+                "F999X-3D-0001",
+                "27000001",
+                {
+                    "数量": 3,
+                    "重量（单件）": 1.5,
+                    "零件合计": 4.5,
+                    "对应IA号": "IA000009",
+                    "NVH": "通过",
+                    "应签人数": 13,
+                    "状态": "审批中",
+                },
+            ),
+        ),
+        official_status="ok",
+    )
+
+    official_columns = snapshot.schema["officialColumns"]
+    assert official_columns["status"] == "ok"
+    assert official_columns["rowStatus"] == {
+        "joined": 1,
+        "ambiguous": 0,
+        "unmatched": 1,
+        "unavailable": 0,
+    }
+    assert official_columns["missingIndexes"] == _expected_missing_indexes()
+    assert len(official_columns["missingIndexes"]) == 27
+
+    joined, unmatched = snapshot.rows
+    assert joined["officialJoin"] == "joined"
+    assert unmatched["officialJoin"] == "unmatched"
+    assert len(joined["values"]) == 47
+    # 官方列有值；未合并行同一列仍为空（前端据此显示「本次未取得官方列」）。
+    for label, expected in (
+        ("数量", 3),
+        ("重量（单件）", 1.5),
+        ("NVH", "通过"),
+        ("应签人数", 13),
+    ):
+        assert joined["values"][headers.index(label)] == expected
+        assert unmatched["values"][headers.index(label)] is None
+    # 20 个列表列在两侧都保留；合并行的状态取官方行（标签映射优先于 API 键）。
+    assert joined["values"][headers.index("流水单号")] == "F999X-3D-0001"
+    assert unmatched["values"][headers.index("流水单号")] == "F999X-3D-0002"
+    assert joined["dimensions"]["status"] == "审批中"
+    assert unmatched["dimensions"]["status"] == "审批中"
+
+
+def test_build_form_snapshot_marks_rows_unavailable_when_status_not_ok() -> None:
+    """官方列不可用时：同步照旧成功，行标 unavailable，列表列仍有值。"""
+    headers = _official_headers()
+    snapshot = build_form_snapshot(
+        "tdc_data_model",
+        [_list_api_row("90000101", "F999X-3D-0001", "27000001")],
+        snapshot_at="2026-10-22T00:00:00Z",
+        source_run_id=22,
+        source="project_status_sync",
+        official_status="truncated",
+    )
+
+    assert snapshot.schema["officialColumns"]["status"] == "truncated"
+    assert snapshot.schema["officialColumns"]["rowStatus"] == {
+        "joined": 0,
+        "ambiguous": 0,
+        "unmatched": 0,
+        "unavailable": 1,
+    }
+    assert snapshot.rows[0]["officialJoin"] == "unavailable"
+    assert snapshot.rows[0]["values"][headers.index("数量")] is None
+    assert snapshot.rows[0]["values"][headers.index("流水单号")] == "F999X-3D-0001"
+    assert snapshot.summary["total"] == 1
+
+
+def test_normalize_form_rows_persists_official_join_marker() -> None:
+    """逐行取得状态进入规范化行（快照行持久化字段），非法值按 unavailable。"""
+    rows = normalize_form_rows(
+        "tdc_data_model",
+        [
+            {
+                **_list_api_row("90000101", "F999X-3D-0001", "27000001"),
+                "officialJoin": "joined",
+            }
+        ],
+        snapshot_at="2026-10-22T00:00:00Z",
+    )
+    assert rows[0]["officialJoin"] == "joined"
+
+    legacy = normalize_form_rows(
+        "tdc_data_model",
+        [_list_api_row("90000102", "F999X-3D-0002", "27000002")],
+        snapshot_at="2026-10-22T00:00:00Z",
+    )
+    assert legacy[0]["officialJoin"] == "unavailable"
+
+    bogus = normalize_form_rows(
+        "tdc_data_model",
+        [
+            {
+                **_list_api_row("90000103", "F999X-3D-0003", "27000003"),
+                "officialJoin": "bogus",
+            }
+        ],
+        snapshot_at="2026-10-22T00:00:00Z",
+    )
+    assert bogus[0]["officialJoin"] == "unavailable"
+
+
+def test_view_payload_exposes_official_columns(tmp_path: Path) -> None:
+    """/view 载荷透出 officialColumns；schema 列数/列序不受影响。"""
+    db = DatabaseManager(tmp_path / "official-columns.db")
+    db.init_database()
+    service = DeliverableFormAnalysisService(db)
+    db.publish_deliverable_form_snapshot(
+        build_form_snapshot(
+            "tdc_data_model",
+            [_list_api_row("90000101", "F999X-3D-0001", "27000001")],
+            snapshot_at="2026-10-22T00:00:00Z",
+            source_run_id=1,
+            source="test",
+            official_rows=(
+                _official_projection("F999X-3D-0001", "27000001", {"数量": 3}),
+            ),
+            official_status="ok",
+        )
+    )
+
+    payload = service.view("tdc_data_model")
+
+    assert payload["officialColumns"] == {
+        "status": "ok",
+        "rowStatus": {"joined": 1, "ambiguous": 0, "unmatched": 0, "unavailable": 0},
+        "missingIndexes": _expected_missing_indexes(),
+    }
+    assert "officialColumns" not in payload["schema"]
+    # 现行契约不变：47 列减去隐藏的两个重量列，列序保持。
+    assert [column["index"] for column in payload["schema"]["columns"]] == [
+        index for index in range(47) if index not in {12, 13}
+    ]
+
+
+def test_view_payload_without_official_columns_keeps_previous_shape(tmp_path: Path) -> None:
+    """旧快照（升级前写入，schema 无 officialColumns）读取行为完全不变。"""
+    db = DatabaseManager(tmp_path / "legacy-official-columns.db")
+    db.init_database()
+    service = DeliverableFormAnalysisService(db)
+    list_rows = [_list_api_row("90000101", "F999X-3D-0001", "27000001")]
+    db.publish_deliverable_form_snapshot(
+        build_form_snapshot(
+            "tdc_data_model",
+            list_rows,
+            snapshot_at="2026-10-22T00:00:00Z",
+            source_run_id=1,
+            source="test",
+            official_rows=(
+                _official_projection("F999X-3D-0001", "27000001", {"数量": 3}),
+            ),
+            official_status="ok",
+        )
+    )
+    with db.get_connection() as conn:
+        stored = conn.execute(
+            "SELECT id, schema_json FROM deliverable_form_snapshots "
+            "WHERE form_key = 'tdc_data_model'"
+        ).fetchone()
+        stored_schema = json.loads(stored["schema_json"])
+        assert "officialColumns" in stored_schema
+        stored_schema.pop("officialColumns")
+        conn.execute(
+            "UPDATE deliverable_form_snapshots SET schema_json = ? WHERE id = ?",
+            (json.dumps(stored_schema, ensure_ascii=False), stored["id"]),
+        )
+
+    payload = service.view("tdc_data_model")
+
+    assert "officialColumns" not in payload
+    assert payload["rowCount"] == 1
+    assert payload["sourceAbsentIndexes"] == list(
+        source_absent_indexes("tdc_data_model", list_rows)
+    )

@@ -16,7 +16,11 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Mapping, Sequence
 
 from core.redaction import redact_sensitive_text
-from core.report_contracts import report_contracts, table_payload
+from core.report_contracts import (
+    _TDC_DATA_MODEL_SOURCE_FIELDS,
+    report_contracts,
+    table_payload,
+)
 from core.report_cost_values import (
     NCR_COST_LABELS as _NCR_COST_LABELS,
     parse_cost_value,
@@ -1089,6 +1093,136 @@ def _ncr_header_mapping_values(
     ]
 
 
+# ── 官方 47 列合并（docs/PLAN_20261022_OFFICIAL_COLUMNS_SYNC.md 设计 v2） ──────
+#
+# 官方导出工作簿是唯一能提供全部 47 列的数据源（列表接口只覆盖 20 列）。合并
+# 只做「补齐」，不改行集、不改单值/多单号匹配语义，也不改写归档原始行。
+
+#: 逐行官方列取得状态（快照行 officialJoin 的闭集）。
+_OFFICIAL_JOIN_STATUSES = ("joined", "ambiguous", "unmatched", "unavailable")
+_OFFICIAL_JOIN_UNAVAILABLE = "unavailable"
+_OFFICIAL_STATUS_OK = "ok"
+#: 复合键的两种命名：官方工作簿用中文表头标签，列表接口用 API 键。
+_OFFICIAL_SERIAL_KEYS = ("流水单号", "documentNo")
+_OFFICIAL_PART_KEYS = ("零件号", "partNumber")
+
+
+def _official_join_key(row: Mapping[str, Any]) -> tuple[str, str] | None:
+    """非空 `(流水单号, 零件号)` 复合键；任一侧为空即视为无有效键。
+
+    只认复合键：单号回退会把「同单号不同零件号」的行互相覆盖（顾问评审
+    2026-10-22 结论，本期不做回退）；incident 跨源口径未证实，不参与对齐。
+    """
+    serial = _source_value(row, *_OFFICIAL_SERIAL_KEYS)
+    part = _source_value(row, *_OFFICIAL_PART_KEYS)
+    serial_text = "" if serial is None else str(serial).strip()
+    part_text = "" if part is None else str(part).strip()
+    if not serial_text or not part_text:
+        return None
+    return serial_text, part_text
+
+
+def _tdc_data_model_missing_indexes() -> tuple[int, ...]:
+    """契约 47 列中列表接口不返回、只能由官方工作簿补齐的列下标。
+
+    由契约表头与 `core/report_contracts._TDC_DATA_MODEL_SOURCE_FIELDS` 现场
+    计算（本期 27 列），绝不硬编码：任一列映射变化时这里自动跟随。
+    """
+    contract = report_contracts()["tdc_data_model"]
+    headers = contract["headerRows"][int(contract.get("dataHeaderRow", 0))]
+    return tuple(
+        index
+        for index in range(len(headers))
+        if index not in _TDC_DATA_MODEL_SOURCE_FIELDS
+    )
+
+
+def _official_join_marker(source: Mapping[str, Any]) -> str:
+    """逐行官方列取得状态；缺失或未知取值（旧快照、其他报表）按 unavailable。"""
+    text = str(source.get("officialJoin") or "").strip()
+    return text if text in _OFFICIAL_JOIN_STATUSES else _OFFICIAL_JOIN_UNAVAILABLE
+
+
+def _merge_official_columns(
+    report: str,
+    rows: Sequence[Mapping[str, Any]],
+    official_rows: Sequence[Mapping[str, Any]],
+    official_status: str,
+) -> tuple[list[dict[str, Any]], dict[str, int], int]:
+    """把官方 47 列合并进列表行；保守 join，绝不猜测。
+
+    - 官方状态非 ``ok``（unavailable/truncated/contract_mismatch/export_failed/
+      not_requested）→ 所有行标 ``unavailable``，不添加任何标签键；
+    - 复合键缺失/任一侧不唯一 → 不合并，标 ``unmatched``（键缺失或官方无此行）
+      或 ``ambiguous``（重复键）；
+    - 合并成功 → ``dict(列表行)`` 叠加官方行，标记 ``officialJoin="joined"``。
+
+    **硬约束**：``_tdc_header_mapping_values`` 只要行里出现任一中文表头标签就
+    整行走标签映射、忽略 API 键。因此合并行必须 47 个标签键齐全（官方缺列补
+    None），未合并行一个标签键都不能加——半套标签会把列表 20 列一起塌成空值。
+
+    -> (行列表, 逐行状态计数, 官方侧未参与合并的行数)
+    """
+    merged_rows = [dict(row) for row in rows if isinstance(row, Mapping)]
+    row_status = {"joined": 0, "ambiguous": 0, "unmatched": 0, "unavailable": 0}
+    if report != "tdc_data_model" or official_status != _OFFICIAL_STATUS_OK:
+        for row in merged_rows:
+            row["officialJoin"] = _OFFICIAL_JOIN_UNAVAILABLE
+        row_status[_OFFICIAL_JOIN_UNAVAILABLE] = len(merged_rows)
+        return merged_rows, row_status, 0
+    # 标签行与 _tdc_header_mapping_values 同源（契约表头第 0 行），保证合并行
+    # 恰好覆盖标签映射需要的每一个键。
+    labels = [
+        str(label or "").strip()
+        for label in report_contracts()[report]["headerRows"][0]
+    ]
+    official_by_key: dict[tuple[str, str], Mapping[str, Any]] = {}
+    duplicated_official_keys: set[tuple[str, str]] = set()
+    for official_row in official_rows:
+        if not isinstance(official_row, Mapping):
+            continue
+        key = _official_join_key(official_row)
+        if key is None:
+            continue
+        if key in official_by_key:
+            duplicated_official_keys.add(key)
+        else:
+            official_by_key[key] = official_row
+    list_keys = [_official_join_key(row) for row in merged_rows]
+    key_counts: dict[tuple[str, str], int] = {}
+    for key in list_keys:
+        if key is not None:
+            key_counts[key] = key_counts.get(key, 0) + 1
+    merged: list[dict[str, Any]] = []
+    for row, key in zip(merged_rows, list_keys):
+        if key is None or key not in official_by_key:
+            row["officialJoin"] = "unmatched"
+        elif key_counts[key] > 1 or key in duplicated_official_keys:
+            row["officialJoin"] = "ambiguous"
+        else:
+            source = official_by_key[key]
+            joined = dict(row)
+            joined.update({label: source.get(label) for label in labels if label})
+            joined["officialJoin"] = "joined"
+            row = joined
+        row_status[row["officialJoin"]] += 1
+        merged.append(row)
+    unjoined_official_rows = sum(
+        1 for key in official_by_key if key not in key_counts
+    )
+    emit(
+        "forms.official_columns_merge",
+        {
+            "report_type": report,
+            "count": row_status["joined"],
+            "failed_count": row_status["ambiguous"] + row_status["unmatched"],
+            "dropped_count": unjoined_official_rows,
+        },
+        name="forms.build_form_snapshot",
+    )
+    return merged, row_status, unjoined_official_rows
+
+
 @observed("forms.normalize_form_rows")
 def normalize_form_rows(
     form_key: str,
@@ -1239,6 +1373,9 @@ def normalize_form_rows(
                 "searchText": search_text,
                 "cost": cost,
                 "contact": dates.get("contact", ""),
+                # 逐行官方列取得状态（joined/ambiguous/unmatched/unavailable）：
+                # 由官方 47 列合并器写入，随快照行持久化供读取侧判定。
+                "officialJoin": _official_join_marker(source),
             }
         )
     if legacy_ambiguous_rows:
@@ -1256,6 +1393,44 @@ def normalize_form_rows(
             name="forms.normalize_form_rows",
         )
     return normalized
+
+
+def _official_columns_payload(stored_schema: object) -> dict[str, Any] | None:
+    """读取侧的官方列状态（快照 schema 里的 ``officialColumns``）。
+
+    旧快照没有该键 → 返回 None（读取行为不变，调用方不下发该键，等价
+    ``not_requested``）。逐行计数固定四个键，缺失按 0，保证前端口径稳定。
+    """
+    if not isinstance(stored_schema, Mapping):
+        return None
+    raw = stored_schema.get("officialColumns")
+    if not isinstance(raw, Mapping):
+        return None
+    status = str(raw.get("status") or "").strip() or "not_requested"
+    raw_row_status = raw.get("rowStatus")
+    row_status: dict[str, int] = {}
+    for key in _OFFICIAL_JOIN_STATUSES:
+        value = raw_row_status.get(key) if isinstance(raw_row_status, Mapping) else None
+        row_status[key] = (
+            int(value)
+            if isinstance(value, int) and not isinstance(value, bool)
+            else 0
+        )
+    raw_missing = raw.get("missingIndexes")
+    missing_indexes = (
+        [
+            int(index)
+            for index in raw_missing
+            if isinstance(index, int) and not isinstance(index, bool)
+        ]
+        if isinstance(raw_missing, Sequence) and not isinstance(raw_missing, (str, bytes))
+        else []
+    )
+    return {
+        "status": status,
+        "rowStatus": row_status,
+        "missingIndexes": missing_indexes,
+    }
 
 
 def _status_bucket(row: Mapping[str, Any]) -> str:
@@ -1776,10 +1951,21 @@ def build_form_snapshot(
     artifacts: Sequence[Mapping[str, Any]] = (),
     sheet_name: str | None = None,
     coverage: Mapping[str, Any] | None = None,
+    official_rows: Sequence[Mapping[str, Any]] = (),
+    official_status: str = "not_requested",
 ) -> FormSnapshotInput:
+    report = _report_type(form_key)
+    # 官方 47 列先合并、再规范化：合并行必须 47 个中文标签键齐全，未合并行
+    # 一个标签键都不能加（见 _merge_official_columns 的硬约束说明）。
+    merged_rows, official_row_status, unjoined_official_rows = _merge_official_columns(
+        report,
+        rows,
+        official_rows,
+        official_status,
+    )
     normalized = normalize_form_rows(
         form_key,
-        rows,
+        merged_rows,
         snapshot_at=snapshot_at,
         sheet_name=sheet_name,
     )
@@ -1788,9 +1974,9 @@ def build_form_snapshot(
         normalized,
         snapshot_at=snapshot_at,
     )
-    report = _report_type(form_key)
     # 「上游完全未提供」的列必须在**建快照时**从原始行判定并随快照持久化：
     # 规范化行只保留位置 values，源键名在入库前就被丢弃，取数时已无从判断。
+    # 判据仍按**原始列表行**（合并只补齐官方列，不改变列表来源能力口径）。
     schema = form_definition(form_key)
     absent_indexes = source_absent_indexes(form_key, rows)
     if absent_indexes:
@@ -1798,6 +1984,19 @@ def build_form_snapshot(
     # 覆盖范围随快照持久化（全部 / 关注清单）；没写的旧快照按全部处理。
     if coverage and coverage.get("kind") == "watchlist":
         schema["coverage"] = dict(coverage)
+    if report == "tdc_data_model":
+        # 官方列取得状态（快照级事实）：旧快照没有该键 → 读取侧视为 not_requested。
+        schema["officialColumns"] = {
+            "status": official_status,
+            "rowStatus": official_row_status,
+            "missingIndexes": list(_tdc_data_model_missing_indexes()),
+        }
+        if unjoined_official_rows:
+            emit(
+                "forms.official_columns_unjoined",
+                {"report_type": report, "row_count": unjoined_official_rows},
+                name="forms.build_form_snapshot",
+            )
     charts = {
         "departmentStatus": summary["departmentStatus"],
         "sectionStatus": summary["sectionStatus"],
@@ -2411,7 +2610,10 @@ class DeliverableFormAnalysisService:
             for index in (raw_absent if isinstance(raw_absent, Sequence) and not isinstance(raw_absent, (str, bytes)) else [])
             if isinstance(index, int)
         ]
-        return {
+        # 官方列取得状态（快照级 + 逐行计数 + 缺失列）一并透出；旧快照没有该键
+        # 时不下发该键（读取行为与升级前完全一致，视为 not_requested）。
+        official_columns_payload = _official_columns_payload(stored_schema)
+        payload = {
             "formKey": key,
             "reportType": _report_type(key),
             "snapshot": snapshot,
@@ -2435,6 +2637,9 @@ class DeliverableFormAnalysisService:
                 "options": _filter_options(option_rows, rollup),
             },
         }
+        if official_columns_payload is not None:
+            payload["officialColumns"] = official_columns_payload
+        return payload
 
 
 __all__ = [
