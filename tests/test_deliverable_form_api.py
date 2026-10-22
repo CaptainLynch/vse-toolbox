@@ -11,7 +11,11 @@ import pytest
 import web.app as web_app
 from core.db_manager import DatabaseManager
 from core.section_rollup import SectionRollupStore
-from services.deliverable_form_analysis import build_form_snapshot, form_definition
+from services.deliverable_form_analysis import (
+    FormSnapshotInput,
+    build_form_snapshot,
+    form_definition,
+)
 
 
 def _save_rollup_rules(db: DatabaseManager, *, aliases: dict[str, list[str]] | None = None) -> dict:
@@ -802,3 +806,111 @@ def test_rows_section_filter_combined_with_threshold_override(client) -> None:
         query_string={"section": "未归集", "overdueDaysStage": "1"},
     )
     assert unassigned_only.get_json()["data"]["total"] == 1
+
+
+# ── 行级 officialJoin 持久化往返（方案 A：official_join 列） ──────────────────
+
+
+def test_form_rows_round_trip_official_join_marker(db: DatabaseManager) -> None:
+    """写入带 officialJoin 的行读回一致；未标注行读回空串（未知）。"""
+    db.publish_deliverable_form_snapshot(
+        FormSnapshotInput(
+            form_key="aras_paa",
+            report_type="paa",
+            source_run_id=7,
+            snapshot_at="2026-10-22T00:00:00Z",
+            schema={"columns": []},
+            rows=(
+                {
+                    "rowKey": "row-joined",
+                    "rowNumber": 1,
+                    "values": ["PAA-OJ-1"],
+                    "dimensions": {},
+                    "officialJoin": "joined",
+                },
+                {
+                    "rowKey": "row-unknown",
+                    "rowNumber": 2,
+                    "values": ["PAA-OJ-2"],
+                    "dimensions": {},
+                },
+                {
+                    "rowKey": "row-unmatched",
+                    "rowNumber": 3,
+                    "values": ["PAA-OJ-3"],
+                    "dimensions": {},
+                    "officialJoin": "unmatched",
+                },
+            ),
+            summary={"total": 3},
+            charts={},
+            source="test archive",
+        )
+    )
+
+    page = db.list_deliverable_form_rows("aras_paa")
+    by_key = {str(item["rowKey"]): item for item in page["items"]}
+
+    assert page["total"] == 3
+    assert by_key["row-joined"]["officialJoin"] == "joined"
+    assert by_key["row-unmatched"]["officialJoin"] == "unmatched"
+    # 行里没有 officialJoin 键 → 落库 ''，读回空串（未知），不是 unavailable。
+    assert by_key["row-unknown"]["officialJoin"] == ""
+
+    # 同一解码路径（图表/搜索用的按快照读行）也读回一致。
+    latest = db.get_latest_deliverable_form_snapshot("aras_paa")
+    assert latest is not None
+    snapshot_rows = {
+        str(row["rowKey"]): row
+        for row in db.list_deliverable_form_snapshot_rows(int(latest["id"]))
+    }
+    assert snapshot_rows["row-joined"]["officialJoin"] == "joined"
+    assert snapshot_rows["row-unknown"]["officialJoin"] == ""
+
+
+def test_legacy_snapshot_rows_read_official_join_as_unknown(
+    db: DatabaseManager,
+) -> None:
+    """旧快照（无 officialColumns、official_join=''）读取行为与改动前一致。"""
+    db.publish_deliverable_form_snapshot(
+        build_form_snapshot(
+            "tdc_data_model",
+            [
+                {
+                    "incident": "90000101",
+                    "documentNo": "3D-00001018",
+                    "partNumber": "27000001",
+                    "projectModel": "F999X",
+                    "status": "2",
+                }
+            ],
+            snapshot_at="2026-10-22T00:00:00Z",
+            source_run_id=8,
+            source="test archive",
+        )
+    )
+    # 模拟升级前写入的旧快照：schema 无 officialColumns，行级状态列为空串。
+    with db.get_connection() as conn:
+        stored = conn.execute(
+            "SELECT id, schema_json FROM deliverable_form_snapshots "
+            "WHERE form_key = 'tdc_data_model'"
+        ).fetchone()
+        stored_schema = json.loads(stored["schema_json"])
+        stored_schema.pop("officialColumns", None)
+        conn.execute(
+            "UPDATE deliverable_form_snapshots SET schema_json = ? WHERE id = ?",
+            (json.dumps(stored_schema, ensure_ascii=False), stored["id"]),
+        )
+        conn.execute(
+            "UPDATE deliverable_form_rows SET official_join = '' WHERE snapshot_id = ?",
+            (stored["id"],),
+        )
+
+    latest = db.get_latest_deliverable_form_snapshot("tdc_data_model")
+    assert latest is not None
+    assert "officialColumns" not in latest["schema"]
+
+    rows = db.list_deliverable_form_rows("tdc_data_model")["items"]
+    assert len(rows) == 1
+    # '' 表示未知（旧快照/未标注），读取侧不得据此合成 unavailable 标注。
+    assert rows[0]["officialJoin"] == ""

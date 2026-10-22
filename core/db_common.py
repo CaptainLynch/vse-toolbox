@@ -891,6 +891,9 @@ TABLE_DEFINITIONS: list[str] = [
                         CHECK (overdue_state IN ('on_time', 'overdue', 'unknown', 'not_applicable')),
         is_completed    INTEGER NOT NULL DEFAULT 0 CHECK (is_completed IN (0, 1)),
         cost_json       TEXT NOT NULL DEFAULT '{}',
+        -- 逐行官方列取得状态（joined/ambiguous/unmatched/unavailable）；
+        -- '' = 未知（旧快照/未标注），读取侧不得据此标注「未取得官方列」。
+        official_join   TEXT NOT NULL DEFAULT '',
         UNIQUE (snapshot_id, row_key),
         FOREIGN KEY (snapshot_id) REFERENCES deliverable_form_snapshots(id) ON DELETE CASCADE
     );

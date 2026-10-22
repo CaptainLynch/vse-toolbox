@@ -505,6 +505,19 @@ class DatabaseManager(
             "AND display_name = 'TDC数模'"
         )
 
+        # deliverable_form_rows 逐行官方列取得状态（方案 A，纯增量列）：
+        # '' = 未知（旧快照/未标注），joined/ambiguous/unmatched/unavailable 为
+        # 官方 47 列合并器的逐行结果。旧库补列时既有行取 ''，不重建、不回填。
+        form_row_columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(deliverable_form_rows)")
+        }
+        if "official_join" not in form_row_columns:
+            conn.execute(
+                "ALTER TABLE deliverable_form_rows "
+                "ADD COLUMN official_join TEXT NOT NULL DEFAULT ''"
+            )
+
         # crawl_tasks 增量表（保持 CURRENT_SCHEMA_VERSION = 14 严格不变）
         conn.execute(
             """

@@ -1166,3 +1166,116 @@ def test_migration_backfills_null_config_signatures(tmp_path) -> None:
         ).fetchone()
         assert row is not None
         assert row["config_signature"] == expected_sig
+
+
+def test_new_database_form_rows_has_official_join_column(tmp_db: DatabaseManager) -> None:
+    """新库建表即含 deliverable_form_rows.official_join（NOT NULL DEFAULT ''）。"""
+    with tmp_db.get_connection() as conn:
+        columns = {
+            str(row["name"]): row
+            for row in conn.execute("PRAGMA table_info(deliverable_form_rows)")
+        }
+
+    assert "official_join" in columns, "新库建表缺少 official_join 列"
+    assert columns["official_join"]["type"] == "TEXT"
+    assert columns["official_join"]["notnull"] == 1
+    assert columns["official_join"]["dflt_value"] == "''"
+
+
+def test_legacy_form_rows_gain_official_join_column(tmp_path: Path) -> None:
+    """旧库（无 official_join）启动后补列，旧行取 ''，连续启动幂等。"""
+    db_path = tmp_path / "legacy-form-rows.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(f"PRAGMA user_version = {CURRENT_SCHEMA_VERSION}")
+    # 升级前的 deliverable_form_rows 结构（缺 official_join），其余列保持一致。
+    conn.execute(
+        """
+        CREATE TABLE deliverable_form_snapshots (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_key       TEXT NOT NULL UNIQUE,
+            form_key           TEXT NOT NULL,
+            report_type        TEXT NOT NULL,
+            source_run_id      INTEGER,
+            source             TEXT NOT NULL DEFAULT '',
+            snapshot_at        TEXT NOT NULL,
+            row_count          INTEGER NOT NULL CHECK (row_count >= 0),
+            schema_json        TEXT NOT NULL,
+            summary_json       TEXT NOT NULL,
+            charts_json        TEXT NOT NULL,
+            artifacts_json     TEXT NOT NULL DEFAULT '[]',
+            created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE deliverable_form_rows (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_id     INTEGER NOT NULL,
+            row_key         TEXT NOT NULL,
+            row_number      INTEGER NOT NULL CHECK (row_number >= 1),
+            sheet_name      TEXT NOT NULL DEFAULT '',
+            values_json     TEXT NOT NULL,
+            dimensions_json TEXT NOT NULL DEFAULT '{}',
+            search_text     TEXT NOT NULL DEFAULT '',
+            status_key      TEXT NOT NULL DEFAULT '',
+            department_key  TEXT NOT NULL DEFAULT '',
+            section_key     TEXT NOT NULL DEFAULT '',
+            model_key       TEXT NOT NULL DEFAULT '',
+            stage_key       TEXT NOT NULL DEFAULT '',
+            submitted_date  TEXT,
+            planned_date    TEXT,
+            overdue_state   TEXT NOT NULL DEFAULT 'unknown'
+                            CHECK (overdue_state IN ('on_time', 'overdue', 'unknown', 'not_applicable')),
+            is_completed    INTEGER NOT NULL DEFAULT 0 CHECK (is_completed IN (0, 1)),
+            cost_json       TEXT NOT NULL DEFAULT '{}',
+            UNIQUE (snapshot_id, row_key),
+            FOREIGN KEY (snapshot_id) REFERENCES deliverable_form_snapshots(id) ON DELETE CASCADE
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO deliverable_form_snapshots "
+        "(id, snapshot_key, form_key, report_type, snapshot_at, row_count, "
+        " schema_json, summary_json, charts_json) "
+        "VALUES (1, 'tdc_data_model:none:2026-10-01T00:00:00Z', 'tdc_data_model', "
+        "        'tdc_data_model', '2026-10-01T00:00:00Z', 1, '{}', '{}', '{}')"
+    )
+    conn.execute(
+        "INSERT INTO deliverable_form_rows "
+        "(snapshot_id, row_key, row_number, values_json) "
+        "VALUES (1, 'legacy-row', 1, '[]')"
+    )
+    conn.commit()
+    conn.close()
+
+    db = DatabaseManager(db_path=db_path)
+    db.init_database()
+
+    with db.get_connection() as c:
+        columns = {
+            str(row["name"]): row
+            for row in c.execute("PRAGMA table_info(deliverable_form_rows)")
+        }
+        assert "official_join" in columns, "旧库启动后未补 official_join 列"
+        assert columns["official_join"]["type"] == "TEXT"
+        assert columns["official_join"]["notnull"] == 1
+        assert columns["official_join"]["dflt_value"] == "''"
+        legacy = c.execute(
+            "SELECT row_key, official_join FROM deliverable_form_rows"
+        ).fetchone()
+        assert legacy["row_key"] == "legacy-row"
+        assert legacy["official_join"] == ""
+        assert c.execute("PRAGMA user_version").fetchone()[0] == CURRENT_SCHEMA_VERSION
+
+    # 连续启动两次幂等：不抛错、列不重复、旧行值不被改写。
+    db.init_database()
+    with db.get_connection() as c:
+        names = [
+            str(row["name"])
+            for row in c.execute("PRAGMA table_info(deliverable_form_rows)")
+        ]
+        assert names.count("official_join") == 1
+        assert c.execute(
+            "SELECT official_join FROM deliverable_form_rows WHERE row_key = 'legacy-row'"
+        ).fetchone()["official_join"] == ""
