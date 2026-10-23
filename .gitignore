@@ -51,6 +51,7 @@ chromedriver.exe
 artifacts/
 .zcode/
 .agents/
+.agent/
 .excel_workbench/
 dist-probe/
 tmp/
