@@ -63,6 +63,7 @@ import {
 } from "./form-state.js";
 import { SearchMultiSelect } from "./multi-select.js";
 import { TermsInput, TermsSummary, WatchlistPanel, loadWatchlist } from "./watchlist.js";
+import { ArchLinksPanel } from "./arch-links.js";
 import { DATA_MODEL_FORM_KEY, termsChipText } from "./watchlist-logic.js";
 
 const keyActivate = (fn) => (event) => {
@@ -955,6 +956,7 @@ export function FormAnalysisPanel({ item, version, ctl, onViewData, archive }) {
       >${bgBusy ? "后台同步中..." : "运行后台归档同步"}</button>`}
     </div>
     ${dataFormKey === DATA_MODEL_FORM_KEY && html`<${WatchlistPanel} watchlist=${watchlist} onChanged=${setWatchlist} />`}
+    ${dataFormKey === DATA_MODEL_FORM_KEY && html`<${ArchLinksPanel} summary=${view.data && view.data.vehicleArchLinks} onSaved=${load} />`}
     <div class="form-summary-grid">
       ${[["总数", summary.total], ["已完成", summary.completed], ["未完成", summary.incomplete], ["逾期", summary.overdue]].map(([label, value]) => html`
         <div class="form-summary-card" key=${label}>

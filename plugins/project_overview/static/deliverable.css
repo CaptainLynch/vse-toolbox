@@ -844,6 +844,12 @@
 .overview-deliverable-detail-view .form-watchlist-items li { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border: 1px solid var(--hairline-strong); border-radius: 999px; }
 .overview-deliverable-detail-view .form-watchlist-state { font-size: 12px; color: var(--muted); }
 .overview-deliverable-detail-view .form-watchlist-state.is-missing { color: var(--warning); }
+/* 关联架构件四态：已匹配=正常，来源不符/键冲突=错误，快照缺失=警告 */
+.overview-deliverable-detail-view .form-watchlist-state.is-matched { color: var(--success); }
+.overview-deliverable-detail-view .form-watchlist-state.is-mismatch { color: var(--error); }
+.overview-deliverable-detail-view .form-watchlist-state.is-conflict { color: var(--error); }
+.overview-deliverable-detail-view .form-arch-links-summary { margin: 0; font-size: 13px; color: var(--muted); }
+.overview-deliverable-detail-view .form-arch-links .form-filter-keyword { width: 100%; }
 .overview-deliverable-detail-view .form-watchlist-error { color: var(--error); margin: 0; }
 .overview-deliverable-detail-view .form-watchlist-empty { margin: 0; color: var(--muted); }
 

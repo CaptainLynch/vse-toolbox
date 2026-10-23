@@ -112,7 +112,7 @@ Ar-L+ · 架构件     按期   5  逾期   0  未判定  9   合计  14
 | 1 | 分组规则 + 维度提取 + D5 专属分组 | ✅ 已实施 |
 | 2 | 两个入口都体现分组：交付物详情页图表 + 独立表单页「归集分组」图表与「数据来源/架构平台」筛选 | ✅ 已实施 |
 | 3 | 台账归属（自动来源） | ❌ 已取消（台账不存在，见第〇节第 2 条） |
-| 4 | 方案 B：车型 ↔ 架构件单人工声明（存储 + 四态校验 + 汇总 + 接口） | ✅ 已实施（页面编辑器待做） |
+| 4 | 方案 B：车型 ↔ 架构件单人工声明（存储 + 四态校验 + 汇总 + 接口 + 页面面板） | ✅ 已实施 |
 
 已改动文件：
 
@@ -123,7 +123,8 @@ Ar-L+ · 架构件     按期   5  逾期   0  未判定  9   合计  14
 - `core/form_registry.py`：`tdc_data_model` 的 `dimension_labels` 登记四个维度（不进全局默认值）
 - `plugins/deliverable_forms/backend.py` + `static/pages/tdc_data_model.json`：展平分组维度与 `_group`，新增分组图表与筛选
 - `plugins/project_overview/backend.py`：`GET/POST /vehicle-arch-links`（读声明、替换/清空，写路由过 `local_guard`）
-- `tests/test_data_model_attribution.py`（35 项）、`tests/test_data_model_vehicle_links.py`（16 项）
+- `plugins/project_overview/static/deliverable/arch-links.js` + `form-analysis.js` + `deliverable.css`：D5 明细页「关联架构件」折叠面板（选车型 → 粘贴单号 → 保存/清空，展示四态与合计）
+- `tests/test_data_model_attribution.py`（35 项）、`tests/test_data_model_vehicle_links.py`（16 项）、`tests/test_plugin_overview_arch_links.py`（7 项）
 
 ## 六、评审响应（`docs/CODE_REVIEW_D5_20261023.md`，R1–R4 已修）
 
@@ -139,10 +140,13 @@ Ar-L+ · 架构件     按期   5  逾期   0  未判定  9   合计  14
 | # | 待确认 | 为什么阻塞 |
 | --- | --- | --- |
 | 1 | D5 是否需要显示 `已废弃` | 归档链路已剔除该状态，放开会影响所有 TDC 交付物，超出"仅 D5"范围 |
-| 2 | 声明清单的页面编辑器何时做 | 存储与接口已就绪，但没有页面就只能通过接口维护；影响可用性不影响口径 |
 
 台账一项已关闭：用户 2026-10-23 确认台账不存在，(a) 作废。
 若将来业务上出现独立于 TDC 的派单关系来源，再开新决策，不在本方案内预留代码。
+
+**声明清单的维护规模已确认**：一个人、几条手输、定一次基本不动。因此按最小形态实现——
+页面上一块折叠面板（选车型 → 粘贴单号 → 保存 / 清空），不做批量导入、权限、审计日志。
+若将来变成多人维护或上百条，再补导入与操作日志（存储已带 operator/basis/revision，够用）。
 
 ## 八、专家顾问意见与裁决
 
