@@ -960,10 +960,11 @@ export function FormAnalysisPanel({ item, version, ctl, onViewData, archive }) {
     <div class="form-summary-grid">
       ${[["总数", summary.total], ["已完成", summary.completed], ["未完成", summary.incomplete], ["逾期", summary.overdue]].map(([label, value]) => html`
         <div class="form-summary-card" key=${label}>
-          <span class="form-summary-label">${label}</span>
+          <span class="form-summary-label">${dataFormKey === DATA_MODEL_FORM_KEY ? `${label}（零件行）` : label}</span>
           <strong class=${summaryClass[label] || "form-summary-value form-status-on-time"}>${String(Number(value) || 0)}</strong>
         </div>`)}
     </div>
+    ${dataFormKey === DATA_MODEL_FORM_KEY && html`<p class="form-analysis-note form-unit-note">以上及「零件行风险分布」均按零件行计数（一个单可含多行零件）；按单的数字见上方「关联架构件」面板。</p>`}
     <p class="form-analysis-note">${dataFormKey === "aras_ncr_detail"
       ? "NCR 明细不计算逾期；整车 / 发动机工作表来源保留在明细行中。"
       : "按期推进 / 正常为绿色，逾期风险为橙黄色；交互式查询不会覆盖后台快照。"}</p>

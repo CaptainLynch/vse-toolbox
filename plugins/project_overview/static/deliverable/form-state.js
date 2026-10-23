@@ -33,8 +33,13 @@ export const DELIVERABLE_FORM_FILTER_LABELS = {
 
 export const DELIVERABLE_FORM_CHART_TITLES = {
   tdc_data_model: {
-    departmentStatus: ["项目状态", "各项目 / 车型按期推进数与逾期风险数"],
-    sectionStatus: ["部门状态", "点击一个部门可追加筛选"],
+    // 数模表一个流程单可含多行零件（实测最多 22 行）。本图按**零件行**计数，
+    // 与"按单完成率"是两个口径，标题里写明，避免和汇总数字对不上被当成错误。
+    departmentStatus: [
+      "零件行风险分布",
+      "按零件行计数：一个流程单可含多行零件；这里看逾期分布，不是单据完成率",
+    ],
+    sectionStatus: ["部门零件行分布", "按零件行计数；点击一个部门可追加筛选"],
   },
   tdc_sor: {
     departmentStatus: ["车型项目状态", "各车型项目按期推进数与逾期风险数"],

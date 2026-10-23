@@ -1607,6 +1607,9 @@ def _data_model_link_payload(
 
     * 给已匹配的架构件行打 ``linkedVehicle`` 标记，阶段图据此把它们归到车型下；
     * 返回方案 B 的汇总载荷（项目件 / 关联架构件 / 合计三层数字）。
+
+    即使一条声明都没有，也照常产出"仅项目件"的按单数字——否则页面上的
+    「关联架构件」面板会空着，用户看不到按单口径的完成率。
     """
     empty = {"scope": "combined", "vehicles": [], "linkedInstanceCount": 0, "note": ""}
     if _report_type(form_key) != "tdc_data_model":
@@ -1621,7 +1624,7 @@ def _data_model_link_payload(
         serial = str(item.get("serial") or "").strip()
         if vehicle and serial:
             links_by_vehicle.setdefault(vehicle, []).append(serial)
-    if not links_by_vehicle:
+    if not rows:
         return rows, dict(empty)
 
     for vehicle, serials in links_by_vehicle.items():

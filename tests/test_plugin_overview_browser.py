@@ -418,7 +418,8 @@ def test_view_timeout_unlocks_interaction_and_offers_retry(session: Session) -> 
     # the failed switch fell back to the last good tab (filters shown == filters applied)
     assert "is-active" in (_tab(page, "项目状态").get_attribute("class") or "")
     page.get_by_role("button", name="刷新表单数据").first.click()
-    page.wait_for_selector(".form-chart-title:has-text('项目状态')")
+    # 数模表的阶段图标题已改为「零件行风险分布」（与按单口径区分）。
+    page.wait_for_selector(".form-chart-title:has-text('零件行风险分布')")
     _tab(page, "数量趋势").click()
     page.wait_for_selector(".form-trend-chart")
     assert page.locator(".form-view-load-error").count() == 0
