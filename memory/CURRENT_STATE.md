@@ -1,5 +1,23 @@
 # Current State
 
+## 2026-10-23 D5 方案 B 完成：含页面面板（一个人/几条/基本不动）
+
+- **维护规模已确认**：一个人维护、几条手输、定一次基本不动。故按最小形态实现，
+  不做批量导入、权限、审计日志（存储里已有 operator/basis/revision，够用）。
+- **页面**：`plugins/project_overview/static/deliverable/arch-links.js`，挂进
+  `form-analysis.js` 的 D5 明细页（与关注清单同级）。折叠面板：选车型（datalist）→
+  粘贴单号（一行一个）→ 保存/清空；展示四态与「仅项目件 / 关联 / 合计」三个数字。
+  四态标签只读后端 `statusLabel`，前端不重算口径。
+- **样式**：`plugins/project_overview/static/deliverable.css` 增加
+  `is-matched/is-mismatch/is-conflict/form-arch-links-summary`（复用 `form-watchlist*` 结构）。
+- **接口**：`GET/POST /api/p/project-overview/vehicle-arch-links`；view 载荷
+  `vehicleArchLinks` 含 `scope=combined / countUnit=instance / vehicles[].{projectOnly,
+  linkedArchitecture, combined, links[]}`。
+- **验证**：`tests/test_plugin_overview_arch_links.py` 7 项（含 node --check 兜底）、
+  `tests/test_data_model_vehicle_links.py` 16 项；全量 pytest 见本轮日志。
+- **已知取舍**：阶段图是行级（746 行），`vehicleArchLinks` 汇总与工作簿是实例级（228 单）。
+  字段已分别命名（`rows` / `instances`），但同一页并排仍可能被误读，是否统一待定。
+
 ## 2026-10-23 D5 方案 B 实施：车型 ↔ 架构件单人工声明
 
 - **用户决策**：接受方案 B——车型合计 = 项目件 + 人工指定且已确认关联的架构件；
