@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 """数模设计审核流程（D5）项目件/架构件分组规则的离线测试。
 
-口径（用户 2026-10-23 确认，方案 a+c）：
+口径（用户 2026-10-23 确认）：
 
 * 项目件按**车型**统计；
 * 架构件按**架构平台**单列，不归属单一车型、不并入车型合计；
-* 车型归属的唯一权威来源是外部项目派单台账（``ledger_vehicle``）；
-* ``EWO/SOR号`` 与流水单号前缀**都不是**归属证据，必须保持被忽略。
+* ``EWO/SOR号`` 与流水单号前缀**都不是**归属证据，必须保持被忽略；
+* 项目派单台账**不存在**（所谓台账就是 TDC 按车型查询的结果，结构上不含
+  ``Ar-`` 行），因此不保留任何台账入参，也不得把它接到别的字段上。
 
 另含代码评审（docs/CODE_REVIEW_D5_20261023.md）四项发现的回归测试：
 R1 复合分组标签不能当 stage 值查库；R2 独立表单页要展平分组维度；
@@ -79,12 +80,17 @@ def test_dimension_fields_for_architecture_part_goes_to_platform_not_vehicle() -
     assert fields["archPlatform"] == "Ar-L"
 
 
-def test_dimension_fields_uses_ledger_vehicle_when_provided() -> None:
-    """台账是唯一权威车型来源：给出即归属，并标注「台账归属」。"""
-    fields = attribution.dimension_fields("Ar-L", ledger_vehicle="f620s")
-    assert fields["vehicle"] == "F620S"
-    assert fields["attribution"] == attribution.ATTRIBUTION_LEDGER
-    assert fields["archPlatform"] == "Ar-L"
+def test_dimension_fields_has_no_ledger_or_sor_parameter() -> None:
+    """台账不存在、SOR 不是证据：两个入口都不得再出现在签名里。
+
+    这是防回流的锁：若将来真要接独立派单台账，必须以显式新参数引入并补口径评审，
+    而不是复用 SOR 号或流水单号。
+    """
+    names = attribution.dimension_fields.__code__.co_varnames
+    assert "ledger_vehicle" not in names
+    assert "ewo" not in names
+    assert "document" not in names
+    assert not hasattr(attribution, "ATTRIBUTION_LEDGER")
 
 
 # ── 反面回归：SOR 号 / 流水单号前缀不得参与归属 ────────────────────────────
@@ -139,10 +145,6 @@ def test_resolve_dimensions_recomputes_legacy_sor_based_attribution() -> None:
 def test_group_label_shapes() -> None:
     assert attribution.group_label(attribution.dimension_fields("F620S")) == "F620S · 项目件"
     assert attribution.group_label(attribution.dimension_fields("Ar-L")) == "Ar-L · 架构件"
-    assert (
-        attribution.group_label(attribution.dimension_fields("Ar-L", ledger_vehicle="F620S"))
-        == "F620S · 架构件（台账）"
-    )
 
 
 def test_group_sort_key_places_vehicle_groups_before_platform_groups() -> None:
@@ -158,12 +160,12 @@ def test_group_sort_key_places_vehicle_groups_before_platform_groups() -> None:
 # ── 实例级汇总 ──────────────────────────────────────────────────────────────
 
 
-def _row(stage: str, status: str, instance: str, ledger: str | None = None) -> dict:
+def _row(stage: str, status: str, instance: str) -> dict:
     return {
         "instance": instance,
         "status": status,
         "dimensions": {
-            **attribution.dimension_fields(stage, ledger_vehicle=ledger),
+            **attribution.dimension_fields(stage),
             "stage": stage,
         },
     }
@@ -412,8 +414,8 @@ def test_enrich_data_model_dimensions_keeps_current_grouping() -> None:
     stored = {
         "stage": "Ar-L",
         "dataSource": attribution.ARCHITECTURE_PART,
-        "vehicle": "F620S",
-        "attribution": attribution.ATTRIBUTION_LEDGER,
+        "vehicle": "",
+        "attribution": attribution.ATTRIBUTION_PLATFORM,
         "archPlatform": "Ar-L",
     }
     rows = [{"values": [], "dimensions": dict(stored)}]

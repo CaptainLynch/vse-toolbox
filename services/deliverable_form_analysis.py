@@ -1888,7 +1888,6 @@ def _enrich_data_model_dimensions(
     current_attributions = {
         _attribution.ATTRIBUTION_SELF,
         _attribution.ATTRIBUTION_PLATFORM,
-        _attribution.ATTRIBUTION_LEDGER,
     }
     for row in rows:
         dimensions = row.get("dimensions")

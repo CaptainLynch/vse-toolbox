@@ -4,7 +4,7 @@
 本模块只服务 ``tdc_data_model``（VPI-T2-D5）这一个交付物：其他交付物
 （EWO / PAA / NCR / SOR / A面）不读取这里的任何函数，也不受影响。
 
-业务口径（用户 2026-10-23 确认，方案 a+c）：
+业务口径（用户 2026-10-23 确认，方案 c + 台账结论）：
 
 * **项目件**：``项目/车型`` 直接是车型代号（如 ``F620S``），按车型统计；
 * **架构件**：``项目/车型`` 是架构平台代号（``Ar-`` 开头，如 ``Ar-L``、
@@ -18,8 +18,10 @@
 ``F710S``——若 SOR 是发布归属，这应当为 0。早期版本曾把 SOR 当最高优先级
 证据，导致架构件 94 单里 34 单被错误归到车型，已整体移除。
 
-车型归属的唯一权威来源是**外部项目派单台账**（车型项目下发清单）。台账接入
-前，架构件一律按平台统计，``vehicle`` 留空。
+台账结论（用户 2026-10-23 确认）：项目派单台账**不存在**，所谓"台账"就是
+TDC 按车型查询的结果，而按车型查询在结构上不会返回 ``Ar-`` 行，所以它无法
+提供"平台单属于哪个车型"的关系。因此不再保留任何台账入参——若将来出现
+独立于 TDC 的派单台账，再以显式参数重新引入，并先补齐口径与回归测试。
 """
 
 from __future__ import annotations
@@ -32,10 +34,8 @@ PROJECT_PART = "项目件"
 ARCHITECTURE_PART = "架构件"
 
 ATTRIBUTION_SELF = "自身车型"
-#: 架构件按平台单列（台账接入前的唯一口径）。
+#: 架构件按平台单列（唯一口径）。
 ATTRIBUTION_PLATFORM = "平台单列"
-#: 台账给出的车型归属（外部权威关系，接入后才出现）。
-ATTRIBUTION_LEDGER = "台账归属"
 
 UNASSIGNED_VEHICLE = "未识别车型"
 
@@ -88,22 +88,18 @@ def classify_source(value: object) -> str:
     return ARCHITECTURE_PART if is_architecture_platform(value) else PROJECT_PART
 
 
-def dimension_fields(
-    project_model: object,
-    *,
-    ledger_vehicle: object = None,
-) -> dict[str, str]:
+def dimension_fields(project_model: object) -> dict[str, str]:
     """给一行 47 列数据算出分组维度。
 
     返回键：
 
     * ``dataSource``：项目件 / 架构件
-    * ``vehicle``：车型（架构件且台账未给出时为空串）
-    * ``attribution``：归属方式（自身车型 / 平台单列 / 台账归属）
+    * ``vehicle``：车型（架构件为空串——平台件不归属单一车型）
+    * ``attribution``：归属方式（自身车型 / 平台单列）
     * ``archPlatform``：架构平台原值（项目件为空串）
 
-    ``ledger_vehicle`` 只能来自外部项目派单台账；**不得**用 SOR 号或流水单号
-    前缀代替（见模块文档的正面/反面说明）。
+    刻意不接受 EWO/SOR 号、流水单号等入参：它们都不是"这单服务哪个车型"
+    的证据（见模块文档）。若将来出现独立派单台账，以新参数显式引入。
     """
     raw = _text(project_model)
     if classify_source(raw) == PROJECT_PART:
@@ -114,15 +110,6 @@ def dimension_fields(
             "attribution": ATTRIBUTION_SELF,
             "archPlatform": "",
         }
-    ledger = _text(ledger_vehicle)
-    if ledger:
-        vehicle, _ = normalize_vehicle(ledger)
-        return {
-            "dataSource": ARCHITECTURE_PART,
-            "vehicle": vehicle or ledger,
-            "attribution": ATTRIBUTION_LEDGER,
-            "archPlatform": raw,
-        }
     return {
         "dataSource": ARCHITECTURE_PART,
         "vehicle": "",
@@ -132,13 +119,13 @@ def dimension_fields(
 
 
 def resolve_dimensions(dimensions: Mapping[str, Any]) -> dict[str, str]:
-    """读取分组维度；旧快照缺键时按原 ``stage`` 兜底推导。
+    """读取分组维度；旧快照缺键或带历史口径时按现行规则重算。
 
     兜底只依赖同一套纯函数，因此新旧快照走同一套规则，不存在第二条计算路径。
-    旧快照里若残留早期版本的 ``attribution``（``SOR号证据`` / ``平台池`` 等），
-    一律按当前口径重算——口径修正必须对历史行同样生效。
+    旧快照里若残留早期版本的 ``attribution``（``SOR号证据`` / ``平台池`` /
+    ``台账归属`` 等），一律按当前口径重算——口径修正必须对历史行同样生效。
     """
-    known = {ATTRIBUTION_SELF, ATTRIBUTION_PLATFORM, ATTRIBUTION_LEDGER}
+    known = {ATTRIBUTION_SELF, ATTRIBUTION_PLATFORM}
     source = _text(dimensions.get("dataSource"))
     attribution = _text(dimensions.get("attribution"))
     if source and attribution in known and (source == ARCHITECTURE_PART or dimensions.get("vehicle")):
@@ -162,31 +149,25 @@ def group_label(dimensions: Mapping[str, Any]) -> str:
 
     * 项目件：``<车型> · 项目件``
     * 架构件：``<平台> · 架构件``（平台单列，不挂车型）
-    * 架构件且台账给出车型：``<车型> · 架构件（台账）``
     """
     resolved = resolve_dimensions(dimensions)
     if resolved["dataSource"] == PROJECT_PART:
         vehicle = resolved["vehicle"] or UNASSIGNED_VEHICLE
         return f"{vehicle} · {PROJECT_PART}"
-    if resolved["attribution"] == ATTRIBUTION_LEDGER:
-        vehicle = resolved["vehicle"] or UNASSIGNED_VEHICLE
-        return f"{vehicle} · {ARCHITECTURE_PART}（台账）"
     platform = resolved["archPlatform"] or "架构平台"
     return f"{platform} · {ARCHITECTURE_PART}"
 
 
 def group_sort_key(label: str) -> tuple[int, str]:
     """项目件（按车型）在前，架构件（按平台）在后；同类按名称排序。"""
-    source_rank = 1 if label.endswith(ARCHITECTURE_PART) or "架构件（台账）" in label else 0
+    source_rank = 1 if label.endswith(ARCHITECTURE_PART) else 0
     return (source_rank, label)
 
 
 def _group_key(resolved: Mapping[str, str]) -> tuple[str, str]:
-    """分组键：项目件按车型、架构件按平台（台账命中时按车型）。"""
+    """分组键：项目件按车型、架构件按平台。"""
     if resolved["dataSource"] == PROJECT_PART:
         return PROJECT_PART, resolved["vehicle"]
-    if resolved["attribution"] == ATTRIBUTION_LEDGER:
-        return ARCHITECTURE_PART, resolved["vehicle"]
     return ARCHITECTURE_PART, resolved["archPlatform"]
 
 
@@ -226,11 +207,9 @@ def summarize_instances(
         if group is None:
             group = {
                 "dataSource": data_source,
-                "vehicle": resolved["vehicle"] if data_source == PROJECT_PART
-                or resolved["attribution"] == ATTRIBUTION_LEDGER else "",
+                "vehicle": resolved["vehicle"] if data_source == PROJECT_PART else "",
                 "archPlatform": resolved["archPlatform"]
-                if data_source == ARCHITECTURE_PART
-                and resolved["attribution"] != ATTRIBUTION_LEDGER else "",
+                if data_source == ARCHITECTURE_PART else "",
                 "attribution": resolved["attribution"],
                 "total": 0,
                 "completed": 0,
