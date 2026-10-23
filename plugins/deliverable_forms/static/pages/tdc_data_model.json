@@ -30,6 +30,11 @@
       "optionsFromRows": true
     },
     {
+      "key": "_archPlatform",
+      "label": "架构平台",
+      "optionsFromRows": true
+    },
+    {
       "key": "_section",
       "label": "部门",
       "optionsFromRows": true

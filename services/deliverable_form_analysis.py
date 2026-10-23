@@ -753,11 +753,7 @@ def _dimensions_from_mapping(
     if report == "tdc_data_model":
         # 与位置行口径保持一致：JSON 快照同样带项目件/架构件归集维度。
         dimensions.update(
-            _attribution.dimension_fields(
-                _source_value(row, "projectModel"),
-                _source_value(row, "ewosorNumber", "ewoSorNumber"),
-                _source_value(row, "documentNo"),
-            )
+            _attribution.dimension_fields(_source_value(row, "projectModel"))
         )
     if report in {"ncr_progress", "ncr_detail"}:
         normalized_ncr_number = _safe_text(ncr_number, 200)
@@ -863,11 +859,7 @@ def _dimensions_from_tdc(
         or norm_str in _TDC_DATA_MODEL_COMPLETED_STATUSES
     )
     project_model = _positional_value(values, definition, "项目/车型")
-    attribution = _attribution.dimension_fields(
-        project_model,
-        _positional_value(values, definition, "EWO/SOR号"),
-        _positional_value(values, definition, "流水单号"),
-    )
+    attribution = _attribution.dimension_fields(project_model)
     return (
         {
             "department": "",
@@ -1461,16 +1453,6 @@ def normalize_form_rows(
             },
             name="forms.normalize_form_rows",
         )
-    if report == "tdc_data_model":
-        # 同一流程实例内可能只有部分行带 SOR 号/车型前缀；统一到实例级口径，
-        # 避免阶段图（行级聚合）与实例汇总给出互相矛盾的数字。
-        _attribution.unify_rows(
-            normalized,
-            lambda row: _safe_text(
-                _positional_value(list(row.get("values") or ()), definition, "实例号"),
-                80,
-            ),
-        )
     return normalized
 
 
@@ -1902,23 +1884,29 @@ def _enrich_data_model_dimensions(
     if _report_type(form_key) != "tdc_data_model" or not rows:
         return list(rows)
     definition = form_definition(form_key)
+    # 现行口径的归属方式取值；早期版本的「SOR号证据 / 平台池」等必须重算。
+    current_attributions = {
+        _attribution.ATTRIBUTION_SELF,
+        _attribution.ATTRIBUTION_PLATFORM,
+        _attribution.ATTRIBUTION_LEDGER,
+    }
     for row in rows:
         dimensions = row.get("dimensions")
         if not isinstance(dimensions, dict):
             continue
-        if all(key in dimensions for key in ("dataSource", "vehicle", "attribution")):
+        if (
+            all(key in dimensions for key in ("dataSource", "vehicle", "attribution"))
+            and dimensions.get("attribution") in current_attributions
+        ):
             continue
         values = row.get("values")
         if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
             continue
         positional = list(values)
-        dimensions.update(
-            _attribution.dimension_fields(
-                _positional_value(positional, definition, "项目/车型"),
-                _positional_value(positional, definition, "EWO/SOR号"),
-                _positional_value(positional, definition, "流水单号"),
-            )
+        computed = _attribution.dimension_fields(
+            _positional_value(positional, definition, "项目/车型")
         )
+        dimensions.update(computed)
     return list(rows)
 
 

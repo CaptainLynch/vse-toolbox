@@ -1,13 +1,16 @@
 # -*- coding: utf-8 -*-
-"""数模设计审核流程（D5）项目件/架构件归集规则的离线测试。
+"""数模设计审核流程（D5）项目件/架构件分组规则的离线测试。
 
-覆盖：脏值归一、来源判定、车型证据提取（SOR 号 > 流水单号 > 平台池）、
-旧快照维度兜底、分组标签、实例级汇总口径，以及"只有 D5 改分组、
-tdc_sor 等其余报表不变"的回归断言。
+口径（用户 2026-10-23 确认，方案 a+c）：
+
+* 项目件按**车型**统计；
+* 架构件按**架构平台**单列，不归属单一车型、不并入车型合计；
+* 车型归属的唯一权威来源是外部项目派单台账（``ledger_vehicle``）；
+* ``EWO/SOR号`` 与流水单号前缀**都不是**归属证据，必须保持被忽略。
 
 另含代码评审（docs/CODE_REVIEW_D5_20261023.md）四项发现的回归测试：
-R1 复合分组标签不能当 stage 值查库；R2 独立表单页要展平归集维度；
-R3 旧快照读取兜底要用保留的 values 重算；R4 平台池按平台分桶。
+R1 复合分组标签不能当 stage 值查库；R2 独立表单页要展平分组维度；
+R3 旧快照读取兜底要用保留的 values 重算；R4 平台分组不能互相合并。
 """
 
 from __future__ import annotations
@@ -55,34 +58,11 @@ def test_classify_source_separates_platform_from_vehicle() -> None:
         assert attribution.classify_source(value) == attribution.PROJECT_PART
 
 
-# ── 车型证据提取 ────────────────────────────────────────────────────────────
-
-
-def test_extract_vehicle_evidence_prefers_sor_number() -> None:
-    assert attribution.extract_vehicle_evidence(
-        "SGMW-F710S-SOR0023", "Ar-L-3D-0002"
-    ) == ("F710S", attribution.ATTRIBUTION_SOR)
-
-
-def test_extract_vehicle_evidence_falls_back_to_document_prefix() -> None:
-    assert attribution.extract_vehicle_evidence("TBD", "F620S-3D-0028") == (
-        "F620S",
-        attribution.ATTRIBUTION_DOCUMENT,
-    )
-
-
-def test_extract_vehicle_evidence_ignores_platform_sor_and_bare_documents() -> None:
-    """``SGMW-Ar-L-SOR0027`` 与 ``3D-00001181`` 都不构成车型证据。"""
-    assert attribution.extract_vehicle_evidence("SGMW-Ar-L-SOR0027", "Ar-L-3D-0079") is None
-    assert attribution.extract_vehicle_evidence("EWO-034010", "3D-00001181") is None
-    assert attribution.extract_vehicle_evidence("", "") is None
-
-
-# ── 行级归集 ────────────────────────────────────────────────────────────────
+# ── 行级分组 ────────────────────────────────────────────────────────────────
 
 
 def test_dimension_fields_for_project_part() -> None:
-    fields = attribution.dimension_fields("F620S", "EWO-034010", "F620S-3D-0075")
+    fields = attribution.dimension_fields("F620S")
     assert fields == {
         "dataSource": attribution.PROJECT_PART,
         "vehicle": "F620S",
@@ -91,19 +71,44 @@ def test_dimension_fields_for_project_part() -> None:
     }
 
 
-def test_dimension_fields_for_architecture_part_with_evidence() -> None:
-    fields = attribution.dimension_fields("Ar-L", "SGMW-F710S-SOR0023", "Ar-L-3D-0002")
+def test_dimension_fields_for_architecture_part_goes_to_platform_not_vehicle() -> None:
+    fields = attribution.dimension_fields("Ar-L")
     assert fields["dataSource"] == attribution.ARCHITECTURE_PART
-    assert fields["vehicle"] == "F710S"
-    assert fields["attribution"] == attribution.ATTRIBUTION_SOR
+    assert fields["vehicle"] == ""
+    assert fields["attribution"] == attribution.ATTRIBUTION_PLATFORM
     assert fields["archPlatform"] == "Ar-L"
 
 
-def test_dimension_fields_for_architecture_part_without_evidence_goes_to_pool() -> None:
-    fields = attribution.dimension_fields("Ar-L+", "EWO-030090", "Ar-L+-3D-0005")
+def test_dimension_fields_uses_ledger_vehicle_when_provided() -> None:
+    """台账是唯一权威车型来源：给出即归属，并标注「台账归属」。"""
+    fields = attribution.dimension_fields("Ar-L", ledger_vehicle="f620s")
+    assert fields["vehicle"] == "F620S"
+    assert fields["attribution"] == attribution.ATTRIBUTION_LEDGER
+    assert fields["archPlatform"] == "Ar-L"
+
+
+# ── 反面回归：SOR 号 / 流水单号前缀不得参与归属 ────────────────────────────
+
+
+def test_sor_number_is_not_evidence_for_attribution() -> None:
+    """SOR 是零件定点文档编号，与数模审批单无关（用户 2026-10-23 确认）。
+
+    早期版本把 ``SGMW-F710S-SOR0023`` 当成"该单服务 F710S"的证据，导致
+    架构件 94 单里 34 单被错误归到车型。``dimension_fields`` 已无该入参，
+    这里锁死行为：架构件无论 SOR 写什么，都按平台单列。
+    """
+    assert "ewo" not in attribution.dimension_fields.__code__.co_varnames
+    assert "document" not in attribution.dimension_fields.__code__.co_varnames
+    fields = attribution.dimension_fields("Ar-L")
     assert fields["vehicle"] == ""
-    assert fields["attribution"] == attribution.ATTRIBUTION_POOL
-    assert fields["archPlatform"] == "Ar-L+"
+    assert attribution.group_label(fields) == "Ar-L · 架构件"
+
+
+def test_project_part_ignores_sor_that_points_to_another_vehicle() -> None:
+    """实测反证：F620S 发布单里存在 SOR 指向 F710S 的行，发布车型仍应为 F620S。"""
+    fields = attribution.dimension_fields("F620S")
+    assert fields["vehicle"] == "F620S"
+    assert attribution.group_label(fields) == "F620S · 项目件"
 
 
 # ── 旧快照兜底与分组标签 ────────────────────────────────────────────────────
@@ -111,45 +116,54 @@ def test_dimension_fields_for_architecture_part_without_evidence_goes_to_pool() 
 
 def test_resolve_dimensions_derives_from_legacy_stage_only_snapshot() -> None:
     """旧快照只有 stage 键，读取侧按同一套纯函数兜底，无需回填。"""
-    legacy = {"stage": "Ar-L", "status": "已完成"}
-    resolved = attribution.resolve_dimensions(legacy)
+    resolved = attribution.resolve_dimensions({"stage": "Ar-L", "status": "已完成"})
     assert resolved["dataSource"] == attribution.ARCHITECTURE_PART
-    assert resolved["attribution"] == attribution.ATTRIBUTION_POOL
+    assert resolved["attribution"] == attribution.ATTRIBUTION_PLATFORM
     assert resolved["archPlatform"] == "Ar-L"
 
 
-def test_group_label_keeps_vehicle_and_source_together() -> None:
-    project = attribution.group_label(
-        attribution.dimension_fields("F620S", "", "F620S-3D-0075")
-    )
-    architecture = attribution.group_label(
-        attribution.dimension_fields("Ar-L", "SGMW-F620S-SOR0064", "Ar-L-3D-0071")
-    )
-    pool = attribution.group_label(attribution.dimension_fields("Ar-L", "TBD", "Ar-L-3D-0002"))
-    assert project == "F620S · 项目件"
-    assert architecture == "F620S · 架构件"
-    assert pool == "待归属 Ar-L · 架构件"
+def test_resolve_dimensions_recomputes_legacy_sor_based_attribution() -> None:
+    """早期版本写进快照的 SOR 归属必须按新口径重算，不能沿用。"""
+    legacy = {
+        "stage": "Ar-L",
+        "dataSource": attribution.ARCHITECTURE_PART,
+        "vehicle": "F710S",
+        "attribution": "SOR号证据",
+        "archPlatform": "Ar-L",
+    }
+    resolved = attribution.resolve_dimensions(legacy)
+    assert resolved["attribution"] == attribution.ATTRIBUTION_PLATFORM
+    assert resolved["vehicle"] == ""
 
 
-def test_group_sort_key_places_pool_last_and_pairs_same_vehicle() -> None:
-    labels = ["待归属 Ar-L · 架构件", "F710S · 项目件", "F620S · 架构件", "F620S · 项目件"]
+def test_group_label_shapes() -> None:
+    assert attribution.group_label(attribution.dimension_fields("F620S")) == "F620S · 项目件"
+    assert attribution.group_label(attribution.dimension_fields("Ar-L")) == "Ar-L · 架构件"
+    assert (
+        attribution.group_label(attribution.dimension_fields("Ar-L", ledger_vehicle="F620S"))
+        == "F620S · 架构件（台账）"
+    )
+
+
+def test_group_sort_key_places_vehicle_groups_before_platform_groups() -> None:
+    labels = ["Ar-L · 架构件", "F710S · 项目件", "Ar-L+ · 架构件", "F620S · 项目件"]
     assert sorted(labels, key=attribution.group_sort_key) == [
         "F620S · 项目件",
-        "F620S · 架构件",
         "F710S · 项目件",
-        "待归属 Ar-L · 架构件",
+        "Ar-L · 架构件",
+        "Ar-L+ · 架构件",
     ]
 
 
 # ── 实例级汇总 ──────────────────────────────────────────────────────────────
 
 
-def _row(stage: str, status: str, instance: str, ewo: str = "", document: str = "") -> dict:
+def _row(stage: str, status: str, instance: str, ledger: str | None = None) -> dict:
     return {
         "instance": instance,
         "status": status,
         "dimensions": {
-            **attribution.dimension_fields(stage, ewo, document),
+            **attribution.dimension_fields(stage, ledger_vehicle=ledger),
             "stage": stage,
         },
     }
@@ -160,14 +174,12 @@ def test_summarize_instances_counts_instances_not_rows() -> None:
         _row("F620S", "已完成", "I1"),
         _row("F620S", "已完成", "I1"),  # 同一实例的第二行，不得重复计数
         _row("F620S", "审批中", "I2"),
-        _row("Ar-L", "已完成", "I3", ewo="SGMW-F620S-SOR0064"),
     ]
-    groups = attribution.summarize_instances(rows)
-    by_label = {group["label"]: group for group in groups}
-    assert by_label["F620S · 项目件"]["total"] == 2
-    assert by_label["F620S · 项目件"]["completed"] == 1
-    assert by_label["F620S · 项目件"]["active"] == 1
-    assert by_label["F620S · 架构件"]["total"] == 1
+    group = attribution.summarize_instances(rows)[0]
+    assert group["label"] == "F620S · 项目件"
+    assert group["total"] == 2
+    assert group["completed"] == 1
+    assert group["active"] == 1
 
 
 def test_summarize_instances_excludes_discarded_from_completion_rate() -> None:
@@ -183,28 +195,39 @@ def test_summarize_instances_excludes_discarded_from_completion_rate() -> None:
     assert group["completionRate"] == 50.0
 
 
-def test_summarize_instances_lets_evidence_win_over_pool_within_instance() -> None:
-    """同一实例多行 EWO 号时，有证据的行把该实例从平台池拉出来。"""
-    rows = [
-        _row("Ar-L", "已完成", "I1", ewo="TBD", document="Ar-L-3D-0045"),
-        _row("Ar-L", "已完成", "I1", ewo="SGMW-F710S-SOR0023", document="Ar-L-3D-0045"),
-    ]
+def test_summarize_instances_keeps_platforms_separate() -> None:
+    rows = [_row("Ar-L", "已完成", "i1"), _row("Ar-L+", "已完成", "i2")]
     groups = attribution.summarize_instances(rows)
-    assert len(groups) == 1
-    assert groups[0]["vehicle"] == "F710S"
-    assert groups[0]["attribution"] == attribution.ATTRIBUTION_SOR
+    assert [group["label"] for group in groups] == ["Ar-L · 架构件", "Ar-L+ · 架构件"]
+    assert [group["total"] for group in groups] == [1, 1]
 
 
-def test_summarize_vehicles_keeps_platform_pool_out_of_vehicle_total() -> None:
+def test_summarize_vehicles_excludes_architecture_parts() -> None:
+    """架构件不并入任何车型合计——这是方案 (c) 的核心断言。"""
     rows = [
         _row("F620S", "已完成", "I1"),
-        _row("Ar-L", "已完成", "I2", ewo="SGMW-F620S-SOR0064"),
-        _row("Ar-L", "已完成", "I3", ewo="TBD", document="Ar-L-3D-0002"),
+        _row("Ar-L", "已完成", "I2"),
+        _row("Ar-L+", "已完成", "I3"),
     ]
     vehicles = attribution.summarize_vehicles(rows)
     assert [item["vehicle"] for item in vehicles] == ["F620S"]
-    assert vehicles[0]["total"] == 2  # 项目件 + 证据归属的架构件
-    assert {part["dataSource"] for part in vehicles[0]["parts"]} == {"项目件", "架构件"}
+    assert vehicles[0]["total"] == 1
+    assert [part["dataSource"] for part in vehicles[0]["parts"]] == [attribution.PROJECT_PART]
+
+
+def test_summarize_platforms_reports_architecture_only() -> None:
+    rows = [
+        _row("F620S", "已完成", "I1"),
+        _row("Ar-L", "已完成", "I2"),
+        _row("Ar-L", "审批中", "I3"),
+        _row("Ar-L+", "已废弃", "I4"),
+    ]
+    platforms = attribution.summarize_platforms(rows)
+    by_name = {item["archPlatform"]: item for item in platforms}
+    assert set(by_name) == {"Ar-L", "Ar-L+"}
+    assert by_name["Ar-L"]["total"] == 2
+    assert by_name["Ar-L"]["completed"] == 1
+    assert by_name["Ar-L+"]["discarded"] == 1
 
 
 # ── 与表单解析/汇总的集成 ──────────────────────────────────────────────────
@@ -235,7 +258,7 @@ def _tdc_values(**overrides: object) -> list[object | None]:
     return values
 
 
-def test_dimensions_from_tdc_adds_attribution_fields_without_changing_stage() -> None:
+def test_dimensions_from_tdc_adds_grouping_fields_without_changing_stage() -> None:
     definition = form_definition("tdc_data_model")
     dimensions, dates = _dimensions_from_tdc(_tdc_values(), definition)
 
@@ -247,7 +270,8 @@ def test_dimensions_from_tdc_adds_attribution_fields_without_changing_stage() ->
     assert dates["isCompleted"] is False
 
 
-def test_dimensions_from_tdc_attributes_architecture_row_via_sor() -> None:
+def test_dimensions_from_tdc_keeps_architecture_row_on_its_platform() -> None:
+    """架构件行即使带 SOR 号，也不得被归到 SOR 里的车型。"""
     definition = form_definition("tdc_data_model")
     dimensions, _ = _dimensions_from_tdc(
         _tdc_values(
@@ -261,35 +285,33 @@ def test_dimensions_from_tdc_attributes_architecture_row_via_sor() -> None:
     )
     assert dimensions["stage"] == "Ar-L"
     assert dimensions["dataSource"] == attribution.ARCHITECTURE_PART
-    assert dimensions["vehicle"] == "F620S"
+    assert dimensions["vehicle"] == ""
     assert dimensions["archPlatform"] == "Ar-L"
 
 
-def _metric_row(project_model: str, status: str, ewo: str = "", document: str = "") -> dict:
+def _metric_row(project_model: str, status: str) -> dict:
     return {
         "overdueState": "on_time",
         "isCompleted": status == "已完成",
         "dimensions": {
-            **attribution.dimension_fields(project_model, ewo, document),
+            **attribution.dimension_fields(project_model),
             "stage": project_model,
             "status": status,
         },
     }
 
 
-def test_data_model_summary_groups_project_and_architecture_under_one_vehicle() -> None:
+def test_data_model_summary_groups_vehicles_and_platforms_side_by_side() -> None:
     rows = [
-        _metric_row("F620S", "已完成", document="F620S-3D-0075"),
-        _metric_row("F620S", "审批中", document="F620S-3D-0076"),
-        _metric_row("Ar-L", "已完成", ewo="SGMW-F620S-SOR0064"),
-        _metric_row("Ar-L", "已完成", ewo="TBD", document="Ar-L-3D-0002"),
+        _metric_row("F620S", "已完成"),
+        _metric_row("F620S", "审批中"),
+        _metric_row("Ar-L", "已完成"),
+        _metric_row("Ar-L+", "已完成"),
     ]
     summary = _stage_status_summary("tdc_data_model", rows)
     labels = [row["label"] for row in summary["stages"]]
-    assert labels == ["F620S · 项目件", "F620S · 架构件", "待归属 Ar-L · 架构件"]
-    assert summary["stages"][0]["total"] == 2
-    assert summary["stages"][1]["total"] == 1
-    assert summary["unrecognizedStageCount"] == 0
+    assert labels == ["F620S · 项目件", "Ar-L · 架构件", "Ar-L+ · 架构件"]
+    assert [row["total"] for row in summary["stages"]] == [2, 1, 1]
 
 
 def test_tdc_sor_stage_summary_is_unchanged() -> None:
@@ -304,7 +326,7 @@ def test_tdc_sor_stage_summary_is_unchanged() -> None:
     assert [row["label"] for row in summary["stages"]] == ["F888Y", "F999X"]
 
 
-def test_registry_exposes_attribution_dimension_labels_for_d5_only() -> None:
+def test_registry_exposes_grouping_dimension_labels_for_d5_only() -> None:
     spec = form_registry.get_form("tdc_data_model")
     assert spec.dimension_label("dataSource") == "数据来源"
     assert spec.dimension_label("vehicle") == "归集车型"
@@ -331,10 +353,10 @@ def test_split_group_filters_moves_composite_labels_out_of_stage() -> None:
 
 def test_split_group_filters_drops_stage_key_when_only_labels_selected() -> None:
     sql_filters, labels = _split_data_model_group_filters(
-        "tdc_data_model", {"stage": ["F620S · 架构件"]}
+        "tdc_data_model", {"stage": ["F620S · 项目件"]}
     )
     assert "stage" not in sql_filters
-    assert labels == ("F620S · 架构件",)
+    assert labels == ("F620S · 项目件",)
 
 
 def test_split_group_filters_leaves_other_reports_untouched() -> None:
@@ -346,51 +368,52 @@ def test_split_group_filters_leaves_other_reports_untouched() -> None:
 
 def test_filter_rows_by_group_label_matches_chart_buckets() -> None:
     rows = [
-        {"dimensions": attribution.dimension_fields("F620S", "", "F620S-3D-0075")},
-        {"dimensions": attribution.dimension_fields("Ar-L", "SGMW-F620S-SOR0001", "")},
-        {"dimensions": attribution.dimension_fields("Ar-L", "TBD", "Ar-L-3D-0002")},
+        {"dimensions": attribution.dimension_fields("F620S")},
+        {"dimensions": attribution.dimension_fields("Ar-L")},
+        {"dimensions": attribution.dimension_fields("Ar-L+")},
     ]
-    kept = _filter_rows_by_group_label(rows, ["F620S · 项目件"])
-    assert len(kept) == 1
-    kept = _filter_rows_by_group_label(rows, ["F620S · 架构件"])
-    assert len(kept) == 1
-    kept = _filter_rows_by_group_label(rows, ["待归属 Ar-L · 架构件"])
-    assert len(kept) == 1
-    # 同一车型的两个来源一起选时是并集。
-    assert len(_filter_rows_by_group_label(rows, ["F620S · 项目件", "F620S · 架构件"])) == 2
+    assert len(_filter_rows_by_group_label(rows, ["F620S · 项目件"])) == 1
+    assert len(_filter_rows_by_group_label(rows, ["Ar-L · 架构件"])) == 1
+    assert len(_filter_rows_by_group_label(rows, ["Ar-L · 架构件", "Ar-L+ · 架构件"])) == 2
 
 
 # ── R3 回归：旧快照读取兜底要用保留的 values 重算 ──────────────────────────
 
 
-def test_enrich_data_model_dimensions_recovers_evidence_from_values() -> None:
-    definition = form_definition("tdc_data_model")
-    values = _tdc_values(
-        **{
-            "项目/车型": "Ar-L",
-            "EWO/SOR号": "SGMW-F620S-SOR0001",
-            "流水单号": "Ar-L-3D-0002",
-        }
-    )
+def test_enrich_data_model_dimensions_recovers_grouping_from_values() -> None:
+    values = _tdc_values(**{"项目/车型": "Ar-L"})
+    rows = [{"values": values, "dimensions": {"stage": "Ar-L", "status": "审批中"}}]
+    enriched = _enrich_data_model_dimensions("tdc_data_model", rows)
+    assert enriched[0]["dimensions"]["dataSource"] == attribution.ARCHITECTURE_PART
+    assert attribution.group_label(enriched[0]["dimensions"]) == "Ar-L · 架构件"
+
+
+def test_enrich_data_model_dimensions_overwrites_legacy_sor_attribution() -> None:
+    """早期版本写过 SOR 归属的旧快照，读取时按新口径改写。"""
+    values = _tdc_values(**{"项目/车型": "Ar-L"})
     rows = [
         {
             "values": values,
-            "dimensions": {"stage": "Ar-L", "status": "审批中"},
+            "dimensions": {
+                "stage": "Ar-L",
+                "dataSource": attribution.ARCHITECTURE_PART,
+                "vehicle": "F710S",
+                "attribution": "SOR号证据",
+                "archPlatform": "Ar-L",
+            },
         }
     ]
     enriched = _enrich_data_model_dimensions("tdc_data_model", rows)
-    assert enriched[0]["dimensions"]["vehicle"] == "F620S"
-    assert enriched[0]["dimensions"]["attribution"] == attribution.ATTRIBUTION_SOR
-    assert attribution.group_label(enriched[0]["dimensions"]) == "F620S · 架构件"
+    assert enriched[0]["dimensions"]["vehicle"] == ""
+    assert enriched[0]["dimensions"]["attribution"] == attribution.ATTRIBUTION_PLATFORM
 
 
-def test_enrich_data_model_dimensions_keeps_stored_values() -> None:
-    """已有归集键的快照不被重算覆盖（避免新旧口径互相打架）。"""
+def test_enrich_data_model_dimensions_keeps_current_grouping() -> None:
     stored = {
         "stage": "Ar-L",
         "dataSource": attribution.ARCHITECTURE_PART,
-        "vehicle": "F710S",
-        "attribution": attribution.ATTRIBUTION_SOR,
+        "vehicle": "F620S",
+        "attribution": attribution.ATTRIBUTION_LEDGER,
         "archPlatform": "Ar-L",
     }
     rows = [{"values": [], "dimensions": dict(stored)}]
@@ -405,29 +428,10 @@ def test_enrich_data_model_dimensions_is_noop_for_other_reports() -> None:
     }
 
 
-# ── R4 回归：平台池按平台分桶 ──────────────────────────────────────────────
+# ── R2 回归：独立表单页展平分组维度 ────────────────────────────────────────
 
 
-def test_summarize_instances_keeps_pool_platforms_separate() -> None:
-    rows = [
-        _row("Ar-L", "已完成", "i1", ewo="TBD", document="Ar-L-3D-0002"),
-        _row("Ar-L+", "已完成", "i2", ewo="EWO-030090", document="Ar-L+-3D-0005"),
-    ]
-    groups = attribution.summarize_instances(rows)
-    assert len(groups) == 2
-    assert {group["archPlatform"] for group in groups} == {"Ar-L", "Ar-L+"}
-    assert {group["label"] for group in groups} == {
-        "待归属 Ar-L · 架构件",
-        "待归属 Ar-L+ · 架构件",
-    }
-    # 平台池仍不并入任何车型合计。
-    assert attribution.summarize_vehicles(rows) == []
-
-
-# ── R2 回归：独立表单页展平归集维度 ────────────────────────────────────────
-
-
-def test_flatten_rows_exposes_attribution_dimensions_for_d5() -> None:
+def test_flatten_rows_exposes_grouping_dimensions_for_d5() -> None:
     from plugins.deliverable_forms.backend import flatten_rows
 
     rows = [
@@ -435,7 +439,7 @@ def test_flatten_rows_exposes_attribution_dimensions_for_d5() -> None:
             "rowKey": "r1",
             "values": _tdc_values(),
             "dimensions": {
-                **attribution.dimension_fields("Ar-L", "SGMW-F620S-SOR0001", "Ar-L-3D-0002"),
+                **attribution.dimension_fields("Ar-L"),
                 "stage": "Ar-L",
                 "status": "审批中",
             },
@@ -446,13 +450,11 @@ def test_flatten_rows_exposes_attribution_dimensions_for_d5() -> None:
     ]
     item = flatten_rows("tdc_data_model", rows)[0]
     assert item["_dataSource"] == "架构件"
-    assert item["_vehicle"] == "F620S"
-    assert item["_attribution"] == attribution.ATTRIBUTION_SOR
     assert item["_archPlatform"] == "Ar-L"
-    assert item["_group"] == "F620S · 架构件"
+    assert item["_group"] == "Ar-L · 架构件"
 
 
-def test_flatten_rows_does_not_leak_attribution_fields_to_other_forms() -> None:
+def test_flatten_rows_does_not_leak_grouping_fields_to_other_forms() -> None:
     from plugins.deliverable_forms.backend import flatten_rows
 
     rows = [
@@ -481,7 +483,7 @@ def test_d5_page_schema_exposes_group_chart_and_filters() -> None:
         ).read_text(encoding="utf-8")
     )
     filter_keys = {item["key"] for item in page["filters"]}
-    assert {"_dataSource", "_vehicle"} <= filter_keys
+    assert {"_dataSource", "_archPlatform"} <= filter_keys
     chart_groups = {item["groupBy"] for item in page["charts"]}
     assert "_group" in chart_groups
     # 原有按原始项目/车型的图表保留，旧习惯不丢。
@@ -534,9 +536,10 @@ def test_clicking_a_d5_group_bar_returns_matching_rows(tmp_path) -> None:
 
     payload = service.view("tdc_data_model")
     buckets = payload["charts"]["departmentStatus"]["stages"]
+    # 架构件带 F620S 的 SOR 号也仍然是平台分组——这是 SOR 不作为证据的端到端断言。
     assert {bucket["label"]: bucket["total"] for bucket in buckets} == {
         "F620S · 项目件": 1,
-        "F620S · 架构件": 1,
+        "Ar-L · 架构件": 1,
     }
 
     for bucket in buckets:
@@ -546,4 +549,3 @@ def test_clicking_a_d5_group_bar_returns_matching_rows(tmp_path) -> None:
     # 原始项目/车型值仍可照旧筛选（旧深链不失效）。
     assert service.view("tdc_data_model", filters={"stage": ["Ar-L"]})["summary"]["total"] == 1
     assert service.view("tdc_data_model", filters={"stage": ["F620S"]})["summary"]["total"] == 1
-
