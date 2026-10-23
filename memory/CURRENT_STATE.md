@@ -1,5 +1,30 @@
 # Current State
 
+## 2026-10-23 D5 方案 B 实施：车型 ↔ 架构件单人工声明
+
+- **用户决策**：接受方案 B——车型合计 = 项目件 + 人工指定且已确认关联的架构件；
+  保留"仅项目件"数字作对照。顾问（run `b039a80…`, astra-medium）三项全采纳。
+- **已落地的结构**：
+  - 表 `data_model_vehicle_arch_links`（`core/db_common.py` TABLE_DEFINITIONS，版本化，
+    同 (车型,单号) 重复声明新增 revision 并置旧行为 inactive）。
+  - `core/repos/data_model_vehicle_links.py`（list / replace / clear，撤销保留历史）；
+    以 mixin 方式注册进 `DatabaseManager`（一行 import + 一行继承）。
+  - `services/data_model_vehicle_links.py`：单号解析、**失配四态**
+    （已匹配/来源不符/快照缺失/键冲突）、`relabel_linked_rows`、方案 B 汇总。
+  - `deliverable_form_analysis.view()` 增加 `vehicleArchLinks` 载荷；读取侧给已匹配的
+    架构件行打 `linkedVehicle`，阶段图据此显示「F620S · 关联架构件」分组。
+  - `plugins/project_overview`：`GET/POST /vehicle-arch-links`（写路由过 `local_guard`）。
+- **计数口径修正**：首版汇总把**行**当实例（746 行报成 746 单），已改为实例级并同时给出
+  `rows` 与 `instances` 两个字段；阶段图仍是行级（746），与汇总（228）单位不同，
+  文档已明示，勿混读。
+- **实测**（真实导出 + 一条声明 `Ar-L-3D-0002 → F620S`）：
+  F620S 项目件 228 实例 / 746 行 / 47.55%；关联架构件 1 单；合计 229 实例 47.8%；
+  阶段图 Ar-L 由 277 行降为 273 行，新增「F620S · 关联架构件 4 行」。
+- **验证**：`tests/test_data_model_vehicle_links.py` 16 项；全量 pytest
+  **3273 passed / 6 skipped**。
+- **未做**：声明清单的页面编辑器（现仅接口可用）；顾问建议的"版本冻结/历史重算"未实现，
+  当前报表绑定"最新声明"。
+
 ## 2026-10-23 D5 分组方案定稿（架构件按平台单列，台账链路已取消）
 
 - **用户最终确认**：项目派单台账**不存在**，"这个就是 TDC 的查询结果"。
