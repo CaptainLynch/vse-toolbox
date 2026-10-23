@@ -35,8 +35,10 @@ from core.project_status_contracts import (
     find_deliverable_id_by_form_key,
     find_job_key_by_deliverable_id,
 )
-# 数模设计审核流程（D5）专属：项目件/架构件归集。其他交付物不引用本模块。
+# 数模设计审核流程（D5）专属：项目件/架构件分组。其他交付物不引用本模块。
 from services import data_model_attribution as _attribution
+# D5 专属：车型 ↔ 架构件单的人工声明（方案 B）。
+from services import data_model_vehicle_links as links
 
 # 表单静态定义的唯一来源是 core/form_registry.py；以下旧变量名由它推导，
 # 保持对既有调用方与测试的兼容。新增或调整表单只改 registry。
@@ -1595,6 +1597,52 @@ def _distinct_ncr_rows(
     return list(representatives.values())
 
 
+def _data_model_link_payload(
+    db: Any,
+    form_key: str,
+    rows: list[dict[str, Any]],
+    definition: Mapping[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """应用 D5 的「车型 ↔ 架构件单」人工声明（方案 B）。
+
+    * 给已匹配的架构件行打 ``linkedVehicle`` 标记，阶段图据此把它们归到车型下；
+    * 返回方案 B 的汇总载荷（项目件 / 关联架构件 / 合计三层数字）。
+    """
+    empty = {"scope": "combined", "vehicles": [], "linkedInstanceCount": 0, "note": ""}
+    if _report_type(form_key) != "tdc_data_model":
+        return rows, empty
+    try:
+        stored = db.list_data_model_vehicle_links()
+    except AttributeError:  # 旧库/替身对象没有该 repo 时退化为无声明
+        return rows, empty
+    links_by_vehicle: dict[str, list[str]] = {}
+    for item in stored:
+        vehicle = str(item.get("vehicle") or "").strip()
+        serial = str(item.get("serial") or "").strip()
+        if vehicle and serial:
+            links_by_vehicle.setdefault(vehicle, []).append(serial)
+    if not links_by_vehicle:
+        return rows, dict(empty)
+
+    for vehicle, serials in links_by_vehicle.items():
+        resolved = links.resolve_links(serials, rows, definition)
+        matched = {
+            str(item["instance"]) for item in resolved if item["status"] == links.LINK_MATCHED
+        }
+        links.relabel_linked_rows(rows, vehicle, matched, definition)
+
+    summary = links.summarize(
+        rows,
+        links_by_vehicle,
+        definition,
+        instance_of=lambda row: _safe_text(
+            _positional_value(list(row.get("values") or ()), definition, "实例号"),
+            80,
+        ),
+    )
+    return rows, summary
+
+
 def _data_model_group_status(
     rows: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
@@ -1609,7 +1657,13 @@ def _data_model_group_status(
         dimensions = row.get("dimensions")
         if not isinstance(dimensions, Mapping):
             dimensions = {}
-        label = _attribution.group_label(dimensions)
+        linked = str(dimensions.get("linkedVehicle") or "").strip()
+        if linked:
+            # 用户显式声明并入该车型：来源仍是架构件，但这里要归到车型下展示，
+            # 否则"车型兼顾架构件"在图上不可见。
+            label = f"{linked} · 关联架构件"
+        else:
+            label = _attribution.group_label(dimensions)
         counts = buckets.setdefault(label, {"onTime": 0, "overdue": 0, "unknown": 0})
         bucket = _status_bucket(row)
         counts[{"on_time": "onTime", "overdue": "overdue", "unknown": "unknown"}[bucket]] += 1
@@ -2665,6 +2719,12 @@ class DeliverableFormAnalysisService:
         # day instead of the last 30 runs.
         snapshots = self.db.list_deliverable_form_snapshots(key, limit=365)
         latest_rows: list[dict[str, Any]] = []
+        link_payload: dict[str, Any] = {
+            "scope": "combined",
+            "vehicles": [],
+            "linkedInstanceCount": 0,
+            "note": "",
+        }
         # 归集激活时 section 不下推 SQL：读取行后按归集口径在 Python 层逐行过滤，
         # 「未归集」因此是逐行分类而不是值列表展开，不存在截断漏数路径。
         sql_filters = {
@@ -2706,6 +2766,11 @@ class DeliverableFormAnalysisService:
                     normalized_filters.get("section"),
                     rollup,
                 )
+            # D5：用户显式声明的「车型 ↔ 架构件单」在读取侧打标（方案 B），
+            # 不改落库维度；声明变更后无需重新同步即可生效。
+            latest_rows, link_payload = _data_model_link_payload(
+                self.db, key, latest_rows, definition
+            )
             summary = summarize_form_rows(
                 key,
                 latest_rows,
@@ -2846,6 +2911,8 @@ class DeliverableFormAnalysisService:
         }
         if official_columns_payload is not None:
             payload["officialColumns"] = official_columns_payload
+        if _report_type(key) == "tdc_data_model":
+            payload["vehicleArchLinks"] = link_payload
         return payload
 
 

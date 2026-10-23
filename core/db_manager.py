@@ -88,6 +88,7 @@ from core.db_common import (  # noqa: F401
 from core.project_status_config_audit import ensure_binding_config_audit_schema
 from core.repos.archive_jobs import ArchiveRepo
 from core.repos.crawl_tasks import CrawlTaskRepo
+from core.repos.data_model_vehicle_links import DataModelVehicleLinkRepo
 from core.repos.form_snapshots import FormSnapshotRepo
 from core.repos.plugin_schema import PLUGIN_SCHEMA_VERSIONS_DDL, PluginSchemaRepo
 from core.repos.project_status import ProjectStatusRepo
@@ -96,6 +97,7 @@ from core.repos.sync_runs import SyncRunRepo
 
 class DatabaseManager(
     ProjectStatusRepo, FormSnapshotRepo, SyncRunRepo, ArchiveRepo, CrawlTaskRepo, PluginSchemaRepo,
+    DataModelVehicleLinkRepo,
 ):
     """
     SQLite 数据库管理器

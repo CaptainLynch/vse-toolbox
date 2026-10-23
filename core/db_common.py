@@ -1073,7 +1073,33 @@ TABLE_DEFINITIONS: list[str] = [
     """
     CREATE INDEX IF NOT EXISTS idx_crawl_tasks_source
         ON crawl_tasks(source, status);
+    """,
+    # 数模设计审核流程（D5）：车型 ↔ 架构件单号的人工关联声明。
+    # 只记录"谁在什么时候依据什么把哪张架构单关联到哪个车型"，不做任何推断。
+    # 版本化：同一 (车型, 单号) 重新声明时新增 revision 并把旧版置为 inactive。
     """
+    CREATE TABLE IF NOT EXISTS data_model_vehicle_arch_links (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        vehicle        TEXT    NOT NULL,
+        serial         TEXT    NOT NULL,
+        basis          TEXT    NOT NULL DEFAULT '',
+        operator       TEXT    NOT NULL DEFAULT '',
+        recorded_at    TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+        effective_from TEXT,
+        effective_to   TEXT,
+        revision       INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+        active         INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+        UNIQUE (vehicle, serial, revision)
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_dm_vehicle_arch_links_active
+        ON data_model_vehicle_arch_links(vehicle, active);
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_dm_vehicle_arch_links_serial
+        ON data_model_vehicle_arch_links(serial, active);
+    """,
 ]
 
 
