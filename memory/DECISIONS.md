@@ -5,6 +5,75 @@ delete. Per-plan rulings stay in their SDD ledger (`.superpowers/sdd/…`, local
 and get promoted here once they prove durable. Newest first. Keep entries
 short: decision, why, cost if violated, source pointer.
 
+## 2026-10-23 — Codex 顾问默认走 Astra（用户选择"多用 astra"）
+
+- 决定：`codex-readonly` 未指定 `--profile` 时，普通决定默认 **`astra-medium`**，任一高风险类别
+  （security-sensitive / migration / concurrency / public-protocol / data-loss）默认 **`astra-high`**。
+  `sol-high` / `sol-xhigh` 降为**显式兼容档**，只在 `--profile sol-*` 时使用，不再是自动路径。
+- 为什么：用户 2026-10-23 明确要求"codex 顾问多用 astra"。此前代码里
+  `HIGH_RISK_CODEX_PROFILE = "sol-xhigh"`、`DEFAULT_ADVISOR_PROFILE = "sol-high"`，与 SKILL.md
+  档位表（data-loss / security / migration → astra）不一致：只传 `--risk data-loss` **永远拿不到
+  astra**，必须显式写 `--profile astra-high`。10-22 的 `DM-RELEASE-STATS-MERGE` 会话就是这样
+  在 data-loss 风险下落到 `gpt-6-sol` 的。
+- 实现：`advisor_core.py` 两个常量改为 astra；`expert_advisor.py` 帮助文本、`SKILL.md` 档位表、
+  `CONTRACT.md` 三处说明、本仓库 `AGENTS.md` 的顾问路由条目同步。技能自带测试 **170 passed**。
+- 验证：`--status` 显示 `default_profile=astra-medium`；dry-run 不带 `--profile` 时
+  `--risk concurrency` → `astra-high / gpt-6-astra / high`，`--risk ordinary` →
+  `astra-medium / gpt-6-astra / medium`；显式 `--profile sol-xhigh` 仍解析为
+  `sol-xhigh / gpt-6-sol / xhigh`（兼容档可用）。
+- 代价/风险：astra 超时档更长（180s / 240s），codex 回复目标字数更短（2500 / 3000 字）；
+  若 Astra 通道不可用，**不会**自动降级到 sol（遵守"不换 provider、不重试"），需显式重发
+  `--profile sol-*`。跨仓库生效：改的是本机技能目录，不是本仓库代码。
+
+## 2026-10-23 — 恢复成本优先：`CURRENT_STATE.md` 上限 40KB，历史进归档，180k 只是评估点
+
+- 决定：`memory/CURRENT_STATE.md` 保持 **≤ 40KB**，只放「当前前沿」+ 最近条目；更早条目原样移入
+  `memory/archive/CURRENT_STATE_ARCHIVE_<date>.md`，并在文件头写归档指针。裁剪只搬不改。
+- 决定：恢复状态时**先读当前前沿，再按需查归档**；禁止再"通读全文"式恢复。
+- 决定：`180k` 是**交接评估点**而不是自动交接；`150k` 起外置证据、`200k` 前停止接新任务并收尾。
+  是否交接按经济性判定：预计剩余调用数 × 延迟节省 > 打包 + 重建 + 验证耗时。
+- 为什么：2026-10-23 实测——按旧规则"读 AGENTS.md + 全套 memory"的重建下限约 **120k token**
+  （其中 `CURRENT_STATE.md` 270KB 独占大头），而只读一份 2,536B 交接包的重建实验 4/4 控制问题答对、
+  成本约 1k token；继续执行的反事实成本仅约 +70s（≥180k 的 18 次调用，步中位 8.4s vs 4.5s）。
+  即：交接包本身很便宜，贵的是恢复规则把整个 memory 拖进来。
+  **裁剪后实测**（冷启动子代理，只读 `AGENTS.md` + `CURRENT_STATE.md` + `PROJECT_MAP.md`，
+  808 行 / 约 70k 字符）：峰值上下文 **49,501 token**（其中文件内容约 31k，其余为系统提示），
+  满足"实际输入 < 50k"的验收线，但只差 500 token——所以 40KB 上限不能再放宽。
+- 违反代价：不裁剪就交接 = 刚开新会话就吃掉 60k+ 预算，等于把 200k 硬闸的一半交给历史；反之
+  裁剪过度会丢约束（重建实验里接手者已指出"未给裁剪目标大小"这类缺口）。
+- 来源：顾问 run `06a4881714794980a7e9cc7bc2b59239`（astra-high，决定 2 = partial）；
+  `docs/AGENT_DISPATCH_PROTOCOL_20261022.md` §9.5.1 与 §10。
+
+## 2026-10-23 — 并行度按观测区间报告，不报单点；机制损耗与争用要分开记
+
+- 决定：调度并行度对外只报**观测区间**（本轮 1.19–1.75×，n=2 组），不再引用 1.37× 作为单点预测；
+  引用 1.37× 时必须同时给区间与样本量。
+- 决定：标定必须分开记两个量——**协调开销**（并行墙钟 − max(单元)）与**争用系数**
+  （并行单元时长 / 串行同类单元时长）。只报总比值会把两者混在一起。
+- 决定：计时端点必须统一（派发消息 → 最后交付文件落盘；单元 = 成员自报开始 → 该单元最后文件），
+  禁止把"派发→落盘"和"自报→自报结束"混用。
+- 为什么：本轮实测协调开销只有 7.8–9.7s（重叠近乎完美），比值差异几乎全来自单元本身快慢
+  （c ∈ [0.88, 1.74]，g3 的并行单元甚至比串行同类单元快 12%）。混算会得出"并行有损耗"的错误结论。
+- 违反代价：用单点 1.37× 排期会系统性高估；不分开记协调/争用则无法判断该加通道还是该均衡负载。
+- 来源：顾问 run `06a4881714794980a7e9cc7bc2b59239`（决定 1 = partial，判"证据不足、不可确认"）；
+  `docs/AGENT_DISPATCH_PROTOCOL_20261022.md` §9.5.1。
+
+## 2026-10-23 — 顾问调用必须后台发出并并行做"结论无关"工作，禁止发出后自堵
+
+- 决定：顾问（Expert Advisor）调用一律后台发出；发出后**禁止**立即用带 wait 的
+  `job_output` 堵住。等待期只做落在「结论可能改变的范围」**之外**的工作：已有证据索引、
+  需求已稳定的文档骨架、与待决方向无关的已授权成员任务、与待决方向无关的定向门禁。
+- 决定：禁止在等待期启动依赖结论的实现、接口定稿、集成，以及按假定结论启动的下游任务。
+- 决定：每次调用必须记三个数——`hidden_wait_s`（顾问耗时）、`coord_s`（并行带来的额外协调）、
+  `discarded_s`（结论推翻后废弃的工作量）；净收益 = hidden_wait − (coord + discarded)。
+  连续 3 次净收益 ≤ 0 即撤销该做法，回到阻塞等待。只记 hidden_wait 不算并行化。
+- 为什么：会话 `9a9119bd` 实测两次顾问调用纯阻塞 4.8 min，占该会话活跃时间 15%；
+  同会话 100 个后台 job 合计仅 514s，说明瓶颈不是"没后台化"，而是"后台化后立刻自堵"。
+- 违反代价：把等待时间继续当墙钟成本付；或反向出错——并行做了依赖结论的工作，
+  结论一改就白做，比等待更贵（最强反例：顾问改写需求本身，连骨架都报废）。
+- 来源：顾问 run `94ca423fbd434d07b5f243f72c74c6be`（astra-high）决定 1=adopted；
+  `docs/AGENT_DISPATCH_PROTOCOL_20261022.md` §10。
+
 ## 2026-10-23 — D5 方案 B：车型合计可含"人工声明的关联架构件"
 
 - 决定：允许在车型下**显式声明**架构件单号（`data_model_vehicle_arch_links`），
