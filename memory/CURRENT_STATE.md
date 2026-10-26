@@ -29,11 +29,15 @@
   普通决定 → `astra-medium`、高风险 → `astra-high`；`sol-*` 降为显式兼容档。已同步
   `advisor_core.py`（两个常量）/ `expert_advisor.py`（帮助）/ `SKILL.md`（档位表）/
   `CONTRACT.md`（三处）/ 本仓库 `AGENTS.md`；技能自带测试 **170 passed**，dry-run 三条路由均已验。
-- **IM 交付待办（2026-10-26）**：用户在 QQ/微信要 webui 测试包时，直接 `present`
-  `dist/hci-20261026/VSE-WebUI.zip.part1` 与 `VSE-WebUI.zip.part2`（各 20.3 MB；网关单文件上限
-  32 MB，整包 40.5 MB 发不出去），**不要重新打包**；详见 `.runtime/im-send-instruction.md`。
-  合并后 SHA256 `64a5b6d4…d17bfb1`。IM 渠道模型已修为 `cn:deepseek-v4.1-flash`
-  （`tools/fix-im-channel-model.ps1`，2026-10-26 19:11 重启后生效；telegram 仍因凭据不足起不来）。
+- **IM 交付待办（2026-10-26）**：用户在 QQ/微信要 webui 测试包时，**只** `present`
+  `dist/hci-20261026/im-delivery/` 下的三个分卷 `VSE-WebUI.zip.part1..3`（各 ≈14.2 MB），
+  **一次 present 调用列全三个**，不要重新打包。
+  实测教训：42.5 MB 整包 → `workspace-file/too-large`（网关 32 MB 上限）；
+  20.3 MB 两分卷 → QQ 侧立即 `Error`（QQ 实际上限在 9.2–20.3 MB 之间）；
+  9.2 MB 的 `VSE-WebUI.exe` 能发出去但**单独无用**（onedir，缺 `_internal/` 与 `plugins/`）。
+  合并后 42,493,183 字节，SHA256 `64a5b6d4…d17bfb1`；详见 `.runtime/im-send-instruction.md`。
+  IM 渠道模型已修为 `cn:deepseek-v4.1-flash`（`tools/fix-im-channel-model.ps1`，19:11 重启后生效；
+  telegram 仍因凭据不足起不来）。
 - **三个自证偏差（引用本文件时必须避免）**：把"规则已写入"当"效果已验证"；把"一次成功"当"稳定"；
   把"三组部分合格"当"完整门槛"。A 只有 1 次合格样本（+65s），只算验证过一次。
 
