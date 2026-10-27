@@ -41,6 +41,31 @@
 - **三个自证偏差（引用本文件时必须避免）**：把"规则已写入"当"效果已验证"；把"一次成功"当"稳定"；
   把"三组部分合格"当"完整门槛"。A 只有 1 次合格样本（+65s），只算验证过一次。
 
+## 2026-10-27 架构评审裁决 + 同步范围三守卫（顾问方案 R3/R9/R10 落地）
+
+- **来源**：用户拿 `docs/PROMPT_SYNC_SCOPE_ARCH_20261027.md` 咨询 Claude，回了一份三阶段方案；
+  主代理按代码事实逐项裁决，先落地「与现有实现不冲突、且直接消除静默错误」的三项。
+- **已落地（含测试）**：
+  1. **R3 科室两键互斥**：`_section_scope_conflict_error`（services/project_status_updates）；
+     保存入口 422 + 运行前就绪检查 raise，不再让连接器静默丢弃单值 `section`（多算）。
+  2. **R10 归档拒绝收窄键**：`scheduled_archive_connectors._checked_filters(narrow_keys=...)`，
+     `sections` 出现时给可执行文案（归档存的是上游原始导出，无本地收窄）；`section` 存量仍可用。
+  3. **R9 字段契约版本**：`core/project_status_contracts.MATCH_FIELD_CONTRACT`（2026-10-27.1）
+     → `sourceInfo.matchFieldContract`；前端同值常量 + 不一致时向导顶部红色提示
+     「重启 VSE-WebUI 并强制刷新」，直接对准「代码改了界面没变」的发布链路问题。
+  4. 插件静态资源加 `Cache-Control: no-cache, must-revalidate`（`web/app.py` after_request，
+     仅 `/plugins/` 前缀），ES module 子模块不再留旧副本。
+  5. 摘要标签补 `sections: "科室范围"`（`details/sync-settings-logic.js`）。
+- **未采纳/待拍板（方案阶段 2–3）**：`MatchFieldSpec` 声明化（收益大但动契约派生，需先锁「派生==字面量」）；
+  向导删除「责任部门」框 + 存量 chip 一键迁移（涉及用户可见行为，需用户决定）；`section` 停用（同上）。
+- **已核验的取证项**（回答方案 §3.4）：D5 `matchKeys − filterKeys` = `{aggregate, reportType,
+  documentNo, documentNos, sections}`（全部可归类，无需再猜）；`data/vse_toolbox.db` 是空开发库，
+  **存量是否有 `section` 绑定仍需在生产库上查**（用户当前绑定确有 `department=车体工程`）。
+- **验证**：新增 `tests/test_sync_scope_contract_guards.py`（8 项，含归档拒绝与前端常量对齐）；
+  全量 `python -m pytest tests -q` → **3352 passed / 6 skipped**；`generate_project_map.py --check` 通过。
+- **教训**：`tests/p1d_frontend_fixture.py` 的 `./policy-logic.js` 是合成桩，
+  **policy.js 新增任何具名 import 都必须同步加进桩的 base 对象**，否则 VM link 直接失败（本轮踩过一次）。
+
 ## 2026-10-26 D5 数模同步增加「按科室筛选」（默认五科室）
 
 - **用户口径**：按部门筛不可靠——同一科室的人有挂在「技术中心」、有挂在「车体工程」，

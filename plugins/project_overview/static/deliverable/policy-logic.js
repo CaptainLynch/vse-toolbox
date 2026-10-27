@@ -8,6 +8,10 @@ export const EWO_POLICY_MODE_LABELS = { manual: "手动维护", automatic: "自�
 export const EWO_POLICY_RECOMMENDED_MODE = "automatic";
 export const EWO_POLICY_DEFAULT_ARAS_BASE_URL = "http://ecm.sgmw.com.cn/innovatorserver";
 export const POLICY_WIZARD_TDC_DEFAULT_BASE_URL = "https://tdc.sgmw.com.cn/";
+//: 同步配置字段契约版本，必须与 core/project_status_contracts.MATCH_FIELD_CONTRACT
+//: 一致。不一致说明前端资源与后端进程不是同一版（onedir 包未重建 / ES module
+//: 缓存 / 后端未重启），界面可能仍在渲染旧控件。
+export const MATCH_FIELD_CONTRACT = "2026-10-27.1";
 export const EWO_POLICY_MATCH_FIELDS = [
   ["ewoNo", "EWO 编号", "ewo_no"],
   ["projectCode", "车型项目", "project_code"],

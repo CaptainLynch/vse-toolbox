@@ -4,6 +4,9 @@
 const FILTER_LABELS = {
   department: "部门",
   section: "科室",
+  // 数模科室多选（本地收窄）：与单值 section 分开标注，避免摘要里出现英文键名
+  // 或让两种科室语义看起来是同一个条件。
+  sections: "科室范围",
   projectModel: "车型项目",
   model: "车型",
   status: "状态",

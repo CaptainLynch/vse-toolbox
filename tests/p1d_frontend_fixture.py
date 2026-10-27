@@ -81,6 +81,7 @@ POLICY_LOGIC_EXPORTS = (
     "EWO_POLICY_MODE_LABELS",
     "EWO_POLICY_RECOMMENDED_MODE",
     "INTERVAL_OPTIONS",
+    "MATCH_FIELD_CONTRACT",
     "POLICY_SYNC_HINTS",
     "SERIAL_SET_TEXT_MAX",
     "applyBindingMode",
@@ -680,6 +681,9 @@ function logicStub() {
     EWO_POLICY_MODE_LABELS: { manual: "手动", auto: "自动同步" },
     EWO_POLICY_RECOMMENDED_MODE: "auto",
     INTERVAL_OPTIONS: [5, 15, 30, 60],
+    // 字段契约版本：面板会与 sourceInfo.matchFieldContract 比较，不一致时提示
+    // 「重启+强刷」。桩给同值，避免测试里出现无关提示。
+    MATCH_FIELD_CONTRACT: "2026-10-27.1",
     POLICY_SYNC_HINTS: { manual: "手动维护", auto: "按间隔自动同步" },
     // 多单号文本框的字符上限（与后端 500 × 64 + 分隔符同口径）。
     SERIAL_SET_TEXT_MAX: 500 * 64 + 499,

@@ -135,6 +135,24 @@ def _valid_match_rule_values(match_rule: Mapping[str, Any]) -> bool:
     return True
 
 
+def _section_scope_conflict_error(match_rule: Mapping[str, Any]) -> str | None:
+    """数模科室两键互斥：单值 ``section``（上游过滤）与多选 ``sections``（本地收窄）。
+
+    两者同时非空时，连接器只能丢掉 ``section``（上游科室参数只接受单值，且存在
+    ``sections`` 时不能把单值发上游——那会先丢掉其它科室的行）。用户以为两层条件
+    都生效，实际只有一层，结果是**多算**。保存入口与运行前就绪检查共用这一判定，
+    避免「能存不能跑」和静默覆盖。
+    """
+    if str(match_rule.get("reportType") or "") != "data_model":
+        return None
+    section = str(match_rule.get("section") or "").strip()
+    sections = match_rule.get("sections")
+    if section and isinstance(sections, (list, tuple)) and sections:
+        return (
+            "科室筛选与上游科室二选一：请只保留「科室（可多选）」，清空上游科室"
+        )
+    return None
+
 def _multi_serial_rule_error(
     match_rule: Mapping[str, Any],
     *,
@@ -601,6 +619,11 @@ class ProjectStatusUpdateService:
             raise SyncBindingNotReadyError(
                 "流水单号与实例号二选一：请只保留其中一项后重新保存配置"
             )
+        section_conflict = _section_scope_conflict_error(match_rule)
+        if section_conflict:
+            # 与保存入口同一判定：存量/手工改库造出的冲突规则在这里停跑，
+            # 不让连接器静默丢掉上游科室条件。
+            raise SyncBindingNotReadyError(section_conflict)
         if (
             contract["reportType"] == "data_model"
             and str(match_rule.get("documentNo") or "").strip()
@@ -1203,6 +1226,9 @@ class ProjectStatusUpdateService:
             ):
                 # 单值 fail-closed（2026-10-10）：单记录绑定按整串精确匹配。
                 fields["matchRule"] = _single_serial_error(match_rule.get("documentNo"))
+            elif _section_scope_conflict_error(match_rule):
+                # 数模：单值上游科室与多选科室范围互斥（2026-10-27）。
+                fields["matchRule"] = _section_scope_conflict_error(match_rule)
             elif multi_serial_error:
                 fields["matchRule"] = multi_serial_error
             elif len(_json_dumps(match_rule)) > MATCH_RULE_TEXT_LIMIT:

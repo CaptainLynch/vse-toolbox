@@ -54,6 +54,7 @@ SYNC_CREDENTIAL_REF = "domain"
 from core.native_folder_picker import NativeFolderPickerError, choose_native_folder
 from core.project_status_contracts import (
     DELIVERABLE_LINK_REGISTRY,
+    MATCH_FIELD_CONTRACT,
     MILESTONE_STATUSES,
     PROJECT_STATUS_SOURCE_CAPABILITIES,
     current_stage_label,
@@ -2540,6 +2541,9 @@ def _project_status_payload(
                         else None
                     ),
                     "syncNote": capabilities.get("syncNote"),
+                    # 字段契约版本：前端据此发现「代码已改但界面还是旧的」
+                    # （onedir 包未重建 / ES module 缓存 / 后端未重启）。
+                    "matchFieldContract": MATCH_FIELD_CONTRACT,
                     # 多单号同步功能开关（缺省关闭）随能力下发：前端据此决定是否
                     # 引导用户使用多单号（开关关闭时后端保存/发现/运行期一律
                     # fail-closed）。只有契约声明 documentNos 的交付物可能为 True。
@@ -3647,6 +3651,18 @@ def create_app(
     app.config["APP_VERSION"] = version_info.get("displayVersion", "开发工作区")
     app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
     app.before_request(_enforce_local_web_access)
+
+    @app.after_request
+    def _plugin_static_revalidate(response):  # type: ignore[no-untyped-def]
+        """插件静态资源走协商缓存（ETag/304），避免「代码改了界面没变」。
+
+        插件前端是原生 ES module：子模块 import 不带版本号，浏览器一旦留下旧副本
+        且没有 revalidate 提示，页面就会一直显示旧控件。这里只约束插件静态目录，
+        API 响应仍由各路由的 ``no-store`` 负责。
+        """
+        if request.path.startswith("/plugins/") and response.status_code in (200, 304):
+            response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return response
 
     @app.errorhandler(413)
     @app.errorhandler(RequestEntityTooLarge)

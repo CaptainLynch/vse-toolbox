@@ -44,6 +44,8 @@
 .overview-deliverable-detail-view .policy-sync-summary-title { color: var(--ink); font-size: 12px; }
 .overview-deliverable-detail-view .policy-sync-summary-state { color: var(--muted); font-family: var(--font-mono); font-size: 11px; }
 .overview-deliverable-detail-view .policy-sync-summary-hint { margin: 0; color: var(--muted-soft); font-size: 12px; }
+/* 前后端字段契约版本不一致：必须显眼，否则用户会把旧界面当成新逻辑。 */
+.overview-deliverable-detail-view .policy-sync-summary-hint.is-warning { color: var(--danger, #b42318); font-weight: 600; }
 .overview-deliverable-detail-view .policy-sync-summary-facts { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
 .overview-deliverable-detail-view .policy-sync-summary-fact { display: flex; gap: 8px; align-items: baseline; }
 .overview-deliverable-detail-view .policy-sync-fact-label { flex: none; color: var(--muted); font-size: 11px; }

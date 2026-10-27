@@ -178,8 +178,21 @@ def _string_list(value: object) -> tuple[str, ...]:
 def _checked_filters(
     value: Mapping[str, object],
     allowed: set[str],
+    *,
+    narrow_keys: frozenset[str] = frozenset(),
 ) -> Mapping[str, object]:
+    """归档 filters 白名单校验。
+
+    ``narrow_keys`` 是「只做本地收窄、不改变上游查询」的键（数模 ``sections``）。
+    归档保存的是上游**原始导出**，没有本地收窄这一步；把这类键静默忽略会让用户
+    以为归档也是按科室收窄的，因此显式拒绝并给可执行文案。
+    """
     unknown = set(value) - allowed
+    if unknown & narrow_keys:
+        raise ValueError(
+            "归档保存的是 TDC 上游原始导出，不支持「科室范围（sections）」；"
+            "如需按归集科室查看，请在看板/交付物明细里按科室筛选"
+        )
     if unknown:
         raise ValueError("archive filters contain unsupported fields")
     return value
@@ -460,7 +473,11 @@ class TDCArchiveConnector:
 
     @staticmethod
     def _data_model_filters(value: Mapping[str, object]) -> TDCDataModelFilters:
-        rule = _checked_filters(value, _TDC_DATA_MODEL_KEYS)
+        rule = _checked_filters(
+            value,
+            _TDC_DATA_MODEL_KEYS,
+            narrow_keys=frozenset({"sections"}),
+        )
         # documentNo（流水单号）不是 TDC 查询参数：只读取这里列出的键，它自然被忽略。
         return TDCDataModelFilters(
             instance_no=_text(rule.get("incident")),

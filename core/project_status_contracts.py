@@ -9,6 +9,15 @@ from typing import Mapping, Sequence, TypedDict
 
 MILESTONE_STATUSES = ("未开始", "进行中", "已完成", "已超期")
 
+#: 同步配置字段契约版本（前后端对齐用）。
+#:
+#: 只在前端/后端对 ``matchRule`` 键的**解释**发生变化时递增（新增键、键语义
+#: 改变、默认值来源改变）；纯文案调整不递增。经 ``sourceInfo.matchFieldContract``
+#: 下发，前端与自身常量不一致时提示「重启 VSE-WebUI 并强制刷新」——
+#: 这是「代码已改但界面还是旧的」最常见的成因（onedir 包未重建 / 浏览器 ES
+#: module 缓存 / 后端进程未重启），比让用户猜要快。
+MATCH_FIELD_CONTRACT = "2026-10-27.1"
+
 
 class DeliverableLink(TypedDict, total=False):
     """单一关联注册表条目：归档任务 ↔ 目录条目 ↔ 项目状态交付物 ↔ 表单。"""

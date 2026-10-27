@@ -17,6 +17,7 @@ import {
   EWO_POLICY_MODE_LABELS,
   EWO_POLICY_RECOMMENDED_MODE,
   INTERVAL_OPTIONS,
+  MATCH_FIELD_CONTRACT,
   POLICY_SYNC_HINTS,
   SERIAL_SET_TEXT_MAX,
   applyBindingMode,
@@ -207,6 +208,10 @@ function SyncSummaryCard({ item, policy, capabilities, settings, advancedOpen, o
   const presetTargets = Array.isArray(capabilities && capabilities.sectionScopePresets) ? capabilities.sectionScopePresets : [];
   const sectionPresets = Array.isArray(capabilities && capabilities.sectionPresets) ? capabilities.sectionPresets : [];
   const declaredHint = POLICY_SYNC_HINTS[syncDisplay.state];
+  // 后端下发了契约版本却与本前端不一致：多半是 onedir 包未重建、后端进程未重启
+  // 或浏览器留了旧 ES module。此时界面可能仍在渲染旧控件，必须显式告知。
+  const contractMismatch = Boolean(capabilities && capabilities.matchFieldContract)
+    && capabilities.matchFieldContract !== MATCH_FIELD_CONTRACT;
   const numberText = kind.isEwo ? "EWO 编号（选填，留空则整车聚合）"
     : kind.isPaa ? "PAA 编号（选填，留空则整车聚合）"
       : kind.isNcr ? "NCR 编号（选填，留空则整车聚合）"
@@ -234,6 +239,7 @@ function SyncSummaryCard({ item, policy, capabilities, settings, advancedOpen, o
       <span class="policy-sync-summary-state">${syncDisplay.label}</span>
     </div>
     ${declaredHint && html`<p class="policy-sync-summary-hint">${declaredHint}</p>`}
+    ${contractMismatch && html`<p class="policy-sync-summary-hint is-warning">前端与后端字段契约版本不一致（界面 ${MATCH_FIELD_CONTRACT} / 服务 ${safeDisplayValue(capabilities.matchFieldContract)}）：请重启 VSE-WebUI 并强制刷新（Ctrl+F5），否则看到的可能仍是旧控件。</p>`}
     ${capabilities && capabilities.completenessPolicy === "workbook_admission" && html`<p class="policy-sync-summary-hint">来源为官方工作簿导出：仅当表头契约成立且逐行归类核对无剩余时才写入快照；该类来源没有声明总数，因此不构成源端零丢失的证明。</p>`}
     <ul class="policy-sync-summary-facts">
       ${facts.map(([label, value]) => html`<li class="policy-sync-summary-fact" key=${label}>
