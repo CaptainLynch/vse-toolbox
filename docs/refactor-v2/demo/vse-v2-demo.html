@@ -1,0 +1,882 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VSE Toolbox v2 Demo</title>
+<style>
+:root{
+  --bg:#efe9df; --win:#f8f4ee; --surface:#fffdf9; --line:#e6ddd1; --line2:#d8ccbd;
+  --ink:#2b2622; --muted:#7a6f66; --faint:#a39a90;
+  --accent:#c4673f; --accent-ink:#fff; --accent-soft:#f6e3d9;
+  --ok:#2f8a5b; --ok-soft:#e1f1e7; --warn:#a8740f; --warn-soft:#f8ecd2;
+  --bad:#c2463d; --bad-soft:#f8e0dd; --off:#8d877f; --off-soft:#ece8e2;
+  --info:#3d6fb0; --info-soft:#e2ebf6;
+  --radius:12px; --shadow:0 10px 30px rgba(60,40,20,.12);
+  font-family:"Microsoft YaHei UI","Microsoft YaHei","PingFang SC",system-ui,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--ink);font-size:14px;line-height:1.55}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+a{color:var(--accent)}
+/* ── window frame ── */
+.desk{min-height:100%;padding:18px 16px 70px;display:flex;justify-content:center}
+.win{width:100%;max-width:1240px;background:var(--win);border-radius:14px;box-shadow:var(--shadow);overflow:hidden;display:flex;flex-direction:column;min-height:calc(100vh - 88px);border:1px solid var(--line2)}
+.win.hidden{display:none}
+.titlebar{height:36px;display:flex;align-items:center;gap:10px;padding:0 6px 0 14px;background:#f1ebe2;border-bottom:1px solid var(--line);user-select:none}
+.titlebar .ttl{font-size:12.5px;color:var(--muted);flex:1}
+.titlebar .wbtn{width:40px;height:28px;border:0;background:transparent;border-radius:6px;color:var(--muted)}
+.titlebar .wbtn:hover{background:#e7dfd3}
+.titlebar .wbtn.close:hover{background:var(--bad);color:#fff}
+.logo{width:22px;height:22px;border-radius:6px;background:var(--accent);color:#fff;display:grid;place-items:center;font-weight:700;font-size:13px}
+/* ── top bar ── */
+.top{display:flex;align-items:center;gap:14px;padding:12px 20px;border-bottom:1px solid var(--line);background:var(--surface);flex-wrap:wrap}
+.proj{display:flex;align-items:center;gap:8px;position:relative}
+.proj-btn{border:1px solid var(--line2);background:var(--win);border-radius:10px;padding:6px 12px;display:flex;align-items:center;gap:8px;font-weight:600}
+.proj-btn small{font-weight:400;color:var(--muted)}
+.menu{position:absolute;top:calc(100% + 6px);left:0;min-width:240px;background:var(--surface);border:1px solid var(--line2);border-radius:10px;box-shadow:var(--shadow);padding:6px;z-index:30}
+.menu button{display:flex;width:100%;text-align:left;border:0;background:transparent;padding:8px 10px;border-radius:8px;gap:8px;align-items:center}
+.menu button:hover{background:var(--accent-soft)}
+.menu hr{border:0;border-top:1px solid var(--line);margin:4px 0}
+nav.tabs{display:flex;gap:4px;flex:1;flex-wrap:wrap}
+nav.tabs button{border:0;background:transparent;padding:7px 14px;border-radius:9px;color:var(--muted);font-weight:600}
+nav.tabs button:hover{background:var(--win);color:var(--ink)}
+nav.tabs button.on{background:var(--accent);color:#fff}
+.right{display:flex;gap:8px;align-items:center}
+.pill{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:3px 10px;font-size:12.5px;font-weight:600;white-space:nowrap}
+.pill::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+.pill.ok{background:var(--ok-soft);color:var(--ok)} .pill.warn{background:var(--warn-soft);color:var(--warn)}
+.pill.bad{background:var(--bad-soft);color:var(--bad)} .pill.off{background:var(--off-soft);color:var(--off)}
+.pill.info{background:var(--info-soft);color:var(--info)} .pill.nodot::before{display:none}
+.iconbtn{border:1px solid var(--line2);background:var(--win);border-radius:9px;padding:6px 11px;position:relative}
+.badge{position:absolute;top:-6px;right:-6px;background:var(--accent);color:#fff;border-radius:999px;font-size:11px;min-width:18px;height:18px;display:grid;place-items:center;padding:0 5px}
+/* ── layout ── */
+main{flex:1;padding:22px 24px 40px;overflow:auto}
+h1{font-size:22px;margin:0 0 4px} h2{font-size:16px;margin:0} h3{font-size:14.5px;margin:0}
+.sub{color:var(--muted);margin:0 0 18px}
+.grid{display:grid;gap:14px}
+.g2{grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
+.g3{grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:16px}
+.card.hl{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.card-h{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
+.muted{color:var(--muted)} .faint{color:var(--faint)} .small{font-size:12.5px}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.spacer{flex:1}
+.btn{border:1px solid var(--line2);background:var(--surface);border-radius:9px;padding:7px 14px;font-weight:600}
+.btn:hover{border-color:var(--accent);color:var(--accent)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.primary:hover{filter:brightness(1.05);color:#fff}
+.btn.ghost{border-color:transparent;background:transparent;color:var(--muted)}
+.btn.danger{color:var(--bad)}
+.btn.sm{padding:4px 10px;font-size:12.5px}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.todo{display:flex;gap:12px;align-items:flex-start;padding:14px;border-radius:10px;border:1px solid var(--line);background:var(--surface)}
+.todo .ic{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;font-size:17px;flex:none}
+.todo .body{flex:1;min-width:0}
+.tone-ok .ic{background:var(--ok-soft)} .tone-warn .ic{background:var(--warn-soft)} .tone-bad .ic{background:var(--bad-soft)} .tone-info .ic{background:var(--info-soft)}
+.errcard{border:1px solid #efc4bf;background:#fdf5f4;border-radius:10px;padding:14px}
+.errcard dl{display:grid;grid-template-columns:96px 1fr;gap:4px 10px;margin:8px 0 12px}
+.errcard dt{color:var(--muted)} .errcard dd{margin:0}
+/* timeline */
+.tl{display:flex;gap:0;overflow-x:auto;padding:8px 2px 4px}
+.node{flex:1;min-width:92px;text-align:center;position:relative;padding-top:22px}
+.node::before{content:"";position:absolute;top:8px;left:0;right:0;height:3px;background:var(--line2)}
+.node:first-child::before{left:50%} .node:last-child::before{right:50%}
+.node .dot{position:absolute;top:2px;left:50%;transform:translateX(-50%);width:15px;height:15px;border-radius:50%;background:var(--surface);border:3px solid var(--line2);z-index:1}
+.node.done .dot{background:var(--ok);border-color:var(--ok)} .node.done::before{background:var(--ok)}
+.node.cur .dot{border-color:var(--accent);box-shadow:0 0 0 4px var(--accent-soft)}
+.node.late .dot{border-color:var(--bad)}
+.node b{display:block;font-size:12.5px} .node span{font-size:11.5px;color:var(--muted)}
+.progress{height:8px;background:var(--off-soft);border-radius:99px;overflow:hidden}
+.progress>i{display:block;height:100%;background:var(--accent);border-radius:99px;transition:width .4s}
+.progress.ok>i{background:var(--ok)}
+/* tables */
+.tbl-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px}
+table{border-collapse:collapse;width:100%;background:var(--surface)}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
+th{font-size:12.5px;color:var(--muted);background:#faf6f0;font-weight:600;cursor:default}
+th.sort{cursor:pointer} th.sort:hover{color:var(--ink)}
+tr:last-child td{border-bottom:0}
+tbody tr.click{cursor:pointer} tbody tr.click:hover{background:#fbf6ef}
+mark{background:#fde9a9;border-radius:3px;padding:0 1px}
+/* forms */
+label.f{display:grid;gap:5px;margin-bottom:12px}
+label.f>span{font-weight:600;font-size:13px}
+label.f>em{font-style:normal;color:var(--muted);font-size:12px}
+input[type=text],input[type=password],input[type=date],input[type=number],select,textarea{border:1px solid var(--line2);border-radius:9px;padding:8px 10px;background:#fff;width:100%}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--accent-soft);border-color:var(--accent)}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{border:1px solid var(--line2);background:var(--surface);border-radius:999px;padding:4px 12px;font-size:13px}
+.chip.on{background:var(--accent-soft);border-color:var(--accent);color:#8f4524;font-weight:600}
+.switch{display:inline-flex;align-items:center;gap:10px;cursor:pointer;user-select:none}
+.switch i{width:38px;height:22px;border-radius:99px;background:var(--line2);position:relative;transition:.2s;flex:none}
+.switch i::after{content:"";position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#fff;transition:.2s}
+.switch.on i{background:var(--ok)} .switch.on i::after{left:19px}
+.seg{display:inline-flex;border:1px solid var(--line2);border-radius:9px;overflow:hidden}
+.seg button{border:0;background:var(--surface);padding:6px 14px}
+.seg button.on{background:var(--accent);color:#fff}
+.subtabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin:0 0 14px;flex-wrap:wrap}
+.subtabs button{border:0;background:transparent;padding:8px 12px;color:var(--muted);font-weight:600;border-bottom:2px solid transparent;margin-bottom:-1px}
+.subtabs button.on{color:var(--accent);border-color:var(--accent)}
+.drop{border:2px dashed var(--line2);border-radius:12px;padding:26px;text-align:center;color:var(--muted);background:#fbf8f3}
+.drop.over{border-color:var(--accent);background:var(--accent-soft)}
+.expert{border-left:3px solid var(--info);padding-left:12px}
+.tag-expert{font-size:11px;color:var(--info);background:var(--info-soft);border-radius:5px;padding:1px 6px;margin-left:6px;font-weight:600}
+/* drawer / modal */
+.scrim{position:fixed;inset:0;background:rgba(43,38,34,.32);z-index:40;display:flex}
+.drawer{margin-left:auto;width:min(720px,100%);height:100%;background:var(--win);box-shadow:var(--shadow);display:flex;flex-direction:column;animation:slide .2s ease}
+.drawer header{display:flex;align-items:center;gap:10px;padding:16px 20px;border-bottom:1px solid var(--line);background:var(--surface)}
+.drawer .content{padding:18px 20px;overflow:auto;flex:1}
+@keyframes slide{from{transform:translateX(30px);opacity:0}}
+.modal{margin:auto;width:min(560px,calc(100% - 32px));background:var(--surface);border-radius:14px;box-shadow:var(--shadow);padding:22px;max-height:calc(100% - 40px);overflow:auto;animation:pop .18s ease}
+.modal.wide{width:min(760px,calc(100% - 32px))}
+@keyframes pop{from{transform:scale(.97);opacity:0}}
+.steps{display:flex;gap:6px;margin:0 0 18px}
+.steps i{flex:1;height:4px;border-radius:99px;background:var(--line)}
+.steps i.on{background:var(--accent)}
+/* skeleton */
+.sk{background:linear-gradient(90deg,#eee6db 25%,#f6f0e8 50%,#eee6db 75%);background-size:200% 100%;animation:sh 1s infinite;border-radius:8px}
+@keyframes sh{to{background-position:-200% 0}}
+/* tray + toasts */
+.taskbar{position:fixed;left:0;right:0;bottom:0;height:44px;background:#24211f;display:flex;align-items:center;justify-content:flex-end;padding:0 12px;gap:10px;z-index:20;color:#ddd;font-size:12px}
+.tray{width:30px;height:30px;border-radius:6px;display:grid;place-items:center;cursor:pointer;position:relative}
+.tray:hover{background:#3a3633}
+.tray .logo{width:20px;height:20px;font-size:11px}
+.tray-menu{position:fixed;right:70px;bottom:50px;background:#2f2b28;color:#eee;border-radius:8px;padding:6px;min-width:190px;z-index:60;box-shadow:var(--shadow)}
+.tray-menu button{display:block;width:100%;text-align:left;background:transparent;border:0;color:#eee;padding:8px 12px;border-radius:6px}
+.tray-menu button:hover{background:#45403c}
+.toasts{position:fixed;right:14px;bottom:54px;display:flex;flex-direction:column;gap:8px;z-index:70;width:min(360px,calc(100% - 28px))}
+.toast{background:#2f2b28;color:#f2eee9;border-radius:10px;padding:12px 14px;box-shadow:var(--shadow);animation:pop .2s ease}
+.toast b{display:block;margin-bottom:2px}
+.toast .row{margin-top:8px}
+.toast .btn{background:#45403c;border-color:#5a544f;color:#fff}
+.toast .btn.primary{background:var(--accent);border-color:var(--accent)}
+.clock{opacity:.8}
+/* demo console */
+.demo{position:fixed;left:12px;bottom:52px;z-index:65;background:#fff;border:1px solid var(--info);border-radius:10px;box-shadow:var(--shadow);width:250px;font-size:12.5px}
+.demo summary{padding:8px 12px;cursor:pointer;color:var(--info);font-weight:700;list-style:none}
+.demo .in{padding:0 10px 10px;display:grid;gap:6px}
+.demo button{border:1px solid var(--line2);background:#fafafa;border-radius:7px;padding:5px 8px;text-align:left}
+.demo button:hover{border-color:var(--info)}
+.splash{position:fixed;inset:0;background:var(--win);z-index:90;display:grid;place-items:center;text-align:center}
+.splash .logo{width:64px;height:64px;font-size:32px;border-radius:16px;margin:0 auto 14px}
+.bar{display:flex;align-items:flex-end;gap:6px;height:120px;padding-top:6px}
+.bar>div{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;font-size:11px;color:var(--muted);min-width:0}
+.bar>div>i{width:100%;max-width:38px;border-radius:5px 5px 0 0;background:var(--accent);display:block}
+.legend{display:flex;gap:12px;font-size:12px;color:var(--muted);flex-wrap:wrap}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:4px;vertical-align:-1px}
+.mailbox{background:#fff;border:1px solid var(--line);border-radius:10px;padding:16px;font-size:13.5px}
+.kv{display:grid;grid-template-columns:120px 1fr;gap:6px 12px}
+.kv dt{color:var(--muted)} .kv dd{margin:0}
+.empty{text-align:center;color:var(--muted);padding:26px}
+.split{grid-template-columns:minmax(0,2fr) minmax(260px,1fr);align-items:start}
+.split.split-l{grid-template-columns:minmax(260px,340px) minmax(0,1fr)}
+@media (max-width:900px){ .split,.split.split-l{grid-template-columns:minmax(0,1fr)} }
+@media (max-width:720px){
+  .todo{flex-wrap:wrap} .todo .body{flex-basis:calc(100% - 50px)}
+  .demo{width:auto;right:12px}
+  .desk{padding:0 0 50px} .win{border-radius:0;min-height:calc(100vh - 44px)}
+  main{padding:16px} .top{padding:10px 16px}
+  .errcard dl{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+<div class="desk"><div class="win" id="win"></div></div>
+<div class="taskbar">
+  <span class="faint" style="margin-right:auto;color:#999">演示：底部为模拟的 Windows 任务栏，右侧是托盘图标</span>
+  <div class="tray" id="tray" title="VSE Toolbox"><span class="logo">V</span></div>
+  <span class="clock">10-28 星期三</span>
+</div>
+<div class="toasts" id="toasts"></div>
+<div id="layer"></div>
+<details class="demo" id="demo"><summary>🧪 演示控制台</summary><div class="in">
+  <button data-act="demo-reset">↺ 重置为首次安装</button>
+  <button data-act="demo-expire">模拟：登录过期</button>
+  <button data-act="demo-discover">模拟：飞书收到更新包</button>
+  <button data-act="demo-badupdate">模拟：安装一个会启动失败的更新</button>
+  <button data-act="demo-syncfail">模拟：NCR 同步失败</button>
+  <span class="faint">数据均为本地假数据，刷新页面会保留进度。</span>
+</div></details>
+
+<script>
+"use strict";
+/* ═════════════ 假数据与状态 ═════════════ */
+const TODAY = "2026-10-28";
+const SECTIONS = ["车身科","内饰科","外饰科","底盘科","电子电器科","动力系统科","车体架构集成科"];
+const DELIV_TEMPLATES = [
+  {key:"sor", name:"SOR 定点流程", source:"TDC", plan:"2026-11-20"},
+  {key:"ewo", name:"EWO 工程变更", source:"Aras", plan:"2026-11-05"},
+  {key:"dm",  name:"数模设计审核", source:"TDC", plan:"2026-10-24"},
+  {key:"paa", name:"PAA 流程", source:"Aras", plan:"2026-12-10"},
+  {key:"ncrp",name:"NCR 审批进度", source:"Aras", plan:"2026-11-15"},
+  {key:"ncrd",name:"NCR 审批明细", source:"Aras", plan:"2026-11-15"},
+];
+const PHASES = [
+  ["VPI","2026-04-08"],["内饰模型评审","2026-05-10"],["外饰模型评审","2026-05-28"],["LLP VDR","2026-06-20"],
+  ["100% VDR","2026-07-15"],["LLP T2","2026-08-10"],["100% T2","2026-09-20"],["OTS","2026-11-10"],
+  ["验证阀","2026-12-15"],["内部体验阀",""],["用户体验阀",""]
+];
+function mkProject(code, sections, pick){
+  return {
+    id: code, code, name: code + " 项目", sections: sections.slice(),
+    phases: PHASES.map(([n,d],i)=>({name:n, date:d, done: d && d < TODAY && i<7})),
+    deliverables: DELIV_TEMPLATES.filter(t=>!pick || pick.includes(t.key)).map((t,i)=>({
+      ...t, id: code+"-"+t.key, enabled:false, verified:false, progress:null, lastRun:null, error:null,
+      filter:{vehicles:[code], sections: sections.slice(), from:"2026-01-01", to:""}, mode:"自动",
+    })),
+  };
+}
+function seed(){
+  return {
+    v:3, firstRun:true, loggedIn:false, user:"", savePwd:true, autostart:false, expert:false,
+    page:"today", sub:{}, projects:[], cur:null, tasks:[], watch:["DM-20261007","DM-20261012"],
+    sessionExpired:false, lastBg:null, reportDone:false, lowVis:false, discoverOn:true,
+    version:{app:"2.0.3", packs:{"项目与交付物":"2.0.3","签署日报":"0.3.0","TIR 简表":"0.2.1","Excel 工具":"0.2.0","自动归档":"0.2.0"}, runtime:"rt-2026.11 (Python 3.12)"},
+    history:[{t:"10-20 09:12", text:"安装 VSE Toolbox 2.0.3", tone:"ok"}],
+    archive:[
+      {id:1,name:"EWO 报表每日留存",on:true,freq:"每天 07:00",last:"今天 07:00 ✓",dir:"默认目录"},
+      {id:2,name:"NCR 审批明细每日留存",on:true,freq:"每天 07:10",last:"今天 07:10 ✓",dir:"默认目录"},
+      {id:3,name:"数模审核流程周留存",on:false,freq:"每周一 08:00",last:"未运行",dir:"默认目录"},
+    ],
+    rollup:[["结构工程科","车身科"],["车门附件科","车身科"],["BE 结构工程科","车身科"],["内外饰工程科","内饰科"]],
+  };
+}
+let S;
+try { S = JSON.parse(localStorage.getItem("vse-v2-demo")||"null"); } catch(e){ S=null; }
+if(!S || S.v!==3) S = seed();
+function save(){ try{ localStorage.setItem("vse-v2-demo", JSON.stringify(S)); }catch(e){} }
+const P = () => S.projects.find(p=>p.id===S.cur);
+
+/* 交付物数据行（数模） */
+function rng(seedN){ let x=seedN; return ()=> (x = (x*9301+49297)%233280)/233280; }
+function dmRows(code){
+  const r=rng(code.split("").reduce((a,c)=>a+c.charCodeAt(0),0));
+  const parts=["前保险杠骨架","仪表板横梁","左前门内板","后背门外板","顶棚总成","中控台面板","座椅骨架","前副车架","线束支架","尾灯安装座","A 柱上饰板","发舱盖铰链"];
+  const people=[["张伟","车身科"],["李娜","内饰科"],["王强","外饰科"],["刘洋","底盘科"],["陈静","电子电器科"],["赵磊","车身科"],["孙敏","内饰科"],["周杰","车体架构集成科"]];
+  const st=["审批中","审批中","审批中","已签署","已签署","退回修改"];
+  return Array.from({length:42},(_,i)=>{
+    const p=people[Math.floor(r()*people.length)];
+    const s=st[Math.floor(r()*st.length)];
+    const plat = r()<.18;
+    return {no:"DM-2026"+String(1001+i*7).padStart(4,"0").slice(-4)+String(10+i).slice(-2), part:parts[Math.floor(r()*parts.length)],
+      veh: plat ? (r()<.5?"Ar-L":"Ar-L+") : code, sec:p[1], who:p[0], st:s, days: s==="已签署"?0:Math.floor(r()*38)+1};
+  });
+}
+
+/* ═════════════ 唯一的状态口径（C4/C5） ═════════════ */
+function delivStatus(d){
+  if(!d.enabled) return {tone:"off", label:"未开启同步", late:0};
+  if(d.error) return {tone:"bad", label:"同步失败", late:0};
+  if(!d.verified) return {tone:"info", label:"首次同步中", late:0};
+  const late = daysBetween(d.plan, TODAY);
+  if(d.progress>=100) return {tone:"ok", label:"已完成", late:0};
+  if(late>0) return {tone:"bad", label:`已逾期 ${late} 天`, late};
+  if(daysBetween(TODAY,d.plan)<=7) return {tone:"warn", label:"7 天内到期", late:0};
+  return {tone:"ok", label:"正常", late:0};
+}
+function daysBetween(a,b){ return Math.round((new Date(b)-new Date(a))/864e5); }
+function overall(p){
+  const have=p.deliverables.filter(d=>d.enabled&&d.verified&&!d.error);
+  if(!have.length) return {pct:null, n:0, m:p.deliverables.length};
+  return {pct:Math.round(have.reduce((a,d)=>a+d.progress,0)/have.length), n:have.length, m:p.deliverables.length};
+}
+function fakeProgress(d){
+  const base={sor:72,ewo:58,dm:64,paa:35,ncrp:81,ncrd:81}[d.key]??50;
+  return base;
+}
+
+/* ═════════════ 工具函数 ═════════════ */
+const $ = (s,el=document)=>el.querySelector(s);
+const esc = s => String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const pill = (tone,text,extra="") => `<span class="pill ${tone} ${extra}">${esc(text)}</span>`;
+function nowStr(){ const d=new Date(); return `${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; }
+function toast(title, text="", actions=[] , ms=5200){
+  const el=document.createElement("div"); el.className="toast";
+  el.innerHTML=`<b>${esc(title)}</b><div class="small" style="opacity:.85">${esc(text)}</div>${actions.length?`<div class="row">${actions.map((a,i)=>`<button class="btn sm ${i===0?"primary":""}" data-i="${i}">${esc(a.label)}</button>`).join("")}</div>`:""}`;
+  el.addEventListener("click",e=>{const b=e.target.closest("button[data-i]"); if(b){ actions[+b.dataset.i].run(); el.remove(); }});
+  $("#toasts").appendChild(el); setTimeout(()=>el.remove(), actions.length? ms*2: ms);
+}
+function addTask(name, ms, onDone, kind="下载"){
+  const t={id:Date.now()+Math.random(), name, pct:0, state:"运行中", kind, file:null};
+  S.tasks.unshift(t); render();
+  const step=()=>{ if(t.state!=="运行中") return;
+    t.pct=Math.min(100,t.pct+17+Math.floor(Math.random()*8)); // 约 5–6 步完成，耗时接近 ms
+    if(t.pct>=100){ t.state="已完成"; const r=onDone&&onDone(t); if(r) t.file=r; save(); }
+    else setTimeout(step, ms/6);
+    refreshLive();
+  };
+  setTimeout(step, ms/6); return t;
+}
+function refreshLive(){ // 轻量刷新：任务徽章与打开的任务抽屉
+  const b=$("#taskBadge"); const n=S.tasks.filter(t=>t.state==="运行中").length;
+  if(b){ b.textContent=n; b.style.display=n?"grid":"none"; }
+  if(layer.kind==="tasks") openTasks();
+  document.querySelectorAll("[data-live-task]").forEach(el=>{ const t=S.tasks.find(x=>String(x.id)===el.dataset.liveTask); if(t) el.innerHTML=taskInline(t); });
+}
+function taskInline(t){
+  return t.state==="运行中" ? `<div class="row small"><span class="muted">${esc(t.name)}…</span><span class="spacer"></span>${t.pct}%</div><div class="progress"><i style="width:${t.pct}%"></i></div>`
+    : `<div class="row small">${pill("ok","已完成")}<span>${esc(t.name)}</span><span class="spacer"></span>${t.file?`<button class="btn sm" data-act="open-file" data-file="${esc(t.file)}">打开文件</button>`:""}</div>`;
+}
+
+/* ═════════════ 渲染：窗口外壳 ═════════════ */
+const NAV=[["today","今天"],["project","项目"],["reports","报告"],["tools","工具"],["settings","设置"]];
+let menuOpen=false, layer={kind:null}, skeleton=false;
+function render(){
+  const win=$("#win");
+  win.classList.toggle("hidden", !!S.hidden);
+  if(S.firstRun){ win.innerHTML = titlebar() + `<main></main>`; openWizard(); return; }
+  const p=P();
+  const sess = S.sessionExpired ? pill("warn","需要重新登录") : pill("ok", S.user? S.user+" · 已连接":"已连接");
+  const running=S.tasks.filter(t=>t.state==="运行中").length;
+  win.innerHTML = titlebar() + `
+  <div class="top">
+    <div class="proj">
+      <button class="proj-btn" data-act="proj-menu" aria-haspopup="true">📁 ${esc(p.code)} <small>项目</small> ▾</button>
+      ${menuOpen?`<div class="menu" role="menu">${S.projects.map(x=>`<button data-act="proj-switch" data-id="${x.id}">${x.id===S.cur?"✓":"　"} ${esc(x.code)} <span class="muted small">${x.deliverables.filter(d=>d.enabled).length}/${x.deliverables.length} 项已同步</span></button>`).join("")}<hr><button data-act="proj-new">＋ 新建项目</button></div>`:""}
+    </div>
+    <nav class="tabs">${NAV.map(([k,t])=>`<button class="${S.page===k?"on":""}" data-act="nav" data-page="${k}">${t}</button>`).join("")}</nav>
+    <div class="right">
+      <button class="iconbtn" data-act="session" title="账号">${sess}</button>
+      <button class="iconbtn" data-act="tasks" title="后台任务">📋 任务<span class="badge" id="taskBadge" style="display:${running?"grid":"none"}">${running}</span></button>
+    </div>
+  </div>
+  <main id="main">${skeleton? skel() : page()}</main>`;
+  save();
+}
+function titlebar(){ return `<div class="titlebar"><span class="logo">V</span><span class="ttl">VSE Toolbox ${S.version.app}</span><button class="wbtn" data-act="win-min" title="最小化">—</button><button class="wbtn" title="最大化">▢</button><button class="wbtn close" data-act="win-close" title="关闭到托盘">✕</button></div>`; }
+function skel(){ return `<div class="sk" style="height:26px;width:180px;margin-bottom:10px"></div><div class="sk" style="height:14px;width:320px;margin-bottom:22px"></div><div class="grid g2">${'<div class="sk" style="height:120px"></div>'.repeat(4)}</div>`; }
+function go(page, sub){ S.page=page; if(sub) S.sub[page]=sub; menuOpen=false; skeleton=true; render(); setTimeout(()=>{ skeleton=false; render(); }, 260); }
+function page(){ return ({today:pageToday, project:pageProject, reports:pageReports, tools:pageTools, settings:pageSettings})[S.page](); }
+
+/* ═════════════ 今天 ═════════════ */
+function pageToday(){
+  const p=P(); const items=[];
+  if(S.sessionExpired) items.push({tone:"warn",ic:"🔑",t:"登录已过期，后台同步已暂停",d:"重新登录后会自动补跑错过的同步。",a:[["重新登录","relogin"]]});
+  p.deliverables.filter(d=>d.error).forEach(d=>items.push({tone:"bad",ic:"⚠️",t:`${d.name} 同步失败`,err:d,a:[]}));
+  const off=p.deliverables.filter(d=>!d.enabled);
+  if(off.length) items.push({tone:"info",ic:"🔄",t:`还有 ${off.length} 项交付物没开启自动同步`,d:off.map(d=>d.name).join("、"),a:[["一键全部开启","enable-all"],["逐项查看","nav-project"]]});
+  p.deliverables.forEach(d=>{const s=delivStatus(d); if(s.late>0) items.push({tone:"bad",ic:"⏰",t:`${d.name} ${s.label}`,d:`计划完成 ${d.plan}，当前进度 ${d.progress}%`,a:[["查看明细","open-deliv:"+d.id]]}); else if(s.tone==="warn") items.push({tone:"warn",ic:"📅",t:`${d.name} ${s.label}`,d:`计划完成 ${d.plan}，当前进度 ${d.progress}%`,a:[["查看明细","open-deliv:"+d.id]]});});
+  const unsched=p.phases.filter(x=>!x.date);
+  if(unsched.length) items.push({tone:"info",ic:"🗓️",t:`主计划有 ${unsched.length} 个节点还没排期`,d:unsched.map(x=>x.name).join("、"),a:[["去排期","nav-project"]]});
+  items.push(S.reportDone ? {tone:"ok",ic:"📨",t:"今天的签署日报已生成",d:"已复制正文 / 已生成邮件草稿",a:[["再看一眼","nav-report"]]} : {tone:"warn",ic:"📨",t:"今天的签署日报还没生成",d:"数据会先自动刷新，大约 20 秒。",a:[["一键生成","quick-report"]]});
+  if(S.pendingUpdate) items.push({tone:"info",ic:"⬆️",t:`发现更新：${S.pendingUpdate.name} ${S.pendingUpdate.ver}`,d:S.pendingUpdate.notes,a:[["安装更新","install-update"]]});
+  const o=overall(p);
+  return `<h1>早上好${S.user?"，"+esc(S.user):""}</h1>
+  <p class="sub">${esc(p.code)} 项目 · 今天 ${TODAY} · 后台同步${S.sessionExpired?"已暂停":"正常"}，上次后台运行 ${S.lastBg||"—"}</p>
+  <div class="grid split">
+    <section class="grid">
+      <h2>需要你处理 <span class="muted small">(${items.length})</span></h2>
+      ${items.map(todoCard).join("")}
+    </section>
+    <aside class="grid">
+      <div class="card"><div class="card-h"><h3>项目进度</h3><button class="btn ghost sm" data-act="nav-project">详情 ›</button></div>
+        ${o.pct===null? `<p class="muted">还没有已同步的交付物，开启同步后自动计算。</p>` : `<div style="font-size:30px;font-weight:700">${o.pct}%</div><div class="progress"><i style="width:${o.pct}%"></i></div><p class="small muted">基于 ${o.n}/${o.m} 项已同步的交付物</p>`}
+        <p class="small" style="margin:8px 0 0">当前节点：<b>${esc(curPhase(p).name)}</b> ${curPhase(p).date?`· 计划 ${curPhase(p).date}`:""}</p>
+      </div>
+      <div class="card"><h3 style="margin-bottom:8px">最近完成的后台任务</h3>${S.tasks.filter(t=>t.state!=="运行中").slice(0,4).map(t=>`<div class="small row" style="padding:4px 0">✓ ${esc(t.name)}</div>`).join("")||`<p class="muted small">暂无</p>`}</div>
+    </aside>
+  </div>`;
+}
+function todoCard(it){
+  if(it.err) return `<div class="errcard"><div class="row"><b>⚠️ ${esc(it.t)}</b><span class="spacer"></span>${pill("bad","失败")}</div>
+    <dl><dt>发生了什么</dt><dd>${esc(it.err.error)}</dd><dt>你需要做什么</dt><dd>${S.sessionExpired?"重新登录即可，系统会自动重试。":"点「重试」；如果仍失败，导出诊断包发给支持人员。"}</dd></dl>
+    <div class="row"><button class="btn primary" data-act="${S.sessionExpired?"relogin":"retry-sync:"+it.err.id}">${S.sessionExpired?"重新登录":"重试"}</button><button class="btn" data-act="diag">导出诊断包</button></div></div>`;
+  return `<div class="todo tone-${it.tone}"><div class="ic">${it.ic}</div><div class="body"><b>${esc(it.t)}</b><div class="small muted">${esc(it.d||"")}</div></div>
+  <div class="row">${it.a.map(([l,a],i)=>`<button class="btn ${i===0?"primary":""} sm" data-act="${a}">${l}</button>`).join("")}</div></div>`;
+}
+function curPhase(p){ return p.phases.find(x=>!x.done) || p.phases[p.phases.length-1]; }
+
+/* ═════════════ 项目 ═════════════ */
+function pageProject(){
+  const p=P(); const o=overall(p); const cp=curPhase(p);
+  const anyOff=p.deliverables.some(d=>!d.enabled);
+  return `<div class="row"><div><h1>${esc(p.code)} 项目</h1><p class="sub">车型 ${esc(p.code)} · 关注科室 ${p.sections.length} 个 · <a href="#" data-act="proj-edit">编辑项目</a></p></div><span class="spacer"></span>
+    ${anyOff?`<button class="btn primary" data-act="enable-all">🔄 一键全部开启自动同步</button>`:`<button class="btn" data-act="sync-now">立即同步全部</button>`}</div>
+  <div class="card" style="margin-bottom:14px">
+    <div class="card-h"><h3>主计划</h3><div class="row small muted">总体进度 <b style="color:var(--ink)">${o.pct===null?"—":o.pct+"%"}</b> ${o.pct===null?"":`<span>（基于 ${o.n}/${o.m} 项）</span>`}<button class="btn sm" data-act="plan-edit">编辑日期</button></div></div>
+    <div class="tl">${p.phases.map(x=>`<div class="node ${x.done?"done":""} ${x===cp?"cur":""} ${!x.done&&x.date&&x.date<TODAY?"late":""}"><i class="dot"></i><b>${esc(x.name)}</b><span>${x.date? x.date.slice(5): `<a href="#" data-act="plan-edit">去排期</a>`}</span></div>`).join("")}</div>
+  </div>
+  <div class="card">
+    <div class="card-h"><h3>交付物</h3><span class="small muted">状态只有一个算法：首页、项目页、报告都显示同样的逾期天数</span></div>
+    <div class="tbl-wrap"><table><thead><tr><th>交付物</th><th>状态</th><th>计划完成</th><th>进度</th><th>自动同步</th><th>上次更新</th><th></th></tr></thead><tbody>
+    ${p.deliverables.map(d=>{const s=delivStatus(d); return `<tr class="click" data-act="open-deliv:${d.id}">
+      <td><b>${esc(d.name)}</b><div class="small faint">来源 ${d.source}</div></td>
+      <td>${pill(s.tone,s.label)}</td><td>${d.plan}</td>
+      <td style="min-width:120px">${d.verified&&!d.error?`<div class="small">${d.progress}%</div><div class="progress ${d.progress>=100?"ok":""}"><i style="width:${d.progress}%"></i></div>`:`<span class="faint">—</span>`}</td>
+      <td>${d.enabled? (d.error?pill("bad","失败"):d.verified?pill("ok","已开启 · 已核对 ✓"):pill("info","核对中…")) : `<button class="btn sm primary" data-act="enable-one:${d.id}">开启</button>`}</td>
+      <td class="small muted">${d.lastRun||"从未"}</td><td><button class="btn sm ghost">详情 ›</button></td></tr>`;}).join("")}
+    </tbody></table></div>
+  </div>`;
+}
+function enableDeliv(d, silent){
+  d.enabled=true; d.verified=false; d.error=null; render();
+  const t=addTask(`首次同步：${d.name}`, 2200, ()=>{ d.verified=true; d.progress=fakeProgress(d); d.lastRun=nowStr(); S.lastBg=nowStr(); render(); return null; }, "同步");
+  return t;
+}
+
+/* 交付物详情抽屉 */
+let gridState={q:"",sort:null,dir:1,page:0,onlyWatch:false};
+function openDeliv(id, tab){
+  const p=P(); const d=p.deliverables.find(x=>x.id===id); if(!d) return;
+  layer={kind:"deliv", id, tab: tab||layer.tab||"data"};
+  const s=delivStatus(d);
+  const tabs=[["data","数据与统计"],["sync","同步设置"],["runs","同步记录"]].concat(d.key==="dm"?[["arch","架构件归属"]]:[]).concat(S.expert?[["audit","配置审计"]]:[]);
+  $("#layer").innerHTML=`<div class="scrim" data-act="close-layer"><div class="drawer" data-stop>
+    <header><div><h2>${esc(d.name)}</h2><div class="small muted">${esc(p.code)} · 来源 ${d.source} · 计划完成 ${d.plan}</div></div><span class="spacer"></span>${pill(s.tone,s.label)}<button class="btn ghost" data-act="close-layer">✕</button></header>
+    <div class="content"><div class="subtabs">${tabs.map(([k,t])=>`<button class="${layer.tab===k?"on":""}" data-act="deliv-tab:${k}">${t}</button>`).join("")}</div>${delivTab(d)}</div></div></div>`;
+}
+function delivTab(d){
+  if(!d.enabled && layer.tab!=="sync") return `<div class="empty"><p>这个交付物还没开启自动同步，所以没有数据。</p><button class="btn primary" data-act="enable-one:${d.id}">开启自动同步</button><p class="small faint">系统会按项目的车型和科室自动填好筛选条件，你不需要手动配置。</p></div>`;
+  if(layer.tab==="data") return dataTab(d);
+  if(layer.tab==="sync") return syncTab(d);
+  if(layer.tab==="runs") return `<div class="tbl-wrap"><table><thead><tr><th>时间</th><th>结果</th><th>新增/变化</th><th>耗时</th></tr></thead><tbody>
+    ${d.lastRun?`<tr><td>${d.lastRun}</td><td>${d.error?pill("bad","失败"):pill("ok","成功")}</td><td>${d.error?"—":"新增 3 · 变化 5"}</td><td>12 秒</td></tr>`:""}
+    <tr><td>10-27 18:00</td><td>${pill("ok","成功")}</td><td>新增 1 · 变化 2</td><td>10 秒</td></tr><tr><td>10-27 17:45</td><td>${pill("ok","成功")}</td><td>无变化</td><td>9 秒</td></tr></tbody></table></div>`;
+  if(layer.tab==="arch"){ const rows=dmRows(P().code).filter(r=>r.veh.startsWith("Ar-"));
+    return `<p class="muted">架构件（Ar- 开头）是平台级发布，不归属单一车型，单独统计。需要把某张架构单算进本车型时，在这里声明。</p>
+    <div class="tbl-wrap"><table><thead><tr><th>单号</th><th>零件</th><th>平台</th><th>归属到本车型</th></tr></thead><tbody>${rows.map((r,i)=>`<tr><td>${r.no}</td><td>${r.part}</td><td>${r.veh}</td><td><label class="switch ${i%3===0?"on":""}" data-act="toggle-sw"><i></i><span class="small">${i%3===0?"已关联":"未关联"}</span></label></td></tr>`).join("")}</tbody></table></div>`;}
+  if(layer.tab==="audit") return `<p class="small"><span class="tag-expert">专家</span> 字段契约 2026-10-27.1 · 映射取证 2/2 一致 · 稳定键 <code>单号</code></p><div class="tbl-wrap"><table><thead><tr><th>时间</th><th>变更</th><th>操作人</th></tr></thead><tbody><tr><td>${d.lastRun||"—"}</td><td>启用同步（按项目默认配置）</td><td>${esc(S.user||"本机")}</td></tr></tbody></table></div>`;
+}
+function dataTab(d){
+  if(!d.verified) return `<div class="sk" style="height:18px;width:40%;margin-bottom:10px"></div><div class="sk" style="height:200px"></div><p class="small muted">正在首次同步并核对数据来源…</p>`;
+  let rows=dmRows(P().code+d.key);
+  const q=gridState.q.trim();
+  if(gridState.onlyWatch) rows=rows.filter((r,i)=>i%5===0);
+  if(q){ const qs=q.split(/[\s,，]+/).filter(Boolean); rows=rows.filter(r=>qs.some(x=>Object.values(r).join(" ").includes(x))); }
+  if(gridState.sort){ const k=gridState.sort; rows=rows.slice().sort((a,b)=>(a[k]>b[k]?1:a[k]<b[k]?-1:0)*gridState.dir); }
+  const per=10, pages=Math.max(1,Math.ceil(rows.length/per)); gridState.page=Math.min(gridState.page,pages-1);
+  const view=rows.slice(gridState.page*per,(gridState.page+1)*per);
+  const bySec={}; dmRows(P().code+d.key).forEach(r=>{ if(r.st!=="已签署") bySec[r.sec]=(bySec[r.sec]||0)+1; });
+  const max=Math.max(1,...Object.values(bySec));
+  const hl=v=>{ let s=esc(v); if(q) q.split(/[\s,，]+/).filter(Boolean).forEach(x=>{ s=s.split(esc(x)).join(`<mark>${esc(x)}</mark>`); }); return s; };
+  const cols=[["no","单号"],["part","零件"],["veh","车型/平台"],["sec","科室"],["who","申请人"],["st","状态"],["days","停留天数"]];
+  return `<div class="grid g3" style="margin-bottom:14px">
+    <div class="card"><div class="muted small">进度</div><div style="font-size:24px;font-weight:700">${d.progress}%</div></div>
+    <div class="card"><div class="muted small">未完成</div><div style="font-size:24px;font-weight:700">${Object.values(bySec).reduce((a,b)=>a+b,0)} 单</div></div>
+    <div class="card"><div class="muted small">停留超 30 天</div><div style="font-size:24px;font-weight:700;color:var(--bad)">${dmRows(P().code+d.key).filter(r=>r.days>30).length} 单</div></div></div>
+  <div class="card" style="margin-bottom:14px"><h3>未完成按科室</h3><div class="bar">${Object.entries(bySec).map(([k,v])=>`<div><span>${v}</span><i style="height:${Math.round(v/max*90)}px"></i><span title="${k}">${k.replace("科","")}</span></div>`).join("")}</div></div>
+  <div class="row" style="margin-bottom:10px"><input type="text" placeholder="搜索：可输入多个单号/人名，用空格分隔" value="${esc(gridState.q)}" data-input="grid-q" style="max-width:340px">
+    <label class="switch ${gridState.onlyWatch?"on":""}" data-act="grid-watch"><i></i><span class="small">只看关注清单</span></label><span class="spacer"></span>
+    <button class="btn sm" data-act="export-deliv:${d.id}">导出 Excel</button></div>
+  <div class="tbl-wrap"><table><thead><tr>${cols.map(([k,t])=>`<th class="sort" data-act="grid-sort:${k}">${t}${gridState.sort===k?(gridState.dir>0?" ▲":" ▼"):""}</th>`).join("")}<th></th></tr></thead>
+  <tbody>${view.map(r=>`<tr>${cols.map(([k])=>`<td>${k==="st"? pill(r.st==="已签署"?"ok":r.st==="退回修改"?"bad":"warn",r.st) : k==="days"? (r.days>30?`<b style="color:var(--bad)">${r.days}</b>`:r.days) : hl(r[k])}</td>`).join("")}<td><button class="btn sm ghost" data-act="copy:${r.no}" title="复制单号">📋</button></td></tr>`).join("")||`<tr><td colspan="8" class="empty">没有符合条件的记录，换个关键词试试。</td></tr>`}</tbody></table></div>
+  <div class="row small muted" style="margin-top:8px">共 ${rows.length} 条 · 第 ${gridState.page+1}/${pages} 页<span class="spacer"></span><button class="btn sm" data-act="grid-page:-1" ${gridState.page===0?"disabled":""}>上一页</button><button class="btn sm" data-act="grid-page:1" ${gridState.page>=pages-1?"disabled":""}>下一页</button></div>`;
+}
+function syncTab(d){
+  const f=d.filter;
+  return `<p class="muted" style="margin-top:0">这些条件已按项目自动填好，通常不需要改。</p>
+  <label class="f"><span>车型</span><div class="chips">${[P().code,"Ar-L","Ar-L+"].map(v=>`<button class="chip ${f.vehicles.includes(v)?"on":""}" data-act="f-veh:${v}">${v}</button>`).join("")}</div><em>选 Ar- 开头的平台会把架构件一起同步进来</em></label>
+  <label class="f"><span>科室</span><div class="chips">${SECTIONS.map(v=>`<button class="chip ${f.sections.includes(v)?"on":""}" data-act="f-sec:${v}">${v}</button>`).join("")}</div></label>
+  <div class="row"><label class="f" style="flex:1"><span>起始日期</span><input type="date" value="${f.from}" data-input="f-from"></label><label class="f" style="flex:1"><span>截止日期</span><input type="date" value="${f.to}" data-input="f-to"><em>留空表示到今天</em></label></div>
+  <label class="f"><span>同步频率</span><select data-input="f-freq"><option>跟随全局（每 15 分钟）</option><option>每 30 分钟</option><option>每 1 小时</option><option>每天一次</option></select></label>
+  ${S.expert?`<div class="expert"><label class="f"><span>更新方式 <span class="tag-expert">专家</span></span><div class="seg">${["自动","混合","手动"].map(m=>`<button class="${d.mode===m?"on":""}" data-act="f-mode:${m}">${m}</button>`).join("")}</div><em>混合：系统更新进度，风险备注由你手填</em></label>
+    <label class="f"><span>原始筛选（只读） <span class="tag-expert">专家</span></span><textarea rows="3" readonly>${esc(JSON.stringify({vehicles:f.vehicles,sections:f.sections,from:f.from,to:f.to||null}))}</textarea></label></div>`:""}
+  <div class="row"><button class="btn primary" data-act="save-sync:${d.id}">保存</button>${d.enabled?`<button class="btn danger" data-act="disable-sync:${d.id}">关闭自动同步</button>`:`<button class="btn" data-act="enable-one:${d.id}">保存并开启</button>`}<span class="small muted">保存后从下一次同步生效</span></div>`;
+}
+
+/* ═════════════ 报告 ═════════════ */
+function pageReports(){
+  const sub=S.sub.reports||"sign";
+  const tabs=[["sign","签署日报"],["tir","TIR 数据简表"],["export","数据导出"],["ewo","EWO 增强导表"]];
+  return `<h1>报告</h1><p class="sub">所有报告都是同一个流程：选条件 → 一键生成 → 预览 → 发出去</p>
+  <div class="subtabs">${tabs.map(([k,t])=>`<button class="${sub===k?"on":""}" data-act="rep-tab:${k}">${t}</button>`).join("")}</div>
+  ${({sign:repSign, tir:repTir, export:repExport, ewo:repEwo})[sub]()}`;
+}
+let signSel=null, signOut=null;
+function repSign(){
+  const p=P(); if(!signSel || signSel.pid!==p.id){ signSel={pid:p.id, veh:[p.code], sec:p.sections.slice(0,5), watch:false}; signOut=null; }
+  return `<div class="grid split split-l">
+  <div class="card"><h3 style="margin-bottom:10px">3D 单签署进展日报</h3>
+    <label class="f"><span>车型</span><div class="chips">${[p.code,"Ar-L","Ar-L+"].map(v=>`<button class="chip ${signSel.veh.includes(v)?"on":""}" data-act="s-veh:${v}">${v}</button>`).join("")}</div></label>
+    <label class="f"><span>科室</span><div class="chips">${SECTIONS.map(v=>`<button class="chip ${signSel.sec.includes(v)?"on":""}" data-act="s-sec:${v}">${v}</button>`).join("")}</div></label>
+    <label class="switch ${signSel.watch?"on":""}" data-act="s-watch" style="margin-bottom:6px"><i></i><span>只统计关注清单（${S.watch.length} 份）</span></label>
+    <div class="small"><a href="#" data-act="watch-edit">在这里维护关注清单</a></div>
+    <hr style="border:0;border-top:1px solid var(--line);margin:14px 0">
+    <button class="btn primary" style="width:100%" data-act="sign-gen">⚡ 一键生成（自动刷新数据）</button>
+    <button class="btn ghost sm" style="width:100%;margin-top:6px" data-act="sign-gen-cached">用现有数据生成（数据时间 今天 07:00）</button>
+    <div style="margin-top:12px" id="signTask">${signTaskId? `<div data-live-task="${signTaskId}">${taskInline(S.tasks.find(t=>String(t.id)===signTaskId)||{state:"已完成",name:"签署日报"})}</div>`:""}</div>
+    <p class="small"><a href="#" data-act="rep-settings">报告设置：花名册、长周期规则、通讯录、阈值 ›</a></p>
+    <label class="switch ${S.dailyAuto?"on":""}" data-act="daily-auto"><i></i><span class="small">每个工作日 08:30 自动生成并提醒我</span></label>
+  </div>
+  <div>${signOut? signPreview() : `<div class="card empty"><p style="font-size:32px;margin:0">📊</p><p>选好条件后点「一键生成」，这里会显示日报预览。</p></div>`}</div></div>`;
+}
+let signTaskId=null;
+function signPreview(){
+  const rows=dmRows(P().code).filter(r=>signSel.sec.includes(r.sec)&&signSel.veh.includes(r.veh));
+  const by={}; rows.forEach(r=>{ by[r.sec]=by[r.sec]||{a:0,b:0,c:0}; if(r.st==="已签署") by[r.sec].a++; else if(r.days>30) by[r.sec].c++; else by[r.sec].b++; });
+  const max=Math.max(1,...Object.values(by).map(v=>v.a+v.b+v.c));
+  return `<div class="card">
+  <div class="card-h"><h3>预览 · ${TODAY} 签署日报</h3><div class="row"><button class="btn" data-act="copy-mail">复制正文</button><button class="btn primary" data-act="eml">生成 Outlook 邮件草稿</button></div></div>
+  <div class="mailbox">
+    <p>各位好，以下为 <b>${signSel.veh.join("、")}</b> 截至 ${TODAY} 08:00（北京时间）的 3D 单签署进展：</p>
+    <p>共 <b>${rows.length}</b> 单，已签署 <b>${rows.filter(r=>r.st==="已签署").length}</b> 单，长周期（超 30 天）<b style="color:var(--bad)">${rows.filter(r=>r.days>30).length}</b> 单。</p>
+    <div class="legend"><span><i style="background:var(--ok)"></i>已签署</span><span><i style="background:var(--warn)"></i>审批中</span><span><i style="background:var(--bad)"></i>长周期</span></div>
+    <div class="bar" style="height:140px">${Object.entries(by).map(([k,v])=>`<div><span>${v.a+v.b+v.c}</span><div style="width:100%;max-width:38px;display:flex;flex-direction:column-reverse"><i style="height:${v.a/max*100}px;background:var(--ok);display:block"></i><i style="height:${v.b/max*100}px;background:var(--warn);display:block"></i><i style="height:${v.c/max*100}px;background:var(--bad);display:block;border-radius:5px 5px 0 0"></i></div><span>${k.replace("科","")}</span></div>`).join("")}</div>
+    <h3 style="margin:14px 0 6px">长周期待办</h3>
+    <div class="tbl-wrap"><table><thead><tr><th>单号</th><th>零件</th><th>科室</th><th>申请人</th><th>停留</th></tr></thead><tbody>${rows.filter(r=>r.days>30).map(r=>`<tr><td>${r.no}</td><td>${r.part}</td><td>${r.sec}</td><td>${r.who}</td><td><b style="color:var(--bad)">${r.days} 天</b></td></tr>`).join("")||`<tr><td colspan="5" class="empty">没有长周期单据 🎉</td></tr>`}</tbody></table></div>
+  </div></div>`;
+}
+function repTir(){
+  return `<div class="grid g2"><div class="card"><h3 style="margin-bottom:10px">TIR 数据简表</h3>
+    <label class="f"><span>车型</span><select><option>${P().code}</option><option>全部车型</option></select></label>
+    <div class="row"><label class="f" style="flex:1"><span>开始</span><input type="date" value="2026-10-01"></label><label class="f" style="flex:1"><span>结束</span><input type="date" value="${TODAY}"></label></div>
+    <button class="btn primary" data-act="tir-run">⬇ 导出 Excel</button>
+    <div style="margin-top:12px">${tirTaskId?`<div data-live-task="${tirTaskId}">${taskInline(S.tasks.find(t=>String(t.id)===tirTaskId))}</div>`:""}</div>
+    <label class="switch ${S.tirAuto?"on":""}" data-act="tir-auto" style="margin-top:8px"><i></i><span class="small">每天 07:30 自动导出（今天已导出过的直接复用）</span></label></div>
+    <div class="card"><h3 style="margin-bottom:10px">最近导出的文件</h3>${["10-28","10-27","10-26"].map((d,i)=>`<div class="row" style="padding:6px 0;border-bottom:1px solid var(--line)"><span>📄 TIR数据简表_${P().code}_2026${d.replace("-","")}.xlsx</span><span class="spacer"></span><button class="btn sm" data-act="open-file" data-file="TIR数据简表_${P().code}_2026${d.replace("-","")}.xlsx">打开</button></div>`).join("")}</div></div>`;
+}
+let tirTaskId=null;
+function repExport(){
+  const opts=["EWO 工程变更报告","PAA 流程报告","NCR 审批进度（官方工作簿）","NCR 审批明细（官方工作簿）","TDC 数模设计审核流程","TDC SOR 定点流程","TDC 造型 A 面冻结发布"];
+  return `<div class="card" style="max-width:640px"><h3 style="margin-bottom:10px">从业务系统导出原始报表</h3>
+    <label class="f"><span>报表</span><select id="expSel">${opts.map(o=>`<option>${o}</option>`).join("")}</select></label>
+    <label class="f"><span>项目 / 车型</span><select><option>${P().code}</option><option>全部</option></select><em>其他筛选按项目设置自动带入</em></label>
+    <div class="row"><button class="btn primary" data-act="export-run">⬇ 导出 Excel</button><span class="small muted">大报表会在后台运行，完成后提醒你</span></div>
+    <div style="margin-top:12px">${expTaskId?`<div data-live-task="${expTaskId}">${taskInline(S.tasks.find(t=>String(t.id)===expTaskId))}</div>`:""}</div>
+    ${S.expert?`<p class="small" style="margin-top:14px"><span class="tag-expert">专家</span> 需要自定义请求、分页或保存 XML，请用「工具 → 原始系统查询」。</p>`:""}</div>`;
+}
+let expTaskId=null;
+function repEwo(){
+  return `<div class="card" style="max-width:680px"><h3 style="margin-bottom:6px">EWO 增强导表</h3><p class="muted" style="margin-top:0">在 Aras 中生成带附加字段的 EWO 报表。</p>
+  <label class="f"><span>EWO 编号（可多个，空格分隔）</span><input type="text" placeholder="例如 EWO-2026-0012 EWO-2026-0047"></label>
+  <button class="btn primary" data-act="ewo-run">开始生成</button>
+  <div class="errcard" style="margin-top:14px;background:#fffaf0;border-color:#efd9a6"><b>⚠ 如果出现「生成结果未知」</b><dl><dt>发生了什么</dt><dd>Aras 收到了请求，但没有回复是否生成成功。</dd><dt>你需要做什么</dt><dd>先到 Aras 网页确认是否已有结果，<b>不要重复点击生成</b>；确认后点「我已核查」。系统不会自动重发，避免重复生成。</dd></dl></div></div>`;
+}
+
+/* ═════════════ 工具 ═════════════ */
+function pageTools(){
+  const sub=S.sub.tools||"excel";
+  const tabs=[["excel","Excel 处理"],["archive","自动归档"]].concat(S.expert?[["raw","原始系统查询"]]:[]);
+  return `<h1>工具</h1><p class="sub">日常的小工具。Excel 处理会在后台自动打开和关闭 Excel，不用手动操作。</p>
+  <div class="subtabs">${tabs.map(([k,t])=>`<button class="${sub===k?"on":""}" data-act="tool-tab:${k}">${t}${k==="raw"?'<span class="tag-expert">专家</span>':""}</button>`).join("")}</div>
+  ${({excel:toolExcel, archive:toolArchive, raw:toolRaw})[sub]()}`;
+}
+let xFiles=[], xOp="合并", xTaskId=null;
+function toolExcel(){
+  return `<div class="grid g2"><div class="card">
+    <div class="row" style="margin-bottom:10px">${pill("ok","Excel 环境正常")}<span class="small muted">已检测：Excel 2021 已激活，无残留进程</span></div>
+    <div class="drop" id="drop" data-act="x-pick"><div style="font-size:28px">📥</div><b>把 Excel 文件拖到这里</b><div class="small">或点击选择（演示中会添加示例文件）</div></div>
+    ${xFiles.length?`<div style="margin-top:10px">${xFiles.map((f,i)=>`<div class="row small" style="padding:4px 0">📄 ${esc(f)}<span class="spacer"></span><button class="btn sm ghost" data-act="x-rm:${i}">移除</button></div>`).join("")}</div>`:""}
+    <label class="f" style="margin-top:12px"><span>要做什么</span><div class="seg">${["合并","叠加","比对"].map(o=>`<button class="${xOp===o?"on":""}" data-act="x-op:${o}">${o}</button>`).join("")}</div>
+    <em>${({合并:"把多个文件的同名工作表首尾相接，合成一个文件",叠加:"按相同的行和列位置，把数值相加",比对:"找出两个文件之间不同的单元格，并标上颜色"})[xOp]}</em></label>
+    <button class="btn primary" data-act="x-run" ${xFiles.length<2?"disabled":""}>开始${xOp}</button> <span class="small muted">${xFiles.length<2?"至少需要 2 个文件":""}</span>
+    <div style="margin-top:12px">${xTaskId?`<div data-live-task="${xTaskId}">${taskInline(S.tasks.find(t=>String(t.id)===xTaskId))}</div>`:""}</div>
+  </div>
+  <div class="card"><h3 style="margin-bottom:8px">最近处理</h3>${S.tasks.filter(t=>t.kind==="Excel").map(t=>`<div class="row small" style="padding:6px 0;border-bottom:1px solid var(--line)">${t.state==="已完成"?"✓":"…"} ${esc(t.name)}<span class="spacer"></span>${t.file?`<button class="btn sm" data-act="open-file" data-file="${esc(t.file)}">打开</button>`:""}</div>`).join("")||`<p class="muted small">还没有处理记录</p>`}</div></div>`;
+}
+function toolArchive(){
+  return `<div class="card"><div class="card-h"><h3>自动归档：每天把报表原件存一份</h3><button class="btn sm" data-act="arch-new">＋ 新建</button></div>
+  <div class="tbl-wrap"><table><thead><tr><th>任务</th><th>开启</th><th>频率</th><th>上次</th><th>保存到</th><th></th></tr></thead><tbody>
+  ${S.archive.map(a=>`<tr><td><b>${esc(a.name)}</b></td><td><label class="switch ${a.on?"on":""}" data-act="arch-toggle:${a.id}"><i></i></label></td><td>${a.freq}</td><td class="small">${a.last}</td><td class="small muted">${a.dir} <a href="#" data-act="open-file" data-file="归档目录">打开</a></td><td><button class="btn sm" data-act="arch-run:${a.id}">立即执行</button></td></tr>`).join("")}
+  </tbody></table></div><p class="small muted">文件默认保留 90 天；保存位置可以在「设置 → 文件夹」修改。${S.expert?' <span class="tag-expert">专家</span> <a href="#">配置变更审计</a>':""}</p></div>`;
+}
+function toolRaw(){
+  return `<div class="card expert"><p class="small muted" style="margin-top:0">⚠ 专家功能：直接向业务系统发请求，适合排查问题。日常导出请用「报告 → 数据导出」。</p>
+  <div class="row"><label class="f" style="flex:1"><span>系统</span><select><option>Aras · EWO</option><option>Aras · PAA</option><option>Aras · NCR 进度</option><option>TDC · 数模</option><option>TDC · SOR</option><option>TDC · A 面</option></select></label>
+  <label class="f" style="flex:2"><span>Base URL</span><input type="text" value="https://aras.example.internal/InnovatorServer"></label></div>
+  <div class="row"><label class="f" style="flex:1"><span>页码</span><input type="number" value="1"></label><label class="f" style="flex:1"><span>每页条数</span><input type="number" value="100"></label><label class="f" style="flex:1"><span>最大记录数</span><input type="number" value="5000"></label></div>
+  <label class="switch"><i></i><span class="small">保存 Aras XML（请求 + 返回，已脱敏）</span></label>
+  <div class="row" style="margin-top:12px"><button class="btn primary" data-act="raw-run">查询预览</button><button class="btn">全量导出 CSV</button></div></div>`;
+}
+
+/* ═════════════ 设置 ═════════════ */
+function pageSettings(){
+  const sub=S.sub.settings||"account";
+  const tabs=[["account","账号"],["folders","文件夹"],["rules","业务规则"],["about","关于与更新"]].concat(S.expert?[["advanced","高级参数"]]:[]);
+  return `<div class="row"><div><h1>设置</h1><p class="sub">大部分情况下不需要改这里</p></div><span class="spacer"></span>
+    <label class="switch ${S.expert?"on":""}" data-act="expert"><i></i><span><b>专家模式</b><br><span class="small muted">显示原始查询、同步审计、高级参数</span></span></label></div>
+  <div class="subtabs">${tabs.map(([k,t])=>`<button class="${sub===k?"on":""}" data-act="set-tab:${k}">${t}</button>`).join("")}</div>
+  ${({account:setAccount, folders:setFolders, rules:setRules, about:setAbout, advanced:setAdvanced})[sub]()}`;
+}
+function setAccount(){
+  return `<div class="card" style="max-width:640px"><dl class="kv"><dt>域账号</dt><dd>${esc(S.user||"—")}</dd>
+    <dt>Aras / TDC</dt><dd>${S.sessionExpired?pill("warn","需要重新登录"):pill("ok","已连接")}</dd>
+    <dt>保存的密码</dt><dd>${S.savePwd?pill("ok","已保存在本机（用于夜间自动同步）"):pill("off","未保存：后台同步需要你在线")}</dd>
+    <dt>开机自动启动</dt><dd><label class="switch ${S.autostart?"on":""}" data-act="autostart"><i></i><span class="small">${S.autostart?"已开启":"已关闭"}</span></label></dd></dl>
+    <div class="row" style="margin-top:14px"><button class="btn primary" data-act="relogin">重新登录</button><button class="btn danger" data-act="logout">退出登录并清除保存的密码</button></div>
+    ${S.expert?`<div class="expert" style="margin-top:14px"><span class="tag-expert">专家</span><div class="row" style="margin-top:6px"><button class="btn sm">只清除 Aras 会话</button><button class="btn sm">只清除 TDC 会话</button></div></div>`:""}</div>`;
+}
+function setFolders(){
+  return `<div class="card" style="max-width:640px">${[["归档保存到","%LOCALAPPDATA%\\VSE-Toolbox\\data\\archive"],["Excel 工作文件夹","D:\\工作\\Excel"],["导出文件保存到","下载文件夹"]].map(([k,v])=>`<label class="f"><span>${k}</span><div class="row"><input type="text" value="${esc(v)}" style="flex:1"><button class="btn" data-act="pick-folder">选择…</button></div></label>`).join("")}<button class="btn primary" data-act="saved">保存</button></div>`;
+}
+function setRules(){
+  return `<div class="card" style="max-width:720px"><h3>科室归集</h3><p class="small muted">历史科室名在统计时自动归到现行科室，只影响统计口径，不改原始数据。</p>
+  <div class="tbl-wrap"><table><thead><tr><th>历史/系统中的科室名</th><th>统计为</th><th></th></tr></thead><tbody>${S.rollup.map(([a,b],i)=>`<tr><td>${esc(a)}</td><td>${esc(b)}</td><td><button class="btn sm ghost" data-act="rollup-rm:${i}">删除</button></td></tr>`).join("")}
+  <tr><td><input type="text" id="ruA" placeholder="例如 车门附件科"></td><td><select id="ruB">${SECTIONS.map(s=>`<option>${s}</option>`).join("")}</select></td><td><button class="btn sm primary" data-act="rollup-add">添加</button></td></tr></tbody></table></div>
+  <p class="small muted">未登记的历史科室会显示在「未归集」里，不会被悄悄丢掉。</p></div>`;
+}
+function setAbout(){
+  return `<div class="grid g2"><div class="card"><h3 style="margin-bottom:10px">当前版本</h3>
+    <dl class="kv"><dt>VSE Toolbox</dt><dd><b>${S.version.app}</b></dd>${Object.entries(S.version.packs).map(([k,v])=>`<dt>${k}</dt><dd>${v}</dd>`).join("")}<dt>运行环境</dt><dd class="small muted">${S.version.runtime}</dd></dl>
+    <div class="row" style="margin-top:12px"><button class="btn" data-act="diag">导出诊断包（发给支持人员）</button></div></div>
+  <div class="card"><h3 style="margin-bottom:10px">安装更新</h3>
+    <div class="drop" id="pkgDrop" data-act="pkg-pick"><div style="font-size:26px">⬆️</div><b>把收到的 .vsepkg 更新包拖到这里</b><div class="small">也可以直接双击更新包，或者什么都不做——程序会自动在「下载」和飞书/QQ 接收文件夹里发现它</div></div>
+    <label class="switch ${S.discoverOn?"on":""}" data-act="discover-toggle" style="margin-top:10px"><i></i><span class="small">自动发现下载文件夹里的更新包（只看 .vsepkg 文件名）</span></label></div>
+  <div class="card" style="grid-column:1/-1"><h3 style="margin-bottom:10px">更新记录</h3><div class="tbl-wrap"><table><thead><tr><th>时间</th><th>内容</th><th></th></tr></thead><tbody>
+    ${S.history.map((h,i)=>`<tr><td class="small">${h.t}</td><td>${h.tone==="bad"?"⚠ ":h.tone==="ok"?"✓ ":""}${esc(h.text)}</td><td>${h.rollback?`<button class="btn sm" data-act="rollback:${i}">回滚到上一版</button>`:""}</td></tr>`).join("")}</tbody></table></div></div></div>`;
+}
+function setAdvanced(){
+  return `<div class="card expert" style="max-width:640px">${[["网络请求失败重试次数",3],["交付物临期预警（天）",7],["历史快照保留数量",30],["下载文件保留天数",7]].map(([k,v])=>`<label class="f"><span>${k}</span><input type="number" value="${v}"></label>`).join("")}
+  <label class="f"><span>诊断日志文件夹</span><input type="text" value="data\\logs"></label><button class="btn primary" data-act="saved">保存</button></div>`;
+}
+
+/* ═════════════ 首次使用向导 ═════════════ */
+let wz={step:0, user:"", pwd:"", code:"F610S", secs:SECTIONS.slice(0,5), picks:DELIV_TEMPLATES.map(t=>t.key), autostart:true, err:"", busy:false, importOld:true};
+function openWizard(){
+  layer={kind:"wizard"};
+  const N=5, st=wz.step;
+  const body=[
+    ()=>`<div style="text-align:center"><div class="logo" style="width:56px;height:56px;font-size:28px;border-radius:14px;margin:0 auto 12px">V</div><h1>欢迎使用 VSE Toolbox</h1>
+      <p class="muted">接下来 4 步、大约 2 分钟，之后交付物进度会自动更新，日报一键生成。</p>
+      <label class="switch ${wz.importOld?"on":""}" data-act="wz-import" style="justify-content:center;margin:6px 0 4px"><i></i><span class="small">发现旧版本数据（D:\\VSE-WebUI\\data），一并导入</span></label></div>`,
+    ()=>`<h2>1. 登录公司域账号</h2><p class="muted">一次登录同时连通 Aras 和 TDC。</p>
+      <label class="f"><span>域账号</span><input type="text" data-input="wz-user" value="${esc(wz.user)}" placeholder="例如 zhangsan" autofocus></label>
+      <label class="f"><span>密码</span><input type="password" data-input="wz-pwd" value="${esc(wz.pwd)}" placeholder="演示中任意填写"></label>
+      <label class="switch on" style="margin-bottom:6px"><i></i><span class="small">记住密码，用于夜间自动同步（加密保存在本机，只有你的 Windows 账号能读取）</span></label>
+      ${wz.err?`<p style="color:var(--bad)">${esc(wz.err)}</p>`:""}`,
+    ()=>`<h2>2. 你跟哪个项目？</h2><p class="muted">以后可以随时在左上角切换或新建项目。</p>
+      <label class="f"><span>车型代码</span><input type="text" data-input="wz-code" value="${esc(wz.code)}"><em>系统会用它自动设置所有交付物的筛选条件</em></label>
+      <label class="f"><span>关注的科室</span><div class="chips">${SECTIONS.map(v=>`<button class="chip ${wz.secs.includes(v)?"on":""}" data-act="wz-sec:${v}">${v}</button>`).join("")}</div></label>`,
+    ()=>`<h2>3. 要自动跟踪哪些交付物？</h2><p class="muted">勾选的交付物会自动同步进度，默认全选。</p>
+      ${DELIV_TEMPLATES.map(t=>`<label class="switch ${wz.picks.includes(t.key)?"on":""}" data-act="wz-pick:${t.key}" style="display:flex;padding:8px 0;border-bottom:1px solid var(--line)"><i></i><span><b>${t.name}</b> <span class="small muted">来自 ${t.source}</span></span></label>`).join("")}`,
+    ()=>`<h2>4. 最后一步</h2>
+      <label class="switch ${wz.autostart?"on":""}" data-act="wz-auto" style="display:flex;margin:10px 0"><i></i><span><b>开机自动启动</b><br><span class="small muted">程序会安静地待在右下角托盘，按时同步数据（推荐）</span></span></label>
+      <div class="card" style="background:var(--win)"><b>准备就绪</b><ul class="small" style="margin:6px 0 0;padding-left:18px"><li>账号：${esc(wz.user)}</li><li>项目：${esc(wz.code)}，${wz.secs.length} 个科室</li><li>自动同步：${wz.picks.length} 项交付物</li></ul></div>`,
+  ][st]();
+  const canNext = st!==1 || (wz.user && wz.pwd);
+  $("#layer").innerHTML=`<div class="scrim" style="background:rgba(43,38,34,.45)"><div class="modal" data-stop>
+    <div class="steps">${Array.from({length:N},(_,i)=>`<i class="${i<=st?"on":""}"></i>`).join("")}</div>${body}
+    <div class="row" style="margin-top:18px">${st>0?`<button class="btn ghost" data-act="wz-back">上一步</button>`:""}<span class="spacer"></span>
+    <button class="btn primary" data-act="wz-next" ${canNext&&!wz.busy?"":"disabled"}>${wz.busy?"正在验证…":st===0?"开始":st===N-1?"完成，开始使用":"下一步"}</button></div></div></div>`;
+}
+function finishWizard(){
+  const p=mkProject(wz.code.trim().toUpperCase()||"F610S", wz.secs, wz.picks);
+  S.projects.push(p); S.cur=p.id; S.user=wz.user; S.loggedIn=true; S.autostart=wz.autostart; S.firstRun=false; S.page="today";
+  if(!S.projects.find(x=>x.id==="F620S") && p.id!=="F620S"){ const q=mkProject("F620S",SECTIONS.slice(0,3)); q.deliverables.forEach(d=>{d.enabled=true;d.verified=true;d.progress=fakeProgress(d)-10;d.lastRun="10-28 07:00";}); S.projects.push(q); }
+  closeLayer(); render();
+  toast("设置完成", `正在为 ${p.code} 首次同步 ${p.deliverables.length} 项交付物，可以先去看看别的。`);
+  p.deliverables.forEach((d,i)=>setTimeout(()=>enableDeliv(d,true), i*500));
+  if(wz.importOld) S.history.unshift({t:nowStr(), text:"已导入旧版本数据（原文件夹保留未动）", tone:"ok"});
+}
+
+/* ═════════════ 其他浮层 ═════════════ */
+function closeLayer(){ layer={kind:null}; $("#layer").innerHTML=""; }
+function openTasks(){
+  layer={kind:"tasks"};
+  $("#layer").innerHTML=`<div class="scrim" data-act="close-layer"><div class="drawer" data-stop style="width:min(480px,100%)"><header><h2>后台任务</h2><span class="spacer"></span><button class="btn ghost" data-act="close-layer">✕</button></header>
+  <div class="content">${S.tasks.length? S.tasks.map(t=>`<div class="card" style="margin-bottom:8px"><div class="row"><b style="flex:1">${esc(t.name)}</b>${pill(t.state==="运行中"?"info":t.state==="已取消"?"off":"ok",t.state)}</div>
+   ${t.state==="运行中"?`<div class="progress" style="margin:8px 0"><i style="width:${t.pct}%"></i></div><button class="btn sm" data-act="task-cancel:${t.id}">取消</button>`:`<div class="row" style="margin-top:6px">${t.file?`<button class="btn sm" data-act="open-file" data-file="${esc(t.file)}">打开文件</button>`:""}${t.state==="已取消"?`<button class="btn sm" data-act="task-retry:${t.id}">重试</button>`:""}</div>`}</div>`).join("") : `<p class="empty">没有后台任务</p>`}
+   <p class="small muted">导出的文件保留 7 天，到期自动清理。</p></div></div></div>`;
+}
+function openLogin(){
+  layer={kind:"login"};
+  $("#layer").innerHTML=`<div class="scrim" data-act="close-layer"><div class="modal" data-stop><h2>重新登录</h2><p class="muted">登录后当前页面保持不变，错过的同步会自动补跑。</p>
+  <label class="f"><span>域账号</span><input type="text" value="${esc(S.user)}"></label><label class="f"><span>密码</span><input type="password" id="rp" placeholder="演示中任意填写"></label>
+  <div class="row"><span class="spacer"></span><button class="btn ghost" data-act="close-layer">取消</button><button class="btn primary" data-act="do-relogin">登录</button></div></div></div>`;
+}
+function openNewProject(edit){
+  const p=edit?P():null; layer={kind:"newproj"};
+  const secs = p? p.sections.slice() : SECTIONS.slice(0,5); layer.secs=secs;
+  $("#layer").innerHTML=`<div class="scrim" data-act="close-layer"><div class="modal" data-stop><h2>${p?"编辑项目":"新建项目"}</h2>
+  <label class="f"><span>车型代码</span><input type="text" id="npCode" value="${p?esc(p.code):""}" placeholder="例如 F710S" ${p?"disabled":""}></label>
+  <label class="f"><span>关注的科室</span><div class="chips" id="npSecs">${SECTIONS.map(v=>`<button class="chip ${secs.includes(v)?"on":""}" data-act="np-sec:${v}">${v}</button>`).join("")}</div></label>
+  ${p?"":`<label class="switch on" style="margin-bottom:10px"><i></i><span class="small">创建后自动开启全部交付物同步</span></label>`}
+  <div class="row"><span class="spacer"></span><button class="btn ghost" data-act="close-layer">取消</button><button class="btn primary" data-act="${p?"np-save":"np-create"}">${p?"保存":"创建"}</button></div></div></div>`;
+}
+function openPlanEdit(){
+  const p=P(); layer={kind:"plan"};
+  $("#layer").innerHTML=`<div class="scrim" data-act="close-layer"><div class="modal wide" data-stop><h2>编辑主计划</h2><p class="muted">只需要填日期；节点完成状态会根据交付物自动判断。</p>
+  <div class="tbl-wrap"><table><thead><tr><th>节点</th><th>计划日期</th><th>已完成</th></tr></thead><tbody>${p.phases.map((x,i)=>`<tr><td>${esc(x.name)}</td><td><input type="date" value="${x.date}" data-plan="${i}"></td><td><input type="checkbox" ${x.done?"checked":""} data-plandone="${i}"></td></tr>`).join("")}</tbody></table></div>
+  <div class="row" style="margin-top:12px"><span class="spacer"></span><button class="btn ghost" data-act="close-layer">取消</button><button class="btn primary" data-act="plan-save">保存</button></div></div></div>`;
+}
+function openUpdate(pkg){
+  layer={kind:"update"};
+  $("#layer").innerHTML=`<div class="scrim" data-act="close-layer"><div class="modal" data-stop><h2>安装更新</h2>
+  <div class="card" style="background:var(--win)"><dl class="kv"><dt>更新内容</dt><dd><b>${esc(pkg.name)} ${pkg.ver}</b></dd><dt>说明</dt><dd>${esc(pkg.notes)}</dd><dt>大小</dt><dd>${pkg.size}</dd><dt>来源校验</dt><dd>${pill("ok","签名有效 · 来自 VSE 打包机")}</dd><dt>兼容性</dt><dd>${pill("ok","与当前版本兼容")}</dd></dl></div>
+  <p class="small muted">安装后需要重启程序（约 5 秒），正在进行的同步会先完成。万一新版本启动失败，会自动回到当前版本。</p>
+  <div class="row"><span class="spacer"></span><button class="btn ghost" data-act="close-layer">稍后</button><button class="btn primary" data-act="do-update">安装并重启</button></div></div></div>`;
+  layer.pkg=pkg;
+}
+function openRepSettings(){
+  layer={kind:"repset"};
+  const tabs=["花名册","长周期规则与词表","长周期结论","区域","通讯录","阈值"];
+  $("#layer").innerHTML=`<div class="scrim" data-act="close-layer"><div class="drawer" data-stop><header><h2>报告设置</h2><span class="spacer"></span><button class="btn ghost" data-act="close-layer">✕</button></header>
+  <div class="content"><div class="subtabs">${tabs.map((t,i)=>`<button class="${i===0?"on":""}">${t}</button>`).join("")}</div>
+  <div class="row" style="margin-bottom:10px"><input type="text" placeholder="搜索姓名" style="max-width:240px"><span class="spacer"></span><button class="btn sm">从 Excel/CSV 导入</button><button class="btn sm">导出</button><button class="btn sm ghost">恢复默认</button></div>
+  <div class="tbl-wrap"><table><thead><tr><th>姓名</th><th>科室</th><th>区域</th><th></th></tr></thead><tbody>${[["张伟","车身科","上汽通用五菱 · 柳州"],["李娜","内饰科","柳州"],["王强","外饰科","柳州"],["刘洋","底盘科","上海"],["陈静","电子电器科","柳州"]].map(r=>`<tr><td>${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td><td><button class="btn sm ghost">编辑</button></td></tr>`).join("")}</tbody></table></div></div></div></div>`;
+}
+function openWatch(){
+  layer={kind:"watch"};
+  $("#layer").innerHTML=`<div class="scrim" data-act="close-layer"><div class="modal" data-stop><h2>关注清单</h2><p class="muted">项目页和报告用的是同一份清单。</p>
+  <div class="chips" style="margin-bottom:10px">${S.watch.map((w,i)=>`<span class="chip on">${esc(w)} <a href="#" data-act="watch-rm:${i}" style="text-decoration:none">✕</a></span>`).join("")||'<span class="muted small">清单是空的</span>'}</div>
+  <div class="row"><input type="text" id="wIn" placeholder="粘贴单号，可一次粘贴多个" style="flex:1"><button class="btn" data-act="watch-add">添加</button></div>
+  <div class="row" style="margin-top:14px"><span class="spacer"></span><button class="btn primary" data-act="close-layer">完成</button></div></div></div>`;
+}
+function splash(text, ms, then){
+  const el=document.createElement("div"); el.className="splash"; el.innerHTML=`<div><div class="logo">V</div><b>${esc(text)}</b><div class="progress" style="width:220px;margin:14px auto 0"><i style="width:10%" id="spb"></i></div></div>`;
+  document.body.appendChild(el); let w=10; const iv=setInterval(()=>{ w=Math.min(100,w+15); const b=$("#spb"); if(b) b.style.width=w+"%"; },ms/7);
+  setTimeout(()=>{ clearInterval(iv); el.remove(); then&&then(); }, ms);
+}
+
+/* ═════════════ 事件 ═════════════ */
+document.addEventListener("click", e=>{
+  const stop=e.target.closest("[data-stop]");
+  const el=e.target.closest("[data-act]");
+  if(!el){ if(menuOpen && !e.target.closest(".proj")){ menuOpen=false; render(); } if(trayMenu && !e.target.closest(".tray-menu,#tray")) closeTray(); return; }
+  // 点在抽屉/弹窗内部的空白处时，最近的 data-act 是外层遮罩，不能当成"关闭"
+  if(el.dataset.act==="close-layer" && stop && !el.matches("button")) return;
+  if(el.tagName==="A") e.preventDefault();
+  const [act,arg]=el.dataset.act.split(/:(.*)/s);
+  const p=P();
+  switch(act){
+    case "nav": go(el.dataset.page); break;
+    case "nav-project": closeLayer(); go("project"); break;
+    case "nav-report": go("reports","sign"); break;
+    case "proj-menu": menuOpen=!menuOpen; render(); break;
+    case "proj-switch": S.cur=el.dataset.id; signSel=null; signOut=null; menuOpen=false; go(S.page); toast("已切换项目", `现在查看 ${S.cur}`); break;
+    case "proj-new": menuOpen=false; render(); openNewProject(false); break;
+    case "proj-edit": openNewProject(true); break;
+    case "np-sec": { const s=layer.secs; const i=s.indexOf(arg); i>=0?s.splice(i,1):s.push(arg); el.classList.toggle("on"); break; }
+    case "np-create": { const code=($("#npCode").value||"").trim().toUpperCase(); if(!code){ $("#npCode").focus(); break; }
+      if(S.projects.find(x=>x.id===code)){ toast("项目已存在", code); break; }
+      const np=mkProject(code, layer.secs); S.projects.push(np); S.cur=code; closeLayer(); go("project"); np.deliverables.forEach((d,i)=>setTimeout(()=>enableDeliv(d),i*400)); toast("项目已创建", `正在为 ${code} 首次同步`); break; }
+    case "np-save": p.sections=layer.secs.slice(); closeLayer(); render(); toast("已保存","下一次同步起按新科室统计"); break;
+    case "session": S.sessionExpired? openLogin() : go("settings","account"); break;
+    case "tasks": openTasks(); break;
+    case "close-layer": if(layer.kind!=="wizard") closeLayer(); break;
+    case "win-close": S.hidden=true; render(); toast("VSE Toolbox 仍在后台运行","会按时同步数据。点击右下角托盘图标可以重新打开。"); break;
+    case "win-min": S.hidden=true; render(); break;
+    case "enable-all": p.deliverables.filter(d=>!d.enabled).forEach((d,i)=>setTimeout(()=>enableDeliv(d),i*350)); toast("已全部开启","系统按项目的车型和科室自动填好了条件，正在首次同步。"); break;
+    case "enable-one": { const d=p.deliverables.find(x=>x.id===arg); enableDeliv(d); if(layer.kind==="deliv") setTimeout(()=>openDeliv(arg,"data"),50); break; }
+    case "disable-sync": { const d=p.deliverables.find(x=>x.id===arg); d.enabled=false; d.verified=false; render(); openDeliv(arg,"sync"); break; }
+    case "save-sync": toast("已保存","从下一次同步开始生效；正在进行的同步不受影响。"); break;
+    case "sync-now": addTask("同步全部交付物",2400,()=>{ S.lastBg=nowStr(); p.deliverables.forEach(d=>{ if(d.enabled&&!d.error) d.lastRun=nowStr(); }); render(); toast("同步完成","没有发现异常"); },"同步"); break;
+    case "retry-sync": { const d=p.deliverables.find(x=>x.id===arg); d.error=null; d.verified=false; render(); addTask(`重试同步：${d.name}`,1800,()=>{ d.verified=true; d.lastRun=nowStr(); render(); toast("重试成功", d.name); }); break; }
+    case "open-deliv": gridState={q:"",sort:null,dir:1,page:0,onlyWatch:false}; openDeliv(arg,"data"); break;
+    case "deliv-tab": layer.tab=arg; openDeliv(layer.id, arg); break;
+    case "grid-sort": if(gridState.sort===arg) gridState.dir*=-1; else { gridState.sort=arg; gridState.dir=1; } openDeliv(layer.id); break;
+    case "grid-page": gridState.page+=+arg; openDeliv(layer.id); break;
+    case "grid-watch": gridState.onlyWatch=!gridState.onlyWatch; gridState.page=0; openDeliv(layer.id); break;
+    case "f-veh": case "f-sec": { const d=p.deliverables.find(x=>x.id===layer.id); const list=act==="f-veh"?d.filter.vehicles:d.filter.sections; const i=list.indexOf(arg); i>=0?list.splice(i,1):list.push(arg); openDeliv(layer.id,"sync"); break; }
+    case "f-mode": { const d=p.deliverables.find(x=>x.id===layer.id); d.mode=arg; openDeliv(layer.id,"sync"); break; }
+    case "export-deliv": addTask("导出交付物数据",1600,()=>`${p.code}_数模审核_${TODAY}.xlsx`); toast("已在后台导出","完成后可以在「任务」里打开"); break;
+    case "copy": toast("已复制单号", arg, [], 1800); break;
+    case "toggle-sw": el.classList.toggle("on"); { const sp=el.querySelector("span"); if(sp) sp.textContent=el.classList.contains("on")?"已关联":"未关联"; } break;
+    case "plan-edit": openPlanEdit(); break;
+    case "plan-save": document.querySelectorAll("[data-plan]").forEach(i=>p.phases[+i.dataset.plan].date=i.value); document.querySelectorAll("[data-plandone]").forEach(i=>p.phases[+i.dataset.plandone].done=i.checked); closeLayer(); render(); toast("主计划已保存"); break;
+    case "rep-tab": S.sub.reports=arg; render(); break;
+    case "s-veh": case "s-sec": { const list=act==="s-veh"?signSel.veh:signSel.sec; const i=list.indexOf(arg); i>=0?list.splice(i,1):list.push(arg); render(); break; }
+    case "s-watch": signSel.watch=!signSel.watch; render(); break;
+    case "watch-edit": openWatch(); break;
+    case "watch-add": { const v=($("#wIn").value||"").split(/[\s,，]+/).filter(Boolean); S.watch.push(...v); openWatch(); break; }
+    case "watch-rm": S.watch.splice(+arg,1); openWatch(); break;
+    case "quick-report": go("reports","sign"); setTimeout(()=>runSign(true),400); break;
+    case "sign-gen": runSign(true); break;
+    case "sign-gen-cached": runSign(false); break;
+    case "copy-mail": toast("正文已复制","可以直接粘贴到飞书或邮件里（图表为图片）"); S.reportDone=true; save(); break;
+    case "eml": toast("已生成 Outlook 邮件草稿","收件人按通讯录自动填好，打开后检查一下就可以发送",[{label:"打开草稿",run:()=>toast("（演示）已打开 Outlook")}]); S.reportDone=true; save(); break;
+    case "rep-settings": openRepSettings(); break;
+    case "daily-auto": S.dailyAuto=!S.dailyAuto; render(); break;
+    case "tir-run": { const t=addTask(`TIR 数据简表 ${p.code}`,2600,()=>{ toast("TIR 数据简表已导出","",[{label:"打开文件",run:()=>toast("（演示）已用 Excel 打开")}]); return `TIR数据简表_${p.code}_20261028.xlsx`; }); tirTaskId=String(t.id); render(); break; }
+    case "tir-auto": S.tirAuto=!S.tirAuto; render(); break;
+    case "export-run": { const name=$("#expSel").value; const t=addTask(`导出 ${name}`,3000,()=>{ toast("导出完成",name,[{label:"打开文件",run:()=>toast("（演示）已用 Excel 打开")}]); return `${name}_${p.code}.xlsx`; }); expTaskId=String(t.id); render(); break; }
+    case "ewo-run": addTask("EWO 增强导表",2400,()=>{ toast("EWO 增强导表完成"); return `EWO增强_${p.code}.xlsx`; }); toast("已提交","进度可以在「任务」里看"); break;
+    case "tool-tab": S.sub.tools=arg; render(); break;
+    case "x-pick": xFiles.push(["一车间BOM.xlsx","二车间BOM.xlsx","供应商清单_10月.xlsx","供应商清单_9月.xlsx"][xFiles.length%4]); render(); break;
+    case "x-rm": xFiles.splice(+arg,1); render(); break;
+    case "x-op": xOp=arg; render(); break;
+    case "x-run": { const op=xOp; const t=addTask(`Excel ${op}：${xFiles.length} 个文件`,2800,()=>{ toast(`Excel ${op}完成`,"",[{label:"打开结果",run:()=>toast("（演示）已用 Excel 打开")}]); return `${op}结果_${TODAY}.xlsx`; },"Excel"); xTaskId=String(t.id); xFiles=[]; render(); break; }
+    case "arch-toggle": { const a=S.archive.find(x=>x.id===+arg); a.on=!a.on; render(); break; }
+    case "arch-run": { const a=S.archive.find(x=>x.id===+arg); addTask(`归档：${a.name}`,2000,()=>{ a.last=nowStr()+" ✓"; render(); return null; }); break; }
+    case "arch-new": S.archive.push({id:Date.now(),name:"新的归档任务",on:true,freq:"每天 07:00",last:"未运行",dir:"默认目录"}); render(); break;
+    case "raw-run": toast("（专家）已发送请求","返回 128 条，已脱敏保存 XML"); break;
+    case "set-tab": S.sub.settings=arg; render(); break;
+    case "expert": S.expert=!S.expert; if(!S.expert&&S.sub.settings==="advanced") S.sub.settings="account"; if(!S.expert&&S.sub.tools==="raw") S.sub.tools="excel"; render(); toast(S.expert?"专家模式已开启":"专家模式已关闭", S.expert?"「工具」里多了原始系统查询，同步设置里多了更新方式和审计":""); break;
+    case "autostart": S.autostart=!S.autostart; render(); break;
+    case "logout": S.savePwd=false; S.sessionExpired=true; render(); toast("已退出并清除保存的密码"); break;
+    case "relogin": openLogin(); break;
+    case "do-relogin": S.sessionExpired=false; p.deliverables.forEach(d=>{ if(d.error&&/登录/.test(d.error)) d.error=null; }); closeLayer(); render(); toast("登录成功","正在补跑错过的同步"); addTask("补跑错过的同步",2000,()=>{ S.lastBg=nowStr(); render(); }); break;
+    case "pick-folder": toast("（演示）会打开 Windows 选择文件夹对话框"); break;
+    case "saved": toast("已保存"); break;
+    case "rollup-add": { const a=$("#ruA").value.trim(); if(a){ S.rollup.push([a,$("#ruB").value]); render(); } break; }
+    case "rollup-rm": S.rollup.splice(+arg,1); render(); break;
+    case "diag": toast("诊断包已导出","已保存到桌面：VSE诊断包_20261028.zip（不含密码和 Cookie），可以直接发给支持人员"); break;
+    case "pkg-pick": openUpdate({name:"签署日报",ver:"0.3.1",notes:"修复：周末不再计入停留天数；邮件里的图表更清晰",size:"46 KB",target:"签署日报"}); break;
+    case "discover-toggle": S.discoverOn=!S.discoverOn; render(); break;
+    case "install-update": openUpdate(S.pendingUpdate); break;
+    case "do-update": { const pkg=layer.pkg; closeLayer(); splash("正在安装更新并重启…",2600,()=>{
+        if(pkg.bad){ S.history.unshift({t:nowStr(), text:`${pkg.name} ${pkg.ver} 启动检查未通过，已自动回到 ${S.version.packs[pkg.target]||S.version.app}`, tone:"bad"}); S.pendingUpdate=null; render(); toast("更新没有成功，已自动恢复","程序已回到之前的版本，你的数据没有变化。原因已记录在「更新记录」里。"); return; }
+        const prev = pkg.target==="app"? S.version.app : S.version.packs[pkg.target];
+        if(pkg.target==="app") S.version.app=pkg.ver; else S.version.packs[pkg.target]=pkg.ver;
+        S.history.unshift({t:nowStr(), text:`${pkg.name} ${prev} → ${pkg.ver}：${pkg.notes}`, tone:"ok", rollback:true, target:pkg.target, prev});
+        S.pendingUpdate=null; render(); toast(`已更新到 ${pkg.name} ${pkg.ver}`, pkg.notes); }); break; }
+    case "rollback": { const h=S.history[+arg]; closeLayer(); splash("正在回滚并重启…",2000,()=>{ if(h.target==="app") S.version.app=h.prev; else S.version.packs[h.target]=h.prev; h.rollback=false; S.history.unshift({t:nowStr(),text:`已回滚 ${h.target==="app"?"VSE Toolbox":h.target} 到 ${h.prev}`,tone:"ok"}); render(); toast("已回滚",`回到 ${h.prev}，数据保持不变`); }); break; }
+    case "open-file": toast("（演示）已打开", el.dataset.file||"文件"); break;
+    case "task-cancel": { const t=S.tasks.find(x=>String(x.id)===arg); t.state="已取消"; openTasks(); refreshLive(); break; }
+    case "task-retry": { const t=S.tasks.find(x=>String(x.id)===arg); S.tasks=S.tasks.filter(x=>x!==t); addTask(t.name,2000,()=>null,t.kind); openTasks(); break; }
+    /* 向导 */
+    case "wz-import": wz.importOld=!wz.importOld; openWizard(); break;
+    case "wz-back": wz.step--; wz.err=""; openWizard(); break;
+    case "wz-next":
+      if(wz.step===1){ wz.busy=true; openWizard(); setTimeout(()=>{ wz.busy=false; if(wz.pwd.length<2){ wz.err="密码不对，请再试一次（演示中至少输入 2 个字符）"; openWizard(); return; } wz.err=""; wz.step++; openWizard(); },900); break; }
+      if(wz.step===4){ finishWizard(); break; }
+      wz.step++; openWizard(); break;
+    case "wz-sec": { const i=wz.secs.indexOf(arg); i>=0?wz.secs.splice(i,1):wz.secs.push(arg); openWizard(); break; }
+    case "wz-pick": { const i=wz.picks.indexOf(arg); i>=0?wz.picks.splice(i,1):wz.picks.push(arg); openWizard(); break; }
+    case "wz-auto": wz.autostart=!wz.autostart; openWizard(); break;
+    /* 演示控制台 */
+    case "demo-reset": try{localStorage.removeItem("vse-v2-demo");}catch(_){} location.reload(); break;
+    case "demo-expire": if(S.firstRun) break; S.sessionExpired=true; render(); toast("VSE Toolbox：需要重新登录","登录已过期，后台同步已暂停",[{label:"重新登录",run:()=>{ S.hidden=false; render(); openLogin(); }}]); break;
+    case "demo-discover": if(S.firstRun) break; if(!S.discoverOn){ toast("自动发现已关闭","请在「设置 → 关于与更新」中开启，或者把更新包拖进窗口"); break; }
+      S.pendingUpdate={name:"VSE Toolbox",ver:"2.0.4",notes:"首页加载更快；修复项目切换后日报科室没有刷新的问题",size:"0.9 MB",target:"app"}; render();
+      toast("发现更新：VSE Toolbox 2.0.4","在「下载」文件夹里找到了 vse-app-2.0.4.vsepkg（签名有效）",[{label:"立即更新",run:()=>{ S.hidden=false; render(); openUpdate(S.pendingUpdate); }},{label:"稍后",run:()=>{}}]); break;
+    case "demo-badupdate": if(S.firstRun) break; openUpdate({name:"TIR 简表",ver:"0.3.0-测试",notes:"（演示用：这个版本会启动失败）",size:"38 KB",target:"TIR 简表",bad:true}); break;
+    case "demo-syncfail": if(S.firstRun) break; { const d=p.deliverables.find(x=>x.key==="ncrp")||p.deliverables[0]; d.enabled=true; d.verified=true; d.error="Aras 服务器在 30 秒内没有响应（可能是内网繁忙）"; d.lastRun=nowStr(); render(); toast(`${d.name} 同步失败`,"已放到「今天」的待处理里",[{label:"查看",run:()=>{ S.hidden=false; go("today"); }}]); break; }
+  }
+});
+document.addEventListener("input", e=>{
+  const k=e.target.dataset.input; if(!k) return; const v=e.target.value;
+  if(k==="wz-user"){ wz.user=v; syncWzBtn(); } else if(k==="wz-pwd"){ wz.pwd=v; syncWzBtn(); } else if(k==="wz-code") wz.code=v;
+  else if(k==="grid-q"){ gridState.q=v; gridState.page=0; clearTimeout(window._gq); window._gq=setTimeout(()=>{ openDeliv(layer.id); const i=$('[data-input="grid-q"]'); if(i){ i.focus(); i.setSelectionRange(v.length,v.length);} },250); }
+  else if(k.startsWith("f-")){ const d=P().deliverables.find(x=>x.id===layer.id); if(k==="f-from") d.filter.from=v; if(k==="f-to") d.filter.to=v; }
+});
+function syncWzBtn(){ const b=$('[data-act="wz-next"]'); if(b) b.disabled=!(wz.user&&wz.pwd); }
+document.addEventListener("keydown", e=>{ if(e.key==="Escape" && layer.kind && layer.kind!=="wizard") closeLayer(); });
+/* 拖放更新包到窗口任意位置 */
+["dragover","dragenter"].forEach(ev=>document.addEventListener(ev,e=>{ e.preventDefault(); const d=$("#pkgDrop")||$("#drop"); if(d) d.classList.add("over"); }));
+document.addEventListener("dragleave",()=>document.querySelectorAll(".drop.over").forEach(d=>d.classList.remove("over")));
+document.addEventListener("drop", e=>{ e.preventDefault(); document.querySelectorAll(".drop.over").forEach(d=>d.classList.remove("over"));
+  const f=[...(e.dataTransfer?.files||[])]; if(!f.length||S.firstRun) return;
+  const pkg=f.find(x=>/\.vsepkg$/i.test(x.name)); const xl=f.filter(x=>/\.xlsx?$/i.test(x.name));
+  if(pkg) openUpdate({name:pkg.name.replace(/\.vsepkg$/i,""),ver:"新版本",notes:"（演示）真实版本会显示包里的更新说明",size:Math.ceil(pkg.size/1024)+" KB",target:"app"});
+  else if(xl.length){ xFiles.push(...xl.map(x=>x.name)); S.page="tools"; S.sub.tools="excel"; render(); }
+  else toast("不认识这个文件","可以拖入 .vsepkg 更新包，或者 Excel 文件");
+});
+/* 托盘 */
+let trayMenu=false;
+function closeTray(){ trayMenu=false; const m=$(".tray-menu"); if(m) m.remove(); }
+$("#tray").addEventListener("click", e=>{
+  e.stopPropagation(); if(trayMenu){ closeTray(); return; } trayMenu=true;
+  const m=document.createElement("div"); m.className="tray-menu";
+  m.innerHTML=`<button data-t="open">打开 VSE Toolbox</button><button data-t="sync">立即同步</button><button data-t="upd">更新记录</button><hr style="border:0;border-top:1px solid #45403c;margin:4px"><button data-t="quit">退出</button>`;
+  m.addEventListener("click", ev=>{ const t=ev.target.dataset.t; closeTray(); if(S.firstRun && t!=="open") return;
+    if(t==="open"){ S.hidden=false; render(); }
+    if(t==="sync"){ addTask("同步全部交付物",2000,()=>{ S.lastBg=nowStr(); render(); toast("同步完成","没有发现异常"); },"同步"); toast("已开始同步"); }
+    if(t==="upd"){ S.hidden=false; go("settings","about"); }
+    if(t==="quit"){ toast("确定要退出吗？","退出后不会再自动同步数据和生成日报",[{label:"仍然退出",run:()=>{ S.hidden=true; render(); toast("（演示）程序已退出","双击桌面图标可以重新打开"); }},{label:"保留在后台",run:()=>{}}]); }
+  });
+  document.body.appendChild(m);
+});
+function runSign(fresh){
+  const t=addTask(fresh?"刷新 TDC 数据并生成签署日报":"生成签署日报", fresh?3000:1000, ()=>{ signOut=true; S.reportDone=true; render(); toast("签署日报已生成","可以复制正文或生成邮件草稿"); return null; });
+  signTaskId=String(t.id); render();
+}
+
+render();
+</script>
+</body>
+</html>
