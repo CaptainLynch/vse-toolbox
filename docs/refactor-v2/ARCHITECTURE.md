@@ -150,6 +150,7 @@
 
 - 选择嵌入版而不是 PyInstaller 冻结，原因：业务代码以普通 `.py` / `.pyc` 存在于 `app\` 和 `packs\` 中，**可以按文件替换**；不会出现 PyInstaller 静态分析漏收模块（现有 spec 里已经在手工补 `hiddenimports`）；`python.exe`/`pythonw.exe` 带 PSF 官方签名，比自建的未签名 bootloader 更少触发杀软误报。
 - 依赖用 `pip install --target` 预装到 `runtime\rt-x\Lib\site-packages`，随包附带 VC 运行库 DLL。pywin32 的 `pywin32_system32` 需要在引导脚本里 `os.add_dll_directory`（**Spike S1** 验证）。
+- **位数必须与 Office 一致**：pywin32 进程内调用 Excel COM 不受位数限制，但 xlwings 的部分功能和加载项对位数敏感。如果生产环境中 32 位 Office 占多数，运行时可能需要提供 x86 版本（由 `tools/env-probe` 的采集结果决定，见 [PRODUCTION_DATA_REQUEST.md](PRODUCTION_DATA_REQUEST.md)）。
 - **可选**：发布时把 `.py` 编译成 `.pyc`（不保留源码），减少同事误改。
 
 ### 5.2 L0 启动器
