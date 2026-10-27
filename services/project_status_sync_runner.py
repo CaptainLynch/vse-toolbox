@@ -34,6 +34,7 @@ from core.project_status_contracts import (
     project_status_source_capabilities,
 )
 from core.redaction import redact_sensitive_text
+from core.section_rollup import SectionRollupStore, build_rollup_index
 from services import data_model_watchlist
 from services.deliverable_form_analysis import build_form_snapshot
 from services.aras_auth import ArasAuthError
@@ -160,6 +161,10 @@ class SyncBindingContext:
     sync_config_revision: int = 0
     # 数模关注清单：非 None 时连接器只保留清单里的流水单号（services/data_model_watchlist.py）。
     watchlist: tuple[str, ...] | None = None
+    # 科室归集索引（core/section_rollup.build_rollup_index）：规则带 sections 时
+    # 由 runner 从本地设置读出注入。connector 不得访问数据库，因此归集规则只能
+    # 以只读索引形式进入上下文；None 表示本次绑定不需要科室收窄。
+    section_rollup: Mapping[str, str | None] | None = None
 
 
 # ── Connector Protocol ──────────────────────────────────────────
@@ -476,13 +481,21 @@ class ProjectStatusSyncRunner:
                 credential_ref = ""
             effective_binding = lease.get("binding_snapshot") or binding
             deliv_updated_at = effective_binding.get("deliverable_updated_at") or binding.get("deliverable_updated_at")
+            match_rule_snapshot = _safe_json_loads(effective_binding.get("match_rule_json"))
+            # 科室多选（sections）的归集规则保存在本地 app_settings：connector 不得
+            # 访问数据库，所以在这里读出索引注入只读上下文（与 watchlist 同一模式）。
+            section_rollup = (
+                build_rollup_index(SectionRollupStore(self._db).get())
+                if isinstance(match_rule_snapshot, Mapping) and "sections" in match_rule_snapshot
+                else None
+            )
             context = SyncBindingContext(
                 binding_id=binding_id,
                 deliverable_id=deliverable_id,
                 phase_id=str(effective_binding.get("phase_id") or binding["phase_id"]),
                 source_type=str(effective_binding.get("source_type") or source_type),
                 external_key=str(effective_binding.get("external_key") or ""),
-                match_rule=_safe_json_loads(effective_binding.get("match_rule_json")),
+                match_rule=match_rule_snapshot,
                 mapping=_safe_json_loads(effective_binding.get("mapping_json")),
                 cursor=_safe_json_loads(effective_binding.get("cursor_json")),
                 expected_deliverable_updated_at=str(deliv_updated_at or ""),
@@ -494,6 +507,7 @@ class ProjectStatusSyncRunner:
                     else (lease.get("sync_config_revision") or 0)
                 ),
                 watchlist=watchlist,
+                section_rollup=section_rollup,
             )
 
             # 在数据库事务外调用 connector。

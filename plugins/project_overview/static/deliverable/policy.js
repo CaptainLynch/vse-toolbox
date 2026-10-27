@@ -104,6 +104,10 @@ function SyncSummaryCard({ item, policy, capabilities, settings, advancedOpen, o
       // NCR 无部门维度：摘要卡展示科室范围声明（归集口径的预设多选）。
       const scopeList = Array.isArray(rule.sectionScope) ? rule.sectionScope : [];
       if (scopeList.length) facts.push(["科室", safeDisplayValue(scopeList.join("、"))]);
+    } else if (kind.isDataModel && Array.isArray(rule.sections) && rule.sections.length) {
+      // 数模：科室是实际筛选条件（本地收窄），部门只是选填的附加条件。
+      facts.push(["科室", safeDisplayValue(rule.sections.join("、"))]);
+      if (dept) facts.push(["责任部门", safeDisplayValue(dept)]);
     } else if (dept) {
       facts.push(["责任部门", safeDisplayValue(dept)]);
     }
@@ -198,8 +202,10 @@ function SyncSummaryCard({ item, policy, capabilities, settings, advancedOpen, o
     }
   };
 
-  // 科室预设与看板「科室归集规则」目标同源（sourceInfo.sectionScopePresets 下发）。
+  // 科室预设与看板「科室归集规则」目标同源：NCR 用 sectionScopePresets（声明式），
+  // 数模用 sectionPresets（筛选式，默认五科室）。
   const presetTargets = Array.isArray(capabilities && capabilities.sectionScopePresets) ? capabilities.sectionScopePresets : [];
+  const sectionPresets = Array.isArray(capabilities && capabilities.sectionPresets) ? capabilities.sectionPresets : [];
   const declaredHint = POLICY_SYNC_HINTS[syncDisplay.state];
   const numberText = kind.isEwo ? "EWO 编号（选填，留空则整车聚合）"
     : kind.isPaa ? "PAA 编号（选填，留空则整车聚合）"
@@ -280,13 +286,26 @@ function SyncSummaryCard({ item, policy, capabilities, settings, advancedOpen, o
               />
               <small class="policy-field-note">科室维度按预设归集统计，其他科室值计入「未归集」；历史科室名可在看板下方「科室归集规则」登记。选择随配置保存，便于核对同步范围。</small>
             </label>`
-    : html`<label class="policy-ewo-field policy-wizard-field">
-              <span>责任部门</span>
+    : html`${kind.isDataModel && html`<label class="policy-ewo-field policy-wizard-field" data-wizard-field="sections">
+              <span>科室（可多选，默认五个科室）</span>
+              <${SearchMultiSelect}
+                ariaLabel="科室筛选"
+                placeholder=${sectionPresets.length ? "留空=不限科室" : "输入科室名后回车添加"}
+                options=${sectionPresets.map((value) => String(value))}
+                values=${values.sections}
+                onChange=${(next) => setValues((prev) => ({ ...prev, sections: next }))}
+              />
+              <small class="policy-field-note">按科室筛选，默认车体科、车身科、内饰科、外饰科、车体架构集成科五个科室。科室值按看板「科室归集规则」归集后匹配（历史名如「结构工程科」「视觉工程科」可先在那里登记）；未登记的历史值计入「未归集」并被排除。清空 = 不限科室。</small>
+            </label>`}
+            <label class="policy-ewo-field policy-wizard-field">
+              <span>${kind.isDataModel ? "责任部门（选填）" : "责任部门"}</span>
               <input type="text" maxlength="200" value=${values.department} onInput=${set("department")}
-                placeholder=${kind.isTdc ? "TDC 部门（如 车体工程，支持留空）" : `默认：${values.defaultDept}`} />
-              <small class="policy-field-note">${kind.isTdc
-    ? "TDC 部门（如“车体工程”），支持留空查询全量数据。请勿填写 Aras 形式“技术中心_车体工程”。"
-    : `默认筛选“${values.defaultDept}”，支持按需修改。`}</small>
+                placeholder=${kind.isDataModel ? "建议留空；如填 车体工程，会作为 TDC 部门条件收窄" : (kind.isTdc ? "TDC 部门（如 车体工程，支持留空）" : `默认：${values.defaultDept}`)} />
+              <small class="policy-field-note">${kind.isDataModel
+    ? "部门口径不稳定：同一科室的人有挂在「技术中心」、有挂在「车体工程」，按部门筛会漏人。建议留空，用上面的科室筛选。请勿填写 Aras 形式「技术中心_车体工程」。"
+    : (kind.isTdc
+      ? "TDC 部门（如“车体工程”），支持留空查询全量数据。请勿填写 Aras 形式“技术中心_车体工程”。"
+      : `默认筛选“${values.defaultDept}”，支持按需修改。`)}</small>
             </label>`}
           ${(kind.isDataModel || kind.isSor) && html`<label class="policy-ewo-field policy-wizard-field">
             <span>${kind.isDataModel ? "状态（选填，实验性）" : "状态（选填）"}</span>

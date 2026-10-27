@@ -72,6 +72,8 @@ from core.section_rollup import (
     SectionRollupError,
     SectionRollupStore,
     build_rollup_index,
+    normalize_section_selection,
+    resolve_section,
     rollup_targets_in_order,
 )
 from core.db_manager import (
@@ -1261,6 +1263,9 @@ _MAPPING_DISCOVERY_RULE_FIELDS: dict[tuple[str, str], dict[str, str]] = {
         # 值同样不进上游查询参数（_tdc_data_model_filters 不读取该键），
         # 运行期多号匹配与保存校验由 Task 8-10 接线。
         "document_nos": "documentNos",
+        # 科室多选（契约 matchKeys 内）：同上，值不进上游查询参数（TDC 科室参数
+        # 只接受单值），抓取后按行内科室列本地收窄，与同步 collect 同一收窄函数。
+        "sections": "sections",
     },
     ("tdc", "sor"): {
         "serial_number": "processNo",
@@ -1399,6 +1404,16 @@ def _mapping_discovery_query_identity(
             serials = _mapping_discovery_serial_set(value, error_type)
             if serials:
                 rule[rule_name] = serials
+            continue
+        if name == "sections":
+            # 科室多选：规范化后进匹配规则，同样绝不进上游查询参数（TDC 科室参数
+            # 只接受单值）。抓取后按行内科室列本地收窄，与同步 collect 同口径。
+            try:
+                sections = normalize_section_selection(value)
+            except ValueError as exc:
+                raise error_type(str(exc)) from None
+            if sections:
+                rule[rule_name] = list(sections)
             continue
         if not isinstance(value, str):
             raise error_type(f"{name} filter must be a string")
@@ -2515,6 +2530,13 @@ def _project_status_payload(
                     "sectionScopePresets": (
                         list(section_scope_presets)
                         if capabilities.get("reportType") in {"ncr_progress", "ncr_detail"}
+                        else None
+                    ),
+                    # 数模科室多选预设（契约标志 sectionPresets）：与归集目标同源，
+                    # 默认即现行五科室。它不是声明式范围，而是同步筛选的默认勾选。
+                    "sectionPresets": (
+                        list(section_scope_presets)
+                        if capabilities.get("sectionPresets") is True
                         else None
                     ),
                     "syncNote": capabilities.get("syncNote"),
@@ -5465,6 +5487,36 @@ def create_app(
                             upstream_declared_total = crawl_total
                         if cache_key:
                             _set_discovery_session_cache(cache_key, rows, upstream_declared_total)
+                    # 科室多选（sections）：与同步 collect 共用同一收窄函数（行内科室列
+                    # 归集后求交）。会话缓存里存的是**未收窄**的全量行，所以收窄放在
+                    # 缓存之后——换科室不必重新抓取。
+                    section_selection = normalize_section_selection(
+                        match_rule.get("sections")
+                    )
+                    if section_selection:
+                        from services.project_status_connectors import (
+                            TDCProjectStatusConnector,
+                        )
+
+                        try:
+                            narrowed = TDCProjectStatusConnector._narrow_by_sections(
+                                rows,
+                                match_rule,
+                                build_rollup_index(SectionRollupStore(db).get()),
+                            )
+                        except ValueError as exc:
+                            raise _TDCRequestError(
+                                str(exc), "SectionColumnMissing", 422
+                            ) from None
+                        if rows and not narrowed:
+                            raise _TDCRequestError(
+                                f"所选科室（{len(section_selection)} 个）在当前查询条件下"
+                                "没有命中任何行；请核对科室名（历史科室名需先在看板"
+                                "「科室归集规则」登记）或放宽其它筛选条件",
+                                "SectionScopeEmpty",
+                                422,
+                            )
+                        rows = narrowed
                     serial_match: dict[str, Any] | None = None
                     serial_diagnostic: dict[str, Any] | None = None
                     serial_partial = False

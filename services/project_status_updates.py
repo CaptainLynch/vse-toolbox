@@ -84,7 +84,13 @@ _SECTION_SCOPE_MAX_LEN = 100
 
 
 def _valid_section_scope(value: Any) -> bool:
-    """科室范围声明：非空字符串列表（无控制字符、不重复、有界）。"""
+    """科室名列表：非空字符串列表（无控制字符、不重复、有界）。
+
+    同一形状服务两个键：
+    - ``sectionScope``：NCR 的**声明式**科室范围（不参与查询，只随绑定保存）；
+    - ``sections``：数模的**筛选式**科室多选（连接器按行内科室列本地收窄）。
+    两者的落库形状与边界一致，语义差异在连接器与 UI 文案里体现。
+    """
     if not isinstance(value, list) or not value or len(value) > _SECTION_SCOPE_MAX_ITEMS:
         return False
     if not all(
@@ -100,6 +106,7 @@ def _valid_match_rule_values(match_rule: Mapping[str, Any]) -> bool:
     """Query rules contain only boolean aggregate and nonblank strings.
 
     ``sectionScope`` is the one declaration-only list (NCR wizard section presets);
+    ``sections`` is the data-model section filter list（数模科室多选，参与本地收窄）；
     ``documentNos`` is the multi-serial set（``list[str]``，与单值 documentNo 互斥）。
     分支写显式 ``if/elif``：嵌套条件表达式读不出「哪个键要求哪种类型」。
     """
@@ -108,6 +115,10 @@ def _valid_match_rule_values(match_rule: Mapping[str, Any]) -> bool:
             if not isinstance(value, bool):
                 return False
         elif key == "sectionScope":
+            if not _valid_section_scope(value):
+                return False
+        elif key == "sections":
+            # 数模科室多选：空集不落库（调用方省略键 = 不限科室），非空时形状同 sectionScope。
             if not _valid_section_scope(value):
                 return False
         elif key == "documentNos":

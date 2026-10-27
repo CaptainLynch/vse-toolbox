@@ -185,6 +185,38 @@ def unassigned_label() -> str:
     return _UNASSIGNED_LABEL
 
 
+#: 科室多选（绑定规则 ``sections``）的边界：最多 20 项、每项 100 字符。
+_SECTION_SELECTION_MAX_ITEMS = 20
+_SECTION_SELECTION_MAX_LEN = 100
+
+
+def normalize_section_selection(value: object) -> tuple[str, ...]:
+    """科室多选（``sections``）的规范化：去空白、去重保序、边界校验。
+
+    单一来源：绑定保存校验、映射发现与同步收窄都调用这里。三处各写一套边界
+    迟早出现「能存不能跑」。``None`` / 空列表返回空元组（= 不限科室）；
+    类型或边界非法抛 ``ValueError``，调用方转成各自的错误类型。
+    """
+    if value is None:
+        return ()
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("科室筛选必须是科室名列表")
+    cleaned: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise ValueError("科室筛选只能包含科室名文本")
+        text = item.strip()
+        if not text or len(text) > _SECTION_SELECTION_MAX_LEN:
+            raise ValueError(f"科室名不能为空或超过 {_SECTION_SELECTION_MAX_LEN} 个字符")
+        if any(ord(ch) < 32 or 127 <= ord(ch) <= 159 for ch in text):
+            raise ValueError("科室名不能包含控制字符")
+        if text not in cleaned:
+            cleaned.append(text)
+    if len(cleaned) > _SECTION_SELECTION_MAX_ITEMS:
+        raise ValueError(f"最多选择 {_SECTION_SELECTION_MAX_ITEMS} 个科室")
+    return tuple(cleaned)
+
+
 def _clean_name(value: object) -> str:
     if isinstance(value, bool) or not isinstance(value, str):
         raise ValueError("必须是字符串")

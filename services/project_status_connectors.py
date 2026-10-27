@@ -11,12 +11,19 @@ import json
 import logging
 import tempfile
 import time
+from functools import lru_cache
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from core.archive_store import ArchiveStore
 from core.credential_provider import CredentialProvider
+from core.section_rollup import (
+    DEFAULT_SECTION_ROLLUP,
+    build_rollup_index,
+    normalize_section_selection,
+    resolve_section,
+)
 from services import data_model_watchlist
 from core.project_status_contracts import (
     project_status_default_department,
@@ -106,6 +113,34 @@ def _require_complete_result(result: Any) -> None:
     ):
         raise ValueError(f"external query is incomplete ({reason})")
 
+
+#: 报表行内科室列的候选键：契约列是第 5 列 ``department``（科室级），
+#: 其余键只在导出/结构漂移时兜底，绝不用 ``superDepartment``（部门级）。
+_ROW_SECTION_KEYS = ("department", "科室", "sectionName")
+
+
+def _section_filter_values(rule: Mapping[str, Any]) -> tuple[str, ...]:
+    """绑定规则里的科室多选（``sections``）-> 规范化后的有序去重元组。
+
+    规范化与边界由 ``core.section_rollup.normalize_section_selection`` 单一来源
+    提供（与保存校验、映射发现同一实现）。fail-closed：运行期遇到脏值直接
+    raise，绝不「当作没配置」退化成不限科室（那会静默多算）。
+    """
+    return normalize_section_selection(rule.get("sections"))
+
+
+@lru_cache(maxsize=1)
+def _default_section_index() -> Mapping[str, str | None]:
+    """内置默认归集索引（未注入用户规则时的兜底，绝不让所有行落「未归集」）。"""
+    return build_rollup_index(DEFAULT_SECTION_ROLLUP)
+
+
+def _row_section_value(row: Mapping[str, Any]) -> str | None:
+    for key in _ROW_SECTION_KEYS:
+        text = _clean_scalar(row.get(key))
+        if text:
+            return text
+    return None
 
 def _raise_if_serial_column_missing(rows: Sequence[Mapping[str, Any]]) -> None:
     """行集完全没有流水单号列时按「结构漂移」归因并 raise（不落「未匹配」）。
@@ -470,6 +505,14 @@ class TDCProjectStatusConnector:
         # 收窄（爬虫完整性已在 _require_complete_result 把关；原始归档行
         # result.rows 不收窄——取证职责）。
         application_rows = self._narrow_by_document_no(application_rows, context.match_rule)
+        # 科室多选（sections）在单号精确收窄之后按行内科室列本地收窄：单号收窄
+        # 保持既有零命中归因，科室只缩小范围。归集索引由 runner 注入（与看板
+        # 「科室归集规则」同源），未注入时用内置默认，绝不让全部行落「未归集」。
+        application_rows = self._narrow_by_sections(
+            application_rows,
+            context.match_rule,
+            getattr(context, "section_rollup", None),
+        )
         # F3（2026-09-29 生产反馈）：同步范围剔除已废弃/已撤回表单（用户口径，
         # docs/PLAN_20260929_R5_SIX_ISSUES.md）。只剔"已证实映射"的状态文本——
         # SOR 行状态为文本立即生效；数模码映射升级后自动生效。归档 JSON 仍为
@@ -536,9 +579,15 @@ class TDCProjectStatusConnector:
     @staticmethod
     def _data_model_filters(rule: Mapping[str, Any]) -> TDCDataModelFilters:
         # incident 是第 0 列实例号；documentNo（流水单号）不是 TDC 查询参数，不在这里消费。
+        # sections（科室多选）同样不是查询参数：TDC 的 department 只接受单值，
+        # 多科室只能在抓取后本地收窄（_narrow_by_sections）。因此 sections 存在时
+        # 单值 section 一律不发上游——否则上游会先丢掉其它科室的行，本地再收窄
+        # 就变成静默少算。
+        sections = _section_filter_values(rule)
         return TDCDataModelFilters(
             instance_no=_clean_scalar(rule.get("incident")), applicant=_clean_scalar(rule.get("applicant")),
-            department=_clean_scalar(rule.get("department")), section=_clean_scalar(rule.get("section")),
+            department=_clean_scalar(rule.get("department")),
+            section=None if sections else _clean_scalar(rule.get("section")),
             application_start=_clean_scalar(rule.get("applicationStart")), application_end=_clean_scalar(rule.get("applicationEnd")),
             project_model=_clean_scalar(rule.get("projectModel")), part_number=_clean_scalar(rule.get("partNumber")),
             model_number=_clean_scalar(rule.get("modelNumber")),
@@ -629,6 +678,68 @@ class TDCProjectStatusConnector:
                 name="sync_connector.TDCProjectStatusConnector.collect",
             )
         return list(matched)
+
+    @staticmethod
+    def _narrow_by_sections(
+        rows: Sequence[Mapping[str, Any]],
+        rule: Mapping[str, Any],
+        rollup: Mapping[str, str | None] | None,
+    ) -> list[Mapping[str, Any]]:
+        """按科室多选（``sections``）本地收窄行集；未配置 = 不限科室。
+
+        为什么在本地：TDC 数模查询的科室参数（HTTP ``department``）只接受单值，
+        多值能力未经验证；绑定「五科室」只能一次抓取后按行内科室列求交。
+
+        口径：行内科室值经 ``resolve_section`` 归集到现行科室名（与看板「科室归集
+        规则」同一原语，历史名如「结构工程科」「BE 车身科」按规则归到目标科室）。
+        归集不到的行计入诊断计数后被排除——用户选的是现行科室，未登记的历史值
+        必须先在看板登记规则，绝不在这里猜。
+
+        fail-closed：整批行都没有科室列时按「结构漂移」raise（与流水单号列缺失
+        同一归因），不返回空行集让同步写出一份「零行成功」。
+        """
+        selected = _section_filter_values(rule)
+        if not selected:
+            return list(rows)
+        index = rollup if rollup is not None else _default_section_index()
+        wanted = set(selected)
+        kept: list[Mapping[str, Any]] = []
+        unassigned = 0
+        missing = 0
+        for row in rows:
+            raw = _row_section_value(row)
+            if raw is None:
+                missing += 1
+                continue
+            target = resolve_section(raw, index)
+            if target is None:
+                unassigned += 1
+                continue
+            if target in wanted:
+                kept.append(row)
+        if rows and missing == len(rows):
+            emit(
+                "tdc_section_column_missing",
+                {"report_type": "data_model", "row_count": len(rows)},
+                name="sync_connector.TDCProjectStatusConnector.collect",
+            )
+            raise ValueError(
+                "同步行缺少科室列（department/科室），无法按科室筛选；"
+                "上游结构可能已变化，请重新进行映射发现"
+            )
+        emit(
+            "tdc_section_narrowed",
+            {
+                "report_type": "data_model",
+                "row_count": len(rows),
+                "kept_count": len(kept),
+                "unassigned_count": unassigned,
+                "missing_count": missing,
+                "selected_count": len(selected),
+            },
+            name="sync_connector.TDCProjectStatusConnector.collect",
+        )
+        return kept
 
     @staticmethod
     def _sor_filters(rule: Mapping[str, Any]) -> TDCSORFilters:

@@ -623,6 +623,14 @@ PROJECT_STATUS_SOURCE_CAPABILITIES: dict[str, dict[str, object]] = {
         "completenessPolicy": "paged_result",
         "defaultDepartment": None,
         "supportsRecordSet": False,
+        # sections：科室多选筛选（list[str]，默认现行五科室）。它**不是上游查询
+        # 参数**——TDC 的 department（科室）参数只接受单值，多值能力未验证——
+        # 因此在抓取后按报表行内科室列本地收窄，归集口径与看板「科室归集规则」
+        # 同源（core/section_rollup.resolve_section）。存在 sections 时单值 section
+        # 不再发往上游，避免单值条件把其它科室的行提前丢弃（静默少算）。
+        # 因不进上游查询，它不列入 filterKeys（那里只放真正改变上游过滤器的键），
+        # 只列入 matchKeys（配置键/签名/审计）。
+        "sectionPresets": True,
         "filterKeys": (
             "incident", "applicant", "department", "section",
             "applicationStart", "applicationEnd", "projectModel",
@@ -641,8 +649,10 @@ PROJECT_STATUS_SOURCE_CAPABILITIES: dict[str, dict[str, object]] = {
             # documentNos：多单号集合键（list[str]，与单值 documentNo 互斥）。
             # 契约键、discovery 过滤名映射、UI 输入项与运行期接线现由同一批交付
             # （保存/发现/运行期 fail-closed 由 VSE_TDC_MULTI_SERIAL_SYNC 兜底）。
+            # sections：科室多选（list[str]）。与 sectionScope（NCR 的声明式范围）
+            # 不同，它**参与同步收窄**：连接器在抓取后按行内科室列归集求交。
             "incident", "documentNo", "documentNos", "applicant", "department", "section",
-            "applicationStart", "applicationEnd", "projectModel",
+            "sections", "applicationStart", "applicationEnd", "projectModel",
             "partNumber", "modelNumber", "status", "aggregate", "reportType",
         ),
         "matchFields": (

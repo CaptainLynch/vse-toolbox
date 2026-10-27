@@ -323,16 +323,30 @@ export function wizardInitialValues(policy, capabilities, vaultConfigured) {
   const kind = wizardKind(capabilities);
   const declaredDept = ewoPolicyString(capabilities && capabilities.defaultDepartment);
   const defaultDept = kind.isTdc ? "车体工程" : (declaredDept || "技术中心_车体工程");
+  // 数模科室多选（matchRule.sections）的默认勾选与看板「科室归集规则」目标同源
+  // （后端 sourceInfo.sectionPresets 下发，默认即现行五科室）。
+  const sectionPresets = Array.isArray(capabilities && capabilities.sectionPresets)
+    ? capabilities.sectionPresets.map((value) => String(value))
+    : [];
   let credential = "";
   if (vaultConfigured) credential = "domain";
   return {
     credential,
     model: ewoPolicyString(rule.projectCode || rule.modelInfo || rule.carTypeProject || rule.projectModel || ""),
-    department: ewoPolicyString(rule.rspDepartment || rule.department || defaultDept),
+    // 数模：部门口径不稳定（同一科室有人挂在「技术中心」、有人挂在「车体工程」），
+    // 新配置默认留空，改按科室筛选；存量绑定仍回填已保存的部门，用户可自行清空。
+    department: kind.isDataModel
+      ? ewoPolicyString(rule.department || "")
+      : ewoPolicyString(rule.rspDepartment || rule.department || defaultDept),
     // 数模存 matchRule.status；SOR 存 matchRule.approvalStatus（TDC SOR 状态筛选）。
     status: ewoPolicyString(kind.isSor ? rule.approvalStatus : rule.status),
-    // NCR 无部门维度：科室为归集口径预设多选，随绑定保存为 matchRule.sectionScope。
-    sections: Array.isArray(rule.sectionScope) ? rule.sectionScope.map((value) => String(value)) : [],
+    // 数模 = 筛选式科室多选（sections，默认五科室）；NCR = 声明式科室范围
+    // （sectionScope）。两者共用同一个多选控件与 values.sections 字段。
+    sections: kind.isDataModel
+      ? (Array.isArray(rule.sections)
+        ? rule.sections.map((value) => String(value))
+        : sectionPresets)
+      : (Array.isArray(rule.sectionScope) ? rule.sectionScope.map((value) => String(value)) : []),
     interval: String((policy && policy.intervalMinutes) || 15),
     number: ewoPolicyString(rule.ewoNo || rule.processNo || rule.incident || rule.paaNo || rule.ncrNo || ""),
     // 数模流水单号（documentNo）与实例号并存二选一：回填只按各自键取值，
@@ -401,8 +415,19 @@ export function buildWizardDiscovery(values, capabilities) {
     set("processNo", "serial_number", specificNo);
   } else if (kind.isDataModel) {
     set("projectModel", "project_model", modelVal);
+    // 部门（HTTP superDepartment）保留为选填条件：部门口径不稳定，向导默认留空；
+    // 真正的主力筛选是下面的科室多选（sections）。
     set("department", "department", deptVal);
     set("status", "status", ewoPolicyString(values.status));
+    // 科室多选（sections）：TDC 的科室查询参数只接受单值，因此集合不进 filters 的
+    // 上游参数，只随 matchRule 保存；发现与同步都在抓取后按行内科室列本地收窄。
+    const sectionValues = Array.isArray(values.sections)
+      ? values.sections.map((value) => String(value).trim()).filter(Boolean)
+      : [];
+    if (sectionValues.length) {
+      matchRule.sections = sectionValues;
+      filters.sections = sectionValues;
+    }
     // 流水单号（documentNo）与实例号（incident）并存二选一（wizardPrecheck 拦截
     // 同填）：流水单号走后端全量抓取+本地精确匹配（它不是 TDC 查询参数），实例号
     // 仍是线上参数 incident。互不覆写，存量绑定回填不跨键转换。
@@ -697,6 +722,10 @@ export function buildPolicyPayload(item, capabilities, storedPolicy, values) {
   // NCR 科室范围声明由向导维护；高级设置保存时原样保留，避免静默丢失。
   if (capabilities.sectionScopePresets && Array.isArray(storedRule.sectionScope) && storedRule.sectionScope.length) {
     payload.matchRule.sectionScope = storedRule.sectionScope.map((value) => String(value));
+  }
+  // 数模科室多选（sections）同理：向导维护，高级设置保存不得静默丢掉筛选范围。
+  if (capabilities.sectionPresets && Array.isArray(storedRule.sections) && storedRule.sections.length) {
+    payload.matchRule.sections = storedRule.sections.map((value) => String(value));
   }
   if (!payload.externalKey && !payload.matchRule.aggregate && payload.matchRule.ewoNo) payload.externalKey = payload.matchRule.ewoNo;
   EWO_POLICY_AUTOMATIC_FIELDS.forEach(([key]) => {

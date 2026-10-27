@@ -41,6 +41,36 @@
 - **三个自证偏差（引用本文件时必须避免）**：把"规则已写入"当"效果已验证"；把"一次成功"当"稳定"；
   把"三组部分合格"当"完整门槛"。A 只有 1 次合格样本（+65s），只算验证过一次。
 
+## 2026-10-26 D5 数模同步增加「按科室筛选」（默认五科室）
+
+- **用户口径**：按部门筛不可靠——同一科室的人有挂在「技术中心」、有挂在「车体工程」，
+  因此数模设计审核流程报表（D5）同步向导增加科室多选，默认车体科、车身科、内饰科、
+  外饰科、车体架构集成科。
+- **落地层选择**：TDC 的科室查询参数（HTTP `department`，行内第 5 列同名但语义为科室级）
+  只接受单值，多值能力未验证 → 科室集合**不进上游**，改为抓取后按行内科室列本地收窄，
+  归集口径复用 `core/section_rollup.resolve_section`（与看板同源，历史名如「结构工程科」
+  「BE 车身科」按规则命中）。存在 `sections` 时单值 `section` 一律不发上游（否则其它科室
+  的行在抓取阶段就被丢掉 = 静默少算）。
+- **契约**：D5 `matchKeys` 增 `sections`（不进 `filterKeys`——它不是上游查询键，
+  `test_declared_filter_keys_match_connector_consumption` 要求 filterKeys 必须改变上游过滤器）；
+  新增能力标志 `sectionPresets`，`sourceInfo.sectionPresets` 下发归集目标（默认五科室）。
+- **接线**：`services/project_status_updates` 校验（复用 `_valid_section_scope` 形状）；
+  `SyncBindingContext.section_rollup` 由 runner 注入（connector 不得访问 DB）；
+  discovery 走 `_MAPPING_DISCOVERY_RULE_FIELDS` 的 `sections` 收口 + 同一收窄函数；
+  前端 `wizardInitialValues` 默认勾选预设、D5 部门默认留空、高级设置保存保留 `sections`。
+- **fail-closed**：整批行缺科室列 → raise（结构漂移，不写空结果）；未登记历史科室值计入
+  `tdc_section_narrowed` 诊断计数后被排除。
+- **验证**：新增 `tests/test_project_status_data_model_sections.py`（32 项，含 collect 级）、
+  `tests/test_plugin_overview_data_model_sections.py`（3 项，真实 policy-logic.js）、
+  `tests/test_plugin_overview_wizard_sections.py`（3 项，真实 policy.js 渲染接线）；
+  全量 `python -m pytest tests -q` → **3344 passed / 6 skipped**；`generate_project_map.py --check` 通过。
+- **未做/取舍**：存量绑定（只有 `department=车体工程`）不自动迁移——打开向导会看到科室五科室
+  默认勾选 + 部门回填，用户清空部门并保存后才切换到纯科室口径（避免未经同意改变已发布报表）；
+  定时归档任务（`scheduled_archive_connectors`）的数模过滤器未接 `sections`。
+- **顾问**：本决策按流程发起一次 live 咨询（task `TASK-20261026-D5-SECTIONS-01`，`--risk data-loss`，
+  dry-run 通过），实际调用在 580s 内无返回、账本无记录，按 skill 规则停止该路由、不重试；
+  上述方案为主代理自行定案。
+
 ## 2026-10-23 调度协议 §10 落地：顾问调用并行化（astra 顾问 1=adopted）
 
 - **顾问**：run `94ca423fbd434d07b5f243f72c74c6be`（codex-readonly / **astra-high** /
