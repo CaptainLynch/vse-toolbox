@@ -116,11 +116,28 @@
 
 | ID | 功能 | 处置 | 说明 |
 |---|---|---|---|
-| K1 | 终端 CLI（`main.py` / `VSE-Toolbox.spec`） | 下线 | **待确认**：仅 CLI 才有的「生成周报 PPT」「扫描飞书待办」「内网抓取」三项会一并移除（见架构方案 §10-1） |
+| K1 | 终端 CLI（`main.py` / `VSE-Toolbox.spec`） | 下线 | 「扫描飞书待办」已按 K6 下线；仅 CLI 才有的「生成周报 PPT」「内网抓取」两项**待确认**（见架构方案 §10-1） |
 | K2 | 原始系统查询页（Base URL、请求头、分页、XML） | 专家 | 常规导出由 F5/F6 承接；原页面只在专家模式下可见 |
 | K3 | 交付物工作台（报表目录） | 下线 | 与 D/E/F 重复 |
 | K4 | TDC Probe（`VSE-TDC-Probe.exe`） | 下线 | 发布产物中移除，代码保留在开发工具里 |
 | K5 | `tools/install_*_task.ps1` 计划任务脚本 | 下线 | 由托盘进程内的调度器替代（架构 §5.4） |
+| K6 | **飞书相关功能**（2026-10-28 用户决定取消，后续有需要再实现） | 下线 | 见下方 K6 明细 |
+
+### K6 飞书功能下线明细
+
+v2 中**产品内不集成飞书**。飞书只作为维护者给同事传文件（安装包、更新包）的渠道，这不是产品功能，不受影响。
+
+| 现有功能点 | 代码位置 | v2 处置 |
+|---|---|---|
+| 扫描飞书待办（IMAP 读邮件里的飞书通知） | `services/feishu_imap.py`、`main.py` 菜单 3 | 移除；运行时去掉 `imapclient` 依赖 |
+| 飞书待办写入交付物 | `core/db_manager.py` 的 `save_feishu_tasks` / `sync_unsynced_feishu_tasks_to_deliverables` | 移除；`feishu_tasks` 表保留不删（只做增量迁移，见架构 §4.3），v2 不再读写 |
+| 概览接口中的飞书待办统计 | `web/app.py` `/api/overview` 的 `feishu` 字段 | 移除 |
+| 周报 PPT 的 `{{待办总数}}` 占位符 | `services/office_toolbox.py` | 周报 PPT 本身待 §10-1 确认；若保留，该占位符改为空 |
+| 签署日报正文里的「飞书多维表格链接」 | `plugins/sign_daily`（`feishuLink` 配置项、`mail.py` 正文段落、页面输入框） | 移除输入框和正文段落；已保存的配置值忽略 |
+| 交付物「数据来源：飞书」标签（EWO） | 项目状态种子数据 | 改为实际来源 Aras |
+
+**预留扩展点**：如果以后需要恢复，作为独立的 `feishu` 功能包实现，通过内核的 `notify` / `tasks` 服务接入，不会改动其他包。
+`services/tdc_auth.py` 中的 `feishukey` 是 TDC 登录协议里的字段，不是飞书功能，**保留**。
 
 ## U. 体验层需求（贯穿所有模块）
 

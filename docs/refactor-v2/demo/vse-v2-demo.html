@@ -196,7 +196,7 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--accent-soft);bor
 <details class="demo" id="demo"><summary>🧪 演示控制台</summary><div class="in">
   <button data-act="demo-reset">↺ 重置为首次安装</button>
   <button data-act="demo-expire">模拟：登录过期</button>
-  <button data-act="demo-discover">模拟：飞书收到更新包</button>
+  <button data-act="demo-discover">模拟：下载文件夹里出现更新包</button>
   <button data-act="demo-badupdate">模拟：安装一个会启动失败的更新</button>
   <button data-act="demo-syncfail">模拟：NCR 同步失败</button>
   <span class="faint">数据均为本地假数据，刷新页面会保留进度。</span>
@@ -614,8 +614,10 @@ function setAbout(){
     <dl class="kv"><dt>VSE Toolbox</dt><dd><b>${S.version.app}</b></dd>${Object.entries(S.version.packs).map(([k,v])=>`<dt>${k}</dt><dd>${v}</dd>`).join("")}<dt>运行环境</dt><dd class="small muted">${S.version.runtime}</dd></dl>
     <div class="row" style="margin-top:12px"><button class="btn" data-act="diag">导出诊断包（发给支持人员）</button></div></div>
   <div class="card"><h3 style="margin-bottom:10px">安装更新</h3>
-    <div class="drop" id="pkgDrop" data-act="pkg-pick"><div style="font-size:26px">⬆️</div><b>把收到的 .vsepkg 更新包拖到这里</b><div class="small">也可以直接双击更新包，或者什么都不做——程序会自动在「下载」和飞书/QQ 接收文件夹里发现它</div></div>
-    <label class="switch ${S.discoverOn?"on":""}" data-act="discover-toggle" style="margin-top:10px"><i></i><span class="small">自动发现下载文件夹里的更新包（只看 .vsepkg 文件名）</span></label></div>
+    <div class="drop" id="pkgDrop" data-act="pkg-pick"><div style="font-size:26px">⬆️</div><b>把收到的 .vsepkg 更新包拖到这里</b><div class="small">也可以直接双击更新包，或者什么都不做——程序会自动在下面这些文件夹里发现它</div></div>
+    <label class="switch ${S.discoverOn?"on":""}" data-act="discover-toggle" style="margin-top:10px"><i></i><span class="small">自动发现更新包（只看 .vsepkg 文件名，不读其他文件）</span></label>
+    <div class="small" style="margin-top:8px"><b>监视的文件夹</b>${(S.watchDirs||["下载"]).map((d,i)=>`<div class="row" style="padding:3px 0">📁 ${esc(d)}<span class="spacer"></span>${i?`<button class="btn sm ghost" data-act="wdir-rm:${i}">移除</button>`:""}</div>`).join("")}
+      <button class="btn sm" data-act="wdir-add">＋ 添加文件夹（例如聊天软件的接收文件夹）</button></div></div>
   <div class="card" style="grid-column:1/-1"><h3 style="margin-bottom:10px">更新记录</h3><div class="tbl-wrap"><table><thead><tr><th>时间</th><th>内容</th><th></th></tr></thead><tbody>
     ${S.history.map((h,i)=>`<tr><td class="small">${h.t}</td><td>${h.tone==="bad"?"⚠ ":h.tone==="ok"?"✓ ":""}${esc(h.text)}</td><td>${h.rollback?`<button class="btn sm" data-act="rollback:${i}">回滚到上一版</button>`:""}</td></tr>`).join("")}</tbody></table></div></div></div>`;
 }
@@ -777,7 +779,7 @@ document.addEventListener("click", e=>{
     case "quick-report": go("reports","sign"); setTimeout(()=>runSign(true),400); break;
     case "sign-gen": runSign(true); break;
     case "sign-gen-cached": runSign(false); break;
-    case "copy-mail": toast("正文已复制","可以直接粘贴到飞书或邮件里（图表为图片）"); S.reportDone=true; save(); break;
+    case "copy-mail": toast("正文已复制","可以直接粘贴到邮件或聊天窗口里（图表为图片）"); S.reportDone=true; save(); break;
     case "eml": toast("已生成 Outlook 邮件草稿","收件人按通讯录自动填好，打开后检查一下就可以发送",[{label:"打开草稿",run:()=>toast("（演示）已打开 Outlook")}]); S.reportDone=true; save(); break;
     case "rep-settings": openRepSettings(); break;
     case "daily-auto": S.dailyAuto=!S.dailyAuto; render(); break;
@@ -807,6 +809,8 @@ document.addEventListener("click", e=>{
     case "diag": toast("诊断包已导出","已保存到桌面：VSE诊断包_20261028.zip（不含密码和 Cookie），可以直接发给支持人员"); break;
     case "pkg-pick": openUpdate({name:"签署日报",ver:"0.3.1",notes:"修复：周末不再计入停留天数；邮件里的图表更清晰",size:"46 KB",target:"签署日报"}); break;
     case "discover-toggle": S.discoverOn=!S.discoverOn; render(); break;
+    case "wdir-add": S.watchDirs=(S.watchDirs||["下载"]).concat(["D:\\我的文档\\接收的文件"]); render(); toast("（演示）会打开 Windows 选择文件夹对话框","已添加示例文件夹"); break;
+    case "wdir-rm": S.watchDirs.splice(+arg,1); render(); break;
     case "install-update": openUpdate(S.pendingUpdate); break;
     case "do-update": { const pkg=layer.pkg; closeLayer(); splash("正在安装更新并重启…",2600,()=>{
         if(pkg.bad){ S.history.unshift({t:nowStr(), text:`${pkg.name} ${pkg.ver} 启动检查未通过，已自动回到 ${S.version.packs[pkg.target]||S.version.app}`, tone:"bad"}); S.pendingUpdate=null; render(); toast("更新没有成功，已自动恢复","程序已回到之前的版本，你的数据没有变化。原因已记录在「更新记录」里。"); return; }
