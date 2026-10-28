@@ -4,8 +4,8 @@
     python tools/e2e_v2_test_install.py
 
 Drives the real VSE-Toolbox.exe and the real app, without opening a window
-(VSE_BOOT_NO_WINDOW=1): first install → second instance → update 2.2.1 →
-broken 2.2.2 rolls back → killing the launcher leaves no orphan → manual rollback.
+(VSE_BOOT_NO_WINDOW=1): first install → second instance → update 2.3.1 →
+broken 2.3.2 rolls back → killing the launcher leaves no orphan → manual rollback.
 Wipes app/, state/ and data/ of the test install first.
 """
 
@@ -95,6 +95,20 @@ def wait_for_version(info: dict, version: str, timeout: float = 120.0) -> dict:
     raise RuntimeError(f"did not restart into {version}")
 
 
+def wait_for_child(old_pid: int, timeout: float = 120.0) -> dict:
+    """After a project switch: a new app child is serving (same version, same port)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            current = json.loads((INSTALL / "state" / "instance.json").read_text(encoding="utf-8"))
+            if int(current.get("pid") or 0) != old_pid and served_version(current):
+                return current
+        except (OSError, ValueError, urllib.error.URLError):
+            pass
+        time.sleep(1)
+    raise RuntimeError("app did not restart after the project switch")
+
+
 def served_version(info: dict) -> str:
     payload = get(info["url"] + "api/version")
     data = payload.get("data", payload)
@@ -112,34 +126,47 @@ def main() -> int:
     if not EXE.is_file():
         print("先运行 python tools/build_v2_test_install.py")
         return 2
-    for name in ("app", "state", "data"):
+    for name in ("app", "state", "data", "projects"):
         shutil.rmtree(INSTALL / name, ignore_errors=True)
 
     # 1. 首次安装
     proc, info = start()
     version = served_version(info)
-    check("首次安装并启动 2.2.0", "2.2.0" in version, version)
+    check("首次安装并启动 2.3.0", "2.3.0" in version, version)
     home = urllib.request.urlopen(info["url"], timeout=10).status
     check("首页可访问", home == 200)
     check("数据目录在安装根下", (INSTALL / "data" / "vse_toolbox.db").is_file())
     nav = [e["title"] for e in get(info["url"] + "api/host/manifest")["data"]["nav"] if not e.get("expert")]
     check("新界面：日常导航只有 今天/项目/报告/工具/设置", nav == ["今天", "项目", "报告", "工具", "设置"], " / ".join(nav))
 
+    # 1b. 多项目：新建项目会切换并重启；新项目有自己的数据文件夹；再切回主项目
+    old_pid = int(info["pid"])
+    post(info["url"] + "api/p/workbench/projects", {"name": "", "vehicle": "F720", "departments": ["车身科"]})
+    info = wait_for_child(old_pid)
+    projects = get(info["url"] + "api/p/workbench/projects")["data"]
+    check("新建项目后自动切换并重启到新项目", projects["active"] == "p2" and [p["name"] for p in projects["projects"]] == ["默认项目", "F720"],
+          json.dumps(projects, ensure_ascii=False)[:200])
+    check("新项目有独立的数据库", (INSTALL / "projects" / "p2" / "data" / "vse_toolbox.db").is_file())
+    old_pid = int(info["pid"])
+    post(info["url"] + "api/p/workbench/projects/main/switch")
+    info = wait_for_child(old_pid)
+    check("切回主项目", get(info["url"] + "api/p/workbench/projects")["data"]["active"] == "main")
+
     # 2. 第二次启动：不再起第二份
     second = subprocess.run([str(EXE)], env=ENV, timeout=30)
     check("第二次启动直接返回（单实例）", second.returncode == 0 and len(list((INSTALL / "app").iterdir())) == 1)
 
-    # 3. 在设置页里发现并安装 2.2.1，一键重启生效（不关程序）
-    received = INSTALL / "vse-app-2.2.1.vsepkg"  # 模拟"收到的更新包放在了被监视的文件夹里"
-    shutil.copy2(OUT / "updates" / "vse-app-2.2.1.vsepkg", received)
+    # 3. 在设置页里发现并安装 2.3.1，一键重启生效（不关程序）
+    received = INSTALL / "vse-app-2.3.1.vsepkg"  # 模拟"收到的更新包放在了被监视的文件夹里"
+    shutil.copy2(OUT / "updates" / "vse-app-2.3.1.vsepkg", received)
     page = get(info["url"] + "api/p/settings/app-updates")["data"]
-    check("设置页显示受启动器管理、当前 2.2.0", page.get("managed") is True and page.get("current") == "2.2.0")
-    check("设置页发现新版本 2.2.1（签名有效）", [a["version"] for a in page.get("available", [])] == ["2.2.1"])
+    check("设置页显示受启动器管理、当前 2.3.0", page.get("managed") is True and page.get("current") == "2.3.0")
+    check("设置页发现新版本 2.3.1（签名有效）", [a["version"] for a in page.get("available", [])] == ["2.3.1"])
     post(info["url"] + "api/p/settings/app-updates/install", {"file": received.name})
     post(info["url"] + "api/p/settings/app-updates/restart")
-    restarted = wait_for_version(info, "2.2.1")
+    restarted = wait_for_version(info, "2.3.1")
     state = status()["app"]
-    check("页面内安装并重启后变成 2.2.1，端口不变", restarted["port"] == info["port"] and state["current"] == "2.2.1" and state["previous"] == "2.2.0")
+    check("页面内安装并重启后变成 2.3.1，端口不变", restarted["port"] == info["port"] and state["current"] == "2.3.1" and state["previous"] == "2.3.0")
     received.unlink()
     info = restarted
 
@@ -153,14 +180,14 @@ def main() -> int:
     time.sleep(1)
     check("退出请求：启动器与 app 都正常退出", code == 0 and not pid_alive(old_child), f"exit={code}")
 
-    # 4. 坏更新 2.2.2：自动回滚
-    print(cli("stage", str(OUT / "updates" / "vse-app-2.2.2.vsepkg")).strip())
+    # 4. 坏更新 2.3.2：自动回滚
+    print(cli("stage", str(OUT / "updates" / "vse-app-2.3.2.vsepkg")).strip())
     proc, info = start(timeout=180)
     version = served_version(info)
     boot = status()
     kinds = [e["kind"] for e in boot["events"][:3]]
-    check("坏版本 2.2.2 自动回滚到 2.2.1", "2.2.1" in version and boot["app"]["current"] == "2.2.1" and "rolledBack" in kinds, f"{version} {kinds}")
-    check("坏版本目录已清理", not (INSTALL / "app" / "2.2.2").exists())
+    check("坏版本 2.3.2 自动回滚到 2.3.1", "2.3.1" in version and boot["app"]["current"] == "2.3.1" and "rolledBack" in kinds, f"{version} {kinds}")
+    check("坏版本目录已清理", not (INSTALL / "app" / "2.3.2").exists())
     check("失败原因保留在日志里", "demo: this build fails at start" in (INSTALL / "state" / "app-last-run.log").read_text(encoding="utf-8", errors="replace"))
     stop(proc, info)
 
@@ -168,23 +195,23 @@ def main() -> int:
     print(cli("rollback").strip())
     proc, info = start()
     version = served_version(info)
-    check("手动回滚到 2.2.0", "2.2.0" in version, version)
+    check("手动回滚到 2.3.0", "2.3.0" in version, version)
     stop(proc, info)
 
-    # 5b. 回滚后在页面里再次升级到 2.2.1（上一版本目录可以被覆盖）
+    # 5b. 回滚后在页面里再次升级到 2.3.1（上一版本目录可以被覆盖）
     proc, info = start()
-    received = INSTALL / "vse-app-2.2.1.vsepkg"
-    shutil.copy2(OUT / "updates" / "vse-app-2.2.1.vsepkg", received)
+    received = INSTALL / "vse-app-2.3.1.vsepkg"
+    shutil.copy2(OUT / "updates" / "vse-app-2.3.1.vsepkg", received)
     post(info["url"] + "api/p/settings/app-updates/install", {"file": received.name})
     post(info["url"] + "api/p/settings/app-updates/restart")
-    info = wait_for_version(info, "2.2.1")
-    check("回滚后再次升级到 2.2.1", status()["app"]["current"] == "2.2.1")
+    info = wait_for_version(info, "2.3.1")
+    check("回滚后再次升级到 2.3.1", status()["app"]["current"] == "2.3.1")
     received.unlink()
     stop(proc, info)
 
     # 6. 篡改的包被拒绝
     tampered = OUT / "tampered.vsepkg"
-    data = bytearray((OUT / "updates" / "vse-app-2.2.1.vsepkg").read_bytes())
+    data = bytearray((OUT / "updates" / "vse-app-2.3.1.vsepkg").read_bytes())
     data[len(data) // 2] ^= 0xFF
     tampered.write_bytes(bytes(data))
     done = subprocess.run([str(EXE), "stage", str(tampered)], env=ENV, capture_output=True, timeout=60)

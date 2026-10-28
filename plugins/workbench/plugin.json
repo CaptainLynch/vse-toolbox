@@ -1,7 +1,7 @@
 {
   "id": "workbench",
   "name": "工作台",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "hostApi": ">=1,<2",
   "description": "v2 日常入口：今天 / 项目 / 报告 / 工具。只编排已有接口，不新增业务逻辑；旧的技术向页面收进专家模式",
   "pages": [

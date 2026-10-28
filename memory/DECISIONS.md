@@ -788,3 +788,13 @@ DSH DeepSeek Harness + v4.1 Flash 主代理和 ZCode Gemini 3.8 Flash 交互主�
 - 决定：app 包一律全量（实测约 1 MB），包内 `requires.runtime` 用 `TARGET_RUNTIME_TAG`（cp312），`VSE-Launcher.spec` 断言构建 Python 与之相同。
 - 决定：冻结启动器默认安装根为 `%LOCALAPPDATA%\VSE-Toolbox`；只有 exe 旁有 `portable.flag` 或已有 `state/boot.json` 才用 exe 所在目录（避免在「下载」里落数据）。app 子进程以源码方式运行（清除 `sys.frozen`），数据根由 `VSE_DATA_ROOT` 指定。
 - 证据：`tests/test_vse_boot_*.py` 等 36 项单测；`tools/e2e_v2_test_install.py` 对真实 exe 14/14（首次安装、单实例、更新、坏包回滚、无孤儿进程、手动回滚、篡改包拒绝）。插件级更新仍走 `host/updates.py`（format 1）。
+
+## 2026-10-28 多项目 = 每个项目一个数据文件夹（不改表结构）
+
+- **决定**：v2 多项目不给表加项目维度，而是由启动器（`vse_boot/projects.py`）按当前项目选定
+  `VSE_DATA_ROOT`，切换项目 = 保存选择 + 重启 app 子进程。
+- **原因**：项目阶段 `VPI-T2` 与交付物 `VPI-T2-D1..D8` 在约 130 处源码和 1300+ 处测试里是字面量，
+  且契约注册表按交付物 id 键控；改主键的爆炸半径与回归风险远大于收益。数据文件夹方案复用已验证的重启/快照/回滚链路，
+  公司账号在 Windows 凭据管理器里天然共享。
+- **代价**：只有当前项目在后台自动同步（切换进来时补跑）；各项目的签署日报等设置各存一份。
+- **取消交付物**：用 `PROJECT_STATUS_RETIRED_DELIVERABLES` + 载荷 `retired` 隐藏，不做破坏性删除。

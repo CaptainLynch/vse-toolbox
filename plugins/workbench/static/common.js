@@ -96,9 +96,14 @@ export function shortTime(value) {
   return text.slice(5, 16);
 }
 
+/** v2 页面显示的交付物：去掉已取消的（例如「子系统开发策略」）。 */
+export function activeDeliverables(deliverables) {
+  return (deliverables || []).filter((d) => !d.retired);
+}
+
 /** 已完成交付物：与表格里的状态同一口径（进度 100% 或状态为已完成），首页和项目页共用。 */
 export function completionCount(deliverables) {
-  const list = deliverables || [];
+  const list = activeDeliverables(deliverables);
   const done = list.filter((d) => d.tone === "success" || Number(d.progress) >= 100).length;
   return { done, total: list.length };
 }

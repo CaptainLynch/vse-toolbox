@@ -4,7 +4,22 @@
 > 更早条目完整保存在 [归档文件](archive/CURRENT_STATE_ARCHIVE_20261023.md)（88 条 → 保留 12 条 + 本节「当前前沿」）。
 > 恢复状态时**不要**再通读全文；先读本节，再按需查归档。
 
-## 当前前沿（2026-10-23）
+## 当前前沿（2026-10-28 · v2 人机交互重构，分支 refactor/ux-v2）
+
+- **已交付测试**：app 2.3.0（`dist/v2-test/updates/vse-app-2.3.0.vsepkg`，1 MB）+ 新启动器整包
+  `dist/v2-test/VSE-Toolbox-v2.3-test.zip`（45.5 MB，超出远程发送上限，只能本机取）。签名密钥是 TEST-ONLY。
+- **本轮完成**：C1 多项目（一个项目一个数据文件夹，`vse_boot/projects.py`）；D2/D3 一键开启自动同步
+  （`plugins/project_overview/static/auto-sync.js`，复用 `deliverable/enable-flow.js`）；交付物详情简洁视图
+  （`deliverable/simple.js`）；取消「子系统开发策略」（`PROJECT_STATUS_RETIRED_DELIVERABLES`，只隐藏不删数据）。
+- **验证**：全量回归 3418 passed / 6 skipped；真实 exe 端到端 21/21（含新建项目→重启→独立数据库→切回）；
+  一键开启在浏览器里用伪造响应走通（真实 TDC/Aras 取证**未验证**）。
+- **限制 / 未做**：只有当前项目在后台同步；48 个车型代码清单未拿到（车型仍是文本框）；F1 报告页内一键生成；
+  M1 第 3 片（token cookie、开机自启开关、pywebview、L0 原生启动器）；生产问题「数模审批流程不能正常同步」（用户让先做 v2）。
+- **多项目要点**：主项目 = 安装根（兼容旧数据）；切换 = 写 `state/projects.json` + `restart.request`；
+  试用快照按项目存在 `state/db-snapshots/<id>/`，`trialDatabase` 记录恢复目标。只装 app 包而不换启动器时，
+  `vse_boot.projects` 不存在 → 工作台按单项目运行（切换器隐藏）。
+
+## 调度协议前沿（2026-10-23）
 
 - **目标**：完成调度协议三项优化——A 顾问调用并行化（已落地）、B 上下文交接阈值、C 并行度标定。
 - **已完成并验证**：

@@ -7,6 +7,8 @@ import { useStylesheet } from "/static/host/kit.js";
 import { PROJECT_PHASE_ID, hashParams } from "./shared/client.js";
 import { apiRequest, enc } from "./deliverable/api.js";
 import { DeliverableDetail } from "./deliverable/detail.js";
+import { SimpleDetail } from "./deliverable/simple.js";
+import { expertStore } from "/static/host/expert.js";
 import { errorText, safeDisplayValue } from "./deliverable/format.js";
 
 const LIST_HASH = "#p/project-overview/details";
@@ -17,9 +19,12 @@ function currentId() {
 
 export default function DeliverablePage({ plugin }) {
   useStylesheet(`/plugins/${(plugin && plugin.id) || "project-overview"}/static/deliverable.css`);
+  useStylesheet(`/plugins/${(plugin && plugin.id) || "project-overview"}/static/deliverable-simple.css`);
   const [id, setId] = useState(currentId);
   const [state, setState] = useState({ status: "loading", data: null, error: "" });
   const [version, setVersion] = useState(0);
+  // v2：默认简洁视图；完整明细与分析点一下才出现，专家模式默认完整（用户 2026-10-28「交付物明细要简化」）。
+  const [full, setFull] = useState(() => expertStore.get());
   const alive = useRef(true);
   const seq = useRef(0);
 
@@ -83,7 +88,11 @@ export default function DeliverablePage({ plugin }) {
       <a class="segment back-to-list-btn" href=${LIST_HASH}>返回交付物列表</a>
     </div>`;
   }
+  if (!full) {
+    return html`<${SimpleDetail} key=${item.id} item=${item} onShowFull=${() => setFull(true)} onSynced=${reloadOverview} />`;
+  }
   return html`<div class="overview-deliverable-detail-view">
+    ${!expertStore.get() && html`<p class="ds-back-simple"><button type="button" class="vk-btn" onClick=${() => setFull(false)}>← 回到简洁视图</button></p>`}
     <${DeliverableDetail}
       key=${item.id}
       item=${item}

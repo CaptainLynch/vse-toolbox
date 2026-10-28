@@ -2,8 +2,9 @@
 import { openInPlaceLogin, updateSessionBadges } from "/static/host/session.js";
 import { useState } from "/static/host/vendor/preact-htm.js";
 import {
-  ErrorCard, PageHead, Progress, Skeleton, Todo, api, completionCount, deliverableHref, html, shortTime, todayString, useLoad, useWorkbenchStyles,
+  ErrorCard, PageHead, activeDeliverables, Progress, Skeleton, Todo, api, completionCount, deliverableHref, html, shortTime, todayString, useLoad, useWorkbenchStyles,
 } from "./common.js";
+import { ProjectSwitcher } from "./projects.js";
 import { Wizard, wizardDismissed } from "./wizard.js";
 
 const SOURCES = {
@@ -50,7 +51,7 @@ function buildTodos({ status, settings, scheduler, signDaily, updates }, actions
       actions: [{ label: "登录", onClick: actions.login }],
     });
   }
-  const deliverables = (status && status.deliverables) || [];
+  const deliverables = activeDeliverables(status && status.deliverables);
   deliverables
     .filter((d) => d.syncDisplay && d.syncDisplay.lastError)
     .forEach((d) => todos.push({ key: `err-${d.id}`, error: d }));
@@ -176,7 +177,7 @@ export default function TodayPage() {
     <${PageHead}
       title=${`${greeting()}`}
       sub=${`${projectName ? `${projectName} 项目 · ` : ""}今天 ${todayString()} · ${syncLine}`}
-      actions=${html`<button type="button" class="wb-btn" onClick=${reload} disabled=${loading}>${loading ? "刷新中…" : "刷新"}</button>`}
+      actions=${html`<${ProjectSwitcher} /><button type="button" class="wb-btn" onClick=${reload} disabled=${loading}>${loading ? "刷新中…" : "刷新"}</button>`}
     />
     <div class="wb-split">
       <section class="wb-todos" aria-label="需要处理的事">

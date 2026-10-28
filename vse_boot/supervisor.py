@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
-from vse_boot import dbsnap
+from vse_boot import dbsnap, projects
 from vse_boot.layout import InstallLayout
 from vse_boot.state import BootState, BootStateError
 
@@ -74,7 +74,8 @@ class Controls:
 
 def spawn_app(app_dir: Path, port: int, layout: InstallLayout) -> ChildProcess:
     env = dict(os.environ)
-    env["VSE_DATA_ROOT"] = str(layout.root)
+    # 多项目：每个项目一个数据文件夹，启动前按当前项目选定（vse_boot/projects.py）。
+    env["VSE_DATA_ROOT"] = str(projects.active_data_root(layout))
     env["VSE_INSTALL_ROOT"] = str(layout.root)
     # vse_boot 本身所在目录（生产环境是运行时的 site-packages）；app 目录由 app_main 插到最前面。
     boot_parent = str(Path(__file__).resolve().parent.parent)
@@ -373,8 +374,13 @@ class Supervisor:
         release declared them, and the database is only a few MB."""
         if state.app.get("trialSnapshot") and Path(state.app["trialSnapshot"]).is_file():
             return
-        snap = dbsnap.snapshot(self.layout.database, self.layout.snapshots_dir, tag=version)
-        state.set_trial_snapshot(str(snap) if snap else None)
+        registry = projects.ProjectRegistry(self.layout)
+        database = registry.database()
+        snapshots = self.layout.snapshots_dir
+        if registry.active_id != projects.MAIN_ID:
+            snapshots = snapshots / registry.active_id
+        snap = dbsnap.snapshot(database, snapshots, tag=version)
+        state.set_trial_snapshot(str(snap) if snap else None, database=str(database))
 
     def _wait_healthy(self, child: ChildProcess, port: int) -> tuple[bool, str]:
         deadline = self.clock() + self.health_timeout

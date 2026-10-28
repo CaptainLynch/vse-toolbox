@@ -1,0 +1,22 @@
+/* 一键开启自动同步 */
+.as-page { display: grid; gap: 16px; max-width: 880px; }
+.as-form, .as-list { background: var(--canvas); border: 1px solid var(--hairline); border-radius: 14px; padding: 16px; box-shadow: var(--shadow-soft); }
+.as-form { display: grid; gap: 14px; }
+.as-field { display: grid; gap: 6px; }
+.as-field > span { font-weight: 600; font-size: 13px; color: var(--ink); }
+.as-field input { max-width: 260px; }
+.as-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.as-chip { border: 1px solid var(--hairline-strong); background: var(--canvas); color: var(--body); border-radius: 99px; padding: 5px 12px; font: inherit; font-size: 13px; cursor: pointer; }
+.as-chip.is-on { background: color-mix(in srgb, var(--primary) 12%, var(--canvas)); border-color: var(--primary); color: var(--primary-active); font-weight: 600; }
+.as-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.as-summary { margin: 0; color: var(--ink); }
+.as-summary.is-error { color: var(--error); }
+.as-list { display: grid; gap: 0; padding: 4px 16px; }
+.as-row { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--hairline); }
+.as-row:last-child { border-bottom: 0; }
+.as-row small { display: block; color: var(--muted); font-size: 12px; }
+.as-state { font-size: 13px; text-align: right; max-width: 60%; }
+.as-state.is-ok { color: var(--success, #2f855a); font-weight: 600; }
+.as-state.is-bad { color: var(--error); }
+.as-state.is-info { color: var(--primary-active); }
+.as-state.is-off { color: var(--muted); }

@@ -838,6 +838,15 @@ try {
         context: sharedContext, identifier: pathToFileURL(DIGEST_PATH).href,
       });
     }
+    if (specifier === "./enable-flow.js") {
+      // 启用流程是 policy.js 抽出来的真实代码（与「一键开启」共用），按真源码加载；
+      // 它自己的依赖（api / discovery / policy-logic）仍走同一个链接器。
+      const flowPath = POLICY_PATH.replace(/policy\.js$/, "enable-flow.js");
+      return new vm.SourceTextModule(readFileSync(flowPath, "utf8"), {
+        context: sharedContext, identifier: pathToFileURL(flowPath).href,
+      });
+    }
+    if (specifier === "./api.js") return apiModule;
     const exportsMap = registry.get(specifier);
     if (!exportsMap) throw new Error("unknown specifier " + specifier);
     return syntheticModule(specifier, exportsMap);

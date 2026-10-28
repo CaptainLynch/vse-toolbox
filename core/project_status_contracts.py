@@ -849,6 +849,15 @@ def project_status_default_policy_mode(deliverable_id: str) -> str:
     return "automatic" if capabilities.get("syncCapable") else "manual"
 
 
+#: 已取消的交付物（用户 2026-10-28：「子系统开发策略这项交付物取消」）。数据保留在库里
+#: （不做破坏性删除，审计与历史仍可查），v2 页面不再显示、也不计入完成数。
+PROJECT_STATUS_RETIRED_DELIVERABLES: frozenset[str] = frozenset({"VPI-T2-D1"})
+
+
+def project_status_retired(deliverable_id: str) -> bool:
+    return str(deliverable_id or "") in PROJECT_STATUS_RETIRED_DELIVERABLES
+
+
 def project_status_board_visible(deliverable_id: str) -> bool:
     """交付物是否进入两块看板（首页卡片区与交付物明细表）。
 

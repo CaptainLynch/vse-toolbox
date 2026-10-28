@@ -63,6 +63,7 @@ from core.project_status_contracts import (
     find_registry_entry_by_deliverable_id,
     milestone_display_status,
     project_status_board_visible,
+    project_status_retired,
     project_status_manual_editability,
 )
 from core.report_contracts import matrix_payload, report_contracts, table_payload
@@ -2494,6 +2495,7 @@ def _project_status_payload(
                 # 该字段只影响看板渲染：deliverables 全量字段、
                 # 详情页、分析接口、审计与统计分母一律不变。
                 "boardVisible": project_status_board_visible(str(row["id"])),
+                "retired": project_status_retired(str(row["id"])),
                 "tone": _PROJECT_STATUS_TONES[row["status"]],
                 "effectiveStatus": effective_status,
                 "syncDisplay": {

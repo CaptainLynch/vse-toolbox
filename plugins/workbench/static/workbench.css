@@ -140,3 +140,15 @@ body[data-theme="dark"] .wb-page { --wb-info: #79a3dc; }
 .wb-switch i::after { content: ""; position: absolute; top: 3px; left: 3px; width: 17px; height: 17px; border-radius: 50%; background: #fff; transition: 0.2s; }
 .wb-switch.on i { background: var(--wb-ok); }
 .wb-switch.on i::after { left: 20px; }
+
+/* 项目切换器（需求 C1） */
+.wb-projects { position: relative; display: inline-flex; align-items: center; gap: 8px; }
+.wb-project-btn b { color: var(--ink); }
+.wb-project-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 800; min-width: 220px; display: grid; padding: 6px; background: var(--canvas); border: 1px solid var(--hairline); border-radius: 12px; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.16); }
+.wb-project-item { display: flex; align-items: baseline; gap: 8px; text-align: left; padding: 8px 10px; border: 0; border-radius: 8px; background: none; color: var(--body); font: inherit; cursor: pointer; }
+.wb-project-item:hover { background: var(--surface-soft); }
+.wb-project-item.is-active b { color: var(--primary-active); }
+.wb-project-item small { color: var(--muted); font-size: 12px; }
+.wb-project-item.is-new { color: var(--primary-active); border-top: 1px solid var(--hairline); border-radius: 0 0 8px 8px; margin-top: 4px; }
+.wb-chip { border: 1px solid var(--hairline-strong); background: var(--canvas); color: var(--body); border-radius: 99px; padding: 5px 12px; font: inherit; font-size: 13px; cursor: pointer; }
+.wb-chip.is-on { background: color-mix(in srgb, var(--primary) 12%, var(--canvas)); border-color: var(--primary); color: var(--primary-active); font-weight: 600; }

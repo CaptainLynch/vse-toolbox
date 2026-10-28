@@ -2,8 +2,9 @@
 // 页面上不出现 JSON、映射取证、稳定键这类词；需要细调时进入交付物详情。
 import { useState } from "/static/host/vendor/preact-htm.js";
 import {
-  ErrorCard, PageHead, Pill, Progress, Skeleton, TONE, api, completionCount, deliverableHref, go, html, shortTime, useLoad, useWorkbenchStyles,
+  ErrorCard, PageHead, activeDeliverables, Pill, Progress, Skeleton, TONE, api, completionCount, deliverableHref, go, html, shortTime, useLoad, useWorkbenchStyles,
 } from "./common.js";
+import { ProjectSwitcher } from "./projects.js";
 
 const SOURCES = { status: "/api/project-status", scheduler: "/api/project-status/scheduler" };
 
@@ -56,7 +57,7 @@ export default function ProjectPage() {
   const status = data.status;
   const phase = status.phase || {};
   const summary = status.summary || {};
-  const deliverables = status.deliverables || [];
+  const deliverables = activeDeliverables(status.deliverables);
   const scheduler = data.scheduler || {};
 
   const syncAll = async () => {
@@ -71,6 +72,8 @@ export default function ProjectPage() {
   };
 
   const late = deliverables.filter((d) => d.scheduleState === "overdue").length;
+  // 能自动同步但还没开启的交付物：给一个「一键开启」入口（需求 D2）。
+  const notEnabled = deliverables.filter((d) => d.sourceInfo && d.sourceInfo.syncCapable && !(d.updatePolicy && d.updatePolicy.enabled)).length;
   const counts = completionCount(deliverables);
 
   return html`<div class="wb-page">
@@ -78,8 +81,10 @@ export default function ProjectPage() {
       title=${`${phase.displayName || "项目"}`}
       sub=${`${phase.startDate || ""} 至 ${phase.endDate || ""} · ${phase.status || ""} · ${scheduler.eligibleCount ? `自动同步 ${scheduler.eligibleCount} 项` : "自动同步未开启"}`}
       actions=${html`
+        <${ProjectSwitcher} />
         <button type="button" class="wb-btn" onClick=${() => go("#p/project-overview/plan")}>编辑主计划</button>
-        <button type="button" class="wb-btn is-primary" onClick=${syncAll} disabled=${!scheduler.eligibleCount || Boolean(syncing)}>立即同步全部</button>`}
+        ${notEnabled > 0 && html`<button type="button" class=${`wb-btn${scheduler.eligibleCount ? "" : " is-primary"}`} onClick=${() => go("#p/project-overview/auto-sync")}>⚡ 一键开启自动同步（${notEnabled} 项）</button>`}
+        ${scheduler.eligibleCount > 0 && html`<button type="button" class="wb-btn is-primary" onClick=${syncAll} disabled=${Boolean(syncing)}>立即同步全部</button>`}`}
     />
     ${syncing && html`<p class="wb-sub" role="status">${syncing}</p>`}
 

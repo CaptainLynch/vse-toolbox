@@ -1,7 +1,7 @@
 {
   "id": "project-overview",
   "name": "项目概览",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "hostApi": ">=1,<2",
   "description": "项目状态概览、交付物明细、主计划维护与交付物详情（旧 #overview 的插件版）；调用既有 /api/project-status 等接口",
   "pages": [
@@ -9,7 +9,8 @@
     {"id": "details", "title": "交付物明细", "kind": "module", "module": "details.js"},
     {"id": "plan", "title": "主计划维护", "kind": "module", "module": "plan.js"},
     {"id": "deliverable", "title": "交付物详情", "kind": "module", "module": "deliverable.js"},
-    {"id": "archive-deliverable", "title": "归档交付物详情", "kind": "module", "module": "archive-deliverable.js"}
+    {"id": "archive-deliverable", "title": "归档交付物详情", "kind": "module", "module": "archive-deliverable.js"},
+    {"id": "auto-sync", "title": "一键开启自动同步", "kind": "module", "module": "auto-sync.js"}
   ],
   "nav": [{"title": "概览", "page": "status", "order": 10, "expert": true, "parent": "workbench/project"}]
 }

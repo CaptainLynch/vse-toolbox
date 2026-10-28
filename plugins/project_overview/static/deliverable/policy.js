@@ -7,7 +7,8 @@
 import { html, useEffect, useRef, useState } from "/static/host/vendor/preact-htm.js";
 import { apiRequest, enc } from "./api.js";
 import { attachPolicyDigest } from "./policy-digest-logic.js";
-import { newWizardSessionId, postMappingDiscovery } from "./discovery.js";
+import { postMappingDiscovery } from "./discovery.js";
+import { runEnableFlow } from "./enable-flow.js";
 import { SearchMultiSelect } from "./multi-select.js";
 import { deliverableSyncDisplay, syncResultText } from "./display.js";
 import { redactSensitiveText, safeDisplayValue } from "./format.js";
@@ -26,27 +27,20 @@ import {
   bindingReadiness,
   buildEvidencePayload,
   buildPolicyPayload,
-  buildWizardDiscovery,
   capabilitiesOf,
   defaultMappingFor,
-  dropDepartment,
   ewoPolicyDiscoveryFields,
   ewoPolicyDiscoveryStateLabel,
   ewoPolicyErrorMessage,
   ewoPolicyString,
   mappingText,
   parseSerialSet,
-  stabilityGateFailureMessage,
   stabilityText,
   wizardInitialValues,
   wizardKind,
-  wizardMapping,
   wizardMultiSerialHint,
-  wizardNotMatchedMessage,
-  wizardPolicyPatch,
   wizardPrecheck,
   wizardPrimaryMatchField,
-  wizardRetryWithoutDepartment,
 } from "./policy-logic.js";
 
 // 终态文案待显示槽按交付物限定：向导可能在用户离开本交付物后才结束；若不限定
@@ -138,43 +132,14 @@ function SyncSummaryCard({ item, policy, capabilities, settings, advancedOpen, o
     // 避免每秒级的 /api/diagnostics 请求与长请求争抢。
     window.__vseWizardBusy = true;
     try {
-      const plan = buildWizardDiscovery(values, capabilities);
-      // 同一次启用内的多次取证共享会话：服务端据此复用第 1 次的全量抓取并做第 2 次轻量核验。
-      plan.payload.wizardSessionId = newWizardSessionId();
-      // 统一域会话下该请求会转后台任务（202），postMappingDiscovery 内部轮询至完成；
-      // 密码/Cookie 模式仍同步执行。两次取证独立契约不变。
-      say("正在抓取映射证据（第 1/2 次，统一域会话下后台执行）...");
-      let result = (await postMappingDiscovery(item.id, plan.payload)) || {};
-      if (result.state === "ambiguous" && !plan.aggregate) {
-        say("候选不唯一，请选择一次目标记录。");
-        const selected = await pickCandidate(result.candidates);
-        setCandidates(null);
-        plan.payload.selectedExternalKey = selected;
-        result = (await postMappingDiscovery(item.id, plan.payload)) || {};
-      }
-      if (result.state !== "matched" && plan.kind.isTdc && plan.deptVal) {
-        say("指定部门未匹配，正在尝试不限部门自动重试...");
-        const retry = (await postMappingDiscovery(item.id, wizardRetryWithoutDepartment(plan.payload))) || {};
-        if (retry && (retry.state === "matched" || (retry.state === "ambiguous" && !plan.aggregate))) {
-          result = retry;
-          dropDepartment(plan);
-        }
-      }
-      if (result.state !== "matched") throw new Error(wizardNotMatchedMessage(result));
-      let confirmed = Number(result.stability && result.stability.confirmed);
-      if (!Number.isFinite(confirmed) || confirmed < 2) {
-        say("正在验证映射稳定性（第 2/2 次）...");
-        result = (await postMappingDiscovery(item.id, { ...plan.payload, stabilityCheck: true })) || {};
-        confirmed = Number(result.stability && result.stability.confirmed);
-        if (result.state !== "matched" || !Number.isFinite(confirmed) || confirmed < 2) {
-          throw new Error(stabilityGateFailureMessage(result));
-        }
-      }
-      const mappingResult = wizardMapping(plan, capabilities, result);
-      say("正在保存配置并启用自动同步...");
-      await apiRequest(policyPath(item.id), { method: "PATCH", body: wizardPolicyPatch(plan, values, result, mappingResult, vaultConfigured) });
-      say("配置已启用，正在触发首次同步...");
-      const syncData = await apiRequest(`/api/project-status/deliverables/${enc(item.id)}/sync-now`, { method: "POST" });
+      const syncData = await runEnableFlow({
+        item, capabilities, values, vaultConfigured, say,
+        pickCandidate: async (list) => {
+          const selected = await pickCandidate(list);
+          setCandidates(null);
+          return selected;
+        },
+      });
       say(`配置并启用成功！${syncResultText(syncData)}`);
       await onReloadOverview();
     } catch (err) {

@@ -66,7 +66,7 @@ class BootState:
             recovered = True
         raw.setdefault("format", STATE_FORMAT)
         app = raw.setdefault("app", {})
-        for key in ("current", "previous", "trial", "trialSnapshot"):
+        for key in ("current", "previous", "trial", "trialSnapshot", "trialDatabase"):
             app.setdefault(key, None)
         app.setdefault("trialBoots", 0)
         raw.setdefault("events", [])
@@ -149,6 +149,7 @@ class BootState:
                 self.app["trial"] = newest
                 self.app["trialBoots"] = 0
                 self.app["trialSnapshot"] = None
+                self.app["trialDatabase"] = None
             self.save()
         return installed
 
@@ -172,15 +173,17 @@ class BootState:
             raise BootStateError("没有可以运行的程序版本，请重新安装 VSE Toolbox")
         return current, False
 
-    def set_trial_snapshot(self, snapshot: str | None) -> None:
+    def set_trial_snapshot(self, snapshot: str | None, *, database: str | None = None) -> None:
         self.app["trialSnapshot"] = snapshot
+        # 快照属于哪个项目的数据库：试用期间切换了项目，恢复时也不能写错库。
+        self.app["trialDatabase"] = database
         self.save()
 
     def commit(self, version: str) -> None:
         if self.app["trial"] != version:
             return
         old = self.app["current"]
-        self.app.update(current=version, previous=old, trial=None, trialBoots=0, trialSnapshot=None)
+        self.app.update(current=version, previous=old, trial=None, trialBoots=0, trialSnapshot=None, trialDatabase=None)
         self._event("activated", version, previous=old)
         self.save()
         self._prune()
@@ -196,9 +199,9 @@ class BootState:
         snapshot = self.app.get("trialSnapshot")
         restored = False
         if snapshot and Path(snapshot).is_file():
-            dbsnap.restore(Path(snapshot), self.layout.database)
+            dbsnap.restore(Path(snapshot), Path(self.app.get("trialDatabase") or self.layout.database))
             restored = True
-        self.app.update(trial=None, trialBoots=0, trialSnapshot=None)
+        self.app.update(trial=None, trialBoots=0, trialSnapshot=None, trialDatabase=None)
         if restored:
             self._event("databaseRestored", version, snapshot=Path(snapshot).name)
         self._event("rolledBack", version, reason=reason, keptVersion=self.app["current"])

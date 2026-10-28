@@ -5,8 +5,8 @@
 
 Produces:
     dist/v2-test/keys/                 a TEST-ONLY signing key (never use for real releases)
-    dist/v2-test/VSE-Toolbox/          launcher + runtime, with vse-app-2.2.0.vsepkg next to the exe
-    dist/v2-test/updates/              vse-app-2.2.1.vsepkg (good) and vse-app-2.2.2.vsepkg (fails at start)
+    dist/v2-test/VSE-Toolbox/          launcher + runtime, with vse-app-2.3.0.vsepkg next to the exe
+    dist/v2-test/updates/              vse-app-2.3.1.vsepkg (good) and vse-app-2.3.2.vsepkg (fails at start)
     dist/v2-test/测试步骤.txt
 """
 
@@ -34,29 +34,36 @@ OUT = REPO / "dist" / "v2-test"
 STEPS = r"""VSE Toolbox v2 测试安装（仅供测试；签名密钥是测试专用的）
 ================================================================
 
-0. 已经装过 2.0.x 或 2.1.x 测试版？
-   双击 updatesse-app-2.2.0.vsepkg → 提示"校验通过，现在重启吗" → 是 → 约 10 秒后变成新界面
+0. 已经装过 2.0.x / 2.1.x / 2.2.x 测试版？
+   双击 updatesse-app-2.3.0.vsepkg → 提示"校验通过，现在重启吗" → 是 → 约 10 秒后变成新界面
    （或者：工具 → 程序与插件更新 → 从文件安装）
+   注意：「多项目切换」需要新的启动器——请用这次的整个 VSE-Toolbox 文件夹替换旧的（data 文件夹保留即可）；
+   只装更新包也能用其他新功能，只是项目切换器不会出现。
 
 1. 首次安装
    双击 VSE-Toolbox\VSE-Toolbox.exe
-   → 自动安装旁边的 vse-app-2.2.0.vsepkg，打开 Edge 应用窗口（没有地址栏）
+   → 自动安装旁边的 vse-app-2.3.0.vsepkg，打开 Edge 应用窗口（没有地址栏）
    → 右下角出现 V 字托盘图标；关掉窗口程序仍在后台，点托盘图标重新打开
    → 再双击一次 exe：不会启动第二份，只会把窗口再打开一次
 
 2. 在程序里更新（推荐的日常方式）
-   把 updates\vse-app-2.2.1.vsepkg 复制到「下载」文件夹（模拟飞书下载）
-   → 程序里打开「工具 → 程序与插件更新」，顶部「程序更新」会显示"发现新版本 2.2.1"
-   → 点「安装并重启」，约 10 秒后页面自动刷新，版本变成 2.2.1
+   把 updates\vse-app-2.3.1.vsepkg 复制到「下载」文件夹（模拟飞书下载）
+   → 程序里打开「工具 → 程序与插件更新」，顶部「程序更新」会显示"发现新版本 2.3.1"
+   → 点「安装并重启」，约 10 秒后页面自动刷新，版本变成 2.3.1
 
 3. 双击更新包安装
    第一次运行 exe 后，.vsepkg 已关联到本程序（只写当前用户的注册表，不需要管理员）
-   → 双击 updates\vse-app-2.2.2.vsepkg → 提示"校验通过，现在重启吗" → 是
-   → 2.2.2 故意启动失败，程序自动回到 2.2.1，托盘弹出提示，窗口照常可用
+   → 双击 updates\vse-app-2.3.2.vsepkg → 提示"校验通过，现在重启吗" → 是
+   → 2.3.2 故意启动失败，程序自动回到 2.3.1，托盘弹出提示，窗口照常可用
 
 4. 回滚与记录
    「程序更新」卡片里可以「回到上一版本」，下面列着安装/生效/回滚记录
    托盘菜单：打开 / 检查更新 / 重新启动 / 退出（退出后不再自动同步）
+
+5. 多项目
+   「今天」或「项目」页右上角「项目 ▾」→「＋ 新建项目」→ 填车型、勾科室 → 新建并切换过去
+   → 约 10 秒后自动刷新，进入新项目（交付物、主计划、同步记录各项目分开；公司账号共用）
+   → 「项目」页「⚡ 一键开启自动同步」：确认车型和科室 → 全部开启（需要先登录并保存密码）
 
 日志：VSE-Toolbox\state\launcher.log、state\app-last-run.log
 数据：VSE-Toolbox\data\（与程序版本无关，升级和回滚都不会动它）
@@ -118,13 +125,13 @@ def main(argv: list[str] | None = None) -> int:
     for old in [*install.glob("*.vsepkg"), *updates.glob("*.vsepkg")]:
         old.unlink()  # 只保留本次构建的包，避免新旧版本混在一起
 
-    first = release.build_app(version="2.2.0", key_pem=pem, notes="界面统一：签署日报左右两栏、交付物详情分页签、TIR / Excel / 设置去掉技术术语", out_dir=install)
+    first = release.build_app(version="2.3.0", key_pem=pem, notes="多项目切换、一键开启自动同步、交付物详情简洁视图、取消「子系统开发策略」", out_dir=install)
     # 已经装过 2.0.x 测试版的电脑：直接用这个包升级到新界面。
     shutil.copy2(first, updates / first.name)
-    release.build_app(version="2.2.1", key_pem=pem, notes="正常更新：演示用", out_dir=updates)
+    release.build_app(version="2.3.1", key_pem=pem, notes="正常更新：演示用", out_dir=updates)
     broken = release.collect_app_files()
     broken["webui.py"] = b"raise RuntimeError('demo: this build fails at start')\n"
-    name, data = build_app_package(broken, version="2.2.2", private_key_pem=pem, notes="故意启动失败，用来演示自动回滚")
+    name, data = build_app_package(broken, version="2.3.2", private_key_pem=pem, notes="故意启动失败，用来演示自动回滚")
     (updates / name).write_bytes(data)
 
     # 测试安装用便携模式：数据留在测试目录里，不碰本机 %LOCALAPPDATA%\VSE-Toolbox。
