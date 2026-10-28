@@ -1,0 +1,126 @@
+/*
+ * v2 统一外观：让还没逐页重写的功能页（签署日报、TIR、Excel、交付物详情、设置……）
+ * 和「今天 / 项目 / 报告 / 工具」用同一套按钮、卡片、输入框和表格样式。
+ * 只改外观，不改布局逻辑；选择器带 #plugin-host 以压过插件自己的样式。
+ */
+
+/* 按钮 */
+#plugin-host .vk-btn,
+#plugin-host .btn,
+#plugin-host .ov-btn,
+#plugin-host .primary-btn,
+#plugin-host .secondary-btn,
+#plugin-host .segment,
+#plugin-host .edit-save-btn,
+#plugin-host .edit-cancel-btn,
+#plugin-host .overview-retry-btn,
+#plugin-host .evidence-retry-btn,
+#plugin-host .timeline-edit-btn {
+  border: 1px solid var(--hairline-strong);
+  background: var(--canvas);
+  color: var(--ink);
+  border-radius: 10px;
+  padding: 7px 15px;
+  font-weight: 600;
+  font-size: 13.5px;
+  line-height: 1.4;
+  box-shadow: none;
+  transition: border-color 0.15s, color 0.15s, filter 0.15s;
+}
+#plugin-host .vk-btn:hover:not(:disabled),
+#plugin-host .btn:hover:not(:disabled),
+#plugin-host .ov-btn:hover:not(:disabled),
+#plugin-host .secondary-btn:hover:not(:disabled),
+#plugin-host .segment:hover,
+#plugin-host .edit-cancel-btn:hover:not(:disabled),
+#plugin-host .timeline-edit-btn:hover:not(:disabled) {
+  border-color: var(--primary);
+  color: var(--primary-active);
+}
+#plugin-host .vk-btn.is-primary,
+#plugin-host .btn.is-primary,
+#plugin-host .ov-btn.is-primary,
+#plugin-host .primary-btn,
+#plugin-host .edit-save-btn {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+#plugin-host .vk-btn.is-primary:hover:not(:disabled),
+#plugin-host .btn.is-primary:hover:not(:disabled),
+#plugin-host .ov-btn.is-primary:hover:not(:disabled),
+#plugin-host .primary-btn:hover:not(:disabled),
+#plugin-host .edit-save-btn:hover:not(:disabled) {
+  filter: brightness(1.05);
+  color: #fff;
+}
+#plugin-host .vk-btn:disabled,
+#plugin-host .btn:disabled,
+#plugin-host .ov-btn:disabled,
+#plugin-host .primary-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* 卡片 / 面板 */
+#plugin-host .st-card,
+#plugin-host .xt-card,
+#plugin-host .overview-band,
+#plugin-host .form-block,
+#plugin-host .sd-panel,
+#plugin-host .result-panel,
+#plugin-host .df-index-card,
+#plugin-host .sa-history-panel,
+#plugin-host .evidence-unified-status,
+#plugin-host .deliverable-page-meta-section,
+#plugin-host .deliverable-form-analysis,
+#plugin-host .deliverable-analysis-panel,
+#plugin-host .deliverable-policy-panel,
+#plugin-host .vk-filter-bar {
+  background: var(--canvas);
+  border: 1px solid var(--hairline);
+  border-radius: 14px;
+  box-shadow: var(--shadow-soft);
+}
+
+/* 输入 */
+#plugin-host input[type="text"],
+#plugin-host input[type="search"],
+#plugin-host input[type="number"],
+#plugin-host input[type="date"],
+#plugin-host input[type="password"],
+#plugin-host input:not([type]),
+#plugin-host select,
+#plugin-host textarea {
+  border: 1px solid var(--hairline-strong);
+  border-radius: 10px;
+  background: var(--canvas);
+  color: var(--ink);
+  padding: 7px 10px;
+  font: inherit;
+}
+#plugin-host input:focus,
+#plugin-host select:focus,
+#plugin-host textarea:focus {
+  outline: 2px solid color-mix(in srgb, var(--primary) 25%, transparent);
+  border-color: var(--primary);
+}
+
+/* 表格 */
+#plugin-host table th {
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 12.5px;
+}
+#plugin-host table td,
+#plugin-host table th {
+  border-color: var(--hairline);
+}
+#plugin-host table tbody tr:hover td {
+  background: color-mix(in srgb, var(--surface-soft) 70%, transparent);
+}
+
+/* 页面标题：与工作台一致的字号层级 */
+#plugin-host h2 { letter-spacing: 0; }
+.workspace-head h2#session-title { font-size: 26px; font-weight: 700; letter-spacing: 0; }

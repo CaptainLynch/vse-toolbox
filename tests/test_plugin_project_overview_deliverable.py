@@ -91,7 +91,7 @@ def _imports(path: Path) -> list[str]:
 
 
 def test_modules_import_only_shipped_files() -> None:
-    host_allowed = {"/static/host/vendor/preact-htm.js", "/static/host/kit.js"}
+    host_allowed = {"/static/host/vendor/preact-htm.js", "/static/host/kit.js", "/static/host/expert.js"}
     dynamic_allowed = {"/plugins/system-query/static/grid.js"}
     for rel in ALL_SOURCES:
         path = STATIC / rel

@@ -295,7 +295,7 @@ function MailTab({ api, state, onSaved }) {
 export function SettingsPanel({ api, state, onSaved, onChanged }) {
   const [tab, setTab] = useState("roster");
   return html`<details class="sd-panel">
-    <summary>设置（花名册、长周期规则与词表、长周期结论、区域、通讯录与阈值）· 种子版本 ${state.seedVersion || "—"}</summary>
+    <summary>报告设置：花名册、长周期规则、区域、通讯录、阈值${document.body.classList.contains("is-expert") ? ` · 种子版本 ${state.seedVersion || "—"}` : ""}</summary>
     <div class="sd-tabs" role="tablist">${TABS.map(([key, label]) => html`<button key=${key} type="button" role="tab"
       aria-selected=${tab === key ? "true" : "false"} class=${`sd-tab${tab === key ? " is-active" : ""}`} onClick=${() => setTab(key)}>${label}</button>`)}</div>
     ${tab === "roster" && html`<${RosterTab} api=${api} onChanged=${onChanged} />`}

@@ -1,10 +1,13 @@
 // Read-only service and version status cards.
 import { html } from "/static/host/vendor/preact-htm.js";
 import { useResource } from "/static/host/api.js";
+import { expertStore } from "/static/host/expert.js";
 import { Chip } from "./sessions.js";
 
 export function ExcelServiceCard({ excelService }) {
   const configured = Boolean(excelService && excelService.configured);
+  // 服务内部名称只对排查有用；日常模式下这张卡片不显示（Excel 是否可用在「工具 → Excel」里会说明）。
+  if (!expertStore.get()) return null;
   return html`<section class="st-card">
     <header class="st-card-head">
       <p class="st-eyebrow">服务状态</p>
@@ -33,9 +36,11 @@ export function VersionCard() {
       ? html`<p class="st-field-error">无法读取版本信息：${res.error.message}</p>`
       : html`<dl class="st-kv">
           <dt>应用版本</dt><dd>${res.loading && !res.data ? "读取中…" : (data.displayVersion || "开发工作区")}</dd>
-          <dt>运行渠道</dt><dd>${data.channel ? `${CHANNEL_LABELS[data.channel] || data.channel}（${data.channel}）` : "-"}</dd>
-          <dt>构建标识</dt><dd>${data.buildId || "无独立构建标识"}</dd>
-          <dt>详情</dt><dd>${data.detail || "-"}</dd>
-        </dl>`}
+          ${expertStore.get() && html`
+            <dt>运行渠道</dt><dd>${data.channel ? `${CHANNEL_LABELS[data.channel] || data.channel}（${data.channel}）` : "-"}</dd>
+            <dt>构建标识</dt><dd>${data.buildId || "无独立构建标识"}</dd>
+            <dt>详情</dt><dd>${data.detail || "-"}</dd>`}
+        </dl>
+        <p class="st-field-note"><a href="#p/settings/updates">程序与插件更新 ›</a></p>`}
   </section>`;
 }

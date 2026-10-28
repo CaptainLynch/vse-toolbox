@@ -1,7 +1,7 @@
 {
   "id": "excel-tasks",
   "name": "Excel 文件处理",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "hostApi": ">=1,<2",
   "description": "Excel 文件处理工作台（插件化迁移；调用既有 /api/excel-* 接口，旧页面并存）",
   "pages": [

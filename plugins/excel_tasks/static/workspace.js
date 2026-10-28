@@ -3,6 +3,7 @@
 //   /api/excel-artifacts/<id>/{download,download-audit}, /api/excel-artifacts/retention-plan,
 //   /api/tasks/excel_<id>/cancel（统一任务中心的取消入口）。
 import { html, useCallback, useEffect, useRef, useState } from "/static/host/vendor/preact-htm.js";
+import { expertStore } from "/static/host/expert.js";
 import { api, ApiError } from "/static/host/api.js";
 import { DataTable, StateBlock, useStylesheet } from "/static/host/kit.js";
 import { ExamplesDialog } from "./examples.js";
@@ -74,6 +75,13 @@ function WorkerControls({ worker, busy, onStart, onStop, onRefresh, onExamples, 
     chip = html`<${StatusChip} status=${worker.state} text=${text} />`;
   }
   const state = worker.state;
+  if (!expertStore.get()) {
+    // 日常模式不暴露"处理服务"启停：提交任务时由程序处理，这里只留刷新和示例。
+    return html`<div class="xt-worker" aria-label="Excel 处理">
+      <button type="button" class="vk-btn" disabled=${refreshing} onClick=${onRefresh}>刷新</button>
+      <button type="button" class="vk-btn" onClick=${onExamples}>查看操作示例</button>
+    </div>`;
+  }
   return html`<div class="xt-worker" aria-label="文件处理服务控制">
     <span class="xt-worker-label">处理服务</span>
     ${chip}
@@ -86,7 +94,7 @@ function WorkerControls({ worker, busy, onStart, onStop, onRefresh, onExamples, 
 
 function RootSelect({ value, roots, onChange }) {
   return html`<select value=${value} disabled=${roots.length === 0} onChange=${(event) => onChange(event.currentTarget.value)}>
-    ${roots.length === 0 && html`<option value="">（无可用位置）</option>`}
+    ${roots.length === 0 && html`<option value="">（还没有设置 Excel 工作文件夹）</option>`}
     ${roots.map((root) => html`<option key=${root} value=${root}>${root}</option>`)}
   </select>`;
 }
@@ -161,7 +169,7 @@ function CreateForm({ form, setForm, roots, rootsError, creating, onSubmit }) {
 
 function TaskList({ tasks, state, selectedId, onSelect, filter, onFilter }) {
   let body;
-  if (state.notConfigured) body = html`<div class="vk-state is-empty">未配置 approved roots，Excel 文件处理服务不可用</div>`;
+  if (state.notConfigured) body = html`<div class="vk-state is-empty">还没有设置 Excel 工作文件夹：到「设置」里选一个文件夹后就能使用</div>`;
   else if (state.loading && tasks.length === 0) body = html`<${StateBlock} loading=${true} />`;
   else if (state.error && tasks.length === 0) body = html`<div class="vk-state is-empty">获取处理记录失败，请点击上方【刷新】重试</div>`;
   else if (tasks.length === 0) body = html`<div class="vk-state is-empty">暂无处理记录。您可在上方选择处理方式并点击【开始处理】创建任务。</div>`;
@@ -415,7 +423,7 @@ export default function ExcelWorkspace({ plugin }) {
       const data = await api("/api/excel-roots", { signal });
       const ids = Array.isArray(data) ? data.map((item) => item && item.rootId).filter((item) => typeof item === "string" && item) : [];
       setRoots(ids);
-      setRootsError(ids.length === 0 ? "未配置可用的文件位置（approved roots），暂不能创建任务。" : "");
+      setRootsError(ids.length === 0 ? "还没有设置 Excel 工作文件夹：到「设置」里选一个文件夹后就能创建任务。" : "");
       setForm((prev) => {
         const pick = (value) => (ids.includes(value) ? value : ids[0] || "");
         return {
@@ -429,7 +437,7 @@ export default function ExcelWorkspace({ plugin }) {
     } catch (err) {
       if (isAbort(err)) return;
       setRoots([]);
-      setRootsError(err.status === 503 ? "未配置可用的文件位置（approved roots），暂不能创建任务。" : `文件位置加载失败：${display(err.message)}`);
+      setRootsError(err.status === 503 ? "还没有设置 Excel 工作文件夹：到「设置」里选一个文件夹后就能创建任务。" : `文件位置加载失败：${display(err.message)}`);
     }
   }, [signal]);
 
@@ -510,7 +518,7 @@ export default function ExcelWorkspace({ plugin }) {
         setSelectedId(null);
         loadDetail(null);
         setListState({ loading: false, error: null, notConfigured: true });
-        setNotice("Excel 文件处理服务未配置");
+        setNotice("Excel 处理还没准备好：先到「设置」里选择 Excel 工作文件夹。");
         return;
       }
       setListState((prev) => ({ ...prev, loading: false, error: err }));
@@ -678,7 +686,7 @@ export default function ExcelWorkspace({ plugin }) {
 
   return html`<div class="vk-page xt-page">
     <header class="vk-page-header xt-header">
-      <p class="vk-muted xt-intro">合并、套模板或与基准比对受控目录中的 Excel 文件；处理由本机处理服务（Excel COM）执行。</p>
+      <p class="vk-muted xt-intro">把 Excel 工作文件夹里的文件合并、套模板，或者和基准文件比对。处理时程序会在后台打开 Excel，不用手动操作。</p>
       <${WorkerControls}
         worker=${worker}
         busy=${workerBusy}

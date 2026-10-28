@@ -64,6 +64,7 @@ import {
 import { SearchMultiSelect } from "./multi-select.js";
 import { TermsInput, TermsSummary, WatchlistPanel, loadWatchlist } from "./watchlist.js";
 import { ArchLinksPanel } from "./arch-links.js";
+import { expertStore } from "/static/host/expert.js";
 import { DATA_MODEL_FORM_KEY, termsChipText } from "./watchlist-logic.js";
 
 const keyActivate = (fn) => (event) => {
@@ -617,6 +618,8 @@ export function FormRowsTable({ data, rowsData, state, onReload }) {
   const offset = Number(rowsData && rowsData.offset) || 0;
   const limit = Math.max(1, Number(rowsData && rowsData.limit) || 50);
   const span = 2 + displayColumns.length;
+  // 来源工作表和行号只对排查数据问题有用，默认收进专家模式。
+  const showSource = expertStore.get();
   return html`<section class="form-row-table-section">
     <div class="form-row-table-head">
       <h5 class="form-chart-title">表单明细</h5>
@@ -626,7 +629,7 @@ export function FormRowsTable({ data, rowsData, state, onReload }) {
     <div class="form-row-table-wrap">
       <table class="form-row-table">
         <thead><tr>
-          ${["工作表", "行号"].map((label) => html`<th key=${label}>${label}</th>`)}
+          ${showSource && ["工作表", "行号"].map((label) => html`<th key=${label}>${label}</th>`)}
           ${displayColumns.map((column, index) => {
             const label = column && column.derivedStatus ? "状态" : (column && column.label ? String(column.label) : `列 ${index + 1}`);
             const isAbsent = column && !column.derivedStatus && absent.has(formColumnIndex(column));
@@ -638,8 +641,8 @@ export function FormRowsTable({ data, rowsData, state, onReload }) {
             const values = Array.isArray(row && row.values) ? row.values : [];
             return html`
               <tr key=${`r${rowIndex}`}>
-                <td>${safeDisplayValue(row && row.sheetName)}</td>
-                <td>${safeDisplayValue(row && row.rowNumber)}</td>
+                ${showSource && html`<td>${safeDisplayValue(row && row.sheetName)}</td>`}
+                ${showSource && html`<td>${safeDisplayValue(row && row.rowNumber)}</td>`}
                 ${displayColumns.map((column, index) => {
                   const cell = formRowCell(column, row, absent);
                   // 该行没合上官方行 + 该列是官方列 → 明示「本次未取得官方列」。

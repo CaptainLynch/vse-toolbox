@@ -49,13 +49,13 @@ export default function SettingsGeneralPage({ plugin }) {
   return html`<div class="vk-page st-page">
     <header class="vk-page-header">
       <div>
-        <p class="st-eyebrow">本地配置</p>
-        <h2>系统设置</h2>
+        <h2>设置</h2>
+        <p class="vk-muted" style="margin:4px 0 0">大部分情况下不需要改这里。</p>
       </div>
       <div class="vk-page-actions">
         <span class="vk-muted" aria-live="polite">${loading ? "正在读取系统设置…" : ""}</span>
-        <a class="vk-btn" href="#p/settings/updates">插件更新</a>
-        <button type="button" class="vk-btn" disabled=${loading} onClick=${reloadAll}>刷新设置</button>
+        <a class="vk-btn" href="#p/settings/updates">程序与插件更新</a>
+        <button type="button" class="vk-btn" disabled=${loading} onClick=${reloadAll}>刷新</button>
       </div>
     </header>
 

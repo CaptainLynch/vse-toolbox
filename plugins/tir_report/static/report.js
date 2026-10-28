@@ -1,5 +1,6 @@
 // TIR数据简表：参数 → 后台导出 → 进度 → 下载帆软原样导出的 Excel。共享运行时与 UI Kit 来自宿主。
 import { html, useEffect, useRef, useState } from "/static/host/vendor/preact-htm.js";
+import { expertStore } from "/static/host/expert.js";
 import { DataTable, StateBlock } from "/static/host/kit.js";
 
 const POLL_MS = 1500;
@@ -85,14 +86,15 @@ export default function Page({ api }) {
     { key: "file", title: "下载", sortable: false, format: (_, row) => fileLink(api, row) },
   ];
 
+  const expert = expertStore.get();
   return html`<div class="vk-page">
-    <header class="vk-page-header"><h2>TIR数据简表</h2>
-      <p class="vk-muted">从帆软报表平台导出「${state.report.path}」，交付帆软原样导出的 Excel，与「自动归档」的其他交付物存放在同一归档目录、同一格式。帆软账号就是统一域账号。</p></header>
-    ${!state.domainCredentialReady && html`<p class="vk-muted" style="color:var(--error)">还没有保存统一域账号：请登录 TDC 并勾选“保存至凭据保护库”，之后才能导出。</p>`}
+    <header class="vk-page-header"><div><h2>TIR 数据简表</h2>
+      <p class="vk-muted" style="margin:4px 0 0">填车型和日期 → 导出 Excel。用的是公司域账号，不需要另外登录帆软。</p></div></header>
+    ${!state.domainCredentialReady && html`<p class="vk-muted" style="color:var(--error)">还没有保存公司账号的密码：点右上角「登录 / 切换」，登录时勾选“保存至凭据保护库”，之后才能导出。</p>`}
     <section class="vk-filter-bar">
-      <${Field} label="项目（留空 = 全部项目）"><input value=${form.project} onInput=${set("project")} /></${Field}>
-      <${Field} label="部门"><input value=${form.department} onInput=${set("department")} /></${Field}>
-      <${Field} label="科室（选填）"><input value=${form.section} onInput=${set("section")} /></${Field}>
+      <${Field} label="车型（留空 = 全部）"><input value=${form.project} onInput=${set("project")} placeholder="例如 F610S" /></${Field}>
+      ${expert && html`<${Field} label="部门"><input value=${form.department} onInput=${set("department")} /></${Field}>`}
+      ${expert && html`<${Field} label="科室（选填）"><input value=${form.section} onInput=${set("section")} /></${Field}>`}
       <${Field} label="发放开始日期"><input type="date" value=${form.startDate} onInput=${set("startDate")} /></${Field}>
       <${Field} label="发放结束日期"><input type="date" value=${form.endDate} onInput=${set("endDate")} /></${Field}>
       <label><input type="checkbox" checked=${form.force} onChange=${set("force")} /> 忽略当天已有结果重新导出</label>
@@ -108,9 +110,8 @@ export default function Page({ api }) {
         <select value=${String(auto.hour)} onChange=${(e) => setAuto({ ...auto, hour: parseInt(e.target.value, 10) })}>
           ${HOURS.map((h) => html`<option key=${h} value=${String(h)}>${h}:00</option>`)}
         </select></${Field}>
-      <button class="vk-btn" onClick=${saveSettings}>保存自动导出与默认筛选</button>
-      <p class="vk-muted" style="flex-basis:100%;margin:0">自动导出用上面的项目/部门/科室/开始日期，结束日期取当天；与「自动归档」一样由 Windows 计划任务驱动，
-        首次需在本机运行一次 <code>tools\install_tir_export_task.ps1</code>。登录失败当天不再重试，以免锁定域账号。
+      <button class="vk-btn" onClick=${saveSettings}>保存</button>
+      <p class="vk-muted" style="flex-basis:100%;margin:0">自动导出用上面的车型和开始日期，结束日期取当天。登录失败当天不再重试，以免锁定域账号。
         ${state.autoState && state.autoState.day ? ` 上次自动导出：${state.autoState.at || state.autoState.day} ${AUTO_STATUS[state.autoState.status] || ""}${state.autoState.error ? `（${state.autoState.error}）` : ""}` : ""}</p>
     </section>
     <h3 style="margin-top:16px">产物</h3>

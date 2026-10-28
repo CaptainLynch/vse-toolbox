@@ -12,9 +12,21 @@ export function toggle(list, value) {
   return list.includes(value) ? list.filter((item) => item !== value) : [...list, value];
 }
 
+/** 数据时间统一显示北京时间（后端快照时间是 UTC，带 Z 或时区偏移）。 */
 export function formatTime(value) {
   if (!value) return "暂无";
-  return String(value).replace("T", " ").replace(/\.\d+/, "").replace(/Z$/, " UTC");
+  const text = String(value);
+  if (/(Z|[+-]\d{2}:?\d{2})$/.test(text)) {
+    const date = new Date(text);
+    if (!Number.isNaN(date.getTime())) {
+      const parts = new Intl.DateTimeFormat("zh-CN", {
+        timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", hour12: false,
+      }).formatToParts(date).reduce((acc, part) => ({ ...acc, [part.type]: part.value }), {});
+      return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
+    }
+  }
+  return text.replace("T", " ").replace(/\.\d+/, "").slice(0, 16);
 }
 
 /** 预览/复制用：把正文里的 cid:sd-<图> 换成同一张 PNG 的 data URI；没有图的位置不动。 */

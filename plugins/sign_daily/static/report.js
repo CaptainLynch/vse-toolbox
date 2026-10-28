@@ -195,7 +195,8 @@ export default function Page({ plugin, api }) {
 
   const busy = phase !== "idle";
   const flash = (text) => { setToast(text); setTimeout(() => { if (alive.current) setToast(""); }, 4000); };
-  const requestBody = () => ({ ...form, ...texts });
+  // 飞书功能已取消（需求清单 K6）：不再发送飞书链接，已保存的旧值也不进正文。
+  const requestBody = () => ({ ...form, ...texts, feishuLink: "" });
 
   const generate = async () => {
     setPhase("generating");
@@ -279,40 +280,46 @@ export default function Page({ plugin, api }) {
 
   return html`<div class="vk-page sd-page">
     <header class="vk-page-header">
-      <h2>3D单签署日报</h2>
-      <div class="vk-page-actions"><span class="vk-muted">TDC 数据时间：${dataTime}${state.data && state.data.coverage === "watchlist" ? "（仅关注清单）" : ""}</span></div>
+      <div><h2>3D 单签署日报</h2>
+        <p class="vk-muted" style="margin:4px 0 0">选好车型和科室 → 一键生成（会先自动刷新 TDC 数据）→ 复制正文或生成邮件草稿</p></div>
+      <div class="vk-page-actions"><span class="vk-muted">数据时间：${dataTime}${state.data && state.data.coverage === "watchlist" ? "（仅关注清单）" : ""}</span></div>
     </header>
 
+    <div class="sd-layout">
+    <div class="sd-side">
     <section class="sd-form">
-      <div class="sd-field"><span>项目/车型</span>
-        <${Chips} options=${state.options.projects} value=${form.projects} onChange=${set("projects")} emptyText="暂无数据，先点一键生成" /></div>
-      <div class="sd-field"><span>归属科室（按申请人的花名册科室）</span>
+      <div class="sd-field"><span>项目 / 车型</span>
+        <${Chips} options=${state.options.projects} value=${form.projects} onChange=${set("projects")} emptyText="还没有数据，先点「一键生成」" /></div>
+      <div class="sd-field"><span>科室</span>
         <${Chips} options=${state.options.departments} value=${form.departments} onChange=${set("departments")} emptyText="—" /></div>
       <label class="sd-check"><input type="checkbox" checked=${form.watchlistOnly}
-        onChange=${() => set("watchlistOnly")(!form.watchlistOnly)} />只统计关注清单
-        <span class="vk-muted">（关注清单 ${watch.count} 份，在交付物明细的数模设计审核流程报表里维护）</span></label>
-      <label class="sd-field"><span>区域名</span>
-        <input value=${form.region} onInput=${(e) => set("region")(e.target.value)} /></label>
-      <label class="sd-field"><span>称呼</span><input value=${texts.greeting} onInput=${setText("greeting")} /></label>
-      <label class="sd-field"><span>计划/超期说明</span>
-        <textarea rows="2" placeholder="如：计划10-10发布，已超期x天" value=${texts.planText} onInput=${setText("planText")}></textarea></label>
-      <label class="sd-field"><span>飞书多维表格链接</span>
-        <input value=${texts.feishuLink} placeholder="问题反馈：https://..." onInput=${setText("feishuLink")} /></label>
+        onChange=${() => set("watchlistOnly")(!form.watchlistOnly)} />只统计关注清单（${watch.count} 份）</label>
       <div class="sd-actions">
-        <button type="button" class="vk-btn is-primary" disabled=${busy} onClick=${oneClick}>一键生成</button>
+        <button type="button" class="vk-btn is-primary sd-main-btn" disabled=${busy} onClick=${oneClick}>⚡ 一键生成</button>
         <button type="button" class="vk-btn" disabled=${busy || !state.data} onClick=${generate}>用现有数据生成</button>
-        ${phase === "refreshing" && html`<span class="sd-progress" role="status">${task && task.reused ? "已有抓取在运行，沿用它：" : ""}${stageText(task) || "正在提交抓取任务…"}</span>`}
-        ${phase === "generating" && html`<span class="sd-progress" role="status">正在生成…</span>`}
       </div>
+      ${phase === "refreshing" && html`<p class="sd-progress" role="status">${task && task.reused ? "已有抓取在运行，沿用它：" : ""}${stageText(task) || "正在提交抓取任务…"}</p>`}
+      ${phase === "generating" && html`<p class="sd-progress" role="status">正在生成…</p>`}
       ${state.dataError && !state.data && html`<p class="vk-muted">${state.dataError}</p>`}
       ${error && html`<div class="vk-state is-error" role="alert">
         <span>${error.message}</span>
         ${error.canFallback && state.data && html`<button type="button" class="vk-btn" onClick=${generate}>用最近一次数据生成（${dataTime}）</button>`}
       </div>`}
+      <details class="sd-mail-options">
+        <summary>邮件内容（可选）：区域、称呼、计划说明</summary>
+        <label class="sd-field"><span>区域名</span>
+          <input value=${form.region} onInput=${(e) => set("region")(e.target.value)} /></label>
+        <label class="sd-field"><span>称呼</span><input value=${texts.greeting} onInput=${setText("greeting")} /></label>
+        <label class="sd-field"><span>计划/超期说明</span>
+          <textarea rows="2" placeholder="如：计划10-10发布，已超期x天" value=${texts.planText} onInput=${setText("planText")}></textarea></label>
+      </details>
     </section>
-
     <${SettingsPanel} api=${api} state=${state} onSaved=${load} onChanged=${() => { if (result) generate(); }} />
+    </div>
 
+    <div class="sd-main">
+    ${!result && html`<section class="sd-empty"><div class="sd-empty-icon" aria-hidden="true">📊</div>
+      <p>选好条件后点「一键生成」，这里会显示日报预览。</p></section>`}
     ${result && html`<section class="sd-result">
       ${result.stale && html`<div class="sd-notice is-stale">用的是旧数据（数据时间 ${formatTime(result.snapshotAt)}），不写快照，不显示日变化。</div>`}
       ${result.notices.map((n) => html`<div key=${n.kind} class=${`sd-notice${n.blocking ? " is-blocking" : ""}`}>${n.text}</div>`)}
@@ -332,5 +339,7 @@ export default function Page({ plugin, api }) {
       <${ChartTools} images=${images} onMessage=${flash} />
       <div class="sd-preview" ref=${previewRef} dangerouslySetInnerHTML=${{ __html: inlineImages(result.html, images) }}></div>
     </section>`}
+    </div>
+    </div>
   </div>`;
 }

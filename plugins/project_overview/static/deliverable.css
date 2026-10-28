@@ -961,3 +961,11 @@
   color: var(--warning);
   border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
 }
+
+/* v2：详情页签 */
+.overview-deliverable-detail-view .dd-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--hairline); flex-wrap: wrap; }
+.overview-deliverable-detail-view .dd-tab { border: 0; background: transparent; padding: 9px 14px; font: inherit; font-weight: 600; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; cursor: pointer; }
+.overview-deliverable-detail-view .dd-tab:hover { color: var(--ink); }
+.overview-deliverable-detail-view .dd-tab.is-active { color: var(--primary-active); border-bottom-color: var(--primary); }
+.overview-deliverable-detail-view .dd-tabpanel { display: grid; gap: 16px; }
+.overview-deliverable-detail-view .dd-tabpanel[hidden] { display: none; }

@@ -253,6 +253,8 @@ const stubs = new Map([
   ["./watchlist-logic.js", { DATA_MODEL_FORM_KEY: "tdc_data_model", termsChipText: () => "" }],
   // D5 关联架构件面板：本用例只测表格渲染，面板本身由 arch_links 用例覆盖。
   ["./arch-links.js", { ArchLinksPanel: function ArchLinksPanel() { return html`<div></div>`; } }],
+  // v2 专家模式：这些用例断言来源工作表/行号列，按专家模式渲染。
+  ["/static/host/expert.js", { expertStore: { get: () => true, subscribe: () => () => {} } }],
 ]);
 
 // 真源码：form-state.js（被钉住的纯函数）、format.js（safeDisplayValue）、chart-math.js、api.js。
