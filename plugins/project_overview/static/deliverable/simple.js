@@ -10,8 +10,14 @@ const PAGE_SIZE = 20;
 const PREFERRED_LABELS = ["流水单号", "NCR编号", "EWO编号", "PAA编号", "SOR号", "零件名称", "更改主题", "标题", "申请人", "部门", "申请日期", "提交日期"];
 const MAX_COLUMNS = 5;
 
-export function simpleColumns(schema) {
-  const columns = Array.isArray(schema && schema.columns) ? schema.columns : [];
+export function simpleColumns(schema, rows = []) {
+  // 当前这批单据里整列都是空的列不显示（例如某些导出里「更改主题」恒为空），让位给下一个可读列。
+  const filled = (column) => !rows.length || rows.some((row) => {
+    const value = Array.isArray(row.values) ? row.values[column.index] : null;
+    return value !== null && value !== undefined && String(value).trim() !== "";
+  });
+  // 状态列由本视图统一显示（已完成 / 逾期 / 原状态），不再重复源表里的「状态」。
+  const columns = (Array.isArray(schema && schema.columns) ? schema.columns : []).filter((c) => c && c.label !== "状态" && filled(c));
   const picked = [];
   PREFERRED_LABELS.forEach((label) => {
     const column = columns.find((c) => c && c.label === label);
@@ -73,7 +79,7 @@ function Records({ formKey }) {
     return () => { alive = false; };
   }, [formKey, applied, onlyOverdue, limit]);
 
-  const columns = simpleColumns(schema);
+  const columns = simpleColumns(schema, rows.items);
   const search = (event) => { event.preventDefault(); setLimit(PAGE_SIZE); setApplied(keyword.trim()); };
 
   return html`<section class="ds-card">
@@ -84,7 +90,7 @@ function Records({ formKey }) {
         <label class="ds-check"><input type="checkbox" checked=${onlyOverdue} onChange=${() => { setLimit(PAGE_SIZE); setOnlyOverdue(!onlyOverdue); }} />只看逾期</label>
       </form></div>
     ${error && html`<p class="ds-error" role="alert">读取单据失败：${error}</p>`}
-    ${!error && html`<div class="ds-table-wrap"><table class="ds-table">
+    ${!error && rows.items.length > 0 && html`<div class="ds-table-wrap"><table class="ds-table">
       <thead><tr>${columns.map((c) => html`<th key=${c.key}>${c.label}</th>`)}<th>状态</th></tr></thead>
       <tbody>${rows.items.map((row) => {
         const values = Array.isArray(row.values) ? row.values : [];
@@ -97,7 +103,7 @@ function Records({ formKey }) {
       })}</tbody>
     </table></div>`}
     ${!error && !loading && !rows.items.length && html`<p class="ds-muted">${applied || onlyOverdue ? "没有符合条件的单据。" : "还没有单据数据，开启自动同步或点「立即同步」后会出现。"}</p>`}
-    <div class="ds-foot"><span class="ds-muted">${loading ? "读取中…" : `共 ${rows.total} 条${rows.items.length < rows.total ? `，已显示 ${rows.items.length} 条` : ""}`}</span>
+    <div class="ds-foot"><span class="ds-muted">${loading ? "读取中…" : !rows.total ? "" : `共 ${rows.total} 条${rows.items.length < rows.total ? `，已显示 ${rows.items.length} 条` : ""}`}</span>
       ${rows.items.length < rows.total && html`<button type="button" class="vk-btn" disabled=${loading} onClick=${() => setLimit(limit + PAGE_SIZE)}>再显示 ${PAGE_SIZE} 条</button>`}</div>
   </section>`;
 }
