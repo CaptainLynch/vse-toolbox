@@ -206,7 +206,9 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--accent-soft);bor
 "use strict";
 /* ═════════════ 假数据与状态 ═════════════ */
 const TODAY = "2026-10-28";
-const SECTIONS = ["车身科","内饰科","外饰科","底盘科","电子电器科","动力系统科","车体架构集成科"];
+const SECTIONS = ["车体科","车身科","内饰科","外饰科","车体架构集成科","底盘科","电子电器科"]; // 前 5 个是 M0 问卷 C2 的默认科室
+const VEHICLES = "E112C CF710V F610M 无人物流 E262S F412S F710C EQ100R-MCE N300L N300P N300PPS迭代 N510M CN110V N001 310S 310C E260S-PLUS F520M F520MR F510C F710S CF710P E261 E261MCE CF510V EQ100R E260R F510S E262C F610S F611S CF510P F520S F520SR E110C F620S CE110M N350V CF810P E261S-PLUS F720S".split(" ").map(v=>v.replace(/-/g," "));
+const PLATFORMS = ["Ar-L","Ar-N","Ar-C","Ar-S","Ar-D","Ar-M"];
 const DELIV_TEMPLATES = [
   {key:"sor", name:"SOR 定点流程", source:"TDC", plan:"2026-11-20"},
   {key:"ewo", name:"EWO 工程变更", source:"Aras", plan:"2026-11-05"},
@@ -256,7 +258,7 @@ function rng(seedN){ let x=seedN; return ()=> (x = (x*9301+49297)%233280)/233280
 function dmRows(code){
   const r=rng(code.split("").reduce((a,c)=>a+c.charCodeAt(0),0));
   const parts=["前保险杠骨架","仪表板横梁","左前门内板","后背门外板","顶棚总成","中控台面板","座椅骨架","前副车架","线束支架","尾灯安装座","A 柱上饰板","发舱盖铰链"];
-  const people=[["张伟","车身科"],["李娜","内饰科"],["王强","外饰科"],["刘洋","底盘科"],["陈静","电子电器科"],["赵磊","车身科"],["孙敏","内饰科"],["周杰","车体架构集成科"]];
+  const people=[["张伟","车身科"],["李娜","内饰科"],["王强","外饰科"],["刘洋","底盘科"],["陈静","车体科"],["赵磊","车身科"],["孙敏","内饰科"],["周杰","车体架构集成科"]];
   const st=["审批中","审批中","审批中","已签署","已签署","退回修改"];
   return Array.from({length:42},(_,i)=>{
     const p=people[Math.floor(r()*people.length)];
@@ -366,7 +368,7 @@ function pageToday(){
   if(S.pendingUpdate) items.push({tone:"info",ic:"⬆️",t:`发现更新：${S.pendingUpdate.name} ${S.pendingUpdate.ver}`,d:S.pendingUpdate.notes,a:[["安装更新","install-update"]]});
   const o=overall(p);
   return `<h1>早上好${S.user?"，"+esc(S.user):""}</h1>
-  <p class="sub">${esc(p.code)} 项目 · 今天 ${TODAY} · 后台同步${S.sessionExpired?"已暂停":"正常"}，上次后台运行 ${S.lastBg||"—"}</p>
+  <p class="sub">${esc(p.code)} 项目 · 今天 ${TODAY} · 后台同步${S.sessionExpired?"已暂停":"正常"}（每天 09:00、16:00，开机自动补跑），上次后台运行 ${S.lastBg||"—"}</p>
   <div class="grid split">
     <section class="grid">
       <h2>需要你处理 <span class="muted small">(${items.length})</span></h2>
@@ -424,7 +426,7 @@ function openDeliv(id, tab){
   const p=P(); const d=p.deliverables.find(x=>x.id===id); if(!d) return;
   layer={kind:"deliv", id, tab: tab||layer.tab||"data"};
   const s=delivStatus(d);
-  const tabs=[["data","数据与统计"],["sync","同步设置"],["runs","同步记录"]].concat(d.key==="dm"?[["arch","架构件归属"]]:[]).concat(S.expert?[["audit","配置审计"]]:[]);
+  const tabs=[["data","数据与统计"],["sync","同步设置"],["runs","同步记录"],["orig","历史原件"]].concat(d.key==="dm"?[["arch","架构件归属"]]:[]).concat(S.expert?[["audit","配置审计"]]:[]);
   $("#layer").innerHTML=`<div class="scrim" data-act="close-layer"><div class="drawer" data-stop>
     <header><div><h2>${esc(d.name)}</h2><div class="small muted">${esc(p.code)} · 来源 ${d.source} · 计划完成 ${d.plan}</div></div><span class="spacer"></span>${pill(s.tone,s.label)}<button class="btn ghost" data-act="close-layer">✕</button></header>
     <div class="content"><div class="subtabs">${tabs.map(([k,t])=>`<button class="${layer.tab===k?"on":""}" data-act="deliv-tab:${k}">${t}</button>`).join("")}</div>${delivTab(d)}</div></div></div>`;
@@ -436,6 +438,8 @@ function delivTab(d){
   if(layer.tab==="runs") return `<div class="tbl-wrap"><table><thead><tr><th>时间</th><th>结果</th><th>新增/变化</th><th>耗时</th></tr></thead><tbody>
     ${d.lastRun?`<tr><td>${d.lastRun}</td><td>${d.error?pill("bad","失败"):pill("ok","成功")}</td><td>${d.error?"—":"新增 3 · 变化 5"}</td><td>12 秒</td></tr>`:""}
     <tr><td>10-27 18:00</td><td>${pill("ok","成功")}</td><td>新增 1 · 变化 2</td><td>10 秒</td></tr><tr><td>10-27 17:45</td><td>${pill("ok","成功")}</td><td>无变化</td><td>9 秒</td></tr></tbody></table></div>`;
+  if(layer.tab==="orig") return `<p class="muted" style="margin-top:0">每次同步都会自动把业务系统导出的原始文件存一份（原来的「自动归档」），保留 90 天。</p>
+    <div class="tbl-wrap"><table><thead><tr><th>同步时间</th><th>原始文件</th><th></th></tr></thead><tbody>${["10-28 09:00","10-27 16:00","10-27 09:00","10-26 16:00"].map(t=>`<tr><td>${t}</td><td>📄 ${esc(d.name)}_${t.replace(/[- :]/g,"")}.xlsx</td><td><button class="btn sm" data-act="open-file" data-file="${esc(d.name)}原件.xlsx">打开</button></td></tr>`).join("")}</tbody></table></div>`;
   if(layer.tab==="arch"){ const rows=dmRows(P().code).filter(r=>r.veh.startsWith("Ar-"));
     return `<p class="muted">架构件（Ar- 开头）是平台级发布，不归属单一车型，单独统计。需要把某张架构单算进本车型时，在这里声明。</p>
     <div class="tbl-wrap"><table><thead><tr><th>单号</th><th>零件</th><th>平台</th><th>归属到本车型</th></tr></thead><tbody>${rows.map((r,i)=>`<tr><td>${r.no}</td><td>${r.part}</td><td>${r.veh}</td><td><label class="switch ${i%3===0?"on":""}" data-act="toggle-sw"><i></i><span class="small">${i%3===0?"已关联":"未关联"}</span></label></td></tr>`).join("")}</tbody></table></div>`;}
@@ -469,10 +473,13 @@ function dataTab(d){
 function syncTab(d){
   const f=d.filter;
   return `<p class="muted" style="margin-top:0">这些条件已按项目自动填好，通常不需要改。</p>
-  <label class="f"><span>车型</span><div class="chips">${[P().code,"Ar-L","Ar-L+"].map(v=>`<button class="chip ${f.vehicles.includes(v)?"on":""}" data-act="f-veh:${v}">${v}</button>`).join("")}</div><em>选 Ar- 开头的平台会把架构件一起同步进来</em></label>
+  <label class="f"><span>车型</span><div class="chips">${f.vehicles.map(v=>`<span class="chip on">${esc(v)} <a href="#" data-act="f-veh:${esc(v)}" style="text-decoration:none" title="移除">✕</a></span>`).join("")}</div>
+    <input type="text" list="vehList" placeholder="搜索车型或平台代码，例如 F7、Ar-" data-input="f-veh-add" style="margin-top:6px">
+    <datalist id="vehList">${VEHICLES.concat(PLATFORMS).filter(v=>!f.vehicles.includes(v)).map(v=>`<option value="${esc(v)}">${v.startsWith("Ar-")?"架构平台":"车型"}</option>`).join("")}</datalist>
+    <em>选 Ar- 开头的平台会把架构件一起同步进来</em></label>
   <label class="f"><span>科室</span><div class="chips">${SECTIONS.map(v=>`<button class="chip ${f.sections.includes(v)?"on":""}" data-act="f-sec:${v}">${v}</button>`).join("")}</div></label>
   <div class="row"><label class="f" style="flex:1"><span>起始日期</span><input type="date" value="${f.from}" data-input="f-from"></label><label class="f" style="flex:1"><span>截止日期</span><input type="date" value="${f.to}" data-input="f-to"><em>留空表示到今天</em></label></div>
-  <label class="f"><span>同步频率</span><select data-input="f-freq"><option>跟随全局（每 15 分钟）</option><option>每 30 分钟</option><option>每 1 小时</option><option>每天一次</option></select></label>
+  <label class="f"><span>同步时间</span><select data-input="f-freq"><option>跟随全局（每天 09:00、16:00）</option><option>只在 09:00</option><option>每天 09:00、12:00、16:00</option><option>只手动同步</option></select><em>电脑关机错过的时刻，开机后自动补跑一次</em></label>
   ${S.expert?`<div class="expert"><label class="f"><span>更新方式 <span class="tag-expert">专家</span></span><div class="seg">${["自动","混合","手动"].map(m=>`<button class="${d.mode===m?"on":""}" data-act="f-mode:${m}">${m}</button>`).join("")}</div><em>混合：系统更新进度，风险备注由你手填</em></label>
     <label class="f"><span>原始筛选（只读） <span class="tag-expert">专家</span></span><textarea rows="3" readonly>${esc(JSON.stringify({vehicles:f.vehicles,sections:f.sections,from:f.from,to:f.to||null}))}</textarea></label></div>`:""}
   <div class="row"><button class="btn primary" data-act="save-sync:${d.id}">保存</button>${d.enabled?`<button class="btn danger" data-act="disable-sync:${d.id}">关闭自动同步</button>`:`<button class="btn" data-act="enable-one:${d.id}">保存并开启</button>`}<span class="small muted">保存后从下一次同步生效</span></div>`;
@@ -549,8 +556,8 @@ function repEwo(){
 
 /* ═════════════ 工具 ═════════════ */
 function pageTools(){
-  const sub=S.sub.tools||"excel";
-  const tabs=[["excel","Excel 处理"],["archive","自动归档"]].concat(S.expert?[["raw","原始系统查询"]]:[]);
+  const sub=(S.sub.tools==="archive"?"excel":S.sub.tools)||"excel"; // 自动归档已并入同步（M0 问卷 A4）
+  const tabs=[["excel","Excel 处理"]].concat(S.expert?[["raw","原始系统查询"]]:[]);
   return `<h1>工具</h1><p class="sub">日常的小工具。Excel 处理会在后台自动打开和关闭 Excel，不用手动操作。</p>
   <div class="subtabs">${tabs.map(([k,t])=>`<button class="${sub===k?"on":""}" data-act="tool-tab:${k}">${t}${k==="raw"?'<span class="tag-expert">专家</span>':""}</button>`).join("")}</div>
   ${({excel:toolExcel, archive:toolArchive, raw:toolRaw})[sub]()}`;
@@ -846,6 +853,7 @@ document.addEventListener("input", e=>{
   const k=e.target.dataset.input; if(!k) return; const v=e.target.value;
   if(k==="wz-user"){ wz.user=v; syncWzBtn(); } else if(k==="wz-pwd"){ wz.pwd=v; syncWzBtn(); } else if(k==="wz-code") wz.code=v;
   else if(k==="grid-q"){ gridState.q=v; gridState.page=0; clearTimeout(window._gq); window._gq=setTimeout(()=>{ openDeliv(layer.id); const i=$('[data-input="grid-q"]'); if(i){ i.focus(); i.setSelectionRange(v.length,v.length);} },250); }
+  else if(k==="f-veh-add"){ const all=VEHICLES.concat(PLATFORMS); if(all.includes(v)){ const d=P().deliverables.find(x=>x.id===layer.id); if(!d.filter.vehicles.includes(v)) d.filter.vehicles.push(v); openDeliv(layer.id,"sync"); } }
   else if(k.startsWith("f-")){ const d=P().deliverables.find(x=>x.id===layer.id); if(k==="f-from") d.filter.from=v; if(k==="f-to") d.filter.to=v; }
 });
 function syncWzBtn(){ const b=$('[data-act="wz-next"]'); if(b) b.disabled=!(wz.user&&wz.pwd); }

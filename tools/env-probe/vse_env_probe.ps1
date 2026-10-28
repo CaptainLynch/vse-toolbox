@@ -17,7 +17,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$ProbeVersion = "1.0"
+$ProbeVersion = "1.1"
 $R = [ordered]@{}
 $Errors = New-Object System.Collections.ArrayList
 $Started = Get-Date
@@ -216,22 +216,32 @@ Try-Section "office" {
     elseif ($o.excelRunningBefore) { $o.comTest = "skipped: Excel 正在运行，关闭 Excel 后重跑可完成此项" }
     elseif (-not $o.excelComProgId) { $o.comTest = "skipped: 未注册 Excel.Application" }
     else {
+        $t0 = Get-Date
         $t = Measure-Command {
+            $xl = $null; $wbs = $null; $wb = $null; $ws = $null; $rg = $null
             try {
                 $xl = New-Object -ComObject Excel.Application
                 $xl.Visible = $false; $xl.DisplayAlerts = $false
                 $o.comVersion = "" + $xl.Version
                 $o.comBuild = "" + $xl.Build
-                $wb = $xl.Workbooks.Add(); $wb.Worksheets.Item(1).Range("A1").Value2 = 42
-                $o.comWorkbookOk = ($wb.Worksheets.Item(1).Range("A1").Value2 -eq 42)
+                # 每一层 COM 对象都要单独持有并释放，否则 EXCEL.EXE 会留在后台（probe 1.0 的教训）
+                $wbs = $xl.Workbooks; $wb = $wbs.Add(); $ws = $wb.Worksheets.Item(1); $rg = $ws.Range("A1")
+                $rg.Value2 = 42
+                $o.comWorkbookOk = ($rg.Value2 -eq 42)
                 $wb.Close($false); $xl.Quit()
-                [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($xl)
                 $o.comTest = "ok"
             } catch { $o.comTest = "failed: " + ("" + $_).Split("`n")[0] }
+            foreach ($c in @($rg, $ws, $wb, $wbs, $xl)) { if ($c) { try { [void][System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($c) } catch {} } }
+            $rg = $null; $ws = $null; $wb = $null; $wbs = $null; $xl = $null
+            try { [GC]::Collect(); [GC]::WaitForPendingFinalizers(); [GC]::Collect() } catch {}
         }
         $o.comSeconds = [int]$t.TotalSeconds
-        Start-Sleep -Seconds 2
-        $o.excelLeftRunning = [bool](Get-Process -Name EXCEL -ErrorAction SilentlyContinue)
+        Start-Sleep -Seconds 3
+        $left = @(Get-Process -Name EXCEL -ErrorAction SilentlyContinue | Where-Object { try { $_.StartTime -ge $t0 } catch { $false } })
+        $o.excelLeftRunningAfterRelease = ($left.Count -gt 0)
+        # 测试前没有 Excel 在运行，测试后新出现的 EXCEL.EXE 一定是本脚本启动的，直接结束它
+        if ($left.Count) { $left | ForEach-Object { try { Stop-Process -Id $_.Id -Force } catch {} } }
+        $o.excelLeftRunning = [bool](Get-Process -Name EXCEL -ErrorAction SilentlyContinue | Where-Object { try { $_.StartTime -ge $t0 } catch { $false } })
     }
     $o
 }
@@ -271,7 +281,7 @@ Try-Section "network" {
         try { $row.dns = @(Resolve-DnsName -Name $u.Host -ErrorAction Stop | Where-Object { $_.IPAddress } | Select-Object -First 1).Count -gt 0 } catch { $row.dns = $false }
         try {
             $sw = Get-Date
-            $resp = Invoke-WebRequest -Uri $t.url -Method Head -UseBasicParsing -TimeoutSec 10 -MaximumRedirection 0 -ErrorAction Stop
+            $resp = Invoke-WebRequest -Uri $t.url -Method Head -UseBasicParsing -TimeoutSec 10 -MaximumRedirection 5 -ErrorAction Stop
             $row.http = [int]$resp.StatusCode
         } catch {
             $code = $null; try { $code = [int]$_.Exception.Response.StatusCode } catch {}
@@ -329,7 +339,11 @@ Try-Section "vseInstall" {
         installDirWritable = $writable
         exeVersion     = FileVer $exePath
         exeDate        = (Get-Item -LiteralPath $exePath).LastWriteTime.ToString("yyyy-MM-dd")
-        installSizeMB  = SizeMB $root
+        # exe 直接放在「下载」或桌面时，整个文件夹的大小没有意义，只统计 VSE 自己的 exe
+        installSizeMB  = $(if ((Get-ChildItem -LiteralPath $root -Directory -Filter "_internal" -ErrorAction SilentlyContinue)) { SizeMB $root } else { $null })
+        layout         = $(if (Test-Path -LiteralPath (Join-Path $root "_internal")) { "onedir" } else { "onefile" })
+        vseExeCopies   = @(Get-ChildItem -LiteralPath $root -Filter "VSE-*.exe" -File).Count
+        vseExeTotalMB  = [int]((Get-ChildItem -LiteralPath $root -Filter "VSE-*.exe" -File | Measure-Object -Property Length -Sum).Sum / 1MB)
         dataDir        = $data
         dbSizeMB       = if (Test-Path -LiteralPath $db) { [math]::Round((Get-Item -LiteralPath $db).Length / 1MB, 1) } else { $null }
         dataSubdirsMB  = $sub
@@ -466,7 +480,8 @@ $R["errors"] = $Errors
 $R["durationSeconds"] = [int]((Get-Date) - $Started).TotalSeconds
 $json = $R | ConvertTo-Json -Depth 12
 # 用户名、电脑名、域名一律替换成占位符
-foreach ($pair in @(@($env:USERNAME, "<user>"), @($env:COMPUTERNAME, "<pc>"), @($env:USERDOMAIN, "<domain>"))) {
+# 域名不替换：它就是公司简称，会把内网主机名也替换掉（probe 1.0 的教训）
+foreach ($pair in @(@($env:USERNAME, "<user>"), @($env:COMPUTERNAME, "<pc>"))) {
     # 只替换完整的名字（前后不是字母数字），避免短用户名把普通单词也替换掉
     if ($pair[0] -and $pair[0].Length -ge 2) { $json = $json -ireplace ("(?<![A-Za-z0-9])" + (Rx-Escape $pair[0]) + "(?![A-Za-z0-9])"), $pair[1] }
 }

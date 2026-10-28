@@ -1,6 +1,6 @@
 # v2 重构：需要从生产环境拿到的信息（从零操作指南）
 
-> 配套：[架构方案](ARCHITECTURE.md) §8 M0、§9 · 采集工具：`tools/env-probe/`（probe 1.0）
+> 配套：[架构方案](ARCHITECTURE.md) §8 M0、§9 · 采集工具：`tools/env-probe/`（probe 1.1）
 > 一句话：**把一个约 15 KB 的压缩包发给 2–3 位同事，各自双击运行一次，填一张问卷，再把结果发回来。**
 
 ## 1. 为什么要这些信息
@@ -30,11 +30,11 @@ v2 方案中有 4 个前提只能在真实办公电脑上验证（架构 §8 M0�
 ## 3. 你要做的事（维护者侧）
 
 ### 第 1 步：拿到采集包
-采集包已经打好：`.runtime\env-probe\vse-env-probe-1.0.zip`，里面有 4 个文件：`RUN-ME.cmd`、`vse_env_probe.ps1`、`README.txt`、`questionnaire.txt`。
+采集包已经打好：`.runtime\env-probe\vse-env-probe-1.1.zip`，里面有 4 个文件：`RUN-ME.cmd`、`vse_env_probe.ps1`、`README.txt`、`questionnaire.txt`。
 如需重新打包，在仓库根目录运行：
 
 ```powershell
-Compress-Archive -Path tools\env-probe\* -DestinationPath .runtime\env-probe\vse-env-probe-1.0.zip -Force
+Compress-Archive -Path tools\env-probe\* -DestinationPath .runtime\env-probe\vse-env-probe-1.1.zip -Force
 ```
 
 ### 第 2 步：选 2–3 台电脑
