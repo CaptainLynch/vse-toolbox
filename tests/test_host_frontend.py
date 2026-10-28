@@ -137,7 +137,8 @@ def test_legacy_hashes_redirect_to_plugin_routes() -> None:
         capture_output=True, text=True, encoding="utf-8", check=True,
     )
     data = json.loads(result.stdout.strip().splitlines()[-1])
-    assert data[""] == data["#overview"] == "#p/project-overview/status"
+    assert data[""] == "#p/workbench/today"
+    assert data["#overview"] == "#p/project-overview/status"
     assert data["#overview?tab=plan"] == "#p/project-overview/plan"
     assert data["#overview/deliverables/VPI-T2-D3"] == "#p/project-overview/deliverable?id=VPI-T2-D3"
     assert data["#deliverable/A%20B"] == "#p/project-overview/deliverable?id=A+B"

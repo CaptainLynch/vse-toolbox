@@ -13,7 +13,5 @@
     {"id": "tdc_data_model", "title": "数模设计审核流程"},
     {"id": "tdc_sor", "title": "SOR 定点流程"}
   ],
-  "nav": [
-    {"title": "表单", "page": "index", "order": 30}
-  ]
+  "nav": [{"title": "表单", "page": "index", "order": 30, "expert": true, "parent": "workbench/project"}]
 }

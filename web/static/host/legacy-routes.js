@@ -4,7 +4,8 @@
 // can be unit-tested under Node.
 
 const PANEL_ROUTES = {
-  "": "#p/project-overview/status",
+  // v2：没有指定页面时进入「今天」。
+  "": "#p/workbench/today",
   overview: "#p/project-overview/status",
   dashboard: "#p/project-overview/status",
   "overview-status-panel": "#p/project-overview/status",

@@ -100,12 +100,17 @@ def test_owner_header_removed_contract() -> None:
 
 
 def test_top_bar_navigation_six_main_domains() -> None:
-    """顶栏全部由插件 plugin.json 的 nav 生成；旧哈希由宿主 legacy-routes.js 转到插件页。"""
+    """顶栏全部由插件 plugin.json 的 nav 生成；旧哈希由宿主 legacy-routes.js 转到插件页。
+
+    v2：日常只显示 今天/项目/报告/工具/设置，原来的八个入口标记为 expert，只在专家模式出现。
+    """
     nav = []
     for manifest_path in sorted(Path("plugins").glob("*/plugin.json")):
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        nav += [(entry.get("order", 100), entry["title"], manifest["id"]) for entry in manifest.get("nav", [])]
-    assert [title for _, title, _ in sorted(nav)] == ["概览", "交付物", "系统查询", "表单", "签署日报", "TIR数据简表", "Excel", "自动归档", "设置"]
+        nav += [(entry.get("order", 100), entry["title"], bool(entry.get("expert"))) for entry in manifest.get("nav", [])]
+    ordered = sorted(nav)
+    assert [title for _, title, expert in ordered if not expert] == ["今天", "项目", "报告", "工具", "设置"]
+    assert [title for _, title, expert in ordered if expert] == ["概览", "交付物", "系统查询", "表单", "签署日报", "TIR数据简表", "Excel", "自动归档"]
 
     html_text = Path("web/templates/dashboard.html").read_text(encoding="utf-8-sig")
     assert "<nav" not in html_text  # 不再有写死在模板里的导航

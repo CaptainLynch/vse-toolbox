@@ -1,7 +1,7 @@
 {
   "id": "settings",
   "name": "设置",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "hostApi": ">=1,<2",
   "description": "系统设置（插件化迁移）：本地目录、高级维护参数、企业域会话与凭据、服务与版本状态；仍调用旧 /api/settings 接口",
   "pages": [

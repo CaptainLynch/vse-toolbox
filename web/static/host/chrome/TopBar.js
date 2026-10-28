@@ -7,6 +7,7 @@ import { SessionBadges, useStore } from "./SessionBadges.js";
 import { TaskCenterButton } from "./TaskCenter.js";
 import { ThemeToggle } from "./ThemeToggle.js";
 import { VersionChip } from "./VersionDialog.js";
+import { expertStore } from "../expert.js";
 
 const PLUGIN_ROUTE = /^#p\/([a-z][a-z0-9_-]{1,39})\/([a-z][a-z0-9_-]{1,39})(?:\?.*)?$/;
 
@@ -23,12 +24,21 @@ export function sortNav(entries) {
  * that exact page, else the plugin's first entry (detail pages such as
  * `#p/project-overview/deliverable` keep 概览 highlighted), else null.
  */
-export function activeNavKey(hash, entries = []) {
+export function activeNavKey(hash, entries = [], visible = entries) {
   const route = PLUGIN_ROUTE.exec(hash || "");
   if (!route) return null;
   const exact = entries.find((entry) => entry.plugin === route[1] && entry.page === route[2]);
   const owner = exact || entries.find((entry) => entry.plugin === route[1]);
-  return owner ? `${owner.plugin}/${owner.page}` : null;
+  if (!owner) return null;
+  const key = `${owner.plugin}/${owner.page}`;
+  // 收起的入口（如签署日报）从「报告」进入时，高亮它所属的可见入口。
+  if (owner.parent && !visible.some((entry) => `${entry.plugin}/${entry.page}` === key)) return owner.parent;
+  return key;
+}
+
+/** Entries shown in the top bar: expert-only ones only when expert mode is on. */
+export function visibleNav(entries, expert) {
+  return entries.filter((entry) => expert || !entry.expert);
 }
 
 /** Plugin nav entries; the shell sets them once the manifest has loaded. */
@@ -45,9 +55,11 @@ function useHash() {
 }
 
 export function TopBar() {
-  const entries = sortNav(useStore(navStore));
+  const all = sortNav(useStore(navStore));
+  const expert = useStore(expertStore);
+  const entries = visibleNav(all, expert);
   const hash = useHash();
-  const active = activeNavKey(hash, entries);
+  const active = activeNavKey(hash, all, entries);
   return html`<header id="hc-top-bar" class=${`hc-top-bar${entries.length ? " has-plugin-nav" : ""}`}>
     <div class="hc-brand">
       <div class="hc-brand-mark" aria-hidden="true">V</div>
@@ -64,7 +76,7 @@ export function TopBar() {
         return html`<a
           key=${key}
           href=${`#p/${entry.plugin}/${entry.page}`}
-          class=${active === key ? "active" : ""}
+          class=${[active === key ? "active" : "", entry.expert ? "is-expert-entry" : ""].join(" ").trim()}
           aria-current=${active === key ? "page" : null}
           data-plugin-link=${key}
         >${entry.title}</a>`;

@@ -10,7 +10,7 @@ import * as kit from "./kit.js";
 import { SCHEMA_RENDERERS } from "./pages.js";
 import { html, render, useEffect, useErrorBoundary, useState } from "./vendor/preact-htm.js";
 
-export const DEFAULT_ROUTE = "#p/project-overview/status";
+export const DEFAULT_ROUTE = "#p/workbench/today";
 
 const ROUTE = /^#p\/([a-z][a-z0-9_-]{1,39})\/([a-z][a-z0-9_-]{1,39})(?:\?.*)?$/;
 
@@ -104,6 +104,8 @@ function syncRoute(manifest, mount) {
     render(null, mount);
     return;
   }
+  // 新工作台页面自带标题区，隐藏外壳的通用标题，避免出现两遍。
+  document.body.dataset.routePlugin = route.pluginId;
   const title = document.getElementById("session-title");
   if (title) title.textContent = pageTitle(manifest, route);
   render(html`<${PluginPage} manifest=${manifest} route=${route} />`, mount);

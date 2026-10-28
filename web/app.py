@@ -3657,10 +3657,10 @@ def create_app(
         """插件静态资源走协商缓存（ETag/304），避免「代码改了界面没变」。
 
         插件前端是原生 ES module：子模块 import 不带版本号，浏览器一旦留下旧副本
-        且没有 revalidate 提示，页面就会一直显示旧控件。这里只约束插件静态目录，
+        且没有 revalidate 提示，页面就会一直显示旧控件。这里约束插件静态目录和宿主外壳（/static/host/，同为 ES module），
         API 响应仍由各路由的 ``no-store`` 负责。
         """
-        if request.path.startswith("/plugins/") and response.status_code in (200, 304):
+        if request.path.startswith(("/plugins/", "/static/host/")) and response.status_code in (200, 304):
             response.headers["Cache-Control"] = "no-cache, must-revalidate"
         return response
 

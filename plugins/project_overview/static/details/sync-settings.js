@@ -1,6 +1,7 @@
 // 交付物明细列表「同步设置」列（签署日报规格 §9 S12–S20）：当场开关、行内编辑间隔/筛选条件/更新方式、
 // 多选批量启用停用与改间隔。修改走宿主既有接口，列表和明细页读写同一份设置。
 import { html, useCallback, useEffect, useState } from "/static/host/vendor/preact-htm.js";
+import { expertStore } from "/static/host/expert.js";
 import { apiRequest } from "../deliverable/api.js";
 import {
   fieldErrorsText, filterSummary, intervalText, lastSyncText, missingText, parseFilters, parseInterval, settingRequest,
@@ -73,6 +74,8 @@ export function SyncSettingsEditor({ setting, onClose, onSaved }) {
   const [filters, setFilters] = useState(JSON.stringify(setting.filters || {}, null, 2));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // 更新方式和原始筛选（JSON）只在专家模式下可改；收起时保存会原样带回现有设置。
+  const expert = expertStore.get();
   const save = async () => {
     const parsedInterval = parseInterval(interval, setting.kind);
     const parsedFilters = parseFilters(filters);
@@ -96,12 +99,14 @@ export function SyncSettingsEditor({ setting, onClose, onSaved }) {
   };
   return html`<div class="sync-settings-editor" onClick=${(event) => event.stopPropagation()}>
     <label>同步间隔（分钟）<input type="number" min="1" value=${interval} onInput=${(e) => setIntervalText(e.target.value)} /></label>
-    ${setting.kind === "binding" && html`<label>更新方式
+    ${expert && setting.kind === "binding" && html`<label>更新方式
       <select value=${mode} onChange=${(e) => setMode(e.target.value)}>
         ${MODES.map(([value, label]) => html`<option key=${value} value=${value}>${label}</option>`)}
       </select></label>`}
-    <label class="sync-settings-filters">筛选条件（JSON）
-      <textarea rows="4" value=${filters} onInput=${(e) => setFilters(e.target.value)}></textarea></label>
+    ${expert
+      ? html`<label class="sync-settings-filters">筛选条件（JSON）
+          <textarea rows="4" value=${filters} onInput=${(e) => setFilters(e.target.value)}></textarea></label>`
+      : html`<p class="sync-settings-note">筛选条件按项目设置自动生成，一般不需要改；确需调整时，在「工具」里开启专家模式。</p>`}
     ${setting.watchlist && html`<p class="sync-settings-note">关注清单在该交付物的明细页里维护（当前：${setting.watchlist.scope === "watchlist" ? `仅关注清单 ${setting.watchlist.count} 份` : "全部表单"}）。</p>`}
     <p class="sync-settings-note">保存后从下一次同步起生效；正在进行的同步不受影响。改筛选条件或更新方式时，进行中那次的结果不会发布，以免与新设置混用。</p>
     ${error && html`<p class="sync-settings-error" role="alert">${error}</p>`}

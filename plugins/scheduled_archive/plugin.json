@@ -7,7 +7,5 @@
   "pages": [
     {"id": "jobs", "title": "自动下载与留存", "kind": "module", "module": "jobs.js"}
   ],
-  "nav": [
-    {"title": "自动归档", "page": "jobs", "order": 50}
-  ]
+  "nav": [{"title": "自动归档", "page": "jobs", "order": 50, "expert": true, "parent": "workbench/tools"}]
 }

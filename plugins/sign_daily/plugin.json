@@ -7,7 +7,5 @@
   "pages": [
     {"id": "report", "title": "签署日报", "kind": "module", "module": "report.js"}
   ],
-  "nav": [
-    {"title": "签署日报", "page": "report", "order": 35}
-  ]
+  "nav": [{"title": "签署日报", "page": "report", "order": 35, "expert": true, "parent": "workbench/reports"}]
 }

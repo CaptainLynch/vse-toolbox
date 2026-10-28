@@ -7,7 +7,5 @@
   "pages": [
     {"id": "catalog", "title": "交付物工作台", "kind": "module", "module": "catalog.js"}
   ],
-  "nav": [
-    {"title": "交付物", "page": "catalog", "order": 15}
-  ]
+  "nav": [{"title": "交付物", "page": "catalog", "order": 15, "expert": true, "parent": "workbench/reports"}]
 }
