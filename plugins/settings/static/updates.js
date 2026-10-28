@@ -5,6 +5,7 @@ import { html, useCallback, useEffect, useRef, useState } from "/static/host/ven
 import { StateBlock, useStylesheet } from "/static/host/kit.js";
 import { request, SettingsError } from "./client.js";
 import { Chip } from "./sessions.js";
+import { AppUpdatesCard } from "./app-updates.js";
 
 const EVENT_LABELS = {
   staged: "已导入，待重启",
@@ -124,7 +125,7 @@ export default function PluginUpdatesPage({ plugin }) {
     <header class="vk-page-header">
       <div>
         <p class="st-eyebrow">插件包</p>
-        <h2>插件更新</h2>
+        <h2>程序与插件更新</h2>
       </div>
       <div class="vk-page-actions">
         <button type="button" class="vk-btn" disabled=${busy} onClick=${load}>刷新</button>
@@ -132,6 +133,8 @@ export default function PluginUpdatesPage({ plugin }) {
     </header>
 
     ${notice && html`<p class=${`st-status is-${notice.tone === "ok" ? "ok" : "error"}`} role="status">${notice.text}</p>`}
+
+    <${AppUpdatesCard} />
 
     <div class="st-layout">
       <div class="st-side">

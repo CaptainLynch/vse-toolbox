@@ -14,6 +14,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -30,6 +31,7 @@ HEALTH_TIMEOUT_SECONDS = 45.0
 _MAX_APP_LOG_BYTES = 2 * 1024 * 1024
 _POLL_SECONDS = 0.5
 _MAX_BOOT_ATTEMPTS = 3
+_MAX_CRASH_RESTARTS = 2
 
 
 class ChildProcess(Protocol):
@@ -51,6 +53,23 @@ def free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
+
+
+def port_is_free(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+    return True
+
+
+class Controls:
+    """Requests from the tray (same process) to the supervisor loop."""
+
+    def __init__(self) -> None:
+        self.quit = threading.Event()
+        self.restart = threading.Event()
 
 
 def spawn_app(app_dir: Path, port: int, layout: InstallLayout) -> ChildProcess:
@@ -245,6 +264,21 @@ class Supervisor:
     clock: Callable[[], float] = time.monotonic
     log: Callable[[str], None] = print
     lock: InstanceLock | None = field(default=None)
+    #: ``tray(supervisor)`` starts a tray icon and returns an object with ``stop()`` and ``notify(text)``.
+    tray: Callable[["Supervisor"], Any] | None = None
+    port_free: Callable[[int], bool] = port_is_free
+    controls: Controls = field(default_factory=Controls)
+    url: str | None = field(default=None, init=False)
+    version: str | None = field(default=None, init=False)
+    _tray_handle: Any = field(default=None, init=False, repr=False)
+
+    def notify(self, text: str) -> None:
+        self.log(text)
+        if self._tray_handle is not None:
+            try:
+                self._tray_handle.notify(text)
+            except Exception:  # noqa: BLE001 - a tray balloon is best effort
+                pass
 
     def run(self) -> int:
         self.layout.ensure()
@@ -267,6 +301,44 @@ class Supervisor:
             return 0
 
     def _run_locked(self) -> int:
+        if self.tray is not None:
+            try:
+                self._tray_handle = self.tray(self)
+            except Exception as exc:  # noqa: BLE001 - no tray is not fatal
+                self.log(f"托盘图标不可用：{exc}")
+        try:
+            return self._loop()
+        finally:
+            if self._tray_handle is not None:
+                try:
+                    self._tray_handle.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+
+    def _loop(self) -> int:
+        port: int | None = None
+        crashes = 0
+        first = True
+        while True:
+            # 端口尽量沿用：重启后已打开的窗口刷新一下就能继续用。
+            if port is None or not self.port_free(port):
+                port = self.pick_port()
+                first = True
+            outcome, code = self._boot(port, open_window=first)
+            first = False
+            if outcome == "restart":
+                crashes = 0
+                continue
+            if outcome == "crashed" and crashes < _MAX_CRASH_RESTARTS and not self.controls.quit.is_set():
+                crashes += 1
+                self.log(f"程序意外退出（退出码 {code}），正在自动重启")
+                continue
+            return code
+
+    def _boot(self, port: int, *, open_window: bool) -> tuple[str, int]:
+        self.layout.restart_request.unlink(missing_ok=True)
+        self.layout.quit_request.unlink(missing_ok=True)
+        self.controls.restart.clear()
         state = BootState(self.layout)
         for version in state.install_staged():
             self.log(f"已安装新版本 {version}")
@@ -275,27 +347,26 @@ class Supervisor:
                 version, trial = state.select_for_boot()
             except BootStateError as exc:
                 self.log(str(exc))
-                return 2
+                return "failed", 2
             app_dir = self.layout.app_dir(version)
             if trial:
                 self._snapshot_before_trial(state, version)
-            port = self.pick_port()
             self.log(f"启动 VSE Toolbox {version}{'（试用）' if trial else ''}")
             child = self.spawn(app_dir, port, self.layout)
             healthy, reason = self._wait_healthy(child, port)
             if healthy:
                 if trial:
                     state.commit(version)
-                    self.log(f"新版本 {version} 已生效")
-                return self._serve(child, port, version)
+                    self.notify(f"VSE Toolbox 已更新到 {version}")
+                return self._serve(child, port, version, open_window=open_window)
             self._stop(child)
             if not trial:
                 self.log(f"VSE Toolbox {version} 无法启动：{reason}")
                 state.record("bootFailed", version, reason=reason)
-                return 3
+                return "failed", 3
             state.abandon(version, reason=reason)  # 也负责恢复试用前的数据库快照
-            self.log(f"新版本 {version} 启动失败（{reason}），已自动回到之前的版本")
-        return 3
+            self.notify(f"新版本 {version} 启动失败，已自动回到之前的版本")
+        return "failed", 3
 
     def _snapshot_before_trial(self, state: BootState, version: str) -> None:
         """Every trial gets a snapshot: migrations run from app code whether or not the
@@ -316,16 +387,32 @@ class Supervisor:
             self.sleep(_POLL_SECONDS)
         return False, f"{int(self.health_timeout)} 秒内没有完成启动"
 
-    def _serve(self, child: ChildProcess, port: int, version: str) -> int:
+    def _serve(self, child: ChildProcess, port: int, version: str, *, open_window: bool) -> tuple[str, int]:
         url = f"http://127.0.0.1:{port}/"
+        self.url, self.version = url, version
         info = {"url": url, "port": port, "version": version, "pid": child.pid, "supervisorPid": os.getpid()}
         self.layout.instance_file.write_text(json.dumps(info), encoding="utf-8")
-        self.show(url, self.layout)
+        if open_window:
+            self.show(url, self.layout)
         try:
-            return child.wait()
+            while True:
+                code = child.poll()
+                if code is not None:
+                    return ("exited" if code == 0 else "crashed"), code
+                if self.layout.quit_request.exists():
+                    self.layout.quit_request.unlink(missing_ok=True)
+                    self.controls.quit.set()
+                if self.controls.quit.is_set():
+                    self._stop(child)
+                    return "quit", 0
+                if self.controls.restart.is_set() or self.layout.restart_request.exists():
+                    self.log("按请求重新启动程序")
+                    self._stop(child)
+                    return "restart", 0
+                self.sleep(_POLL_SECONDS)
         except KeyboardInterrupt:
             self._stop(child)
-            return 0
+            return "quit", 0
 
     @staticmethod
     def _stop(child: ChildProcess) -> None:

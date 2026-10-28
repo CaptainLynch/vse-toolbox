@@ -31,29 +31,31 @@ from vse_boot.packages import build_app_package, key_id_for  # noqa: E402
 
 OUT = REPO / "dist" / "v2-test"
 
-STEPS = """VSE Toolbox v2 测试安装（仅供测试；签名密钥是测试专用的）
+STEPS = r"""VSE Toolbox v2 测试安装（仅供测试；签名密钥是测试专用的）
 ================================================================
 
 1. 首次安装
-   双击 VSE-Toolbox\\VSE-Toolbox.exe
+   双击 VSE-Toolbox\VSE-Toolbox.exe
    → 自动安装旁边的 vse-app-2.0.0.vsepkg，打开 Edge 应用窗口（没有地址栏）
-   → 再双击一次 exe：不会启动第二份，只会把已有窗口再打开一次
+   → 右下角出现 V 字托盘图标；关掉窗口程序仍在后台，点托盘图标重新打开
+   → 再双击一次 exe：不会启动第二份，只会把窗口再打开一次
 
-2. 正常更新
-   把 updates\\vse-app-2.0.1.vsepkg 拖到 VSE-Toolbox\\安装更新包.cmd 上（或在命令行运行
-   VSE-Toolbox.exe stage ..\\updates\\vse-app-2.0.1.vsepkg）
-   → 关闭程序（结束 VSE-Toolbox.exe 进程）后重新双击 exe → 版本变成 2.0.1
+2. 在程序里更新（推荐的日常方式）
+   把 updates\vse-app-2.0.1.vsepkg 复制到「下载」文件夹（模拟飞书下载）
+   → 程序里打开「设置 → 插件更新」，顶部「程序更新」会显示"发现新版本 2.0.1"
+   → 点「安装并重启」，约 10 秒后页面自动刷新，版本变成 2.0.1
 
-3. 坏更新自动回滚
-   同样安装 updates\\vse-app-2.0.2.vsepkg（这个版本故意启动失败）
-   → 重新启动：先试 2.0.2，失败后自动回到 2.0.1，窗口照常打开
+3. 双击更新包安装
+   第一次运行 exe 后，.vsepkg 已关联到本程序（只写当前用户的注册表，不需要管理员）
+   → 双击 updates\vse-app-2.0.2.vsepkg → 提示"校验通过，现在重启吗" → 是
+   → 2.0.2 故意启动失败，程序自动回到 2.0.1，托盘弹出提示，窗口照常可用
 
-4. 查看状态 / 手动回滚
-   VSE-Toolbox\\查看状态.cmd     当前版本、上一版本、安装与回滚记录
-   VSE-Toolbox.exe rollback      下次启动回到上一版本
+4. 回滚与记录
+   「程序更新」卡片里可以「回到上一版本」，下面列着安装/生效/回滚记录
+   托盘菜单：打开 / 检查更新 / 重新启动 / 退出（退出后不再自动同步）
 
-日志：VSE-Toolbox\\state\\launcher.log、state\\app-last-run.log
-数据：VSE-Toolbox\\data\\（与程序版本无关，升级和回滚都不会动它）
+日志：VSE-Toolbox\state\launcher.log、state\app-last-run.log
+数据：VSE-Toolbox\data\（与程序版本无关，升级和回滚都不会动它）
 """
 
 STAGE_CMD = '@echo off\r\nchcp 65001 >nul\r\n"%~dp0VSE-Toolbox.exe" stage "%~1"\r\npause\r\n'

@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -73,6 +74,27 @@ def get(url: str) -> dict:
         return json.loads(response.read().decode("utf-8"))
 
 
+def post(url: str, body: dict | None = None) -> dict:
+    data = json.dumps(body or {}).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method="POST", headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def wait_for_version(info: dict, version: str, timeout: float = 120.0) -> dict:
+    """After an in-app restart: same port, new version (instance.json is rewritten)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            current = json.loads((INSTALL / "state" / "instance.json").read_text(encoding="utf-8"))
+            if current.get("version") == version and version in served_version(current):
+                return current
+        except (OSError, ValueError, urllib.error.URLError):
+            pass
+        time.sleep(1)
+    raise RuntimeError(f"did not restart into {version}")
+
+
 def served_version(info: dict) -> str:
     payload = get(info["url"] + "api/version")
     data = payload.get("data", payload)
@@ -104,15 +126,30 @@ def main() -> int:
     # 2. 第二次启动：不再起第二份
     second = subprocess.run([str(EXE)], env=ENV, timeout=30)
     check("第二次启动直接返回（单实例）", second.returncode == 0 and len(list((INSTALL / "app").iterdir())) == 1)
-    stop(proc, info)
 
-    # 3. 正常更新 2.0.1
-    print(cli("stage", str(OUT / "updates" / "vse-app-2.0.1.vsepkg")).strip())
-    proc, info = start()
-    version = served_version(info)
+    # 3. 在设置页里发现并安装 2.0.1，一键重启生效（不关程序）
+    received = INSTALL / "vse-app-2.0.1.vsepkg"  # 模拟"收到的更新包放在了被监视的文件夹里"
+    shutil.copy2(OUT / "updates" / "vse-app-2.0.1.vsepkg", received)
+    page = get(info["url"] + "api/p/settings/app-updates")["data"]
+    check("设置页显示受启动器管理、当前 2.0.0", page.get("managed") is True and page.get("current") == "2.0.0")
+    check("设置页发现新版本 2.0.1（签名有效）", [a["version"] for a in page.get("available", [])] == ["2.0.1"])
+    post(info["url"] + "api/p/settings/app-updates/install", {"file": received.name})
+    post(info["url"] + "api/p/settings/app-updates/restart")
+    restarted = wait_for_version(info, "2.0.1")
     state = status()["app"]
-    check("更新到 2.0.1 并生效", "2.0.1" in version and state["current"] == "2.0.1" and state["previous"] == "2.0.0", version)
-    stop(proc, info)
+    check("页面内安装并重启后变成 2.0.1，端口不变", restarted["port"] == info["port"] and state["current"] == "2.0.1" and state["previous"] == "2.0.0")
+    received.unlink()
+    info = restarted
+
+    # 3b. 用命令（托盘「退出」走同一条路）正常退出
+    old_child = int(info["pid"])
+    cli("quit")
+    try:
+        code = proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        code = None
+    time.sleep(1)
+    check("退出请求：启动器与 app 都正常退出", code == 0 and not pid_alive(old_child), f"exit={code}")
 
     # 4. 坏更新 2.0.2：自动回滚
     print(cli("stage", str(OUT / "updates" / "vse-app-2.0.2.vsepkg")).strip())
@@ -130,6 +167,17 @@ def main() -> int:
     proc, info = start()
     version = served_version(info)
     check("手动回滚到 2.0.0", "2.0.0" in version, version)
+    stop(proc, info)
+
+    # 5b. 回滚后在页面里再次升级到 2.0.1（上一版本目录可以被覆盖）
+    proc, info = start()
+    received = INSTALL / "vse-app-2.0.1.vsepkg"
+    shutil.copy2(OUT / "updates" / "vse-app-2.0.1.vsepkg", received)
+    post(info["url"] + "api/p/settings/app-updates/install", {"file": received.name})
+    post(info["url"] + "api/p/settings/app-updates/restart")
+    info = wait_for_version(info, "2.0.1")
+    check("回滚后再次升级到 2.0.1", status()["app"]["current"] == "2.0.1")
+    received.unlink()
     stop(proc, info)
 
     # 6. 篡改的包被拒绝

@@ -2,9 +2,11 @@
 """Command line / launcher entry.
 
     python -m vse_boot [run] [--root DIR]      start (default)
-    python -m vse_boot stage FILE [--root DIR] verify and stage an app package
+    python -m vse_boot open FILE [--root DIR]  double-clicked .vsepkg: verify, stage, offer a restart
+    python -m vse_boot stage FILE [--root DIR] verify and stage an app package (no dialogs)
     python -m vse_boot status [--root DIR]
     python -m vse_boot rollback [--root DIR]   back to the previous version at next start
+    python -m vse_boot restart|quit [--root DIR]  ask the running instance to restart / quit
 
 The frozen launcher (``VSE-Toolbox.exe``) also routes two internal forms:
 ``--app-child --app-dir D --port P`` (the app child process) and
@@ -21,12 +23,15 @@ import os
 import sys
 from pathlib import Path
 
+from vse_boot import api
 from vse_boot.discover import find_updates
 from vse_boot.layout import InstallLayout
-from vse_boot.packages import PackageError, load_trusted_keys, stage_app, verify_app_package
+from vse_boot.packages import PackageError
 from vse_boot.state import BootState, BootStateError
 
-RUNTIME_KEYS = Path(__file__).resolve().parent / "trusted_keys.json"
+# 兼容旧名称（测试与工具引用）
+trusted_keys = api.trusted_keys
+stage_file = api.stage_file
 
 
 def default_root() -> Path:
@@ -44,34 +49,76 @@ def default_root() -> Path:
     return Path(base) / "VSE-Toolbox"
 
 
-def trusted_keys(layout: InstallLayout) -> dict[str, bytes]:
-    """Keys shipped with the runtime, plus keys the current app version ships (rotation)."""
-    paths = [RUNTIME_KEYS]
-    current = BootState(layout).app.get("current")
-    if current:
-        paths.append(layout.app_dir(current) / "host" / "trusted_keys.json")
-    return load_trusted_keys(paths)
-
-
-def stage_file(layout: InstallLayout, path: Path) -> str:
-    verified = verify_app_package(path.read_bytes(), trusted_keys(layout))
-    stage_app(verified, layout)
-    return verified.version
-
-
-def _first_install(layout: InstallLayout) -> None:
+def _first_install(layout: InstallLayout, log) -> None:  # type: ignore[no-untyped-def]
     """No version installed yet: install the newest app package next to the launcher or in Downloads."""
     state = BootState(layout)
-    if state.app["current"] or any(layout.staging_dir.glob("app-*")):
+    if state.app["current"] or api.staged_versions(layout):
         return
-    folders = [layout.root]
-    if getattr(sys, "frozen", False):
-        folders.insert(0, Path(sys.executable).resolve().parent)
-    folders.append(Path.home() / "Downloads")
-    candidates = [c for c in find_updates(folders, trusted_keys(layout), current_app_version=None) if c.kind == "app"]
+    candidates = [c for c in find_updates(api.watch_dirs(layout), api.trusted_keys(layout), current_app_version=None) if c.kind == "app"]
     if candidates:
-        version = stage_file(layout, candidates[0].path)
-        print(f"首次安装：找到程序包 {candidates[0].path.name}（{version}）")
+        version = api.stage_file(layout, candidates[0].path)
+        log(f"首次安装：找到程序包 {candidates[0].path.name}（{version}）")
+
+
+def _is_running(layout: InstallLayout) -> bool:
+    from vse_boot.supervisor import InstanceLock
+
+    lock = InstanceLock(layout.lock_file)
+    if lock.acquire():
+        lock.release()
+        return False
+    return True
+
+
+def _open_package(layout: InstallLayout, path: Path, log) -> int:  # type: ignore[no-untyped-def]
+    """Double-click flow: everything is a dialog, because the windowed exe has no console."""
+    from vse_boot.association import ask
+
+    try:
+        version = api.stage_file(layout, path)
+    except (PackageError, OSError) as exc:
+        log(f"无法安装 {path.name}：{exc}")
+        ask(f"无法安装这个更新包：\n{exc}", yes_no=False)
+        return 1
+    log(f"已校验并暂存 {version}（{path.name}）")
+    if _is_running(layout):
+        if ask(f"更新包校验通过：VSE Toolbox {version}。\n\n现在重启程序完成更新吗？（大约 10 秒）"):
+            api.request_restart(layout)
+        return 0
+    if ask(f"更新包校验通过：VSE Toolbox {version}。\n\n现在启动 VSE Toolbox 吗？"):
+        return _run(layout, log)
+    return 0
+
+
+def _run(layout: InstallLayout, log) -> int:  # type: ignore[no-untyped-def]
+    from vse_boot.supervisor import Supervisor, open_window
+
+    try:
+        _first_install(layout, log)
+    except (PackageError, OSError) as exc:
+        log(f"首次安装失败：{exc}")
+    headless = bool(os.environ.get("VSE_BOOT_NO_WINDOW"))
+    if getattr(sys, "frozen", False) and not headless:
+        try:
+            from vse_boot.association import register
+
+            if register(Path(sys.executable).resolve()):
+                log("已关联 .vsepkg：以后双击更新包即可安装")
+        except OSError as exc:
+            log(f"无法关联 .vsepkg：{exc}")
+    show = open_window
+    tray = None
+    if headless:
+        # 自动化测试 / 无人值守：不打开窗口、不显示托盘，只记录地址。
+        show = lambda url, _layout: log(f"就绪：{url}")  # noqa: E731
+    else:
+        try:
+            from vse_boot.tray import start_tray
+
+            tray = start_tray
+        except ImportError:
+            tray = None
+    return Supervisor(layout, show=show, log=log, tray=tray).run()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -86,24 +133,30 @@ def main(argv: list[str] | None = None) -> int:
         return run_app_script(Path(argv[0]), argv[1:])
 
     parser = argparse.ArgumentParser(prog="vse_boot", description="VSE Toolbox 启动与更新")
-    parser.add_argument("command", nargs="?", default="run", choices=["run", "stage", "status", "rollback"])
+    parser.add_argument(
+        "command", nargs="?", default="run",
+        choices=["run", "open", "stage", "status", "rollback", "restart", "quit"],
+    )
     parser.add_argument("file", nargs="?")
     parser.add_argument("--root", default=None)
     args = parser.parse_args(argv)
     layout = InstallLayout(Path(args.root) if args.root else default_root()).ensure()
+    log = _file_logger(layout)
 
-    if args.command == "stage":
+    if args.command in ("open", "stage"):
         if not args.file:
-            parser.error("stage 需要更新包路径")
+            parser.error(f"{args.command} 需要更新包路径")
+        if args.command == "open":
+            return _open_package(layout, Path(args.file), log)
         try:
-            version = stage_file(layout, Path(args.file))
+            version = api.stage_file(layout, Path(args.file))
         except (PackageError, OSError) as exc:
-            _file_logger(layout)(f"无法安装 {Path(args.file).name}：{exc}")
+            log(f"无法安装 {Path(args.file).name}：{exc}")
             return 1
-        _file_logger(layout)(f"已校验并暂存 {version}，下次启动时生效")
+        log(f"已校验并暂存 {version}，下次启动时生效")
         return 0
     if args.command == "status":
-        print(json.dumps(BootState(layout).status(), ensure_ascii=False, indent=2))
+        print(json.dumps(api.status(layout), ensure_ascii=False, indent=2))
         return 0
     if args.command == "rollback":
         try:
@@ -113,19 +166,14 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print(f"下次启动将使用 {version}")
         return 0
-
-    from vse_boot.supervisor import Supervisor, open_window
-
-    log = _file_logger(layout)
-    try:
-        _first_install(layout)
-    except (PackageError, OSError) as exc:
-        log(f"首次安装失败：{exc}")
-    show = open_window
-    if os.environ.get("VSE_BOOT_NO_WINDOW"):
-        # 自动化测试 / 无人值守：不打开窗口，只记录地址。
-        show = lambda url, _layout: log(f"就绪：{url}")  # noqa: E731
-    return Supervisor(layout, show=show, log=log).run()
+    if args.command == "restart":
+        api.request_restart(layout)
+        return 0
+    if args.command == "quit":
+        layout.state_dir.mkdir(parents=True, exist_ok=True)
+        layout.quit_request.write_text("quit", encoding="utf-8")
+        return 0
+    return _run(layout, log)
 
 
 def _file_logger(layout: InstallLayout):  # type: ignore[no-untyped-def]

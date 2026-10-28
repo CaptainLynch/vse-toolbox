@@ -50,6 +50,14 @@ class InstallLayout:
         return self.state_dir / "instance.json"
 
     @property
+    def restart_request(self) -> Path:
+        return self.state_dir / "restart.request"
+
+    @property
+    def quit_request(self) -> Path:
+        return self.state_dir / "quit.request"
+
+    @property
     def lock_file(self) -> Path:
         return self.state_dir / "instance.lock"
 

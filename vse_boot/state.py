@@ -121,9 +121,9 @@ class BootState:
                 target = self.layout.app_dir(version)
                 if not (entry / "files").is_dir():
                     raise ValueError("暂存目录缺少文件")
-                if version in (self.app["current"], self.app["previous"]):
-                    # 不覆盖正在使用或可回滚的版本目录。
-                    raise ValueError("该版本已安装")
+                if version == self.app["current"]:
+                    # 不覆盖正在使用的版本目录（上一版本没有在运行，回滚后再升级回去是正常操作，可以覆盖）。
+                    raise ValueError("该版本正在使用，无需重复安装")
                 if target.exists():
                     shutil.rmtree(target)
                 target.parent.mkdir(parents=True, exist_ok=True)

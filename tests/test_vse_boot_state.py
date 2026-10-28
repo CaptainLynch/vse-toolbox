@@ -164,3 +164,29 @@ def test_bad_staging_entry_is_skipped_and_current_still_boots(layout: InstallLay
     assert state.select_for_boot() == ("2.0.0", False)
     assert state.events[0]["kind"] == "installFailed"
     assert not broken.exists()
+
+
+def test_upgrade_again_after_manual_rollback(layout: InstallLayout) -> None:
+    stage(layout, "2.0.0")
+    BootState(layout).install_staged()
+    stage(layout, "2.0.1")
+    state = BootState(layout)
+    state.install_staged()
+    state.select_for_boot()
+    state.commit("2.0.1")
+    BootState(layout).rollback()  # current 2.0.0, previous 2.0.1
+    stage(layout, "2.0.1", marker="again")
+    state = BootState(layout)
+    assert state.install_staged() == ["2.0.1"]
+    assert state.select_for_boot() == ("2.0.1", True)
+    assert "again" in (layout.app_dir("2.0.1") / "webui.py").read_text(encoding="utf-8")
+
+
+def test_reinstalling_the_running_version_is_refused(layout: InstallLayout) -> None:
+    stage(layout, "2.0.0")
+    BootState(layout).install_staged()
+    stage(layout, "2.0.0", marker="again")
+    state = BootState(layout)
+    assert state.install_staged() == []
+    assert state.events[0]["kind"] == "installFailed"
+    assert "again" not in (layout.app_dir("2.0.0") / "webui.py").read_text(encoding="utf-8")

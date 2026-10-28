@@ -83,6 +83,7 @@ hiddenimports += [
 hiddenimports += collect_submodules("win32com")
 hiddenimports += collect_submodules("xlwings")
 hiddenimports += collect_submodules("vse_boot")
+hiddenimports += collect_submodules("pystray") + ["PIL.Image", "PIL.ImageDraw", "PIL.ImageFont"]
 
 keys_file = os.environ.get("VSE_TRUSTED_KEYS_FILE") or str(REPO / "vse_boot" / "trusted_keys.json")
 
