@@ -18,3 +18,10 @@ def test_frozen_app_root_is_writable_executable_directory(monkeypatch, tmp_path:
 
     assert runtime_paths.app_root() == exe_dir.resolve()
     assert not (exe_dir / "data" / ".write_probe").exists()
+
+
+def test_explicit_data_root_wins_for_v2_launcher(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("VSE_DATA_ROOT", str(tmp_path / "install"))
+    monkeypatch.setattr(runtime_paths.sys, "frozen", True, raising=False)
+
+    assert runtime_paths.app_root() == tmp_path / "install"

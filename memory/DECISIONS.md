@@ -780,3 +780,11 @@ DSH DeepSeek Harness + v4.1 Flash 主代理和 ZCode Gemini 3.8 Flash 交互主�
   不发送 `seccode`；取消端点不要求 `base_url`。
 - 决定：不保留“表单明细用户列偏好”概念（现有表单明细表无该存储；系统查询网格的列偏好键不变）。
 
+
+## 2026-10-28 v2 增量更新内核放在运行时层（vse_boot）
+
+- 决定：负责校验/安装/试用/回滚的 `vse_boot/` 只依赖标准库与 `cryptography`，不 import 任何 app 代码，随运行时（L1）发布，不随 app 包更新——坏的 app 包不能弄坏更新链路。
+- 决定：监督进程 + app 子进程；试用版健康检查（`/api/version`、`/api/host/manifest` 均 200）失败或进程崩溃即回滚；**每次试用前都做数据库快照**（不依赖发布者声明迁移），回滚时恢复；Windows Job Object 保证结束启动器时 app 子进程同时退出。
+- 决定：app 包一律全量（实测约 1 MB），包内 `requires.runtime` 用 `TARGET_RUNTIME_TAG`（cp312），`VSE-Launcher.spec` 断言构建 Python 与之相同。
+- 决定：冻结启动器默认安装根为 `%LOCALAPPDATA%\VSE-Toolbox`；只有 exe 旁有 `portable.flag` 或已有 `state/boot.json` 才用 exe 所在目录（避免在「下载」里落数据）。app 子进程以源码方式运行（清除 `sys.frozen`），数据根由 `VSE_DATA_ROOT` 指定。
+- 证据：`tests/test_vse_boot_*.py` 等 36 项单测；`tools/e2e_v2_test_install.py` 对真实 exe 14/14（首次安装、单实例、更新、坏包回滚、无孤儿进程、手动回滚、篡改包拒绝）。插件级更新仍走 `host/updates.py`（format 1）。
