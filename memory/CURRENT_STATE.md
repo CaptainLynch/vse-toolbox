@@ -98,6 +98,21 @@
   试用快照按项目存在 `state/db-snapshots/<id>/`，`trialDatabase` 记录恢复目标。只装 app 包而不换启动器时，
   `vse_boot.projects` 不存在 → 工作台按单项目运行（切换器隐藏）。
 
+## 2026-10-31 Wave 4 集成完成（W13-04 lead + W3-01/W5-02/W1-02/W14-03A worker）
+
+- **W13-04**：web/excel_boot.py（13 路由逐字迁入）。**方法论升级**：块迁移后用 ast 自由变量审计
+  （Load 名 − 局部 Store − 模块导入 − 内建），本轮据此补齐 3 个异常类；注意函数内局部 import 不是
+  ast.Name Store（扫描器要放行带局部 from-import 的名字）。
+- **W3-01/W5-02/W1-02/W14-03A 全部交付**（lead 各修 1-3 处 worker 自测问题：事件桩缺
+  stopPropagation/currentTarget、async 导出匹配、warn 语义、朴素术语扫描误报、可复现性测试共用
+  有状态库）。专家导航 +自检；路由 golden 164 条。
+- **W1-02 教训**：objective 里 "password/token/cookie" 字样会触发 supervisor 高危正则拒派——契约文本
+  用中文描述敏感键类别。
+- **门禁**：全量 3574 passed/6 skipped（含新增诊断/计划编辑/会话状态/golden 测试）、地图 verified、
+  术语/浏览器全绿；包 2.3.8（262 文件 sha256 4d2775ac…）验签通过。
+- **待办**：W14-03B（updates 拆分实施）、W16-02（窗口/单实例，lead）、W6-01（调度，lead+worker）、
+  W2-01（凭据会话恢复，lead 高危）。
+
 ## 2026-10-31 Wave 3 集成完成（W13-03 lead + W12-01/W1-01/W14-01 worker）
 
 - **W13-03**：web/tasks_boot.py 承载任务中心 6 路由+4 助手（510 行逐字迁移）。**教训**：块提取要连带

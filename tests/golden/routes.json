@@ -506,6 +506,17 @@
     "download": "none"
   },
   {
+    "rule": "/api/p/diagnostics/self-check",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_diagnostics.self_check",
+    "view_function": "self_check",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
     "rule": "/api/p/project-overview/form-terms",
     "methods": [
       "GET"
@@ -1688,6 +1699,17 @@
       "GET"
     ],
     "endpoint": "plugin_deliverables_static.static",
+    "view_function": "send_static_file",
+    "is_write": false,
+    "envelope": "none",
+    "download": "download"
+  },
+  {
+    "rule": "/plugins/diagnostics/static/<path:filename>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_diagnostics_static.static",
     "view_function": "send_static_file",
     "is_write": false,
     "envelope": "none",

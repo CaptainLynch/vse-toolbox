@@ -4,7 +4,10 @@ import { useState } from "/static/host/vendor/preact-htm.js";
 import {
   ErrorCard, PageHead, activeDeliverables, Pill, Progress, Skeleton, TONE, api, completionCount, deliverableHref, go, html, shortTime, useLoad, useWorkbenchStyles,
 } from "./common.js";
+import { PlanSection, PlanTimeline } from "./plan-edit.js";
 import { ProjectSwitcher } from "./projects.js";
+
+export { PlanTimeline as Timeline };
 
 const SOURCES = { status: "/api/project-status", scheduler: "/api/project-status/scheduler" };
 
@@ -35,22 +38,6 @@ function scheduleText(d) {
   if (d.scheduleState === "overdue") return html`<${Pill} tone="bad">逾期 ${d.scheduleDays} 天<//>`;
   if (d.scheduleState === "due_soon") return html`<${Pill} tone="warn">${d.scheduleDays} 天内到期<//>`;
   return null;
-}
-
-function Timeline({ milestones, today }) {
-  const list = milestones || [];
-  const current = list.find((m) => m.status !== "已完成");
-  return html`<div class="wb-timeline" role="list">
-    ${list.map((m) => {
-      const done = m.status === "已完成";
-      const late = !done && m.date && m.date < today;
-      const cls = ["wb-node", done ? "is-done" : "", m === current ? "is-current" : "", late ? "is-late" : ""].join(" ");
-      return html`<div class=${cls} role="listitem" key=${m.id}>
-        <i class="dot"></i><b>${m.name}</b>
-        <span>${m.date ? m.date.slice(5) : html`<a class="wb-link" href="#p/project-overview/plan">去排期</a>`}</span>
-      </div>`;
-    })}
-  </div>`;
 }
 
 export default function ProjectPage() {
@@ -107,10 +94,12 @@ export default function ProjectPage() {
         <p style="margin:6px 0 0;color:var(--ink);font-weight:600">${summary.risk || "暂无风险"}</p></div>
     </div>
 
-    <section class="wb-card">
-      <div class="wb-card-head"><h3>主计划</h3><span class="wb-small wb-muted">今天 ${phase.today || ""}</span></div>
-      <${Timeline} milestones=${status.milestones} today=${phase.today || ""} />
-    </section>
+    <${PlanSection}
+      milestones=${status.milestones}
+      phase=${phase}
+      onReload=${reload}
+      today=${phase.today || ""}
+    />
 
     <section class="wb-card">
       <div class="wb-card-head"><h3>交付物</h3><span class="wb-small wb-muted">点任意一行查看明细与同步设置</span></div>
