@@ -98,6 +98,21 @@
   试用快照按项目存在 `state/db-snapshots/<id>/`，`trialDatabase` 记录恢复目标。只装 app 包而不换启动器时，
   `vse_boot.projects` 不存在 → 工作台按单项目运行（切换器隐藏）。
 
+## 2026-10-31 Wave 3 集成完成（W13-03 lead + W12-01/W1-01/W14-01 worker）
+
+- **W13-03**：web/tasks_boot.py 承载任务中心 6 路由+4 助手（510 行逐字迁移）。**教训**：块提取要连带
+  模块级/闭包级常量（_CRAWL_TASK_TYPE_LABELS 漏带导致首跑全量 26 failed，web.app 局部常量也是依赖）。
+- **W12-01**：Excel 路径安全（穿越/UNC/ADS/重解析越界）+ 环境探测（激活状态如实「需要检查」；
+  残留进程只认本工具拥有的）。
+- **W1-01**：诊断导出字段白名单化——白名单外不收集（不是脱敏后保留），禁导清单物理阻断。
+- **W14-01 第 2 步（worker 拆分被否决）**：worker 的子模块拆分产生真实行为漂移（values 列变短，
+  15 failed）→ lead 回退，改用契约内置兜底：包壳 = _impl.py 原文 + 136 名字 re-export（零风险），
+  全量 re 重跑 90 passed。**教训**：120KB 级服务的等价拆分需要逐符号对照 + 每子模块一步一验，
+  单个 15 分钟 worker 会话装不下；子模块渐进拆分留后续（黄金基线已锁行为）。
+- **门禁**：全量 PASS、地图 verified、术语/浏览器全绿、包 2.3.7（256 文件 sha256 9e49dabc…）验签。
+- **下一步 Wave 4**：W13-04 Excel 路由迁移（lead）、W3-01/W5-02/W1-02（worker/部分并行）、
+  W14-03（updates 拆分，需先黄金基线——吸取 W14 教训拆两步）、W16-02（lead）。
+
 ## 2026-10-31 Wave 2 集成完成（W13-02 lead 迁移 + W5-01/W14-01A/W16-01 worker）
 
 - **W13-02**：web/host_boot.py 承载 11 条宿主路由（version/settings/host-update），HostRouteDeps 注入，

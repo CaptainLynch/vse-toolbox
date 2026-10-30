@@ -176,6 +176,19 @@
 
 **路由基线**：163 条（新增 workbench 归档、settings 自启开关）。
 
+
+## Wave 3 交付记录（2026-10-31）
+
+| 任务 | 状态 | 交付物与证据 |
+|---|---|---|
+| W13-03 | ✅ | `web/tasks_boot.py`（6 条 /api/tasks 路由 + 4 助手逐字迁入，510 行；_CRAWL_TASK_TYPE_LABELS 随迁——首跑全量暴露后补）；golden 零差异 |
+| W12-01 | ✅ | `services/excel_path_safety.py`（穿越/UNC/ADS/越界）+ `services/excel_env_check.py`（激活状态「需要检查」不伪报；残留进程只认本工具）+ 全 mock 测试 |
+| W1-01 | ✅ | 诊断导出字段白名单化（白名单外不收集；禁导清单物理阻断）+ `tests/test_diagnostics_whitelist.py` |
+| W14-01（第 2 步） | ✅/🔄 | 服务包化（`services/deliverable_form_analysis/` = `_impl.py` 原文 + 136 名字全量 re-export，零行为风险）；worker 子模块拆分尝试因行为漂移（15 failed）被 lead 否决回退；子模块渐进拆分留后续波次 |
+| Wave 3 集成包 | ✅ | `dist/v2-test/updates/vse-app-2.3.7.vsepkg`（256 文件，sha256 `9e49dabc…`，验签通过，未真机安装） |
+
+**Wave 3 门禁**：全量回归 PASS、地图 verified、术语/Node/浏览器通道全绿、包 2.3.7 验签。
+
 ## 基线证据（2026-10-31，W0）
 
 - 已提交：`b9f309b`（同步三问题+展示口径）、`7f4617f`（日报门禁+孤儿项目）、`d7ba018`（文档基线）。

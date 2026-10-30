@@ -4097,16 +4097,7 @@ def create_app(
             return _json_error(500, "ServerError", "Excel artifact retention plan query failed")
 
     # ── 统一任务中心门面与工件下载 (Unified Task Center API Facade) ──────────
-
-    _CRAWL_TASK_TYPE_LABELS = {
-        "paa_crawl": "Aras PAA 全量抓取",
-        "paa_export": "Aras PAA 导出",
-        "ewo_export": "Aras EWO 导出",
-        "tdc_data_model_crawl": "TDC 数模审核全量抓取",
-        "tdc_data_model_export": "TDC 数模审核导出",
-        "tdc_sor_crawl": "TDC SOR 全量抓取",
-        "tdc_sor_export": "TDC SOR 导出",
-    }
+    # 实现已迁入 web/tasks_boot.py（W13-03）；_CRAWL_TASK_TYPE_LABELS 随迁。
 
     # 任务中心统一路由已迁入 web/tasks_boot.py（W13-03，路径/endpoint/信封不变）。
     from web.tasks_boot import TasksRouteDeps, register_tasks_routes

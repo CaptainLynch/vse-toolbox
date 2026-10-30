@@ -340,7 +340,8 @@ def test_legacy_label_only_ncr_rows_disclose_ambiguous_columns(
 
     events: list[tuple[str, object, str]] = []
     monkeypatch.setattr(
-        "services.deliverable_form_analysis.emit",
+        # 包化后实现住在 _impl：patch 目标随实现走（W14-01 渐进拆分）
+        "services.deliverable_form_analysis._impl.emit",
         lambda kind, data=None, *, name="", exception=None: events.append(
             (kind, data, name)
         ),

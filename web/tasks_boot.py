@@ -23,6 +23,17 @@ logger = logging.getLogger(__name__)
 
 _TASK_RESULT_MAX_BYTES = 64 * 1024 * 1024
 
+#: 抓取任务类型的中文标题（随 W13-03 从 create_app 局部常量迁入）。
+_CRAWL_TASK_TYPE_LABELS = {
+    "paa_crawl": "Aras PAA 全量抓取",
+    "paa_export": "Aras PAA 导出",
+    "ewo_export": "Aras EWO 导出",
+    "tdc_data_model_crawl": "TDC 数模审核全量抓取",
+    "tdc_data_model_export": "TDC 数模审核导出",
+    "tdc_sor_crawl": "TDC SOR 全量抓取",
+    "tdc_sor_export": "TDC SOR 导出",
+}
+
 
 class TasksRouteDeps:
     """任务路由依赖包：create_app 显式注入。"""
