@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 import email
+import json
 import sys
 import time
 from email import policy
@@ -434,3 +435,99 @@ def test_watchlist_report_does_not_overwrite_same_day_full_snapshot(client) -> N
     with db.get_connection() as conn:
         kind = conn.execute("SELECT scope_kind FROM p_sign_daily_snapshot_meta WHERE data_date = '2026-10-02'").fetchone()
     assert kind["scope_kind"] == "all"  # 第二天的全量日报仍有基线
+
+
+# ── 2026-10-29 生产测试两处口径修复 ────────────────────────────────────
+
+def test_selection_without_data_keeps_subject_and_reports_it(client) -> None:  # type: ignore[no-untyped-def]
+    """选择里留着本次数据已不存在的项目时，标题只写实际计入的项目，并显式披露。"""
+    _, http, db, _ = client
+    _publish(db, _rows(), "2026-10-02T08:00:00Z")
+    report = _ok(http.post(f"{API}/preview", json={**SCOPE, "projects": ["F610S", "F610M"]}))
+    assert report["projectLabel"] == "F610M"
+    assert report["subject"] == "F610M项目3D单签署进展-车体区域-20261002"
+    assert report["selectedWithoutData"] == ["F610S"]
+    notice = next(n for n in report["notices"] if n["kind"] == "selectedWithoutData")
+    assert notice["projects"] == ["F610S"] and "F610S" in notice["text"]
+    assert report["summary"]["total"]["flows"] == 4  # 与只选 F610M 相同：幻影项目不参与统计
+    assert "F610S" not in report["html"] and "F610S" not in report["text"]  # 正文任何位置都不留残留项目
+
+    both = _ok(http.post(f"{API}/preview", json={**SCOPE, "projects": ["E50", "F610M"]}))
+    assert both["projectLabel"] == "E50&F610M"  # 按选择顺序，不是字典序
+    assert both["selectedWithoutData"] == []
+    assert not any(n["kind"] == "selectedWithoutData" for n in both["notices"])
+
+
+def test_text_status_does_not_block_export(client) -> None:  # type: ignore[no-untyped-def]
+    _, http, db, _ = client
+    _publish(db, _rows(), "2026-10-02T08:00:00Z")
+    gate = _ok(http.post(f"{API}/preview", json=SCOPE))["statusGate"]
+    assert gate == {"enabled": True, "blocked": False, "codes": [], "text": ""}
+
+
+def test_numeric_status_codes_block_export(client) -> None:  # type: ignore[no-untyped-def]
+    """状态列是未映射的数字码时：预览照出并列出码值，导出接口拒绝；单开关可回滚。"""
+    _, http, db, _ = client
+    rows = [
+        _row("S1", 零件名称="前门内板", 冲压="冲压丁(未签)", 待审批人员="冲压丁"),
+        _row("S2", 状态="6"),
+        _row("S3", 状态="3"),
+    ]
+    _publish(db, rows, "2026-10-02T08:00:00Z")
+    report = _ok(http.post(f"{API}/preview", json=SCOPE))
+    assert report["exportBlocked"] is True  # 长周期待确认先挡着，先确认再验门禁
+    _confirm_all(http, report)
+    report = _ok(http.post(f"{API}/preview", json=SCOPE))
+    gate = report["statusGate"]
+    assert report["exportBlocked"] is False
+    assert gate["enabled"] is True and gate["blocked"] is True
+    assert gate["codes"] == [{"code": "3", "flows": 1}, {"code": "6", "flows": 1}]
+    assert "3：1 份" in gate["text"] and "6：1 份" in gate["text"]
+    images = {key: PNG for key in report["chartsWithData"]}
+    blocked = http.post(f"{API}/eml", json={**SCOPE, "images": images, "proceedWithSuggestion": True})
+    assert blocked.status_code == 409
+    assert blocked.get_json()["error"]["type"] == "StatusGateBlocked"
+    assert "数字码" in blocked.get_json()["error"]["message"]
+
+    assert http.post(f"{API}/config", json={"statusGateEnabled": "yes"}).status_code == 400
+    _ok(http.post(f"{API}/config", json={"statusGateEnabled": False}))
+    off = _ok(http.post(f"{API}/preview", json=SCOPE))
+    assert off["statusGate"]["blocked"] is False and off["statusGate"]["codes"]  # 关闭后仍披露码值
+    allowed = http.post(f"{API}/eml", json={**SCOPE, "images": images, "proceedWithSuggestion": True})
+    assert allowed.status_code == 200 and allowed.mimetype == "message/rfc822"
+
+
+def test_status_gate_recognizes_numeric_forms(client) -> None:  # type: ignore[no-untyped-def]
+    """只识别整数形态（含 Excel 浮点转写与前后空白）；中文数字与文本不拦。"""
+    _, http, db, _ = client
+    rows = [
+        _row("S1", 状态="3.0"),
+        _row("S2", 状态=" 6 "),
+        _row("S3", 状态="三"),
+        _row("S4", 状态="已废弃"),
+    ]
+    _publish(db, rows, "2026-10-02T08:00:00Z")
+    report = _ok(http.post(f"{API}/preview", json=SCOPE))
+    assert report["statusGate"]["codes"] == [{"code": "3", "flows": 1}, {"code": "6", "flows": 1}]
+    assert report["statusGate"]["blocked"] is True
+    assert report["summary"]["total"]["flows"] == 3  # 3.0 / 6 / 三 计入，字面已废弃剔除
+
+
+def test_scope_preference_migration_keeps_other_scopes(client) -> None:  # type: ignore[no-untyped-def]
+    """取消孤儿时的迁移载荷只带新 key；后端必须保留其它范围与旧 key（整表替换会静默清空）。"""
+    _, http, db, _ = client
+    _publish(db, _rows(), "2026-10-02T08:00:00Z")
+    old_key = json.dumps({"projects": ["F610M", "F610S"], "departments": []}, ensure_ascii=False)
+    new_key = json.dumps({"projects": ["F610M"], "departments": []}, ensure_ascii=False)
+    other_key = json.dumps({"projects": ["E50"], "departments": []}, ensure_ascii=False)
+    old_prefs = {"to": '"甲"<a@x.com>', "cc": "", "region": "车体区域",
+                 "greeting": "各位领导、同事：", "planText": "旧范围", "feishuLink": ""}
+    other_prefs = {**old_prefs, "to": '"乙"<b@x.com>', "planText": "别的范围"}
+    _ok(http.post(f"{API}/config", json={"preferences": {old_key: old_prefs, other_key: other_prefs}}))
+    before = _ok(http.get(f"{API}/state"))["preferences"]
+    _ok(http.post(f"{API}/config", json={"preferences": {new_key: dict(before[old_key])}}))
+    after = _ok(http.get(f"{API}/state"))["preferences"]
+    assert after[old_key] == old_prefs and after[other_key] == other_prefs  # 旧 key 与其它范围原样保留
+    assert after[new_key]["to"] == '"甲"<a@x.com>' and after[new_key]["planText"] == "旧范围"
+
+

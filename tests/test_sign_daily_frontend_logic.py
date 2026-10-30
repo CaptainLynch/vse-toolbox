@@ -90,6 +90,14 @@ console.log(JSON.stringify({
   gbk: L.decodeCsv(new Uint8Array([0xd0, 0xd5, 0xc3, 0xfb])),
   utf8: L.decodeCsv(new TextEncoder().encode("﻿姓名")),
   stage: L.stageText({stage: "正在抓取", percent: 5}),
+  gate: [L.exportAllowed({exportBlocked: false, statusGate: {blocked: true}}, true),
+         L.exportAllowed({exportBlocked: false, statusGate: {blocked: false}})],
+  gateText: [L.statusGateText({statusGate: {blocked: true, text: "X"}}),
+             L.statusGateText({statusGate: {blocked: false, text: "X"}}), L.statusGateText(null),
+             L.statusGateText({statusGate: {blocked: false, codes: [{code: "6", flows: 2}]}})],
+  orphans: L.orphanProjects(["F620S", "F620S产品项目"], ["F610S", "F620S", "F620S产品项目", "F610S"]),
+  migrate: [L.migratePrefs({a: {to: "x"}, b: {to: "y"}}, "a", "b"),
+            L.migratePrefs({a: {to: "x"}}, "a", "c"), L.migratePrefs({a: {to: "x"}}, "a", "a")],
 }));
 """)
     # 与 backend.scope_key（Python json.dumps）逐字一致
@@ -106,3 +114,55 @@ console.log(JSON.stringify({
     assert out["formatted"] == "尾门=背门、后背门"
     assert out["gbk"] == "姓名" and out["utf8"] == "姓名"
     assert out["stage"] == "正在抓取（5%）"
+    # 状态门禁不提供「继续」选项；孤儿项目只披露、不自动删除；新范围有记忆时不覆盖
+    assert out["gate"] == [False, True]
+    assert out["gateText"] == ["X", "", "", "门禁已关闭，状态列仍是数字码（6：2 份）：数字仅供参考，发出去就是错数"]
+    assert out["orphans"] == ["F610S"]
+    assert out["migrate"] == [None, {"to": "x"}, None]
+
+
+def test_chips_renders_orphans(tmp_path):
+    """门禁：孤儿 chip 排在 options 之后、class 带 is-on 与 is-orphan、点一下取消；无 options 时仍渲染。"""
+    root = STATIC.parents[2]
+    (tmp_path / "preact-htm.js").write_text(
+        (root / "web" / "static" / "host" / "vendor" / "preact-htm.js").read_text(encoding="utf-8"),
+        encoding="utf-8")
+    (tmp_path / "report-logic.js").write_text(
+        (STATIC / "report-logic.js").read_text(encoding="utf-8"), encoding="utf-8")
+    (tmp_path / "chips.mjs").write_text(
+        (STATIC / "chips.js").read_text(encoding="utf-8").replace(
+            '"/static/host/vendor/preact-htm.js"', '"./preact-htm.js"'),
+        encoding="utf-8")
+    harness = """
+import { Chips } from "./chips.mjs";
+const flatten = (v) => v.props.children.filter(Boolean).flat(Infinity);
+const rows = (v) => flatten(v).map((x) => ({
+  cls: x.props.class, title: x.props.title || "",
+  checked: x.props.children.find((c) => c && c.type === "input").props.checked,
+  text: x.props.children.filter((c) => typeof c === "string").join(""),
+}));
+const input = (node) => node.props.children.find((c) => c && c.type === "input");
+const calls = [];
+const out = Chips({options: ["F620S", "F620S产品项目"], value: ["F620S", "F620S产品项目", "F610S"],
+  onChange: (v) => calls.push(v), emptyText: "空", orphans: ["F610S"]});
+input(flatten(out).find((x) => String(x.props.class).includes("is-orphan"))).props.onChange();
+const dup = Chips({options: ["F620S"], value: ["F620S", "F610S", "F610S"], onChange: (v) => calls.push(v),
+  emptyText: "空", orphans: ["F610S"]});
+input(flatten(dup).find((x) => String(x.props.class).includes("is-orphan"))).props.onChange();
+const only = Chips({options: [], value: ["F610S"], onChange: () => {}, emptyText: "空", orphans: ["F610S"]});
+console.log(JSON.stringify({rows: rows(out), calls, only: rows(only), onlyTag: only.type}));
+"""
+    (tmp_path / "run.mjs").write_text(harness, encoding="utf-8")
+    result = subprocess.run(["node", str(tmp_path / "run.mjs")], capture_output=True, text=True,
+                            encoding="utf-8", check=False)
+    assert result.returncode == 0, result.stderr[-2000:]
+    data = json.loads(result.stdout.strip().splitlines()[-1])
+    # 不变量 1：孤儿只出现一次、排在 options 之后、class 同时含 is-on 与 is-orphan，普通 chip 不受影响
+    assert [r["cls"] for r in data["rows"]] == ["sd-chip is-on", "sd-chip is-on", "sd-chip is-on is-orphan"]
+    assert data["rows"][2]["title"] and "取消" in data["rows"][2]["title"]
+    # 不变量 2：options 为空、只有孤儿时仍渲染 chip（不是 emptyText 的 span）
+    assert data["onlyTag"] == "div" and [r["cls"] for r in data["only"]] == ["sd-chip is-on is-orphan"]
+    # 不变量 3：点掉孤儿后该项完全移除（含重复），其余选择与顺序不变
+    assert data["calls"][0] == ["F620S", "F620S产品项目"]
+    assert data["calls"][1] == ["F620S"]
+

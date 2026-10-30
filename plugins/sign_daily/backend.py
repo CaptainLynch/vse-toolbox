@@ -92,6 +92,8 @@ def _default_config() -> dict[str, Any]:
         "thresholds": dict(_DEFAULT_THRESHOLDS),
         # 范围 key -> {region, greeting, planText, feishuLink, to, cc}
         "preferences": {},
+        # 发送门禁（TDC-20261029）：状态列仍是数字码时禁止导出，单开关回滚。
+        "statusGateEnabled": True,
         "form": {"projects": [], "departments": [], "watchlistOnly": False, "region": _DEFAULT_REGION},
         # v1 的「范围 key -> {to, cc}」，只读兜底（同范围的收件人带到 v2）
         "recipients": {},
@@ -182,7 +184,7 @@ def scope_key(scope: S.Scope, watchlist_only: bool) -> str:
 def _validate_config_patch(patch: Any) -> dict[str, Any]:
     if not isinstance(patch, Mapping):
         raise _Invalid("请求体必须是 JSON 对象")
-    allowed = {"personAreas", "areaNames", "addressBook", "thresholds", "preferences"}
+    allowed = {"personAreas", "areaNames", "addressBook", "thresholds", "preferences", "statusGateEnabled"}
     unknown = set(patch) - allowed
     if unknown:
         raise _Invalid("未知配置项：" + "、".join(sorted(unknown)))
@@ -212,6 +214,11 @@ def _validate_config_patch(patch: Any) -> dict[str, Any]:
             "baselineMaxGapDays": _int(value.get("baselineMaxGapDays", S.BASELINE_MAX_GAP_DAYS),
                                        "基线最长间隔天数", 1, 90),
         }
+    if "statusGateEnabled" in patch:
+        enabled = patch["statusGateEnabled"]
+        if not isinstance(enabled, bool):
+            raise _Invalid("发送门禁开关必须是布尔值")
+        clean["statusGateEnabled"] = enabled
     if "preferences" in patch:
         value = patch["preferences"]
         if not isinstance(value, Mapping) or len(value) > 500:
@@ -418,6 +425,7 @@ def register(host):
                 snapshots, source, scope, region=texts["region"], effective=effective(config),
                 save_snapshot=save, today=_today(), watchlist=watch,
                 max_gap_days=int(config["thresholds"]["baselineMaxGapDays"]),
+                status_gate_enabled=bool(config.get("statusGateEnabled", True)),
             )
         except S.NoData as exc:
             return None, ctx.json_error(409, "NoData", str(exc))
@@ -479,6 +487,9 @@ def register(host):
             return error
         if result["exportBlocked"] and not proceed:
             return ctx.json_error(409, "LongCycleReviewPending", "有长周期初筛待确认，确认或选择「本次按建议继续」后再导出")
+        if result["statusGate"]["blocked"]:
+            # TDC-20261029：状态列是数字码时份数与签单率都不可信，宁可不出报。
+            return ctx.json_error(409, "StatusGateBlocked", result["statusGate"]["text"])
         expected = set(result["chartsWithData"])
         if set(images_in) != expected:
             raise _Invalid("图片与正文里的图不一致，请重新生成后再下载")

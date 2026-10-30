@@ -34,6 +34,8 @@ SNAPSHOT_RETENTION_DAYS = 90
 BASELINE_MAX_GAP_DAYS = 14
 SEEDS_DIR = Path(__file__).resolve().parent / "seeds"
 _TASK_ID = re.compile(r"^crawl_[0-9a-f]{12}$")
+#: 发送门禁识别的状态形态：整数，或 Excel 浮点转写（"3.0"）。只识别形态，不解释码义。
+_STATUS_CODE = re.compile(r"^\d+(?:\.0+)?$")
 
 
 # ── 种子 ────────────────────────────────────────────────────────────
@@ -422,6 +424,32 @@ def scope_options(flows: Sequence[V.Flow], ctx: _Context) -> dict[str, list[str]
     return {"projects": sorted({f.project for f in flows if f.project}), "departments": departments}
 
 
+def status_gate(flows: Sequence[V.Flow], *, enabled: bool = True) -> dict[str, Any]:
+    """发送门禁：范围内状态仍是纯数字的行 = 未映射的数模状态码（TDC-20261029）。
+
+    同步路径把数模状态写成数字码（只映射 2/4，其余透传），而日报只认字面「已废弃」，
+    这些单会被当成在途计入，份数与签单率随之失真。这里不猜码义、不改 rules.py 的
+    判定（10-03 审计保留「未知值按在途并报异常」），只在组装层标出「不可发送」：
+    预览照出并列出码值与份数，导出接口拒绝。码义取证后由上游归一根治，届时门禁自然不再触发。
+    """
+    counts: dict[str, int] = {}
+    for flow in flows:
+        code = (flow.status or "").strip()
+        # 只认"整数形态"：兼容 "3"、" 3 "、"3.0"（Excel 浮点转写）。中文数字与文本变体不拦，
+        # 它们仍走既有"未知状态按在途并报异常"的判定。
+        if code and _STATUS_CODE.match(code):
+            code = code.split(".", 1)[0]
+            counts[code] = counts.get(code, 0) + 1
+    codes = [{"code": code, "flows": count} for code, count in
+             sorted(counts.items(), key=lambda item: (-item[1], item[0]))]
+    text = ""
+    if codes:
+        listed = "、".join(f"{item['code']}：{item['flows']} 份" for item in codes)
+        text = (f"状态列是数字码（{listed}），已禁止发送：请先确认码值含义或改用归档快照；"
+                "临时放行需管理员把 statusGateEnabled 置为 false")
+    return {"enabled": bool(enabled), "blocked": bool(enabled and codes), "codes": codes, "text": text}
+
+
 def compose(
     store: SnapshotStore,
     source: SourceData,
@@ -433,6 +461,7 @@ def compose(
     today: date | None = None,
     watchlist: Sequence[str] | None = None,
     max_gap_days: int = BASELINE_MAX_GAP_DAYS,
+    status_gate_enabled: bool = True,
 ) -> dict[str, Any]:
     """today 是生成当天的日历日期；数据日期早于它且那天的快照已存，说明在用旧数据。
 
@@ -454,6 +483,10 @@ def compose(
     if not flows:
         raise LookupError("范围内没有 3D单")
     projects = sorted({f.project for f in flows})
+    # TDC-20261029：选择里可能留着本次数据已不存在的项目（历史残留）。标签只认实际计入的项目，
+    # 否则标题会写出 0 份的项目，而 chip 上根本看不到它、也取消不掉。
+    counted = set(projects)
+    selected_without_data = [p for p in scope.projects if p and p not in counted]
     serials_by_project: dict[str, set[str]] = {}
     for flow in flows:
         serials_by_project.setdefault(flow.project, set()).add(flow.serial)
@@ -485,8 +518,13 @@ def compose(
         row["partLabel"] = V.part_label(row)
         row["todoText"] = V.todo_text(row)
 
-    label = project_label(scope.projects, flows)
+    label = project_label([p for p in scope.projects if p in counted], flows)
     notices = _notices(flows, ctx, charts, long_cycle, parsed.anomalies)
+    if selected_without_data:
+        notices.insert(1 if notices and notices[0]["kind"] == "longCycleReview" else 0, {
+            "kind": "selectedWithoutData", "blocking": False, "projects": selected_without_data,
+            "text": "所选项目在所选范围内没有单，未计入：" + "、".join(selected_without_data),
+        })
     if watch_missing:
         notices.insert(1 if notices and notices[0]["kind"] == "longCycleReview" else 0, {
             "kind": "watchlistMissing", "blocking": False, "names": watch_missing,
@@ -531,6 +569,8 @@ def compose(
         "anomalies": parsed.anomalies,
         "watchlist": None if watchlist is None else {"count": len(watchlist), "missing": watch_missing,
                                                      "counted": len(flows)},
+        "selectedWithoutData": selected_without_data,
+        "statusGate": status_gate(flows, enabled=status_gate_enabled),
         "coverage": source.coverage.get("kind", W.SCOPE_ALL),
         "seedVersion": seed_version(),
         "snapshotSaved": bool(save_snapshot and not stale),

@@ -34,9 +34,44 @@ export function inlineImages(html, images) {
   return String(html || "").replace(/src="cid:sd-([a-z]+)"/g, (match, key) => (images && images[key] ? `src="${images[key]}"` : match));
 }
 
-/** 有待复核项时禁止复制和下载，除非选了「本次按建议继续」（§7 时序 4、7）。 */
+/** 有待复核项时禁止复制和下载，除非选了「本次按建议继续」（§7 时序 4、7）。
+ *  状态门禁（数字码）不提供「继续」选项：份数与签单率不可信时一律不许发送。 */
 export function exportAllowed(result, proceed) {
-  return Boolean(result) && (!result.exportBlocked || proceed === true);
+  if (!result) return false;
+  if (result.statusGate && result.statusGate.blocked) return false;
+  return !result.exportBlocked || proceed === true;
+}
+
+/** 已保存但本次数据里没有的项目（历史残留）：可见、可取消，绝不自动删除。 */
+export function orphanProjects(options, selected) {
+  const known = new Set(options || []);
+  const seen = new Set();
+  return (selected || []).filter((item) => {
+    if (!item || known.has(item) || seen.has(item)) return false;
+    seen.add(item);
+    return true;
+  });
+}
+
+/** 发送门禁提示（后端 statusGate）；未拦截时为空串。 */
+export function statusGateText(result) {
+  const gate = result && result.statusGate;
+  const codes = (gate && gate.codes) || [];
+  if (gate && gate.blocked) return String(gate.text || "状态列是数字码，已禁止发送");
+  if (!codes.length) return "";
+  // 门禁被关掉但码值仍在：不拦，但必须披露，否则就是静默错数
+  const listed = codes.map((item) => `${item.code}：${item.flows} 份`).join("、");
+  return `门禁已关闭，状态列仍是数字码（${listed}）：数字仅供参考，发出去就是错数`;
+}
+
+/** 取消孤儿项目时沿用原范围的收件人与文案：只在新范围还没有记忆、旧范围有记忆时返回旧记忆。 */
+export function migratePrefs(preferences, oldKey, newKey) {
+  const prefs = preferences || {};
+  if (!oldKey || !newKey || oldKey === newKey) return null;
+  if (prefs[newKey]) return null;
+  const previous = prefs[oldKey];
+  if (!previous || typeof previous !== "object") return null;
+  return { ...previous };
 }
 
 /** 复核面板的默认勾选：确定命中勾选、疑似不勾选；排除项默认不纳入。 */

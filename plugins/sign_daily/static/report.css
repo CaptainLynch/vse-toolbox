@@ -11,6 +11,8 @@
   border-radius: 999px; cursor: pointer; user-select: none; }
 .sd-chip input { margin: 0; }
 .sd-chip.is-on { border-color: var(--primary); background: var(--surface-soft); }
+/* 已保存但本次数据里没有的项目：虚线、可点一下取消，绝不自动删除 */
+.sd-chip.is-orphan { border-style: dashed; border-color: var(--warning); color: var(--muted); }
 .sd-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .sd-progress { color: var(--muted); }
 .sd-panel { border: 1px solid var(--hairline); border-radius: 8px; padding: 8px 12px; max-width: 960px; }
@@ -49,6 +51,8 @@
 .sd-settings-tab input:not([type="checkbox"]):not([type="radio"]), .sd-settings-tab select, .sd-review input:not([type="checkbox"]) {
   font: inherit; padding: 4px 6px; border: 1px solid var(--hairline-strong); border-radius: 6px; background: var(--canvas); color: var(--ink); }
 .sd-preview img { max-width: 100%; height: auto; }
+/* 门禁阻断时预览内的提示：手工选中复制也会带上它 */
+.sd-preview-warning { border: 1px solid var(--error); border-radius: 6px; padding: 6px 10px; margin-bottom: 10px; color: var(--error); font-weight: 600; }
 
 /* v2：左侧条件、右侧预览（窄屏上下排列） */
 .sd-layout { display: grid; grid-template-columns: minmax(280px, 360px) minmax(0, 1fr); gap: 16px; align-items: start; }

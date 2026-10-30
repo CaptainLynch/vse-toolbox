@@ -4,21 +4,14 @@ import { html, useEffect, useRef, useState } from "/static/host/vendor/preact-ht
 import { StateBlock, useStylesheet } from "/static/host/kit.js";
 import { renderChartPng } from "./chart.js";
 import {
-  conclusionsPayload, exportAllowed, formatTime, initialPicks, inlineImages, scopeKey, searchMisses, stageText, toggle,
+  conclusionsPayload, exportAllowed, formatTime, initialPicks, inlineImages, migratePrefs, orphanProjects, scopeKey,
+  searchMisses, stageText, statusGateText, toggle,
 } from "./report-logic.js";
+import { Chips } from "./chips.js";
 import { SettingsPanel } from "./settings-panel.js";
 
 const CHART_TITLES = { external: "图1 外区域会签未签单情况", sections: "图2 内部科室会签未签单情况", approval: "图3 审批未签单情况" };
 const POLL_MS = 1500;
-
-function Chips({ options, value, onChange, emptyText }) {
-  if (!options.length) return html`<span class="vk-muted">${emptyText}</span>`;
-  return html`<div class="sd-chips">
-    ${options.map((option) => html`<label key=${option} class=${`sd-chip ${value.includes(option) ? "is-on" : ""}`}>
-      <input type="checkbox" checked=${value.includes(option)} onChange=${() => onChange(toggle(value, option))} />${option}
-    </label>`)}
-  </div>`;
-}
 
 /** 富文本复制：clipboard.write 同时写 text/html 和 text/plain；非安全上下文时退回选中预览区复制（§10）。 */
 async function copyRich(htmlText, plainText, fallbackNode) {
@@ -258,6 +251,9 @@ export default function Page({ plugin, api }) {
   };
 
   const canExport = exportAllowed(result, proceed);
+  const gate = result ? result.statusGate : null;
+  const gateBlocked = Boolean(gate && gate.blocked);
+  const gateText = result ? statusGateText(result) : "";
   const copy = async () => {
     try {
       flash(await copyRich(inlineImages(result.html, images), result.text, previewRef.current));
@@ -274,6 +270,25 @@ export default function Page({ plugin, api }) {
   };
 
   const set = (field) => (value) => setForm({ ...form, [field]: value });
+  // 取消孤儿项目（本次数据里没有的历史残留）时，沿用原范围的收件人与文案；
+  // 只在新范围还没有记忆时复制，旧范围的记忆保留（TDC-20261029）。
+  const migrateScope = async (oldKey, nextKey) => {
+    const prefs = migratePrefs(state.preferences, oldKey, nextKey);
+    if (!prefs) return;
+    try {
+      await api.post("config", { preferences: { [nextKey]: prefs } });
+      await load();
+      flash("已沿用原范围的收件人与文案");
+    } catch (err) {
+      flash(err.message);
+    }
+  };
+  const setProjects = (next) => {
+    const removed = orphanProjects(state.options.projects, form.projects).filter((item) => !next.includes(item));
+    const nextKey = scopeKey(next, form.departments, form.watchlistOnly);
+    setForm({ ...form, projects: next });
+    if (removed.length) migrateScope(key, nextKey);
+  };
   const setText = (field) => (e) => setTexts({ ...texts, [field]: e.target.value });
   const dataTime = state.data ? formatTime(state.data.snapshotAt) : "暂无";
   const watch = state.watchlist;
@@ -289,7 +304,8 @@ export default function Page({ plugin, api }) {
     <div class="sd-side">
     <section class="sd-form">
       <div class="sd-field"><span>项目 / 车型</span>
-        <${Chips} options=${state.options.projects} value=${form.projects} onChange=${set("projects")} emptyText="还没有数据，先点「一键生成」" /></div>
+        <${Chips} options=${state.options.projects} orphans=${state.data ? orphanProjects(state.options.projects, form.projects) : []}
+          value=${form.projects} onChange=${setProjects} emptyText="还没有数据，先点「一键生成」" /></div>
       <div class="sd-field"><span>科室</span>
         <${Chips} options=${state.options.departments} value=${form.departments} onChange=${set("departments")} emptyText="—" /></div>
       <label class="sd-check"><input type="checkbox" checked=${form.watchlistOnly}
@@ -323,6 +339,8 @@ export default function Page({ plugin, api }) {
     ${result && html`<section class="sd-result">
       ${result.stale && html`<div class="sd-notice is-stale">用的是旧数据（数据时间 ${formatTime(result.snapshotAt)}），不写快照，不显示日变化。</div>`}
       ${result.notices.map((n) => html`<div key=${n.kind} class=${`sd-notice${n.blocking ? " is-blocking" : ""}`}>${n.text}</div>`)}
+      ${gateText && html`<div class=${`sd-notice${gateBlocked ? " is-blocking" : ""}`}
+        role=${gateBlocked ? "alert" : "status"}>${gateText}</div>`}
       <${LongCycleReview} key=${result.longCycle.review.map((i) => i.normalized).join("|")} longCycle=${result.longCycle}
         onConfirm=${confirmLongCycle} onProceed=${() => setProceed(true)} proceeding=${proceed} />
       <div class="sd-preview-bar">
@@ -330,14 +348,17 @@ export default function Page({ plugin, api }) {
         <div class="sd-actions">
           <button type="button" class="vk-btn is-primary" disabled=${!canExport} onClick=${copy}>复制正文</button>
           <button type="button" class="vk-btn" disabled=${!canExport} onClick=${eml}>下载 .eml 草稿</button>
-          ${!canExport && html`<span class="vk-muted">长周期初筛待确认，确认后才能复制和下载</span>`}
+          ${!canExport && html`<span class="vk-muted">${gateBlocked ? "状态列是数字码，禁止发送" : "长周期初筛待确认，确认后才能复制和下载"}</span>`}
           ${toast && html`<span class="vk-muted" role="status">${toast}</span>`}
         </div>
       </div>
       <${Recipients} key=${result.scopeKey + result.recipientsText.to + result.recipientsText.cc} result=${result}
         onSave=${(names) => savePrefs(names)} />
       <${ChartTools} images=${images} onMessage=${flash} />
-      <div class="sd-preview" ref=${previewRef} dangerouslySetInnerHTML=${{ __html: inlineImages(result.html, images) }}></div>
+      <div class="sd-preview" ref=${previewRef}>
+        ${gateBlocked && html`<div class="sd-preview-warning">状态列是数字码，本页数字不可直接引用；手工复制也会带上这条提示。</div>`}
+        <div dangerouslySetInnerHTML=${{ __html: inlineImages(result.html, images) }}></div>
+      </div>
     </section>`}
     </div>
     </div>
