@@ -247,6 +247,15 @@ export function stabilityGateFailureMessage(result) {
     if (mismatch.reason === "legacy_baseline") {
       return "映射稳定性核验未通过：历史证据格式不兼容，请重新开始配置以重新取证。";
     }
+    if (mismatch.reason === "baseline_signature_mismatch") {
+      // 旧配置（换绑/改规则前）的基线不能给新配置背书：只能重新取证。
+      return "映射稳定性核验未通过：首次取证基线与当前配置不一致，请重新开始配置以重新取证。";
+    }
+    if (mismatch.reason === "inconclusive") {
+      // 空样本不能判稳定：采样的若干页在所选科室里都没有命中任何行时，前端必须说清
+      // "没判定"而不是"上游变了"（后者会误导用户反复重试同一条路）。
+      return "映射稳定性核验未完成：已检查前若干页采样，所选科室仍没有命中记录，无法判定是否稳定。请扩大科室范围或稍后重试。";
+    }
   }
   return "映射稳定性未就绪（需连续两次一致的脱敏证据），请稍后重试。";
 }

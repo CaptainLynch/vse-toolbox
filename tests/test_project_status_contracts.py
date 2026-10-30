@@ -16,6 +16,7 @@ from core.project_status_contracts import (
     PROJECT_STATUS_INVALID_MAPPING_READ_ONLY_REASON,
     PROJECT_STATUS_MAPPED_READ_ONLY_REASON,
     current_stage_label,
+    derive_effective_progress,
     get_deliverable_default_mapping,
     get_deliverable_field_aliases,
     milestone_display_status,
@@ -1017,3 +1018,72 @@ def test_default_mappings_and_field_aliases_contracts() -> None:
         assert "「执行人」" not in semantics_text
         assert "「责任人」" not in semantics_text
         assert "「更改内容」" not in semantics_text
+
+
+# ── 交付物进度派生单源（2026-10-28：同步后仍显示 0%）────────────────────────────
+
+
+def test_derive_effective_progress_snapshot_uses_completed_over_total() -> None:
+    """快照态按明细换算：EWO 340 单完成 241 → 71%，不是手工字段的 0%。"""
+    value, source = derive_effective_progress(
+        "snapshot", {"total": 340, "completed": 241}, 0
+    )
+    assert (value, source) == (71, "snapshot")
+
+
+def test_derive_effective_progress_snapshot_without_rows_is_null() -> None:
+    """没有有效明细（total=0）时返回 None，前端显示「—」而不是编造 0%。"""
+    assert derive_effective_progress("snapshot", {"total": 0, "completed": 0}, 45) == (
+        None,
+        "snapshot",
+    )
+    assert derive_effective_progress("snapshot", None, 45) == (None, "snapshot")
+
+
+def test_derive_effective_progress_manual_states_keep_manual_value() -> None:
+    """非快照态保留手工值：manual 态等于 progress 字段，其它态同口径回退。"""
+    assert derive_effective_progress("manual", None, 45) == (45, "manual")
+    assert derive_effective_progress("paused", None, 30) == (30, "manual")
+    assert derive_effective_progress("manual", None, None) == (None, "manual")
+    # 越界与脏值都被夹紧，绝不把非数字原样透出。
+    assert derive_effective_progress("manual", None, 130) == (100, "manual")
+    assert derive_effective_progress("manual", None, -5) == (0, "manual")
+    assert derive_effective_progress("manual", None, "abc") == (None, "manual")
+
+
+def test_derive_effective_progress_matches_legacy_display_progress_oracle() -> None:
+    """displayProgress 语义必须与改动前的内联实现逐例等价（oracle 比对）。
+
+    旧实现（web/app.py，改动前）：
+    - snapshot 且 total>0 → min(100, max(0, round(completed/total*100)))，否则 None；
+    - manual → int(progress)，None 保持 None；
+    - 其它态 → None。
+    """
+    def legacy(display_state: str, summary: object, manual: object) -> int | None:
+        if display_state == "snapshot":
+            total = int(summary.get("total") or 0) if isinstance(summary, dict) else 0
+            completed = int(summary.get("completed") or 0) if isinstance(summary, dict) else 0
+            return min(100, max(0, round(completed / total * 100))) if total > 0 else None
+        if display_state == "manual":
+            return int(manual) if manual is not None else None
+        return None
+
+    summaries = (
+        None,
+        {"total": 0, "completed": 0},
+        {"total": 340, "completed": 241},
+        {"total": 4, "completed": 5},   # completed>total：必须夹到 100
+        {"total": 3, "completed": 1},
+    )
+    for state in ("snapshot", "manual", "paused", "pending_config", "sync_failed", "no_source_records"):
+        for summary in summaries:
+            for manual in (None, 0, 45, 100):
+                value, _source = derive_effective_progress(state, summary, manual)
+                # displayProgress 只在 manual/snapshot 两态给数值（其余 None）。
+                observed = value if state in ("manual", "snapshot") else None
+                assert observed == legacy(state, summary, manual), (state, summary, manual)
+
+    # 有意差异（新键 effectiveProgress 独有，displayProgress 不受影响）：
+    # 非快照态回退手工值；越界/脏值夹紧或判 None（旧实现会把 150 原样透出）。
+    assert derive_effective_progress("paused", None, 45) == (45, "manual")
+    assert derive_effective_progress("manual", None, 150) == (100, "manual")

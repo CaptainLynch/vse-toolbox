@@ -191,6 +191,39 @@ def deliverable_display_state(
     return state, label, effective_status
 
 
+def derive_effective_progress(
+    display_state: str,
+    display_summary: Mapping[str, object] | None,
+    manual_progress: object,
+) -> tuple[int | None, str]:
+    """交付物进度的单一派生口径：快照态按明细换算，其余状态保留手工值。
+
+    为什么单独成一个纯函数：同一响应里 ``progress`` 是**手工字段**（编辑表单
+    预填它并原样保存），若把派生值写回该键，用户点一次"保存"就会把派生数字
+    固化成手工值 —— 那是没有审计的数据写入。因此派生值只走新键
+    （``effectiveProgress`` / ``progressSource``），由这里唯一实现。
+
+    - snapshot 且 total>0 → round(completed/total*100)，source=``snapshot``；
+    - snapshot 但 total==0（无有效明细）→ None，前端显示"—"，不显示 0%；
+    - 其它状态 → 手工值（可能为 None），source=``manual``。
+    """
+    state = str(display_state or "")
+    if state == "snapshot":
+        summary = display_summary if isinstance(display_summary, Mapping) else None
+        total = int(summary.get("total") or 0) if summary is not None else 0
+        if total <= 0:
+            return None, "snapshot"
+        completed = int(summary.get("completed") or 0) if summary is not None else 0
+        return min(100, max(0, round(completed / total * 100))), "snapshot"
+    if manual_progress is None or isinstance(manual_progress, bool):
+        return None, "manual"
+    try:
+        value = int(manual_progress)
+    except (TypeError, ValueError):
+        return None, "manual"
+    return min(100, max(0, value)), "manual"
+
+
 # These are deliberately user-facing strings.  The API exposes the reason
 # alongside ``manualEditable`` so clients can explain why a row is locked.
 PROJECT_STATUS_MAPPED_READ_ONLY_REASON = "已配置外部来源映射，需通过同步结果维护"

@@ -1529,10 +1529,11 @@ def test_f10_failed_sample_then_fresh_pair_reaches_ready(tmp_path):
 
 
 def test_f10_failed_sample_row_is_never_used_as_baseline(tmp_path):
-    """顾问复核 F1：失败行（key_changed，带 _mismatch 载荷）不得被选作稳定性基线。
+    """顾问复核 F1 + 2026-10-28 生产修复：失败行不得被选作基线，也不得毒化基线。
 
-    基线选取按 result_state=="matched" 硬过滤；失败行之后直接采样必须返回
-    not_found（确认数 0），而不是把失败行当基线走新路径。
+    基线选取按 result_state=="matched" 过滤；一次失配落的 key_changed 只打断
+    连续计数（confirmed 归零），但**不能顶掉**最近一条 matched 基线 —— 否则
+    之后每次重试都只能 stability_baseline_missing，绑定永久卡死（数模生产现象）。
     """
     db = DatabaseManager(tmp_path / "db.sqlite")
     db.init_database()
@@ -1552,8 +1553,78 @@ def test_f10_failed_sample_row_is_never_used_as_baseline(tmp_path):
     after_failure = service.observe_stability_sample(
         "VPI-T2-D2", "tdc", rows[:50], 60, aggregate=True, match_rule=rule
     )
-    assert after_failure["state"] == "not_found"
-    assert after_failure["stability"] == {"confirmed": 0, "required": 2, "ready": False}
+    # 回到原始上游后可以重新比对：基线仍是首次那条 matched 观测，不是失败行。
+    assert after_failure["state"] == "matched"
+    # 失败行仍打断连续计数：这条 matched 只算 1/2，必须再核验一次才 ready。
+    assert after_failure["stability"] == {"confirmed": 1, "required": 2, "ready": False}
+    baseline = db.list_mapping_observations("VPI-T2-D2", 3)[-1]
+    assert baseline["result_state"] == "matched"
+    assert after_failure["candidates"] == json.loads(baseline["candidate_summary_json"])
+
+
+def test_f10_empty_sample_is_inconclusive_and_writes_no_observation(tmp_path):
+    """空样本（如科室收窄后第 1 页无行）不能判稳定，且不得落观测毒化基线。
+
+    空集是任何集合的子集，子集判定会空真通过 ⇒ 假 ready。这里明确返回
+    inconclusive，observationId 为 None（不写库）。
+    """
+    db = DatabaseManager(tmp_path / "db.sqlite")
+    db.init_database()
+    service = MappingDiscoveryService(db)
+    rows = [{"incident": f"SOR-{i:04d}", "approvalStatus": "审批中"} for i in range(60)]
+    rule = _sor_rule()
+    service.observe("VPI-T2-D2", "tdc", rows, aggregate=True, match_rule=rule, upstream_total=60)
+    before = len(db.list_mapping_observations("VPI-T2-D2", 100))
+
+    result = service.observe_stability_sample(
+        "VPI-T2-D2", "tdc", [], 60, aggregate=True, match_rule=rule,
+        sample_empty_reason="stability_sample_inconclusive",
+    )
+
+    assert result["observationId"] is None
+    assert result["state"] == "not_found"
+    assert result["reason"] == "stability_sample_inconclusive"
+    assert result["mismatch"] == {"reason": "inconclusive", "expected": None, "actual": 0}
+    assert result["stability"] == {"confirmed": 0, "required": 2, "ready": False}
+    assert len(db.list_mapping_observations("VPI-T2-D2", 100)) == before
+
+
+def test_f10_stability_baseline_requires_matching_config_signature(tmp_path):
+    """换绑/改规则后不得回退到旧配置的 matched 基线（否则 1 次样本就能 2/2）。
+
+    只接受「同签名」或「旧版无签名」的基线；找不到就明确 baseline_missing，
+    强制重新取证——这正是「连续两次一致证据」不变量的要求。
+    """
+    db = DatabaseManager(tmp_path / "db.sqlite")
+    db.init_database()
+    service = MappingDiscoveryService(db)
+    rows = [{"incident": f"SOR-{i:04d}", "approvalStatus": "审批中"} for i in range(60)]
+    rule_a = _sor_rule()
+    service.observe("VPI-T2-D2", "tdc", rows, aggregate=True, match_rule=rule_a, upstream_total=60)
+
+    # 规则变化（不同 config_signature）：即便样本与旧基线完全一致，也不得判稳定。
+    # 旧配置基线只用于「否定性」比对，结果必须是 key_changed 而不是 matched。
+    rule_b = {"reportType": "sor", "aggregate": True, "carTypeProject": "F620S"}
+    result = service.observe_stability_sample(
+        "VPI-T2-D2", "tdc", rows[:50], 60, aggregate=True, match_rule=rule_b
+    )
+    assert result["state"] == "key_changed"
+    assert result["mismatch"]["reason"] == "baseline_signature_mismatch"
+    assert result["stability"] == {"confirmed": 0, "required": 2, "ready": False}
+
+    # 同一规则下仍可正常比对（严格匹配只挡旧配置，不影响本配置的既有基线）。
+    # 失败采样会打断连续计数，所以要两条一致证据才能回到 ready（I4）。
+    same_rule = service.observe_stability_sample(
+        "VPI-T2-D2", "tdc", rows[:50], 60, aggregate=True, match_rule=rule_a
+    )
+    assert same_rule["state"] == "matched"
+    assert same_rule["stability"] == {"confirmed": 1, "required": 2, "ready": False}
+
+    recovered = service.observe_stability_sample(
+        "VPI-T2-D2", "tdc", rows[:50], 60, aggregate=True, match_rule=rule_a
+    )
+    assert recovered["state"] == "matched"
+    assert recovered["stability"] == {"confirmed": 2, "required": 2, "ready": True}
 
 
 @pytest.mark.parametrize(

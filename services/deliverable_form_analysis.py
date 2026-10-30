@@ -526,6 +526,12 @@ def form_definition(form_key: str) -> dict[str, Any]:
     if report in _RELATION_FIELD_BY_REPORT:
         filter_fields.append("relationEwo")
     rules = _OVERDUE_RULES.get(report)
+    # 阶段码 → 展示名的单一来源（core.form_registry.FormSpec.stage_labels）。
+    # 前端阶段列只读 schema.stageLabels，缺失时回退原码，不另写一份文案表。
+    form_spec = _form_registry.FORMS_BY_KEY.get(form_key) or next(
+        (item for item in _form_registry.FORMS if item.report == report), None
+    )
+    stage_labels = dict(form_spec.stage_labels) if form_spec is not None else {}
     definition = {
         "formKey": form_key,
         "reportType": report,
@@ -541,6 +547,7 @@ def form_definition(form_key: str) -> dict[str, Any]:
         "keyColumns": key_columns,
         "filterFields": filter_fields,
         "chartFields": list(_STAGES_BY_REPORT[report]),
+        "stageLabels": stage_labels,
     }
     if rules:
         if report in _TDC_DWELL_REPORTS:

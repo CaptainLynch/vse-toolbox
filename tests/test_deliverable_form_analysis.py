@@ -115,6 +115,25 @@ def test_form_definitions_match_approved_report_contracts() -> None:
     assert detail["sheetNames"] == ["整车", "发动机"]
 
 
+def test_form_definition_exposes_stage_labels_from_registry() -> None:
+    """阶段展示名的单一来源：schema.stageLabels 由 FormSpec.stage_labels 派生。
+
+    2026-10-28：单据列表的"状态"要写阶段（不是 Aras 原码 PROC）。文案只允许在
+    core/form_registry.py 里维护一份，前端只读 schema。
+    """
+    ewo = form_definition("VPI-T2-D3")
+    assert ewo["stageLabels"]["PROC"] == "审批中"
+    assert ewo["stageLabels"]["CLOSE"] == "已关闭"
+    assert set(ewo["stageLabels"]) == set(ewo["chartFields"])
+
+    paa = form_definition("aras_paa")
+    assert paa["stageLabels"]["IMPL"] == "实施中"
+
+    # 没有登记阶段词表的表单（NCR 节点本身就是中文）下发空表，前端回退原值。
+    assert form_definition("aras_ncr_detail")["stageLabels"] == {}
+    assert form_definition("tdc_data_model")["stageLabels"] == {}
+
+
 def test_all_sheet_xlsx_preview_preserves_sheet_names_and_limits(tmp_path: Path) -> None:
     path = tmp_path / "two-sheet.xlsx"
     _write_two_sheet_xlsx(path)

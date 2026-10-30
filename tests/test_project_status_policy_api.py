@@ -440,6 +440,9 @@ def test_sync_display_states_across_binding_lifecycle(client) -> None:
     # 1. 新库默认：契约内 pending_config；手工模式 manual。
     _, d3 = fetch("VPI-T2-D3")
     assert d3["syncDisplay"]["state"] == "pending_config"
+    # 非快照态：派生进度等于手工字段，来源标 manual（不编造快照数字）。
+    assert d3["progressSource"] == "manual"
+    assert d3["effectiveProgress"] == d3["progress"]
     _, d4 = fetch("VPI-T2-D4")
     assert d4["syncDisplay"]["state"] == "manual"
 
@@ -489,6 +492,10 @@ def test_sync_display_states_across_binding_lifecycle(client) -> None:
     }, [])
     _, d5 = fetch("VPI-T2-D5")
     assert d5["syncDisplay"]["state"] == "no_source_records"
+    # 快照存在但 total=0 属「无来源记录」，不是 snapshot 态：派生进度回退手工值，
+    # 不把空快照当可信进度来源（state 与 progressSource 因此不同源）。
+    assert d5["progressSource"] == "manual"
+    assert d5["effectiveProgress"] == d5["progress"]
 
     # 5. enabled + 有效快照：snapshot + effectiveStatus（有逾期 → 已逾期）；
     #    汇总：待同步只剩 D2/D3（pending_config），D5 快照逾期计风险。
@@ -500,6 +507,12 @@ def test_sync_display_states_across_binding_lifecycle(client) -> None:
     status, d5 = fetch("VPI-T2-D5")
     assert d5["syncDisplay"]["state"] == "snapshot"
     assert d5["effectiveStatus"] == "已逾期"
+    # 2026-10-28：进度按明细换算（3/4 → 75%），不再回落到手工 0%。
+    assert d5["effectiveProgress"] == 75
+    assert d5["progressSource"] == "snapshot"
+    assert d5["progress"] == 0  # 手工字段语义不变（编辑表单预填它）
+    # 概览表的「实际完成或当前进度」同样取派生值，避免两套数字。
+    assert d5["progressOrDate"] == "75%"
     assert status["phase"]["pendingCount"] == 2
     assert status["phase"]["completedCount"] == 1
     assert status["phase"]["riskCount"] == 2  # D4 计划逾期（手工态）+ D5 快照逾期

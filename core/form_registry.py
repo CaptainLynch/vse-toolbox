@@ -46,9 +46,18 @@ class FormSpec:
     terminal_statuses: frozenset[str] = frozenset()
     dimension_labels: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
     page_column_labels: tuple[str, ...] = ()
+    #: 阶段码 → 展示名（如 PROC → 审批中）。未登记的阶段按原码展示。
+    #: 这是阶段文案的唯一来源：后端 schema 与前端阶段列都读它，不在前端另写一份。
+    stage_labels: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
 
     def dimension_label(self, dimension: str) -> str:
         return self.dimension_labels.get(dimension) or DEFAULT_DIMENSION_LABELS.get(dimension, dimension)
+
+    def stage_label(self, stage: object) -> str:
+        text = str(stage or "").strip()
+        if not text:
+            return ""
+        return self.stage_labels.get(text) or text
 
     @property
     def page_columns(self) -> tuple[str, ...]:
@@ -83,6 +92,17 @@ FORMS: tuple[FormSpec, ...] = (
             "主题", "提交日期", "要求完成时间",
         ),
         dimension_labels=MappingProxyType({"section": "责任科室", "model": "车型", "stage": "审批阶段"}),
+        # 用户口径（2026-10-28）：单据列表的"状态"要写阶段，而不是 Aras 原码。
+        # 文案集中在这里，改词只改这一处；未登记的阶段回退原码。
+        stage_labels=MappingProxyType({
+            "DRAFT1": "起草",
+            "DRAFT2": "起草（二轮）",
+            "EDIT1": "编辑",
+            "EDIT2": "编辑（二轮）",
+            "PROC": "审批中",
+            "IMPL": "实施中",
+            "CLOSE": "已关闭",
+        }),
     ),
     FormSpec(
         form_key="aras_paa",
@@ -98,6 +118,14 @@ FORMS: tuple[FormSpec, ...] = (
             "零件或总成名称", "提交日期", "估计完成日期", "EWO编号",
         ),
         dimension_labels=MappingProxyType({"section": "专业科室", "model": "车型", "stage": "审批阶段"}),
+        stage_labels=MappingProxyType({
+            "DRAFT1": "起草",
+            "DRAFT2": "起草（二轮）",
+            "EDIT": "编辑",
+            "PROC": "审批中",
+            "IMPL": "实施中",
+            "CLOSE": "已关闭",
+        }),
     ),
     FormSpec(
         form_key="aras_ncr_progress",

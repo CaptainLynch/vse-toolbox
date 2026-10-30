@@ -46,6 +46,11 @@ _MISMATCH_KEY = "_mismatch"
 #: 旧版本（本次修复前）多单号观测的 ``_stabilityIds`` 是行身份，不能当成员集合比，
 #: 缺这个标记时按「基线不可用」明确失败，绝不落一条假的 key_changed。
 _STABILITY_MODE_KEY = "_stabilityMode"
+
+#: 稳定性基线回看窗口：采样端取「最近一条 matched 观测」作基线，而不是最近一条
+#: 观测。一次失配会落 key_changed（对基线证据的否定），若把最新一条当基线，这条
+#: 否定会顶掉基线，之后每次重试都只能 stability_baseline_missing（绑定永久卡死）。
+_STABILITY_BASELINE_WINDOW = 50
 _STABILITY_MODE_MEMBER = "member"
 # 落库观测的归因（与 HTTP 响应里的 ``reason`` 同源）：多单号部分命中必须让
 # DB/历史读者也看得到 ``serial_set_partial``，而不是只看到一条裸的 not_found。
@@ -307,6 +312,7 @@ class MappingDiscoveryService:
         aggregate: bool = False,
         match_rule: Mapping[str, Any] | None = None,
         member_identities: Sequence[str] | None = None,
+        sample_empty_reason: str | None = None,
     ) -> dict[str, Any]:
         """F10: 对上游独立轻量签名核验，比对通过才确认为稳定。
 
@@ -332,9 +338,57 @@ class MappingDiscoveryService:
                 raise ValueError("member_identities must be a sequence of strings")
             if any(not isinstance(item, str) for item in member_identities):
                 raise ValueError("member_identities must be a sequence of strings")
+        if sample_empty_reason is not None:
+            # 空样本不能判稳定：空集是任何集合的子集，子集判定会空真通过 ⇒ 假 ready。
+            # 这里明确返回 inconclusive，且**不落观测**（不毒化基线）。
+            return {
+                "observationId": None,
+                "state": "not_found",
+                "externalKey": None,
+                "candidateCount": total_count,
+                "candidates": [],
+                "fieldReport": {"fields": []},
+                "reason": sample_empty_reason,
+                "stability": {"confirmed": 0, "required": 2, "ready": False},
+                "mismatch": {"reason": "inconclusive", "expected": None, "actual": 0},
+            }
         member_mode = member_identities is not None
-        previous = self.db.list_mapping_observations(deliverable_id, 1)
-        if not previous or previous[0]["result_state"] != "matched":
+        # 基线 = 最近一条 matched 观测（见 _STABILITY_BASELINE_WINDOW）。
+        recent = self.db.list_mapping_observations(
+            deliverable_id, _STABILITY_BASELINE_WINDOW
+        )
+        current_signature = (
+            compute_config_signature(source_type, match_rule)
+            if match_rule is not None
+            else None
+        )
+        matched_observations = [
+            row for row in recent if row["result_state"] == "matched"
+        ]
+        obs1 = None
+        signature_conflict = False
+        if matched_observations:
+            if current_signature is None:
+                obs1 = matched_observations[0]
+            else:
+                # 优先「与当前 match_rule 同签名」或「旧版无签名」的基线。
+                obs1 = next(
+                    (
+                        row
+                        for row in matched_observations
+                        if not row.get("config_signature")
+                        or row.get("config_signature") == current_signature
+                    ),
+                    None,
+                )
+                if obs1 is None:
+                    # 只剩旧配置的基线：仍拿它做**否定性**比对（让用户看到明确的
+                    # 「基线不一致」并重新取证），但本次绝不返回 matched —— 否则新
+                    # 配置可能只凭一次样本就与旧基线吻合而达到 2/2，违反「连续两次
+                    # 一致证据」。换绑/改规则后的正确恢复路径是重新取证。
+                    obs1 = matched_observations[0]
+                    signature_conflict = True
+        if obs1 is None:
             return {
                 "observationId": None,
                 "state": "not_found",
@@ -346,12 +400,11 @@ class MappingDiscoveryService:
                 "stability": {"confirmed": 0, "required": 2, "ready": False},
                 "mismatch": None,
             }
-        obs1 = previous[0]
         config_signature = obs1.get("config_signature")
         if match_rule is not None:
-            rule_sig = compute_config_signature(source_type, match_rule)
-            if config_signature and rule_sig != config_signature:
-                config_signature = rule_sig
+            # 选中 obs1 时已保证「同签名或无签名」，这里直接采用当前规则签名：本次
+            # 观测才会被 mapping_stability_count 计入（旧观测缺签名时也能继续累计）。
+            config_signature = compute_config_signature(source_type, match_rule)
 
         baseline_payload = self._stability_baseline_payload(obs1)
         legacy_baseline = baseline_payload is None
@@ -453,6 +506,14 @@ class MappingDiscoveryService:
                     "expected": len(obs1_fields),
                     "actual": len(sample_field_keys),
                 }
+
+        if mismatch is None and signature_conflict:
+            # 基线来自旧配置：即使样本恰好落在旧基线内，也必须判不一致。
+            mismatch = {
+                "reason": "baseline_signature_mismatch",
+                "expected": None,
+                "actual": None,
+            }
 
         if mismatch is None:
             state = "matched"

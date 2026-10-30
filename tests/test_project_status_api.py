@@ -1507,6 +1507,267 @@ def test_mapping_discovery_f10_stability_detects_total_mismatch(client, monkeypa
     assert data2["stability"]["ready"] is False
 
 
+def test_mapping_discovery_f10_stability_sample_narrows_sections(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """2026-10-28 生产缺陷：稳定性采样必须与首次取证同源（同一科室收窄）。
+
+    取证基线 = 全量行按 sections 收窄后的身份集；采样若拿未收窄的第 1 页去比，
+    其它科室的行永远不在基线里 ⇒ 永久 sample_not_in_baseline，绑定无法就绪。
+    """
+    rows = [
+        {"incident": "INC-001", "projectModel": "F610S", "department": "车体科"},
+        {"incident": "INC-002", "projectModel": "F610S", "department": "内饰科"},
+    ]
+
+    class FakeTDCClient:
+        def crawl_data_model_all(self, filters, max_records=5000, should_stop=None):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(rows=list(rows), complete=True, stop_reason="reported_pages")
+
+        def query_data_model_page(self, filters, page=1, page_size=50):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(rows=list(rows), total=2, page=1, page_size=50)
+
+    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    payload = {
+        "base_url": "https://tdc.sgmw.com.cn",
+        "wizardSessionId": "wiz-stability-sections",
+        "filters": {"project_model": "F610S", "sections": ["车体科"]},
+        "aggregate": True,
+    }
+
+    resp1 = client.post("/api/project-status/deliverables/VPI-T2-D5/mapping-discovery", json=payload)
+    assert resp1.status_code == 200
+    assert resp1.get_json()["data"]["stability"]["confirmed"] == 1
+
+    resp2 = client.post(
+        "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery",
+        json={**payload, "stabilityCheck": True},
+    )
+    assert resp2.status_code == 200
+    data2 = resp2.get_json()["data"]
+    assert data2["state"] == "matched", data2
+    assert data2["stability"] == {"confirmed": 2, "required": 2, "ready": True}
+
+
+def test_mapping_discovery_f10_stability_sample_empty_is_inconclusive(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """收窄后采样为空不能判稳定：空集是任何集合的子集，直接比对会空真通过。"""
+    crawl_rows = [
+        {"incident": "INC-001", "projectModel": "F610S", "department": "车体科"},
+        {"incident": "INC-002", "projectModel": "F610S", "department": "内饰科"},
+    ]
+    page_rows = [{"incident": "INC-002", "projectModel": "F610S", "department": "内饰科"}]
+
+    class FakeTDCClient:
+        def crawl_data_model_all(self, filters, max_records=5000, should_stop=None):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(rows=list(crawl_rows), complete=True, stop_reason="reported_pages")
+
+        def query_data_model_page(self, filters, page=1, page_size=50):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(rows=list(page_rows), total=2, page=1, page_size=50)
+
+    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    payload = {
+        "base_url": "https://tdc.sgmw.com.cn",
+        "wizardSessionId": "wiz-stability-empty",
+        "filters": {"project_model": "F610S", "sections": ["车体科"]},
+        "aggregate": True,
+    }
+
+    resp1 = client.post("/api/project-status/deliverables/VPI-T2-D5/mapping-discovery", json=payload)
+    assert resp1.status_code == 200
+
+    resp2 = client.post(
+        "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery",
+        json={**payload, "stabilityCheck": True},
+    )
+    assert resp2.status_code == 200
+    data2 = resp2.get_json()["data"]
+    assert data2["state"] != "matched"
+    assert data2["observationId"] is None
+    assert data2["reason"] == "stability_sample_inconclusive"
+    assert data2["mismatch"] == {"reason": "inconclusive", "expected": None, "actual": 0}
+    assert data2["stability"]["ready"] is False
+
+
+def _inject_sor_sections(monkeypatch, sections):  # type: ignore[no-untyped-def]
+    """SOR 契约目前没有 sections 过滤名（API 层会 400），这里在规则冻结处注入，
+    覆盖采样分支对「规则里带 sections」的防御性收窄。"""
+    original = web_app._mapping_discovery_query_identity
+
+    def patched(payload, deliverable_id, selected_external_key=None):  # type: ignore[no-untyped-def]
+        rule, values = original(payload, deliverable_id, selected_external_key)
+        rule["sections"] = list(sections)
+        return rule, values
+
+    monkeypatch.setattr(web_app, "_mapping_discovery_query_identity", patched)
+
+
+def test_mapping_discovery_f10_stability_sor_sample_narrows_sections(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """SOR（D2）分页采样同样按 sections 收窄，其它科室的行不再造成 sample_not_in_baseline。"""
+    rows = [
+        {"processNo": "SOR-001", "carTypeProject": "F610S", "department": "车体科"},
+        {"processNo": "SOR-002", "carTypeProject": "F610S", "department": "内饰科"},
+    ]
+
+    class FakeTDCClient:
+        def crawl_sor_all(self, filters, **kwargs):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(rows=list(rows), complete=True, stop_reason="reported_pages", total=2)
+
+        def query_sor_page(self, filters, page=1, page_size=50):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(rows=list(rows), total=2, page=page, page_size=page_size)
+
+    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    _inject_sor_sections(monkeypatch, ["车体科"])
+    payload = {
+        "base_url": "https://tdc.sgmw.com.cn",
+        "wizardSessionId": "wiz-stability-sor-sections",
+        "filters": {"car_type_project": "F610S"},
+        "aggregate": True,
+    }
+
+    resp1 = client.post("/api/project-status/deliverables/VPI-T2-D2/mapping-discovery", json=payload)
+    assert resp1.status_code == 200, resp1.get_json()
+    assert resp1.get_json()["data"]["stability"]["confirmed"] == 1
+
+    resp2 = client.post(
+        "/api/project-status/deliverables/VPI-T2-D2/mapping-discovery",
+        json={**payload, "stabilityCheck": True},
+    )
+    assert resp2.status_code == 200
+    data2 = resp2.get_json()["data"]
+    assert data2["state"] == "matched", data2
+    assert data2["stability"] == {"confirmed": 2, "required": 2, "ready": True}
+
+
+def test_mapping_discovery_f10_stability_pages_until_section_hit(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """第 1 页没有所选科室的行时继续翻页：用第 2 页的命中行判稳定，总数仍取上游未收窄总数。"""
+    page_requests: list[int] = []
+    crawl_rows = [
+        {"incident": "INC-001", "projectModel": "F610S", "department": "车体科"},
+        {"incident": "INC-002", "projectModel": "F610S", "department": "内饰科"},
+    ]
+    pages = {
+        1: [{"incident": "INC-002", "projectModel": "F610S", "department": "内饰科"}],
+        2: [{"incident": "INC-001", "projectModel": "F610S", "department": "车体科"}],
+    }
+
+    class FakeTDCClient:
+        def crawl_data_model_all(self, filters, max_records=5000, should_stop=None):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(
+                rows=list(crawl_rows), complete=True, stop_reason="reported_pages", total=120
+            )
+
+        def query_data_model_page(self, filters, page=1, page_size=50):  # type: ignore[no-untyped-def]
+            page_requests.append(page)
+            return SimpleNamespace(
+                rows=list(pages.get(page, [])), total=120, page=page, page_size=page_size
+            )
+
+    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    payload = {
+        "base_url": "https://tdc.sgmw.com.cn",
+        "wizardSessionId": "wiz-stability-paging",
+        "filters": {"project_model": "F610S", "sections": ["车体科"]},
+        "aggregate": True,
+    }
+
+    resp1 = client.post("/api/project-status/deliverables/VPI-T2-D5/mapping-discovery", json=payload)
+    assert resp1.status_code == 200, resp1.get_json()
+    assert resp1.get_json()["data"]["stability"]["confirmed"] == 1
+
+    resp2 = client.post(
+        "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery",
+        json={**payload, "stabilityCheck": True},
+    )
+    assert resp2.status_code == 200
+    data2 = resp2.get_json()["data"]
+    assert page_requests == [1, 2]  # 第 2 页命中即停，不再多翻
+    assert data2["state"] == "matched", data2
+    assert data2["observationId"] is not None
+    assert data2["stability"] == {"confirmed": 2, "required": 2, "ready": True}
+
+
+def test_mapping_discovery_f10_stability_paging_is_bounded(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """翻页有界：窗口内始终无命中 → inconclusive，且请求页数不超过上限。"""
+    page_requests: list[int] = []
+    crawl_rows = [
+        {"processNo": "SOR-001", "carTypeProject": "F610S", "department": "车体科"},
+        {"processNo": "SOR-002", "carTypeProject": "F610S", "department": "内饰科"},
+    ]
+
+    class FakeTDCClient:
+        def crawl_sor_all(self, filters, **kwargs):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(
+                rows=list(crawl_rows), complete=True, stop_reason="reported_pages", total=100000
+            )
+
+        def query_sor_page(self, filters, page=1, page_size=50):  # type: ignore[no-untyped-def]
+            page_requests.append(page)
+            return SimpleNamespace(
+                rows=[{"processNo": f"SOR-X{page}", "carTypeProject": "F610S", "department": "内饰科"}],
+                total=100000,
+                page=page,
+                page_size=page_size,
+            )
+
+    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    _inject_sor_sections(monkeypatch, ["车体科"])
+    payload = {
+        "base_url": "https://tdc.sgmw.com.cn",
+        "wizardSessionId": "wiz-stability-bounded",
+        "filters": {"car_type_project": "F610S"},
+        "aggregate": True,
+    }
+
+    resp1 = client.post("/api/project-status/deliverables/VPI-T2-D2/mapping-discovery", json=payload)
+    assert resp1.status_code == 200, resp1.get_json()
+
+    resp2 = client.post(
+        "/api/project-status/deliverables/VPI-T2-D2/mapping-discovery",
+        json={**payload, "stabilityCheck": True},
+    )
+    assert resp2.status_code == 200
+    data2 = resp2.get_json()["data"]
+    assert len(page_requests) == web_app._STABILITY_SAMPLE_MAX_PAGES
+    assert page_requests == list(range(1, web_app._STABILITY_SAMPLE_MAX_PAGES + 1))
+    assert data2["observationId"] is None
+    assert data2["reason"] == "stability_sample_inconclusive"
+    assert data2["mismatch"] == {"reason": "inconclusive", "expected": None, "actual": 0}
+    assert data2["stability"]["ready"] is False
+
+
+def test_mapping_discovery_f10_stability_missing_section_column_is_422(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """采样侧缺科室列必须 422（配置错误），不能被吞成 inconclusive。
+
+    收窄函数对「整批行都没有科室列」是 fail-closed（结构漂移）；采样路径必须把
+    同一个 ValueError 映射成 422，否则用户看到的是永远"无法判定"。
+    """
+    with_section = [{"incident": "INC-001", "projectModel": "F610S", "department": "车体科"}]
+    without_section = [{"incident": "INC-001", "projectModel": "F610S"}]
+
+    class FakeTDCClient:
+        def crawl_data_model_all(self, filters, max_records=5000, should_stop=None):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(rows=list(with_section), complete=True, stop_reason="reported_pages")
+
+        def query_data_model_page(self, filters, page=1, page_size=50):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(rows=list(without_section), total=1, page=1, page_size=50)
+
+    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    payload = {
+        "base_url": "https://tdc.sgmw.com.cn",
+        "wizardSessionId": "wiz-stability-no-section",
+        "filters": {"project_model": "F610S", "sections": ["车体科"]},
+        "aggregate": True,
+    }
+
+    resp1 = client.post("/api/project-status/deliverables/VPI-T2-D5/mapping-discovery", json=payload)
+    assert resp1.status_code == 200
+
+    resp2 = client.post(
+        "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery",
+        json={**payload, "stabilityCheck": True},
+    )
+    assert resp2.status_code == 422
+    assert resp2.get_json()["error"]["type"] == "SectionColumnMissing"
+
+
 def test_mapping_discovery_f10_stability_aggregate_over_one_page(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """回归主用例（TASK-20260929-F10-STABILITY-GATE）：>50 条聚合 + 上游倒序。
 

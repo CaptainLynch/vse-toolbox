@@ -21,6 +21,16 @@ function syncCell(d) {
     ${policy.lastSuccessAt && html`<small>上次 ${shortTime(policy.lastSuccessAt)}</small>`}</span>`;
 }
 
+/** 进度取派生值（快照态 = 明细 completed/total 换算），回退手工值；
+ *  null 表示没有可信数值 —— 列表显示「—」，不编造 0%。 */
+function rowProgress(d) {
+  const raw = d && d.effectiveProgress !== undefined ? d.effectiveProgress : (d ? d.progress : null);
+  if (raw === null || raw === undefined) return null;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return null;
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
 function scheduleText(d) {
   if (d.scheduleState === "overdue") return html`<${Pill} tone="bad">逾期 ${d.scheduleDays} 天<//>`;
   if (d.scheduleState === "due_soon") return html`<${Pill} tone="warn">${d.scheduleDays} 天内到期<//>`;
@@ -107,10 +117,10 @@ export default function ProjectPage() {
       <div class="wb-table-wrap"><table class="wb-table">
         <thead><tr><th>交付物</th><th>状态</th><th>计划完成</th><th>进度</th><th>自动同步</th></tr></thead>
         <tbody>${deliverables.map((d) => html`<tr key=${d.id} onClick=${() => go(deliverableHref(d.id))}>
-          <td><b>${d.name}</b><small>${d.owner ? `负责人 ${d.owner} · ` : ""}${d.countsTowardCompletion ? "计入完成统计" : "仅供参考"}</small></td>
+          <td><b>${d.name}</b><small>${d.countsTowardCompletion ? "计入完成统计" : "仅供参考"}</small></td>
           <td><span class="wb-row"><${Pill} tone=${TONE[d.tone] || "off"}>${d.status}<//>${scheduleText(d)}</span></td>
           <td>${d.plannedDate || html`<span class="wb-muted">未设置</span>`}</td>
-          <td style="min-width:140px"><div class="wb-small">${d.progress ?? 0}%</div><${Progress} value=${d.progress} tone=${d.progress >= 100 ? "ok" : d.scheduleState === "overdue" ? "bad" : ""} /></td>
+          <td style="min-width:140px"><div class="wb-small">${rowProgress(d) === null ? "—" : `${rowProgress(d)}%`}</div><${Progress} value=${rowProgress(d) ?? 0} tone=${(rowProgress(d) ?? 0) >= 100 ? "ok" : d.scheduleState === "overdue" ? "bad" : ""} /></td>
           <td>${syncCell(d)}</td>
         </tr>`)}</tbody>
       </table></div>

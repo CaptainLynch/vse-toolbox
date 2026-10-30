@@ -59,6 +59,7 @@ from core.project_status_contracts import (
     PROJECT_STATUS_SOURCE_CAPABILITIES,
     current_stage_label,
     deliverable_display_state,
+    derive_effective_progress,
     find_job_key_by_deliverable_id,
     find_registry_entry_by_deliverable_id,
     milestone_display_status,
@@ -1227,6 +1228,85 @@ def _tdc_sor_filters(values: dict[str, str | None]) -> TDCSORFilters:
         latest_completed_node=values.get("latest_completed_node"),
         approval_status=values.get("approval_status"),
     )
+
+
+def _narrow_discovery_rows_by_sections(
+    db: Any,
+    rows: Sequence[Mapping[str, Any]],
+    match_rule: Mapping[str, Any],
+) -> list[Mapping[str, Any]]:
+    """按绑定 sections 收窄取证/采样行集（与同步 collect 同一收窄函数）。
+
+    为什么单独成函数：稳定性采样（第 1 页 50 行 / 单号重抓）必须与首次取证
+    **同源**——同一条收窄流水线、同一归集索引。采样若拿未收窄的行去比「已收窄
+    的全量基线」，其它科室的行永远不在基线集合里 ⇒ sample_not_in_baseline 会把
+    绑定永久卡死（2026-10-28 生产现象）。
+
+    返回空列表表示「收窄后无行」：取证侧按 SectionScopeEmpty 报错，采样侧按
+    inconclusive 处理（空集是任何集合的子集，直接比对会空真通过）。
+    """
+    selection = normalize_section_selection(match_rule.get("sections"))
+    if not selection:
+        return list(rows)
+    from services.project_status_connectors import TDCProjectStatusConnector
+
+    try:
+        return list(
+            TDCProjectStatusConnector._narrow_by_sections(
+                rows,
+                match_rule,
+                build_rollup_index(SectionRollupStore(db).get()),
+            )
+        )
+    except ValueError as exc:
+        raise _TDCRequestError(str(exc), "SectionColumnMissing", 422) from None
+
+
+# 稳定性采样在「所选科室第 1 页无命中」时最多翻到的页数（含第 1 页）。
+# 有界的原因：稳定性核验是**同步请求**（用户在向导里等着），每翻一页都是一次上游
+# 往返；全量抓取（crawl_*_all）才允许跑后台任务。10 页 × 50 行 = 500 行的采样窗口
+# 足以覆盖「所选科室的行不在上游默认排序前 50 行」的常见情形，翻不到则按
+# inconclusive 如实报「未判定」，而不是无限翻页拖死请求。
+_STABILITY_SAMPLE_MAX_PAGES = 10
+_STABILITY_SAMPLE_PAGE_SIZE = 50
+
+
+def _stability_paged_sample(
+    db: Any,
+    fetch_page: Callable[[int], Any],
+    match_rule: Mapping[str, Any],
+) -> tuple[list[Mapping[str, Any]], Any]:
+    """分页类（SOR / 数模无单号）稳定性采样：按 sections 收窄并必要时有界翻页。
+
+    为什么翻页：绑定选了科室后，上游默认排序的第 1 页（50 行）可能一行都不属于
+    所选科室，收窄后为空 ⇒ 每次重试都 inconclusive，绑定永远无法就绪（2026-10-28
+    生产现象的另一种形态）。仅在「有 sections 且收窄后为空」时才继续取第 2、3…页，
+    遇到第一页有命中即停，用该页命中行作样本。
+
+    返回 (样本行, 上游声明总数)。总数永远取第 1 页的**未收窄**上游总数——它与
+    首次取证的 upstream_declared_total 同口径，翻页/收窄不改变总数语义。样本行
+    为空表示「有界窗口内无命中」，调用方按 inconclusive 处理。
+    """
+    first = fetch_page(1)
+    sample_total = first.total
+    sample_rows = _narrow_discovery_rows_by_sections(db, first.rows, match_rule)
+    if sample_rows or not normalize_section_selection(match_rule.get("sections")):
+        return sample_rows, sample_total
+    page = 1
+    page_rows = list(first.rows)
+    while (
+        page < _STABILITY_SAMPLE_MAX_PAGES
+        and page_rows
+        and isinstance(sample_total, int)
+        and not isinstance(sample_total, bool)
+        and page * _STABILITY_SAMPLE_PAGE_SIZE < sample_total
+    ):
+        page += 1
+        page_rows = list(fetch_page(page).rows)
+        sample_rows = _narrow_discovery_rows_by_sections(db, page_rows, match_rule)
+        if sample_rows:
+            break
+    return sample_rows, sample_total
 
 
 def _tdc_preview_source(payload: Mapping[str, Any]) -> str:
@@ -2453,19 +2533,28 @@ def _project_status_payload(
                 "overdue": int(source_summary.get("overdue") or 0),
                 "snapshotAt": source_link.get("snapshotAt") if isinstance(source_link, dict) else None,
             }
-            display_progress_value: int | None = (
-                min(100, max(0, round(display_completed / display_total * 100)))
-                if display_total > 0
-                else None
-            )
-        elif display_state == "manual":
-            display_summary_value = None
-            display_progress_value = (
-                int(row["progress"]) if row["progress"] is not None else None
-            )
         else:
             display_summary_value = None
-            display_progress_value = None
+        # 进度派生单源（core.project_status_contracts.derive_effective_progress）：
+        # 快照态按明细 completed/total 换算，其余状态保留手工值。响应里的
+        # progress 仍是手工字段（编辑表单预填它并原样保存），派生值只走新键
+        # effectiveProgress/progressSource，避免派生数字被"保存"回写成手工值。
+        effective_progress_value, progress_source = derive_effective_progress(
+            display_state, display_summary_value, row["progress"]
+        )
+        # displayProgress 语义保持不变：只在 manual/snapshot 两态给数值。
+        display_progress_value: int | None = (
+            effective_progress_value
+            if display_state in ("manual", "snapshot")
+            else None
+        )
+        # 「实际完成或当前进度」列同样取派生值：否则概览表仍显示手工 0%，
+        # 与工作台列表/详情页出现两套数字。
+        progress_text_value = (
+            effective_progress_value
+            if effective_progress_value is not None
+            else row["progress"]
+        )
         display_status_value = (
             effective_status if display_state in ("manual", "snapshot") else None
         )
@@ -2479,8 +2568,16 @@ def _project_status_payload(
                 "owner": row["owner"],
                 "plannedDate": row["planned_date"],
                 "actualDate": actual_date,
-                "progressOrDate": actual_date if row["status"] == "已完成" else f'{row["progress"]}%',
+                "progressOrDate": (
+                    actual_date
+                    if row["status"] == "已完成"
+                    else (f"{progress_text_value}%" if progress_text_value is not None else "—")
+                ),
                 "progress": row["progress"],
+                # 派生进度：快照态按明细 completed/total 换算，其余状态等于手工值。
+                # 只读展示键；progress 保持手工语义（编辑表单预填它）。
+                "effectiveProgress": effective_progress_value,
+                "progressSource": progress_source,
                 "note": row["remark"],
                 "source": row["source"],
                 "department": row["department"],
@@ -5503,6 +5600,11 @@ def create_app(
                             and crawl_total >= 0
                         ):
                             upstream_declared_total = crawl_total
+                        elif upstream_declared_total is None:
+                            # 未声明总数时用「收窄前的全量行数」当基线总数：采样侧拿到的是
+                            # 上游 page total（同样未收窄），两者必须同口径。若在这里记收窄
+                            # 后的行数，带科室多选的绑定会在 total_mismatch 上永久失败。
+                            upstream_declared_total = len(rows)
                         if cache_key:
                             _set_discovery_session_cache(cache_key, rows, upstream_declared_total)
                     # 科室多选（sections）：与同步 collect 共用同一收窄函数（行内科室列
@@ -5512,20 +5614,7 @@ def create_app(
                         match_rule.get("sections")
                     )
                     if section_selection:
-                        from services.project_status_connectors import (
-                            TDCProjectStatusConnector,
-                        )
-
-                        try:
-                            narrowed = TDCProjectStatusConnector._narrow_by_sections(
-                                rows,
-                                match_rule,
-                                build_rollup_index(SectionRollupStore(db).get()),
-                            )
-                        except ValueError as exc:
-                            raise _TDCRequestError(
-                                str(exc), "SectionColumnMissing", 422
-                            ) from None
+                        narrowed = _narrow_discovery_rows_by_sections(db, rows, match_rule)
                         if rows and not narrowed:
                             raise _TDCRequestError(
                                 f"所选科室（{len(section_selection)} 个）在当前查询条件下"
@@ -5811,16 +5900,29 @@ def create_app(
 
             if deliverable_id in {"VPI-T2-D2", "VPI-T2-D5"}:
                 if is_stability_check:
-                    # F10: 独立轻量签名采样核验（只拉取第 1 页 50 条，秒级完成，保持同步）
+                    # F10: 独立轻量签名采样核验（默认只拉第 1 页 50 条，秒级完成，保持同步；
+                    # 选了科室且第 1 页无命中时才有界翻页，见 _stability_paged_sample）
                     client = _build_tdc_client_from_payload(
                         payload, app.config["TDC_ALLOWED_HOSTS"]
                     )
                     stability_kwargs: dict[str, Any] = {}
                     if deliverable_id == "VPI-T2-D2":
-                        paged_result = client.query_sor_page(
-                            _tdc_sor_filters(values), page=1, page_size=50
+                        sor_filters = _tdc_sor_filters(values)
+                        # 与首次取证同源：按 sections 收窄（必要时有界翻页），否则
+                        # 其它科室的行永远不在（已收窄的）基线里 ⇒ 永久 sample_not_in_baseline。
+                        sample_rows, sample_total = _stability_paged_sample(
+                            db,
+                            lambda page: client.query_sor_page(
+                                sor_filters,
+                                page=page,
+                                page_size=_STABILITY_SAMPLE_PAGE_SIZE,
+                            ),
+                            match_rule,
                         )
-                        sample_rows, sample_total = paged_result.rows, paged_result.total
+                        if not sample_rows:
+                            stability_kwargs["sample_empty_reason"] = (
+                                "stability_sample_inconclusive"
+                            )
                     elif document_no:
                         # 流水单号只能本地判定：采样必须与首次观测同源（全量抓取 +
                         # 精确匹配）。拿"全量第 1 页"去比"匹配到的那一行"必然误报
@@ -5837,9 +5939,19 @@ def create_app(
                                 None,
                                 _pagination_diagnostic(crawl_result, len(crawl_result.rows)),
                             )
-                        sample_rows, _ = match_serial(crawl_result.rows, document_no)
+                        # 与首次取证同源：先按 sections 收窄，再做单号精确匹配
+                        # （取证侧同一顺序：收窄 → match_serial）。
+                        narrowed_rows = _narrow_discovery_rows_by_sections(
+                            db, crawl_result.rows, match_rule
+                        )
+                        sample_rows, _ = match_serial(narrowed_rows, document_no)
                         if len(sample_rows) > 1:
                             raise _TDCRequestError("该流水单号命中多行，请核对后重试")
+                        if not sample_rows:
+                            # 收窄/未命中导致样本为空：不能判稳定（空集空真通过）。
+                            stability_kwargs["sample_empty_reason"] = (
+                                "stability_sample_inconclusive"
+                            )
                         full_total = getattr(crawl_result, "total", None)
                         sample_total = (
                             full_total
@@ -5870,9 +5982,17 @@ def create_app(
                                 None,
                                 _pagination_diagnostic(crawl_result, len(crawl_result.rows)),
                             )
-                        matched_rows, bookkeeping = match_serials(
-                            crawl_result.rows, document_nos
+                        narrowed_rows = _narrow_discovery_rows_by_sections(
+                            db, crawl_result.rows, match_rule
                         )
+                        matched_rows, bookkeeping = match_serials(
+                            narrowed_rows, document_nos
+                        )
+                        if not matched_rows:
+                            # 同单值分支：收窄后没有命中集合时按不确定处理。
+                            stability_kwargs["sample_empty_reason"] = (
+                                "stability_sample_inconclusive"
+                            )
                         # 样本侧是「本次全量抓取里命中的单号集合」（全集，不是采样），
                         # 与基线按集合相等比对；声明总数与单值分支同一口径，但成员模式
                         # 不参与比对（上游零件行会让总体总数增长）。
@@ -5885,10 +6005,23 @@ def create_app(
                         )
                         stability_kwargs["member_identities"] = bookkeeping["found"]
                     else:
-                        paged_result = client.query_data_model_page(
-                            _tdc_data_model_filters(values), page=1, page_size=50
+                        dm_filters = _tdc_data_model_filters(values)
+                        # 与首次取证同源：采样同样按 sections 收窄（必要时有界翻页），
+                        # 否则其它科室的行永远不在（已收窄的）基线集合里 ⇒ 永久
+                        # sample_not_in_baseline。
+                        sample_rows, sample_total = _stability_paged_sample(
+                            db,
+                            lambda page: client.query_data_model_page(
+                                dm_filters,
+                                page=page,
+                                page_size=_STABILITY_SAMPLE_PAGE_SIZE,
+                            ),
+                            match_rule,
                         )
-                        sample_rows, sample_total = paged_result.rows, paged_result.total
+                        if not sample_rows:
+                            stability_kwargs["sample_empty_reason"] = (
+                                "stability_sample_inconclusive"
+                            )
                     if sample_total is None or sample_total < 0:
                         raise _TDCRequestError("TDC 返回的总记录数无效")
                     result = discovery_service.observe_stability_sample(

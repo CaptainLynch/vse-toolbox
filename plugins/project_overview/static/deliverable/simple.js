@@ -1,9 +1,11 @@
 // 交付物详情的「简洁视图」（v2 默认）：一眼看懂进度 → 四个数字 → 需要关注的单据。
 // 完整的表单分析、筛选、图表、同步设置和记录都还在，点「显示完整明细与分析」才出现；
 // 专家模式默认直接打开完整视图。本视图只读已有接口，不新增后端逻辑。
+// 纯口径（阶段/逾期/派生进度/同步文案）在 simple-logic.js，由 Node 门禁直接断言。
 import { html, useEffect, useState } from "/static/host/vendor/preact-htm.js";
 import { apiRequest, enc } from "./api.js";
 import { redactSensitiveText, safeDisplayValue } from "./format.js";
+import { overdueLabel, progressDisplay, stageLabel, syncResultText } from "./simple-logic.js";
 
 const PAGE_SIZE = 20;
 /** 简表优先挑这些列（按顺序，最多 5 列）；表单没声明关键列时也能挑出可读的几列。 */
@@ -16,7 +18,7 @@ export function simpleColumns(schema, rows = []) {
     const value = Array.isArray(row.values) ? row.values[column.index] : null;
     return value !== null && value !== undefined && String(value).trim() !== "";
   });
-  // 状态列由本视图统一显示（已完成 / 逾期 / 原状态），不再重复源表里的「状态」。
+  // 阶段与逾期由本视图统一成两列，不再重复源表里的「状态」。
   const columns = (Array.isArray(schema && schema.columns) ? schema.columns : []).filter((c) => c && c.label !== "状态" && filled(c));
   const picked = [];
   PREFERRED_LABELS.forEach((label) => {
@@ -91,14 +93,14 @@ function Records({ formKey }) {
       </form></div>
     ${error && html`<p class="ds-error" role="alert">读取单据失败：${error}</p>`}
     ${!error && rows.items.length > 0 && html`<div class="ds-table-wrap"><table class="ds-table">
-      <thead><tr>${columns.map((c) => html`<th key=${c.key}>${c.label}</th>`)}<th>状态</th></tr></thead>
+      <thead><tr>${columns.map((c) => html`<th key=${c.key}>${c.label}</th>`)}<th>阶段</th><th>逾期</th></tr></thead>
       <tbody>${rows.items.map((row) => {
         const values = Array.isArray(row.values) ? row.values : [];
-        const dims = row.dimensions || {};
-        const late = row.overdueState === "overdue" && !row.isCompleted;
+        const overdue = overdueLabel(row);
         return html`<tr key=${row.rowKey}>
           ${columns.map((c) => html`<td key=${c.key}>${cell(values[c.index])}</td>`)}
-          <td><span class=${`ds-pill is-${row.isCompleted ? "ok" : late ? "bad" : "info"}`}>${row.isCompleted ? "已完成" : late ? "逾期" : safeDisplayValue(dims.status || "进行中")}</span></td>
+          <td><span class=${`ds-pill is-${row.isCompleted ? "ok" : "info"}`}>${row.isCompleted ? "已完成" : safeDisplayValue(stageLabel(schema, row) || "进行中")}</span></td>
+          <td>${overdue === "是" ? html`<span class="ds-pill is-bad">是</span>` : overdue}</td>
         </tr>`;
       })}</tbody>
     </table></div>`}
@@ -115,14 +117,18 @@ export function SimpleDetail({ item, onShowFull, onSynced }) {
   const sync = syncLine(item);
   const policy = item.updatePolicy || {};
   const caps = item.sourceInfo || {};
-  const progress = Math.max(0, Math.min(100, Number(item.progress) || 0));
+  // 进度读派生字段（快照态 = 明细 completed/total 换算），回退手工值；
+  // null 表示没有可信数值，显示「—」而不是编造 0%。
+  const progress = progressDisplay(item);
   const late = item.scheduleState === "overdue";
+  // 聚合同步不写负责人/计划完成（记录集禁止映射单值字段），标注「手工」避免误以为同步会改。
+  const plannedManual = policy.aggregate === true;
 
   const syncNow = async () => {
     setSyncing("正在同步…");
     try {
-      await apiRequest(`/api/project-status/deliverables/${enc(item.id)}/sync-now`, { method: "POST" });
-      setSyncing("同步完成");
+      const data = await apiRequest(`/api/project-status/deliverables/${enc(item.id)}/sync-now`, { method: "POST" });
+      setSyncing(syncResultText(data));
       if (onSynced) await onSynced();
     } catch (err) {
       setSyncing(`同步失败：${redactSensitiveText(err.message || String(err))}`);
@@ -136,10 +142,10 @@ export function SimpleDetail({ item, onShowFull, onSynced }) {
     <section class="ds-card ds-hero">
       <div class="ds-hero-main">
         <h2>${safeDisplayValue(item.name)}</h2>
-        <p class="ds-muted">${item.owner ? `负责人 ${safeDisplayValue(item.owner)} · ` : ""}计划完成 ${item.plannedDate || "未设置"}
+        <p class="ds-muted">计划完成 ${item.plannedDate || "未设置"}${item.plannedDate && plannedManual ? "（手工）" : ""}
           ${late ? html` · <b class="ds-bad">逾期 ${item.scheduleDays} 天</b>` : ""}</p>
-        <div class="ds-progress"><i style=${`width:${progress}%`} class=${late ? "is-bad" : progress >= 100 ? "is-ok" : ""}></i></div>
-        <p class="ds-muted">${progress}% · ${safeDisplayValue(item.effectiveStatus || item.status || "")}</p>
+        <div class="ds-progress"><i style=${`width:${progress.value === null ? 0 : progress.value}%`} class=${late ? "is-bad" : progress.value !== null && progress.value >= 100 ? "is-ok" : ""}></i></div>
+        <p class="ds-muted">${progress.text} · ${safeDisplayValue(item.effectiveStatus || item.status || "")}${progress.derived ? " · 由明细派生" : ""}</p>
       </div>
       <div class="ds-hero-side">
         <span class=${`ds-pill is-${sync.tone}`}>${sync.text}</span>
