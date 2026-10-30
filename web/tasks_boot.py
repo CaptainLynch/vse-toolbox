@@ -35,6 +35,63 @@ _CRAWL_TASK_TYPE_LABELS = {
 }
 
 
+class _TaskLifecycleState:
+    """任务生命周期扩展状态（契约 C6：两态取消 / retryOf；进程内，重启即清零）。
+
+    取消两态：cancel_requested（已请求，任务可能仍在收尾）→ cancelled（确认停止）。
+    持久化留给底层任务表（W11 后续）；这里的进程内记录已足以支撑 UI 的
+    「取消中…不要重复点」与幂等取消语义。
+    """
+
+    def __init__(self) -> None:
+        import threading
+
+        self._lock = threading.Lock()
+        self._cancel_requested: set[str] = set()
+        self._retry_of: dict[str, str] = {}
+
+    def mark_cancel_requested(self, *ids: str) -> None:
+        with self._lock:
+            for tid in ids:
+                if tid:
+                    self._cancel_requested.add(str(tid).strip())
+
+    def is_cancel_requested(self, *ids: str) -> bool:
+        with self._lock:
+            return any(str(tid).strip() in self._cancel_requested for tid in ids if tid)
+
+    def clear_cancel_requested(self, *ids: str) -> None:
+        with self._lock:
+            for tid in ids:
+                if tid:
+                    self._cancel_requested.discard(str(tid).strip())
+
+    def record_retry(self, new_id: str, old_id: str) -> None:
+        with self._lock:
+            self._retry_of[str(new_id)] = str(old_id)
+
+    def retry_of(self, new_id: str) -> str | None:
+        with self._lock:
+            return self._retry_of.get(str(new_id))
+
+
+_TASK_LIFECYCLE = _TaskLifecycleState()
+
+
+def _augment_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    """统一入口字段扩展（契约 C6）：两态取消标记、retryOf、不定进度。"""
+    tid = entry.get("id") or ""
+    raw_id = entry.get("raw_id") or ""
+    entry["cancelRequested"] = _TASK_LIFECYCLE.is_cancel_requested(tid, raw_id)
+    retry_of = _TASK_LIFECYCLE.retry_of(tid)
+    if retry_of:
+        entry["retryOf"] = retry_of
+    if entry.get("is_active") and not entry.get("progress"):
+        # 未知总量用不定进度，不伪造百分比（前端显示「进行中」）。
+        entry["progressIndeterminate"] = True
+    return entry
+
+
 class TasksRouteDeps:
     """任务路由依赖包：create_app 显式注入。"""
 
@@ -67,6 +124,34 @@ def register_tasks_routes(app: Any, deps: TasksRouteDeps) -> None:
     _local_web_mutation_error = deps.local_mutation_error
     _json_error = deps.json_error
     _safe_attachment_basename = deps.safe_attachment_basename
+
+    # 每个 app 实例独立的生命周期状态：进程级全局会让不同测试/不同应用实例互相串味。
+    lifecycle = _TaskLifecycleState()
+
+    def _augment_entry(entry: dict[str, Any]) -> dict[str, Any]:
+        """统一入口字段扩展（契约 C6）：两态取消标记、retryOf、不定进度。"""
+        tid = entry.get("id") or ""
+        raw_id = entry.get("raw_id") or ""
+        entry["cancelRequested"] = lifecycle.is_cancel_requested(tid, raw_id)
+        retry_of = lifecycle.retry_of(tid)
+        if retry_of:
+            entry["retryOf"] = retry_of
+        if entry.get("is_active") and not entry.get("progress"):
+            # 未知总量用不定进度，不伪造百分比（前端显示「进行中」）。
+            entry["progressIndeterminate"] = True
+        return entry
+
+    def _mark_cancel_requested(*ids: str) -> None:
+        lifecycle.mark_cancel_requested(*ids)
+
+    def _cancel_already_requested(*ids: str) -> bool:
+        return lifecycle.is_cancel_requested(*ids)
+
+    def _clear_cancel_requested(*ids: str) -> None:
+        lifecycle.clear_cancel_requested(*ids)
+
+    def _record_retry(new_id: str, old_id: str) -> None:
+        lifecycle.record_retry(new_id, old_id)
 
     def _crawl_task_title(task_type: str | None, source: str | None) -> str:
         t = (task_type or "").lower()
@@ -231,12 +316,12 @@ def register_tasks_routes(app: Any, deps: TasksRouteDeps) -> None:
         if crawl_task_runner is not None:
             ct = crawl_task_runner.get_task(tid) or crawl_task_runner.get_task(tid.removeprefix("crawl_"))
             if ct is not None:
-                return _crawl_task_entry(ct)
+                return _augment_entry(_crawl_task_entry(ct))
         raw_ex_id = tid.removeprefix("excel_")
         if raw_ex_id.isdigit() and excel_admin_service is not None:
             try:
                 et = excel_admin_service.get_task(int(raw_ex_id))
-                return _excel_task_entry(et)
+                return _augment_entry(_excel_task_entry(et))
             except KeyError:
                 pass
         raw_ewo_id = tid.removeprefix("ewo_").strip()
@@ -245,7 +330,7 @@ def register_tasks_routes(app: Any, deps: TasksRouteDeps) -> None:
                 from core.ewo_export_jobs import EWOExportJobs
                 ej = EWOExportJobs(db.db_path).get_job(raw_ewo_id)
                 if ej is not None:
-                    return _ewo_task_entry(ej)
+                    return _augment_entry(_ewo_task_entry(ej))
             except Exception:
                 pass
         return None
@@ -266,7 +351,7 @@ def register_tasks_routes(app: Any, deps: TasksRouteDeps) -> None:
         if crawl_task_runner is not None and (not category or category == "crawl"):
             try:
                 for ct in crawl_task_runner.list_tasks(limit=limit * 2):
-                    aggregated.append(_crawl_task_entry(ct))
+                    aggregated.append(_augment_entry(_crawl_task_entry(ct)))
             except Exception:
                 logger.exception("Failed to query crawl_tasks for unified task list")
 
@@ -274,7 +359,7 @@ def register_tasks_routes(app: Any, deps: TasksRouteDeps) -> None:
         if excel_admin_service is not None and (not category or category == "excel"):
             try:
                 for et in excel_admin_service.list_tasks(limit=limit * 2):
-                    aggregated.append(_excel_task_entry(et))
+                    aggregated.append(_augment_entry(_excel_task_entry(et)))
             except Exception:
                 logger.exception("Failed to query excel_tasks for unified task list")
 
@@ -284,7 +369,7 @@ def register_tasks_routes(app: Any, deps: TasksRouteDeps) -> None:
                 from core.ewo_export_jobs import EWOExportJobs
                 ewo_jobs = EWOExportJobs(db.db_path).list_jobs(limit=limit * 2)
                 for ej in ewo_jobs:
-                    aggregated.append(_ewo_task_entry(ej))
+                    aggregated.append(_augment_entry(_ewo_task_entry(ej)))
             except Exception:
                 logger.exception("Failed to query ewo_export_jobs for unified task list")
 
@@ -343,9 +428,16 @@ def register_tasks_routes(app: Any, deps: TasksRouteDeps) -> None:
             ct = crawl_task_runner.get_task(tid) or crawl_task_runner.get_task(raw_tid)
             if ct is not None:
                 if ct["status"] not in ("queued", "leased", "running"):
+                    _clear_cancel_requested(task_id, ct["task_id"])
                     return _json_error(409, "Conflict", f"Task is already {ct['status']}")
+                if _cancel_already_requested(task_id, ct["task_id"]):
+                    # 已请求取消仍在收尾：幂等返回，不重复触发（契约 C6 两态取消）。
+                    return jsonify({"ok": True, "data": {"taskId": task_id, "status": "cancelled",
+                                                         "cancelRequested": True}})
+                _mark_cancel_requested(task_id, ct["task_id"])
                 crawl_task_runner.cancel_task(ct["task_id"])
-                return jsonify({"ok": True, "data": {"taskId": task_id, "status": "cancelled"}})
+                return jsonify({"ok": True, "data": {"taskId": task_id, "status": "cancelled",
+                                                     "cancelRequested": True}})
 
         # 2. Try excel task
         raw_ex_id = tid.removeprefix("excel_")
@@ -354,9 +446,15 @@ def register_tasks_routes(app: Any, deps: TasksRouteDeps) -> None:
             try:
                 et = excel_admin_service.get_task(ex_id)
                 if et["status"] not in ("queued", "leased", "running"):
+                    _clear_cancel_requested(task_id, tid)
                     return _json_error(409, "Conflict", f"Task is already {et['status']}")
+                if _cancel_already_requested(task_id, tid):
+                    return jsonify({"ok": True, "data": {"taskId": task_id, "status": "cancelled",
+                                                         "cancelRequested": True}})
+                _mark_cancel_requested(task_id, tid)
                 excel_admin_service.cancel_task(ex_id)
-                return jsonify({"ok": True, "data": {"taskId": task_id, "status": "cancelled"}})
+                return jsonify({"ok": True, "data": {"taskId": task_id, "status": "cancelled",
+                                                     "cancelRequested": True}})
             except KeyError:
                 pass
 
@@ -369,9 +467,15 @@ def register_tasks_routes(app: Any, deps: TasksRouteDeps) -> None:
                 ej = ewo_jobs.get_job(raw_ewo_id)
                 if ej is not None:
                     if ej["state"] not in ("queued", "generating", "downloading"):
+                        _clear_cancel_requested(task_id, raw_ewo_id)
                         return _json_error(409, "Conflict", f"Task is already {ej['state']}")
+                    if _cancel_already_requested(task_id, raw_ewo_id):
+                        return jsonify({"ok": True, "data": {"taskId": task_id, "status": "cancelled",
+                                                             "cancelRequested": True}})
+                    _mark_cancel_requested(task_id, raw_ewo_id)
                     ewo_jobs.cancel(raw_ewo_id)
-                    return jsonify({"ok": True, "data": {"taskId": task_id, "status": "cancelled"}})
+                    return jsonify({"ok": True, "data": {"taskId": task_id, "status": "cancelled",
+                                                         "cancelRequested": True}})
             except Exception:
                 pass
 
@@ -394,6 +498,7 @@ def register_tasks_routes(app: Any, deps: TasksRouteDeps) -> None:
                     return _json_error(409, "Conflict", f"Task cannot be retried (current status: {ct['status']})")
                 try:
                     new_id = crawl_task_runner.retry_task(ct["task_id"])
+                    _record_retry(new_id, ct["task_id"])
                     return jsonify({"ok": True, "data": {"taskId": ct["task_id"], "newTaskId": new_id, "status": "queued"}})
                 except (RuntimeError, ValueError) as exc:
                     return _json_error(400, "CannotRetry", str(exc))
@@ -436,6 +541,7 @@ def register_tasks_routes(app: Any, deps: TasksRouteDeps) -> None:
                         new_job = ewo_jobs.create(ej["scope"], targets)
                     except ValueError as exc:
                         return _json_error(400, "CannotRetry", str(exc))
+                    _record_retry(f"ewo_{new_job['id']}", task_id)
                     return jsonify({"ok": True, "data": {"taskId": task_id, "newTaskId": f"ewo_{new_job['id']}", "status": "queued"}})
             except Exception:
                 logger.exception("EWO export job retry failed")

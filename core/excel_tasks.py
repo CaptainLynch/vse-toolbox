@@ -1261,18 +1261,24 @@ class ExcelTaskRepository:
         cutoff_iso: str,
         limit: int = 200,
     ) -> tuple[list[dict[str, Any]], bool]:
-        """Query committed output artifacts created at or before cutoff_iso without filesystem access."""
+        """Query committed output artifacts created at or before cutoff_iso without filesystem access.
+
+        清理保护（契约 C6）：活跃任务（排队/租约/运行中）的产物不在清理候选内——
+        它们可能正被下载或即将被取走；历史原件（ArchiveStore）不在本表，天然隔离。
+        """
         if not isinstance(cutoff_iso, str) or not cutoff_iso.strip():
             raise ValueError("cutoff_iso must be a non-empty string")
         bounded = max(1, min(int(limit), 500))
         with self._db.get_connection() as conn:
             rows = conn.execute(
                 """
-                SELECT id, task_id, run_id, artifact_type, root_id, relative_path,
-                       display_name, size_bytes, sha256, created_at
-                FROM excel_task_artifacts
-                WHERE created_at <= ?
-                ORDER BY created_at ASC, id ASC
+                SELECT a.id, a.task_id, a.run_id, a.artifact_type, a.root_id, a.relative_path,
+                       a.display_name, a.size_bytes, a.sha256, a.created_at
+                FROM excel_task_artifacts AS a
+                JOIN excel_tasks AS t ON t.id = a.task_id
+                WHERE a.created_at <= ?
+                  AND t.status NOT IN ('queued', 'leased', 'running')
+                ORDER BY a.created_at ASC, a.id ASC
                 LIMIT ?
                 """,
                 (cutoff_iso.strip(), bounded + 1),

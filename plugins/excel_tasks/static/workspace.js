@@ -8,7 +8,7 @@ import { api, ApiError } from "/static/host/api.js";
 import { DataTable, StateBlock, useStylesheet } from "/static/host/kit.js";
 import { ExamplesDialog } from "./examples.js";
 import {
-  ACTIVE_TASK_STATES, ErrorCard, OPERATIONS, STATUS_FILTERS, StatusChip,
+  ACTIVE_TASK_STATES, EnvCheckCard, ErrorCard, OPERATIONS, STATUS_FILTERS, StatusChip,
   buildTaskPayload, display, formFromTask, formatDate, formatSize, newIdempotencyKey, operationLabel,
 } from "./shared.js";
 
@@ -219,7 +219,7 @@ const RUN_COLUMNS = [
 
 function AuditBox({ audit }) {
   if (audit.loading) return html`<div class="xt-audit is-empty">加载下载记录中…</div>`;
-  if (audit.error) return html`<div class="xt-audit is-empty is-error">${display(audit.error.message)}</div>`;
+  if (audit.error) return html`<div class="xt-audit is-empty"><${ErrorCard} error=${audit.error} /></div>`;
   const rows = audit.rows || [];
   if (rows.length === 0) return html`<div class="xt-audit is-empty">暂无下载记录</div>`;
   return html`<div class="xt-audit">
@@ -697,6 +697,8 @@ export default function ExcelWorkspace({ plugin }) {
         onExamples=${() => setExamplesOpen(true)}
       />
     </header>
+
+    <${EnvCheckCard} env=${null} />
 
     <${ErrorCard} error=${error} onDismiss=${() => setError(null)} />
     <div class="xt-status" aria-live="polite">

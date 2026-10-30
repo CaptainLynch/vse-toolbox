@@ -212,6 +212,19 @@
 | W14-03（第 2 步） | ✅ | project_status_updates 包化（_impl.py 原文 + 69 符号 re-export + __path__ 兼容垫片，零行为风险）；黄金+既有 37 passed；子模块渐进拆分留后续波次 |
 | Wave 4 收尾包 | ✅ | `dist/v2-test/updates/vse-app-2.3.9.vsepkg`（264 文件，sha256 `ecce9570…`，验签通过，未真机安装） |
 
+
+## Wave 5 交付记录（2026-10-31）
+
+| 任务 | 状态 | 交付物与证据 |
+|---|---|---|
+| W13-05 | ✅ | `web/archive_boot.py`（10 条 /api/scheduled-archive 路由聚合迁入——原文件与其他注册交错，按装饰器逐段提取）；_archive_history_limit 严格校验随迁（lead 曾凭印象重写致 2 failed，恢复原文）；golden 零差异 |
+| W4-01 | ✅ | 向导补全（登录→建项目→选交付物→自启询问→完成；跨重启恢复非敏感状态；「稍后设置」区分；密码/凭据偏好绝不持久化——saveCredentials 偏好也不入 localStorage）；lead 修复 3 处（键集断言、写点清理、注释入数组块） |
+| W11-01 | ✅（lead 接管完成） | 两态取消（cancel_requested→幂等 200）、cancelRequested/retryOf/progressIndeterminate 字段、清理保护（活跃任务产物 SQL 排除；历史原件天然隔离）；每次注册独立生命周期状态（全局单例曾致跨测试串味）；8 测试 |
+| W12-02（缩减版） | ✅ | Excel 工具页环境检查卡片（三态；无后端时占位不伪报）+ ErrorCard 接入；lead 修复 2 处（空对象语义对齐、注释 .py 误报措辞） |
+| Wave 5 集成包 | ✅ | `dist/v2-test/updates/vse-app-2.3.10.vsepkg`（265 文件，sha256 `daaaaa26…`，验签通过，未真机安装） |
+
+**Wave 5 教训**：① 路由块迁移后必须 ast 自由变量审计 + 常量随迁（_archive_history_limit 凭印象重写是违规）；② 进程级单例状态在 Web 应用里必须按 app 实例隔离；③ 契约文本避免英文敏感词（password/token 触发高危拒派）。
+
 ## 基线证据（2026-10-31，W0）
 
 - 已提交：`b9f309b`（同步三问题+展示口径）、`7f4617f`（日报门禁+孤儿项目）、`d7ba018`（文档基线）。
