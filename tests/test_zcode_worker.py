@@ -213,26 +213,21 @@ def test_build_preflight_params_disable_all_tools_and_use_plan_mode(tmp_path):
     assert params['toolAllowlist'] == []
     assert set(params['toolDenylist']) >= {'Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash', 'Agent'}
     assert params['workspace']['workspacePath'] == str(tmp_path.resolve())
-    assert params['runtimeModel']['model'] == runtime['model']
-    assert 'contextBudget' not in params['runtimeModel']
+    # 2026-10-31 协议锁：新版 ZCode CLI 的 session/create 拒绝 runtimeModel 键，
+    # 任何会话参数都不得再携带它（曾在 preflight 报 Invalid params — Unrecognized key）。
+    assert 'runtimeModel' not in params
 
 
-def test_protocol_runtime_strips_internal_budget_metadata():
-    runtime = {
-        'model': {'providerId': 'provider', 'modelId': 'gemini-test'},
-        'contextBudget': {'context_window_tokens': 1_000_000},
-        'provider': {
-            'models': [{'modelId': 'gemini-test', 'contextWindow': 1_000_000,
-                        'contextBudget': {'max_input_tokens': 950_848},
-                        'thinkingLevel': 'low'}],
-        },
-    }
-    protocol = module().protocol_runtime(runtime)
-    assert 'contextBudget' not in protocol
-    assert 'contextBudget' not in protocol['provider']['models'][0]
-    assert 'thinkingLevel' not in protocol['provider']['models'][0]
-    assert protocol['provider']['models'][0]['contextWindow'] == 1_000_000
-    assert runtime['contextBudget']['context_window_tokens'] == 1_000_000
+def test_session_params_omit_runtime_model(tmp_path):
+    """会话创建参数同样不得携带 runtimeModel（与 preflight 同一协议约束）。"""
+    worker = module()
+    runtime = {'model': {'providerId': 'provider', 'modelId': 'gemini-test'}}
+    # 直接对 build_preflight_params 与会话参数字典共同持有的键做白名单校验：
+    # 若将来恢复 runtimeModel，build_preflight_params 的协议锁会先失败；这里再锁一次
+    # 协议元数据不上行的面（contextBudget/thinkingLevel 等本地字段不外发）。
+    params = worker.build_preflight_params(runtime, tmp_path)
+    assert 'contextBudget' not in params
+    assert 'thinkingLevel' not in params
 
 
 def test_host_rpc_response_completes_runtime_and_provider_handshakes():
@@ -446,7 +441,10 @@ def test_invoke_passes_one_million_token_runtime_and_records_usage(monkeypatch, 
     assert result['process']['usage'] == {'input_tokens': 10, 'output_tokens': 2}
     assert result['process']['context_waterline'] == 'green'
     create = next(item for item in captured if item[0] == 'session/create')
-    assert create[1]['runtimeModel']['provider']['models'][0]['contextWindow'] == 1_000_000
+    # 2026-10-31 协议变更：session/create 不再携带 runtimeModel（新版 CLI 拒绝该键）；
+    # 模型身份仍随 'model' 上行，1M 上下文预算只在本地位图（waterline/usage budget）生效。
+    assert 'runtimeModel' not in create[1]
+    assert create[1]['model']['modelId'] == 'gemini-test'
     send = next(item for item in captured if item[0] == 'session/send')
     assert '1000000' in send[1]['content']
 

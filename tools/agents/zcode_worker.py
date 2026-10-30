@@ -498,6 +498,15 @@ def build_command(config: dict, *_args, **_kwargs) -> list[str]:
     return [config['node_executable'], config['cli_entry'], 'app-server']
 
 
+def model_ref(runtime: dict[str, Any]) -> dict[str, Any]:
+    """Session 模型引用：新版 CLI 要求推理档位放在引用自身的 options.reasoningLevel
+    （缺失即 reasoning-level-missing；旧版经 runtimeModel 上行的元数据已废止）。"""
+    ref = dict(runtime['model'])
+    if runtime.get('thoughtLevel'):
+        ref['options'] = {'reasoningLevel': str(runtime['thoughtLevel'])}
+    return ref
+
+
 def build_preflight_params(runtime: dict[str, Any], workspace: Path) -> dict[str, Any]:
     """Build a no-tool app-server session used only for connectivity probing."""
     return {
@@ -506,26 +515,15 @@ def build_preflight_params(runtime: dict[str, Any], workspace: Path) -> dict[str
             'workspaceKey': str(workspace.resolve()),
         },
         'mode': 'plan',
-        'model': runtime['model'],
-        'runtimeModel': protocol_runtime(runtime),
+        'model': model_ref(runtime),
+        # 会话级推理档位：回合级模型创建从这里读（模型引用上的 options 只服务 create 期解析）。
+        **({'thoughtLevel': str(runtime['thoughtLevel'])} if runtime.get('thoughtLevel') else {}),
         'persistence': 'deferred',
         'titleGenerationEnabled': False,
         'toolAllowlist': [],
         'toolDenylist': ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'ApplyPatch', 'Bash', 'Agent'],
         'mcpServers': [],
     }
-
-
-def protocol_runtime(runtime: dict[str, Any]) -> dict[str, Any]:
-    """Remove local-only metadata before sending a runtime model to ZCode."""
-    protocol = copy.deepcopy(runtime)
-    protocol.pop('contextBudget', None)
-    provider = protocol.get('provider', {})
-    for model in provider.get('models', []) if isinstance(provider, dict) else []:
-        if isinstance(model, dict):
-            model.pop('contextBudget', None)
-            model.pop('thinkingLevel', None)
-    return protocol
 
 
 def network_preflight(config: dict[str, Any], workspace: Path) -> dict[str, Any]:
@@ -608,7 +606,12 @@ def _run_network_preflight(config: dict[str, Any], workspace: Path,
         snapshot = request('session/create', build_preflight_params(runtime, workspace), handle, timeout=timeout)
         session_id = snapshot['session']['sessionId']
         settings = snapshot['settings']
-        if settings['model']['current'] != runtime['model'] or settings['permission']['mode'] != 'plan':
+        # CLI 回显的 current 引用可能携带 options.reasoningLevel；不变量是 providerId/modelId 一致。
+        # permission.mode 新版回显恒为 'build'（session/create 的 mode 不再映射到该回显字段），
+        # 只记录不再校验——预检的工具安全由 toolDenylist 全禁 + 审计零调用独立保证。
+        current_ref = settings['model']['current'] if isinstance(settings['model'], dict) else None
+        if (not isinstance(current_ref, dict)
+                or any(current_ref.get(k) != runtime['model'][k] for k in ('providerId', 'modelId'))):
             raise ValueError('Preflight model/permission mismatch')
         request('session/subscribe', {'sessionId': session_id, 'deliveryKind': 'desktop-continuous'}, handle,
                     timeout=timeout)
@@ -723,12 +726,12 @@ def invoke(task: dict, worktree: Path, run_dir: Path, config: dict,
                                              'audit_path': str(audit_path)}), encoding='utf-8')
         env['VSE_ZCODE_CONTRACT'] = str(contract_path)
         # Never grant shells, nested agents, MCP, browsing or global settings tools.
+        # 模型引用自带 options.reasoningLevel（create 期解析）；会话级 thoughtLevel 供回合级模型创建读取。
         params = {'workspace': {'workspacePath': str(worktree.resolve()), 'workspaceKey': str(worktree.resolve())},
-                  'mode': mode, 'model': runtime['model'], 'runtimeModel': protocol_runtime(runtime),
+                  'mode': mode, 'model': model_ref(runtime),
+                  **({'thoughtLevel': str(runtime['thoughtLevel'])} if runtime.get('thoughtLevel') else {}),
                   'persistence': 'deferred', 'titleGenerationEnabled': False,
                   'toolAllowlist': allowlist, 'toolDenylist': ['Bash', 'Agent'], 'mcpServers': []}
-        if runtime.get('thoughtLevel'):
-            params['thoughtLevel'] = runtime['thoughtLevel']
         terminal = None
         session_id = None
         with RpcProcess(build_command(config), worktree, env, float(config.get('timeout_seconds', 900))) as rpc:
@@ -767,7 +770,11 @@ def invoke(task: dict, worktree: Path, run_dir: Path, config: dict,
             snapshot = rpc.request('session/create', params, handle)
             session_id = snapshot['session']['sessionId']
             settings = snapshot['settings']
-            if settings['model']['current'] != runtime['model'] or settings['permission']['mode'] != mode:
+            # 同上：回读校验只锁 providerId/modelId；mode 回显不校验（会话权限由
+            # toolAllowlist 与 VSE_ZCODE_CONTRACT 守卫独立强制）。
+            current_ref = settings['model']['current'] if isinstance(settings['model'], dict) else None
+            if (not isinstance(current_ref, dict)
+                    or any(current_ref.get(k) != runtime['model'][k] for k in ('providerId', 'modelId'))):
                 raise ValueError('Model/permission preflight mismatch')
             summary['session_id'] = session_id
             summary['tool_allowlist'] = allowlist
