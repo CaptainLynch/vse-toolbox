@@ -3856,12 +3856,8 @@ def create_app(
     def favicon():
         return "", 204
 
-    @app.get("/api/version")
-    def api_version():
-        info = app.config.get("APP_VERSION_INFO") or get_app_version_info()
-        response = jsonify({"ok": True, "data": info})
-        response.headers["Cache-Control"] = "no-store"
-        return response
+    # 版本与设置路由已迁入 web/host_boot.py（W13-02，路径/endpoint/信封不变）；
+    # 注册放在设置服务就绪之后（见下方 register_host_service_routes 调用）。
 
     @app.route("/api/overview")
     def api_overview():
@@ -4664,155 +4660,23 @@ def create_app(
             logger.exception("scheduled archive native folder picker failed")
             return _json_error(500, "ServerError", "无法选择归档目录")
 
-    @app.get("/api/settings")
-    def api_settings_get():
-        response = jsonify(
-            {
-                "ok": True,
-                "data": {
-                    "settings": settings_store.get(),
-                    "sessions": domain_sessions.payload(),
-                    "credentialVaultConfigured": credential_vault.is_configured(),
-                    "excelService": {"configured": excel_admin_service is not None},
-                },
-            }
-        )
-        response.headers["Cache-Control"] = "no-store"
-        return response
+    # 设置路由已迁入 web/host_boot.py（W13-02）：settings 读改、本机选目录、
+    # 统一域账号登录、会话清除。此处只做依赖注入。
+    from web.host_boot import HostRouteDeps, register_host_service_routes
 
-    @app.patch("/api/settings")
-    def api_settings_update():
-        local_error = _local_web_mutation_error()
-        if local_error is not None:
-            return local_error
-        payload = request.get_json(silent=True)
-        if not isinstance(payload, dict):
-            return _json_error(400, "ValidationError", "JSON object body is required")
-        try:
-            data = settings_store.update(payload)
-            response = jsonify({"ok": True, "data": {"settings": data}})
-            response.headers["Cache-Control"] = "no-store"
-            return response
-        except SettingsValidationError as exc:
-            return _project_status_validation_error(exc.fields)
-
-    @app.post("/api/settings/folders/native")
-    def api_settings_native_folder():
-        local_error = _local_web_mutation_error()
-        if local_error is not None:
-            return local_error
-        if app.config.get("TESTING"):
-            return _json_error(503, "NativeFolderPickerUnavailable", "测试环境不打开本机文件夹选择器")
-        payload = request.get_json(silent=True) or {}
-        initial_value = payload.get("path", "") if isinstance(payload, dict) else ""
-        initial_path: Path | None = None
-        if isinstance(initial_value, str) and initial_value.strip():
-            try:
-                initial_path = Path(validate_local_directory(initial_value))
-            except ValueError:
-                initial_path = None
-        try:
-            selected = choose_native_folder(initial_path)
-            selected_path = None if selected is None else validate_local_directory(str(selected))
-            response = jsonify({"ok": True, "data": {"path": selected_path, "cancelled": selected is None}})
-            response.headers["Cache-Control"] = "no-store"
-            return response
-        except NativeFolderPickerError as exc:
-            return _json_error(503, "NativeFolderPickerUnavailable", _sanitize_error_message(exc))
-        except ValueError as exc:
-            return _project_status_validation_error({"path": _sanitize_error_message(exc)})
-
-    @app.post("/api/settings/domain-login")
-    def api_domain_login():
-        local_error = _local_web_mutation_error()
-        if local_error is not None:
-            return local_error
-        payload = request.get_json(silent=True)
-        if not isinstance(payload, dict):
-            return _json_error(400, "ValidationError", "JSON object body is required")
-        username = payload.get("username")
-        password = payload.get("password")
-        if not isinstance(username, str) or not username.strip() or not isinstance(password, str) or not password:
-            return _project_status_validation_error({"credentials": "域用户名和密码不能为空"})
-        results: dict[str, object] = {}
-        domain_sessions.clear()
-        try:
-            login_result = ArasECMAuthClient().login(username.strip(), password)
-            domain_sessions.mark_authenticated(
-                "aras", login_result.session, principal=username.strip(), source_root=DEFAULT_ARAS_BASE_URL
-            )
-            results["aras"] = {"ok": True}
-        except Exception as exc:
-            results["aras"] = {"ok": False, "message": _sanitize_error_message(exc)}
-        try:
-            login_result = TDCPasswordAuthClient().login(username.strip(), password)
-            domain_sessions.mark_authenticated("tdc", login_result.session)
-            results["tdc"] = {"ok": True}
-        except Exception as exc:
-            results["tdc"] = {"ok": False, "message": _sanitize_error_message(exc)}
-        if any(isinstance(item, dict) and item.get("ok") for item in results.values()):
-            tdc_export_cache.clear()
-        if bool(payload.get("saveForScheduled")) and any(
-            isinstance(item, dict) and item.get("ok") for item in results.values()
-        ):
-            # 先写 Windows 凭据管理器（失败更常见），再写 DPAPI 凭据库；
-            # 任一步失败都不得出现「一侧已落盘」的半保存状态。
-            try:
-                store_windows_generic_credential(SYNC_CREDENTIAL_REF, username.strip(), password)
-            except CredentialProviderError as exc:
-                return _json_error(
-                    503,
-                    "CredentialVaultUnavailable",
-                    f"登录会话已建立，但同步凭据保存失败：{_sanitize_error_message(exc)}",
-                )
-            try:
-                credential_vault.store(username.strip(), password)
-            except CredentialVaultError as exc:
-                # DPAPI 落库失败：回滚 Windows 凭据，保持两侧一致。
-                try:
-                    delete_windows_generic_credential(SYNC_CREDENTIAL_REF)
-                except CredentialProviderError:
-                    pass
-                return _json_error(
-                    503,
-                    "CredentialVaultUnavailable",
-                    f"登录会话已建立，但定时下载凭据保存失败：{_sanitize_error_message(exc)}",
-                )
-        response = jsonify(
-            {
-                "ok": any(isinstance(item, dict) and item.get("ok") for item in results.values()),
-                "data": {"results": results, "sessions": domain_sessions.payload()},
-            }
-        )
-        response.headers["Cache-Control"] = "no-store"
-        return response, (200 if response.get_json()["ok"] else 401)
-
-    @app.delete("/api/settings/sessions")
-    def api_domain_sessions_clear():
-        local_error = _local_web_mutation_error()
-        if local_error is not None:
-            return local_error
-        payload = request.get_json(silent=True) or {}
-        system = payload.get("system") if isinstance(payload, dict) else None
-        if system not in (None, "aras", "tdc"):
-            return _project_status_validation_error({"system": "仅支持 aras 或 tdc"})
-        domain_sessions.clear(system)
-        if system in (None, "tdc"):
-            tdc_export_cache.clear()
-        if isinstance(payload, dict) and payload.get("clearCredentialVault"):
-            # 先删 Windows 凭据，再清 DPAPI 凭据库；Windows 删除失败时 DPAPI
-            # 保持原状，避免出现 Windows 侧孤儿凭据。
-            try:
-                delete_windows_generic_credential(SYNC_CREDENTIAL_REF)
-            except CredentialProviderError as exc:
-                return _json_error(503, "CredentialVaultUnavailable", _sanitize_error_message(exc))
-            try:
-                credential_vault.clear()
-            except CredentialVaultError as exc:
-                return _json_error(503, "CredentialVaultUnavailable", _sanitize_error_message(exc))
-        response = jsonify({"ok": True, "data": {"sessions": domain_sessions.payload()}})
-        response.headers["Cache-Control"] = "no-store"
-        return response
+    host_deps = HostRouteDeps(
+        settings_store=settings_store,
+        domain_sessions=domain_sessions,
+        credential_vault=credential_vault,
+        excel_admin_service=excel_admin_service,
+        tdc_export_cache=tdc_export_cache,
+        local_mutation_error=_local_web_mutation_error,
+        json_ok=_json_ok,
+        json_error=_json_error,
+        sanitize_error_message=_sanitize_error_message,
+        validation_error=_project_status_validation_error,
+    )
+    register_host_service_routes(app, host_deps)
 
     @app.get("/api/scheduled-archive/jobs")
     def api_scheduled_archive_jobs():
@@ -7142,7 +7006,7 @@ def create_app(
 
     from web.diagnostics import install_diagnostics
     install_diagnostics(app, local_guard=_local_web_mutation_error)
-    _install_plugin_host(app, db, plugin_dirs=plugin_dirs, plugin_only=plugin_only)
+    _install_plugin_host(app, db, plugin_dirs=plugin_dirs, plugin_only=plugin_only, host_deps=host_deps)
     return app
 
 
@@ -7158,6 +7022,7 @@ def _install_plugin_host(
     *,
     plugin_dirs: Sequence[Path] | None,
     plugin_only: Sequence[str] | None,
+    host_deps: Any = None,
 ) -> None:
     """加载 `plugins/` 下的功能插件；旧路由全部注册完成后再加载，插件不能覆盖它们。"""
     import mimetypes
@@ -7228,55 +7093,18 @@ def _install_plugin_host(
     def api_host_updates():
         return _json_ok(_updates_payload())
 
-    @app.post("/api/host/updates/import")
-    def api_host_updates_import():
-        local_error = _local_web_mutation_error()
-        if local_error is not None:
-            return local_error
-        upload = request.files.get("file")
-        if upload is None or not upload.filename:
-            return _json_error(400, "ValidationError", "请选择 .vsepkg 插件包")
-        data = upload.read()
-        try:
-            from host.updates import verify_package
+    # 宿主更新路由已迁入 web/host_boot.py（W13-02，路径/endpoint/信封不变）；
+    # updates/registry/_updates_payload 仍由本函数装配。
+    from web.host_boot import register_host_update_routes
 
-            package = verify_package(data, updates.trusted_keys)
-            record = registry.record_for(package.id)
-            current = record.manifest.version if record and record.manifest and record.status == "loaded" else None
-            updates.stage(data, current_version=current)
-        except PackageError as exc:
-            return _json_error(422, "PackageRejected", str(exc))
-        except OSError as exc:
-            logger.exception("staging plugin package failed")
-            return _json_error(500, "ServerError", _sanitize_error_message(exc))
-        return _json_ok({
-            "id": package.id,
-            "version": package.version,
-            "previous": current,
-            "message": "插件包已校验通过，重启 VSE Toolbox 后生效",
-            "updates": _updates_payload(),
-        })
-
-    @app.post("/api/host/updates/<plugin_id>/discard")
-    def api_host_updates_discard(plugin_id: str):
-        local_error = _local_web_mutation_error()
-        if local_error is not None:
-            return local_error
-        if not updates.discard_pending(plugin_id):
-            return _json_error(404, "NotFound", "没有待生效的插件包")
-        return _json_ok(_updates_payload())
-
-    @app.post("/api/host/updates/<plugin_id>/rollback")
-    def api_host_updates_rollback(plugin_id: str):
-        local_error = _local_web_mutation_error()
-        if local_error is not None:
-            return local_error
-        if plugin_id not in updates.read_state()["plugins"]:
-            return _json_error(404, "NotFound", "该插件没有通过插件包安装的版本")
-        previous = updates.rollback(plugin_id, reason="用户手动回滚")
-        data = _updates_payload()
-        data["message"] = f"已切回 {previous or '随包内置版本'}，重启后生效"
-        return _json_ok(data)
+    if host_deps is not None:
+        register_host_update_routes(
+            app,
+            updates=updates,
+            registry=registry,
+            updates_payload=_updates_payload,
+            deps=host_deps,
+        )
 
 
 if __name__ == "__main__":
