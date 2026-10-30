@@ -3902,47 +3902,6 @@ def create_app(
         ),
     )
 
-    @app.get("/api/scheduled-archive/folders")
-    def api_scheduled_archive_folders():
-        try:
-            data = archive_admin_service.list_folders(request.args.get("path", ""))
-            response = jsonify({"ok": True, "data": data})
-            response.headers["Cache-Control"] = "no-store"
-            return response
-        except FileNotFoundError:
-            return _json_error(404, "NotFound", "未找到归档目录")
-        except ArchiveSafetyError as exc:
-            return _json_error(422, "ValidationError", _sanitize_error_message(exc))
-        except OSError:
-            logger.exception("scheduled archive folder query failed")
-            return _json_error(500, "ServerError", "无法读取归档目录")
-
-    @app.post("/api/scheduled-archive/folders/native")
-    def api_scheduled_archive_native_folder():
-        local_error = _local_web_mutation_error()
-        if local_error is not None:
-            return local_error
-        if app.config.get("TESTING"):
-            return _json_error(503, "NativeFolderPickerUnavailable", "测试环境不打开本机文件夹选择器")
-        payload = request.get_json(silent=True) or {}
-        initial_directory = payload.get("path", "") if isinstance(payload, dict) else ""
-        if not isinstance(initial_directory, str):
-            return _project_status_validation_error({"path": "必须是本机目录字符串"})
-        try:
-            data = archive_admin_service.pick_native_folder(initial_directory)
-            response = jsonify({"ok": True, "data": data})
-            response.headers["Cache-Control"] = "no-store"
-            return response
-        except NativeFolderPickerError as exc:
-            return _json_error(503, "NativeFolderPickerUnavailable", _sanitize_error_message(exc))
-        except FileNotFoundError:
-            return _json_error(404, "NotFound", "未找到归档目录")
-        except ArchiveSafetyError as exc:
-            return _json_error(422, "ValidationError", _sanitize_error_message(exc))
-        except OSError:
-            logger.exception("scheduled archive native folder picker failed")
-            return _json_error(500, "ServerError", "无法选择归档目录")
-
     # 设置路由已迁入 web/host_boot.py（W13-02）：settings 读改、本机选目录、
     # 统一域账号登录、会话清除。此处只做依赖注入。
     from web.host_boot import HostRouteDeps, register_host_service_routes
@@ -3961,151 +3920,22 @@ def create_app(
     )
     register_host_service_routes(app, host_deps)
 
-    @app.get("/api/scheduled-archive/jobs")
-    def api_scheduled_archive_jobs():
-        try:
-            response = jsonify({"ok": True, "data": archive_admin_service.list_jobs()})
-            response.headers["Cache-Control"] = "no-store"
-            return response
-        except Exception as exc:
-            logger.exception("scheduled archive jobs query failed")
-            return _json_error(500, "ServerError", _sanitize_error_message(exc))
+    # 原件留存路由已迁入 web/archive_boot.py（W13-05，路径/endpoint/信封不变）。
+    from web.archive_boot import ArchiveRouteDeps, register_archive_routes
 
-    @app.post("/api/scheduled-archive/jobs")
-    def api_scheduled_archive_job_create():
-        local_error = _local_web_mutation_error()
-        if local_error is not None:
-            return local_error
-        payload = request.get_json(silent=True)
-        if not isinstance(payload, dict):
-            return _json_error(400, "ValidationError", "JSON object body is required")
-        try:
-            data = archive_admin_service.create_job(payload)
-            response = jsonify({"ok": True, "data": data})
-            response.headers["Cache-Control"] = "no-store"
-            return response, 201
-        except ArchiveAdminValidationError as exc:
-            return _project_status_validation_error(exc.fields)
-        except (KeyError, ValueError) as exc:
-            return _project_status_validation_error({"request": _sanitize_error_message(exc)})
-
-    @app.patch("/api/scheduled-archive/jobs/<job_key>")
-    def api_scheduled_archive_job_update(job_key: str):
-        local_error = _local_web_mutation_error()
-        if local_error is not None:
-            return local_error
-        payload = request.get_json(silent=True)
-        if not isinstance(payload, dict):
-            return _json_error(400, "ValidationError", "JSON object body is required")
-        try:
-            data = archive_admin_service.update_job(job_key, payload)
-            response = jsonify({"ok": True, "data": data})
-            response.headers["Cache-Control"] = "no-store"
-            return response
-        except ArchiveAdminValidationError as exc:
-            return _project_status_validation_error(exc.fields)
-        except KeyError:
-            return _json_error(404, "NotFound", "未找到归档任务")
-        except (ArchiveLeaseBusyError, RuntimeError):
-            return _json_error(409, "Conflict", "任务正在运行或配置已更新，请刷新后重试")
-        except ArchiveJobNotReadyError:
-            return _json_error(409, "NotReady", "启用任务前必须配置凭据引用")
-        except (ArchiveSafetyError, TypeError, ValueError) as exc:
-            return _project_status_validation_error(
-                {"request": _sanitize_error_message(exc)}
-            )
-        except Exception as exc:
-            logger.exception("scheduled archive job update failed")
-            return _json_error(500, "ServerError", _sanitize_error_message(exc))
-
-    @app.delete("/api/scheduled-archive/jobs/<job_key>")
-    def api_scheduled_archive_job_archive(job_key: str):
-        local_error = _local_web_mutation_error()
-        if local_error is not None:
-            return local_error
-        payload = request.get_json(silent=True) or {}
-        try:
-            data = archive_admin_service.archive_job(
-                job_key,
-                payload.get("updatedAt") if isinstance(payload, dict) else None,
-            )
-            response = jsonify({"ok": True, "data": data})
-            response.headers["Cache-Control"] = "no-store"
-            return response
-        except ArchiveAdminValidationError as exc:
-            return _project_status_validation_error(exc.fields)
-        except KeyError:
-            return _json_error(404, "NotFound", "未找到定时任务")
-        except RuntimeError:
-            return _json_error(409, "Conflict", "任务配置已更新，请刷新后重试")
-        except ValueError as exc:
-            return _project_status_validation_error({"request": _sanitize_error_message(exc)})
-
-    @app.get("/api/scheduled-archive/runs")
-    def api_scheduled_archive_runs():
-        job_key = request.args.get("jobKey") or None
-        try:
-            limit = _archive_history_limit(request.args.get("limit"))
-            data = archive_admin_service.list_runs(job_key, limit)
-            response = jsonify({"ok": True, "data": data})
-            response.headers["Cache-Control"] = "no-store"
-            return response
-        except KeyError:
-            return _json_error(404, "NotFound", "未找到归档任务")
-        except (TypeError, ValueError) as exc:
-            return _json_error(422, "ValidationError", _sanitize_error_message(exc))
-        except Exception as exc:
-            logger.exception("scheduled archive runs query failed")
-            return _json_error(500, "ServerError", _sanitize_error_message(exc))
-
-    @app.get("/api/scheduled-archive/runs/<int:run_id>/artifacts")
-    def api_scheduled_archive_artifacts(run_id: int):
-        try:
-            if db.get_archive_run(run_id) is None:
-                return _json_error(404, "NotFound", "未找到归档运行")
-            data = {
-                "runId": run_id,
-                "artifacts": archive_admin_service.list_artifacts(run_id),
-            }
-            response = jsonify({"ok": True, "data": data})
-            response.headers["Cache-Control"] = "no-store"
-            return response
-        except Exception as exc:
-            logger.exception("scheduled archive artifacts query failed")
-            return _json_error(500, "ServerError", _sanitize_error_message(exc))
-
-    @app.get("/api/scheduled-archive/config-audit")
-    def api_scheduled_archive_config_audit():
-        job_key = request.args.get("jobKey") or None
-        try:
-            limit = _archive_history_limit(request.args.get("limit"))
-            data = archive_admin_service.list_audit(job_key, limit)
-            response = jsonify({"ok": True, "data": data})
-            response.headers["Cache-Control"] = "no-store"
-            return response
-        except KeyError:
-            return _json_error(404, "NotFound", "未找到归档任务")
-        except (TypeError, ValueError) as exc:
-            return _json_error(422, "ValidationError", _sanitize_error_message(exc))
-        except Exception as exc:
-            logger.exception("scheduled archive audit query failed")
-            return _json_error(500, "ServerError", _sanitize_error_message(exc))
-
-    @app.post("/api/scheduled-archive/jobs/<job_key>/sync-now")
-    def api_scheduled_archive_sync_now(job_key: str):
-        local_error = _local_web_mutation_error()
-        if local_error is not None:
-            return local_error
-        try:
-            data = archive_admin_service.sync_now(job_key)
-            response = jsonify({"ok": True, "data": data})
-            response.headers["Cache-Control"] = "no-store"
-            return response
-        except KeyError:
-            return _json_error(404, "NotFound", "未找到归档任务")
-        except Exception as exc:
-            logger.exception("scheduled archive sync-now failed")
-            return _json_error(500, "ServerError", _sanitize_error_message(exc))
+    register_archive_routes(
+        app,
+        ArchiveRouteDeps(
+            db=db,
+            archive_admin_service=archive_admin_service,
+            excel_admin_service=excel_admin_service,
+            sanitize_error_message=_sanitize_error_message,
+            local_mutation_error=_local_web_mutation_error,
+            json_ok=_json_ok,
+            json_error=_json_error,
+            validation_error=_project_status_validation_error,
+        ),
+    )
 
     @app.get("/api/project-status")
     def api_project_status():
