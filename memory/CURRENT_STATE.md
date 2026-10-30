@@ -98,6 +98,24 @@
   试用快照按项目存在 `state/db-snapshots/<id>/`，`trialDatabase` 记录恢复目标。只装 app 包而不换启动器时，
   `vse_boot.projects` 不存在 → 工作台按单项目运行（切换器隐藏）。
 
+## 2026-10-31 W1 集成完成（全量 3474+ / 6 skipped；包 2.3.5 验签通过）
+
+- **W1 七任务全部交付并集成**（两轮协议适配 + lead 三处针对性修复后）：路由契约快照（160 条 golden）、
+  时间逾期内核、UI Kit + 术语门禁（失败输出脱敏；盘符正则收紧）、wave_gate 门禁编排（--focus 轻量模式、
+  Chrome headless 真实通道验证）、性能基线（冷启动 1948ms）、真机核对清单、新用户验收脚本+记录表。
+- **集成包**：`dist/v2-test/updates/vse-app-2.3.5.vsepkg`（251 文件，sha256 `8844aa0c…`，验签通过，未真机安装）。
+- **运行时适配（详见 RECOVERY_NOTES 2026-10-31，均已同步安装副本）**：
+  ① session/create 停发 runtimeModel；② 模型引用带 options.reasoningLevel + 会话级 thoughtLevel（缺一即
+  invalid_model_request）；③ 回显校验只锁 providerId/modelId（permission.mode 回显恒 build）；
+  ④ 事件 params 可能是数组；⑤ interaction/requestPermission 宿主应答 allow（强制边界在 PreToolUse guard）；
+  ⑥ guard 改结构化应答（exit 2 旧协议会被判成整会话 permission 死亡）；
+  ⑦ supervisor 事后分类分级（只读探界 ≤5 次不算失败，写类拒绝/超限仍判死）；
+  ⑧ doctor 对 zcode 路线不查 Codex lead（VSE_CODEX_CONFIG 显式时才查）。
+- **Worker 派发操作要点**：重派前必须清 worktree 目录 + `git worktree remove --force` + 分支 + run 目录
+  （顺序：先 remove worktree 再删分支）；objective 文本避开英文高危词（DELETE 触发 destructive 正则）。
+- **下一步**：Wave 2 派发（W13-02 lead 做 settings/host/version 迁移；W5-01/W14-01/W16-01 契约已备在
+  .agents/tasks/）；W2+ 派发节奏参照 docs/refactor-v2/EXECUTION_PLAN_20261031.md。
+
 ## 2026-10-31 v2 全波次执行启动（W0 完成，W1 派发中）· ZCode 路线
 
 - **路线**：用户选定 ZCode 执行——当前交互模型任唯一 lead，Gemini 3.8 Flash worker 承担有界任务；不启用 DSH 路线，不双 lead，不换供应商。总规划见 `docs/PROMPT_20261031_ASTRA_V2_MASTER_PLAN.md`。

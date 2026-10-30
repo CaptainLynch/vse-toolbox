@@ -1,0 +1,1762 @@
+[
+  {
+    "rule": "/",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "index",
+    "view_function": "index",
+    "is_write": false,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/api/aras/ewo/enrichment/jobs",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "ewo_enrichment_prepare",
+    "view_function": "ewo_enrichment_prepare",
+    "is_write": true,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/api/aras/ewo/enrichment/jobs/<job_id>/run",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "ewo_enrichment_run",
+    "view_function": "ewo_enrichment_run",
+    "is_write": true,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/api/aras/ewo/enrichment/jobs/<job_id>/status",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "ewo_enrichment_status",
+    "view_function": "ewo_enrichment_status",
+    "is_write": true,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/api/aras/ewo/enrichment/jobs/restore",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "ewo_enrichment_restore",
+    "view_function": "ewo_enrichment_restore",
+    "is_write": true,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/api/aras/ewo/export",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_aras_ewo_export",
+    "view_function": "api_aras_ewo_export",
+    "is_write": true,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/api/aras/ewo/query",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_aras_ewo_query",
+    "view_function": "api_aras_ewo_query",
+    "is_write": true,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/api/aras/ncr/detail",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_aras_ncr_detail",
+    "view_function": "api_aras_ncr_detail",
+    "is_write": true,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/api/aras/ncr/detail/download",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_aras_ncr_detail_download",
+    "view_function": "api_aras_ncr_detail_download",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "download"
+  },
+  {
+    "rule": "/api/aras/ncr/progress",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_aras_ncr_progress",
+    "view_function": "api_aras_ncr_progress",
+    "is_write": true,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/api/aras/ncr/progress/download",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_aras_ncr_progress_download",
+    "view_function": "api_aras_ncr_progress_download",
+    "is_write": true,
+    "envelope": "none",
+    "download": "download"
+  },
+  {
+    "rule": "/api/aras/paa/crawl-all",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_aras_paa_crawl_all",
+    "view_function": "api_aras_paa_crawl_all",
+    "is_write": true,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/api/aras/paa/export",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_aras_paa_export",
+    "view_function": "api_aras_paa_export",
+    "is_write": true,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/api/aras/paa/query",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_aras_paa_query",
+    "view_function": "api_aras_paa_query",
+    "is_write": true,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/api/deliverable-forms/<form_key>/rows",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_deliverable_form_rows",
+    "view_function": "api_deliverable_form_rows",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/deliverable-forms/<form_key>/statistics",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_deliverable_form_statistics",
+    "view_function": "api_deliverable_form_statistics",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/deliverable-forms/<form_key>/view",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_deliverable_form_view",
+    "view_function": "api_deliverable_form_view",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/deliverables/catalog",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_deliverables_catalog",
+    "view_function": "api_deliverables_catalog",
+    "is_write": false,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/api/diagnostics",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "diagnostic_status",
+    "view_function": "diagnostic_status",
+    "is_write": false,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/api/diagnostics/bundles/<identity>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "diagnostic_download",
+    "view_function": "diagnostic_download",
+    "is_write": false,
+    "envelope": "none",
+    "download": "download"
+  },
+  {
+    "rule": "/api/diagnostics/events",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "diagnostic_events",
+    "view_function": "diagnostic_events",
+    "is_write": true,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/api/diagnostics/mark",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "diagnostic_mark",
+    "view_function": "diagnostic_mark",
+    "is_write": true,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/api/diagnostics/start",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "diagnostic_start",
+    "view_function": "diagnostic_start",
+    "is_write": true,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/api/diagnostics/stop",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "diagnostic_stop",
+    "view_function": "diagnostic_stop",
+    "is_write": true,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/api/excel-artifacts/<int:artifact_id>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_excel_artifact_detail",
+    "view_function": "api_excel_artifact_detail",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/excel-artifacts/<int:artifact_id>/download",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_excel_artifact_download",
+    "view_function": "api_excel_artifact_download",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "download"
+  },
+  {
+    "rule": "/api/excel-artifacts/<int:artifact_id>/download-audit",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_excel_artifact_download_audit",
+    "view_function": "api_excel_artifact_download_audit",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/excel-artifacts/retention-plan",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_excel_artifacts_retention_plan",
+    "view_function": "api_excel_artifacts_retention_plan",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/excel-roots",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_excel_roots_list",
+    "view_function": "api_excel_roots_list",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/excel-tasks",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_excel_tasks_list",
+    "view_function": "api_excel_tasks_list",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/excel-tasks",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_excel_tasks_create",
+    "view_function": "api_excel_tasks_create",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/excel-tasks/<int:task_id>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_excel_task_detail",
+    "view_function": "api_excel_task_detail",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/excel-tasks/<int:task_id>/artifacts",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_excel_task_artifacts",
+    "view_function": "api_excel_task_artifacts",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/excel-tasks/<int:task_id>/runs",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_excel_task_runs",
+    "view_function": "api_excel_task_runs",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/excel-worker/start",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_excel_worker_start",
+    "view_function": "api_excel_worker_start",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/excel-worker/status",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_excel_worker_status",
+    "view_function": "api_excel_worker_status",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/excel-worker/stop",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_excel_worker_stop",
+    "view_function": "api_excel_worker_stop",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/host/manifest",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_host_manifest",
+    "view_function": "api_host_manifest",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/host/updates",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_host_updates",
+    "view_function": "api_host_updates",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/host/updates/<plugin_id>/discard",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_host_updates_discard",
+    "view_function": "api_host_updates_discard",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/host/updates/<plugin_id>/rollback",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_host_updates_rollback",
+    "view_function": "api_host_updates_rollback",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/host/updates/import",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_host_updates_import",
+    "view_function": "api_host_updates_import",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/overview",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_overview",
+    "view_function": "api_overview",
+    "is_write": false,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/deliverable-forms/forms",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_deliverable_forms.forms",
+    "view_function": "forms",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/deliverable-forms/forms/<form_key>/rows",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_deliverable_forms.form_rows",
+    "view_function": "form_rows",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/deliverable-forms/registry",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_deliverable_forms.registry",
+    "view_function": "registry",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/project-overview/form-terms",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_project_overview.form_terms",
+    "view_function": "form_terms",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/project-overview/sync-settings",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_project_overview.sync_settings_view",
+    "view_function": "sync_settings_view",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/project-overview/vehicle-arch-links",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_project_overview.vehicle_arch_links_view",
+    "view_function": "vehicle_arch_links_view",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/project-overview/vehicle-arch-links",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "plugin_project_overview.vehicle_arch_links_update",
+    "view_function": "vehicle_arch_links_update",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/project-overview/watchlist",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_project_overview.watchlist",
+    "view_function": "watchlist",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/project-overview/watchlist",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "plugin_project_overview.watchlist_update",
+    "view_function": "watchlist_update",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/project-overview/watchlist.csv",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_project_overview.watchlist_csv",
+    "view_function": "watchlist_csv",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "download"
+  },
+  {
+    "rule": "/api/p/settings/app-updates",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_settings.app_updates",
+    "view_function": "app_updates",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/settings/app-updates/install",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "plugin_settings.app_updates_install",
+    "view_function": "app_updates_install",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/settings/app-updates/restart",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "plugin_settings.app_updates_restart",
+    "view_function": "app_updates_restart",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/settings/app-updates/rollback",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "plugin_settings.app_updates_rollback",
+    "view_function": "app_updates_rollback",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/settings/app-updates/upload",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "plugin_settings.app_updates_upload",
+    "view_function": "app_updates_upload",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/sign-daily/config",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "plugin_sign_daily.save_config",
+    "view_function": "save_config",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/sign-daily/eml",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "plugin_sign_daily.eml",
+    "view_function": "eml",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/sign-daily/generate",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "plugin_sign_daily.generate",
+    "view_function": "generate",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/sign-daily/long-cycle",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_sign_daily.long_cycle_list",
+    "view_function": "long_cycle_list",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/sign-daily/long-cycle",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "plugin_sign_daily.long_cycle_confirm",
+    "view_function": "long_cycle_confirm",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/sign-daily/long-cycle/clear",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "plugin_sign_daily.long_cycle_clear",
+    "view_function": "long_cycle_clear",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/sign-daily/preview",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "plugin_sign_daily.preview",
+    "view_function": "preview",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/sign-daily/refresh",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "plugin_sign_daily.refresh",
+    "view_function": "refresh",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/sign-daily/refresh/<task_id>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_sign_daily.refresh_status",
+    "view_function": "refresh_status",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/sign-daily/settings/<dataset>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_sign_daily.settings_view",
+    "view_function": "settings_view",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/sign-daily/settings/<dataset>.csv",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_sign_daily.dataset_csv",
+    "view_function": "dataset_csv",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "download"
+  },
+  {
+    "rule": "/api/p/sign-daily/settings/<dataset>/import",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "plugin_sign_daily.dataset_import",
+    "view_function": "dataset_import",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/sign-daily/settings/<dataset>/reset",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "plugin_sign_daily.dataset_reset",
+    "view_function": "dataset_reset",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/sign-daily/settings/<dataset>/restore",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "plugin_sign_daily.dataset_restore",
+    "view_function": "dataset_restore",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/sign-daily/settings/roster/person",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "plugin_sign_daily.roster_person",
+    "view_function": "roster_person",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/sign-daily/settings/roster/revert",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "plugin_sign_daily.roster_revert",
+    "view_function": "roster_revert",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/sign-daily/settings/rules/revert",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "plugin_sign_daily.rules_revert",
+    "view_function": "rules_revert",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/sign-daily/settings/rules/rule",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "plugin_sign_daily.rules_rule",
+    "view_function": "rules_rule",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/sign-daily/settings/vocabulary",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "plugin_sign_daily.vocabulary_save",
+    "view_function": "vocabulary_save",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/sign-daily/state",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_sign_daily.state",
+    "view_function": "state",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/tir-report/config",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "plugin_tir_report.save_config",
+    "view_function": "save_config",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/tir-report/export",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "plugin_tir_report.export",
+    "view_function": "export",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/tir-report/export/<task_id>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_tir_report.export_status",
+    "view_function": "export_status",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/tir-report/files",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_tir_report.files",
+    "view_function": "files",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/tir-report/files/<day>/<stem>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_tir_report.download",
+    "view_function": "download",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "download"
+  },
+  {
+    "rule": "/api/p/tir-report/state",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_tir_report.state",
+    "view_function": "state",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/workbench/projects",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_workbench.projects_list",
+    "view_function": "projects_list",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/workbench/projects",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "plugin_workbench.projects_create",
+    "view_function": "projects_create",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/workbench/projects/<project_id>",
+    "methods": [
+      "PATCH"
+    ],
+    "endpoint": "plugin_workbench.projects_update",
+    "view_function": "projects_update",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/workbench/projects/<project_id>/switch",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "plugin_workbench.projects_switch",
+    "view_function": "projects_switch",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/project-status",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_project_status",
+    "view_function": "api_project_status",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/project-status/analytics",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_project_status_analytics",
+    "view_function": "api_project_status_analytics",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/project-status/deliverables/<deliverable_id>",
+    "methods": [
+      "PATCH"
+    ],
+    "endpoint": "api_project_status_deliverable_update",
+    "view_function": "api_project_status_deliverable_update",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/project-status/deliverables/<deliverable_id>/analysis",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_project_status_deliverable_analysis",
+    "view_function": "api_project_status_deliverable_analysis",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/project-status/deliverables/<deliverable_id>/analysis/items",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_project_status_deliverable_analysis_items",
+    "view_function": "api_project_status_deliverable_analysis_items",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/project-status/deliverables/<deliverable_id>/candidate-preview",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_project_status_candidate_preview",
+    "view_function": "api_project_status_candidate_preview",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/project-status/deliverables/<deliverable_id>/chart-labels",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_project_status_chart_labels",
+    "view_function": "api_project_status_chart_labels",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/project-status/deliverables/<deliverable_id>/chart-labels",
+    "methods": [
+      "PUT"
+    ],
+    "endpoint": "api_project_status_chart_labels_write",
+    "view_function": "api_project_status_chart_labels_write",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/project-status/deliverables/<deliverable_id>/debug-bundle",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_project_status_debug_bundle",
+    "view_function": "api_project_status_debug_bundle",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "download"
+  },
+  {
+    "rule": "/api/project-status/deliverables/<deliverable_id>/mapping-discovery",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_project_status_mapping_discovery_history",
+    "view_function": "api_project_status_mapping_discovery_history",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/project-status/deliverables/<deliverable_id>/mapping-discovery",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_project_status_mapping_discovery",
+    "view_function": "api_project_status_mapping_discovery",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/project-status/deliverables/<deliverable_id>/mapping-discovery/cancel",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_project_status_mapping_discovery_cancel",
+    "view_function": "api_project_status_mapping_discovery_cancel",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/project-status/deliverables/<deliverable_id>/sync-by-car-type",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_project_status_sync_by_car_type",
+    "view_function": "api_project_status_sync_by_car_type",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/project-status/deliverables/<deliverable_id>/sync-now",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_project_status_sync_now",
+    "view_function": "api_project_status_sync_now",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/project-status/deliverables/<deliverable_id>/unified-status",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_project_status_unified_status",
+    "view_function": "api_project_status_unified_status",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/project-status/deliverables/<deliverable_id>/update-policy",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_project_status_update_policy",
+    "view_function": "api_project_status_update_policy",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/project-status/deliverables/<deliverable_id>/update-policy",
+    "methods": [
+      "PATCH"
+    ],
+    "endpoint": "api_project_status_update_policy_write",
+    "view_function": "api_project_status_update_policy_write",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/project-status/phases/<phase_id>",
+    "methods": [
+      "PATCH"
+    ],
+    "endpoint": "api_project_status_phase_update",
+    "view_function": "api_project_status_phase_update",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/project-status/phases/<phase_id>/milestones",
+    "methods": [
+      "PATCH"
+    ],
+    "endpoint": "api_project_status_milestones_update",
+    "view_function": "api_project_status_milestones_update",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/project-status/runs",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_project_status_runs",
+    "view_function": "api_project_status_runs",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/project-status/runs/<int:run_id>/artifacts",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_project_status_run_artifacts",
+    "view_function": "api_project_status_run_artifacts",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/project-status/scheduler",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_project_status_scheduler_status",
+    "view_function": "api_project_status_scheduler_status",
+    "is_write": false,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/api/project-status/scheduler/config",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_project_status_scheduler_config",
+    "view_function": "api_project_status_scheduler_config",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/project-status/scheduler/sync-all",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_project_status_scheduler_sync_all",
+    "view_function": "api_project_status_scheduler_sync_all",
+    "is_write": true,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/api/project-status/section-rollup",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_section_rollup_get",
+    "view_function": "api_section_rollup_get",
+    "is_write": false,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/api/project-status/section-rollup",
+    "methods": [
+      "PUT"
+    ],
+    "endpoint": "api_section_rollup_put",
+    "view_function": "api_section_rollup_put",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/project-status/updates",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_project_status_updates",
+    "view_function": "api_project_status_updates",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/scheduled-archive/config-audit",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_scheduled_archive_config_audit",
+    "view_function": "api_scheduled_archive_config_audit",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/scheduled-archive/folders",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_scheduled_archive_folders",
+    "view_function": "api_scheduled_archive_folders",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/scheduled-archive/folders/native",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_scheduled_archive_native_folder",
+    "view_function": "api_scheduled_archive_native_folder",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/scheduled-archive/jobs",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_scheduled_archive_jobs",
+    "view_function": "api_scheduled_archive_jobs",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/scheduled-archive/jobs",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_scheduled_archive_job_create",
+    "view_function": "api_scheduled_archive_job_create",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/scheduled-archive/jobs/<job_key>",
+    "methods": [
+      "DELETE"
+    ],
+    "endpoint": "api_scheduled_archive_job_archive",
+    "view_function": "api_scheduled_archive_job_archive",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/scheduled-archive/jobs/<job_key>",
+    "methods": [
+      "PATCH"
+    ],
+    "endpoint": "api_scheduled_archive_job_update",
+    "view_function": "api_scheduled_archive_job_update",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/scheduled-archive/jobs/<job_key>/sync-now",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_scheduled_archive_sync_now",
+    "view_function": "api_scheduled_archive_sync_now",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/scheduled-archive/runs",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_scheduled_archive_runs",
+    "view_function": "api_scheduled_archive_runs",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/scheduled-archive/runs/<int:run_id>/artifacts",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_scheduled_archive_artifacts",
+    "view_function": "api_scheduled_archive_artifacts",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/settings",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_settings_get",
+    "view_function": "api_settings_get",
+    "is_write": false,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/api/settings",
+    "methods": [
+      "PATCH"
+    ],
+    "endpoint": "api_settings_update",
+    "view_function": "api_settings_update",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/settings/domain-login",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_domain_login",
+    "view_function": "api_domain_login",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/settings/folders/native",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_settings_native_folder",
+    "view_function": "api_settings_native_folder",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/settings/sessions",
+    "methods": [
+      "DELETE"
+    ],
+    "endpoint": "api_domain_sessions_clear",
+    "view_function": "api_domain_sessions_clear",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/tasks",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_tasks_list",
+    "view_function": "api_tasks_list",
+    "is_write": false,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/api/tasks/<task_id>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_tasks_get",
+    "view_function": "api_tasks_get",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/tasks/<task_id>/cancel",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_tasks_cancel",
+    "view_function": "api_tasks_cancel",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/tasks/<task_id>/download",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_tasks_download",
+    "view_function": "api_tasks_download",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "download"
+  },
+  {
+    "rule": "/api/tasks/<task_id>/result",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_tasks_result",
+    "view_function": "api_tasks_result",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/tasks/<task_id>/retry",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_tasks_retry",
+    "view_function": "api_tasks_retry",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/tdc/a-face/crawl-all",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_tdc_a_face_crawl_all",
+    "view_function": "api_tdc_a_face_crawl_all",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/tdc/a-face/export",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_tdc_a_face_export",
+    "view_function": "api_tdc_a_face_export",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/tdc/a-face/query",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_tdc_a_face_query",
+    "view_function": "api_tdc_a_face_query",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/tdc/data-model/crawl-all",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_tdc_data_model_crawl_all",
+    "view_function": "api_tdc_data_model_crawl_all",
+    "is_write": true,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/api/tdc/data-model/export",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_tdc_data_model_export",
+    "view_function": "api_tdc_data_model_export",
+    "is_write": true,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/api/tdc/data-model/export-merged",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_tdc_data_model_export_merged",
+    "view_function": "api_tdc_data_model_export_merged",
+    "is_write": true,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/api/tdc/data-model/query",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_tdc_data_model_query",
+    "view_function": "api_tdc_data_model_query",
+    "is_write": true,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/api/tdc/sor/car-type-projects",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_tdc_sor_car_type_projects",
+    "view_function": "api_tdc_sor_car_type_projects",
+    "is_write": true,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/api/tdc/sor/crawl-all",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_tdc_sor_crawl_all",
+    "view_function": "api_tdc_sor_crawl_all",
+    "is_write": true,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/api/tdc/sor/export",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_tdc_sor_export",
+    "view_function": "api_tdc_sor_export",
+    "is_write": true,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/api/tdc/sor/query",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_tdc_sor_query",
+    "view_function": "api_tdc_sor_query",
+    "is_write": true,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/api/version",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_version",
+    "view_function": "api_version",
+    "is_write": false,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/favicon.ico",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "favicon",
+    "view_function": "favicon",
+    "is_write": false,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/plugins/deliverable-forms/static/<path:filename>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_deliverable_forms_static.static",
+    "view_function": "send_static_file",
+    "is_write": false,
+    "envelope": "none",
+    "download": "download"
+  },
+  {
+    "rule": "/plugins/deliverables/static/<path:filename>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_deliverables_static.static",
+    "view_function": "send_static_file",
+    "is_write": false,
+    "envelope": "none",
+    "download": "download"
+  },
+  {
+    "rule": "/plugins/excel-tasks/static/<path:filename>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_excel_tasks_static.static",
+    "view_function": "send_static_file",
+    "is_write": false,
+    "envelope": "none",
+    "download": "download"
+  },
+  {
+    "rule": "/plugins/project-overview/static/<path:filename>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_project_overview_static.static",
+    "view_function": "send_static_file",
+    "is_write": false,
+    "envelope": "none",
+    "download": "download"
+  },
+  {
+    "rule": "/plugins/scheduled-archive/static/<path:filename>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_scheduled_archive_static.static",
+    "view_function": "send_static_file",
+    "is_write": false,
+    "envelope": "none",
+    "download": "download"
+  },
+  {
+    "rule": "/plugins/settings/static/<path:filename>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_settings_static.static",
+    "view_function": "send_static_file",
+    "is_write": false,
+    "envelope": "none",
+    "download": "download"
+  },
+  {
+    "rule": "/plugins/sign-daily/static/<path:filename>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_sign_daily_static.static",
+    "view_function": "send_static_file",
+    "is_write": false,
+    "envelope": "none",
+    "download": "download"
+  },
+  {
+    "rule": "/plugins/system-query/static/<path:filename>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_system_query_static.static",
+    "view_function": "send_static_file",
+    "is_write": false,
+    "envelope": "none",
+    "download": "download"
+  },
+  {
+    "rule": "/plugins/tir-report/static/<path:filename>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_tir_report_static.static",
+    "view_function": "send_static_file",
+    "is_write": false,
+    "envelope": "none",
+    "download": "download"
+  },
+  {
+    "rule": "/plugins/workbench/static/<path:filename>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_workbench_static.static",
+    "view_function": "send_static_file",
+    "is_write": false,
+    "envelope": "none",
+    "download": "download"
+  },
+  {
+    "rule": "/static/<path:filename>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "static",
+    "view_function": "<lambda>",
+    "is_write": false,
+    "envelope": "none",
+    "download": "none"
+  }
+]

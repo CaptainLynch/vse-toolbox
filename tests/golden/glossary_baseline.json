@@ -1,0 +1,67 @@
+{
+  "plugins/deliverable_forms/static/index.js": [
+    "快照"
+  ],
+  "plugins/deliverables/static/catalog.js": [
+    "Base URL"
+  ],
+  "plugins/deliverables/static/lib.js": [
+    "Base URL"
+  ],
+  "plugins/project_overview/static/archive-deliverable.js": [
+    "快照"
+  ],
+  "plugins/project_overview/static/deliverable/analysis.js": [
+    "快照"
+  ],
+  "plugins/project_overview/static/deliverable/detail.js": [
+    "快照"
+  ],
+  "plugins/project_overview/static/deliverable/discovery.js": [
+    "取证"
+  ],
+  "plugins/project_overview/static/deliverable/display.js": [
+    "快照"
+  ],
+  "plugins/project_overview/static/deliverable/evidence.js": [
+    "JSON",
+    "取证"
+  ],
+  "plugins/project_overview/static/deliverable/form-analysis.js": [
+    "快照"
+  ],
+  "plugins/project_overview/static/deliverable/policy-logic.js": [
+    "取证"
+  ],
+  "plugins/project_overview/static/deliverable/status-chart.js": [
+    "快照"
+  ],
+  "plugins/project_overview/static/details/external.js": [
+    "快照"
+  ],
+  "plugins/project_overview/static/details/sync-settings-logic.js": [
+    "JSON"
+  ],
+  "plugins/project_overview/static/shared/status-logic.js": [
+    "快照"
+  ],
+  "plugins/scheduled_archive/static/archive_data.js": [
+    "JSON"
+  ],
+  "plugins/scheduled_archive/static/jobs.js": [
+    "JSON",
+    "盘符路径"
+  ],
+  "plugins/settings/static/settings-form.js": [
+    "快照"
+  ],
+  "plugins/system_query/static/query.js": [
+    "Base URL"
+  ],
+  "plugins/workbench/static/tools.js": [
+    "Base URL"
+  ],
+  "web/static/host/session.js": [
+    "JSON"
+  ]
+}

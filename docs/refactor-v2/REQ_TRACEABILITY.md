@@ -146,6 +146,23 @@
 | 3 名新用户 10 分钟全路径 | ⏸ | W20-01 → W20-02 | 缺真实人员时如实待验证 |
 | 更新验收（app 包双击安装+失败回滚） | 🔄 | W17-03 | 真机 |
 
+
+## W1 交付记录（2026-10-31）
+
+| 任务 | 状态 | 交付物与证据 |
+|---|---|---|
+| W17-01 | ✅ | `tools/wave_gate.py`（--focus 轻量模式/全量/地图/术语/打包五步编排，SKIP 如实标记）+ `tests/browser/`（Chrome headless 真实通道验证，无通道时带原因 skip） |
+| W13-01 | ✅ | `tests/test_route_contract_snapshot.py` + `tests/golden/routes.json`（160 条路由锁定，对比模式零差异） |
+| W8-01 | ✅ | `web/static/host/ui-kit.js`（ErrorCard/FixIt/Skeleton/TONE）+ `glossary.js` + 术语门禁 pytest + 基线（21 文件）；失败输出脱敏（不泄露内网串）；盘符正则收紧为反斜杠 |
+| W10-01 | ✅ | `core/time_rules.py`（aware UTC/北京时间/纯日期/三来源解释/逾期内核）+ 20 项测试；NamedTuple __classcell__ 兼容修复 |
+| W18-01 | ✅ | `tools/perf_baseline.py` + [PERF_BASELINE_20261031.md](PERF_BASELINE_20261031.md)（实测：冷启动 1948ms、overview 1.63ms、深分页 0.12ms） |
+| W19-01 | ✅ | `docs/manual/真机核对清单.md`（7 大项，操作步骤/预期现象/截图要点） |
+| W20-01 | ✅ | `docs/manual/新用户验收脚本.md` + `docs/manual/验收记录表.md`（步骤合计 480s ≤ 600s） |
+| W1 集成包 | ✅ | `dist/v2-test/updates/vse-app-2.3.5.vsepkg`（251 文件，验签通过，sha256 `8844aa0c…`） |
+
+**W1 期间运行时适配（lead，不入需求追踪）**：worker 运行时对新版 GLM zcode.cjs 的协议适配四连修
+（runtimeModel/推理档位/params 形状/guard 拒绝分级），详见 RECOVERY_NOTES 2026-10-31。
+
 ## 基线证据（2026-10-31，W0）
 
 - 已提交：`b9f309b`（同步三问题+展示口径）、`7f4617f`（日报门禁+孤儿项目）、`d7ba018`（文档基线）。
