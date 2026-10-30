@@ -77,6 +77,22 @@ def check_tool(event, contract):
     return tool_decision(tool, data, contract)['decision'] == 'allow'
 
 
+def _hook_output(allowed: bool, reason: str) -> None:
+    """新版 CLI 的 PreToolUse 协议：stdout 输出 permissionDecision JSON（exit 0）。
+
+    旧协议（exit 2 + stderr）在新 CLI 下会把拒绝升级成整个会话的
+    "stopped: permission"（TASK-W19-01/W20-01 实测）；结构化 deny 让模型
+    看到 execution-denied 并自行改走界内路径。
+    """
+    print(json.dumps({
+        'hookSpecificOutput': {
+            'hookEventName': 'PreToolUse',
+            'permissionDecision': 'allow' if allowed else 'deny',
+            'permissionDecisionReason': reason,
+        },
+    }, ensure_ascii=False))
+
+
 def main():
     contract_path = os.environ.get('VSE_ZCODE_CONTRACT')
     if not contract_path:
@@ -85,18 +101,23 @@ def main():
         contract = json.loads(Path(contract_path).read_text(encoding='utf-8-sig'))
         raw = sys.stdin.read(1_000_001)
         if len(raw) > 1_000_000:
-            return 2
+            _hook_output(False, 'Tool input exceeds guard size limit')
+            return 0
         event = json.loads(raw)
-        allowed = check_tool(event, contract)
+        decision = tool_decision(event.get('tool_name', event.get('toolName')),
+                                 event.get('tool_input', event.get('input', {})), contract)
+        allowed = decision['decision'] == 'allow'
         with Path(contract['audit_path']).open('a', encoding='utf-8') as handle:
             handle.write(json.dumps({'tool': event.get('tool_name', event.get('toolName')),
                                      'allowed': allowed}) + '\n')
         if not allowed:
             print('Worker tool is outside the allowed scope.', file=sys.stderr)
-        return 0 if allowed else 2
+        _hook_output(allowed, decision.get('reason') or ('Allowed' if allowed else 'Denied by scope contract'))
+        return 0
     except Exception:
         print('Worker scope guard cannot validate this request.', file=sys.stderr)
-        return 2
+        _hook_output(False, 'Worker scope guard cannot validate this request')
+        return 0
 
 
 if __name__ == '__main__':
