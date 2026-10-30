@@ -771,7 +771,9 @@ def invoke(task: dict, worktree: Path, run_dir: Path, config: dict,
                         else:
                             rpc.send({'id': message['id'], 'result': result})
                     return
-                event = message.get('params', {})
+                # 新版 CLI 的事件 params 可能是数组（TASK-W13-01 实测 AttributeError）：
+                # 非 dict 一律按空事件处理，只保留宿主 RPC 分支的语义。
+                event = message.get('params') if isinstance(message.get('params'), dict) else {}
                 payload = event.get('payload', {})
                 if message.get('method') == 'session/event' and event.get('sessionId') == session_id:
                     ref = payload.get('modelRef')
@@ -834,8 +836,16 @@ def invoke(task: dict, worktree: Path, run_dir: Path, config: dict,
         summary['guard_calls'] = len(audited)
         if summary.get('tool_call_count', 0) and not audited:
             result = failure(task['task_id'], 'guard')
-        elif any(not event['allowed'] for event in audited):
-            result = failure(task['task_id'], 'permission')
+        else:
+            # 2026-10-31 分级策略：guard 拒绝的**只读探测**（Glob/Grep/Read）是模型
+            # 探界后改道的正常行为（TASK-W19-01/W20-01 实测：产出已完成，仅因历史
+            # 上"一次拒绝即判死"浪费成果）。写类拒绝或探测次数超限仍判 permission
+            # 失败，控制文件探测（.git/.zcode/AGENTS.md 等，guard 必拒且往往反复）
+            # 由次数上限兜住。
+            denied = [event for event in audited if not event['allowed']]
+            denied_writes = [event for event in denied if event.get('tool') in ('Write', 'Edit', 'ApplyPatch')]
+            if denied_writes or len(denied) > 5:
+                result = failure(task['task_id'], 'permission')
         result['needs_review'] = True
     except PermissionError:
         result = failure(task['task_id'], 'permission')
