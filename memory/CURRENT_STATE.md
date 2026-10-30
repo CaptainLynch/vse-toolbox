@@ -98,6 +98,17 @@
   试用快照按项目存在 `state/db-snapshots/<id>/`，`trialDatabase` 记录恢复目标。只装 app 包而不换启动器时，
   `vse_boot.projects` 不存在 → 工作台按单项目运行（切换器隐藏）。
 
+## 2026-10-31 Wave 4 收尾（W16-02 + W14-03B）
+
+- **W16-02**：open_window 三级回退（pywebview 后台线程→失败静默落 Edge app→浏览器）+ 4 单测；
+  单实例 InstanceLock / free_port 探活系 M1 已交付（本波核验而非新写）；L0 选型 Spike 报告落档
+  （L0 不替换，重评触发条件写入）。pywebview 真机表现待 W17-02。
+- **W14-03B**：project_status_updates 包化第 1 步（_impl 原文 + 69 符号 + __path__ 垫片）37 passed；
+  两次实践确认「先包壳后渐进」是 120KB 级服务唯一安全拆分路径；子模块化留后续。
+- **门禁**：全量 PASS、地图 verified、包 2.3.9（264 文件 sha256 ecce9570…）验签。
+- **下一步**：Wave 5（W13-05 scheduled-archive 迁移 lead；W7-01 报告中心 lead+worker；
+  W11-01 任务生命周期；W4-01 向导；W12-02 Excel UI；W6-01 调度 lead）。真机验证项持续累积至 W17-02。
+
 ## 2026-10-31 Wave 4 集成完成（W13-04 lead + W3-01/W5-02/W1-02/W14-03A worker）
 
 - **W13-04**：web/excel_boot.py（13 路由逐字迁入）。**方法论升级**：块迁移后用 ast 自由变量审计

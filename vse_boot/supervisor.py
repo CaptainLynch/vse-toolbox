@@ -191,6 +191,31 @@ def _edge_path() -> str | None:
 
 
 def open_window(url: str, layout: InstallLayout) -> None:
+    """三级回退开窗（W16-02）：pywebview 桌面窗口 → Edge app → 默认浏览器。
+
+    pywebview 是 WebView2 封装，体验最接近桌面应用，但第三方依赖可能缺失；
+    Edge app 模式有自己的独立配置目录（无地址栏）；两者都不可用才退到默认
+    浏览器标签页。任何一级失败都不能阻塞 supervise 主循环——webview.start()
+    会阻塞，所以放后台线程，失败静默落到下一级。
+    """
+    try:
+        import webview  # type: ignore[import-not-found]
+    except ImportError:
+        webview = None  # type: ignore[assignment]
+    if webview is not None:
+        def _run_webview() -> None:  # pragma: no cover - 依赖图形环境
+            try:
+                webview.create_window("VSE Toolbox", url, width=1280, height=860)
+                webview.start()
+            except Exception:
+                _open_edge_or_browser(url, layout)
+
+        threading.Thread(target=_run_webview, name="vse-window", daemon=True).start()
+        return
+    _open_edge_or_browser(url, layout)
+
+
+def _open_edge_or_browser(url: str, layout: InstallLayout) -> None:
     """Edge app window with its own profile (no address bar); default browser as fallback."""
     edge = _edge_path()
     if edge:

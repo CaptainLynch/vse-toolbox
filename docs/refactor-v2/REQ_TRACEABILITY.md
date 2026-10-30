@@ -203,6 +203,15 @@
 
 **基线更新**：路由 golden 164 条（+diagnostics 自检）；专家导航基线 +「自检」。
 
+
+## Wave 4 收尾记录（2026-10-31，W16-02 + W14-03B）
+
+| 任务 | 状态 | 交付物与证据 |
+|---|---|---|
+| W16-02 | ✅（本阶段范围） | 三级回退开窗（pywebview→Edge app→默认浏览器，`vse_boot/supervisor.py::open_window`）+ 4 项单测；单实例 InstanceLock 与端口零干预（free_port/探活）系 M1 已交付，本波核验；[L0 选型 Spike 报告](L0_SPIKE_20261031.md)（L0 不替换）；pywebview 窗口与 L0 原生启动器真机验证留 W17-02 |
+| W14-03（第 2 步） | ✅ | project_status_updates 包化（_impl.py 原文 + 69 符号 re-export + __path__ 兼容垫片，零行为风险）；黄金+既有 37 passed；子模块渐进拆分留后续波次 |
+| Wave 4 收尾包 | ✅ | `dist/v2-test/updates/vse-app-2.3.9.vsepkg`（264 文件，sha256 `ecce9570…`，验签通过，未真机安装） |
+
 ## 基线证据（2026-10-31，W0）
 
 - 已提交：`b9f309b`（同步三问题+展示口径）、`7f4617f`（日报门禁+孤儿项目）、`d7ba018`（文档基线）。
