@@ -36,6 +36,7 @@ SUPPORTED_PROVIDER_API_FORMATS = {
 }
 RUNTIME_PREFERENCES_METHOD = 'session/requestRuntimePreferences'
 PROVIDER_RUNTIME_HEADERS_METHOD = 'interaction/requestProviderRuntimeHeaders'
+PERMISSION_REQUEST_METHOD = 'interaction/requestPermission'
 
 
 def resolve_context_budget(config: dict[str, Any]) -> dict[str, int]:
@@ -261,6 +262,18 @@ def host_rpc_response(
             'memoryEnabled': False,
             'askUserQuestionAutoResolutionEnabled': True,
             'modelContextBudgetStrategy': 'preflight-v1',
+        }
+    if method == PERMISSION_REQUEST_METHOD:
+        # 2026-10-31：新版 CLI 经 interaction/requestPermission 向宿主请求工具批准；
+        # 未实现时整个会话以 "stopped: permission" 终止（TASK-W19-01 实测）。
+        # 这里对放行决策统一 allow，与 CLI 自身 headless 模式的兜底一致；真正的强制
+        # 边界是 PreToolUse 范围 guard（VSE_ZCODE_CONTRACT，scope-audit.jsonl 有拒绝记录），
+        # 本应答只避免 benign 审批把会话挂死。
+        tool_name = params.get('toolName') if isinstance(params, dict) else None
+        return {
+            'decision': 'allow',
+            'reason': 'Headless worker: guarded by PreToolUse scope contract'
+                      + (f" (tool={tool_name})" if isinstance(tool_name, str) else ''),
         }
     if method != PROVIDER_RUNTIME_HEADERS_METHOD:
         return None
