@@ -5,10 +5,11 @@
 /api/tasks、/api/p/sign-daily/state、/api/p/settings/app-updates …），不复制业务逻辑。
 自有路由只有「项目」：
 
-GET   projects               项目列表、当前项目、是否由启动器管理
+GET   projects               项目列表、当前项目、是否由启动器管理（retired 项目带 status 字段）
 POST  projects               {name, vehicle, departments}：新建项目并切换过去（重启程序）
 POST  projects/<id>/switch   切换到另一个项目（重启程序）
-PATCH projects/<id>          修改名称 / 车型 / 默认科室
+POST  projects/<id>/archive  归档项目（保留数据，当前项目不可直接归档）
+PATCH projects/<id>          修改名称 / 车型 / 默认科室（支持 expectedRevision 修订检查）
 
 每个项目一个数据文件夹，由启动器在程序启动前选定（vse_boot/projects.py）。
 直接从源码运行（没有启动器）时只有一个项目，新建和切换返回 409。
@@ -47,13 +48,18 @@ def register(host):
     def view(project: dict[str, Any], active_id: str) -> dict[str, Any]:
         is_active = project["id"] == active_id
         vehicle = project.get("vehicle") or (phase_vehicle() if is_active else "")
-        return {
+        res: dict[str, Any] = {
             "id": project["id"],
             "name": project.get("name") or vehicle or "默认项目",
             "vehicle": vehicle,
             "departments": list(project.get("departments") or []),
             "active": is_active,
         }
+        if "status" in project:
+            res["status"] = project["status"]
+        if "revision" in project:
+            res["revision"] = int(project["revision"])
+        return res
 
     def managed():  # type: ignore[no-untyped-def]
         api, projects = _boot()
@@ -71,8 +77,14 @@ def register(host):
             body = request.get_json(silent=True)
             if not isinstance(body, dict):
                 body = {}
+            revision_err = getattr(projects, "RevisionConflictError", ())
+            archive_err = getattr(projects, "CurrentProjectArchivedError", ())
             try:
                 return handler(api, projects, layout, body, *args, **kwargs)
+            except revision_err as exc:  # type: ignore[misc]
+                return ctx.json_error(409, "RevisionConflict", str(exc))
+            except archive_err as exc:  # type: ignore[misc]
+                return ctx.json_error(409, "CurrentProjectArchived", str(exc))
             except projects.ProjectError as exc:
                 return ctx.json_error(422, "ValidationError", str(exc))
             except OSError as exc:
@@ -110,11 +122,28 @@ def register(host):
         return ctx.json_ok({"project": view(project, project_id), "restarting": True,
                             "message": f"正在切换到「{project.get('name') or '默认项目'}」"})
 
+    @bp.post("/projects/<project_id>/archive")
+    @mutation
+    def projects_archive(api, projects, layout, body, project_id):  # type: ignore[no-untyped-def]
+        registry = projects.ProjectRegistry(layout)
+        project = registry.archive(project_id)
+        return ctx.json_ok({"project": view(project, registry.active_id),
+                            "message": f"已归档「{project.get('name') or '默认项目'}」"})
+
     @bp.patch("/projects/<project_id>")
     @mutation
     def projects_update(api, projects, layout, body, project_id):  # type: ignore[no-untyped-def]
         registry = projects.ProjectRegistry(layout)
-        project = registry.update(project_id, name=body.get("name"), vehicle=body.get("vehicle"), departments=body.get("departments"))
+        update_kwargs: dict[str, Any] = {}
+        if "name" in body:
+            update_kwargs["name"] = body["name"]
+        if "vehicle" in body:
+            update_kwargs["vehicle"] = body["vehicle"]
+        if "departments" in body:
+            update_kwargs["departments"] = body["departments"]
+        if "expectedRevision" in body:
+            update_kwargs["expected_revision"] = body["expectedRevision"]
+        project = registry.update(project_id, **update_kwargs)
         return ctx.json_ok({"project": view(project, registry.active_id)})
 
     return None

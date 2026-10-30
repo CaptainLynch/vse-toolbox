@@ -5,13 +5,18 @@
 /api/settings/domain-login、/api/settings/sessions 与 /api/version，
 这些接口（含本机写保护、凭据与会话处理）保留在 web/app.py，不在插件内复制。
 
-插件自有路由只有「程序更新」（v2 启动器下的 app 版本）：
+插件自有路由：
+1.「程序更新」（v2 启动器下的 app 版本）：
 GET  app-updates            当前/上一/试用版本、待生效版本、下载文件夹里发现的新版本、记录
 POST app-updates/install    {file}：安装一个已发现的更新包（只接受发现列表里的文件）
 POST app-updates/upload     multipart：安装上传的更新包
 POST app-updates/restart    请启动器重启程序，让待生效版本生效
 POST app-updates/rollback   下次启动回到上一版本，并立即重启
 不由 v2 启动器运行时（源码直接运行），GET 返回 managed=false，其余返回 409。
+
+2.「开机自启」（HKCU Run 项）：
+GET  autostart              获取当前用户开机自启状态（enabled: bool）
+POST autostart              修改当前用户开机自启（{enabled: bool}）
 """
 
 from __future__ import annotations
@@ -118,6 +123,40 @@ def register(host):
             return ctx.json_error(409, "NoPrevious", str(exc))
         api.request_restart(layout)
         return ctx.json_ok({"version": version, "message": f"正在回到 {version} 并重新启动"})
+
+    def _autostart_mod():  # type: ignore[no-untyped-def]
+        try:
+            from vse_boot import autostart
+
+            return autostart
+        except ImportError:
+            return None
+
+    @bp.get("/autostart")
+    def autostart_status():  # type: ignore[no-untyped-def]
+        mod = _autostart_mod()
+        if mod is None:
+            return ctx.json_ok({"enabled": False, "available": False})
+        return ctx.json_ok({"enabled": mod.enabled(), "available": True})
+
+    @bp.post("/autostart")
+    def autostart_toggle():  # type: ignore[no-untyped-def]
+        guard = ctx.local_guard()
+        if guard is not None:
+            return guard
+        mod = _autostart_mod()
+        if mod is None:
+            return ctx.json_error(501, "NotSupported", "当前运行环境不支持开机自启设置")
+        body = request.get_json(silent=True) or {}
+        should_enable = bool(body.get("enabled"))
+        try:
+            if should_enable:
+                mod.enable()
+            else:
+                mod.disable()
+        except OSError as exc:
+            return ctx.json_error(500, "RegistryError", f"修改开机启动项失败：{exc}")
+        return ctx.json_ok({"enabled": mod.enabled()})
 
     return None
 

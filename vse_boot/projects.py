@@ -11,7 +11,7 @@ app on the active one. Switching project = save the choice + restart the app
 ``state/projects.json``::
 
     {"active": "main",
-     "projects": [{"id": "main", "name": "", "vehicle": "", "departments": [], "createdAt": "..."}]}
+     "projects": [{"id": "main", "name": "", "vehicle": "", "departments": [], "createdAt": "...", "status": "active", "revision": 0}]}
 
 The ``main`` project is the install root itself, so installs from before
 multi-project keep their data where it is. Other projects live in
@@ -40,6 +40,19 @@ _MAX_DEPARTMENTS = 12
 
 class ProjectError(ValueError):
     """A request the user can fix (bad name, unknown project, too many projects)."""
+
+
+class RevisionConflictError(ProjectError):
+    """Raised when expectedRevision does not match current project revision."""
+
+
+class CurrentProjectArchivedError(ProjectError):
+    """Raised when attempting to archive the active project or the only project."""
+
+
+RevisionConflict = RevisionConflictError
+CurrentProjectArchived = CurrentProjectArchivedError
+_UNSET: Any = object()
 
 
 def _now() -> str:
@@ -79,7 +92,20 @@ def _clean_departments(value: Any) -> list[str]:
 
 
 def _default_registry() -> dict[str, Any]:
-    return {"active": MAIN_ID, "projects": [{"id": MAIN_ID, "name": "", "vehicle": "", "departments": [], "createdAt": None}]}
+    return {
+        "active": MAIN_ID,
+        "projects": [
+            {
+                "id": MAIN_ID,
+                "name": "",
+                "vehicle": "",
+                "departments": [],
+                "createdAt": None,
+                "status": "active",
+                "revision": 0,
+            }
+        ],
+    }
 
 
 class ProjectRegistry:
@@ -102,6 +128,9 @@ class ProjectRegistry:
             project.setdefault("vehicle", "")
             project.setdefault("departments", [])
             project.setdefault("createdAt", None)
+            if "status" not in project:
+                project["status"] = "retired" if project.get("retired") is True else "active"
+            project.setdefault("revision", 0)
         active = raw.get("active")
         if active not in {p["id"] for p in projects}:
             active = MAIN_ID
@@ -167,6 +196,8 @@ class ProjectRegistry:
             "vehicle": clean_vehicle,
             "departments": _clean_departments(departments),
             "createdAt": _now(),
+            "status": "active",
+            "revision": 0,
         }
         (self.data_root(project["id"]) / "data").mkdir(parents=True, exist_ok=True)
         self.data["projects"].append(project)
@@ -174,17 +205,70 @@ class ProjectRegistry:
         self.save()
         return dict(project)
 
-    def update(self, project_id: str, *, name: Any = None, vehicle: Any = None, departments: Any = None) -> dict[str, Any]:
+    def update(
+        self,
+        project_id: str,
+        *,
+        name: Any = _UNSET,
+        vehicle: Any = _UNSET,
+        departments: Any = _UNSET,
+        status: Any = _UNSET,
+        expected_revision: int | None = None,
+    ) -> dict[str, Any]:
         project = self.get(project_id)
-        if name is not None:
+        if expected_revision is not None:
+            try:
+                exp_rev = int(expected_revision)
+            except (ValueError, TypeError):
+                raise ProjectError("修订版本号格式不正确")
+            if int(project.get("revision") or 0) != exp_rev:
+                raise RevisionConflictError("项目已被修改，请刷新后重试")
+
+        if name is not _UNSET:
+            if name is None:
+                raise ProjectError("项目名称不允许清空")
             clean_name = _clean_text(name, limit=_MAX_NAME, label="项目名称")
-            if clean_name and any(p["name"] == clean_name and p["id"] != project_id for p in self.data["projects"]):
+            if not clean_name:
+                raise ProjectError("项目名称不允许清空")
+            if any(p["name"] == clean_name and p["id"] != project_id for p in self.data["projects"]):
                 raise ProjectError("已经有同名项目了")
             project["name"] = clean_name
-        if vehicle is not None:
-            project["vehicle"] = _clean_text(vehicle, limit=_MAX_VEHICLE, label="车型")
-        if departments is not None:
-            project["departments"] = _clean_departments(departments)
+
+        if vehicle is not _UNSET:
+            if vehicle is None:
+                project["vehicle"] = ""
+            else:
+                project["vehicle"] = _clean_text(vehicle, limit=_MAX_VEHICLE, label="车型")
+
+        if departments is not _UNSET:
+            if departments is None:
+                project["departments"] = []
+            else:
+                project["departments"] = _clean_departments(departments)
+
+        if status is not _UNSET:
+            if status not in ("active", "retired"):
+                raise ProjectError("项目状态无效")
+            project["status"] = status
+
+        project["revision"] = int(project.get("revision") or 0) + 1
+        self.save()
+        return dict(project)
+
+    def archive(self, project_id: str) -> dict[str, Any]:
+        project = self.get(project_id)
+        if len(self.data["projects"]) <= 1:
+            raise CurrentProjectArchivedError("当前只有一个项目，不能归档")
+        if project_id == self.active_id:
+            active_others = [
+                p for p in self.data["projects"]
+                if p["id"] != project_id and p.get("status", "active") != "retired"
+            ]
+            if active_others:
+                raise CurrentProjectArchivedError("当前项目正在使用中，请先切换到其他项目再归档")
+            raise CurrentProjectArchivedError("当前只有一个可用项目，不能归档")
+        project["status"] = "retired"
+        project["revision"] = int(project.get("revision") or 0) + 1
         self.save()
         return dict(project)
 

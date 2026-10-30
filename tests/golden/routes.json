@@ -638,6 +638,28 @@
     "download": "none"
   },
   {
+    "rule": "/api/p/settings/autostart",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_settings.autostart_status",
+    "view_function": "autostart_status",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/settings/autostart",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "plugin_settings.autostart_toggle",
+    "view_function": "autostart_toggle",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
     "rule": "/api/p/sign-daily/config",
     "methods": [
       "POST"
@@ -952,6 +974,17 @@
     ],
     "endpoint": "plugin_workbench.projects_update",
     "view_function": "projects_update",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/workbench/projects/<project_id>/archive",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "plugin_workbench.projects_archive",
+    "view_function": "projects_archive",
     "is_write": true,
     "envelope": "envelope",
     "download": "none"

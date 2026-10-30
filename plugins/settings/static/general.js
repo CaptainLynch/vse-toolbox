@@ -6,7 +6,7 @@ import { refreshGlobalBadges, request } from "./client.js";
 import { ErrorCard } from "./error-card.js";
 import { SettingsForm } from "./settings-form.js";
 import { SessionsCard } from "./sessions.js";
-import { ExcelServiceCard, VersionCard } from "./service-status.js";
+import { AutostartCard, ExcelServiceCard, VersionCard } from "./service-status.js";
 
 export default function SettingsGeneralPage({ plugin }) {
   useStylesheet(`/plugins/${plugin.id}/static/settings.css`);
@@ -75,6 +75,7 @@ export default function SettingsGeneralPage({ plugin }) {
         onError=${setError}
       />
       <div class="st-side">
+        <${AutostartCard} seed=${seed} onError=${setError} />
         <${SessionsCard}
           sessions=${data.sessions}
           vaultConfigured=${Boolean(data.credentialVaultConfigured)}

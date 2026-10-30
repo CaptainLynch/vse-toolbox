@@ -133,6 +133,18 @@ export default function AutoSyncPage({ plugin }) {
           failed.push(item.name);
         }
       }
+      // 科室回写：用户确认的科室集合在启用流程成功后写回项目默认科室（只在界面有明确科室选择时，失败不阻断流程）
+      const currentProjectId = load.project && load.project.id;
+      if (ok > 0 && currentProjectId && Array.isArray(departments) && departments.length > 0) {
+        try {
+          await apiRequest(`/api/p/workbench/projects/${enc(currentProjectId)}`, {
+            method: "PATCH",
+            body: { departments },
+          });
+        } catch (writeErr) {
+          console.warn("回写项目默认科室失败：", writeErr);
+        }
+      }
     } catch (err) {
       setSummary({ error: true, text: `没有开始：${redactSensitiveText(ewoPolicyErrorMessage(err))}` });
       setRunning(false);

@@ -163,6 +163,19 @@
 **W1 期间运行时适配（lead，不入需求追踪）**：worker 运行时对新版 GLM zcode.cjs 的协议适配四连修
 （runtimeModel/推理档位/params 形状/guard 拒绝分级），详见 RECOVERY_NOTES 2026-10-31。
 
+
+## Wave 2 交付记录（2026-10-31）
+
+| 任务 | 状态 | 交付物与证据 |
+|---|---|---|
+| W13-02 | ✅ | `web/host_boot.py`（11 条路由逐字迁移：version/settings/host-update）；路由 golden 零差异；settings 安全测试 33 passed |
+| W5-01 | ✅ | 项目编辑（expectedRevision 修订检查、省略≠null）、归档（retired 保留数据、当前项目保护）、科室回写、旧 projects.json 容忍读取；契约测试 6 项（lead 修复：信封键名/视图回退断言/缺失 fixture） |
+| W14-01（第 1 步） | ✅ | 表单分析黄金基线 `tests/golden/form_analysis/`（form_definition/rows/view 三入口，6 测试）；**W14-01b 服务拆分留待 Wave 3**（首次派发超时，已拆分） |
+| W16-01 | ✅ | `vse_boot/autostart.py`（HKCU Run，无管理员，默认关）+ 设置页开关 + 26 测试（注册表全 mock）；vse_boot 改动 → 下版整包（矩阵 §2） |
+| Wave 2 集成包 | ✅ | `dist/v2-test/updates/vse-app-2.3.6.vsepkg`（252 文件，sha256 `5fe31662…`，验签通过，未真机安装） |
+
+**路由基线**：163 条（新增 workbench 归档、settings 自启开关）。
+
 ## 基线证据（2026-10-31，W0）
 
 - 已提交：`b9f309b`（同步三问题+展示口径）、`7f4617f`（日报门禁+孤儿项目）、`d7ba018`（文档基线）。

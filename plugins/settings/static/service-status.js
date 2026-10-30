@@ -1,8 +1,68 @@
-// Read-only service and version status cards.
-import { html } from "/static/host/vendor/preact-htm.js";
+// Read-only service, autostart, and version status cards.
+import { html, useCallback, useEffect, useState } from "/static/host/vendor/preact-htm.js";
 import { useResource } from "/static/host/api.js";
 import { expertStore } from "/static/host/expert.js";
+import { request } from "./client.js";
 import { Chip } from "./sessions.js";
+
+export function AutostartCard({ seed = 0, onError }) {
+  const [enabled, setEnabled] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const data = await request("/api/p/settings/autostart");
+      setEnabled(Boolean(data && data.enabled));
+    } catch (_err) {
+      // 无法获取状态时保持默认关闭
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load, seed]);
+
+  const onToggle = async (next) => {
+    if (busy) return;
+    setBusy(true);
+    setStatus("正在保存…");
+    try {
+      const data = await request("/api/p/settings/autostart", {
+        method: "POST",
+        body: { enabled: next },
+      });
+      setEnabled(Boolean(data && data.enabled));
+      setStatus(next ? "已开启开机自启" : "已关闭开机自启");
+    } catch (err) {
+      setStatus("");
+      if (onError) onError(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return html`<section class="st-card">
+    <header class="st-card-head">
+      <p class="st-eyebrow">系统启动</p>
+      <h3>开机自启</h3>
+    </header>
+    <label class="st-check">
+      <input
+        type="checkbox"
+        checked=${enabled}
+        disabled=${loading || busy}
+        onChange=${(e) => onToggle(e.currentTarget.checked)}
+      />
+      <span>开机自动启动 VSE 工具箱</span>
+    </label>
+    <p class="st-field-note" style="margin:6px 0 0">只影响当前 Windows 账号。</p>
+    ${status && html`<span class="st-status" style="margin-top:6px" aria-live="polite">${status}</span>`}
+  </section>`;
+}
 
 export function ExcelServiceCard({ excelService }) {
   const configured = Boolean(excelService && excelService.configured);

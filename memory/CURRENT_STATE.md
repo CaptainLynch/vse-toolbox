@@ -98,6 +98,20 @@
   试用快照按项目存在 `state/db-snapshots/<id>/`，`trialDatabase` 记录恢复目标。只装 app 包而不换启动器时，
   `vse_boot.projects` 不存在 → 工作台按单项目运行（切换器隐藏）。
 
+## 2026-10-31 Wave 2 集成完成（W13-02 lead 迁移 + W5-01/W14-01A/W16-01 worker）
+
+- **W13-02**：web/host_boot.py 承载 11 条宿主路由（version/settings/host-update），HostRouteDeps 注入，
+  路由 golden 零差异；测试 mock 目标随迁（断言未动）。提交 1ee5f1e。
+- **W5-01**：项目编辑修订检查（expectedRevision，省略≠null 用 _UNSET 哨兵）、归档保护、科室回写、
+  旧文件容忍读取；lead 修复 worker 测试三处（信封键名 error.type、active 项目 vehicle 视图回退断言、
+  缺失 layout fixture）。
+- **W16-01**：HKCU 开机自启开关（默认关）+ 设置页卡片；lead 修复其自测正则（多行组件体）。
+- **W14-01 拆分**：黄金基线已落树（三入口 6 测试）；服务拆分（W14-01b）留 Wave 3——首派超时零产出，
+  按「先基线后拆分」两步走。
+- **门禁**：全量 pytest PASS（wave_gate 步骤 2）、地图 verified、术语/Node/浏览器通道全绿；
+  集成包 2.3.6（252 文件，sha256 5fe31662…）验签通过，未真机安装。
+- **路由基线 163 条**；下一步 Wave 3（W13-03 tasks 迁移 lead；W2-01 凭据高危 lead；W12-01/W1-01 worker 契约待写）。
+
 ## 2026-10-31 W1 集成完成（全量 3474+ / 6 skipped；包 2.3.5 验签通过）
 
 - **W1 七任务全部交付并集成**（两轮协议适配 + lead 三处针对性修复后）：路由契约快照（160 条 golden）、

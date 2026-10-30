@@ -96,7 +96,9 @@ export function ProjectSwitcher() {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   if (!data || !data.managed) return null;
-  const active = data.projects.find((p) => p.active) || data.projects[0];
+  const visibleProjects = (data.projects || []).filter((p) => p.status !== "retired");
+  const active = visibleProjects.find((p) => p.active) || (data.projects || []).find((p) => p.active) || visibleProjects[0] || (data.projects || [])[0];
+  if (!active) return null;
 
   const restartInto = async (project, text) => {
     setBusy(text);
@@ -119,7 +121,7 @@ export function ProjectSwitcher() {
     <button type="button" class="wb-btn wb-project-btn" aria-haspopup="listbox" aria-expanded=${open ? "true" : "false"} onClick=${() => setOpen(!open)}>
       <span class="wb-muted wb-small">项目</span> <b>${active.name}</b> ▾</button>
     ${open && html`<div class="wb-project-menu" role="listbox" aria-label="切换项目">
-      ${data.projects.map((p) => html`<button type="button" role="option" key=${p.id} aria-selected=${p.active ? "true" : "false"}
+      ${visibleProjects.map((p) => html`<button type="button" role="option" key=${p.id} aria-selected=${p.active ? "true" : "false"}
         class=${`wb-project-item${p.active ? " is-active" : ""}`} onClick=${() => switchTo(p)}>
         <b>${p.name}</b>${p.vehicle && p.vehicle !== p.name ? html`<small>${p.vehicle}</small>` : null}${p.active ? html`<small>当前</small>` : null}</button>`)}
       <button type="button" class="wb-project-item is-new" onClick=${() => { setOpen(false); setCreating(true); }}>＋ 新建项目</button>
