@@ -1,5 +1,17 @@
 # Recovery Notes
 
+## 2026-10-31 — ZCode worker 运行时对新版 GLM zcode.cjs 的协议适配（实测取证）
+
+- **症状**：supervisor 派发一律 `preflight-blocked`。逐层错误与修复（按顺序，每层修掉才见下一层）：
+  1. `Invalid params — (root): Unrecognized key: "runtimeModel"`：新版 session/create 不认识该键（旧版经它上行运行时元数据）→ 停发。
+  2. `Reasoning level is required for <provider>/<model>`（create 期）：模型引用对象要求 `{providerId, modelId, options:{reasoningLevel}}`。CLI 内字符串形式的分隔符常量 `VDe="$"`（即 `provider/model$level`）。
+  3. 同错误但发生在 session/send 后（`turnPhase: model_creation`）：回合级模型创建读**会话级顶层** `thoughtLevel`（create schema 有 `thoughtLevel` 可选键）；与第 2 条并存、缺一不可。
+  4. `Preflight model/permission mismatch`：回显 `settings.permission.mode` 恒为 `'build'`（CLI 内 `permission:{mode:this.config.mode??"build"}`，create 的 mode 不落到该回显字段）→ 回读校验只锁 providerId/modelId。工具安全不依赖 mode：预检 toolDenylist 全禁 + 审计零调用；正式会话 toolAllowlist（readonly 仅读）+ VSE_ZCODE_CONTRACT 守卫独立强制。
+- **doctor**：`validate_codex_lead_policy` 硬编码 gpt-5.6-luna 对 zcode-app-server 路线不适用（既有已知问题）→ doctor 仅在显式设置 `VSE_CODEX_CONFIG` 时校验 Codex lead；guard/runtime/Node 检查不变。
+- **安装副本同步**：`tools/agents/zcode_worker.py` 需 cp 到 `~/.zcode/worker-runtime/tools/agents/`（改两处时容易漏），备份 `zcode_worker.py.bak-20261031`。测试反转为协议锁：session 参数断言无 runtimeModel。
+- **排查手法**：CLI 是压缩 bundle——`rg -o -N ".{80}关键词.{120}"` 抓上下文；探针脚本放 `.runtime/`（probe_session_create.py / probe_network_preflight.py），用 spy 包住 host_rpc_response 与 RpcProcess.request 观察回显与反向 RPC（新版会发 `session/requestRuntimePreferences` scope=runtime-materialization 与 `interaction/requestOfficialMcpAuthHeaders`）。
+- **教训**：worker 运行时是独立安装副本，CLI 更新（此处 D:/zcode/resources/glm 换成 GLM 资源包）后必须先跑一次最小任务冒烟，不能假设 9 月验收过的协议仍成立。
+
 ## 2026-10-09 — 帆软 FineReport（report.sgmw.com.cn）TIR数据简表 协议事实
 
 - Chrome 导出的 HAR 是「脱敏 HAR」：没有 Cookie/Authorization 头不代表请求不带鉴权。登录响应 `data.accessToken`，
