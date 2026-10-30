@@ -4,6 +4,84 @@
 > 更早条目完整保存在 [归档文件](archive/CURRENT_STATE_ARCHIVE_20261023.md)（88 条 → 保留 12 条 + 本节「当前前沿」）。
 > 恢复状态时**不要**再通读全文；先读本节，再按需查归档。
 
+## 2026-10-29 3D单签署日报两处口径修复（发送门禁 + 幻影项目）
+
+- **来源**：生产测试环境截图两处现象——选 620S 却出现 610S 项目；报表里混入 TDC 上「已废弃」的单。
+  顾问 run `c1c8d71b-ad68-4b32-a335-679c585064bd`（claude-opus-5-5 / xhigh / `--risk data-loss`，
+  用户授权从 codex-readonly 改走 Claude，因为 codex 账号固定闸报 exit 8），裁决 1=partial 2=partial 3=partial。
+- **根因（已核实）**：① 主题/正文首行的项目串取自**请求里的选择**而不是实际计入的 flows，前端只渲染
+  数据里存在的 chip、从不与已保存选择对账 → 历史残留项目永久留在选择里（逐字复现，份数不变）；
+  ② 数模状态列在**交付物同步**路径是数字码（只映射 2/4，3/6 透传、剔除集只认中文），日报只认字面
+  「已废弃」→ 这些单按「未知状态=在途」计入并各报一条 unknownStatus。
+- **落地**：`service.status_gate()`（组装层，不改 rules.py 的未知值判定）+ `statusGateEnabled` 单开关；
+  `/eml` 命中即 409 StatusGateBlocked；预览照出并列出码值与份数，复制/下载在前端一并禁用
+  （复制是浏览器端动作，纯后端拒绝挡不住）。`project_label` 改用「选择 ∩ 实际计入」，
+  新增 `selectedWithoutData` + 预览提示；孤儿项目渲染为虚线 chip、**可取消但绝不自动删除**，
+  取消时仅当新范围无记忆才沿用旧范围收件人/文案（范围 key 含 projects，自动剪枝会让邮件发错人）。
+- **顾问未采纳/被推翻**：顾问判「191 条异常 > 155 份不自洽，故生产是否真有废弃单混入只有低置信」——
+  推翻：异常按**全快照**算（`build_flows(source.records)` 在 `in_scope` 之前），与范围内份数无关。
+  顾问担心的「chip 可能基于区域过滤后的数据」也已核销：`/state` 的 options 来自未过滤的 parsed.flows。
+- **验证**：`pytest tests/test_plugin_sign_daily.py tests/test_plugin_sign_daily_browser.py tests/test_sign_daily_*`
+  → **132 passed / 2 skipped**（browser 用例因本机无 playwright 跳过）；Chips 用真 htm 冒烟出
+  `sd-chip is-on is-orphan`；report.js 以宿主桩导入通过（导出 Page 为 function）；全量 `python -m pytest tests -q`
+  → **3438 passed / 6 skipped**（基线 3435/6，新增 3 条）；`generate_project_map.py --check` 通过。
+- **待办**：生产只读取证（generate 响应的 anomalies 分组、按 UTC 回取 20:44 快照、状态码 × 中文状态交叉表）
+  → 定 B1（码值映射）后再谈根治；门禁上线后若快照是数字码，日报会连续不出报，需业务认可。
+
+### 2026-10-30 顾问二轮（打包前复核）+ 2.3.4 升级包
+
+- **顾问** run `21f8f9cf-81e9-41a1-8395-af86de941401`（claude-opus-5-5 / xhigh / `--risk data-loss`，
+  包 30 KB 含完整 diff），裁决 1=partial 2=no_change 3=adopted。
+- **被推翻的顾问判断（附代码证据）**：D1「偏好迁移可能整表替换、清空其它范围」——`/config` 先
+  `merged.update(patch["preferences"])` 再整键 upsert，是合并不是替换；D2「切换范围会回落收件人」——
+  回填 effect 只在 `state.preferences[key]` 存在时赋值（不重置），`load()` 用 `current || data.form`
+  不重置表单，迁移后又用同一份旧值回填，页面与记忆一致。
+- **采纳并修**：门禁数字形态放宽到「整数或 .0 浮点转写」；残留项目测试补「正文 html/text 不含该项」；
+  提示文案改「所选范围内没有单」；门禁关闭但码值仍在时也给非阻断披露；阻断时预览容器内加提示
+  （手工复制会带上）；`Chips` 抽成 `static/chips.js` 并把 htm 渲染固化为 pytest 门禁
+  （3 条不变量：孤儿只出现一次且排在 options 后、无 options 时仍渲染、点掉后完全移除）。
+- **打包**：`dist/v2-test/updates/vse-app-2.3.4.vsepkg`（1,055 KB，TEST-ONLY keyId `4c39d7a3…`，
+  sha256 `bb1b7f60…`）。`verify_app_package` 验签通过、version 2.3.4 > 2.3.3；与 2.3.3 逐文件比对
+  仅 5 改 1 增（`chips.js`），`rules.py` 字节未变，6 个改动文件与工作区逐字节一致。
+- **验证**：全量 `pytest tests -q` → **3441 passed / 6 skipped**（上一轮 3438，新增 3 条门禁）。
+
+## 2026-10-29 v2 同步三问题修复（已落地 + 全量回归）
+
+- **来源**：用户截图三处生产现象——EWO 同步后时间不变/负责人多余/状态是原码 PROC；交付物明细进度恒 0%；
+  数模「一键开启自动同步」永久失败。顾问 run `34b15811-3337-4841-a4d0-4396246e9f1d`
+  （claude-opus-5-5 / xhigh / `--risk data-loss`），裁决 1=adopted 2=adopted 3=partial。
+  方案与实施记录：`docs/PLAN_20261028_V2_SYNC_DISPLAY_FIX.md`。
+- **根因（已核实）**：① 幂等 skipped 分支不刷新 `last_success_at`（`core/repos/sync_runs.py`），
+  且 sync-now 对 failed 也返回 200 + `ok:true`；② 后端已派生 `syncDisplay.displayProgress`，
+  简洁视图与工作台列表读的是手工 `progress`；③ 数模稳定性采样用**未收窄**的第 1 页去比
+  **已收窄**的全量基线（永久 `sample_not_in_baseline`），且失败落的 `key_changed` 会顶掉基线
+  （之后永远 `stability_baseline_missing`）。
+- **落地**：`derive_effective_progress` 契约 + `effectiveProgress/progressSource`（`progress` 语义不变，
+  防编辑表单把派生值写回手工）；`FormSpec.stage_labels` → `schema.stageLabels`；简洁视图拆出
+  `simple-logic.js`（阶段/逾期/进度/同步文案，Node 门禁可断言）；skipped 分支刷新 `last_success_at`；
+  数模发现/采样统一走 `_narrow_discovery_rows_by_sections`，空样本 inconclusive 且不落观测，
+  基线改取「最近一条 matched」（50 条回看窗口）。
+- **未做/取舍**：基线自检（去重身份数 vs 上游 total）暂缓——total 是行数还是实例数未取证，
+  加了会误杀合法绑定；多单号「全部单号消失」按 inconclusive 处理。
+- **验证**：全量 `python -m pytest tests -q` → **3432 passed / 6 skipped**（基线 3418/6）；
+  `generate_project_map.py --check` 通过。真机端到端（EWO 连点两次同步、数模开启自动同步）**待验**。
+- **审计补丁（2026-10-29，Claude）**：分页类稳定性采样（SOR / 数模无单号）统一走
+  `web/app.py::_stability_paged_sample`——按 sections 收窄，收窄为空时有界翻页
+  （`_STABILITY_SAMPLE_MAX_PAGES=10`，总数仍取第 1 页未收窄 total），防「第 1 页无所选科室 ⇒
+  永久 inconclusive」。SOR 契约目前无 `sections`（matchKeys 不含），SOR 分支收窄属防御性。
+  全量 **3435 passed / 6 skipped**；PROJECT_MAP 已 `--write` 刷新并 `--check` 通过。
+- **生产测试包（2026-10-29）**：`dist/v2-test/updates/vse-app-2.3.3.vsepkg`（1051 KB，TEST-ONLY 密钥签名，
+  含本次全部未提交改动，无迁移；sha256 `83105b4039910778801e3621f429e7d0e625965e154e434cf38a42e17aaff9b8`）。版本号跳过演示用 2.3.1/2.3.2。
+  已验签 + 关键文件哈希与仓库一致；**未在真机安装启动**，改动仍未提交。
+- **实施后复核（2026-10-29）**：顾问 run `e6210966-371f-4be7-8d1d-35e1bbb4c4b6`（xhigh）判「需修再发布」，
+  裁决 1=partial / 2=adopted / 3=partial。采纳：旧配置基线只做否定性比对（新增
+  `baseline_signature_mismatch`）、`progressOrDate` 改用派生进度、补 4 条门禁。**否决**（附代码证据）：
+  「skipped 会自锁」（节流分支不调 runner；失败路径已断言 last_success_at 不变）、
+  「binding.updated_at 放大乐观锁」（绑定编辑用 sync_config_revision + 配置摘要）、
+  「snapshot 丢夹紧」（实现里有 min/max，已加旧实现 oracle 等价测试）、「缺列 422 丢失」（helper 内映射 422）。
+  过程冲突一次：既有契约 `test_legacy_form_id_baseline_reports_mismatch_instead_of_matching` 要求旧基线必须
+  报不一致，故保留否定性比对而非直接 baseline_missing。
+
 ## 当前前沿（2026-10-28 · v2 人机交互重构，分支 refactor/ux-v2）
 
 - **已交付测试**：app 2.3.0（`dist/v2-test/updates/vse-app-2.3.0.vsepkg`，1 MB）+ 新启动器整包
@@ -14,7 +92,8 @@
 - **验证**：全量回归 3418 passed / 6 skipped；真实 exe 端到端 21/21（含新建项目→重启→独立数据库→切回）；
   一键开启在浏览器里用伪造响应走通（真实 TDC/Aras 取证**未验证**）。
 - **限制 / 未做**：只有当前项目在后台同步；48 个车型代码清单未拿到（车型仍是文本框）；F1 报告页内一键生成；
-  M1 第 3 片（token cookie、开机自启开关、pywebview、L0 原生启动器）；生产问题「数模审批流程不能正常同步」（用户让先做 v2）。
+  M1 第 3 片（token cookie、开机自启开关、pywebview、L0 原生启动器）；~~生产问题「数模审批流程不能正常同步」~~
+  → **2026-10-29 已修**（见顶部条目，真机待验）。
 - **多项目要点**：主项目 = 安装根（兼容旧数据）；切换 = 写 `state/projects.json` + `restart.request`；
   试用快照按项目存在 `state/db-snapshots/<id>/`，`trialDatabase` 记录恢复目标。只装 app 包而不换启动器时，
   `vse_boot.projects` 不存在 → 工作台按单项目运行（切换器隐藏）。
