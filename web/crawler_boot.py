@@ -1203,3 +1203,1438 @@ def register_crawler_routes(app: Any, deps: CrawlerRouteDeps) -> None:
             shutil.rmtree(temp_dir, ignore_errors=True)
             return _aras_error_response(e, client, "NCR detail download")
 
+
+
+# ── TDC 报表查询/导出门面（W13-07 迁入，三清单冻结法） ──
+
+import csv
+
+import hashlib
+
+from dataclasses import asdict, replace
+
+from services.form_search import MAX_TERMS as MAX_DOCUMENT_NOS
+
+from services.form_search import parse_terms as parse_form_terms
+
+from services.form_search import _SEPARATORS as _FORM_TERM_SEPARATORS
+
+from services.project_status_records import (
+    COMPLETE_RESULT_STOP_REASONS,
+    MAX_AGGREGATE_RECORDS,
+    authoritative_identity_field,
+    authoritative_record_identity,
+    identity_field_name,
+    identity_fields,
+)
+
+from services.data_model_watchlist import (
+    MAX_WATCHLIST_BYTES,
+    MULTI_SERIAL_DISABLED_MESSAGE,
+    MULTI_SERIAL_EXTERNAL_KEY_MESSAGE,
+    WatchlistError,
+    match_serial,
+    match_serials,
+    multi_serial_enabled,
+    normalize_serial_set,
+    normalize_single_serial,
+)
+
+from services.tdc_auth import TDCAuthError, TDCPasswordAuthClient
+
+from services.tdc_crawler import (
+    AFACE_CONTRACT_BLOCKER,
+    CrawlCancelled,
+    TDCCrawlerClient,
+    TDCCrawlerError,
+    TDCDataModelFilters,
+    TDCSORFilters,
+    flatten_sor_rows,
+    flatten_sor_value,
+)
+
+from services.tdc_export_cache import TDCExportCache
+
+from services.tdc_official_rows import (
+    OfficialWorkbookContractError,
+    OfficialWorkbookTruncated,
+    OfficialWorkbookUnreadable,
+    official_contract_headers,
+    read_official_tdc_rows,
+)
+
+_TDC_PAGE_MAX = 1_000_000
+
+
+_TDC_PAGE_SIZE_MAX = 1000
+
+
+_TDC_MAX_PAGES_MAX = 10000
+
+
+_TDC_MAX_RECORDS_MAX = 1_000_000
+
+
+_TDC_XLSX_NAME_RE = re.compile(r"^[^<>:\"/\\|?*\x00-\x1f]+\.xlsx$", re.IGNORECASE)
+
+
+_TDC_CSV_NAME_RE = re.compile(r"^[^<>:\"/\\|?*\x00-\x1f]+\.csv$", re.IGNORECASE)
+
+
+_TDC_OFFICIAL_PREVIEW_MAX_ROWS = 50_001
+
+
+_TDC_MERGED_MAX_ROWS = _TDC_OFFICIAL_PREVIEW_MAX_ROWS
+
+
+_TDC_DATA_MODEL_FIELDS = [
+    # serial_number 的 API 键名语义是第 0 列实例号（incident，纯数字）；流水单号
+    # （documentNo，3D- 前缀）不是 TDC 查询参数，走顶层 document_no 全量抓取 + 本地匹配。
+    {"name": "serial_number", "label": "实例号(incident)", "type": "text"},
+    # 目录/交付物工作台可见的输入字段；不在 _TDC_DATA_MODEL_FILTER_NAMES 里
+    # （服务端从请求体顶层读取，进 filters 会被 400 拒绝——fail-open 防护）。
+    {"name": "document_no", "label": "流水单号", "type": "text"},
+    {"name": "applicant", "label": "申请人", "type": "text"},
+    {"name": "department", "label": "部门", "type": "text"},
+    {"name": "section", "label": "科室", "type": "text"},
+    {"name": "application_start", "label": "申请开始", "type": "date"},
+    {"name": "application_end", "label": "申请结束", "type": "date"},
+    {"name": "project_model", "label": "项目车型", "type": "text"},
+    {"name": "part_number", "label": "零件号", "type": "text"},
+    {"name": "model_number", "label": "模型编号", "type": "text"},
+    {"name": "status", "label": "状态", "type": "text"},
+]
+
+
+_TDC_SOR_FIELDS = [
+    {"name": "serial_number", "label": "流水号", "type": "text"},
+    {"name": "process_type", "label": "流程类型", "type": "text"},
+    {"name": "car_type_project", "label": "车型项目", "type": "text"},
+    {"name": "applicant", "label": "申请人", "type": "text"},
+    {"name": "title", "label": "标题", "type": "text"},
+    {"name": "department", "label": "部门", "type": "text"},
+    {"name": "section", "label": "科室", "type": "text"},
+    {"name": "application_start", "label": "申请开始", "type": "date"},
+    {"name": "application_end", "label": "申请结束", "type": "date"},
+    {"name": "part_number", "label": "零件号", "type": "text"},
+    {"name": "part_name", "label": "零件名称", "type": "text"},
+    {"name": "version", "label": "版本", "type": "text"},
+    {"name": "sor_number", "label": "SOR 编号", "type": "text"},
+    {"name": "latest_completed_node", "label": "最近完成节点", "type": "text"},
+    {"name": "approval_status", "label": "审批状态", "type": "text"},
+]
+
+
+class _TDCRequestError(ValueError):
+    """TDC 请求级校验失败（主机 allowlist / 凭据 / 参数边界），映射为 HTTP 错误。"""
+
+    def __init__(
+        self,
+        message: str,
+        error_type: str = "ValidationError",
+        status_code: int = 400,
+        diagnostic_path: Path | None = None,
+        diagnostic: Mapping[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.error_type = error_type
+        self.status_code = status_code
+        self.diagnostic_path = diagnostic_path
+        self.diagnostic = dict(diagnostic) if diagnostic is not None else None
+
+
+def _safe_tdc_sor_rows(rows: list[dict[str, Any]]) -> list[dict[str, str | None]]:
+    """SOR 行扁平化（共享实现见 services.tdc_crawler.flatten_sor_rows）。"""
+    return flatten_sor_rows(rows)
+
+
+_safe_tdc_sor_value = flatten_sor_value
+
+
+def _close_owned_tdc_client(client: TDCCrawlerClient | None) -> None:
+    """Close one-shot TDC sessions without closing the shared domain session."""
+    if client is None:
+        return
+    session = getattr(client, "session", None)
+    if session is None or session is _shared_domain_session("tdc"):
+        return
+    close = getattr(session, "close", None)
+    if not callable(close):
+        return
+    try:
+        close()
+    except Exception as exc:  # cleanup must not mask the request result
+        logger.debug("TDC one-shot session close failed: %s", type(exc).__name__)
+
+
+def _tdc_positive_int(value: Any, name: str, default: int, maximum: int) -> int:
+    """严格正整数边界校验：缺失用默认值，非法值 fail-closed。"""
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise _TDCRequestError(f"{name} must be an integer")
+    if value <= 0 or value > maximum:
+        raise _TDCRequestError(f"{name} must be between 1 and {maximum}")
+    return value
+
+
+def _tdc_filter_string(filters: dict[str, Any], name: str) -> str | None:
+    value = filters.get(name)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise _TDCRequestError(f"{name} filter must be a string")
+    return value.strip() or None
+
+
+def _tdc_filters_from_payload(
+    payload: dict[str, Any],
+    allowed_names: tuple[str, ...],
+) -> dict[str, str | None]:
+    filters = payload.get("filters", {})
+    if not isinstance(filters, dict):
+        raise _TDCRequestError("filters must be an object")
+    unknown = [name for name in filters if name not in allowed_names]
+    if unknown:
+        raise _TDCRequestError("filters contains unsupported fields")
+    return {name: _tdc_filter_string(filters, name) for name in allowed_names}
+
+
+def _tdc_data_model_filters(values: dict[str, str | None]) -> TDCDataModelFilters:
+    # API 层键名仍是 serial_number（前端传参键；历史持久化值一律按实例号处理）：
+    # 它对应第 0 列实例号 incident，不是流水单号（documentNo）。
+    return TDCDataModelFilters(
+        instance_no=values.get("serial_number"),
+        applicant=values.get("applicant"),
+        department=values.get("department"),
+        section=values.get("section"),
+        application_start=values.get("application_start"),
+        application_end=values.get("application_end"),
+        project_model=values.get("project_model"),
+        part_number=values.get("part_number"),
+        model_number=values.get("model_number"),
+        status=values.get("status"),
+    )
+
+
+def _tdc_sor_filters(values: dict[str, str | None]) -> TDCSORFilters:
+    return TDCSORFilters(
+        serial_number=values.get("serial_number"),
+        process_type=values.get("process_type"),
+        car_type_project=values.get("car_type_project"),
+        car_type_project_id=values.get("car_type_project_id"),
+        applicant=values.get("applicant"),
+        title=values.get("title"),
+        department=values.get("department"),
+        section=values.get("section"),
+        application_start=values.get("application_start"),
+        application_end=values.get("application_end"),
+        part_number=values.get("part_number"),
+        part_name=values.get("part_name"),
+        version=values.get("version"),
+        sor_number=values.get("sor_number"),
+        latest_completed_node=values.get("latest_completed_node"),
+        approval_status=values.get("approval_status"),
+    )
+
+
+def _tdc_preview_source(payload: Mapping[str, Any]) -> str:
+    """Validate the explicit TDC query source selector."""
+    value = payload.get("preview_source")
+    if value is None:
+        return "list_endpoint"
+    if not isinstance(value, str):
+        raise _TDCRequestError("preview_source must be list_endpoint or official_export")
+    source = value.strip() or "list_endpoint"
+    if source not in {"list_endpoint", "official_export"}:
+        raise _TDCRequestError("preview_source must be list_endpoint or official_export")
+    return source
+
+
+_TDC_DATA_MODEL_FILTER_NAMES = tuple(
+    field["name"] for field in _TDC_DATA_MODEL_FIELDS if field["name"] != "document_no"
+)
+
+
+_TDC_SOR_FILTER_NAMES = tuple(field["name"] for field in _TDC_SOR_FIELDS) + ("car_type_project_id",)
+
+
+def _mapping_result_is_complete(result: Any) -> bool:
+    """抓取结果是否有显式终局证据（与 ``_require_complete_mapping_result`` 同源）。"""
+    stop_reason = str(getattr(result, "stop_reason", "unknown") or "unknown")
+    return getattr(result, "complete", None) is True and stop_reason in COMPLETE_RESULT_STOP_REASONS
+
+
+def _validate_tdc_base_url(
+    base_url: str,
+    allowed_hosts: Sequence[str],
+    *,
+    require_https: bool,
+) -> None:
+    """构造 TDC client 前执行主机 allowlist；password 模式额外要求 HTTPS。"""
+    try:
+        parsed = urlsplit(str(base_url or "").strip())
+        port = parsed.port
+    except ValueError:
+        raise _TDCRequestError("base_url is not a valid URL", "HostNotAllowed") from None
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        raise _TDCRequestError("base_url must use http or https", "HostNotAllowed")
+    if require_https and scheme != "https":
+        raise _TDCRequestError("password authentication requires an HTTPS base_url", "HostNotAllowed")
+    if parsed.username is not None or parsed.password is not None:
+        raise _TDCRequestError("base_url must not contain userinfo", "HostNotAllowed")
+    hostname = (parsed.hostname or "").lower()
+    if not hostname:
+        raise _TDCRequestError("base_url must include a host", "HostNotAllowed")
+    default_port = 443 if scheme == "https" else 80
+    if port is None or port == default_port:
+        port = None
+    for entry in allowed_hosts:
+        allowed_host, allowed_port = _normalize_allowed_host(entry)
+        if hostname == allowed_host and (allowed_port is None or allowed_port == port):
+            return
+    raise _TDCRequestError("base_url host is not allowed", "HostNotAllowed")
+
+
+def _build_tdc_client_from_payload(
+    payload: dict[str, Any],
+    allowed_hosts: Sequence[str] | None = None,
+    *,
+    output_dir: Path | None = None,
+) -> TDCCrawlerClient:
+    base_url = str(payload["base_url"]).strip()
+    hosts = tuple(allowed_hosts) if allowed_hosts is not None else _DEFAULT_TDC_ALLOWED_HOSTS
+    auth_mode = str(payload.get("auth_mode") or "browser").strip().lower()
+    if auth_mode not in {"password", "browser"}:
+        raise _TDCRequestError("auth_mode must be password or browser")
+    headers = _clean_string_mapping(payload.get("headers"))
+    secret_header_names = {"authorization", "cookie", "set-cookie"}
+    cookies = _clean_string_mapping(payload.get("cookies"))
+    cookie = payload.get("cookie")
+
+    if auth_mode == "password":
+        _validate_tdc_base_url(base_url, hosts, require_https=True)
+        if any(name.lower() in secret_header_names for name in headers):
+            raise _TDCRequestError(
+                "password authentication cannot be combined with secret headers",
+                "AuthenticationModeConflict",
+            )
+        if (isinstance(cookie, str) and cookie.strip()) or cookies:
+            raise _TDCRequestError(
+                "password authentication cannot be combined with browser cookies",
+                "AuthenticationModeConflict",
+            )
+        username = str(payload.get("username") or "").strip()
+        password = str(payload.get("password") or "")
+        if not username:
+            raise _TDCRequestError("username is required for password authentication")
+        if not password:
+            raise _TDCRequestError("password is required for password authentication")
+        report = MarkdownDiagnosticReport(
+            options=DiagnosticOptions(enabled=True, unsafe_raw=False),
+            base_url=base_url,
+            mode="tdc:auth",
+            inputs={
+                "auth_mode": "password",
+                "origin": urlsplit(base_url).netloc,
+            },
+            report_title="TDC WebUI Auth Diagnostic",
+            file_name_prefix="tdc_webui_auth",
+            output_dir=DIAGNOSTIC_DIR,
+            allow_unsafe_raw=False,
+        )
+        try:
+            login_result = TDCPasswordAuthClient(
+                base_url, timeout=30.0, diagnostic_hook=report.record_http_event
+            ).login(username, password)
+        except TDCAuthError as exc:
+            report.record_exception(exc)
+            try:
+                diagnostic_path = report.save("failed")
+            except OSError:
+                # 诊断落盘失败不得改变认证错误的 HTTP 语义；降级为无路径
+                diagnostic_path = None
+            raise _TDCRequestError(
+                f"TDC authentication failed: {_sanitize_error_message(exc)}",
+                "AuthenticationError",
+                401,
+                diagnostic_path=diagnostic_path,
+            ) from None
+        return TDCCrawlerClient(
+            base_url,
+            session=login_result.session,
+            headers=headers,
+            timeout=30.0,
+            output_dir=output_dir,
+        )
+
+    _validate_tdc_base_url(base_url, hosts, require_https=False)
+    if str(payload.get("username") or "").strip() or str(payload.get("password") or ""):
+        raise _TDCRequestError(
+            "browser authentication cannot be combined with username/password",
+            "AuthenticationModeConflict",
+        )
+    if isinstance(cookie, str) and cookie.strip():
+        headers["Cookie"] = cookie.strip()
+    if cookies:
+        cookie_pairs = "; ".join(f"{key}={value}" for key, value in cookies.items())
+        existing = headers.get("Cookie")
+        headers["Cookie"] = f"{existing}; {cookie_pairs}" if existing else cookie_pairs
+    shared = _shared_domain_session("tdc")
+    if shared is not None and not headers.get("Cookie"):
+        return TDCCrawlerClient(
+            base_url, session=shared, headers=headers, timeout=30.0, output_dir=output_dir
+        )
+    if not headers:
+        raise _TDCRequestError(
+            "尚未建立统一域账号会话：请先在「设置 → 统一域账号登录」完成登录",
+            "DomainSessionRequired",
+            401,
+        )
+    return TDCCrawlerClient(base_url, headers=headers, timeout=30.0, output_dir=output_dir)
+
+
+def _tdc_file_name(value: Any, *, pattern: re.Pattern[str] | None = None) -> str | None:
+    """校验用户提供的导出文件名（默认要求安全 `.xlsx` basename）。
+
+    ``pattern`` 允许合并导出这类产物扩展名不同的路径复用同一套安全校验
+    （长度/纯 basename/无穿越/无非法字符），避免为 `.csv` 另写一份校验。
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if not isinstance(value, str):
+        raise _TDCRequestError("file_name must be a string")
+    name = value.strip()
+    if len(name) > 180:
+        raise _TDCRequestError("file_name is too long")
+    if Path(name).name != name or ".." in Path(name).parts:
+        raise _TDCRequestError("file_name must be a plain basename without traversal")
+    if not (pattern or _TDC_XLSX_NAME_RE).fullmatch(name):
+        raise _TDCRequestError("file_name must be a safe .xlsx basename")
+    return name
+
+
+def _tdc_merged_file_name(value: Any) -> str | None:
+    """合并导出的文件名：接受 `.xlsx`（用户看到的是「XLSX 文件名」框）或 `.csv`。
+
+    Codex 复核 P2：产物是 CSV，但请求里的名字按 `.xlsx` 校验会让填 `.csv` 的用户
+    拿到「must be a safe .xlsx basename」。两种扩展名都放行，产物统一改写为 `.csv`。
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, str) and value.strip().lower().endswith(".csv"):
+        return _tdc_file_name(value, pattern=_TDC_CSV_NAME_RE)
+    return _tdc_file_name(value)
+
+
+def _tdc_query(
+    client: TDCCrawlerClient,
+    report_type: str,
+    filters: Any,
+    *,
+    page: int,
+    page_size: int,
+):
+    if report_type == "data_model":
+        return client.query_data_model_page(filters, page=page, page_size=page_size)
+    return client.query_sor_page(filters, page=page, page_size=page_size)
+
+
+def _tdc_crawl(
+    client: TDCCrawlerClient,
+    report_type: str,
+    filters: Any,
+    *,
+    page_size: int,
+    max_pages: int,
+    max_records: int,
+    should_stop: Callable[[], bool] | None = None,
+    on_page: Callable[[int, int], None] | None = None,
+):
+    if report_type == "data_model":
+        return client.crawl_data_model_all(
+            filters,
+            page_size=page_size,
+            max_pages=max_pages,
+            max_records=max_records,
+            should_stop=should_stop,
+            on_page=on_page,
+        )
+    return client.crawl_sor_all(
+        filters,
+        page_size=page_size,
+        max_pages=max_pages,
+        max_records=max_records,
+        should_stop=should_stop,
+        on_page=on_page,
+    )
+
+
+def _tdc_export(
+    client: TDCCrawlerClient,
+    report_type: str,
+    filters: Any,
+    *,
+    file_name: str | None,
+):
+    if report_type == "data_model":
+        return client.export_data_model(filters, file_name=file_name)
+    return client.export_sor(filters, file_name=file_name)
+
+
+def _tdc_result_data(result: Any) -> dict[str, Any]:
+    if result.report_type == "data_model":
+        safe_rows = _safe_rows(result.rows)
+        table = table_payload("tdc_data_model", safe_rows)
+    elif result.report_type == "sor":
+        safe_rows = _safe_tdc_sor_rows(result.rows)
+        table = table_payload("tdc_sor", safe_rows)
+    else:
+        raise ValueError(f"unsupported TDC report type: {result.report_type}")
+    return {
+        **table,
+        "report_type": result.report_type,
+        "data_source": "list_endpoint",
+        "page": result.page,
+        "page_size": result.page_size,
+        "total": result.total,
+        "pages": result.pages,
+        "fetched_pages": result.fetched_pages,
+        "unique_count": result.unique_count,
+        "duplicate_count": result.duplicate_count,
+        "stop_reason": result.stop_reason,
+        "record_granularity": result.record_granularity,
+    }
+
+
+_CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+_STRICT_NUMBER_LITERAL = re.compile(r"^-?\d+(?:\.\d+)?$")
+
+
+def _csv_cell(value: Any) -> Any:
+    """单元格输出前的公式注入缓解（只处理文本，严格数字豁免）。
+
+    Codex 复核 P1：只检查首字符会漏掉"前导空白/控制字符 + 公式"的形态，
+    因此按**去掉前导空白后的首字符**判定；严格数字字面量（含前导空白）保持原样。
+    """
+    if not isinstance(value, str) or not value:
+        return value
+    probe = value.lstrip()
+    if not probe:
+        return value
+    if probe[0] in _CSV_FORMULA_PREFIXES and not _STRICT_NUMBER_LITERAL.match(probe):
+        return "'" + value
+    return value
+
+
+def _tdc_official_rows_csv(rows: Sequence[Mapping[str, Any]]) -> bytes:
+    """官方工作簿行的 CSV 字节（UTF-8 BOM，Excel 双击可开）。
+
+    列序与列头沿用官方 47 列契约，**逐列取值**：官方工作簿是全部官方列的唯一
+    来源，列表接口只有其中 20 列——用列表行拼官方列会把"官方才有"的 27 列
+    留空，用户会把空列读成"无人待签/数量为 0"（2026-10-13 生产反馈）。
+    单元格经 ``_csv_cell`` 做公式注入缓解（数据来自上游报表，属不可信文本）。
+    """
+    labels = official_contract_headers("data_model")
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\r\n")
+    writer.writerow(labels)
+    for row in rows:
+        writer.writerow([_csv_cell(row.get(label)) for label in labels])
+    return buffer.getvalue().encode("utf-8-sig")
+
+
+def _tdc_export_cache_context(payload: Mapping[str, Any]) -> tuple[TDCExportCache, str] | None:
+    """Return a cache and non-secret namespace for one safe local request."""
+    if not has_app_context():
+        return None
+    cache = current_app.extensions.get("tdc_export_cache")
+    if not isinstance(cache, TDCExportCache):
+        return None
+    headers = payload.get("headers")
+    if isinstance(headers, Mapping) and any(
+        str(key).lower() in {"authorization", "cookie", "set-cookie"} for key in headers
+    ):
+        return None
+    if str(payload.get("cookie") or "").strip() or payload.get("cookies"):
+        return None
+    auth_mode = str(payload.get("auth_mode") or "browser").strip().lower()
+    if auth_mode == "password":
+        username = str(payload.get("username") or "").strip()
+        if not username:
+            return None
+        marker = hashlib.sha256(username.encode("utf-8")).hexdigest()
+        return cache, f"password-user:{marker}"
+    shared = _shared_domain_session("tdc")
+    if shared is None:
+        return None
+    registry = current_app.extensions.get("domain_sessions")
+    marker = ""
+    if isinstance(registry, DomainSessionRegistry):
+        status = registry.payload().get("tdc", {})
+        if isinstance(status, Mapping):
+            marker = str(status.get("updatedAt") or status.get("expiresAt") or "")
+    if not marker:
+        return None
+    return cache, f"shared-session:{marker}:{id(shared)}"
+
+
+def _tdc_sor_project_options(projects: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
+    """Expose only the safe, user-visible fields of TDC project choices."""
+    options: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for project in projects:
+        if not isinstance(project, Mapping):
+            continue
+        project_id = _safe_tdc_sor_value(project.get("id"))
+        project_no = _safe_tdc_sor_value(project.get("projectNo"))
+        project_name = _safe_tdc_sor_value(project.get("projectName"))
+        if not project_id:
+            continue
+        identity = (project_id, project_no or "", project_name or "")
+        if identity in seen:
+            continue
+        seen.add(identity)
+        label = project_no or project_name or project_id
+        if project_no and project_name and project_no != project_name:
+            label = f"{project_no} — {project_name}"
+        options.append(
+            {
+                "id": project_id,
+                "projectNo": project_no or "",
+                "projectName": project_name or "",
+                "label": label,
+            }
+        )
+    return options
+
+
+def _tdc_official_export_bytes(
+    payload: Mapping[str, Any],
+    report_type: str,
+    filters: Any,
+    allowed_hosts: Sequence[str],
+    *,
+    file_name: str | None = None,
+) -> tuple[bytes, bool]:
+    """Fetch one official workbook, using only a safe short-lived cache when possible."""
+    cache_context = _tdc_export_cache_context(payload)
+
+    def produce() -> bytes:
+        temp_dir = Path(tempfile.mkdtemp(prefix=f"tdc_{report_type}_export_cache_"))
+        client: TDCCrawlerClient | None = None
+        try:
+            client = _build_tdc_client_from_payload(dict(payload), allowed_hosts, output_dir=temp_dir)
+            exported = _tdc_export(
+                client,
+                report_type,
+                filters,
+                file_name=file_name or f"tdc_{report_type}_cached.xlsx",
+            )
+            saved = Path(exported.path).resolve()
+            if not saved.is_relative_to(temp_dir.resolve()):
+                raise TDCCrawlerError(
+                    "TDC export produced a path outside the temporary output directory",
+                    stage="export-validation",
+                )
+            return saved.read_bytes()
+        finally:
+            _close_owned_tdc_client(client)
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    if cache_context is None:
+        return produce(), False
+    cache, namespace = cache_context
+    key = cache.make_key(
+        report_type=report_type,
+        base_url=str(payload.get("base_url") or ""),
+        filters=filters.to_params(),
+        namespace=namespace,
+    )
+    result = cache.get_or_create(key, produce)
+    return result.content, result.hit
+
+
+def _tdc_data_model_export_bytes(
+    payload: Mapping[str, Any],
+    filters: TDCDataModelFilters,
+    allowed_hosts: Sequence[str],
+    *,
+    file_name: str | None = None,
+) -> tuple[bytes, bool]:
+    return _tdc_official_export_bytes(
+        payload,
+        "data_model",
+        filters,
+        allowed_hosts,
+        file_name=file_name,
+    )
+
+
+def _tdc_sor_export_bytes(
+    payload: Mapping[str, Any],
+    filters: TDCSORFilters,
+    allowed_hosts: Sequence[str],
+    *,
+    file_name: str | None = None,
+) -> tuple[bytes, bool]:
+    return _tdc_official_export_bytes(
+        payload,
+        "sor",
+        filters,
+        allowed_hosts,
+        file_name=file_name,
+    )
+
+
+def _tdc_official_preview(
+    payload: Mapping[str, Any],
+    report_type: str,
+    filters: Any,
+    allowed_hosts: Sequence[str],
+    *,
+    operation: str,
+    page: int = 1,
+    page_size: int = 50,
+    max_records: int = _TDC_MAX_RECORDS_MAX,
+) -> dict[str, Any]:
+    """Preview an official TDC workbook using its approved table contract."""
+    contract_key = "tdc_data_model" if report_type == "data_model" else "tdc_sor"
+    temp_dir = Path(tempfile.mkdtemp(prefix=f"tdc_{report_type}_preview_"))
+    try:
+        if report_type == "data_model":
+            content, cache_hit = _tdc_data_model_export_bytes(payload, filters, allowed_hosts)
+        else:
+            content, cache_hit = _tdc_sor_export_bytes(payload, filters, allowed_hosts)
+        saved = temp_dir / f"tdc_{report_type}_preview.xlsx"
+        saved.write_bytes(content)
+
+        preview = read_xlsx_preview(saved, max_rows=_TDC_OFFICIAL_PREVIEW_MAX_ROWS)
+        expected_header = [
+            str(value or "").strip() for value in report_contracts()[contract_key]["headerRows"][0]
+        ]
+        actual_header = [
+            str(value or "").strip() for value in (preview.rows[0] if preview.rows else [])
+        ]
+        if (
+            len(actual_header) < len(expected_header)
+            or actual_header[: len(expected_header)] != expected_header
+            or any(actual_header[len(expected_header) :])
+        ):
+            raise TDCCrawlerError(
+                f"official TDC {report_type} export header does not match the approved contract",
+                stage="contract-validation",
+            )
+
+        data_rows = [
+            [None if value is None else redact_sensitive_text(value) for value in row]
+            for row in preview.rows[1:]
+            if row and any(value not in (None, "") for value in row)
+        ]
+        total = None if preview.truncated else len(data_rows)
+        pages = None if total is None else (total + page_size - 1) // page_size
+        if operation == "query":
+            start = (page - 1) * page_size
+            selected_rows = data_rows[start : start + page_size]
+            result_page = page
+            result_page_size = page_size
+            stop_reason = "official_export_truncated" if preview.truncated else "official_export"
+        else:
+            selected_rows = data_rows[:max_records]
+            result_page = 1
+            result_page_size = page_size
+            if len(data_rows) > max_records:
+                stop_reason = "max_records"
+            else:
+                stop_reason = "official_export_truncated" if preview.truncated else "official_export"
+
+        table = matrix_payload(contract_key, selected_rows)
+        return {
+            **table,
+            "report_type": report_type,
+            "data_source": "official_export",
+            "page": result_page,
+            "page_size": result_page_size,
+            "total": total,
+            "pages": pages,
+            "fetched_pages": 1,
+            "unique_count": len(selected_rows),
+            "duplicate_count": 0,
+            "stop_reason": stop_reason,
+            "record_granularity": "part_detail",
+            "preview": {
+                "sheetName": preview.sheet_name,
+                "sheetNames": list(preview.sheet_names),
+                "truncated": preview.truncated,
+                "maxRows": _TDC_OFFICIAL_PREVIEW_MAX_ROWS,
+            },
+            "cache": {"hit": cache_hit, "ttlSeconds": 180},
+        }
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def _tdc_official_data_model_preview(
+    payload: Mapping[str, Any],
+    filters: TDCDataModelFilters,
+    allowed_hosts: Sequence[str],
+    *,
+    operation: str,
+    page: int = 1,
+    page_size: int = 50,
+    max_records: int = _TDC_MAX_RECORDS_MAX,
+) -> dict[str, Any]:
+    return _tdc_official_preview(
+        payload,
+        "data_model",
+        filters,
+        allowed_hosts,
+        operation=operation,
+        page=page,
+        page_size=page_size,
+        max_records=max_records,
+    )
+
+
+def _tdc_official_sor_preview(
+    payload: Mapping[str, Any],
+    filters: TDCSORFilters,
+    allowed_hosts: Sequence[str],
+    *,
+    operation: str,
+    page: int = 1,
+    page_size: int = 50,
+    max_records: int = _TDC_MAX_RECORDS_MAX,
+) -> dict[str, Any]:
+    return _tdc_official_preview(
+        payload,
+        "sor",
+        filters,
+        allowed_hosts,
+        operation=operation,
+        page=page,
+        page_size=page_size,
+        max_records=max_records,
+    )
+
+
+def _tdc_error_response(exc: Exception, report_type: str, operation: str):
+    if isinstance(exc, _TDCRequestError):
+        return _json_error(
+            exc.status_code,
+            exc.error_type,
+            _sanitize_error_message(exc),
+            exc.diagnostic_path,
+            diagnostic=getattr(exc, "diagnostic", None),
+        )
+    if isinstance(exc, TDCAuthError):
+        return _json_error(401, "AuthenticationError", _sanitize_error_message(exc), getattr(exc, "diagnostic_path", None))
+    if isinstance(exc, XLSXPreviewError):
+        return _json_error(502, "TDCCrawlerError", _sanitize_error_message(exc))
+    if isinstance(exc, ValueError):
+        return _json_error(400, "ValidationError", _sanitize_error_message(exc))
+    if isinstance(exc, TDCCrawlerError):
+        status = 400 if exc.stage == "contract-validation" else 502
+        diagnostic = exc.safe_diagnostic()
+        # 有界重试后仍失败的上游 5xx/429 是"暂时不可用"，不是配置错误：
+        # 主文案给出可重试语义并保留 request_id（现场与诊断关联的唯一抓手）；
+        # 上游路径等运维细节在下发的 diagnostic 与诊断录制里，不再塞进用户文案。
+        if diagnostic.get("retryable") is True:
+            message = (
+                f"TDC 暂时不可用（{diagnostic.get('upstreamHttpStatus')}），请稍后重试；"
+                f"request_id={diagnostic.get('requestId', '')}"
+            )
+        else:
+            message = f"{_sanitize_error_message(exc)}; {exc.safe_diagnostic_message()}"
+        return _json_error(
+            status,
+            "TDCCrawlerError",
+            message,
+            diagnostic=diagnostic,
+        )
+    logger.warning("TDC %s %s API failed: %s", report_type, operation, type(exc).__name__)
+    return _json_error(500, type(exc).__name__, "Unexpected server error")
+
+
+def _tdc_document_no(payload: Mapping[str, Any]) -> str | None:
+    """流水单号（documentNo）。它不是 TDC 查询参数，只能本地精确匹配。
+
+    缺省或纯空白 = 不启用本地匹配；类型非法 fail-closed。
+    """
+    value = payload.get("document_no")
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise _TDCRequestError("document_no must be a string")
+    return value.strip() or None
+
+
+def _tdc_document_nos(payload: Mapping[str, Any]) -> list[str] | None:
+    """流水单号（可多值，分隔符约定同交付物明细搜索：空格/逗号/分号/顿号/换行）。
+
+    缺省 = 不启用本地匹配；去重保序，上限沿用 form_search.MAX_TERMS（超限部分
+    被 parse_terms 丢弃，这里按分隔符预扫描发现超限即 fail-closed），全空白也
+    fail-closed——绝不静默截断或退化成无过滤查询。
+    """
+    raw = _tdc_document_no(payload)
+    if raw is None:
+        return None
+    if len(_FORM_TERM_SEPARATORS.split(raw.strip())) > MAX_DOCUMENT_NOS:
+        raise _TDCRequestError(f"流水单号一次最多 {MAX_DOCUMENT_NOS} 个，请分批查询")
+    serials = parse_form_terms(raw)
+    if not serials:
+        raise _TDCRequestError("document_no 不能为空")
+    return serials
+
+
+def _tdc_data_model_serial_query(
+    payload: Mapping[str, Any],
+    filters: TDCDataModelFilters,
+    allowed_hosts: Sequence[str],
+    document_nos: list[str],
+):
+    """带流水单号的数模查询：全量翻页 → 本地精确匹配（A′ 路线）。
+
+    单个流水单号保持既有簿记形状（``requested`` 为字符串）；多个流水单号走
+    集合匹配，簿记含 ``found``/``missing`` 明细（S8：missing 只展示不删除）。
+    fail-closed：抓取不完整时返回 200 + 空行 + ``serialMatch.complete=false``
+    且 ``reason="crawl_incomplete"``——语义是"无法判定"，不是"未找到"；只有
+    抓取完整且匹配 0 行才是真正的"未找到"。
+
+    范围预检（2026-10-13 生产反馈）：流水单号不是上游查询参数，只能全量抓取后
+    本地匹配；当上游声明的总行数已超过本次抓取上限（``max_pages × page_size``
+    与 ``max_records`` 的较小值）时，用首页 ``total`` 直接给出可操作结论
+    （``reason="range_too_large"``），不再空跑 max_pages 页后报"抓取不完整"
+    （现场表现为同步请求跑满数分钟仍无结论）。
+    """
+    page_size = _tdc_positive_int(payload.get("page_size"), "page_size", 50, _TDC_PAGE_SIZE_MAX)
+    max_pages = _tdc_positive_int(payload.get("max_pages"), "max_pages", 100, _TDC_MAX_PAGES_MAX)
+    max_records = _tdc_positive_int(
+        payload.get("max_records"), "max_records", 10000, _TDC_MAX_RECORDS_MAX
+    )
+    row_cap = min(max_pages * page_size, max_records)
+    client: TDCCrawlerClient | None = None
+    try:
+        client = _build_tdc_client_from_payload(payload, allowed_hosts)
+        probe = client.crawl_data_model_all(
+            filters,
+            page_size=page_size,
+            max_pages=1,
+            max_records=max_records,
+        )
+        total = getattr(probe, "total", None)
+        if isinstance(total, int) and not isinstance(total, bool) and total > row_cap:
+            data = _tdc_result_data(
+                replace(probe, rows=[], unique_count=0, duplicate_count=0)
+            )
+            data["serialMatch"] = {
+                "requested": document_nos if len(document_nos) > 1 else document_nos[0],
+                "scanned": 0,
+                "matched": 0,
+                "scannedPages": int(getattr(probe, "fetched_pages", 0) or 0),
+                "complete": False,
+                "reason": "range_too_large",
+                "total": total,
+                "limit": row_cap,
+            }
+            return jsonify({"ok": True, "data": data})
+        crawl_result = client.crawl_data_model_all(
+            filters,
+            page_size=page_size,
+            max_pages=max_pages,
+            max_records=max_records,
+        )
+    finally:
+        _close_owned_tdc_client(client)
+    scanned_pages = int(getattr(crawl_result, "fetched_pages", 0) or 0)
+    scanned = len(crawl_result.rows)
+    if not _mapping_result_is_complete(crawl_result):
+        data = _tdc_result_data(
+            replace(crawl_result, rows=[], unique_count=0, duplicate_count=0)
+        )
+        data["serialMatch"] = {
+            "requested": document_nos if len(document_nos) > 1 else document_nos[0],
+            "scanned": scanned,
+            "matched": 0,
+            "scannedPages": scanned_pages,
+            "complete": False,
+            "reason": "crawl_incomplete",
+        }
+        return jsonify({"ok": True, "data": data})
+    if len(document_nos) == 1:
+        matched, bookkeeping = match_serial(crawl_result.rows, document_nos[0])
+        data = _tdc_result_data(
+            replace(crawl_result, rows=matched, unique_count=len(matched), duplicate_count=0)
+        )
+        data["serialMatch"] = {
+            "requested": bookkeeping["serial"],
+            "scanned": bookkeeping["scanned"],
+            "matched": bookkeeping["matched"],
+            "scannedPages": scanned_pages,
+            "complete": True,
+        }
+        return jsonify({"ok": True, "data": data})
+    matched, bookkeeping = match_serials(crawl_result.rows, document_nos)
+    data = _tdc_result_data(
+        replace(crawl_result, rows=matched, unique_count=len(matched), duplicate_count=0)
+    )
+    data["serialMatch"] = {
+        "requested": bookkeeping["requested"],
+        "found": bookkeeping["found"],
+        "missing": bookkeeping["missing"],
+        "scanned": bookkeeping["scanned"],
+        "matched": bookkeeping["matched"],
+        "scannedPages": scanned_pages,
+        "complete": True,
+    }
+    return jsonify({"ok": True, "data": data})
+
+
+def _tdc_report_query(
+    report_type: str,
+    filter_builder,
+    allowed_names: tuple[str, ...],
+    allowed_hosts: Sequence[str],
+):
+    payload, error_response = _request_payload()
+    if error_response:
+        return error_response
+    assert payload is not None
+    client: TDCCrawlerClient | None = None
+    try:
+        filters = filter_builder(_tdc_filters_from_payload(payload, allowed_names))
+        document_nos = _tdc_document_nos(payload) if report_type == "data_model" else None
+        page = _tdc_positive_int(payload.get("page"), "page", 1, _TDC_PAGE_MAX)
+        page_size = _tdc_positive_int(payload.get("page_size"), "page_size", 50, _TDC_PAGE_SIZE_MAX)
+        preview_source = _tdc_preview_source(payload)
+        if document_nos is not None:
+            # 流水单号必须走全量翻页 + 本地精确匹配；官方导出预览是另一种数据源，
+            # 静默忽略 document_no 会让用户拿到"全部行"当成匹配结果。
+            if preview_source != "list_endpoint":
+                raise _TDCRequestError(
+                    "填了流水单号时，查询预览只能用「快速查询（list 接口）」：请把查询模式切回快速查询；"
+                    "需要官方 47 列全量请到交付物工作台使用「导出合并结果」，或清空流水单号后再用官方 Excel 预览。",
+                    "SerialRequiresListSource",
+                    400,
+                )
+            return _tdc_data_model_serial_query(payload, filters, allowed_hosts, document_nos)
+        if preview_source == "official_export":
+            preview_builder = (
+                _tdc_official_data_model_preview
+                if report_type == "data_model"
+                else _tdc_official_sor_preview
+            )
+            data = preview_builder(
+                payload,
+                filters,
+                allowed_hosts,
+                operation="query",
+                page=page,
+                page_size=page_size,
+            )
+            return jsonify({"ok": True, "data": data})
+        client = _build_tdc_client_from_payload(payload, allowed_hosts)
+        result = _tdc_query(client, report_type, filters, page=page, page_size=page_size)
+        return jsonify({"ok": True, "data": _tdc_result_data(result)})
+    except Exception as exc:
+        return _tdc_error_response(exc, report_type, "query")
+    finally:
+        _close_owned_tdc_client(client)
+
+
+def _crawl_runner_from_request() -> Any:
+    return current_app.extensions.get("crawl_task_runner")
+
+
+def _tdc_report_crawl(
+    report_type: str,
+    filter_builder,
+    allowed_names: tuple[str, ...],
+    allowed_hosts: Sequence[str],
+):
+    payload, error_response = _request_payload()
+    if error_response:
+        return error_response
+    assert payload is not None
+    try:
+        filters = filter_builder(_tdc_filters_from_payload(payload, allowed_names))
+        page_size = _tdc_positive_int(payload.get("page_size"), "page_size", 50, _TDC_PAGE_SIZE_MAX)
+        max_pages = _tdc_positive_int(payload.get("max_pages"), "max_pages", 100, _TDC_MAX_PAGES_MAX)
+        max_records = _tdc_positive_int(
+            payload.get("max_records"), "max_records", 10000, _TDC_MAX_RECORDS_MAX
+        )
+        preview_source = _tdc_preview_source(payload)
+    except Exception as exc:
+        return _tdc_error_response(exc, report_type, "crawl-all")
+    if preview_source == "official_export":
+        # 官方导出预览为本地解析路径，维持同步 200 契约（交付物控制台依赖）。
+        preview_builder = (
+            _tdc_official_data_model_preview
+            if report_type == "data_model"
+            else _tdc_official_sor_preview
+        )
+        try:
+            data = preview_builder(
+                payload,
+                filters,
+                allowed_hosts,
+                operation="crawl_all",
+                page_size=page_size,
+                max_records=max_records,
+            )
+            return jsonify({"ok": True, "data": data})
+        except Exception as exc:
+            return _tdc_error_response(exc, report_type, "crawl-all")
+
+    # 网络全量抓取路径转换为后台任务（202 Accepted + task_id）。
+    session, gate_error = _async_session_gate("tdc", payload)
+    if gate_error is not None:
+        return gate_error
+    try:
+        base_url = str(payload["base_url"]).strip()
+        _validate_tdc_base_url(base_url, allowed_hosts, require_https=False)
+    except Exception as exc:
+        return _tdc_error_response(exc, report_type, "crawl-all")
+
+    def worker(ctx):
+        client = TDCCrawlerClient(base_url, session=session, timeout=30.0)
+        # 会话为共享统一域会话：worker 线程内禁止关闭（无 app 上下文无法识别）。
+        result = _tdc_crawl(
+            client,
+            report_type,
+            filters,
+            page_size=page_size,
+            max_pages=max_pages,
+            max_records=max_records,
+            should_stop=lambda: ctx.is_cancelled,
+            on_page=lambda page_no, rows_so_far: ctx.update_progress(
+                current=rows_so_far,
+                total=max_records,
+                stage=f"TDC {report_type} 全量抓取第 {page_no} 页",
+            ),
+        )
+        data = _tdc_result_data(result)
+        artifact = ctx.downloads_dir / f"{ctx.task_id}.result.json"
+        artifact.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        ctx.set_artifact(artifact)
+        ctx.update_progress(percent=100, stage="全量抓取完成")
+
+    params = {
+        "base_url": base_url,
+        "filters": asdict(filters),
+        "page_size": page_size,
+        "max_pages": max_pages,
+        "max_records": max_records,
+    }
+    return _submit_background_task(
+        _crawl_runner_from_request(),
+        f"tdc_{report_type}_crawl",
+        "tdc",
+        params,
+        worker,
+        error_context="TDC crawl-all",
+    )
+
+
+def _tdc_report_export(
+    report_type: str,
+    filter_builder,
+    allowed_names: tuple[str, ...],
+    allowed_hosts: Sequence[str],
+):
+    payload, error_response = _request_payload()
+    if error_response:
+        return error_response
+    assert payload is not None
+    try:
+        file_name = _tdc_file_name(payload.get("file_name"))
+        filters = filter_builder(_tdc_filters_from_payload(payload, allowed_names))
+    except Exception as exc:
+        return _tdc_error_response(exc, report_type, "export")
+
+    # 大导出转换为后台任务：官方工作簿下载 + XLSX 落盘至 data/downloads/，
+    # 由统一任务抽屉下载（7 天自动轮换清理）。
+    session, gate_error = _async_session_gate("tdc", payload)
+    if gate_error is not None:
+        return gate_error
+    try:
+        base_url = str(payload["base_url"]).strip()
+        _validate_tdc_base_url(base_url, allowed_hosts, require_https=False)
+    except Exception as exc:
+        return _tdc_error_response(exc, report_type, "export")
+
+    def worker(ctx):
+        # 会话为共享统一域会话：worker 线程内禁止关闭（无 app 上下文无法识别）。
+        client = TDCCrawlerClient(
+            base_url, session=session, timeout=30.0, output_dir=ctx.downloads_dir
+        )
+        ctx.update_progress(stage=f"正在生成 TDC {report_type} 官方导出")
+        user_name = file_name or f"tdc_{report_type}.xlsx"
+        unique_name = f"{Path(user_name).stem}_{ctx.task_id}.xlsx"
+        result = _tdc_export(client, report_type, filters, file_name=unique_name)
+        out_path = Path(result.path).resolve()
+        if not out_path.is_relative_to(ctx.downloads_dir.resolve()):
+            raise TDCCrawlerError(
+                "TDC export produced a path outside the download directory",
+                stage="export-validation",
+            )
+        ctx.set_artifact(out_path)
+        ctx.update_progress(percent=100, stage="导出完成")
+
+    params = {
+        "base_url": base_url,
+        "filters": asdict(filters),
+        "file_name": file_name,
+    }
+    return _submit_background_task(
+        _crawl_runner_from_request(),
+        f"tdc_{report_type}_export",
+        "tdc",
+        params,
+        worker,
+        error_context="TDC export",
+    )
+
+
+def _tdc_report_export_merged(allowed_hosts: Sequence[str]):
+    """数模「填多个流水单号 → 合并导出」：全量抓取 → 本地集合精确匹配 → 合并成一张 CSV。
+
+    官方导出（`_tdc_report_export`）只按其它筛选条件取数，**不读**顶层的
+    ``document_no``——多单号合并导出此前完全缺失（2026-10-10 用户反馈）。
+    本入口复用查询侧同一套解析与匹配（``_tdc_document_nos`` + ``match_serials``），
+    保证"预览里看到的合并行"与"导出的合并行"同源。
+    """
+    payload, error_response = _request_payload()
+    if error_response:
+        return error_response
+    assert payload is not None
+    try:
+        file_name = _tdc_merged_file_name(payload.get("file_name")) or "tdc_data_model_merged.xlsx"
+        document_nos = _tdc_document_nos(payload)
+        if not document_nos:
+            raise _TDCRequestError("请先填写至少一个流水单号（多个用空格、逗号或换行分隔）")
+        # 与查询预览共用同一套筛选/分页参数构造，保证"预览命中的单号 = 导出命中的单号"。
+        filters = _tdc_data_model_filters(
+            _tdc_filters_from_payload(payload, _TDC_DATA_MODEL_FILTER_NAMES)
+        )
+        page_size = _tdc_positive_int(payload.get("page_size"), "page_size", 50, _TDC_PAGE_SIZE_MAX)
+        max_pages = _tdc_positive_int(payload.get("max_pages"), "max_pages", 100, _TDC_MAX_PAGES_MAX)
+        max_records = _tdc_positive_int(
+            payload.get("max_records"), "max_records", 10000, _TDC_MAX_RECORDS_MAX
+        )
+    except Exception as exc:
+        return _tdc_error_response(exc, "data_model", "export")
+
+    session, gate_error = _async_session_gate("tdc", payload)
+    if gate_error is not None:
+        return gate_error
+    try:
+        base_url = str(payload["base_url"]).strip()
+        _validate_tdc_base_url(base_url, allowed_hosts, require_https=False)
+    except Exception as exc:
+        return _tdc_error_response(exc, "data_model", "export")
+
+    def worker(ctx):
+        # 统一域会话是应用内存对象：worker 线程内复用，禁止关闭。
+        work_dir = Path(tempfile.mkdtemp(prefix="tdc_merged_official_"))
+        try:
+            client = TDCCrawlerClient(
+                base_url, session=session, timeout=30.0, output_dir=work_dir
+            )
+            ctx.update_progress(percent=5, stage="正在核对范围（官方报表行数）")
+            # 范围预检：官方工作簿一次返回全部行，先用列表首页拿 total，避免为了
+            # 一个超大范围去下载整表（也避免把"没抓全"说成"单号不存在"）。
+            probe = client.crawl_data_model_all(
+                filters, page_size=page_size, max_pages=1, max_records=max_records
+            )
+            total = getattr(probe, "total", None)
+            if (
+                isinstance(total, int)
+                and not isinstance(total, bool)
+                and total > _TDC_MERGED_MAX_ROWS
+            ):
+                raise _TDCRequestError(
+                    f"当前条件命中 {total} 行，超过官方报表单次上限 "
+                    f"{_TDC_MERGED_MAX_ROWS} 行；请补充车型/日期等条件后重试",
+                    "RangeTooLarge",
+                    422,
+                )
+            ctx.update_progress(percent=20, stage="正在生成官方报表（含全部官方列）")
+            official = client.export_data_model(
+                filters, file_name=f"{Path(str(file_name)).stem}_官方报表.xlsx"
+            )
+            ctx.update_progress(percent=70, stage="正在按流水单号筛选官方报表行")
+            try:
+                official_rows = read_official_tdc_rows(
+                    Path(official.path), "data_model", max_rows=_TDC_MERGED_MAX_ROWS
+                )
+            except OfficialWorkbookTruncated:
+                raise _TDCRequestError(
+                    f"官方报表行数超过单次上限 {_TDC_MERGED_MAX_ROWS} 行，"
+                    "请补充车型/日期等条件后重试",
+                    "RangeTooLarge",
+                    422,
+                )
+            except OfficialWorkbookContractError:
+                raise _TDCRequestError(
+                    "官方报表表头与已批准契约不一致，无法安全导出（请联系维护人员）",
+                    "OfficialContractMismatch",
+                    502,
+                )
+            except OfficialWorkbookUnreadable:
+                raise _TDCRequestError(
+                    "官方报表无法解析（不是有效的 XLSX 工作簿），请重试或联系维护人员",
+                    "OfficialWorkbookUnreadable",
+                    502,
+                )
+            matched, bookkeeping = match_serials(official_rows, document_nos)
+            # fail-closed：请求了 N 个单号就必须全部命中——静默少导出会被当成"导出成功"，
+            # 与查询预览"展示 missing"的语义不同（导出件是要带走的结果）。
+            missing = [str(item) for item in bookkeeping.get("missing", [])]
+            if missing or not matched:
+                shown = "、".join(missing[:5]) + (f"（共 {len(missing)} 个）" if len(missing) > 5 else "")
+                raise _TDCRequestError(
+                    f"未找到以下流水单号：{shown}" if missing else "未找到任何匹配的流水单号",
+                    "SerialNotFound",
+                    422,
+                )
+            ctx.update_progress(percent=90, stage=f"命中 {len(matched)} 行，正在生成 CSV")
+            stem = Path(str(file_name)).stem or "tdc_data_model_merged"
+            out_path = ctx.downloads_dir / f"{stem}_合并_{ctx.task_id}.csv"
+            out_path.write_bytes(_tdc_official_rows_csv(matched))
+            ctx.set_artifact(out_path)
+            ctx.update_progress(
+                percent=100,
+                stage=(
+                    f"合并导出完成（{len(matched)} 行，官方 "
+                    f"{len(official_contract_headers('data_model'))} 列）"
+                ),
+            )
+        finally:
+            shutil.rmtree(work_dir, ignore_errors=True)
+
+    params = {
+        "base_url": base_url,
+        "filters": asdict(filters),
+        "document_no_count": len(document_nos),
+        "page_size": page_size,
+        "max_pages": max_pages,
+        "max_records": max_records,
+    }
+    return _submit_background_task(
+        _crawl_runner_from_request(),
+        "tdc_data_model_export_merged",
+        "tdc",
+        params,
+        worker,
+        error_context="TDC merged export",
+    )
+
+
+
+def register_tdc_routes(app: Any, deps: CrawlerRouteDeps) -> None:
+    # 闭包别名：被搬运的 TDC 路由按 create_app 内原名引用 db。
+    db = deps.db
+
+    # ── TDC 路由（逐字迁入） ──
+    @app.post("/api/tdc/data-model/query")
+    def api_tdc_data_model_query():
+        return _tdc_report_query(
+            "data_model",
+            _tdc_data_model_filters,
+            _TDC_DATA_MODEL_FILTER_NAMES,
+            app.config["TDC_ALLOWED_HOSTS"],
+        )
+
+
+    @app.post("/api/tdc/data-model/crawl-all")
+    def api_tdc_data_model_crawl_all():
+        return _tdc_report_crawl(
+            "data_model",
+            _tdc_data_model_filters,
+            _TDC_DATA_MODEL_FILTER_NAMES,
+            app.config["TDC_ALLOWED_HOSTS"],
+        )
+
+
+    @app.post("/api/tdc/data-model/export")
+    def api_tdc_data_model_export():
+        return _tdc_report_export(
+            "data_model",
+            _tdc_data_model_filters,
+            _TDC_DATA_MODEL_FILTER_NAMES,
+            app.config["TDC_ALLOWED_HOSTS"],
+        )
+
+
+    @app.post("/api/tdc/data-model/export-merged")
+    def api_tdc_data_model_export_merged():
+        """多流水单号合并导出（CSV）。官方导出不支持按单号过滤，见函数注释。"""
+        return _tdc_report_export_merged(app.config["TDC_ALLOWED_HOSTS"])
+
+
+    @app.post("/api/tdc/sor/car-type-projects")
+    def api_tdc_sor_car_type_projects():
+        payload, error_response = _request_payload()
+        if error_response:
+            return error_response
+        assert payload is not None
+        client: TDCCrawlerClient | None = None
+        try:
+            client = _build_tdc_client_from_payload(payload, app.config["TDC_ALLOWED_HOSTS"])
+            projects = client.list_car_type_projects()
+            return jsonify({"ok": True, "data": {"projects": _tdc_sor_project_options(projects)}})
+        except Exception as exc:
+            return _tdc_error_response(exc, "sor", "car-type-projects")
+        finally:
+            _close_owned_tdc_client(client)
+
+
+    @app.post("/api/tdc/sor/query")
+    def api_tdc_sor_query():
+        return _tdc_report_query(
+            "sor",
+            _tdc_sor_filters,
+            _TDC_SOR_FILTER_NAMES,
+            app.config["TDC_ALLOWED_HOSTS"],
+        )
+
+
+    @app.post("/api/tdc/sor/crawl-all")
+    def api_tdc_sor_crawl_all():
+        return _tdc_report_crawl(
+            "sor",
+            _tdc_sor_filters,
+            _TDC_SOR_FILTER_NAMES,
+            app.config["TDC_ALLOWED_HOSTS"],
+        )
+
+
+    @app.post("/api/tdc/sor/export")
+    def api_tdc_sor_export():
+        return _tdc_report_export(
+            "sor",
+            _tdc_sor_filters,
+            _TDC_SOR_FILTER_NAMES,
+            app.config["TDC_ALLOWED_HOSTS"],
+        )
+
+
+    @app.post("/api/tdc/a-face/query")
+    def api_tdc_a_face_query():
+        return _json_error(400, "ContractBlocker", AFACE_CONTRACT_BLOCKER)
+
+
+    @app.post("/api/tdc/a-face/crawl-all")
+    def api_tdc_a_face_crawl_all():
+        return _json_error(400, "ContractBlocker", AFACE_CONTRACT_BLOCKER)
+
+
+    @app.post("/api/tdc/a-face/export")
+    def api_tdc_a_face_export():
+        return _json_error(400, "ContractBlocker", AFACE_CONTRACT_BLOCKER)
+
+
