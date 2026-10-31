@@ -1,5 +1,24 @@
 # Recovery Notes
 
+## 2026-10-31 — W13-07 手工迁移失败与止损（TDC 路由迁移回退全程）
+
+- **经过**：用 W13-06 的"闭包脚本+分段提取"迁移 11 条 /api/tdc 路由 + 52 个成员，删除 1254 行后
+  连锁暴露 6+ 层缺名（_json_error/_local_web_mutation_error/_DEFAULT_TDC_ALLOWED_HOSTS/
+  _loopback_hostname/_TDC_SOR_FIELDS/COMPLETE_RESULT_STOP_REASONS/flatten_sor_value…），
+  每层修完暴露下一层，5+ 轮不收敛 → **整体回退**（stash web/app.py+crawler_boot.py，
+  checkout 五个测试文件到 HEAD），全量即刻恢复 3612/6/0。
+- **与 W13-06 的本质差异**：Aras 路由的 40 成员闭包只含模块级函数，自包含；TDC 闭包 52 成员
+  传递依赖直通 create_app 局部符号（_json_ok/_json_error/_local_web_mutation_error 在模块级
+  有定义但 TDC 成员还引用 _loopback_hostname/_DEFAULT_TDC_ALLOWED_HOSTS/AFACE_CONTRACT_BLOCKER
+  等局部/导入符号），闭包脚本只算模块级 def 的自由名，**看不见 create_app 函数体内的局部符号图**。
+- **教训**：① 大路由域迁移前必须先做"闭包完整性证明"——把拟迁移集合在独立模块里 mock 出
+  create_app 依赖（deps 显式列出）并能 import + 全量路由快照零差异，才允许动 app.py；
+  ② 修 NameError 的迭代循环只测 `import web.app` 不够（函数体执行期才炸），要以路由快照
+  测试 + 关键域聚焦测试为准；③ 逐名补 import 的旋涡超过 3 层即止损回退，把闭包完整性分析
+  作为独立前置任务。
+- **W13-07 重做前置**：先静态提取 TDC 路由段全部自由名（含 create_app 局部名）分类为
+  [已迁入 boot / 需随迁成员 / 需 deps 注入的局部名] 三清单，冻结后再动手。
+
 ## 2026-10-31 — ZCode worker 运行时对新版 GLM zcode.cjs 的协议适配（实测取证）
 
 - **症状**：supervisor 派发一律 `preflight-blocked`。逐层错误与修复（按顺序，每层修掉才见下一层）：
