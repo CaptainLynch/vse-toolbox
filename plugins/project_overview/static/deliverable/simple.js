@@ -8,19 +8,22 @@ import { redactSensitiveText, safeDisplayValue } from "./format.js";
 import {
   calculateVisibleColumns,
   candidateColumns,
+  columnKeyOf,
   copyTextToClipboard,
   extractSerialNumber,
-  findSerialNumberColumn,
   getRowCellValue,
   loadColumnPreferences,
   nextSortState,
   overdueLabel,
   progressDisplay,
   saveColumnPreferences,
+  serialCopyColumnKey,
   simpleColumns,
   sortRows,
   stageLabel,
   syncResultText,
+  tableHeaders,
+  toggleColumnVisibility,
 } from "./simple-logic.js";
 
 export { simpleColumns };
@@ -102,13 +105,8 @@ function Records({ formKey }) {
   );
 
   const toggleCol = (colKey, checked) => {
-    const currentKeys = visibleCols.map((c) => (c.key !== undefined && c.key !== null ? String(c.key) : String(c.index)));
-    let nextKeys;
-    if (checked) {
-      nextKeys = Array.from(new Set([...currentKeys, String(colKey)]));
-    } else {
-      nextKeys = currentKeys.filter((k) => k !== String(colKey));
-    }
+    const nextKeys = toggleColumnVisibility(visibleCols, colKey, checked, candidateCols);
+    if (!nextKeys) return; // 隐藏最后一列被拒绝，保持当前状态
     const nextPrefs = { visibleKeys: nextKeys };
     setColPrefs(nextPrefs);
     saveColumnPreferences(formKey, nextPrefs);
@@ -120,7 +118,7 @@ function Records({ formKey }) {
   };
 
   const selectAllColumns = () => {
-    const allKeys = candidateCols.map((c) => (c.key !== undefined && c.key !== null ? String(c.key) : String(c.index)));
+    const allKeys = candidateCols.map(columnKeyOf);
     const nextPrefs = { visibleKeys: allKeys };
     setColPrefs(nextPrefs);
     saveColumnPreferences(formKey, nextPrefs);
@@ -136,8 +134,9 @@ function Records({ formKey }) {
     }
   };
 
-  const serialCol = findSerialNumberColumn(schema);
-  const serialColKey = serialCol ? (serialCol.key !== undefined && serialCol.key !== null ? String(serialCol.key) : String(serialCol.index)) : null;
+  // 复制按钮所在列：单号列 key 缺失回退 index；单号列被隐藏时退回第一可见列。
+  const serialColKey = serialCopyColumnKey(schema, visibleCols);
+  const headers = tableHeaders(visibleCols, sortState);
 
   return html`<section class="ds-card">
     <div class="ds-card-head">
@@ -164,8 +163,8 @@ function Records({ formKey }) {
               </div>
               <div class="grid-column-list" style="display:flex;flex-direction:column;gap:4px;">
                 ${candidateCols.map((col) => {
-                  const colKey = col.key !== undefined && col.key !== null ? String(col.key) : String(col.index);
-                  const checked = visibleCols.some((vc) => (vc.key !== undefined && vc.key !== null ? String(vc.key) : String(vc.index)) === colKey);
+                  const colKey = columnKeyOf(col);
+                  const checked = visibleCols.some((vc) => columnKeyOf(vc) === colKey);
                   return html`<label key=${colKey} class="grid-column-item" style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;">
                     <input type="checkbox" checked=${checked} onChange=${(e) => toggleCol(colKey, e.currentTarget.checked)} />
                     <span>${col.label}</span>
@@ -180,19 +179,14 @@ function Records({ formKey }) {
     ${error && html`<p class="ds-error" role="alert">读取单据失败：${error}</p>`}
     ${!error && sortedItems.length > 0 && html`<div class="ds-table-wrap"><table class="ds-table">
       <thead><tr>
-        ${visibleCols.map((c) => {
-          const colKey = c.key !== undefined && c.key !== null ? String(c.key) : String(c.index);
-          const isSorted = sortState.key === colKey;
-          const arrow = isSorted ? (sortState.direction === "asc" ? " ▲" : " ▼") : "";
-          return html`<th
-            key=${c.key}
-            class="grid-sortable"
-            style="cursor:pointer;user-select:none"
-            title="点击排序"
-            aria-sort=${isSorted ? (sortState.direction === "asc" ? "ascending" : "descending") : "none"}
-            onClick=${() => onSort(colKey)}
-          >${c.label}${arrow}</th>`;
-        })}
+        ${headers.map((h) => html`<th
+          key=${h.key}
+          class="grid-sortable"
+          style="cursor:pointer;user-select:none"
+          title="点击排序"
+          aria-sort=${h.ariaSort}
+          onClick=${() => onSort(h.sortKey)}
+        >${h.label}${h.arrow}</th>`)}
         <th
           class="grid-sortable"
           style="cursor:pointer;user-select:none"
@@ -214,10 +208,10 @@ function Records({ formKey }) {
         const serialNum = extractSerialNumber(row, schema);
         return html`<tr key=${row.rowKey}>
           ${visibleCols.map((c) => {
-            const colKey = c.key !== undefined && c.key !== null ? String(c.key) : String(c.index);
-            const isSerial = serialNum && (colKey === serialColKey || (!serialColKey && c === visibleCols[0]));
+            const colKey = columnKeyOf(c);
+            const isSerial = serialNum && serialColKey && colKey === serialColKey;
             if (isSerial) {
-              return html`<td key=${c.key}>
+              return html`<td key=${colKey}>
                 <span style="display:inline-flex;align-items:center;gap:6px">
                   <span>${cell(values[c.index])}</span>
                   <button
@@ -231,7 +225,7 @@ function Records({ formKey }) {
                 </span>
               </td>`;
             }
-            return html`<td key=${c.key}>${cell(values[c.index])}</td>`;
+            return html`<td key=${colKey}>${cell(values[c.index])}</td>`;
           })}
           <td><span class=${`ds-pill is-${row.isCompleted ? "ok" : "info"}`}>${row.isCompleted ? "已完成" : safeDisplayValue(stageLabel(schema, row) || "进行中")}</span></td>
           <td>${overdue === "是" ? html`<span class="ds-pill is-bad">是</span>` : overdue}</td>

@@ -59,6 +59,16 @@ export const PREFERRED_LABELS = [
 ];
 export const MAX_COLUMNS = 5;
 
+/** 列身份的唯一取法：优先 c.key，缺失（含空串）回退 c.index。
+ *  排序、显隐、复制、表头/单元格 key 全部走这里，避免各处各写一套回退。 */
+export function columnKeyOf(column) {
+  if (!column) return "";
+  const key = column.key;
+  if (key !== undefined && key !== null && String(key) !== "") return String(key);
+  if (column.index !== undefined && column.index !== null) return String(column.index);
+  return "";
+}
+
 /** 候选列：排除源表「状态」（阶段与逾期已独立成列），排除全空列。 */
 export function candidateColumns(schema, rows = []) {
   const filled = (column) => !rows.length || rows.some((row) => {
@@ -109,7 +119,7 @@ export function calculateVisibleColumns(candidateCols, preferences, defaultCols 
     const keySet = new Set(visibleKeys.map(String));
     const matched = candidates.filter((col) => {
       if (!col) return false;
-      const k = col.key !== undefined && col.key !== null ? String(col.key) : String(col.index);
+      const k = columnKeyOf(col);
       return keySet.has(k) || keySet.has(String(col.index)) || keySet.has(String(col.label));
     });
     return matched.length > 0 ? matched : defaults.slice(0, 1);
@@ -120,13 +130,31 @@ export function calculateVisibleColumns(candidateCols, preferences, defaultCols 
     const hiddenSet = new Set(hiddenKeys.map(String));
     const matched = defaults.filter((col) => {
       if (!col) return false;
-      const k = col.key !== undefined && col.key !== null ? String(col.key) : String(col.index);
+      const k = columnKeyOf(col);
       return !hiddenSet.has(k) && !hiddenSet.has(String(col.index)) && !hiddenSet.has(String(col.label));
     });
     return matched.length > 0 ? matched : defaults.slice(0, 1);
   }
 
   return defaults;
+}
+
+/**
+ * 列显隐切换：返回下一次可见列的 key 列表；拒绝时返回 null。
+ * - 勾选：仅接受候选列中存在的列，重复勾选保持原样；
+ * - 取消勾选：隐藏最后一列时拒绝（返回 null），保证表格至少保留一列。
+ */
+export function toggleColumnVisibility(visibleCols, colKey, checked, candidateCols = []) {
+  const visibleKeys = (Array.isArray(visibleCols) ? visibleCols : []).filter(Boolean).map(columnKeyOf);
+  const key = String(colKey);
+  if (checked) {
+    const candidates = (Array.isArray(candidateCols) ? candidateCols : []).filter(Boolean).map(columnKeyOf);
+    if (!candidates.includes(key) && !visibleKeys.includes(key)) return null;
+    return Array.from(new Set([...visibleKeys, key]));
+  }
+  if (!visibleKeys.includes(key)) return visibleKeys;
+  if (visibleKeys.length <= 1) return null;
+  return visibleKeys.filter((k) => k !== key);
 }
 
 // ── 自适应排序逻辑 ───────────────────────────────────────────────────────
@@ -186,7 +214,7 @@ export function getRowCellValue(row, colKey, options = {}) {
     return overdueLabel(row);
   }
   const columns = (options && Array.isArray(options.columns)) ? options.columns : [];
-  const col = columns.find((c) => c && (String(c.key) === String(colKey) || String(c.index) === String(colKey)));
+  const col = columns.find((c) => c && (columnKeyOf(c) === String(colKey) || String(c.index) === String(colKey)));
   if (col && Array.isArray(row.values) && col.index < row.values.length) {
     return row.values[col.index];
   }
@@ -197,28 +225,51 @@ export function getRowCellValue(row, colKey, options = {}) {
   return null;
 }
 
+/** 表头描述：key 缺失回退 index，排序箭头与 aria-sort 也由同一 key 推导。
+ *  simple.js 只按描述渲染，不再各自计算列身份。 */
+export function tableHeaders(visibleCols, sortState) {
+  return (Array.isArray(visibleCols) ? visibleCols : []).filter(Boolean).map((col) => {
+    const key = columnKeyOf(col);
+    const sorted = Boolean(sortState && sortState.key === key);
+    const direction = sorted ? sortState.direction : null;
+    return {
+      key,
+      label: col.label,
+      sortKey: key,
+      sorted,
+      direction,
+      ariaSort: direction === "asc" ? "ascending" : direction === "desc" ? "descending" : "none",
+      arrow: direction === "asc" ? " ▲" : direction === "desc" ? " ▼" : "",
+    };
+  });
+}
+
 /**
  * 简表数据行排序：
  * - sortState: { key, direction }；
  * - getValue: 自定义取值函数 (row, key) => value；
  * - direction 为 null 或空时恢复原顺序（返回浅拷贝，不破坏原数据）。
  * - 空值在升序与降序下均恒排在末尾。
+ * - 相等元素显式按原下标兜底，稳定排序不依赖引擎实现。
  */
 export function sortRows(rows, sortState, getValue) {
   if (!Array.isArray(rows)) return [];
   if (!sortState || !sortState.key || !sortState.direction) return rows.slice();
   const { key, direction } = sortState;
   const mult = direction === "desc" ? -1 : 1;
-  return rows.slice().sort((rowA, rowB) => {
-    const valA = getValue ? getValue(rowA, key) : rowA[key];
-    const valB = getValue ? getValue(rowB, key) : rowB[key];
-    const aEmpty = valA === null || valA === undefined || valA === "";
-    const bEmpty = valB === null || valB === undefined || valB === "";
-    if (aEmpty && bEmpty) return 0;
-    if (aEmpty) return 1;
-    if (bEmpty) return -1;
-    return compareAdaptive(valA, valB) * mult;
-  });
+  return rows
+    .map((row, index) => ({ row, index }))
+    .sort((a, b) => {
+      const valA = getValue ? getValue(a.row, key) : a.row[key];
+      const valB = getValue ? getValue(b.row, key) : b.row[key];
+      const aEmpty = valA === null || valA === undefined || valA === "";
+      const bEmpty = valB === null || valB === undefined || valB === "";
+      if (aEmpty && bEmpty) return a.index - b.index;
+      if (aEmpty) return 1;
+      if (bEmpty) return -1;
+      return compareAdaptive(valA, valB) * mult || (a.index - b.index);
+    })
+    .map((entry) => entry.row);
 }
 
 // ── 单号识别与复制提取 ───────────────────────────────────────────────────
@@ -240,6 +291,17 @@ export function findSerialNumberColumn(schema) {
     if (keyCol) return keyCol;
   }
   return cols[0] || null;
+}
+
+/** 复制按钮所在列的 key：优先单号列；单号列未显示（或被隐藏）时退回第一可见列。
+ *  列 key 缺失时由 columnKeyOf 回退 index，复制按钮不会因缺 key 消失。 */
+export function serialCopyColumnKey(schema, visibleCols) {
+  const cols = (Array.isArray(visibleCols) ? visibleCols : []).filter(Boolean);
+  if (!cols.length) return "";
+  const serialCol = findSerialNumberColumn(schema);
+  const serialKey = serialCol ? columnKeyOf(serialCol) : "";
+  if (serialKey && cols.some((col) => columnKeyOf(col) === serialKey)) return serialKey;
+  return columnKeyOf(cols[0]);
 }
 
 /** 从行数据中提取单号字符串。 */
