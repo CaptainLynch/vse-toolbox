@@ -1,15 +1,12 @@
-﻿# VSE TOOLBOX (CLI Edition) — 依赖清单
+﻿# VSE TOOLBOX — 依赖清单（W15-01 起 CLI/爬虫/飞书 IMAP 专属依赖已移除）
 # 安装方式: pip install -r requirements.txt
 # 国内镜像: pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 # Python 版本要求: >= 3.9
 
 # ── 运行时依赖 ──────────────────────────────────────────────────
-rich>=13.7.0                       # 终端富文本渲染
 pywin32>=306                       # win32com.client COM 自动化 (Office 操作)
 xlwings>=0.33.0                    # Excel 原生进程自动化 (P0 Excel 工具箱)
-imapclient>=3.0.0                  # IMAP 邮件客户端 (替代标准库 imaplib)
 pytz>=2024.1                       # 时区处理
-selenium>=4.20.0                   # 浏览器自动化 (内网爬虫)
 requests>=2.32.0                   # HTTP 客户端 (P1 Aras 爬虫)
 Flask>=3.0.0                       # WEB 可视化适配层 / API 路由
 cryptography>=42.0.0               # 插件包 Ed25519 签名校验（host/updates.py）

@@ -111,7 +111,7 @@ def test_top_bar_navigation_six_main_domains() -> None:
     ordered = sorted(nav)
     assert [title for _, title, expert in ordered if not expert] == ["今天", "项目", "报告", "工具", "设置"]
     # 2026-10-31 W1-02：专家自检页（plugins/diagnostics）入列专家导航
-    assert [title for _, title, expert in ordered if expert] == ["概览", "交付物", "系统查询", "表单", "签署日报", "TIR数据简表", "Excel", "自动归档", "自检"]
+    assert [title for _, title, expert in ordered if expert] == ["概览", "系统查询", "表单", "签署日报", "TIR数据简表", "Excel", "自动归档", "自检"]
 
     html_text = Path("web/templates/dashboard.html").read_text(encoding="utf-8-sig")
     assert "<nav" not in html_text  # 不再有写死在模板里的导航
@@ -119,7 +119,7 @@ def test_top_bar_navigation_six_main_domains() -> None:
     routes = Path("web/static/host/legacy-routes.js").read_text(encoding="utf-8")
     for legacy, target in [
         ("overview", "#p/project-overview/status"),
-        ("deliverables", "#p/deliverables/catalog"),
+        ("deliverables", "#p/project-overview/details"),
         ("aras-panel", "#p/system-query/query"),
         ("excel-tasks", "#p/excel-tasks/workspace"),
         ("scheduled-archive", "#p/scheduled-archive/jobs"),

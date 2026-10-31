@@ -6,37 +6,16 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from rich.console import Console
 
-import main
 import core.config as config
 from core.diagnostics import DiagnosticOptions, MarkdownDiagnosticReport
 from core.redaction import redact_sensitive_text, safe_display_value
-from services.feishu_imap import FeishuImapParser
 from services.tdc_crawler import TDCCrawlerClient, TDCCrawlerError, TDCHttpDiagnosticEvent
 
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def test_feishu_credentials_use_getpass_for_password(monkeypatch, tmp_db):
-    prompts = []
-
-    monkeypatch.setattr(
-        "services.feishu_imap.Prompt.ask",
-        lambda prompt: prompts.append(prompt) or "user@example.com",
-    )
-    monkeypatch.setattr(
-        "services.feishu_imap.getpass.getpass",
-        lambda prompt: "secret-password",
-    )
-
-    username, password = FeishuImapParser(tmp_db)._get_credentials()
-
-    assert username == "user@example.com"
-    assert password == "secret-password"
-    assert len(prompts) == 1
-    assert "密码" not in prompts[0]
 
 
 def _prompt_ask_calls_with_sensitive_text(path: Path) -> list[str]:
@@ -62,18 +41,8 @@ def _prompt_ask_calls_with_sensitive_text(path: Path) -> list[str]:
     return sensitive_calls
 
 
-def test_no_plaintext_password_prompt_in_feishu_imap():
-    path = ROOT / "services" / "feishu_imap.py"
-
-    assert _prompt_ask_calls_with_sensitive_text(path) == []
 
 
-def test_intranet_scraper_keeps_manual_browser_login_without_terminal_secret_prompt():
-    path = ROOT / "services" / "intranet_scraper.py"
-    source = path.read_text(encoding="utf-8")
-
-    assert _prompt_ask_calls_with_sensitive_text(path) == []
-    assert "getpass" not in source
 
 
 def test_config_has_no_sensitive_constants():
@@ -202,7 +171,6 @@ def test_tdc_source_isolated_from_sensitive_material_and_gitignored():
     source_paths = [
         ROOT / "services" / "tdc_auth.py",
         ROOT / "services" / "tdc_crawler.py",
-        ROOT / "main.py",
         ROOT / "core" / "diagnostics.py",
     ]
     forbidden = "fictional-persisted-credential"
@@ -239,10 +207,6 @@ def test_tdc_console_log_error_and_diagnostic_report_share_redaction(monkeypatch
             "token=fictional-query-secret"
         ),
     )
-    console = Console(record=True, width=160)
-    monkeypatch.setattr(main, "console", console)
-    main._tdc_console_debug_hook(event)
-
     report = MarkdownDiagnosticReport(
         options=DiagnosticOptions(enabled=True),
         base_url="https://tdc.example",
@@ -261,7 +225,7 @@ def test_tdc_console_log_error_and_diagnostic_report_share_redaction(monkeypatch
         TDCCrawlerClient("https://tdc.example", session=_FailingTDCSession()).query_sor_page()
 
     combined = "\n".join(
-        [console.export_text(), path.read_text(encoding="utf-8"), caplog.text, str(excinfo.value)]
+        [path.read_text(encoding="utf-8"), caplog.text, str(excinfo.value)]
     )
     for secret in ("fictional-cookie-secret", "fictional-auth-secret", "fictional-query-secret"):
         assert secret not in combined

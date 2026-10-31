@@ -144,7 +144,7 @@ def test_legacy_hashes_redirect_to_plugin_routes() -> None:
     assert data["#deliverable/A%20B"] == "#p/project-overview/deliverable?id=A+B"
     assert data["#deliverable-detail/X"] == "#p/project-overview/deliverable?id=X"
     assert data["#archive-deliverable/J1"] == "#p/project-overview/archive-deliverable?job=J1"
-    assert data["#deliverables"] == "#p/deliverables/catalog"
+    assert data["#deliverables"] == "#p/project-overview/details"
     assert data["#aras-panel?mode=ewo&from=overview"] == "#p/system-query/query?mode=ewo&from=overview"
     assert data["#excel"] == "#p/excel-tasks/workspace"
     assert data["#archive"] == "#p/scheduled-archive/jobs"

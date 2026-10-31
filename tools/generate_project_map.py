@@ -28,7 +28,6 @@ MAP_SCHEMA_VERSION = 1
 # production code and is intentionally outside the map.
 SOURCE_DIRS = ("core", "host", "plugins", "services", "web")
 SOURCE_FILES = (
-    "main.py",
     "webui.py",
     "excel_worker_entry.py",
     "tdc_probe_main.py",
@@ -142,7 +141,6 @@ ROLE_OVERRIDES = {
     "plugins/tir_report/protocol.py": "FineReport TIR数据简表 protocol: parameters/cjkEncode, sessionID, content parsing (pure)",
     "plugins/tir_report/client.py": "FineReport client: login, report session, parameters, original Excel export",
     "plugins/tir_report/service.py": "tir-report export run: original xlsx on disk, same-day reuse, task view",
-    "main.py": "Rich CLI adapter, menu routing and legacy operations",
     "webui.py": "WebUI source/frozen launcher",
     "excel_worker_entry.py": "Frozen Excel Worker launcher",
     "tdc_probe_main.py": "Standalone TDC probe launcher",
@@ -252,8 +250,6 @@ def _test_hint(relative_path: str, root: Path) -> str:
         return f"tests/{exact.name}"
     if relative_path == "web/app.py":
         return "tests/*web*.py"
-    if relative_path == "main.py":
-        return "tests/*cli*.py"
     if relative_path.startswith("services/tdc_") or relative_path.startswith("tdc_probe"):
         return "tests/*tdc*.py"
     if relative_path.startswith("services/aras_"):
@@ -318,9 +314,9 @@ def _manual_sections() -> str:
         not a substitute for reading the target implementation.
 
         **Approved production scope:** `core/`, `host/`, `plugins/`, `services/`, `web/`,
-        `main.py`, `webui.py`, `excel_worker_entry.py`,
+        `webui.py`, `excel_worker_entry.py`,
         `tools/excel_worker_cli.py`, `tdc_probe_main.py`, and
-        `tdc_probe_cli.py`.
+        `tdc_probe_cli.py`. W15-01 起 `main.py`（Rich 交互式 CLI）已下线。
 
         ## Default-deny paths
 
@@ -335,7 +331,7 @@ def _manual_sections() -> str:
         | Product | Entry point | Main implementation | Packaging |
         | --- | --- | --- | --- |
         | WebUI | `webui.py` | `web/app.py`, `web/templates/`, `web/static/` | `VSE-WebUI.spec` |
-        | CLI | `main.py` | `main.py`, `services/` | `VSE-Toolbox.spec` |
+        | ~~CLI~~ | 已随 W15-01 下线 | — | `VSE-Toolbox.spec` 已删除 |
         | Excel Worker | `webui.py` (`--excel-worker` 哨兵) | `tools/excel_worker_cli.py`, `core/excel_worker.py` | `VSE-WebUI.spec`（单 exe；`VSE-ExcelWorker.spec` 仅开发机备用） |
         | TDC Probe | `tdc_probe_main.py` | `tdc_probe_cli.py`, `services/tdc_contract_probe.py` | `VSE-TDC-Probe.spec` |
 

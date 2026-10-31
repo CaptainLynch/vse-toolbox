@@ -23,7 +23,6 @@ def test_source_scope_includes_product_code_and_excludes_repository_noise() -> N
     assert "core/db_manager.py" in paths
     assert "services/tdc_crawler.py" in paths
     assert "web/app.py" in paths
-    assert "main.py" in paths
     assert "webui.py" in paths
     assert "excel_worker_entry.py" in paths
     assert "tools/excel_worker_cli.py" in paths

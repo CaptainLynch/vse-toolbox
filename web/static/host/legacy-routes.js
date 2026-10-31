@@ -11,7 +11,7 @@ const PANEL_ROUTES = {
   "overview-status-panel": "#p/project-overview/status",
   "overview-details-panel": "#p/project-overview/details",
   "overview-plan-panel": "#p/project-overview/plan",
-  deliverables: "#p/deliverables/catalog",
+  deliverables: "#p/project-overview/details",
   "aras-panel": "#p/system-query/query",
   aras: "#p/system-query/query",
   "system-query": "#p/system-query/query",
