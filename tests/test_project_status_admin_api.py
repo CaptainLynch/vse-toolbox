@@ -1315,7 +1315,7 @@ def test_mapping_discovery_post_canonicalizes_sor_and_ewo_filters(
         "tdc", sor_rule
     )
 
-    monkeypatch.setattr(crawler_boot, "_build_aras_client_from_payload", lambda *args: FakeEWO())
+    monkeypatch.setattr(web_app, "_build_aras_client_from_payload", lambda *args: FakeEWO())
     ewo_response = client.post(
         "/api/project-status/deliverables/VPI-T2-D3/mapping-discovery",
         json={
