@@ -187,7 +187,7 @@ def _labels() -> list[str]:
 
 
 def _run(client, document_no: str, monkeypatch, *, file_name=None, **fake_kwargs):  # type: ignore[no-untyped-def]
-    monkeypatch.setattr(web_app, "TDCCrawlerClient", _fake_client(**fake_kwargs))
+    monkeypatch.setattr(crawler_boot, "TDCCrawlerClient", _fake_client(**fake_kwargs))
     monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: object())
     extra = {} if file_name is None else {"file_name": file_name}
     response = _post(client, document_no, **extra)
@@ -427,7 +427,7 @@ def test_merged_export_rejects_unsafe_file_name_before_submitting_task(env) -> N
 
 
 def test_merged_export_still_rejects_unsafe_csv_file_name(env, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setattr(web_app, "TDCCrawlerClient", _fake_client())
+    monkeypatch.setattr(crawler_boot, "TDCCrawlerClient", _fake_client())
     monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: object())
 
     response = _post(env["client"], "3D-00001018", file_name="..\\evil.csv")
@@ -441,7 +441,7 @@ def test_merged_export_uses_the_same_query_construction_as_preview(env, monkeypa
     crawl_calls: list[tuple] = []
     export_calls: list[tuple] = []
     monkeypatch.setattr(
-        web_app,
+        crawler_boot,
         "TDCCrawlerClient",
         _fake_client(crawl_calls=crawl_calls, export_calls=export_calls),
     )

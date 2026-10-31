@@ -332,9 +332,10 @@ def test_statistics_endpoint_history_row_cap_truncates(client, monkeypatch) -> N
     部分历史仍参与统计（historySnapshotCount=2）。
     """
     import web.app as web_app
+    import web.crawler_boot as crawler_boot
 
     flask_client, db = client
-    monkeypatch.setattr(web_app, "_STATISTICS_MAX_HISTORY_ROWS", 4)
+    monkeypatch.setattr(crawler_boot, "_STATISTICS_MAX_HISTORY_ROWS", 4)
     _publish_paa_snapshot(db, snapshot_at="2026-09-10T08:00:00Z", run_id=1)
     _publish_paa_snapshot(db, snapshot_at="2026-09-11T08:00:00Z", run_id=2)
 

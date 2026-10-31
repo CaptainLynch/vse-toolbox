@@ -80,7 +80,8 @@ def test_unexpected_json_success_is_not_written(tmp_path):
 
 
 def test_project_options_never_substitute_display_name_for_missing_id():
-    from web.app import _tdc_sor_project_options
+    # W13-09 起该纯函数随 TDC 路由迁居 web.crawler_boot。
+    from web.crawler_boot import _tdc_sor_project_options
     assert _tdc_sor_project_options([{'projectNo': 'MODEL-A'}]) == []
 
 

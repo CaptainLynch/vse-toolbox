@@ -329,8 +329,8 @@ def client(monkeypatch, tmp_path):  # type: ignore[no-untyped-def]
     FakeTDCWebClient.export_outside = False
     FakeTDCWebAuthClient.calls = []
     FakeTDCWebAuthClient.fail = None
-    monkeypatch.setattr(web_app, "TDCCrawlerClient", FakeTDCWebClient)
-    monkeypatch.setattr(web_app, "TDCPasswordAuthClient", FakeTDCWebAuthClient)
+    monkeypatch.setattr(crawler_boot, "TDCCrawlerClient", FakeTDCWebClient)
+    monkeypatch.setattr(crawler_boot, "TDCPasswordAuthClient", FakeTDCWebAuthClient)
     db_cls = web_app.DatabaseManager
     monkeypatch.setattr(web_app, "DatabaseManager", lambda: db_cls(tmp_path / "deliverables-test.db"))
     monkeypatch.setattr(crawler_boot, "DIAGNOSTIC_DIR", tmp_path / "diagnostics")
@@ -815,7 +815,7 @@ def test_tdc_data_model_official_preview_without_serial_skips_guard(client, monk
         seen.append(kwargs["operation"])
         return {"report_type": "data_model", "data_source": "official_export", "rows": []}
 
-    monkeypatch.setattr(web_app, "_tdc_official_data_model_preview", fake_preview)
+    monkeypatch.setattr(crawler_boot, "_tdc_official_data_model_preview", fake_preview)
     for extra in ({}, {"document_no": ""}, {"document_no": "   "}):
         payload = {
             "base_url": "https://tdc.example", "auth_mode": "password",
@@ -851,7 +851,7 @@ def test_crawl_all_ignores_document_no_and_reports_full_scope(client, monkeypatc
     def fake_preview(payload, filters, allowed_hosts, **kwargs):
         return {"report_type": "data_model", "data_source": "official_export", "rows": []}
 
-    monkeypatch.setattr(web_app, "_tdc_official_data_model_preview", fake_preview)
+    monkeypatch.setattr(crawler_boot, "_tdc_official_data_model_preview", fake_preview)
     official = client.post(
         "/api/tdc/data-model/crawl-all", json={**payload, "preview_source": "official_export"}
     )

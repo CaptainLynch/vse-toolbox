@@ -37,8 +37,17 @@ def test_route_entries_extracts_web_api_contract_without_importing_app() -> None
 
     entries = route_entries(source)
 
-    assert ("/api/tdc/sor/export", "POST", "api_tdc_sor_export") in entries
+    # W13-09 起 TDC 报表路由迁居 web/crawler_boot.py，app.py 只保留
+    # 项目状态与装配路由；两侧都必须能被静态抽取。
     assert ("/api/project-status", "GET", "api_project_status") in entries
+    assert ("/api/project-status/scheduler", "GET", "api_project_status_scheduler_status") in entries
+
+    crawler_source = (ROOT / "web" / "crawler_boot.py").read_text(encoding="utf-8")
+    crawler_entries = route_entries(crawler_source)
+
+    assert ("/api/tdc/sor/export", "POST", "api_tdc_sor_export") in crawler_entries
+    assert ("/api/tdc/data-model/query", "POST", "api_tdc_data_model_query") in crawler_entries
+    assert ("/api/deliverables/catalog", "GET", "api_deliverables_catalog") in crawler_entries
 
 
 def test_build_map_contains_task_router_and_explicit_noise_boundary() -> None:

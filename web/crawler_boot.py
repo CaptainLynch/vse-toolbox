@@ -48,6 +48,8 @@ from core.domain_identity import (
 )
 
 from core.report_contracts import matrix_payload, report_contracts, table_payload
+from core.section_rollup import build_rollup_index
+from core.project_status_contracts import DELIVERABLE_LINK_REGISTRY
 
 from core.diagnostics import DiagnosticOptions, MarkdownDiagnosticReport
 
@@ -82,6 +84,10 @@ from services.windows_http import WinHTTPError, WinHTTPTimeoutError
 
 _DEFAULT_ARAS_ALLOWED_HOSTS: tuple[str, ...] = ("ecm.sgmw.com.cn",)
 
+#: 测试 host 只能通过 create_app(tdc_allowed_hosts=...) 或
+#: app.config["TDC_ALLOWED_HOSTS"] 显式注入。
+_DEFAULT_TDC_ALLOWED_HOSTS: tuple[str, ...] = ("tdc.sgmw.com.cn",)
+
 
 
 logger = logging.getLogger(__name__)
@@ -102,6 +108,8 @@ class CrawlerRouteDeps:
         local_mutation_error: Callable[[], Any],
         json_ok: Callable[..., Any],
         json_error: Callable[..., Any],
+        deliverable_form_service: Any | None = None,
+        section_rollup_store: Any | None = None,
     ) -> None:
         self.db = db
         self.crawl_task_runner = crawl_task_runner
@@ -112,6 +120,8 @@ class CrawlerRouteDeps:
         self.local_mutation_error = local_mutation_error
         self.json_ok = json_ok
         self.json_error = json_error
+        self.deliverable_form_service = deliverable_form_service
+        self.section_rollup_store = section_rollup_store
 
 
 logger = logging.getLogger("vse_toolbox.web")
@@ -1227,6 +1237,8 @@ from services.project_status_records import (
     identity_field_name,
     identity_fields,
 )
+
+from services.deliverable_form_analysis import SECTION_ROLLUP_FORM_KEYS
 
 from services.data_model_watchlist import (
     MAX_WATCHLIST_BYTES,
@@ -2799,8 +2811,86 @@ def _deliverable_form_statistics_payload(
 
 
 
-def register_form_catalog_routes(app: Any) -> None:
-    # 无 create_app 局部依赖（纯模块级常量 + 服务调用）。
+def register_form_catalog_routes(app: Any, deps: CrawlerRouteDeps) -> None:
+    # 交付物表单/目录路由：服务与归集存储由 create_app 经 deps 注入；
+    # 查询契约解析与归集索引构建为纯模块级逻辑（逐字迁自 create_app 闭包）。
+    db = deps.db
+    deliverable_form_service = deps.deliverable_form_service
+    section_rollup_store = deps.section_rollup_store
+
+    def _deliverable_form_query() -> tuple[dict[str, object], int, dict[str, int] | None]:
+        """Parse the shared read-only form-view query contract.
+
+        同一字段内多选以重复查询参数表达（OR）；逾期判定天数以
+        overdueDaysStage / overdueDaysLate 覆盖批准的默认口径。
+        """
+        filter_keys = {
+            "keyword",
+            "status",
+            "department",
+            "section",
+            "model",
+            "stage",
+            "dateStart",
+            "dateEnd",
+            "overdueState",
+            "isCompleted",
+            "relationEwo",
+            "terms",
+        }
+        multi_keys = {"status", "department", "section", "model", "stage", "overdueState"}
+        control_keys = filter_keys | {
+            "trendLimit",
+            "offset",
+            "limit",
+            "overdueDaysStage",
+            "overdueDaysLate",
+        }
+        unknown = set(request.args) - control_keys
+        if unknown:
+            raise ValueError("unsupported deliverable form query parameter")
+        filters: dict[str, object] = {}
+        for key in filter_keys:
+            values = [value for value in request.args.getlist(key) if value != ""]
+            if not values:
+                continue
+            if key in multi_keys:
+                if len(values) > 20:
+                    raise ValueError(f"{key} accepts at most 20 values")
+                filters[key] = values
+            else:
+                if len(values) > 1:
+                    raise ValueError(f"{key} accepts one value")
+                filters[key] = values[0]
+        if "terms" in filters:
+            # 多值搜索原文 -> 检索词列表（§9 S2，services/form_search.py）。
+            filters["terms"] = parse_form_terms(filters["terms"])
+
+        def strict_int(name: str, default: int, lower: int, upper: int) -> int:
+            raw = request.args.get(name)
+            if raw is None or raw == "":
+                return default
+            try:
+                value = int(raw)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{name} must be an integer") from exc
+            if not lower <= value <= upper:
+                raise ValueError(f"{name} must be between {lower} and {upper}")
+            return value
+
+        thresholds: dict[str, int] = {}
+        for name in ("overdueDaysStage", "overdueDaysLate"):
+            parsed = strict_int(name, -1, 0, 999)
+            if parsed >= 0:
+                thresholds[name] = parsed
+        return filters, strict_int("trendLimit", 30, 1, 365), thresholds or None
+
+    def _form_section_rollup(form_key: str):
+        """读取归集规则并构建扁平索引；非归集表单返回 None（保持原始口径）。"""
+        if form_key not in SECTION_ROLLUP_FORM_KEYS:
+            return None
+        rules = section_rollup_store.get()
+        return build_rollup_index(rules), rules
 
     # ── 路由（逐字迁入） ──
     @app.get("/api/deliverable-forms/<form_key>/view")
