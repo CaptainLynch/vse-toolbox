@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import web.app as web_app
+import web.project_status_boot as ps_boot
 import web.crawler_boot as crawler_boot
 from core.db_manager import DatabaseManager
 from core.project_status_contracts import (
@@ -72,7 +73,7 @@ def fake_registry() -> ConnectorRegistry:
 def registry_factory(monkeypatch, fake_registry: ConnectorRegistry) -> MagicMock:
     """Provide a spy/mock factory for create_production_registry returning fake_registry."""
     factory = MagicMock(return_value=fake_registry)
-    monkeypatch.setattr(web_app, "create_production_registry", factory)
+    monkeypatch.setattr(ps_boot, "create_production_registry", factory)
     return factory
 
 
@@ -533,7 +534,7 @@ def test_candidate_preview_does_not_invoke_external_factories(
     mock_aras = MagicMock()
     mock_tdc = MagicMock()
     monkeypatch.setattr(crawler_boot, "_build_aras_client_from_payload", mock_aras)
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", mock_tdc)
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", mock_tdc)
 
     resp = client.get("/api/project-status/deliverables/VPI-T2-D5/candidate-preview")
     assert resp.status_code == 200
@@ -1219,7 +1220,7 @@ def test_mapping_discovery_post_freezes_query_identity_before_rebind_and_can_ena
                 stop_reason="reported_pages",
             )
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda *args: FakeTDC())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda *args: FakeTDC())
     payload = {
         "base_url": "https://tdc.example",
         "filters": {"serial_number": "FLOW-A"},
@@ -1294,7 +1295,7 @@ def test_mapping_discovery_post_canonicalizes_sor_and_ewo_filters(
 
     headers = _loopback_headers()
     environ = {"REMOTE_ADDR": "127.0.0.1"}
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda *args: FakeSOR())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda *args: FakeSOR())
     sor_response = client.post(
         "/api/project-status/deliverables/VPI-T2-D2/mapping-discovery",
         json={
@@ -1315,7 +1316,7 @@ def test_mapping_discovery_post_canonicalizes_sor_and_ewo_filters(
         "tdc", sor_rule
     )
 
-    monkeypatch.setattr(web_app, "_build_aras_client_from_payload", lambda *args: FakeEWO())
+    monkeypatch.setattr(ps_boot, "_build_aras_client_from_payload", lambda *args: FakeEWO())
     ewo_response = client.post(
         "/api/project-status/deliverables/VPI-T2-D3/mapping-discovery",
         json={
@@ -1359,7 +1360,7 @@ def test_mapping_discovery_selected_document_no_is_matched_locally(
                 stop_reason="short_page",
             )
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda *args: FakeTDC())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda *args: FakeTDC())
     response = client.post(
         "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery",
         json={
@@ -1412,7 +1413,7 @@ def test_mapping_discovery_rejects_incomplete_results_before_observing(
         def crawl_ewo_report_all(self, _filters=None, **kwargs):  # type: ignore[no-untyped-def]
             return SimpleNamespace(rows=result_rows, complete=False, stop_reason="max_records")
 
-    monkeypatch.setattr(web_app, builder_name, lambda *args: IncompleteClient())
+    monkeypatch.setattr(ps_boot, builder_name, lambda *args: IncompleteClient())
     endpoint = f"/api/project-status/deliverables/{deliverable_id}/mapping-discovery"
     response = client.post(
         endpoint,
@@ -1438,7 +1439,7 @@ def test_mapping_discovery_rejects_service_overlimit_as_recoverable_validation_e
                 stop_reason="reported_pages",
             )
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda *args: TooManyClient())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda *args: TooManyClient())
     response = client.post(
         "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery",
         json={"base_url": "https://tdc.example", "filters": {}},

@@ -32,20 +32,26 @@ import tempfile
 
 from pathlib import Path
 
-from typing import Any, Callable, Mapping, Sequence, cast
+from typing import (
+    Any,
+    Callable,
+    Mapping,
+    Sequence,
+)
 
 from urllib.parse import urlsplit
 
-from flask import Flask, current_app, has_app_context, jsonify, render_template, request, send_file
-
-from core.config import DIAGNOSTIC_DIR, FLASK_HOST, FLASK_PORT
-
-from core.domain_identity import (
-    CredentialVaultError,
-    DPAPICredentialProvider,
-    DomainSessionRegistry,
-    WindowsDPAPICredentialVault,
+from flask import (
+    current_app,
+    has_app_context,
+    jsonify,
+    request,
+    send_file,
 )
+
+from core.config import DIAGNOSTIC_DIR
+
+from core.domain_identity import DomainSessionRegistry
 
 from core.report_contracts import matrix_payload, report_contracts, table_payload
 from core.section_rollup import build_rollup_index
@@ -70,12 +76,13 @@ from services.aras_crawler import (
     PAAReportFilters,
 )
 
-from services.aras_auth import ArasAuthError, ArasECMAuthClient, DEFAULT_ARAS_BASE_URL
+from services.aras_auth import (
+    ArasAuthError,
+    ArasECMAuthClient,
+)
 
 from services.aras_department_mapping import (
-    NCR_SECTION_CODES,
     normalize_departments,
-    parse_ncr_section_codes_input,
     resolve_ncr_section_codes,
 )
 
@@ -1229,34 +1236,19 @@ from services.form_search import parse_terms as parse_form_terms
 
 from services.form_search import _SEPARATORS as _FORM_TERM_SEPARATORS
 
-from services.project_status_records import (
-    COMPLETE_RESULT_STOP_REASONS,
-    MAX_AGGREGATE_RECORDS,
-    authoritative_identity_field,
-    authoritative_record_identity,
-    identity_field_name,
-    identity_fields,
-)
+from services.project_status_records import COMPLETE_RESULT_STOP_REASONS
 
 from services.deliverable_form_analysis import SECTION_ROLLUP_FORM_KEYS
 
 from services.data_model_watchlist import (
-    MAX_WATCHLIST_BYTES,
-    MULTI_SERIAL_DISABLED_MESSAGE,
-    MULTI_SERIAL_EXTERNAL_KEY_MESSAGE,
-    WatchlistError,
     match_serial,
     match_serials,
-    multi_serial_enabled,
-    normalize_serial_set,
-    normalize_single_serial,
 )
 
 from services.tdc_auth import TDCAuthError, TDCPasswordAuthClient
 
 from services.tdc_crawler import (
     AFACE_CONTRACT_BLOCKER,
-    CrawlCancelled,
     TDCCrawlerClient,
     TDCCrawlerError,
     TDCDataModelFilters,
@@ -2654,14 +2646,7 @@ def register_tdc_routes(app: Any, deps: CrawlerRouteDeps) -> None:
 
 # ── 交付物目录与表单统计路由（W13-08 迁入） ──
 
-from core.db_manager import (
-    ArchiveJobNotReadyError,
-    ArchiveLeaseBusyError,
-    DatabaseManager,
-    MappedDeliverableReadOnlyError,
-    PROJECT_STATUS_MILESTONE_TEMPLATE,
-    SyncBindingNotReadyError,
-)
+from core.db_manager import DatabaseManager
 from services.deliverable_statistics import (
     STATISTICS_HISTORY_SNAPSHOT_LIMIT,
     compute_form_statistics,

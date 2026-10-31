@@ -146,7 +146,7 @@ def client(monkeypatch, tmp_path: Path):  # type: ignore[no-untyped-def]
         reg.register("aras", DummyConnector())
         return reg
 
-    monkeypatch.setattr("web.app.create_production_registry", mock_registry)
+    monkeypatch.setattr("web.project_status_boot.create_production_registry", mock_registry)
 
     app = web_app.create_app()
     app.config.update(TESTING=True)

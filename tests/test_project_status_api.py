@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 import web.app as web_app
+import web.project_status_boot as ps_boot
 import web.crawler_boot as crawler_boot
 from core.db_manager import DatabaseManager
 
@@ -688,7 +689,7 @@ def _document_no_discovery(monkeypatch, rows, *, complete=True, stop_reason="rep
             seen.append(filters.instance_no)
             return SimpleNamespace(rows=list(rows), complete=complete, stop_reason=stop_reason)
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
     return seen
 
 
@@ -982,7 +983,8 @@ def _stub(monkeypatch, rows, *, complete=True, stop_reason="reported_pages"):  #
             return SimpleNamespace(rows=list(rows), complete=complete, stop_reason=stop_reason)
 
     monkeypatch.setattr(
-        web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient()
+        ps_boot,
+        "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient()
     )
     return seen
 
@@ -1197,7 +1199,8 @@ def _multi_serial_stability_stub(monkeypatch, snapshots, *, complete=True):  # t
             )
 
     monkeypatch.setattr(
-        web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient()
+        ps_boot,
+        "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient()
     )
     return actions
 
@@ -1389,7 +1392,7 @@ def test_mapping_discovery_f9a_session_cache_deduplicates(client, monkeypatch) -
                 stop_reason="reported_pages",
             )
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
         "wizardSessionId": "wiz-sess-test-01",
@@ -1440,7 +1443,7 @@ def test_mapping_discovery_f10_stability_sampling_verification(client, monkeypat
                 page_size=50,
             )
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
         "wizardSessionId": "wiz-stability-01",
@@ -1485,7 +1488,7 @@ def test_mapping_discovery_f10_stability_detects_total_mismatch(client, monkeypa
                 page_size=50,
             )
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
         "wizardSessionId": "wiz-stability-mismatch",
@@ -1526,7 +1529,7 @@ def test_mapping_discovery_f10_stability_sample_narrows_sections(client, monkeyp
         def query_data_model_page(self, filters, page=1, page_size=50):  # type: ignore[no-untyped-def]
             return SimpleNamespace(rows=list(rows), total=2, page=1, page_size=50)
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
         "wizardSessionId": "wiz-stability-sections",
@@ -1563,7 +1566,7 @@ def test_mapping_discovery_f10_stability_sample_empty_is_inconclusive(client, mo
         def query_data_model_page(self, filters, page=1, page_size=50):  # type: ignore[no-untyped-def]
             return SimpleNamespace(rows=list(page_rows), total=2, page=1, page_size=50)
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
         "wizardSessionId": "wiz-stability-empty",
@@ -1597,7 +1600,7 @@ def _inject_sor_sections(monkeypatch, sections):  # type: ignore[no-untyped-def]
         rule["sections"] = list(sections)
         return rule, values
 
-    monkeypatch.setattr(web_app, "_mapping_discovery_query_identity", patched)
+    monkeypatch.setattr(ps_boot, "_mapping_discovery_query_identity", patched)
 
 
 def test_mapping_discovery_f10_stability_sor_sample_narrows_sections(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -1614,7 +1617,7 @@ def test_mapping_discovery_f10_stability_sor_sample_narrows_sections(client, mon
         def query_sor_page(self, filters, page=1, page_size=50):  # type: ignore[no-untyped-def]
             return SimpleNamespace(rows=list(rows), total=2, page=page, page_size=page_size)
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
     _inject_sor_sections(monkeypatch, ["车体科"])
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
@@ -1661,7 +1664,7 @@ def test_mapping_discovery_f10_stability_pages_until_section_hit(client, monkeyp
                 rows=list(pages.get(page, [])), total=120, page=page, page_size=page_size
             )
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
         "wizardSessionId": "wiz-stability-paging",
@@ -1708,7 +1711,7 @@ def test_mapping_discovery_f10_stability_paging_is_bounded(client, monkeypatch) 
                 page_size=page_size,
             )
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
     _inject_sor_sections(monkeypatch, ["车体科"])
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
@@ -1750,7 +1753,7 @@ def test_mapping_discovery_f10_stability_missing_section_column_is_422(client, m
         def query_data_model_page(self, filters, page=1, page_size=50):  # type: ignore[no-untyped-def]
             return SimpleNamespace(rows=list(without_section), total=1, page=1, page_size=50)
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
         "wizardSessionId": "wiz-stability-no-section",
@@ -1802,7 +1805,7 @@ def test_mapping_discovery_f10_stability_aggregate_over_one_page(client, monkeyp
                 page_size=page_size,
             )
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
         "wizardSessionId": "wiz-stability-60",
@@ -1847,7 +1850,7 @@ def test_mapping_discovery_f10_stability_mismatch_structure_reported(client, mon
             drifted = [{"incident": "INC-9000", "projectModel": "F610S"}] + ordered[:49]
             return SimpleNamespace(rows=drifted, total=60, page=page, page_size=page_size)
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
         "wizardSessionId": "wiz-stability-drift",
@@ -1899,7 +1902,7 @@ def test_mapping_discovery_f10_stability_cache_hit_keeps_declared_total(client, 
                 rows=ordered[:page_size], total=62, page=page, page_size=page_size
             )
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
         "wizardSessionId": "wiz-stability-cache-total",
@@ -1960,7 +1963,7 @@ def test_mapping_discovery_async_202_contract_and_isomorphic_result(client, monk
                 total=1,
             )
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
     monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: object())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
@@ -2011,7 +2014,7 @@ def test_mapping_discovery_async_same_params_reattach_and_conflict(client, monke
                 stop_reason="reported_pages", total=1,
             )
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: BlockingTDCClient())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: BlockingTDCClient())
     monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: object())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
@@ -2067,7 +2070,7 @@ def test_mapping_discovery_async_cooperative_cancel(client, monkeypatch) -> None
                 _time.sleep(0.02)
             return SimpleNamespace(rows=[], complete=True, stop_reason="reported_pages", total=0)
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: SlowTDCClient())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: SlowTDCClient())
     monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: object())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
@@ -2108,7 +2111,7 @@ def test_mapping_discovery_password_mode_stays_sync(client, monkeypatch) -> None
                 stop_reason="reported_pages", total=1,
             )
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
     monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: object())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
@@ -2151,7 +2154,7 @@ def test_mapping_discovery_cancel_endpoint_cancels_background_task(client, monke
                 stop_reason="reported_pages", total=1,
             )
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: BlockingTDCClient())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: BlockingTDCClient())
     monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: object())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
@@ -2211,7 +2214,7 @@ def test_mapping_discovery_cookie_mode_stays_sync(client, monkeypatch) -> None: 
                 stop_reason="reported_pages", total=1,
             )
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
     monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: object())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
@@ -2245,7 +2248,7 @@ def test_mapping_discovery_async_artifact_redline_on_async_path(client, monkeypa
                 stop_reason="reported_pages", total=1,
             )
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
     monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: object())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
@@ -2305,7 +2308,7 @@ def test_stale_cancel_token_cannot_cancel_a_later_task(client, monkeypatch) -> N
         def cancel_task(self, task_id):  # type: ignore[no-untyped-def]
             cancelled.append(task_id)
 
-    monkeypatch.setattr(web_app, "_crawl_runner_from_request", lambda: FakeRunner())
+    monkeypatch.setattr(ps_boot, "_crawl_runner_from_request", lambda: FakeRunner())
     web_app._MAPPING_DISCOVERY_TASKS.clear()
     web_app._MAPPING_DISCOVERY_TASKS["VPI-T2-D5"] = {"task_id": "NEW-TASK-B", "params_hash": "NEW-QUERY-B", "tokens": ["disc-token-b"]}
     url = "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery/cancel"
