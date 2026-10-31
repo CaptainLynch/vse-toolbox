@@ -11,6 +11,7 @@ from rich.prompt import Prompt
 
 import main
 import web.app as web_app
+import web.crawler_boot as crawler_boot
 from core.diagnostics import DiagnosticOptions, MarkdownDiagnosticReport
 from services.aras_auth import ArasAuthError
 from services.aras_crawler import (
@@ -221,10 +222,10 @@ def _make_test_client(monkeypatch, tmp_path, allowed_hosts=None):  # type: ignor
     FakeArasClient.fail = None
     FakeArasClient.rows = None
     FakeArasClient.detail_file_name = "detail.xlsx"
-    monkeypatch.setattr(web_app, "ArasCrawlerClient", FakeArasClient)
+    monkeypatch.setattr(crawler_boot, "ArasCrawlerClient", FakeArasClient)
     db_cls = web_app.DatabaseManager
     monkeypatch.setattr(web_app, "DatabaseManager", lambda: db_cls(tmp_path / "web-test.db"))
-    monkeypatch.setattr(web_app, "DIAGNOSTIC_DIR", tmp_path / "diagnostics")
+    monkeypatch.setattr(crawler_boot, "DIAGNOSTIC_DIR", tmp_path / "diagnostics")
     app = web_app.create_app(allowed_hosts=allowed_hosts)
     app.config.update(TESTING=True)
     # 统一域账号登录后，路由测试默认处于「已建立共享域会话」的状态。
@@ -355,7 +356,7 @@ def test_paa_route_can_return_sanitized_request_and_response_xml(client, monkeyp
 def test_web_password_auth_injects_authenticated_session_without_echo(monkeypatch, tmp_path) -> None:
     FakeWebAuthClient.calls = []
     FakeWebAuthClient.fail = None
-    monkeypatch.setattr(web_app, "ArasECMAuthClient", FakeWebAuthClient)
+    monkeypatch.setattr(crawler_boot, "ArasECMAuthClient", FakeWebAuthClient)
     test_client = _make_test_client(monkeypatch, tmp_path, allowed_hosts=["aras.example"])
 
     resp = test_client.post(
@@ -386,7 +387,7 @@ def test_web_password_auth_injects_authenticated_session_without_echo(monkeypatc
 def test_web_password_auth_failure_is_401_and_secret_modes_cannot_mix(monkeypatch, tmp_path) -> None:
     FakeWebAuthClient.calls = []
     FakeWebAuthClient.fail = ArasAuthError("ECM identity rejected credentials", stage="ecm-credentials")
-    monkeypatch.setattr(web_app, "ArasECMAuthClient", FakeWebAuthClient)
+    monkeypatch.setattr(crawler_boot, "ArasECMAuthClient", FakeWebAuthClient)
     test_client = _make_test_client(monkeypatch, tmp_path, allowed_hosts=["aras.example"])
 
     failed = test_client.post(
@@ -426,7 +427,7 @@ def test_web_password_auth_failure_is_401_and_secret_modes_cannot_mix(monkeypatc
 def test_web_password_crawler_failure_saves_detailed_diagnostic(monkeypatch, tmp_path) -> None:
     FakeWebAuthClient.calls = []
     FakeWebAuthClient.fail = None
-    monkeypatch.setattr(web_app, "ArasECMAuthClient", FakeWebAuthClient)
+    monkeypatch.setattr(crawler_boot, "ArasECMAuthClient", FakeWebAuthClient)
 
     def fail_with_invalid_xml(self, filters, page=1, page_size=50, max_records=2000):  # type: ignore[no-untyped-def]
         assert callable(self.diagnostic_hook)
@@ -746,7 +747,7 @@ def test_host_allowlist_injectable_via_app_config(monkeypatch, tmp_path) -> None
     FakeArasClient.calls = []
     FakeArasClient.fail = None
     FakeArasClient.detail_file_name = "detail.xlsx"
-    monkeypatch.setattr(web_app, "ArasCrawlerClient", FakeArasClient)
+    monkeypatch.setattr(crawler_boot, "ArasCrawlerClient", FakeArasClient)
     db_cls = web_app.DatabaseManager
     monkeypatch.setattr(web_app, "DatabaseManager", lambda: db_cls(tmp_path / "web-test.db"))
     app = web_app.create_app()  # 默认仅 ecm.sgmw.com.cn
@@ -2005,15 +2006,15 @@ def test_aras_auth_error_survives_diagnostic_save_failure(monkeypatch, tmp_path)
     """诊断报告 save() 抛 OSError 时，认证错误仍应返 401，不被替换为 500。"""
     FakeWebAuthClient.calls = []
     FakeWebAuthClient.fail = ArasAuthError("ECM identity rejected credentials", stage="ecm-credentials")
-    monkeypatch.setattr(web_app, "ArasECMAuthClient", FakeWebAuthClient)
+    monkeypatch.setattr(crawler_boot, "ArasECMAuthClient", FakeWebAuthClient)
 
-    real_cls = web_app.MarkdownDiagnosticReport
+    real_cls = crawler_boot.MarkdownDiagnosticReport
 
     class FailingSaveReport(real_cls):  # type: ignore[misc, valid-type]
         def save(self, status: str):  # type: ignore[override]
             raise OSError("disk full")
 
-    monkeypatch.setattr(web_app, "MarkdownDiagnosticReport", FailingSaveReport)
+    monkeypatch.setattr(crawler_boot, "MarkdownDiagnosticReport", FailingSaveReport)
     test_client = _make_test_client(monkeypatch, tmp_path, allowed_hosts=["aras.example"])
 
     failed = test_client.post(
@@ -2039,15 +2040,15 @@ def test_aras_auth_error_survives_diagnostic_save_failure(monkeypatch, tmp_path)
 def test_aras_crawler_error_survives_diagnostic_save_failure(monkeypatch, tmp_path) -> None:
     FakeWebAuthClient.calls = []
     FakeWebAuthClient.fail = None
-    monkeypatch.setattr(web_app, "ArasECMAuthClient", FakeWebAuthClient)
+    monkeypatch.setattr(crawler_boot, "ArasECMAuthClient", FakeWebAuthClient)
 
-    real_cls = web_app.MarkdownDiagnosticReport
+    real_cls = crawler_boot.MarkdownDiagnosticReport
 
     class FailingSaveReport(real_cls):  # type: ignore[misc, valid-type]
         def save(self, status: str):  # type: ignore[override]
             raise OSError("disk full")
 
-    monkeypatch.setattr(web_app, "MarkdownDiagnosticReport", FailingSaveReport)
+    monkeypatch.setattr(crawler_boot, "MarkdownDiagnosticReport", FailingSaveReport)
     test_client = _make_test_client(monkeypatch, tmp_path, allowed_hosts=["aras.example"])
     FakeArasClient.fail = ArasCrawlerError("XML response is not valid")
 
@@ -2072,8 +2073,8 @@ def test_aras_crawler_error_survives_diagnostic_save_failure(monkeypatch, tmp_pa
 def test_aras_browser_mode_without_session_or_credentials_is_guided_to_unified_login() -> None:
     """无共享域会话且无任何凭据时，必须 401 引导用户去统一域账号登录。"""
     payload = {"base_url": "http://ecm.sgmw.com.cn/innovatorserver"}
-    with pytest.raises(web_app._ArasRequestError) as excinfo:
-        web_app._build_aras_client_from_payload(payload)
+    with pytest.raises(crawler_boot._ArasRequestError) as excinfo:
+        crawler_boot._build_aras_client_from_payload(payload)
     assert excinfo.value.error_type == "DomainSessionRequired"
     assert excinfo.value.status_code == 401
 
@@ -2085,8 +2086,8 @@ def test_aras_browser_mode_rejects_username_password_credentials() -> None:
         "username": "user",
         "password": "pwd",
     }
-    with pytest.raises(web_app._ArasRequestError) as excinfo:
-        web_app._build_aras_client_from_payload(payload)
+    with pytest.raises(crawler_boot._ArasRequestError) as excinfo:
+        crawler_boot._build_aras_client_from_payload(payload)
     assert excinfo.value.error_type == "AuthenticationModeConflict"
 
 
@@ -2096,7 +2097,7 @@ def test_aras_browser_mode_allows_custom_authorization_header() -> None:
         "base_url": "http://ecm.sgmw.com.cn/innovatorserver",
         "headers": {"Authorization": "Bearer token"},
     }
-    client = web_app._build_aras_client_from_payload(payload)
+    client = crawler_boot._build_aras_client_from_payload(payload)
     # _normalize_aras_app_root 会补尾斜杠。
     assert "innovatorserver" in client.base_url
 
