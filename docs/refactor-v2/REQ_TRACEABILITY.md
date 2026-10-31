@@ -257,6 +257,35 @@
 | W15-01 | ✅ | K1–K6 全落地（见上表 K 行）：删 main.py(1682 行)/plugins/deliverables/feishu_imap/3 个 install_*.ps1/VSE-Toolbox*.spec；requirements 移除 rich/imapclient/selenium；7 个专属测试套件删除、4 个混合套件改造；全量 3514/6/0（净减 123 个 CLI 专属用例） |
 | Wave 9 集成包 | ✅ | `dist/v2-test/updates/vse-app-2.3.14.vsepkg`（261 文件，sha256 `3c1c1176…`，含全部 7 个 boot 模块；main.py 与 plugins/deliverables 已不在包内；未真机安装） |
 
+## Wave 10 交付记录（2026-10-31，W16-03 已提交、待集成验收）
+
+| 任务 | 状态 | 交付物与证据 |
+|---|---|---|
+| W16-03（b781066） | 🔄 已提交、待集成验收 | 本机安全集中接入（契约 C7 全条款）：新建 `web/security.py`（247 行：BootTicketStore 10 秒一次性启动票据 / LocalSessionStore 12 小时会话 Cookie / LocalWebSecurity 统一写保护四件套，fail-closed）；`web/static/host/boot-exchange.js` 前端换票；`vse_boot/supervisor.py` 把票据注入 `?boot=` 与 instance.json bootToken；`webui.py`、`web/app.py` 接线；新增 `tests/test_local_security.py`（339 行）、路由金样 +11 条；删除 `tools/verify_milestone_empty_restore.py`。**代码已入库、集成验收未做**（真机票据换发 / 10 秒一次性票据与 `_show_existing` 复用旧 URL / 12 小时会话过期 / `install_local_security` 无条件安装自动认证测试客户端需显式夹具与原生负向测试），**不得记为已交付** |
+
+## DSH-V2-00 验收基线重建记录（2026-10-31，HEAD 7798997）
+
+> 目的：在隔离工作区重建 b781066（含其上 7798997 纯文档提交）的验收基线，纠正此前进度记录。
+> 只改 `PROJECT_MAP.md`、`memory/CURRENT_STATE.md`、本文件；**未改任何产品代码与测试**，未 commit。
+> 证据日志：`E:\project\vse-toolbox-wt\_logs\DSH-V2-00\`（工作区外）。
+
+| 验证 | 命令 | 退出码 | 实测结果 |
+|---|---|---|---|
+| 全量回归 | `python -B -m pytest -p no:cacheprovider tests -q -rs` | **0** | **3530 passed / 6 skipped / 2 warnings**；首轮 535.99s（`pytest-full.txt`），评审复核复跑 471.64s（`pytest-full-round2.txt`）；同工作区另记录 486.02s / 557.26s，四次计数完全一致 |
+| 评审复核 | 重新核对工作区（HEAD `7798997`） | — | 指纹由 `b84b3415…` 变为 `7d1bfec0…`，经核对为**文档改动**：`git diff --name-only` 仅 3 个 owned_scope 文件，产品/测试文件与 HEAD 逐字节一致，无未跟踪文件；复跑 pytest / flake8 / 地图 `--check` / `git diff --check` 结果与上表一致 |
+| 子集抽样 | 4 套件（local_security / route_contract_snapshot / time_rules / time_display_frontend） | 0 | **44 passed，5.81s**（源证据 7.71s）——非全量 |
+| 地图写入 | `python tools/generate_project_map.py --write` | **0** | 生成 PROJECT_MAP.md（指纹 `580f871a…`→`57f6074c…`，范围文件 259→261，Python 模块 121→122，新增 `web/security.py` 行）；幂等，写入前后 sha256 不变 |
+| 地图校验 | `python tools/generate_project_map.py --check` | **1 → 0** | 提交态（HEAD 内容）exit 1（`Project map is out of date`，本轮复现派发前失败）；写入后 **exit 0**（verified） |
+| 静态检查 | `python -m flake8 web/app.py` | **1** | 6 条：E303×2（429、606）+ F811×4（561、606） |
+| 空白检查 | `git diff --check` | **0** | 干净 |
+
+- **6 个 skip 的真实原因**（全为环境缺失，非缺陷）：playwright 未安装 ×2（`test_plugin_overview_browser.py:24`、`test_plugin_sign_daily_browser.py:18`）、Windows 不允许创建符号链接 ×2（`test_archive_store.py:69/162`）、`time.tzset` 仅 POSIX ×1（`test_sign_daily_mail.py:133`）、symlink unavailable ×1（`test_zcode_worker.py:475`）。
+- **2 条 warning 均在测试侧**：`test_plugin_diagnostics.py:251` SyntaxWarning（`\s` 无效转义）、`test_glossary_terms.py:310` 禁词基线 UserWarning。
+- **数字口径（禁止混写）**：`3530 passed/6 skipped/13 warnings in 437.58s` **只是 W16-03 提交前的历史全量**，不是本轮证据；本轮 passed/skipped 计数与之相同但 warning 为 2（环境相关）。`3514 passed/6 skipped` 是 W15-01（60eaf6b）提交时的历史值，**不是当前全量**。
+- **flake8 F811 历史记录已核实为真**：`web/app.py:561`（`CrawlerRouteDeps` / `register_crawler_routes`）与 `:606`（`ProjectStatusRouteDeps` / `register_project_status_routes`）均为工厂函数内局部 import 遮蔽模块级再导出别名，另有 E303 两条。以真实退出码 1 与真实输出为准，`echo FLAKE-OK` 之类不算通过；本任务不修产品代码，缺陷留后续任务。
+- **构建 WinError5（根因未定）**：`tools/build_v2_test_install.py:126 old.unlink()` 对 `dist/v2-test/updates/vse-app-2.3.10.vsepkg` 抛 `PermissionError WinError 5`，构建 exit 1（`.runtime/w16_03_build.log`）。文件占用与 ACL 拒绝均可能，未验证前不得断言单一根因；**修复归 DSH-V2-44**，本任务不改构建脚本。本轮未复跑构建，证据沿用 W16-03 记录。
+- **未完成项**：W16-03 集成验收（真机票据 / 会话过期 / 重复启动）未做；flake8 F811/E303 未修（越界）；构建 WinError5 未修（归 DSH-V2-44）。
+
 ## 基线证据（2026-10-31，W0）
 
 - 已提交：`b9f309b`（同步三问题+展示口径）、`7f4617f`（日报门禁+孤儿项目）、`d7ba018`（文档基线）。

@@ -4,8 +4,56 @@
 > 更早条目完整保存在 [归档文件](archive/CURRENT_STATE_ARCHIVE_20261023.md)。
 > 恢复状态时**不要**再通读全文；先读本节，再按需查归档。
 
-## 当前前沿（2026-10-31 · Wave 9 完成：app.py 装配化 + W15-01 下线）
+## 当前前沿（2026-10-31 · Wave 10：W16-03 已提交、待集成验收 · DSH-V2-00 基线重建）
 
+- **W16-03（b781066）——已提交、待集成验收（不是已交付）**：本机安全集中接入，C7 全条款落地。
+  `web/security.py` 新建（247 行：BootTicketStore 10 秒一次性启动票据 / LocalSessionStore 12 小时会话
+  Cookie / LocalWebSecurity 统一写保护）；`web/static/host/boot-exchange.js` 前端换票；
+  `vse_boot/supervisor.py` 把票据写进 `?boot=` 与 instance.json bootToken；`webui.py`、`web/app.py` 接线；
+  新增 `tests/test_local_security.py`（339 行）、路由金样 +11 条；删除 `tools/verify_milestone_empty_restore.py`。
+  **集成验收（真机票据、会话过期、重复启动复用旧 URL、`install_local_security` 无条件装自动认证测试
+  客户端）全部未做**——按「已提交、待集成验收」记账，不得写成通过。
+- **DSH-V2-00（本轮）——重建 b781066 验收基线并纠正进度记录**：HEAD `7798997`（b781066 之上的纯文档提交）；
+  开工时 `git log -1 --oneline` = `7798997 docs(dsh-next): 新增 DSH 后续 50 项任务计划基线（README + tasks.json）`，
+  `git status --porcelain` 显示 3 个已修改文件（`PROJECT_MAP.md`、`memory/CURRENT_STATE.md`、
+  `docs/refactor-v2/REQ_TRACEABILITY.md`，均属本任务 owned_scope，来自先前未收尾的部分尝试），无未跟踪文件。
+  以下为本轮实测，日志目录 `E:\project\vse-toolbox-wt\_logs\DSH-V2-00\`（工作区外）：
+  - **全量 pytest**：`python -B -m pytest -p no:cacheprovider tests -q -rs` → **exit 0**，
+    **3530 passed / 6 skipped / 2 warnings**；首轮 535.99s（0:08:55，`pytest-full.txt`），
+    评审复核复跑 471.64s（0:07:51，`pytest-full-round2.txt`）。同一工作区另记录两次全量
+    （486.02s / 557.26s），四次计数完全一致，结果稳定。6 个 skip 全为环境缺失：
+    playwright 未安装 ×2（test_plugin_overview_browser.py:24、test_plugin_sign_daily_browser.py:18）、
+    Windows 不允许建符号链接 ×2（test_archive_store.py:69/162）、`time.tzset` 仅 POSIX ×1
+    （test_sign_daily_mail.py:133）、symlink unavailable ×1（test_zcode_worker.py:475）。
+    2 条 warning 均在测试侧：test_plugin_diagnostics.py:251 SyntaxWarning（`\s` 无效转义）、
+    test_glossary_terms.py:310 禁词基线 UserWarning。
+  - **口径纠正**：`3530 passed/6 skipped/13 warnings in 437.58s` **只是 W16-03 提交前的历史全量**，
+    不是本轮证据；本轮 passed/skipped 计数与之相同但 warning 为 2（环境相关），两者分别记录、不得混写。
+    `3514 passed/6 skipped` 是 W15-01（60eaf6b）提交时的历史数字，**不是当前全量**，不得引用为现状。
+  - **子集预检**（4 个套件，非全量）：test_local_security / test_route_contract_snapshot /
+    test_time_rules / test_time_display_frontend → **44 passed，exit 0**，**5.81s**（本轮实测，
+    `pytest-subset-44.txt`；派发前源证据为 7.71s）。只作抽样，不能代表全量。
+  - **项目地图**：提交态 `PROJECT_MAP.md`（指纹 `580f871a…`、259 文件）已过期——本轮把 HEAD 内容放回
+    工作区复跑 `--check` → **exit 1**（`Project map is out of date`，与派发前记录的失败一致）；
+    本工作区地图已由先前部分尝试重新生成，故本轮 `--write` → **exit 0**（幂等，写入前后 sha256 不变）、
+    `--check` → **exit 0**（`Project map verified`）。漂移仅 W16-03 增量：指纹 `580f871a…`→`57f6074c…`、
+    范围文件 259→261、Python 模块 121→122、新增 `web/security.py` 行。
+  - **flake8**：`python -m flake8 web/app.py` → **exit 1**，6 条：E303×2（429、606）+ **F811×4**
+    （561 的 `CrawlerRouteDeps`/`register_crawler_routes`、606 的 `ProjectStatusRouteDeps`/
+    `register_project_status_routes`，均为工厂函数内局部 import 遮蔽模块级别名再导出）。
+    **历史 F811 记录经实测确认存在**，以真实退出码与输出为准；`echo FLAKE-OK` 之类不算通过。
+    本任务不修产品代码，缺陷留后续任务处理。
+  - **评审阻断复核（round 2）**：评审期工作区指纹由 `b84b3415…` 变为 `7d1bfec0…`，逐项核对确认
+    **仅文档改动、无产品代码变化**：HEAD 仍 `7798997`；`git diff --name-only` 只有 `PROJECT_MAP.md`、
+    `memory/CURRENT_STATE.md`、`docs/refactor-v2/REQ_TRACEABILITY.md`；产品/测试文件与 HEAD 逐字节一致，
+    `git ls-files --others --exclude-standard` 为空。复核复跑：全量 pytest **exit 0，3530/6/2，471.64s**
+    （`pytest-full-round2.txt`）；`flake8 web/app.py` **exit 1**（同 6 条）；`generate_project_map.py --check`
+    **exit 0**；`git diff --check` **exit 0**；CURRENT_STATE ≈15.7 KB（≤40KB）。锚点：
+    `PROJECT_MAP.md` sha256 = `49B44AAB14B17C945E2C1113FCCBE28DC2719E291EF7E8C091E742BCBB8213B3`（复核前后未变）。
+  - **构建 WinError5 证据（根因未定）**：`tools/build_v2_test_install.py:126 old.unlink()` 对
+    `dist/v2-test/updates/vse-app-2.3.10.vsepkg` 抛 `PermissionError WinError 5`，构建 exit 1
+    （日志 `.runtime/w16_03_build.log`）。文件被占用与 ACL 拒绝均可能，**未验证前不得断言单一根因**；
+    修复归 **DSH-V2-44**，本任务不改构建脚本；本轮未复跑构建，证据沿用 W16-03 记录。
 - **W13-09a（09f41a2）——补完 W13-07/08 接线（复核纠偏）**：Wave 8 的 19c09cf/bd6792b 实为向
   crawler_boot **复制副本**，路由原件从未迁出、`register_tdc_routes`/`register_form_catalog_routes`
   零调用者（提交说明与实际不符，全量测试因原件仍在而全绿）。本轮：两 register 真正接线
@@ -30,16 +78,21 @@
   plugins/workbench（新版工作台）、Probe 开发能力（tdc_probe_main/cli + VSE-TDC-Probe.spec，
   Keyboard 中断 130 语义由 tdc_probe_main 承接）。测试删 7 个专属套件、改造 4 个混合套件
   （aras_cli_web 保 42 个 web 测试；credential_safety 保 8 个核心脱敏测试；probe 24 个改走专用入口）。
-  全量 **3514/6/0**（净减 123 个 CLI 专属用例）。
+  全量 **3514/6/0**——**该数字只是 60eaf6b 提交时的历史值，不是当前全量**（净减 123 个 CLI 专属用例）。
 - **门禁**：wave_gate PASS（地图 verified、术语门禁 PASS；打包留 W17-03）；按 RELEASE_MATRIX 追加
   Wave 9 集成包 `dist/v2-test/updates/vse-app-2.3.14.vsepkg`（261 文件，sha256 `3c1c1176…`，
   含全部 7 个 *_boot.py；main.py 与 plugins/deliverables 已不在包内；**未真机安装**）。
-- **提交链**：a24db63（地图指纹+W13-07 教训）→ 09f41a2（W13-09a）→ a85a875（W13-09b）→ 60eaf6b（W15-01）。
+  **口径注意**：wave_gate 的 `package_sign` 恒为 SKIP、`overall_passed` 只判「无 FAIL」、`--focus` 会隐式
+  skip_full，所以 **PASS ≠ 发布通过**；门禁裁定归 W17-03。
+- **提交链**：a24db63（地图指纹+W13-07 教训）→ 09f41a2（W13-09a）→ a85a875（W13-09b）→ 60eaf6b（W15-01）
+  → 261ed6e（Wave 9 记忆）→ 7e16687（RECOVERY_NOTES 标记修正）→ **b781066（W16-03）** → 7798997（DSH 计划文档）。
   无关未跟踪文件（.dsh/、pelican-*.html、dsh-remote-bridge.mjs、VSE-WebUI-compact.spec、
   .claude/launch.json、docs/dsh-remote-control/）保留未提交——**禁止 git add -A**，按路径显式加。
-- **下一步 Wave 10（串行独占）**：**W16-03 安全集中接入**（lead，high/security）——boot 交换票据、
-  本机 Cookie、统一写保护接入点（web/security.py 新建 + vse_boot/ 启动票据），契约 C7 全部条款、
-  fail-closed 验证，整包发布。之后 Wave 11（W17-03 门禁裁定 + W8-02 剩余页 + W18-02 索引优化）。
+  本隔离工作区（`DSH-V2-00`）开工与收尾时均无未跟踪文件。
+- **下一步（串行独占）**：W16-03 **已完成提交 b781066、待集成验收**——验收项：真机 `?boot=` 票据换发、
+  10 秒一次性票据与 `_show_existing` 复用旧 URL、12 小时会话过期、`install_local_security` 无条件安装
+  自动认证测试客户端需显式夹具与原生负向测试；验收前不得发布整包。之后 Wave 11（W17-03 门禁裁定 +
+  W8-02 剩余页 + W18-02 索引优化）。
 - **真机验证累积至 W17-02**：2.3.5–2.3.14 全部未真机安装；W1-03/W20-02 需真实环境与人员。
 
 ## Wave 梗概（W2–W8，2026-10-31，详见 git log 与 REQ_TRACEABILITY.md）
