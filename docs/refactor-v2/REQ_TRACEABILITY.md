@@ -235,6 +235,19 @@
 | W8-02b | ✅ | 四页 ErrorCard/Skeleton 接入（源级断言版门禁，杜绝 hooks 直渲染崩溃重演）；23 测试 |
 | Wave 7 集成包 | ✅ | `dist/v2-test/updates/vse-app-2.3.12.vsepkg`（267 文件，sha256 `9e6f2f48…`，验签通过，未真机安装） |
 
+
+## Wave 8 交付记录（2026-10-31）
+
+| 任务 | 状态 | 交付物与证据 |
+|---|---|---|
+| W13-07（重做） | ✅ | 三清单冻结法成功：52 成员 + deps=[app] + 12 导入行 + 11 路由段一次性发射；import 块整合至文件顶部修复模块级 NameError；TDC 聚焦 404 passed；全量 3637/6/0 |
+| W13-08 | ✅ | deliverable-forms(3) + deliverables/catalog(1) 迁入 crawler_boot（deps=[]）；host(2) 保留在宿主（_install_plugin_host） |
+| W10-02 | ✅ | 全站时间 zh-CN 门禁 `tests/test_time_display_frontend.py` + 修复 4 处 locale-default |
+| W8-02b | ✅ | 四页 ErrorCard/Skeleton 源级断言门禁（23 测试） |
+| Wave 8 集成包 | ✅ | `dist/v2-test/updates/vse-app-2.3.13.vsepkg`（267 文件，sha256 `28a852bd…`，验签通过，未真机安装） |
+
+**路由分布**：web/app.py 仅剩 project-status(25) + 通用路由（favicon/overview/version 等），TDC/Aras/Excel/Tasks/Archive/Settings/Host/Deliverables 全部模块化。
+
 ## 基线证据（2026-10-31，W0）
 
 - 已提交：`b9f309b`（同步三问题+展示口径）、`7f4617f`（日报门禁+孤儿项目）、`d7ba018`（文档基线）。

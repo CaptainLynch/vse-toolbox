@@ -98,6 +98,21 @@
   试用快照按项目存在 `state/db-snapshots/<id>/`，`trialDatabase` 记录恢复目标。只装 app 包而不换启动器时，
   `vse_boot.projects` 不存在 → 工作台按单项目运行（切换器隐藏）。
 
+## 2026-10-31 Wave 8 集成完成（W13-07 重做成功 + W13-08 + W10-02 + W8-02b）
+
+- **W13-07 三清单法重做成功**：52 模块成员 + deps=[app] + 12 导入行 + 11 路由段，一次性发射后
+  路由快照零差异、TDC 聚焦 404 passed、全量 3637/6/0。关键改进：create_app 局部符号闭包排除在
+  迁移集外（deps 只注入 app），导入行跟着成员走。19c09cf + bd6792b。
+- **import 块整合**：双 crawler_boot import 块合并至文件顶部（42 名字），修复模块级使用
+  先于 import 的 NameError。bd6792b。
+- **W13-08 ✅**：deliverable-forms(3) + deliverables/catalog(1) 迁入 crawler_boot（deps=[]）。
+- **W10-02 ✅（lead 收敛）**：全站仅 4 处 locale-default 时间展示，门禁 tests/test_time_display_frontend.py。
+- **W8-02b ✅**：四页 ErrorCard/Skeleton 源级断言门禁 23 测试。
+- **门禁**：全量 PASS、地图 verified、术语/浏览器全绿；包 2.3.13（267 文件 sha256 28a852bd…）验签。
+- **路由分布**：app.py 仅剩 project-status(25) + 通用路由，其余全部模块化。
+- **下一步 Wave 9**：W13-09 project-status 最后迁移（25 路由）+ W15-01 下线 + W16-03 安全集中接入。
+  真机验证累积至 W17-02。
+
 ## 2026-10-31 Wave 7 集成完成（W8-02b/W10-02；W13-07 回退重规划）
 
 - **W13-07 回退**：手工迁移 52 成员闭包含 create_app 局部符号依赖，6+ 层缺名不收敛 → stash 回退全绿态
