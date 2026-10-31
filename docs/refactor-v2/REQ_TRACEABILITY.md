@@ -117,12 +117,12 @@
 
 | ID | 功能 | 状态 | 波次/任务 | 备注 |
 |---|---|---|---|---|
-| K1 | CLI 下线（含周报 PPT/内网抓取/selenium/rich/imapclient） | 🔄 | W15-01 | |
+| K1 | CLI 下线（含周报 PPT/内网抓取/selenium/rich/imapclient） | ✅ | W15-01 | main.py 与 VSE-Toolbox*.spec 已删，依赖已移除 |
 | K2 | 原始查询页收专家 | ✅/🔄 | 基线 / W15-01 | |
-| K3 | 旧交付物工作台下线 | 🔄 | W15-01 | **保留新版 workbench** |
-| K4 | TDC Probe 生产产物下线 | 🔄 | W15-01 | 开发能力保留 |
-| K5 | 计划任务脚本下线 | 🔄 | W15-01 | 不重新引入 Windows 计划任务 |
-| K6 | 飞书功能下线 | 〰️ | 基线 / W15-01 | 2.2.0 已去页面链接；代码路径与依赖随 W15-01 |
+| K3 | 旧交付物工作台下线 | ✅ | W15-01 | **保留新版 workbench**；legacy #deliverables 改指 #p/project-overview/details |
+| K4 | TDC Probe 生产产物下线 | ✅ | W15-01 | 开发能力保留（tdc_probe_main/cli + VSE-TDC-Probe.spec）；库内无生产产物 |
+| K5 | 计划任务脚本下线 | ✅ | W15-01 | 3 个 install_*_task.ps1 已删 |
+| K6 | 飞书功能下线 | ✅ | 基线 / W15-01 | feishu_imap.py 已删；feishu_tasks 表与 TDC feishukey 保留 |
 
 ## U. 体验层
 
@@ -240,13 +240,22 @@
 
 | 任务 | 状态 | 交付物与证据 |
 |---|---|---|
-| W13-07（重做） | ✅ | 三清单冻结法成功：52 成员 + deps=[app] + 12 导入行 + 11 路由段一次性发射；import 块整合至文件顶部修复模块级 NameError；TDC 聚焦 404 passed；全量 3637/6/0 |
-| W13-08 | ✅ | deliverable-forms(3) + deliverables/catalog(1) 迁入 crawler_boot（deps=[]）；host(2) 保留在宿主（_install_plugin_host） |
+| W13-07（重做） | ⚠️→✅ | 复核纠偏：19c09cf/bd6792b 实为向 crawler_boot 复制副本，路由原件未迁出、register_* 未接线（提交说明与实际不符）。副本于 Wave 9 W13-09a 真正接线并单源化 |
+| W13-08 | ⚠️→✅ | 同上纠偏：表单/目录路由原件当时仍在 app.py；真正迁居+接线于 W13-09a 完成 |
 | W10-02 | ✅ | 全站时间 zh-CN 门禁 `tests/test_time_display_frontend.py` + 修复 4 处 locale-default |
 | W8-02b | ✅ | 四页 ErrorCard/Skeleton 源级断言门禁（23 测试） |
 | Wave 8 集成包 | ✅ | `dist/v2-test/updates/vse-app-2.3.13.vsepkg`（267 文件，sha256 `28a852bd…`，验签通过，未真机安装） |
 
 **路由分布**：web/app.py 仅剩 project-status(25) + 通用路由（favicon/overview/version 等），TDC/Aras/Excel/Tasks/Archive/Settings/Host/Deliverables 全部模块化。
+
+## Wave 9 交付记录（2026-10-31）
+
+| 任务 | 状态 | 交付物与证据 |
+|---|---|---|
+| W13-09a | ✅ | 补完 W13-07/08 接线：register_tdc_routes + register_form_catalog_routes 真正迁居并接线（CrawlerRouteDeps 增 deliverable_form_service/section_rollup_store；逐字回迁 2 闭包）；补 4 处缺名（_DEFAULT_TDC_ALLOWED_HOSTS 等）；app.py 删 57 个重复顶层定义（1580 行）转 51 名别名再导出；7 处补丁目标改随路由现属模块；全量 3637/6/0 |
+| W13-09b | ✅ | 三清单冻结法：43 成员 + 3 闭包 + 27 条 /api/project-status* 路由逐字迁入 web/project_status_boot.py（2967 行），ProjectStatusRouteDeps 注入 8 服务；app.py 5330→736 行装配化，flake8 F401/F821 清零；194 个失消费导入修剪；路由金样零差异；全量 3637/6/0 |
+| W15-01 | ✅ | K1–K6 全落地（见上表 K 行）：删 main.py(1682 行)/plugins/deliverables/feishu_imap/3 个 install_*.ps1/VSE-Toolbox*.spec；requirements 移除 rich/imapclient/selenium；7 个专属测试套件删除、4 个混合套件改造；全量 3514/6/0（净减 123 个 CLI 专属用例） |
+| Wave 9 集成包 | ✅ | `dist/v2-test/updates/vse-app-2.3.14.vsepkg`（261 文件，sha256 `3c1c1176…`，含全部 7 个 boot 模块；main.py 与 plugins/deliverables 已不在包内；未真机安装） |
 
 ## 基线证据（2026-10-31，W0）
 

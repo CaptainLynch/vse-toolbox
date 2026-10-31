@@ -1,5 +1,39 @@
 # Recovery Notes
 
+## 2026-10-31 — Wave 8/9「迁移」复核纠偏：副本≠迁移（W13-09a 的核心发现）
+
+- **现象**：19c09cf/bd6792b 提交说明声称「TDC/表单目录路由迁入 crawler_boot（三清单冻结法重做）」，
+  实际只向 crawler_boot **追加了 1435+304 行副本**——`register_tdc_routes`/`register_form_catalog_routes`
+  **零调用者**，app.py 原件从未删除。全量 3637 全绿是因为原件仍在服务（golden 快照对比的是路径，
+  不比对在哪注册）。
+- **为什么当时没暴露**：① 副本是死代码，AST 相似、import 成功、golden 零差异全部「通过」；
+  ② 闭包审计只覆盖了 register 子树自由名，没覆盖**模块级函数**的自由名——副本缺
+  `_DEFAULT_TDC_ALLOWED_HOSTS` 等 4 个名字，只在真实调用路径执行到才 NameError。
+- **AST 相同 ≠ 环境相同**：同一份 `_build_tdc_client_from_payload` 在 app.py 里能解析
+  `_DEFAULT_TDC_ALLOWED_HOSTS`（app.py 模块级有定义），复制到 crawler_boot 后自由名环境变了。
+  逐字复制必须连同**全部自由名的定义**一起走，或改成从单源模块导入。
+- **正确姿势（W13-09a 落地）**：① `grep register_* 调用者` 验证接线；② 全模块自由名审计
+  （对每个顶层 def 收 Load 名，减局部 Store/参数/内建/模块符号）；③ 单源化：定义只留一份
+  （boot 模块），旧宿主用 `from ... import` 别名再导出（tests 的 `web_app.X` 属性访问靠它）。
+
+## 2026-10-31 — 补丁目标对齐的三种漏网形态（W13-09b）
+
+- 单行正则 `setattr\(web_app, "SYM"` 只覆盖单行形态；**多行 setattr（`setattr(
+ web_app,`）**、
+  **字符串形式** `setattr("web.app.SYM")`（pytest 会校验属性存在，漏改直接 setup 报错）、
+  **参数化动态目标** `setattr(web_app, builder_name, ...)` 三种都要扫。tripwire：
+  `monkeypatch.setattr` 目标模块 = 被测路由现属模块；消费调用点在 create_app 体内的仍指 web_app。
+- 别名再导出只保住「原地变更/直接调用」类测试（dict.clear()/["k"]=v/getattr 读）；凡
+  **patch-then-exercise**（打补丁后跑路由）必须把补丁打到路由所在的模块。
+
+## 2026-10-31 — git add -A 差点带入无关用户文件
+
+- 仓库根有用户自己的未跟踪文件（.dsh/、pelican-*.html、dsh-remote-bridge.mjs、
+  VSE-WebUI-compact.spec、.claude/launch.json、docs/dsh-remote-control/）。`git add -A` 会把它们
+  全部暂存进提交。**规则：只按路径显式 `git add <path>`；提交前 `git status --porcelain` 逐行核对
+  staged 清单**。已发生一次，soft reset + 按路径重加后重交（60eaf6b）。
+
+
 ## 2026-10-31 — W13-07 手工迁移失败与止损（TDC 路由迁移回退全程）
 
 - **经过**：用 W13-06 的"闭包脚本+分段提取"迁移 11 条 /api/tdc 路由 + 52 个成员，删除 1254 行后
