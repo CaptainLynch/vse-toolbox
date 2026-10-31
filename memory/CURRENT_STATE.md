@@ -98,6 +98,21 @@
   试用快照按项目存在 `state/db-snapshots/<id>/`，`trialDatabase` 记录恢复目标。只装 app 包而不换启动器时，
   `vse_boot.projects` 不存在 → 工作台按单项目运行（切换器隐藏）。
 
+## 2026-10-31 Wave 7 集成完成（W8-02b/W10-02；W13-07 回退重规划）
+
+- **W13-07 回退**：手工迁移 52 成员闭包含 create_app 局部符号依赖，6+ 层缺名不收敛 → stash 回退全绿态
+  （3612/6/0 恢复确认）。重做前置（RECOVERY_NOTES 2026-10-31 W13-07 条）：先静态提取 TDC 路由段全部
+  自由名并分类三清单，冻结后再动手。这是本轮唯一未完成的迁移域。
+- **W8-02b ✅**：旧页统一改用源级断言门禁（不渲染 hooks 组件）——23 测试；双重转义（
+ 在模板字面量
+  里被二次处理）、自引用断言（函数名含被禁词）两处夹具修复。
+- **W10-02 ✅（lead 收敛）**：实查全站仅 4 处 locale-default 时间展示（catalog.js×3、query.js×1），
+  直接改 zh-CN+hour12:false；门禁 tests/test_time_display_frontend.py（locale-default 禁止 +
+  toISOString 白名单钉内部用法）。worker 两轮超时/权限后 lead 收敛——4 行修复不需要 worker。
+- **门禁**：全量 PASS、地图 verified、术语/浏览器全绿；包 2.3.12（267 文件 sha256 9e6f2f48…）验签。
+- **下一步**：Wave 8（W13-08 剩余路由迁移——含 TDC 重做；W18-02 索引优化；W8-03 收口）。
+  真机验证累积至 W17-02。
+
 ## 2026-10-31 Wave 6 集成（W13-06/W9-01/W6-02 完成；W8-02 与 1 个测试待续）
 
 - **W13-06（05258ec）**：crawler_boot.py 承载 9 条 /api/aras 路由 + 40 个共享助手（闭包脚本算依赖）；
