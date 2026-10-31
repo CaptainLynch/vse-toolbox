@@ -3,6 +3,7 @@
 // route. Hashes from before the plugin refactor are redirected through
 // legacyRedirect(); anything else falls back to the first nav entry.
 import { api, pluginApi } from "./api.js";
+import { runBootExchange } from "./boot-exchange.js";
 import { mountChrome } from "./chrome/index.js";
 import { sortNav } from "./chrome/TopBar.js";
 import { legacyRedirect } from "./legacy-routes.js";
@@ -127,4 +128,7 @@ export async function startShell(mount = document.getElementById("plugin-host"))
   return manifest;
 }
 
-if (typeof document !== "undefined") startShell();
+if (typeof document !== "undefined") {
+  // C7：先用地址栏票据换会话 Cookie（并清理地址栏），再加载外壳。
+  runBootExchange().finally(() => startShell());
+}

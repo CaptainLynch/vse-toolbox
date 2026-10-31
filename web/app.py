@@ -355,6 +355,7 @@ def create_app(
     archive_store: ArchiveStore | None = None,
     plugin_dirs: Sequence[Path] | None = None,
     plugin_only: Sequence[str] | None = None,
+    boot_token: str | None = None,
 ) -> Flask:
     """Flask 应用工厂。
 
@@ -386,6 +387,12 @@ def create_app(
     app.config["APP_VERSION"] = version_info.get("displayVersion", "开发工作区")
     app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
     app.before_request(_enforce_local_web_access)
+
+    # C7 本机安全（W16-03）：启动交换票据 + 会话 Cookie + 写操作四件套。
+    # 注册顺序在 loopback/Host 守卫之后：读请求行为不变，写请求需会话+Origin。
+    from web.security import install_local_security
+
+    install_local_security(app, boot_token=boot_token)
 
     @app.after_request
     def _plugin_static_revalidate(response):  # type: ignore[no-untyped-def]

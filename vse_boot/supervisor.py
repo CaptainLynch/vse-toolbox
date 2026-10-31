@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import shutil
 import socket
 import subprocess
@@ -378,6 +379,11 @@ class Supervisor:
             if trial:
                 self._snapshot_before_trial(state, version)
             self.log(f"启动 VSE Toolbox {version}{'（试用）' if trial else ''}")
+            # C7（W16-03）：启动器生成短时单次启动票据，经环境变量传给服务进程、
+            # 经 ?boot= 查询串传给页面；服务端校验单次+TTL 后换会话 Cookie。
+            # 经 os.environ 传递（不进命令行，避免本机进程列表可见）。
+            self.boot_token = secrets.token_urlsafe(32)
+            os.environ["VSE_BOOT_TOKEN"] = self.boot_token
             child = self.spawn(app_dir, port, self.layout)
             healthy, reason = self._wait_healthy(child, port)
             if healthy:
@@ -419,9 +425,13 @@ class Supervisor:
         return False, f"{int(self.health_timeout)} 秒内没有完成启动"
 
     def _serve(self, child: ChildProcess, port: int, version: str, *, open_window: bool) -> tuple[str, int]:
-        url = f"http://127.0.0.1:{port}/"
+        boot_token = getattr(self, "boot_token", None) or ""
+        # 票据附在 URL 供页面交换；instance.json 同步记录（单次+10s TTL，
+        # 留存本身无价值），供重启后 _show_existing 重开窗口与本机自动化取用。
+        url = f"http://127.0.0.1:{port}/?boot={boot_token}" if boot_token else f"http://127.0.0.1:{port}/"
         self.url, self.version = url, version
-        info = {"url": url, "port": port, "version": version, "pid": child.pid, "supervisorPid": os.getpid()}
+        info = {"url": url, "port": port, "version": version, "pid": child.pid,
+                "supervisorPid": os.getpid(), "bootToken": boot_token}
         self.layout.instance_file.write_text(json.dumps(info), encoding="utf-8")
         if open_window:
             self.show(url, self.layout)

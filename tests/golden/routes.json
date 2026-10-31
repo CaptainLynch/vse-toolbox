@@ -1419,6 +1419,17 @@
     "download": "none"
   },
   {
+    "rule": "/api/security/boot-exchange",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_security_boot_exchange",
+    "view_function": "api_security_boot_exchange",
+    "is_write": true,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
     "rule": "/api/settings",
     "methods": [
       "GET"

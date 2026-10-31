@@ -108,7 +108,7 @@ def test_first_install_boots_and_opens_window(layout: InstallLayout) -> None:
     harness = Harness(layout, {"2.0.0": True})
     assert harness.supervisor().run() == 0
     assert harness.spawned == ["2.0.0"]
-    assert harness.shown == ["http://127.0.0.1:50123/"]
+    assert harness.shown and harness.shown[0].startswith("http://127.0.0.1:50123/?boot=")
     assert not layout.instance_file.exists()  # 退出时清理
 
 
@@ -214,7 +214,7 @@ def test_restart_request_installs_staged_version_and_keeps_port(layout: InstallL
     harness.on_poll = during_serve
     assert supervisor.run() == 0
     assert harness.spawned == ["2.0.0", "2.0.1"]
-    assert harness.shown == ["http://127.0.0.1:50123/"]  # 重启沿用端口，不再弹第二个窗口
+    assert harness.shown and harness.shown[0].startswith("http://127.0.0.1:50123/?boot=")  # 重启沿用端口，不再弹第二个窗口
     assert BootState(layout).app["current"] == "2.0.1"
     assert not layout.restart_request.exists() and not layout.quit_request.exists()
 

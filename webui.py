@@ -154,12 +154,16 @@ def main(argv: list[str] | None = None) -> int:
     from web.app import create_app
 
     plugin_only = [item.strip() for item in (args.only or "").split(",") if item.strip()] or None
-    # 已批准的 Excel 根目录来自 VSE_EXCEL_ROOTS_JSON。此前只有 `python web/app.py`
-    # 的 __main__ 读取它，经 webui.py（打包入口）启动时 Excel 任务接口恒为「未配置」
-    # ——单 exe 的 Excel 功能因此不可用。配置非法时 fail-closed 抛出，不静默降级。
+    # C7（W16-03）：启动票据由启动器（vse_boot supervisor）经环境变量传入；
+    # 直接运行 webui.py 的开发态没有启动器，这里自行生成一枚并附在打开的
+    # URL 上。两种来源都只是「签发」，校验仍在 web.security（单次+≤10s）。
+    import secrets as _secrets
+
+    boot_token = os.environ.get("VSE_BOOT_TOKEN") or _secrets.token_urlsafe(32)
     app = create_app(
         plugin_only=plugin_only,
         excel_roots=load_production_excel_roots(),
+        boot_token=boot_token,
     )
     if args.diagnostics:
         try:
@@ -179,7 +183,7 @@ def main(argv: list[str] | None = None) -> int:
         if browser_host:
             threading.Thread(
                 target=_open_browser_when_ready,
-                args=(url,),
+                args=(f"{url}?boot={boot_token}",),
                 name="webui-browser-probe",
                 daemon=True,
             ).start()

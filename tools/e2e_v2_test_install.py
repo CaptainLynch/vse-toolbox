@@ -69,15 +69,52 @@ def start(timeout: float = 120.0) -> tuple[subprocess.Popen, dict]:
     raise RuntimeError("launcher did not become ready")
 
 
+import http.cookiejar
+
+_OPENER = None
+
+
+def _opener():
+    """带 Cookie 罐的 opener（C7：写接口需要启动交换票据换来的会话 Cookie）。"""
+    global _OPENER
+    if _OPENER is None:
+        _OPENER = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())
+        )
+    return _OPENER
+
+
+def boot_exchange(instance: dict) -> None:
+    """用启动票据换本机会话（W16-03）。票据单次+≤10s，须在启动后尽快交换。"""
+    token = instance.get("bootToken")
+    if not token:
+        raise RuntimeError("instance.json 缺少 bootToken——启动器版本过旧或启动失败")
+    base = instance["url"].split("?")[0]
+    req = urllib.request.Request(
+        base + "api/security/boot-exchange",
+        data=json.dumps({"token": token}).encode("utf-8"),
+        method="POST",
+        headers={"Content-Type": "application/json", "Accept": "application/json",
+                 "Origin": base.rstrip("/")},
+    )
+    with _opener().open(req, timeout=10) as response:
+        if response.status != 200:
+            raise RuntimeError(f"boot-exchange 失败：HTTP {response.status}")
+
+
 def get(url: str) -> dict:
-    with urllib.request.urlopen(url, timeout=10) as response:
+    with _opener().open(url, timeout=10) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
 def post(url: str, body: dict | None = None) -> dict:
     data = json.dumps(body or {}).encode("utf-8")
-    req = urllib.request.Request(url, data=data, method="POST", headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=30) as response:
+    origin = url.split("/api/")[0] if "/api/" in url else url.rstrip("/")
+    req = urllib.request.Request(url, data=data, method="POST", headers={
+        "Content-Type": "application/json", "Accept": "application/json",
+        "Origin": origin,
+    })
+    with _opener().open(req, timeout=30) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -131,6 +168,7 @@ def main() -> int:
 
     # 1. 首次安装
     proc, info = start()
+    boot_exchange(info)
     version = served_version(info)
     check("首次安装并启动 2.3.0", "2.3.0" in version, version)
     home = urllib.request.urlopen(info["url"], timeout=10).status
@@ -143,6 +181,7 @@ def main() -> int:
     old_pid = int(info["pid"])
     post(info["url"] + "api/p/workbench/projects", {"name": "", "vehicle": "F720", "departments": ["车身科"]})
     info = wait_for_child(old_pid)
+    boot_exchange(info)
     projects = get(info["url"] + "api/p/workbench/projects")["data"]
     check("新建项目后自动切换并重启到新项目", projects["active"] == "p2" and [p["name"] for p in projects["projects"]] == ["默认项目", "F720"],
           json.dumps(projects, ensure_ascii=False)[:200])
@@ -150,6 +189,7 @@ def main() -> int:
     old_pid = int(info["pid"])
     post(info["url"] + "api/p/workbench/projects/main/switch")
     info = wait_for_child(old_pid)
+    boot_exchange(info)
     check("切回主项目", get(info["url"] + "api/p/workbench/projects")["data"]["active"] == "main")
 
     # 2. 第二次启动：不再起第二份
@@ -169,6 +209,7 @@ def main() -> int:
     check("页面内安装并重启后变成 2.3.1，端口不变", restarted["port"] == info["port"] and state["current"] == "2.3.1" and state["previous"] == "2.3.0")
     received.unlink()
     info = restarted
+    boot_exchange(info)
 
     # 3b. 用命令（托盘「退出」走同一条路）正常退出
     old_child = int(info["pid"])
@@ -183,6 +224,7 @@ def main() -> int:
     # 4. 坏更新 2.3.2：自动回滚
     print(cli("stage", str(OUT / "updates" / "vse-app-2.3.2.vsepkg")).strip())
     proc, info = start(timeout=180)
+    boot_exchange(info)
     version = served_version(info)
     boot = status()
     kinds = [e["kind"] for e in boot["events"][:3]]

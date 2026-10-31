@@ -14,6 +14,7 @@ export class ApiError extends Error {
 }
 
 const STATUS_MESSAGES = {
+  401: "本地会话已失效，请关闭窗口后重新打开 VSE Toolbox",
   403: "该操作只允许在本机浏览器中执行",
   404: "接口不存在，插件可能未加载",
   500: "服务内部错误",
