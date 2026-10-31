@@ -7,6 +7,7 @@ from zipfile import ZipFile
 import pytest
 
 import web.app as web_app
+import web.crawler_boot as crawler_boot
 from services.tdc_auth import TDCAuthError, TDCLoginResult
 from services.tdc_crawler import TDCCrawlerError, TDCExportResult, TDCPagedResult
 
@@ -332,7 +333,7 @@ def client(monkeypatch, tmp_path):  # type: ignore[no-untyped-def]
     monkeypatch.setattr(web_app, "TDCPasswordAuthClient", FakeTDCWebAuthClient)
     db_cls = web_app.DatabaseManager
     monkeypatch.setattr(web_app, "DatabaseManager", lambda: db_cls(tmp_path / "deliverables-test.db"))
-    monkeypatch.setattr(web_app, "DIAGNOSTIC_DIR", tmp_path / "diagnostics")
+    monkeypatch.setattr(crawler_boot, "DIAGNOSTIC_DIR", tmp_path / "diagnostics")
     app = web_app.create_app(tdc_allowed_hosts=["tdc.example"])
     app.config.update(TESTING=True)
     # 后台异步路径需要已建立的统一域会话

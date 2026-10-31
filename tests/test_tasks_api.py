@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 import web.app as web_app
+import web.crawler_boot as crawler_boot
 from core.db_manager import DatabaseManager
 from core.excel_tasks import ApprovedExcelRoots, ExcelTaskRepository
 from core.ewo_export_jobs import EWOExportJobs
@@ -456,7 +457,7 @@ def test_async_crawl_task_cooperative_cancellation(test_env, monkeypatch) -> Non
                 time.sleep(0.02)
             raise AssertionError("crawl loop should have been cancelled")
 
-    monkeypatch.setattr(web_app, "ArasCrawlerClient", LoopingCrawler)
+    monkeypatch.setattr(crawler_boot, "ArasCrawlerClient", LoopingCrawler)
 
     resp = client.post("/api/aras/paa/crawl-all", json={"base_url": "http://aras.example", "filters": {}})
     assert resp.status_code == 202
@@ -511,7 +512,7 @@ def test_async_crawl_task_success_writes_result_artifact(test_env, monkeypatch) 
                 raw_xml="<xml/>",
             )
 
-    monkeypatch.setattr(web_app, "ArasCrawlerClient", InstantCrawler)
+    monkeypatch.setattr(crawler_boot, "ArasCrawlerClient", InstantCrawler)
 
     resp = client.post("/api/aras/paa/crawl-all", json={"base_url": "http://aras.example", "filters": {}})
     assert resp.status_code == 202

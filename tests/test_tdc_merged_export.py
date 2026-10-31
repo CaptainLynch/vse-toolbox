@@ -22,6 +22,7 @@ from zipfile import ZipFile
 import pytest
 
 import web.app as web_app
+import web.crawler_boot as crawler_boot
 from core.db_manager import DatabaseManager
 from core.report_contracts import report_contracts
 
@@ -187,7 +188,7 @@ def _labels() -> list[str]:
 
 def _run(client, document_no: str, monkeypatch, *, file_name=None, **fake_kwargs):  # type: ignore[no-untyped-def]
     monkeypatch.setattr(web_app, "TDCCrawlerClient", _fake_client(**fake_kwargs))
-    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: object())
     extra = {} if file_name is None else {"file_name": file_name}
     response = _post(client, document_no, **extra)
     assert response.status_code == 202, response.get_json()
@@ -410,7 +411,7 @@ def test_merged_export_rejects_password_mode(env) -> None:  # type: ignore[no-un
 
 def test_merged_export_rejects_base_url_outside_allowlist(env, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     # 会话门在 base_url 校验之前（与官方导出同序）：先放行会话，再验 allowlist。
-    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: object())
     response = _post_raw(env["client"], _payload(base_url="https://evil.example"))
 
     assert response.status_code in (400, 403)
@@ -427,7 +428,7 @@ def test_merged_export_rejects_unsafe_file_name_before_submitting_task(env) -> N
 
 def test_merged_export_still_rejects_unsafe_csv_file_name(env, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setattr(web_app, "TDCCrawlerClient", _fake_client())
-    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: object())
 
     response = _post(env["client"], "3D-00001018", file_name="..\\evil.csv")
 
@@ -444,7 +445,7 @@ def test_merged_export_uses_the_same_query_construction_as_preview(env, monkeypa
         "TDCCrawlerClient",
         _fake_client(crawl_calls=crawl_calls, export_calls=export_calls),
     )
-    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: object())
     filters_in = {"project_model": "Ar-N", "status": "2"}
 
     response = _post_raw(env["client"], _payload(filters=filters_in))

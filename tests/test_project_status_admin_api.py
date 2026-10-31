@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import web.app as web_app
+import web.crawler_boot as crawler_boot
 from core.db_manager import DatabaseManager
 from core.project_status_contracts import (
     PROJECT_STATUS_INVALID_MAPPING_READ_ONLY_REASON,
@@ -531,7 +532,7 @@ def test_candidate_preview_does_not_invoke_external_factories(
 
     mock_aras = MagicMock()
     mock_tdc = MagicMock()
-    monkeypatch.setattr(web_app, "_build_aras_client_from_payload", mock_aras)
+    monkeypatch.setattr(crawler_boot, "_build_aras_client_from_payload", mock_aras)
     monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", mock_tdc)
 
     resp = client.get("/api/project-status/deliverables/VPI-T2-D5/candidate-preview")
@@ -1314,7 +1315,7 @@ def test_mapping_discovery_post_canonicalizes_sor_and_ewo_filters(
         "tdc", sor_rule
     )
 
-    monkeypatch.setattr(web_app, "_build_aras_client_from_payload", lambda *args: FakeEWO())
+    monkeypatch.setattr(crawler_boot, "_build_aras_client_from_payload", lambda *args: FakeEWO())
     ewo_response = client.post(
         "/api/project-status/deliverables/VPI-T2-D3/mapping-discovery",
         json={

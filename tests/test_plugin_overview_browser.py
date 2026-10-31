@@ -27,7 +27,8 @@ playwright_sync = pytest.importorskip("playwright.sync_api")
 # route handlers are discarded at teardown and would otherwise surface as unraisable warnings.
 pytestmark = pytest.mark.filterwarnings("ignore::pytest.PytestUnraisableExceptionWarning")
 
-import web.app as web_app  # noqa: E402
+import web.app as web_app
+import web.crawler_boot as crawler_boot  # noqa: E402
 from core.db_manager import DatabaseManager  # noqa: E402
 from services.deliverable_form_analysis import build_form_snapshot, form_definition  # noqa: E402
 from werkzeug.serving import make_server  # noqa: E402
@@ -902,7 +903,7 @@ def test_wizard_end_to_end_against_real_backend_task_contract(session: Session, 
             return SimpleNamespace(rows=ordered[:page_size], total=12, page=page, page_size=page_size)
 
     monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda payload, hosts: FakeTDCClient())
-    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: object())
     web_app._MAPPING_DISCOVERY_TASKS.clear()
     page = session.page
     page.route("**/api/settings", lambda r: _json_response(r, {"ok": True, "data": {"credentialVaultConfigured": True}})
@@ -1050,8 +1051,8 @@ def test_ncr_wizard_end_to_end_saves_section_scope_declaration(session: Session,
         return list(rows)
 
     monkeypatch.setattr(ArasProjectStatusConnector, "_collect_ncr_rows", classmethod(fake_collect))
-    monkeypatch.setattr(web_app, "_build_aras_client_from_payload", lambda payload, hosts: object())
-    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    monkeypatch.setattr(crawler_boot, "_build_aras_client_from_payload", lambda payload, hosts: object())
+    monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: object())
     web_app._MAPPING_DISCOVERY_TASKS.clear()
     page = session.page
     page.route("**/api/settings", lambda r: _json_response(r, {"ok": True, "data": {"credentialVaultConfigured": True}})
@@ -1126,7 +1127,7 @@ def test_sor_wizard_end_to_end_with_status_filter_and_real_binding(session: Sess
             return SimpleNamespace(rows=rows[:page_size], total=5, page=page, page_size=page_size)
 
     monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda payload, hosts: FakeTDCClient())
-    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: object())
     web_app._MAPPING_DISCOVERY_TASKS.clear()
     text = _run_wizard_to_end(
         session, "VPI-T2-D2",
@@ -1158,7 +1159,7 @@ def test_client_deadline_cancels_the_running_crawl_on_the_server(session: Sessio
             return SimpleNamespace(rows=[], total=0, complete=False, stop_reason="cancelled")
 
     monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda payload, hosts: SlowTDCClient())
-    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: None)   # no unified session: synchronous path
+    monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: None)   # no unified session: synchronous path
     page = session.page
     page.route("**/api/settings", lambda r: _json_response(r, {"ok": True, "data": {"credentialVaultConfigured": True}})
                if r.request.method == "GET" else r.fallback())
@@ -1196,7 +1197,7 @@ def test_cancelling_the_background_task_ends_the_wizard_with_a_restart_hint(sess
             return SimpleNamespace(rows=[], total=0, complete=False, stop_reason="cancelled")
 
     monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda payload, hosts: SlowTDCClient())
-    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: object())
     web_app._MAPPING_DISCOVERY_TASKS.clear()
     page = session.page
     page.route("**/api/settings", lambda r: _json_response(r, {"ok": True, "data": {"credentialVaultConfigured": True}})

@@ -1,42 +1,31 @@
 // 交付物详情的「简洁视图」（v2 默认）：一眼看懂进度 → 四个数字 → 需要关注的单据。
 // 完整的表单分析、筛选、图表、同步设置和记录都还在，点「显示完整明细与分析」才出现；
 // 专家模式默认直接打开完整视图。本视图只读已有接口，不新增后端逻辑。
-// 纯口径（阶段/逾期/派生进度/同步文案）在 simple-logic.js，由 Node 门禁直接断言。
-import { html, useEffect, useState } from "/static/host/vendor/preact-htm.js";
+// 纯口径（阶段/逾期/派生进度/同步文案/自适应排序/列显隐/单号复制）在 simple-logic.js，由 Node 门禁直接断言。
+import { html, useEffect, useRef, useState } from "/static/host/vendor/preact-htm.js";
 import { apiRequest, enc } from "./api.js";
 import { redactSensitiveText, safeDisplayValue } from "./format.js";
-import { overdueLabel, progressDisplay, stageLabel, syncResultText } from "./simple-logic.js";
+import {
+  calculateVisibleColumns,
+  candidateColumns,
+  copyTextToClipboard,
+  extractSerialNumber,
+  findSerialNumberColumn,
+  getRowCellValue,
+  loadColumnPreferences,
+  nextSortState,
+  overdueLabel,
+  progressDisplay,
+  saveColumnPreferences,
+  simpleColumns,
+  sortRows,
+  stageLabel,
+  syncResultText,
+} from "./simple-logic.js";
+
+export { simpleColumns };
 
 const PAGE_SIZE = 20;
-/** 简表优先挑这些列（按顺序，最多 5 列）；表单没声明关键列时也能挑出可读的几列。 */
-const PREFERRED_LABELS = ["流水单号", "NCR编号", "EWO编号", "PAA编号", "SOR号", "零件名称", "更改主题", "标题", "申请人", "部门", "申请日期", "提交日期"];
-const MAX_COLUMNS = 5;
-
-export function simpleColumns(schema, rows = []) {
-  // 当前这批单据里整列都是空的列不显示（例如某些导出里「更改主题」恒为空），让位给下一个可读列。
-  const filled = (column) => !rows.length || rows.some((row) => {
-    const value = Array.isArray(row.values) ? row.values[column.index] : null;
-    return value !== null && value !== undefined && String(value).trim() !== "";
-  });
-  // 阶段与逾期由本视图统一成两列，不再重复源表里的「状态」。
-  const columns = (Array.isArray(schema && schema.columns) ? schema.columns : []).filter((c) => c && c.label !== "状态" && filled(c));
-  const picked = [];
-  PREFERRED_LABELS.forEach((label) => {
-    const column = columns.find((c) => c && c.label === label);
-    if (column && picked.length < MAX_COLUMNS && !picked.includes(column)) picked.push(column);
-  });
-  if (picked.length < 3) {
-    const keys = Array.isArray(schema && schema.keyColumns) ? schema.keyColumns : [];
-    keys.forEach((index) => {
-      const column = columns.find((c) => c && c.index === Number(index));
-      if (column && picked.length < MAX_COLUMNS && !picked.includes(column)) picked.push(column);
-    });
-  }
-  columns.forEach((column) => {
-    if (picked.length < 3 && !picked.includes(column)) picked.push(column);
-  });
-  return picked;
-}
 
 function cell(value) {
   if (value === null || value === undefined || value === "") return "—";
@@ -62,6 +51,21 @@ function Records({ formKey }) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
+  // 简表交互状态：列显隐偏好、下拉开闭、排序三态、行内复制反馈
+  const [colPrefs, setColPrefs] = useState(() => loadColumnPreferences(formKey));
+  const [colPickerOpen, setColPickerOpen] = useState(false);
+  const [sortState, setSortState] = useState({ key: null, direction: null });
+  const [copiedKey, setCopiedKey] = useState(null);
+  const copyTimer = useRef(null);
+
+  useEffect(() => () => clearTimeout(copyTimer.current), []);
+
+  useEffect(() => {
+    setColPrefs(loadColumnPreferences(formKey));
+    setSortState({ key: null, direction: null });
+    setCopiedKey(null);
+  }, [formKey]);
+
   useEffect(() => {
     apiRequest(`/api/deliverable-forms/${enc(formKey)}/view?trendLimit=30`)
       .then((view) => setSchema((view && view.schema) || {}))
@@ -81,24 +85,154 @@ function Records({ formKey }) {
     return () => { alive = false; };
   }, [formKey, applied, onlyOverdue, limit]);
 
-  const columns = simpleColumns(schema, rows.items);
+  const candidateCols = candidateColumns(schema, rows.items);
+  const defaultCols = simpleColumns(schema, rows.items);
+  const visibleCols = calculateVisibleColumns(candidateCols, colPrefs, defaultCols);
+
   const search = (event) => { event.preventDefault(); setLimit(PAGE_SIZE); setApplied(keyword.trim()); };
 
+  const onSort = (key) => {
+    setSortState((prev) => nextSortState(prev, key));
+  };
+
+  const sortedItems = sortRows(
+    rows.items,
+    sortState,
+    (row, key) => getRowCellValue(row, key, { schema, columns: candidateCols })
+  );
+
+  const toggleCol = (colKey, checked) => {
+    const currentKeys = visibleCols.map((c) => (c.key !== undefined && c.key !== null ? String(c.key) : String(c.index)));
+    let nextKeys;
+    if (checked) {
+      nextKeys = Array.from(new Set([...currentKeys, String(colKey)]));
+    } else {
+      nextKeys = currentKeys.filter((k) => k !== String(colKey));
+    }
+    const nextPrefs = { visibleKeys: nextKeys };
+    setColPrefs(nextPrefs);
+    saveColumnPreferences(formKey, nextPrefs);
+  };
+
+  const resetColumns = () => {
+    setColPrefs(null);
+    saveColumnPreferences(formKey, null);
+  };
+
+  const selectAllColumns = () => {
+    const allKeys = candidateCols.map((c) => (c.key !== undefined && c.key !== null ? String(c.key) : String(c.index)));
+    const nextPrefs = { visibleKeys: allKeys };
+    setColPrefs(nextPrefs);
+    saveColumnPreferences(formKey, nextPrefs);
+  };
+
+  const onCopy = async (e, text, rowKey) => {
+    e.stopPropagation();
+    const ok = await copyTextToClipboard(text);
+    if (ok) {
+      setCopiedKey(rowKey);
+      clearTimeout(copyTimer.current);
+      copyTimer.current = setTimeout(() => setCopiedKey(null), 1500);
+    }
+  };
+
+  const serialCol = findSerialNumberColumn(schema);
+  const serialColKey = serialCol ? (serialCol.key !== undefined && serialCol.key !== null ? String(serialCol.key) : String(serialCol.index)) : null;
+
   return html`<section class="ds-card">
-    <div class="ds-card-head"><h3>单据</h3>
-      <form class="ds-search" onSubmit=${search}>
-        <input type="search" value=${keyword} onInput=${(e) => setKeyword(e.currentTarget.value)} placeholder="搜单号、零件名称、申请人" aria-label="搜索单据" />
-        <button type="submit" class="vk-btn">搜索</button>
-        <label class="ds-check"><input type="checkbox" checked=${onlyOverdue} onChange=${() => { setLimit(PAGE_SIZE); setOnlyOverdue(!onlyOverdue); }} />只看逾期</label>
-      </form></div>
+    <div class="ds-card-head">
+      <h3>单据</h3>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <form class="ds-search" onSubmit=${search}>
+          <input type="search" value=${keyword} onInput=${(e) => setKeyword(e.currentTarget.value)} placeholder="搜单号、零件名称、申请人" aria-label="搜索单据" />
+          <button type="submit" class="vk-btn">搜索</button>
+          <label class="ds-check"><input type="checkbox" checked=${onlyOverdue} onChange=${() => { setLimit(PAGE_SIZE); setOnlyOverdue(!onlyOverdue); }} />只看逾期</label>
+        </form>
+        <div style="position:relative;display:inline-block">
+          <button
+            type="button"
+            class="vk-btn grid-column-btn"
+            aria-haspopup="true"
+            aria-expanded=${colPickerOpen ? "true" : "false"}
+            onClick=${() => setColPickerOpen(!colPickerOpen)}
+          >列显隐</button>
+          ${colPickerOpen && html`
+            <div class="grid-column-panel" style="position:absolute;top:calc(100% + 4px);right:0;z-index:60;width:220px;max-height:300px;overflow-y:auto;background:var(--canvas,#ffffff);border:1px solid var(--hairline,#d0d7de);border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.12);padding:8px;">
+              <div class="grid-column-quick" style="display:flex;gap:6px;margin-bottom:8px;">
+                <button type="button" class="vk-btn grid-quick-btn" style="flex:1;font-size:12px;padding:3px 6px" onClick=${resetColumns}>默认列</button>
+                <button type="button" class="vk-btn grid-quick-btn" style="flex:1;font-size:12px;padding:3px 6px" onClick=${selectAllColumns}>全部列</button>
+              </div>
+              <div class="grid-column-list" style="display:flex;flex-direction:column;gap:4px;">
+                ${candidateCols.map((col) => {
+                  const colKey = col.key !== undefined && col.key !== null ? String(col.key) : String(col.index);
+                  const checked = visibleCols.some((vc) => (vc.key !== undefined && vc.key !== null ? String(vc.key) : String(vc.index)) === colKey);
+                  return html`<label key=${colKey} class="grid-column-item" style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;">
+                    <input type="checkbox" checked=${checked} onChange=${(e) => toggleCol(colKey, e.currentTarget.checked)} />
+                    <span>${col.label}</span>
+                  </label>`;
+                })}
+              </div>
+            </div>
+          `}
+        </div>
+      </div>
+    </div>
     ${error && html`<p class="ds-error" role="alert">读取单据失败：${error}</p>`}
-    ${!error && rows.items.length > 0 && html`<div class="ds-table-wrap"><table class="ds-table">
-      <thead><tr>${columns.map((c) => html`<th key=${c.key}>${c.label}</th>`)}<th>阶段</th><th>逾期</th></tr></thead>
-      <tbody>${rows.items.map((row) => {
+    ${!error && sortedItems.length > 0 && html`<div class="ds-table-wrap"><table class="ds-table">
+      <thead><tr>
+        ${visibleCols.map((c) => {
+          const colKey = c.key !== undefined && c.key !== null ? String(c.key) : String(c.index);
+          const isSorted = sortState.key === colKey;
+          const arrow = isSorted ? (sortState.direction === "asc" ? " ▲" : " ▼") : "";
+          return html`<th
+            key=${c.key}
+            class="grid-sortable"
+            style="cursor:pointer;user-select:none"
+            title="点击排序"
+            aria-sort=${isSorted ? (sortState.direction === "asc" ? "ascending" : "descending") : "none"}
+            onClick=${() => onSort(colKey)}
+          >${c.label}${arrow}</th>`;
+        })}
+        <th
+          class="grid-sortable"
+          style="cursor:pointer;user-select:none"
+          title="点击排序"
+          aria-sort=${sortState.key === "stage" ? (sortState.direction === "asc" ? "ascending" : "descending") : "none"}
+          onClick=${() => onSort("stage")}
+        >阶段${sortState.key === "stage" ? (sortState.direction === "asc" ? " ▲" : " ▼") : ""}</th>
+        <th
+          class="grid-sortable"
+          style="cursor:pointer;user-select:none"
+          title="点击排序"
+          aria-sort=${sortState.key === "overdue" ? (sortState.direction === "asc" ? "ascending" : "descending") : "none"}
+          onClick=${() => onSort("overdue")}
+        >逾期${sortState.key === "overdue" ? (sortState.direction === "asc" ? " ▲" : " ▼") : ""}</th>
+      </tr></thead>
+      <tbody>${sortedItems.map((row) => {
         const values = Array.isArray(row.values) ? row.values : [];
         const overdue = overdueLabel(row);
+        const serialNum = extractSerialNumber(row, schema);
         return html`<tr key=${row.rowKey}>
-          ${columns.map((c) => html`<td key=${c.key}>${cell(values[c.index])}</td>`)}
+          ${visibleCols.map((c) => {
+            const colKey = c.key !== undefined && c.key !== null ? String(c.key) : String(c.index);
+            const isSerial = serialNum && (colKey === serialColKey || (!serialColKey && c === visibleCols[0]));
+            if (isSerial) {
+              return html`<td key=${c.key}>
+                <span style="display:inline-flex;align-items:center;gap:6px">
+                  <span>${cell(values[c.index])}</span>
+                  <button
+                    type="button"
+                    class="vk-btn"
+                    style="padding:1px 6px;font-size:11px;line-height:1.4"
+                    title="复制单号"
+                    aria-label=${`复制单号 ${serialNum}`}
+                    onClick=${(e) => onCopy(e, serialNum, row.rowKey)}
+                  >${copiedKey === row.rowKey ? "已复制" : "复制"}</button>
+                </span>
+              </td>`;
+            }
+            return html`<td key=${c.key}>${cell(values[c.index])}</td>`;
+          })}
           <td><span class=${`ds-pill is-${row.isCompleted ? "ok" : "info"}`}>${row.isCompleted ? "已完成" : safeDisplayValue(stageLabel(schema, row) || "进行中")}</span></td>
           <td>${overdue === "是" ? html`<span class="ds-pill is-bad">是</span>` : overdue}</td>
         </tr>`;

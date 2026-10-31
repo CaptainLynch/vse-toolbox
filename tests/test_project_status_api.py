@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 import web.app as web_app
+import web.crawler_boot as crawler_boot
 from core.db_manager import DatabaseManager
 
 MILESTONE_TEMPLATE_NAMES = (
@@ -1960,7 +1961,7 @@ def test_mapping_discovery_async_202_contract_and_isomorphic_result(client, monk
             )
 
     monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
-    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: object())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
         "wizardSessionId": "wiz-sess-async-01",
@@ -2011,7 +2012,7 @@ def test_mapping_discovery_async_same_params_reattach_and_conflict(client, monke
             )
 
     monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: BlockingTDCClient())
-    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: object())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
         "wizardSessionId": "wiz-sess-async-02",
@@ -2067,7 +2068,7 @@ def test_mapping_discovery_async_cooperative_cancel(client, monkeypatch) -> None
             return SimpleNamespace(rows=[], complete=True, stop_reason="reported_pages", total=0)
 
     monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: SlowTDCClient())
-    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: object())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
         "wizardSessionId": "wiz-sess-async-03",
@@ -2108,7 +2109,7 @@ def test_mapping_discovery_password_mode_stays_sync(client, monkeypatch) -> None
             )
 
     monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
-    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: object())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
         "wizardSessionId": "wiz-sess-async-04",
@@ -2151,7 +2152,7 @@ def test_mapping_discovery_cancel_endpoint_cancels_background_task(client, monke
             )
 
     monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: BlockingTDCClient())
-    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: object())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
         "wizardSessionId": "wiz-sess-async-05",
@@ -2211,7 +2212,7 @@ def test_mapping_discovery_cookie_mode_stays_sync(client, monkeypatch) -> None: 
             )
 
     monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
-    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: object())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
         "wizardSessionId": "wiz-sess-async-06",
@@ -2245,7 +2246,7 @@ def test_mapping_discovery_async_artifact_redline_on_async_path(client, monkeypa
             )
 
     monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
-    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: object())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
         "wizardSessionId": "wiz-sess-async-07",
