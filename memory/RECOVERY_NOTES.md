@@ -18,8 +18,7 @@
 
 ## 2026-10-31 — 补丁目标对齐的三种漏网形态（W13-09b）
 
-- 单行正则 `setattr\(web_app, "SYM"` 只覆盖单行形态；**多行 setattr（`setattr(
- web_app,`）**、
+- 单行正则 `setattr(web_app, "SYM")` 只覆盖单行形态；**多行 setattr（setattr\( 换行 web_app,）**、
   **字符串形式** `setattr("web.app.SYM")`（pytest 会校验属性存在，漏改直接 setup 报错）、
   **参数化动态目标** `setattr(web_app, builder_name, ...)` 三种都要扫。tripwire：
   `monkeypatch.setattr` 目标模块 = 被测路由现属模块；消费调用点在 create_app 体内的仍指 web_app。
