@@ -110,12 +110,10 @@
     常量提取两处修复）；所有权守卫测试移除（supervisor scope 机制负责，非运行时测试）。
   - W8-02：hooks 组件在无 DOM VM 里无法直渲染（结构性缺陷），两次修复不收敛 → 整体留下一波，
     契约改为源级断言（已定方向未实施）。其页面改动已回退主树。
-- **已知失败（下一个动作）**：tests/test_project_status_admin_api.py::
-
-  test_mapping_discovery_post_canonicalizes_sor_and_ewo_filters —— D2 SOR 腿 200、D3 EWO 腿 400。
-  已排除：patch 目标错位（已回正）、路由行为（探针单独 200）。剩余方向：该测试文件的
-  registry_factory(MagicMock) 夹具与 discovery 校验的交互。其余全部测试绿。
-- **门禁**：Wave 5 包 2.3.10 已发；Wave 6 收尾（2.3.11）待上述两项闭环后打。
+- **已知失败已修复（86e779a）**：根因 = 字符串式 patch 目标 setattr(crawler_boot,
+  "_build_aras_client_from_payload") 漏改——discovery 路由在 web/app.py，经 web_app 命名空间绑定解析。
+  修复后全量 **3612 passed / 6 skipped / 0 failed**（411s）。Wave 6 门禁判通过；
+  集成包 2.3.11（267 文件 sha256 b25661a8…）验签通过，未真机安装。
 
 ## 2026-10-31 Wave 5 集成完成（W13-05 lead + W4-01/W11-01/W12-02）
 
