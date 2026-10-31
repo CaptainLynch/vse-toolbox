@@ -1,5 +1,6 @@
 // 签署日报「设置」：花名册、长周期规则与词表、长周期结论、未在册人员区域、区域显示名、通讯录与阈值（规格 §7、§8）。
 import { html, useEffect, useState } from "/static/host/vendor/preact-htm.js";
+import { ErrorCard, Skeleton, TONE } from "/static/host/ui-kit.js";
 import {
   bytesToBase64, decodeCsv, formatPairs, formatSynonyms, lines, parsePairs, parseSynonyms,
 } from "./report-logic.js";
@@ -8,6 +9,20 @@ const TABS = [
   ["roster", "花名册"], ["rules", "长周期规则"], ["vocabulary", "长周期词表"], ["conclusions", "长周期结论"],
   ["people", "未在册人员与区域名"], ["mail", "通讯录与阈值"],
 ];
+
+export const STATUS_TONE = {
+  ok: TONE.ok,
+  warn: TONE.warn,
+  bad: TONE.bad,
+  off: TONE.off,
+};
+
+export const SOURCE_TONE = {
+  "已删除": TONE.bad,
+  "已修改": TONE.warn,
+  "新增": TONE.ok,
+  "内置": TONE.off,
+};
 
 function useAsync() {
   const [busy, setBusy] = useState(false);
@@ -94,6 +109,7 @@ function ImportExport({ api, dataset, view, onView, onChanged }) {
         <button type="button" class="vk-btn" onClick=${() => setPlan(null)}>全部取消</button>
       </div>
     </div>`}
+    ${op.busy && html`<div style="margin:8px 0"><${Skeleton} rows=${2} /></div>`}
     ${view.backups && view.backups.length > 0 && html`<details><summary>最近 ${view.backups.length} 份备份</summary>
       <ul class="sd-plain-list">${view.backups.map((b) => html`<li key=${b.id}>#${b.id} ${b.createdAt} ${b.reason}
         <button type="button" class="vk-btn" disabled=${op.busy} onClick=${() => restore(b.id)}>恢复</button></li>`)}</ul></details>`}
@@ -105,15 +121,34 @@ function RosterTab({ api, onChanged }) {
   const [view, setView] = useState(null);
   const [filter, setFilter] = useState("");
   const [draft, setDraft] = useState({ name: "", department: "车身科" });
+  const [error, setError] = useState(null);
   const op = useAsync();
-  useEffect(() => { api.get("settings/roster").then(setView).catch((err) => op.setMessage(err.message)); }, []);
-  if (!view) return html`<p class="vk-muted">${op.message || "加载中…"}</p>`;
+  const load = () => {
+    setError(null);
+    api.get("settings/roster").then(setView).catch((err) => {
+      setError(err);
+      op.setMessage(err.message);
+    });
+  };
+  useEffect(() => { load(); }, []);
+  if (!view) {
+    if (error) {
+      return html`<div class="sd-settings-tab">
+        <${ErrorCard}
+          what=${error.message || "读取花名册失败"}
+          todo="请检查网络连接或稍后刷新重试"
+          onFix=${load}
+        />
+      </div>`;
+    }
+    return html`<div class="sd-settings-tab"><${Skeleton} rows=${5} /></div>`;
+  }
   const save = (payload, done) => op.run(async () => { setView(await api.post("settings/roster/person", payload)); onChanged(); }, done);
   const revert = (name) => op.run(async () => { setView(await api.post("settings/roster/revert", { name })); onChanged(); }, "已撤销本地改动");
   const shown = view.rows.filter((row) => !filter || row.name.includes(filter) || row.department.includes(filter)).slice(0, 200);
   return html`<div class="sd-settings-tab">
     <p class="vk-muted">共 ${view.rows.length} 人${view.mode === "replace" ? "（整体覆盖模式：内置种子已停用）" : ""}。只存姓名和科室；匹配只用姓名。</p>
-    ${view.conflicts.length > 0 && html`<p class="sd-warn">种子升级后和本地都改过（本地优先）：${view.conflicts.map((c) => `${c.key}（种子 ${c.seed || "无"}，本地 ${c.local || "删除"}）`).join("、")}</p>`}
+    ${view.conflicts.length > 0 && html`<p class=${`sd-warn tone-${TONE.warn}`}>种子升级后和本地都改过（本地优先）：${view.conflicts.map((c) => `${c.key}（种子 ${c.seed || "无"}，本地 ${c.local || "删除"}）`).join("、")}</p>`}
     <div class="sd-actions">
       <input placeholder="搜索姓名或科室" value=${filter} onInput=${(e) => setFilter(e.target.value)} />
       <input placeholder="新增姓名" value=${draft.name} onInput=${(e) => setDraft({ ...draft, name: e.target.value })} />
@@ -129,7 +164,7 @@ function RosterTab({ api, onChanged }) {
         <td><select value=${row.department} disabled=${op.busy || row.source === "已删除"}
           onChange=${(e) => save({ name: row.name, department: e.target.value }, "已保存")}>
           ${view.departments.map((d) => html`<option key=${d} value=${d}>${d}</option>`)}</select></td>
-        <td><span class="sd-tag">${row.source}</span></td>
+        <td><span class=${`sd-tag tone-${SOURCE_TONE[row.source] || TONE.off}`}>${row.source}</span></td>
         <td>${row.source === "已删除" || row.source === "已修改"
           ? html`<button type="button" class="vk-btn" disabled=${op.busy} onClick=${() => revert(row.name)}>撤销</button>`
           : html`<button type="button" class="vk-btn" disabled=${op.busy} onClick=${() => save({ name: row.name, department: null }, "已删除")}>删除</button>`}</td>
@@ -144,14 +179,33 @@ function RosterTab({ api, onChanged }) {
 function RulesTab({ api, onChanged }) {
   const [view, setView] = useState(null);
   const [draft, setDraft] = useState({ id: "", name: "", remark: "", aliases: "", enabled: true });
+  const [error, setError] = useState(null);
   const op = useAsync();
-  useEffect(() => { api.get("settings/rules").then(setView).catch((err) => op.setMessage(err.message)); }, []);
-  if (!view) return html`<p class="vk-muted">${op.message || "加载中…"}</p>`;
+  const load = () => {
+    setError(null);
+    api.get("settings/rules").then(setView).catch((err) => {
+      setError(err);
+      op.setMessage(err.message);
+    });
+  };
+  useEffect(() => { load(); }, []);
+  if (!view) {
+    if (error) {
+      return html`<div class="sd-settings-tab">
+        <${ErrorCard}
+          what=${error.message || "读取长周期规则失败"}
+          todo="请检查后台服务连接后重试"
+          onFix=${load}
+        />
+      </div>`;
+    }
+    return html`<div class="sd-settings-tab"><${Skeleton} rows=${5} /></div>`;
+  }
   const save = (payload, done) => op.run(async () => { setView(await api.post("settings/rules/rule", payload)); onChanged(); }, done);
   const revert = (id) => op.run(async () => { setView(await api.post("settings/rules/revert", { id })); onChanged(); }, "已撤销本地改动");
   return html`<div class="sd-settings-tab">
     <p class="vk-muted">一行对应清单一项；名称用「/」写并列叫法，备注写「非A、B」作为排除词，别名用顿号分隔。改动后已有的人工结论不变，新命中且没结论的零件会重新进入复核。</p>
-    ${view.conflicts.length > 0 && html`<p class="sd-warn">种子升级后和本地都改过（本地优先）：${view.conflicts.map((c) => c.key).join("、")}</p>`}
+    ${view.conflicts.length > 0 && html`<p class=${`sd-warn tone-${TONE.warn}`}>种子升级后和本地都改过（本地优先）：${view.conflicts.map((c) => c.key).join("、")}</p>`}
     <div class="sd-actions">
       <input placeholder="规则编号（新增可留空）" value=${draft.id} onInput=${(e) => setDraft({ ...draft, id: e.target.value })} />
       <input placeholder="零件名称" value=${draft.name} onInput=${(e) => setDraft({ ...draft, name: e.target.value })} />
@@ -165,7 +219,7 @@ function RulesTab({ api, onChanged }) {
         <td>${row.id}</td><td>${row.name}</td><td>${row.remark}</td><td>${row.aliases}</td>
         <td><input type="checkbox" checked=${row.enabled} disabled=${op.busy || row.source === "已删除"}
           onChange=${() => save({ id: row.id, name: row.name, remark: row.remark, aliases: row.aliases, enabled: !row.enabled }, "已保存")} /></td>
-        <td><span class="sd-tag">${row.source}</span></td>
+        <td><span class=${`sd-tag tone-${SOURCE_TONE[row.source] || TONE.off}`}>${row.source}</span></td>
         <td>
           <button type="button" class="vk-btn" onClick=${() => setDraft({ id: row.id, name: row.name, remark: row.remark, aliases: row.aliases, enabled: row.enabled })}>编辑</button>
           ${row.source === "已删除" || row.source === "已修改"
@@ -182,6 +236,7 @@ function RulesTab({ api, onChanged }) {
 function VocabularyTab({ api, onChanged }) {
   const [view, setView] = useState(null);
   const [text, setText] = useState(null);
+  const [error, setError] = useState(null);
   const op = useAsync();
   const fill = (data) => {
     setView(data);
@@ -192,8 +247,26 @@ function VocabularyTab({ api, onChanged }) {
       suffixes: data.vocabulary.suffixes.join("\n"),
     });
   };
-  useEffect(() => { api.get("settings/vocabulary").then(fill).catch((err) => op.setMessage(err.message)); }, []);
-  if (!view || !text) return html`<p class="vk-muted">${op.message || "加载中…"}</p>`;
+  const load = () => {
+    setError(null);
+    api.get("settings/vocabulary").then(fill).catch((err) => {
+      setError(err);
+      op.setMessage(err.message);
+    });
+  };
+  useEffect(() => { load(); }, []);
+  if (!view || !text) {
+    if (error) {
+      return html`<div class="sd-settings-tab">
+        <${ErrorCard}
+          what=${error.message || "读取长周期词表失败"}
+          todo="请检查服务连接后重试"
+          onFix=${load}
+        />
+      </div>`;
+    }
+    return html`<div class="sd-settings-tab"><${Skeleton} rows=${4} /></div>`;
+  }
   const save = () => op.run(async () => {
     fill(await api.post("settings/vocabulary", { vocabulary: {
       globalExcludes: lines(text.globalExcludes), synonyms: parseSynonyms(text.synonyms),
@@ -221,8 +294,13 @@ function ConclusionsTab({ api, projects, onChanged }) {
   const [known, setKnown] = useState([]);
   const [project, setProject] = useState("");
   const [items, setItems] = useState([]);
+  const [error, setError] = useState(null);
   const op = useAsync();
-  useEffect(() => { api.get("long-cycle").then((data) => setKnown(data.projects || [])).catch(() => {}); }, []);
+  const loadKnown = () => {
+    setError(null);
+    api.get("long-cycle").then((data) => setKnown(data.projects || [])).catch((err) => setError(err));
+  };
+  useEffect(() => { loadKnown(); }, []);
   const choices = [...new Set([...known, ...projects])].sort();
   const load = (value) => {
     setProject(value);
@@ -245,6 +323,12 @@ function ConclusionsTab({ api, projects, onChanged }) {
       <button type="button" class="vk-btn" disabled=${!project || op.busy} onClick=${clear}>清空该项目的记忆</button>
       ${op.message && html`<span class="vk-muted" role="status">${op.message}</span>`}
     </div>
+    ${error && html`<${ErrorCard}
+      what=${error.message || "读取长周期项目记忆失败"}
+      todo="请检查服务连接或刷新重试"
+      onFix=${loadKnown}
+    />`}
+    ${op.busy && html`<div style="margin:12px 0"><${Skeleton} rows=${3} /></div>`}
     ${project && html`<table class="sd-table"><thead><tr><th>零件（规范化名称）</th><th>结论</th><th>当时的自动结果</th><th>规则</th><th>确认时间</th><th></th></tr></thead><tbody>
       ${items.map((item) => html`<tr key=${item.key}><td>${item.key}</td><td>${item.include ? "纳入" : "不纳入"}</td>
         <td>${item.autoResult}</td><td>${item.rule}</td><td>${item.decidedAt}</td>

@@ -1,12 +1,15 @@
 // TIR数据简表：参数 → 后台导出 → 进度 → 下载帆软原样导出的 Excel。共享运行时与 UI Kit 来自宿主。
 import { html, useEffect, useRef, useState } from "/static/host/vendor/preact-htm.js";
 import { expertStore } from "/static/host/expert.js";
-import { DataTable, StateBlock } from "/static/host/kit.js";
+import { DataTable } from "/static/host/kit.js";
+import { ErrorCard, Skeleton, TONE } from "/static/host/ui-kit.js";
 
 const POLL_MS = 1500;
 const STAGES = { login: "登录帆软", save: "保存文件", done: "完成" };
 const HOURS = Array.from({ length: 24 }, (_, h) => h);
 const AUTO_STATUS = { ok: "成功", failed: "失败" };
+const AUTO_TONE = { ok: TONE.ok, failed: TONE.bad };
+const TASK_TONE = { queued: TONE.warn, running: TONE.warn, succeeded: TONE.ok, failed: TONE.bad };
 
 function Field({ label, children }) {
   return html`<label class="vk-filter-field"><span>${label}</span>${children}</label>`;
@@ -56,25 +59,40 @@ export default function Page({ api }) {
     try {
       await api.post("config", { auto, defaults: { project: form.project, department: form.department, section: form.section, startDate: form.startDate } });
       setMessage("已保存");
+      setError(null);
       load();
     } catch (err) {
+      setError(err);
       setMessage(err.message);
     }
   }
 
   async function start() {
     setMessage("");
+    setError(null);
     try {
       const started = await api.post("export", form);
       setTask(started);
       if (started.taskId && !started.result) poll(started.taskId);
       else load();
     } catch (err) {
+      setError(err);
       setMessage(err.message);
     }
   }
 
-  if (!state || !form || !auto) return html`<${StateBlock} loading=${!error} error=${error} onRetry=${load} />`;
+  if (!state || !form || !auto) {
+    if (error) {
+      return html`<div class="vk-page">
+        <${ErrorCard}
+          what=${error.message || "读取简表状态失败"}
+          todo="请检查网络连接或确认帆软报表服务正常后重试"
+          onFix=${load}
+        />
+      </div>`;
+    }
+    return html`<div class="vk-page"><${Skeleton} rows=${4} /></div>`;
+  }
   const set = (key) => (e) => setForm({ ...form, [key]: e.target.type === "checkbox" ? e.target.checked : e.target.value });
   const running = task && (task.status === "queued" || task.status === "running");
   const columns = [
@@ -100,9 +118,20 @@ export default function Page({ api }) {
       <label><input type="checkbox" checked=${form.force} onChange=${set("force")} /> 忽略当天已有结果重新导出</label>
       <button class="vk-btn is-primary" disabled=${running} onClick=${start}>${running ? "导出中…" : "导出"}</button>
     </section>
-    ${task && html`<p class="vk-muted">${task.reused ? "复用：" : ""}${task.status === "failed" ? `失败：${task.error || ""}` :
+    ${running && html`<div style="margin:12px 0"><${Skeleton} rows=${2} /></div>`}
+    ${error && html`<${ErrorCard}
+      what=${error.message || "操作发生异常"}
+      todo="请检查网络连接或配置后重试"
+      onFix=${() => { setError(null); load(); }}
+    />`}
+    ${task && task.status === "failed" && html`<${ErrorCard}
+      what=${`导出任务未成功：${task.error || "未知异常"}`}
+      todo="请核对车型与日期等筛选条件，或稍后点击重新导出"
+      onFix=${start}
+    />`}
+    ${task && html`<p class="vk-muted"><span class=${`vk-tone-${TASK_TONE[task.status] || TONE.off}`}>${task.reused ? "复用：" : ""}${task.status === "failed" ? `失败：${task.error || ""}` :
       task.status === "succeeded" ? `完成${task.result && task.result.rows != null ? `（${task.result.rows} 行）` : ""}` :
-      `${STAGES[task.stage] || "排队中"} ${task.percent ?? 0}%`}</p>`}
+      `${STAGES[task.stage] || "排队中"} ${task.percent ?? 0}%`}</span></p>`}
     ${message && html`<p class="vk-muted">${message}</p>`}
     <section class="vk-filter-bar" style="margin-top:12px">
       <label><input type="checkbox" checked=${auto.enabled} onChange=${(e) => setAuto({ ...auto, enabled: e.target.checked })} /> 每天自动导出</label>
@@ -112,7 +141,7 @@ export default function Page({ api }) {
         </select></${Field}>
       <button class="vk-btn" onClick=${saveSettings}>保存</button>
       <p class="vk-muted" style="flex-basis:100%;margin:0">自动导出用上面的车型和开始日期，结束日期取当天。登录失败当天不再重试，以免锁定域账号。
-        ${state.autoState && state.autoState.day ? ` 上次自动导出：${state.autoState.at || state.autoState.day} ${AUTO_STATUS[state.autoState.status] || ""}${state.autoState.error ? `（${state.autoState.error}）` : ""}` : ""}</p>
+        ${state.autoState && state.autoState.day ? html` 上次自动导出：${state.autoState.at || state.autoState.day} <span class=${`vk-tone-${AUTO_TONE[state.autoState.status] || TONE.off}`}>${AUTO_STATUS[state.autoState.status] || ""}</span>${state.autoState.error ? `（${state.autoState.error}）` : ""}` : ""}</p>
     </section>
     <h3 style="margin-top:16px">产物</h3>
     <${DataTable} columns=${columns} rows=${state.exports.map((item) => ({ ...item, key: `${item.day}/${item.stem}` }))} rowKey="key" emptyText="还没有导出过" />

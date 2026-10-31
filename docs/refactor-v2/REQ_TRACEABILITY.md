@@ -225,6 +225,16 @@
 
 **Wave 5 教训**：① 路由块迁移后必须 ast 自由变量审计 + 常量随迁（_archive_history_limit 凭印象重写是违规）；② 进程级单例状态在 Web 应用里必须按 app 实例隔离；③ 契约文本避免英文敏感词（password/token 触发高危拒派）。
 
+
+## Wave 7 交付记录（2026-10-31）
+
+| 任务 | 状态 | 交付物与证据 |
+|---|---|---|
+| W13-07 | ⏸ **重新规划** | 首次手工迁移（52 成员闭包）传递依赖直通 create_app 局部符号，6+ 层缺名不收敛 → **整体回退**到全绿态；教训与重做前置（三清单冻结法）入 RECOVERY_NOTES 2026-10-31 |
+| W10-02 | ✅（lead 收敛） | 全站时间展示 zh-CN 门禁（`tests/test_time_display_frontend.py`：locale-default 禁止 + toISOString 内部用法白名单）；修复 catalog.js×3、query.js×1；worker 两轮超时/权限后 lead 直接收敛（实际展示点仅 4 处，不需要 time-format.js 抽象） |
+| W8-02b | ✅ | 四页 ErrorCard/Skeleton 接入（源级断言版门禁，杜绝 hooks 直渲染崩溃重演）；23 测试 |
+| Wave 7 集成包 | ✅ | `dist/v2-test/updates/vse-app-2.3.12.vsepkg`（267 文件，sha256 `9e6f2f48…`，验签通过，未真机安装） |
+
 ## 基线证据（2026-10-31，W0）
 
 - 已提交：`b9f309b`（同步三问题+展示口径）、`7f4617f`（日报门禁+孤儿项目）、`d7ba018`（文档基线）。

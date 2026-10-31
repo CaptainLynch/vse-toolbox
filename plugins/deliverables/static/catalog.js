@@ -250,7 +250,7 @@ function DeliverableDetail({ item, categories, runLock, onRecord }) {
   const mode = { previewSource: item.id === "tdc-data-model" || item.id === "tdc-sor" };
   const label = (op) => OPERATION_LABELS[op] || op;
   const record = (op, runStatus, summary) => onRecord({
-    id: item.id, name: item.name, operation: op, status: runStatus, summary, time: new Date().toLocaleTimeString(),
+    id: item.id, name: item.name, operation: op, status: runStatus, summary, time: new Date().toLocaleString("zh-CN", { hour12: false }),
   });
 
   const setValue = (name, value) => {
@@ -352,7 +352,7 @@ function DeliverableDetail({ item, categories, runLock, onRecord }) {
         if (signal.aborted) return;
         if (current()) {
           latestRendered.current = tracked.seq;
-          renderRows(data, tracked.operation, { queryTime: new Date().toLocaleString(), filterSummary: tracked.summary });
+          renderRows(data, tracked.operation, { queryTime: new Date().toLocaleString("zh-CN", { hour12: false }), filterSummary: tracked.summary });
           setStatus({ text: "后台全量抓取完成", loading: false });
         }
         record(tracked.operation, "success", `rows=${((data && data.rows) || []).length}`);
@@ -439,7 +439,7 @@ function DeliverableDetail({ item, categories, runLock, onRecord }) {
         const data = body.data || {};
         if (isCurrent()) {
           latestRendered.current = requestSeq;
-          renderRows(data, op, { queryTime: new Date().toLocaleString(), filterSummary: summary });
+          renderRows(data, op, { queryTime: new Date().toLocaleString("zh-CN", { hour12: false }), filterSummary: summary });
         }
         record(op, "success", `rows=${(data.rows || []).length}`);
         if (mounted.current) setStatus({ text: "完成", loading: false });

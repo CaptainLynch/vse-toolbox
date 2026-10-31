@@ -4,6 +4,7 @@
 // It calls the existing /api/aras, /api/tdc and /api/tasks endpoints.
 import { html, useEffect, useRef, useState } from "/static/host/vendor/preact-htm.js";
 import { useStylesheet } from "/static/host/kit.js";
+import { ErrorCard, Skeleton, TONE } from "/static/host/ui-kit.js";
 import { DataGrid } from "./grid.js";
 import {
   FORBIDDEN_PERSIST_KEYS,
@@ -163,25 +164,16 @@ const sleep = (ms, signal) => new Promise((resolve) => {
 
 // ── 小组件 ─────────────────────────────────────────────────────────────
 
-function ErrorCard({ card }) {
-  return html`<div class="structured-error-card" role="alert" aria-live="polite">
-    <div class="structured-error-head">
-      <span class="error-badge-icon" aria-hidden="true">!</span>
-      <div class="error-head-text">
-        <div class="error-summary">${card.summary}</div>
-        <div class="error-impact">${card.impact}</div>
-      </div>
-    </div>
-    ${card.actions && card.actions.length > 0 && html`<div class="error-actions">
-      ${card.actions.map((act) => html`<button key=${act.label} type="button"
-        class=${`error-action-btn ${act.primary ? "is-primary" : ""}`} onClick=${act.action}>${act.label}</button>`)}
-    </div>`}
-    ${card.technical && html`<details class="error-technical-details">
-      <summary>技术详情（维护与排查问题使用）</summary>
-      <div class="error-technical-content">${redactSensitiveText(card.technical)}</div>
-    </details>`}
-  </div>`;
-}
+const TASK_STATUS_TONES = {
+  queued: TONE.warn,
+  leased: TONE.warn,
+  running: TONE.warn,
+  succeeded: TONE.ok,
+  failed: TONE.bad,
+  cancelled: TONE.off,
+  interrupted: TONE.bad,
+  timeout: TONE.bad,
+};
 
 function EmptyNotice({ title, desc }) {
   return html`<div class="empty-result-card">
@@ -247,7 +239,7 @@ function TaskStrip({ task, onCancel }) {
     <div class="sq-task-head">
       <strong>后台${task.kind === "export" ? "导出" : "全量抓取"}任务</strong>
       <span class="sq-task-id">${task.taskId}</span>
-      <span class=${`sq-task-status is-${task.status || "queued"}`}>${statusText}</span>
+      <span class=${`sq-task-status is-${task.status || "queued"} tone-${TASK_STATUS_TONES[task.status] || TONE.off}`}>${statusText}</span>
       ${task.active && html`<button type="button" class="secondary-btn" disabled=${task.cancelling} onClick=${onCancel}>
         ${task.cancelling ? "取消中..." : "取消任务"}</button>`}
       ${task.downloadUrl && html`<a class="secondary-btn sq-task-download" href=${task.downloadUrl} download>下载结果文件</a>`}
@@ -482,7 +474,7 @@ export default function SystemQueryPage({ plugin }) {
 
   // ── 结果 ──
   const renderResult = (data, id, summary) => {
-    setResult({ data: data || {}, modeId: id, key: seq.current, at: new Date().toLocaleString(), summary });
+    setResult({ data: data || {}, modeId: id, key: seq.current, at: new Date().toLocaleString("zh-CN", { hour12: false }), summary });
     setContextNote("");
     const m = MODES[id];
     const captured = data && data.xml;
@@ -810,7 +802,30 @@ export default function SystemQueryPage({ plugin }) {
         <p class="eyebrow">结果</p>
         <span class="sq-result-kind">${shownResult ? (RESULT_KIND_LABELS[mode.resultKind] || mode.resultKind) : "就绪"}</span>
       </div>
-      ${card && html`<${ErrorCard} card=${card} />`}
+      ${card && html`<${ErrorCard}
+        what=${html`<div>
+          <div>${card.summary}</div>
+          ${card.technical && html`<details class="error-technical-details" style="margin-top:6px">
+            <summary>技术详情（维护与排查问题使用）</summary>
+            <div class="error-technical-content">${redactSensitiveText(card.technical)}</div>
+          </details>`}
+        </div>`}
+        todo=${html`<div>
+          <div>${card.impact}</div>
+          ${((card.actions || []).filter((a) => !a.primary)).map((act) => html`<button
+            key=${act.label}
+            type="button"
+            class="vk-btn"
+            style="margin-top:6px;margin-right:6px"
+            onClick=${act.action}
+          >${act.label}</button>`)}
+        </div>`}
+        onFix=${(card.actions || []).find((a) => a.primary) ? {
+          label: (card.actions || []).find((a) => a.primary).label,
+          onClick: (card.actions || []).find((a) => a.primary).action,
+        } : null}
+      />`}
+      ${busy && html`<div style="padding:16px 0"><${Skeleton} rows=${4} /></div>`}
       ${warning && html`<div class="error-msg sq-warning" role="status">${warning}</div>`}
       ${contextNote && html`<div class="deliverable-preview-context">${contextNote}</div>`}
       ${!shownResult && html`<div class="is-empty">暂无结果</div>`}
