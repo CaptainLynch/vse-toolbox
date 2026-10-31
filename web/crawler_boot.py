@@ -2638,3 +2638,307 @@ def register_tdc_routes(app: Any, deps: CrawlerRouteDeps) -> None:
         return _json_error(400, "ContractBlocker", AFACE_CONTRACT_BLOCKER)
 
 
+
+
+# ── 交付物目录与表单统计路由（W13-08 迁入） ──
+
+from core.db_manager import (
+    ArchiveJobNotReadyError,
+    ArchiveLeaseBusyError,
+    DatabaseManager,
+    MappedDeliverableReadOnlyError,
+    PROJECT_STATUS_MILESTONE_TEMPLATE,
+    SyncBindingNotReadyError,
+)
+from services.deliverable_statistics import (
+    STATISTICS_HISTORY_SNAPSHOT_LIMIT,
+    compute_form_statistics,
+    statistics_history_entry,
+)
+
+_DELIVERABLE_CATEGORIES = [
+    {"id": "aras", "name": "Aras 报告"},
+    {"id": "tdc", "name": "TDC 报表"},
+]
+
+
+_DELIVERABLES_CATALOG = [
+    {
+        "id": "aras-ewo",
+        "name": "EWO 工程变更报告",
+        "category": "aras",
+        "source": "services/aras_crawler.py",
+        "availability": "available",
+        "implementation_status": "已完整实现",
+        "description": "在 Aras 工作区执行 EWO 报告查询、全量抓取与 CSV 导出。",
+        "output_formats": ["JSON", "CSV"],
+        "operations": ["query", "crawl_all", "export"],
+        "fields": [],
+        "target": {"panel": "aras-panel", "mode": "ewo"},
+    },
+    {
+        "id": "aras-paa",
+        "name": "PAA流程",
+        "category": "aras",
+        "source": "services/aras_crawler.py",
+        "availability": "available",
+        "implementation_status": "已完整实现",
+        "description": "在 Aras 工作区执行 PAA流程分页查询、全量抓取与 CSV 导出。",
+        "output_formats": ["JSON", "CSV"],
+        "operations": ["query", "crawl_all", "export"],
+        "fields": [],
+        "target": {"panel": "aras-panel", "mode": "paa"},
+    },
+    {
+        "id": "aras-ncr-progress",
+        "name": "NCR 审批进度",
+        "category": "aras",
+        "source": "services/aras_crawler.py",
+        "availability": "available",
+        "implementation_status": "已完整实现",
+        "description": "在 Aras 工作区执行 NCR 审批进度查询。",
+        "output_formats": ["JSON"],
+        "operations": ["query"],
+        "fields": [],
+        "target": {"panel": "aras-panel", "mode": "ncr-progress"},
+    },
+    {
+        "id": "aras-ncr-detail",
+        "name": "NCR 审批明细",
+        "category": "aras",
+        "source": "services/aras_crawler.py",
+        "availability": "available",
+        "implementation_status": "已完整实现",
+        "description": "在 Aras 工作区生成并下载 NCR 审批明细文件。",
+        "output_formats": ["XLSX"],
+        "operations": ["query", "download"],
+        "fields": [],
+        "target": {"panel": "aras-panel", "mode": "ncr-detail"},
+    },
+    {
+        "id": "tdc-data-model",
+        "name": "TDC 数模设计审核流程报表",
+        "category": "tdc",
+        "source": "services/tdc_crawler.py",
+        "availability": "available",
+        "implementation_status": "已完整实现",
+        "description": "TDC 数模设计审核流程报表的查询、全量抓取与官方 XLSX 导出。",
+        "output_formats": ["JSON", "XLSX"],
+        "operations": ["query", "crawl_all", "export"],
+        "fields": _TDC_DATA_MODEL_FIELDS,
+    },
+    {
+        "id": "tdc-sor",
+        "name": "TDC SOR 流程报表",
+        "category": "tdc",
+        "source": "services/tdc_crawler.py",
+        "availability": "available",
+        "implementation_status": "已完整实现",
+        "description": "TDC SOR 流程报表的查询、全量抓取与官方 XLSX 导出。",
+        "output_formats": ["JSON", "XLSX"],
+        "operations": ["query", "crawl_all", "export"],
+        "fields": _TDC_SOR_FIELDS,
+    },
+]
+
+
+_STATISTICS_MAX_HISTORY_ROWS = 20000
+
+
+def _deliverable_form_statistics_payload(
+    db: DatabaseManager,
+    form_key: str,
+) -> dict[str, Any]:
+    """快照统计分析读取装配：最新快照行 + 有界历史快照 → 纯函数。
+
+    只读已落库的规范化行，不做任何抓取或凭据解析；历史快照数量有界
+    （STATISTICS_HISTORY_SNAPSHOT_LIMIT），累计行数有界
+    （_STATISTICS_MAX_HISTORY_ROWS），避免端点无界读取。
+    historyTruncated=True 表示因行数上限停止装载，历史不完整。
+    """
+    latest = db.get_latest_deliverable_form_snapshot(form_key)
+    if latest is None:
+        return {
+            "formKey": str(form_key),
+            "hasSnapshot": False,
+            "snapshotAt": None,
+            "statistics": None,
+            "historyTruncated": False,
+        }
+    snapshot_id = int(latest["id"])
+    snapshot_at = str(latest.get("snapshot_at") or "")
+    rows = db.list_deliverable_form_snapshot_rows(snapshot_id)
+    history: list[dict[str, Any]] = []
+    history_rows_loaded = 0
+    history_truncated = False
+    snapshots = db.list_deliverable_form_snapshots(
+        form_key, limit=STATISTICS_HISTORY_SNAPSHOT_LIMIT + 1
+    )
+    for item in snapshots:
+        if int(item["id"]) == snapshot_id or len(history) >= STATISTICS_HISTORY_SNAPSHOT_LIMIT:
+            continue
+        if history_rows_loaded >= _STATISTICS_MAX_HISTORY_ROWS:
+            history_truncated = True
+            break
+        entry_rows = db.list_deliverable_form_snapshot_rows(int(item["id"]))
+        # 解码成本已发生，即使快照时间非法未入 history 也计入累计上界。
+        history_rows_loaded += len(entry_rows)
+        entry = statistics_history_entry(item.get("snapshot_at"), entry_rows)
+        if entry is not None:
+            history.append(entry)
+    statistics = compute_form_statistics(
+        str(form_key), rows, snapshot_at=snapshot_at, history=history
+    )
+    return {
+        "formKey": str(form_key),
+        "hasSnapshot": True,
+        "snapshotAt": snapshot_at or None,
+        "statistics": statistics,
+        "historyTruncated": history_truncated,
+    }
+
+
+
+def register_form_catalog_routes(app: Any) -> None:
+    # 无 create_app 局部依赖（纯模块级常量 + 服务调用）。
+
+    # ── 路由（逐字迁入） ──
+    @app.get("/api/deliverable-forms/<form_key>/view")
+    def api_deliverable_form_view(form_key: str):
+        try:
+            filters, trend_limit, overdue_thresholds = _deliverable_form_query()
+            rollup = _form_section_rollup(form_key)
+            data = deliverable_form_service.view(
+                form_key,
+                filters=filters,
+                trend_limit=trend_limit,
+                overdue_thresholds=overdue_thresholds,
+                section_rollup=rollup[0] if rollup else None,
+            )
+            if rollup is not None:
+                data["sectionRollup"] = rollup[1]
+            response = jsonify({"ok": True, "data": data})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except KeyError:
+            return _json_error(404, "NotFound", "未找到交付物表单")
+        except (TypeError, ValueError) as exc:
+            return _json_error(422, "ValidationError", _sanitize_error_message(exc))
+        except Exception as exc:
+            logger.exception("deliverable form view failed")
+            return _json_error(500, "ServerError", _sanitize_error_message(exc))
+
+
+    @app.get("/api/deliverable-forms/<form_key>/rows")
+    def api_deliverable_form_rows(form_key: str):
+        try:
+            filters, _, overdue_thresholds = _deliverable_form_query()
+            offset = request.args.get("offset", "0")
+            limit = request.args.get("limit", "200")
+            try:
+                parsed_offset = int(offset)
+                parsed_limit = int(limit)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("offset and limit must be integers") from exc
+            if not 0 <= parsed_offset <= 100000:
+                raise ValueError("offset must be between 0 and 100000")
+            if not 1 <= parsed_limit <= 500:
+                raise ValueError("limit must be between 1 and 500")
+            rollup = _form_section_rollup(form_key)
+            data = deliverable_form_service.rows(
+                form_key,
+                filters,
+                offset=parsed_offset,
+                limit=parsed_limit,
+                overdue_thresholds=overdue_thresholds,
+                section_rollup=rollup[0] if rollup else None,
+            )
+            response = jsonify({"ok": True, "data": data})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except KeyError:
+            return _json_error(404, "NotFound", "未找到交付物表单")
+        except (TypeError, ValueError) as exc:
+            return _json_error(422, "ValidationError", _sanitize_error_message(exc))
+        except Exception as exc:
+            logger.exception("deliverable form rows failed")
+            return _json_error(500, "ServerError", _sanitize_error_message(exc))
+
+
+    @app.get("/api/deliverable-forms/<form_key>/statistics")
+    def api_deliverable_form_statistics(form_key: str):
+        """确定性快照统计分析（纯统计学，无 AI）：读取最新快照行 + 有界
+        历史快照，交由 services.deliverable_statistics 纯函数计算。"""
+        try:
+            data = _deliverable_form_statistics_payload(db, form_key)
+            response = jsonify({"ok": True, "data": data})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except KeyError:
+            return _json_error(404, "NotFound", "未找到交付物表单")
+        except (TypeError, ValueError) as exc:
+            return _json_error(422, "ValidationError", _sanitize_error_message(exc))
+        except Exception as exc:
+            logger.exception("deliverable form statistics failed")
+            return _json_error(500, "ServerError", _sanitize_error_message(exc))
+
+
+    @app.get("/api/deliverables/catalog")
+    def api_deliverables_catalog():
+        # 按目录条目反查单一关联注册表，追加 links 字段；只追加，
+        # 不修改 _DELIVERABLES_CATALOG 字面量本身，向后兼容。
+        registry_by_catalog_id: dict[str, tuple[str, Mapping[str, Any]]] = {}
+        linked_deliverable_ids: set[str] = set()
+        for candidate_key, candidate in DELIVERABLE_LINK_REGISTRY.items():
+            registry_by_catalog_id[str(candidate["catalog_id"])] = (
+                candidate_key,
+                candidate,
+            )
+            linked_deliverable_ids.add(str(candidate["deliverable_id"]))
+        # displayCode 优先取 project_status_deliverables 表中的实际展示码：
+        # 存量库顺延场景（display_code 冲突后重建）下注册表常量可能与项目
+        # 状态页展示不一致；一次轻量查询取回映射复用，查不到回退注册表常量。
+        actual_display_codes: dict[str, str] = {}
+        if linked_deliverable_ids:
+            with db.get_connection() as conn:
+                placeholders = ", ".join("?" for _ in linked_deliverable_ids)
+                rows = conn.execute(
+                    "SELECT id, display_code FROM project_status_deliverables "
+                    f"WHERE id IN ({placeholders})",
+                    tuple(sorted(linked_deliverable_ids)),
+                ).fetchall()
+            for row in rows:
+                code = str(row["display_code"] or "").strip()
+                if code:
+                    actual_display_codes[str(row["id"])] = code
+        deliverables = []
+        for item in _DELIVERABLES_CATALOG:
+            linked = registry_by_catalog_id.get(str(item.get("id") or ""))
+            job_key, entry = linked if linked is not None else (None, None)
+            display_code = None
+            if entry is not None:
+                deliverable_id = str(entry["deliverable_id"])
+                display_code = (
+                    actual_display_codes.get(deliverable_id)
+                    or entry["display_code"]
+                )
+            enriched = dict(item)
+            enriched["links"] = {
+                "archiveJobKey": job_key,
+                "projectStatusDeliverableId": entry["deliverable_id"] if entry else None,
+                "displayCode": display_code,
+                "formKey": entry["form_key"] if entry else None,
+            }
+            deliverables.append(enriched)
+        return jsonify(
+            {
+                "ok": True,
+                "data": {
+                    "categories": _DELIVERABLE_CATEGORIES,
+                    "deliverables": deliverables,
+                },
+            }
+        )
+
+
+
