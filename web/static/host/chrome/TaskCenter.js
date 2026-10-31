@@ -32,6 +32,27 @@ export function taskCounts(tasks) {
   return { active, history: (tasks || []).length - active };
 }
 
+/**
+ * Display-only progress for one task.
+ *
+ * `task.progress` stays the raw payload of /api/tasks (manual/DB value): the
+ * effective value used for rendering is derived here and never written back.
+ * A task whose total is unknown stays indeterminate — the percent is never
+ * faked as 0% (contract C6).
+ */
+export function effectiveProgress(task) {
+  const raw = task && typeof task.progress === "object" && task.progress ? task.progress : {};
+  const hasRawPercent = raw.percent !== undefined && raw.percent !== null && raw.percent !== "";
+  const numeric = hasRawPercent ? Number(raw.percent) : NaN;
+  const percent = Number.isFinite(numeric) ? Math.min(100, Math.max(0, Math.round(numeric))) : null;
+  const active = isActiveTask(task);
+  return {
+    percent,
+    indeterminate: percent === null && (Boolean(task && task.progressIndeterminate) || active),
+    stage: typeof raw.stage === "string" ? raw.stage : "",
+  };
+}
+
 /** Delay before the next poll, or null to stop polling. */
 export function nextPollDelay({ open, activeCount, closedPolls }) {
   if (open) return POLL_OPEN_MS;
@@ -246,7 +267,14 @@ function TaskCard({ task, now }) {
   const [error, setError] = useState("");
   const active = isActiveTask(task);
   const elapsed = formatElapsed(task, now);
-  const pct = task.progress && task.progress.percent != null ? task.progress.percent : 0;
+  const progress = effectiveProgress(task);
+  const progressFillStyle = progress.indeterminate
+    ? {
+        width: "100%",
+        opacity: "0.45",
+        background: "repeating-linear-gradient(45deg, #0969da 0 6px, #9dc4f0 6px 12px)",
+      }
+    : { width: `${progress.percent}%` };
 
   const run = async (action, failLabel) => {
     setBusy(action);
@@ -272,11 +300,11 @@ function TaskCard({ task, now }) {
       </div>
       <span class=${`hc-task-status ${statusClass(task.status)}`}>${statusLabel(task.status)}</span>
     </div>
-    ${active && task.progress && Object.keys(task.progress).length > 0 && html`<div class="hc-task-progress">
-      <div class="hc-task-progress-bg"><div class="hc-task-progress-fill" style=${{ width: `${pct}%` }}></div></div>
+    ${active && (progress.percent !== null || progress.indeterminate) && html`<div class="hc-task-progress">
+      <div class="hc-task-progress-bg"><div class=${`hc-task-progress-fill${progress.indeterminate ? " is-indeterminate" : ""}`} style=${progressFillStyle}></div></div>
       <div class="hc-task-progress-text">
-        <span>${task.progress.stage || (task.status === "queued" ? "等待资源执行..." : "正在处理中...")}</span>
-        <span>${pct}%</span>
+        <span>${progress.stage || (task.status === "queued" ? "等待资源执行..." : "正在处理中...")}</span>
+        <span>${progress.percent !== null ? `${progress.percent}%` : "进行中"}</span>
       </div>
     </div>`}
     ${task.error_message && html`<div class="hc-task-error">${redactSensitiveText(task.error_message)}</div>`}
