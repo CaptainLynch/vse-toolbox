@@ -10,6 +10,8 @@
 
 The frozen launcher (``VSE-Toolbox.exe``) also routes two internal forms:
 ``--app-child --app-dir D --port P`` (the app child process) and
+``--window URL --profile DIR`` (the pywebview window child process, so that
+``webview.start()`` runs on a process main thread), and
 ``<app>/…/script.py args`` (the app asking for "python script.py", e.g. the
 Excel worker).
 """
@@ -127,6 +129,11 @@ def main(argv: list[str] | None = None) -> int:
         from vse_boot.app_main import main as app_main
 
         return app_main(argv[1:])
+    if argv[:1] == ["--window"]:
+        # pywebview 窗口子进程：start() 必须在本进程主线程，所以由这里直接跑（C1）。
+        from vse_boot.supervisor import run_window
+
+        return run_window(argv)
     if argv and argv[0].lower().endswith(".py"):
         from vse_boot.app_main import run_app_script
 
