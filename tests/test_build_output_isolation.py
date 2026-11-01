@@ -164,3 +164,52 @@ def test_real_winerror5_aborts_script_with_nonzero_process_exit(tmp_path) -> Non
     assert "PermissionError" in message
     assert "下一步" in message
     assert not (updates / "vse-app-2.3.1.vsepkg").exists()
+
+
+def test_install_dir_removal_failure_is_reported_not_ignored(tmp_path, monkeypatch, capsys) -> None:
+    """exe 构建后删除旧安装目录失败时不再静默：报告文件与错误类型、非零退出、不拷入新 exe。"""
+    out_root = tmp_path / "out"
+    install = out_root / "VSE-Toolbox"
+    install.mkdir(parents=True)
+    locked = install / "VSE-Toolbox.exe"
+    locked.write_bytes(b"old exe still running")
+    built = tmp_path / "built" / "VSE-Toolbox"
+    built.mkdir(parents=True)
+    (built / "VSE-Toolbox.exe").write_bytes(b"new exe")
+
+    monkeypatch.setattr(build, "build_exe", lambda trusted, root: built)
+
+    def deny_rmtree(path, *args, **kwargs):
+        raise PermissionError(13, "Access is denied", str(locked))
+
+    monkeypatch.setattr(build.shutil, "rmtree", deny_rmtree)
+    code = build.main(["--out", str(out_root)])
+    captured = capsys.readouterr()
+    message = captured.out + captured.err
+
+    assert code == 2
+    assert locked.read_bytes() == b"old exe still running", "失败时不得覆盖旧安装"
+    assert str(locked) in message
+    assert "PermissionError" in message
+    assert "安装目录" in message
+    assert "下一步" in message
+    assert not (install / "vse-app-2.3.0.vsepkg").exists(), "失败后不得继续生成包"
+
+
+def test_install_dir_removal_success_replaces_with_built_exe(tmp_path, monkeypatch, capsys) -> None:
+    """成功路径：旧安装目录被整体替换为本次构建结果（残留旧文件不保留）。"""
+    out_root = tmp_path / "out"
+    install = out_root / "VSE-Toolbox"
+    install.mkdir(parents=True)
+    (install / "leftover-from-old-build.dll").write_bytes(b"old")
+    built = tmp_path / "built" / "VSE-Toolbox"
+    built.mkdir(parents=True)
+    (built / "VSE-Toolbox.exe").write_bytes(b"new exe")
+    monkeypatch.setattr(build, "build_exe", lambda trusted, root: built)
+
+    code = build.main(["--out", str(out_root)])
+    capsys.readouterr()
+
+    assert code == 0
+    assert (install / "VSE-Toolbox.exe").read_bytes() == b"new exe"
+    assert not (install / "leftover-from-old-build.dll").exists()

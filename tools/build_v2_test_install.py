@@ -40,10 +40,11 @@ OUT_ENV = "VSE_TEST_INSTALL_ROOT"
 class StalePackageError(Exception):
     """旧包清理失败：保留现场，由 main() 报告路径、错误类型和下一步后非零退出。"""
 
-    def __init__(self, path: Path, error: OSError) -> None:
+    def __init__(self, path: Path, error: OSError, what: str = "更新包") -> None:
         super().__init__(f"{path}: {type(error).__name__}: {error}")
         self.path = path
         self.error = error
+        self.what = what
 
 
 def resolve_out_root(value: str | None = None) -> Path:
@@ -80,9 +81,25 @@ def remove_stale_packages(*directories: Path) -> list[Path]:
     return removed
 
 
+def remove_install_dir(install: Path) -> None:
+    """删除上次的安装目录以便整体替换为新构建的 exe 目录。
+
+    删除失败（文件被占用、权限不足等）不再静默忽略：包装成 StalePackageError
+    向上抛，调用方报告并非零退出，避免把新 exe 拷进残留旧文件的目录。
+    不修改 ACL、不结束进程。
+    """
+    if not install.exists():
+        return
+    try:
+        shutil.rmtree(install)
+    except OSError as exc:
+        failed = Path(exc.filename) if getattr(exc, "filename", None) else install
+        raise StalePackageError(failed, exc, what="安装目录文件") from exc
+
+
 def report_stale_package_error(exc: StalePackageError, out_root: Path) -> int:
     """打印旧包清理失败的诊断信息并返回非零退出码（不吞掉任何 OSError）。"""
-    print("错误：无法删除旧更新包，本次构建已停止（旧包保留在原处）。", file=sys.stderr)
+    print(f"错误：无法删除旧{exc.what}，本次构建已停止（未删除的文件保留在原处）。", file=sys.stderr)
     print(f"  文件：{exc.path}", file=sys.stderr)
     print(f"  错误类型：{type(exc.error).__name__}：{exc.error}", file=sys.stderr)
     print(f"  输出根：{out_root}", file=sys.stderr)
@@ -193,7 +210,10 @@ def main(argv: list[str] | None = None) -> int:
     pem, trusted = ensure_test_key(out_root / "keys")
     if not args.skip_exe:
         built = build_exe(trusted, out_root)
-        shutil.rmtree(install, ignore_errors=True)
+        try:
+            remove_install_dir(install)
+        except StalePackageError as exc:
+            return report_stale_package_error(exc, out_root)
         shutil.copytree(built, install, dirs_exist_ok=True)
 
     first = release.build_app(version="2.3.0", key_pem=pem, notes="多项目切换、一键开启自动同步、交付物详情简洁视图、取消「子系统开发策略」", out_dir=install)
