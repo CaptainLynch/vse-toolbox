@@ -6,6 +6,8 @@ from datetime import date
 import json
 from typing import Mapping, Sequence, TypedDict
 
+from core.time_rules import overdue_state
+
 
 MILESTONE_STATUSES = ("未开始", "进行中", "已完成", "已超期")
 
@@ -180,6 +182,9 @@ def deliverable_display_state(
         state, label = "snapshot", "快照同步"
 
     # 快照态的有效状态换算（与前端 deliverableFormDisplay 同规则）。
+    # 这里的 overdue 只是**消费**单一内核的计数（由
+    # services.project_status_deliverable_analysis 的列表/详情同源汇总给出），
+    # 本函数不重算任何逾期天数。
     effective_status = str(status_baseline)
     if state == "snapshot" and display_summary:
         if total and int(display_summary.get("completed") or 0) >= total:
@@ -943,6 +948,13 @@ def project_status_default_department(deliverable_id: str) -> str | None:
 
 
 def milestone_display_status(status: object, milestone_date: object, today: date) -> str:
+    """节点展示状态：已完成覆盖一切，逾期判定委托 core.time_rules 单一内核。
+
+    项目状态看板（列表）与阶段详情共用本函数，``已超期`` 不再各自实现
+    ``planned < today``：未完成节点统一由 ``overdue_state`` 判定，避免列表与
+    详情出现两套逾期口径（契约 C5/C9）。日期解析仍留在本层，解析失败与
+    未设置日期都回落到既有文案（不伪造逾期）。
+    """
     normalized = {
         "done": "已完成",
         "current": "进行中",
@@ -953,11 +965,15 @@ def milestone_display_status(status: object, milestone_date: object, today: date
     }.get(str(status), str(status))
     if normalized == "已完成":
         return normalized
+    fallback = normalized if normalized in MILESTONE_STATUSES else "未开始"
     try:
         planned = date.fromisoformat(str(milestone_date))
-    except ValueError:
-        return normalized if normalized in MILESTONE_STATUSES else "未开始"
-    return "已超期" if planned < today else normalized
+    except (TypeError, ValueError):
+        return fallback
+    # completed=False 是安全的：未完成节点才走到这里（上面已提前返回）。
+    if overdue_state(planned, False, today=today).state == "overdue":
+        return "已超期"
+    return normalized
 
 
 def current_stage_label(
