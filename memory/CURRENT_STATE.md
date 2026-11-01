@@ -4,7 +4,25 @@
 > 更早条目完整保存在 [归档文件](archive/CURRENT_STATE_ARCHIVE_20261023.md)。
 > 恢复状态时**不要**再通读全文；先读本节，再按需查归档。
 
-## 当前前沿（2026-10-31 · Wave 10：W16-03 已提交、待集成验收 · DSH-V2-00 基线重建）
+## 当前前沿（2026-11-01 · DSH 计划第 1 波已集成：V2-01/44/45/46；V2-47 待批）
+
+- **DSH 第 1 波（2026-11-01）——已合入 refactor/ux-v2（7cfa1a4，快进）**：计划见
+  `docs/dsh-next-20261031/`。四任务各在隔离工作树执行（DSH 执行者 deepseek-v4.1-flash，Claude 评审），
+  合并无冲突；集成全量 pytest **3556 passed / 7 skipped / 2 warnings，exit 0，441.56s**
+  （日志 `E:\project\vse-toolbox-wt\_logs\wave1-integration-pytest.txt`；新增 skip 为 V2-45 符号链接用例）。
+  - 4ee5f49 V2-46 交付物详情表格列身份（simple-logic.js 纯函数 + Node 驱动测试）。
+  - ac59701 V2-44 测试安装输出根可配置（`--out`/`VSE_TEST_INSTALL_ROOT`）、旧包清理失败 exit 2 不吞错。
+    **评审两轮均 pass，但桥指纹在内容未变时翻转（881a69bf↔e0c76e1c）致工作流 blocked，由主控人工复核放行**。
+    遗留低风险：旧包清理移到 exe 构建之前；`shutil.rmtree(install, ignore_errors=True)` 仍静默。
+  - a7edd4e V2-45 产物过期清理只删过期且非活跃任务、失败保留并报告；TaskCenter 进度仅展示层。
+    遗留：`web/app.py` 启动期清理仍按 mtime 删除，未走新链路。
+  - 2542dab V2-01 本机安全真实 HTTP 集成测试（werkzeug make_server + FakeClock，5 场景）。
+  - 合并后 `PROJECT_MAP.md` 已 `--write` 刷新，`--check` exit 0。
+- **执行环境教训**：本地网关并发 4 个执行者会 503 `no_healthy_account`——**串行派发**；桥已修超时杀进程树
+  （`taskkill /T /F`）、执行超时 30 分钟；指纹翻转根因未定，桥已加 `~/.dsh-bridge/fp-debug.log` 诊断。
+  执行者计划须写明不得用 `git add -N` 等改动索引的命令。
+- **下一步**：DSH-V2-47（启动器单实例/自启，risk_class=high）须主控冻结契约并经用户单独批准后才可派发；
+  其余后续波次按 tasks.json 依赖推进。W16-03 集成验收项仍未做（见下）。
 
 - **W16-03（b781066）——已提交、待集成验收（不是已交付）**：本机安全集中接入，C7 全条款落地。
   `web/security.py` 新建（247 行：BootTicketStore 10 秒一次性启动票据 / LocalSessionStore 12 小时会话
