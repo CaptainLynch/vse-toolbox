@@ -6,12 +6,25 @@
 // 3. 区分「稍后设置」（标记 status: skipped）与「已完成」（标记 status: completed）；
 // 4. 每步可返回，开机自启询问默认关闭，现有向导调用方零修改。
 
-import { html, useState, useEffect } from "/static/host/vendor/preact-htm.js";
+import { html, useState, useEffect, useRef } from "/static/host/vendor/preact-htm.js";
 import { submitDomainLogin, updateSessionBadges } from "/static/host/session.js";
 import { api, go, activeDeliverables } from "./common.js";
 
 export const DISMISS_KEY = "vse.wizardDone";
 export const STATE_KEY = "vse.wizardState";
+
+/**
+ * 单项目环境（源码直接运行，没有启动器管理多项目）的唯一合法错误码。
+ * 后端 POST /api/p/workbench/projects 只在该情形返回 409 + 这个错误码，
+ * 见 plugins/workbench/backend.py 的 mutation()：ctx.json_error(409, "NotManaged", ...)。
+ */
+export const NOT_MANAGED_CODE = "NotManaged";
+
+/**
+ * 开机自启的确认状态。只有后端明确回报后才允许显示「已开启 / 未开启」，
+ * 失败或读不到状态时绝不猜测（避免勾选/未勾选被伪报成已生效）。
+ */
+export const AUTOSTART_CONFIRMED = ["on", "off", "failed", "unknown"];
 
 export const STEP_NAMES = ["欢迎", "统一登录", "新建项目", "选择交付物", "开机自启", "完成"];
 
@@ -31,6 +44,12 @@ export const ALLOWED_STATE_KEYS = [
   // 注：偏好类标记（如「记住登录」勾选）不进本清单——凭据本身走凭据保护库，勾选态每次会话默认勾上
   "updatedAt",
   "skippedStep",
+  // 项目恢复：已建项目 ID 与创建签名（车型+名称+科室），用于刷新/重启后复用，不再重复建项目
+  "projectId",
+  "projectCreated",
+  "projectSignature",
+  // 开机自启确认态（on/off/failed/unknown），只记录后端回报的结果，不记录任何凭据
+  "autostartConfirmed",
 ];
 
 /**
@@ -63,6 +82,12 @@ export function sanitizeWizardState(input) {
   // 开机自启询问默认关
   clean.autostart = Boolean(clean.autostart);
   if (typeof clean.username !== "string") clean.username = "";
+  // 项目恢复：ID 与签名只接受字符串，未创建过就是空
+  if (typeof clean.projectId !== "string") clean.projectId = "";
+  if (typeof clean.projectSignature !== "string") clean.projectSignature = "";
+  clean.projectCreated = Boolean(clean.projectCreated);
+  // 开机自启确认态：只接受枚举值，未知一律 unknown（不猜测已生效）
+  if (!AUTOSTART_CONFIRMED.includes(clean.autostartConfirmed)) clean.autostartConfirmed = "unknown";
   delete clean.saveCredentials;  // 偏好不持久化（见 ALLOWED_STATE_KEYS 注释）
   return clean;
 }
@@ -181,6 +206,146 @@ export function resetWizardState() {
   } catch (_err) {}
 }
 
+/**
+ * 项目创建签名：车型 + 项目名称 + 科室。
+ * 用来判断「已建项目是否就是这次要建的项目」，从而在重复点击或刷新恢复后复用，
+ * 不再发第二次创建请求。
+ */
+export function projectSignature({ vehicle, name, departments } = {}) {
+  const v = String(vehicle == null ? "" : vehicle).trim();
+  const n = String(name == null ? "" : name).trim();
+  const depts = Array.isArray(departments) ? departments.map((d) => String(d)) : [];
+  return JSON.stringify([v, n, depts]);
+}
+
+/**
+ * 只有「HTTP 409 且错误码为 NotManaged」才是已批准的单项目环境分支。
+ * 其它 409（RevisionConflict / CurrentProjectArchived 等）与其它错误码一律按失败处理。
+ * 注：host 的 json_error(409, "NotManaged", ...) 把错误码放在 error.type，
+ * 显式传 code 时才放在 error.code，两者都要认。
+ */
+export function isSingleProjectEnvironment(err) {
+  if (!err || Number(err.status) !== 409) return false;
+  const code = err.code == null || err.code === "" ? err.type : err.code;
+  return String(code == null ? "" : code) === NOT_MANAGED_CODE;
+}
+
+/**
+ * 创建项目失败时给用户看的中文说明。按状态码归类，不回显后端内部细节
+ * （异常类型、路径、堆栈、英文原文）。
+ */
+export function projectCreateErrorMessage(err) {
+  const status = err && Number(err.status);
+  if (status === 401) return "登录状态已失效，请重新登录后再继续";
+  if (status === 403) return "当前操作只允许在本机浏览器中执行";
+  if (status === 409) return "项目创建失败，请刷新后重试";
+  if (status === 422) return "项目信息格式有误，请检查车型与科室后重试";
+  if (status >= 500) return "本地服务暂时不可用，请稍后重试";
+  if (!status) return "无法连接本地服务，请确认 VSE Toolbox 仍在运行";
+  if (status >= 400) return "项目创建失败，请稍后重试";
+  // 2xx 但没有可用的成功响应（例如非 JSON 响应体）
+  return "本地服务返回异常，请重试";
+}
+
+/** 开机自启设置失败时的中文说明，同样不回显内部细节。 */
+export function autostartErrorMessage(err) {
+  const status = err && Number(err.status);
+  if (status === 401) return "登录状态已失效，请重新登录后再继续";
+  if (status === 403) return "开机自启只允许在本机浏览器中设置";
+  if (status === 501) return "当前运行环境不支持开机自启设置";
+  if (status >= 500) return "本地服务暂时不可用，开机自启未生效";
+  if (!status) return "无法连接本地服务，开机自启未生效";
+  if (status >= 400) return "开机自启设置失败，请稍后在设置里重试";
+  return "开机自启未生效，请稍后在设置里重试";
+}
+
+/**
+ * 创建项目或复用已建项目（向导第 2 步的唯一决策点，供组件与测试共用）。
+ *
+ * - 已建过项目且签名一致（重复点击、刷新/重启恢复）→ 直接复用，不再发创建请求；
+ * - 409 + NotManaged → 单项目环境的已批准分支，视为可继续；
+ * - 其它任何错误（401/403/500/网络/非 JSON/其它 409）→ 失败：不推进步骤、不标记已建项目。
+ *
+ * 返回 { ok, step, projectId, signature, reused, singleProject, message }。
+ */
+export async function createOrReuseProject({ create, vehicle, name, departments, saved } = {}) {
+  const v = String(vehicle == null ? "" : vehicle).trim();
+  const projectNameStr = String(name == null ? "" : name).trim() || v;
+  const depts = Array.isArray(departments) ? departments.map((d) => String(d)) : [];
+  const signature = projectSignature({ vehicle: v, name: projectNameStr, departments: depts });
+  const previous = saved && typeof saved === "object" ? saved : {};
+
+  if (previous.projectCreated === true && previous.projectSignature === signature) {
+    return {
+      ok: true,
+      step: 3,
+      reused: true,
+      singleProject: false,
+      projectId: typeof previous.projectId === "string" ? previous.projectId : "",
+      signature,
+    };
+  }
+
+  let data;
+  try {
+    data = await create({ name: projectNameStr, vehicle: v, departments: depts });
+  } catch (err) {
+    if (isSingleProjectEnvironment(err)) {
+      // 单项目环境：没有多项目能力，但没有真的失败；记下 main（后端单项目 id）避免反复 409
+      return { ok: true, step: 3, reused: false, singleProject: true, projectId: "main", signature };
+    }
+    return {
+      ok: false,
+      step: 2,
+      reused: false,
+      singleProject: false,
+      projectId: "",
+      signature,
+      message: projectCreateErrorMessage(err),
+    };
+  }
+
+  const createdId = data && data.project && data.project.id ? String(data.project.id) : "";
+  return { ok: true, step: 3, reused: false, singleProject: false, projectId: createdId, signature };
+}
+
+/**
+ * 开机自启询问的决策点（向导第 4 步）。
+ *
+ * - 未勾选：绝不调用开启；只读回真实状态，读不到就不下结论（confirmed: unknown）；
+ * - 勾选：调用 POST {enabled: true}，只有后端明确返回 enabled === true 才算已开启；
+ * - 失败：如实返回失败（confirmed: failed），组件停在当前步显示原因。
+ */
+export async function submitAutostartChoice({ request, autostart } = {}) {
+  if (!autostart) {
+    try {
+      const data = await request("/api/p/settings/autostart", { method: "GET" });
+      const enabled = Boolean(data && data.enabled === true);
+      return { ok: true, step: 5, called: false, enabled, confirmed: enabled ? "on" : "off" };
+    } catch (_err) {
+      return { ok: true, step: 5, called: false, enabled: false, confirmed: "unknown" };
+    }
+  }
+
+  let data;
+  try {
+    data = await request("/api/p/settings/autostart", { method: "POST", body: { enabled: true } });
+  } catch (err) {
+    return { ok: false, step: 4, called: true, enabled: false, confirmed: "failed", message: autostartErrorMessage(err) };
+  }
+  if (!data || data.enabled !== true) {
+    return {
+      ok: false,
+      step: 4,
+      called: true,
+      enabled: false,
+      confirmed: "failed",
+      message: "开机自启没有生效，请稍后在设置里重新开启",
+    };
+  }
+  return { ok: true, step: 5, called: true, enabled: true, confirmed: "on" };
+}
+
 export function Wizard({ projectName, onClose, initialStep }) {
   const saved = loadWizardState() || {};
 
@@ -214,11 +379,17 @@ export function Wizard({ projectName, onClose, initialStep }) {
 
   // 开机自启设置（默认关）
   const [autostart, setAutostart] = useState(Boolean(saved.autostart));
+  // 开机自启确认态：只有后端回报后才显示已开启/未开启
+  const [autostartConfirmed, setAutostartConfirmed] = useState(
+    AUTOSTART_CONFIRMED.includes(saved.autostartConfirmed) ? saved.autostartConfirmed : "unknown"
+  );
 
   // 交互反馈与加载状态
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(null);
   const [error, setError] = useState("");
+  // 防重复点击：创建项目的请求在飞时不发第二次
+  const projectSubmitting = useRef(false);
 
   const persistCurrent = (nextStep, extra = {}) => {
     saveWizardState({
@@ -313,29 +484,47 @@ export function Wizard({ projectName, onClose, initialStep }) {
 
   const submitProject = async (event) => {
     if (event) event.preventDefault();
+    if (projectSubmitting.current) return;  // 双击只发一次创建请求
     const v = vehicle.trim();
     if (!v) {
       setError("请填写车型，例如 F610S");
       return;
     }
+    projectSubmitting.current = true;
     setBusy(true);
     setError("");
     const projectNameStr = name.trim() || v;
     saveWizardState({ vehicle: v, name: projectNameStr, departments });
+    let outcome;
     try {
-      await api("/api/p/workbench/projects", {
-        method: "POST",
-        body: { name: projectNameStr, vehicle: v, departments },
+      outcome = await createOrReuseProject({
+        create: (body) => api("/api/p/workbench/projects", { method: "POST", body }),
+        vehicle: v,
+        name: projectNameStr,
+        departments,
+        saved: loadWizardState() || {},
       });
-    } catch (err) {
-      // 若处于单项目环境（409 NotManaged），非致命错误，平滑进入下一步
-      if (err && err.status === 422) {
-        setError(err.message || "项目信息格式有误");
-        setBusy(false);
-        return;
-      }
+    } catch (_err) {
+      // 任何未预期的异常同样按失败处理，不得静默推进
+      outcome = null;
+    } finally {
+      projectSubmitting.current = false;
     }
     setBusy(false);
+    if (!outcome || !outcome.ok) {
+      // 失败一律停在当前步，显示真实原因，不标记已建项目
+      setError((outcome && outcome.message) || "项目创建失败，请稍后重试");
+      return;
+    }
+    // 创建成功：把项目 ID 与创建签名一起持久化，刷新/重启后复用，不再重复建项目
+    saveWizardState({
+      projectCreated: true,
+      projectId: outcome.projectId || "",
+      projectSignature: outcome.signature,
+      vehicle: v,
+      name: projectNameStr,
+      departments,
+    });
     goToStep(3);
   };
 
@@ -385,18 +574,28 @@ export function Wizard({ projectName, onClose, initialStep }) {
 
   const submitAutostart = async () => {
     setBusy(true);
+    setError("");
     saveWizardState({ autostart });
-    if (autostart) {
-      try {
-        await api("/api/p/settings/autostart", {
-          method: "POST",
-          body: { enabled: true },
-        });
-      } catch (_err) {
-        // 环境不支持时不影响继续向导
-      }
-    }
+    const outcome = await submitAutostartChoice({
+      request: (url, options) => api(url, options),
+      autostart,
+    });
     setBusy(false);
+    setAutostartConfirmed(outcome.confirmed);
+    saveWizardState({ autostartConfirmed: outcome.confirmed });
+    if (!outcome.ok) {
+      // 如实显示失败，停在自启步；用户可重试，也可显式跳过
+      setError(outcome.message || "开机自启设置失败，请稍后在设置里重试");
+      return;
+    }
+    goToStep(5);
+  };
+
+  /** 自启设置失败后显式跳过：不把失败伪报成已开启，完成页如实说明未生效。 */
+  const skipAutostartStep = () => {
+    setError("");
+    setAutostartConfirmed("failed");
+    saveWizardState({ autostartConfirmed: "failed" });
     goToStep(5);
   };
 
@@ -512,17 +711,28 @@ export function Wizard({ projectName, onClose, initialStep }) {
           </div>
         </label>
       </div>
+      ${error && html`<p class="wb-error" role="alert">${error}</p>`}
       <div class="wb-row" style="margin-top:20px;justify-content:space-between">
         <div class="wb-row">
           <button type="button" class="wb-link" onClick=${() => goToStep(3)}>上一步</button>
           <span style="color:var(--hairline-strong)">|</span>
           <button type="button" class="wb-link" onClick=${skipWizard}>稍后设置</button>
+          ${error && html`<span style="color:var(--hairline-strong)">|</span><button type="button" class="wb-link" onClick=${skipAutostartStep}>先跳过自启</button>`}
         </div>
         <button type="button" class="wb-btn is-primary" onClick=${submitAutostart} disabled=${busy}>${busy ? "正在保存…" : "下一步"}</button>
       </div>
     </div>`;
   } else {
     const displayProject = name || vehicle || projectName || "默认项目";
+    // 开机自启只按后端回报的确认态展示：未确认或失败绝不写成已开启
+    const autostartText =
+      autostartConfirmed === "on"
+        ? "已开启"
+        : autostartConfirmed === "off"
+          ? "未开启（默认关闭，可随时在设置开启）"
+          : autostartConfirmed === "failed"
+            ? "未能开启（可稍后在设置里开启）"
+            : "未确认（可稍后在设置里查看）";
     body = html`<div>
       <h2>配置完成</h2>
       <p class="wb-sub">首次使用向导配置已就绪，你可以开始使用了。</p>
@@ -530,7 +740,7 @@ export function Wizard({ projectName, onClose, initialStep }) {
         <li>账号：${username ? `${username}（${save ? "已记住密码，可自动同步" : "未记住密码"}）` : "未配置（可稍后登录）"}</li>
         <li>项目：${displayProject}（${departments.length} 个科室）</li>
         <li>跟踪交付物：已选 ${selectedDeliverables.length} 项纳入自动跟踪</li>
-        <li>开机自启：${autostart ? "已开启" : "未开启（默认关闭，可随时在设置开启）"}</li>
+        <li>开机自启：${autostartText}</li>
       </ul>
       <p class="wb-sub" style="margin-top:12px">接下来可以在项目页一键开启交付物自动同步，或进入今天页查看待办与最新进度。</p>
       <div class="wb-row" style="margin-top:20px;justify-content:space-between">
