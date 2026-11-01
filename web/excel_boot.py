@@ -20,6 +20,24 @@ from services.excel_task_admin import ExcelArtifactUnavailableError, ExcelTaskAd
 logger = logging.getLogger(__name__)
 
 
+def _worker_autostart(controller: Any | None) -> dict[str, Any]:
+    """提交后自动拉起唯一 Worker 进程（契约 2）；失败只降级为状态值，不影响任务创建。
+
+    控制器没有 `ensure_running`（如 in_process 模式）时视为 unavailable。
+    """
+    ensure = getattr(controller, "ensure_running", None) if controller is not None else None
+    if not callable(ensure):
+        return {"state": "unavailable"}
+    try:
+        result = ensure(reason="submit")
+    except Exception:
+        logger.exception("Excel worker auto start failed")
+        return {"state": "failed", "error": "Excel 处理进程自动启动失败，请手动启动或稍后重试"}
+    if isinstance(result, dict):
+        return dict(result)
+    return {"state": "unknown"}
+
+
 class ExcelRouteDeps:
     """Excel 路由依赖包：create_app 显式注入。"""
 
@@ -75,6 +93,11 @@ def register_excel_routes(app: Any, deps: ExcelRouteDeps) -> None:
             return _json_error(400, "ValidationError", "JSON object body is required")
         try:
             data = excel_admin_service.create_task(payload)
+            # 任务已落库（queued）后才尝试自动启动：启动失败也保持 200/queued。
+            try:
+                data["workerAutoStart"] = _worker_autostart(excel_worker_controller)
+            except Exception:
+                logger.exception("Excel worker auto start hook failed")
             response = jsonify({"ok": True, "data": data})
             response.headers["Cache-Control"] = "no-store"
             return response
