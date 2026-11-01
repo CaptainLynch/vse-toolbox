@@ -9,6 +9,12 @@ artifact_type 为 ``official_xlsx``，与 TDC/Aras 官方工作簿同一套安�
 同一导出日同一组筛选条件已有成功产物时直接复用（``force`` 才重跑）；复用判断与产物列表用的运行记录是插件内部数据，
 放在 ``<插件数据目录>/runs/<导出日>/<筛选键>.json``（不提供下载）。失败不写任何文件。
 
+复用键 = 导出日目录 + 筛选键（``project``/``department``/``section``/起止日期的 sha256 摘要）+ 记录里的同名字段，
+命中后还必须确认产物仍在归档根目录内、大小与记录的 ``bytes``、摘要与记录的 ``sha256`` 与磁盘一致（``artifact_intact``）；
+文件丢失、被改写、记录缺校验字段都算未命中，走正常导出重新落盘，不删除任何既有文件。
+项目隔离有两条：多项目环境每个项目一个数据根（``VSE_DATA_ROOT``），运行记录按项目数据目录分开；
+记录里另存 ``filters``（含项目编号），跨项目共享归档根时也不会误复用。
+
 账号：帆软账号与统一域账号相同，只经宿主的 DPAPI 域账号库读取（``DOMAIN_REF``），插件不保存账号口令。
 自动导出参照「自动归档」：Windows 计划任务每小时跑一次 ``tools/tir_export_cli.py --once``，
 由 ``auto_decision`` 判断是否到点、当天是否已有结果；登录类失败当天不再重试，避免锁定域账号。
@@ -51,6 +57,8 @@ AUTO_STOP_CODES = frozenset({"credential_missing", "credential_unavailable", "lo
 _LOCK_STALE_SECONDS = 30 * 60
 _DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _STEM_RE = re.compile(r"^tir_[A-Za-z0-9-]{1,24}_\d{8}-\d{8}_[0-9a-f]{8}$")
+_SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+_DIGEST_CHUNK = 1024 * 1024
 _TASK_ID_RE = re.compile(r"^crawl_[0-9a-f]{12}$")
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
@@ -162,6 +170,42 @@ def artifact_path(store: Any, record: Mapping[str, Any]) -> Path | None:
     return target
 
 
+def _file_fingerprint(path: Path) -> tuple[int, str] | None:
+    """``(size, sha256)`` of one archived file, or ``None`` when it cannot be read."""
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        with path.open("rb") as handle:
+            while True:
+                chunk = handle.read(_DIGEST_CHUNK)
+                if not chunk:
+                    break
+                size += len(chunk)
+                digest.update(chunk)
+    except OSError:
+        return None
+    return size, digest.hexdigest()
+
+
+def artifact_intact(record: Mapping[str, Any], target: Path) -> bool:
+    """是否仍是记录描述的那份产物：文件存在、大小与 ``bytes``、摘要与 ``sha256`` 都一致。
+
+    记录缺 ``bytes``/``sha256``（旧记录或被手改）时一律算不符：无法证明产物没变，
+    宁可重新导出，也不能把被改写的工作簿当成当天结果返回。
+    """
+    recorded_size = record.get("bytes")
+    recorded_sha = record.get("sha256")
+    if not isinstance(recorded_size, int) or isinstance(recorded_size, bool) or recorded_size <= 0:
+        return False
+    if not isinstance(recorded_sha, str) or not _SHA256_RE.match(recorded_sha):
+        return False
+    fingerprint = _file_fingerprint(target)
+    if fingerprint is None:
+        return False
+    size, digest = fingerprint
+    return size == recorded_size and digest == recorded_sha.lower()
+
+
 def _read_record(data_dir: Path, day: str, stem: str) -> dict[str, Any] | None:
     try:
         record = json.loads((runs_root(data_dir) / day / f"{stem}.json").read_text(encoding="utf-8"))
@@ -171,10 +215,24 @@ def _read_record(data_dir: Path, day: str, stem: str) -> dict[str, Any] | None:
 
 
 def find_cached(data_dir: Path, store: Any, day: str, filters: P.ExportFilters) -> dict[str, Any] | None:
-    record = _read_record(data_dir, day, file_stem(filters))
-    if record is not None and artifact_path(store, record) is not None:
-        return {**record, "day": day}
-    return None
+    """同一天、同一组筛选的既有成功产物；任何一项对不上都算未命中（调用方照常导出）。
+
+    复用键 = 导出日 + ``file_stem(filters)``（项目/部门/科室/起止日期摘要），并要求记录里的
+    ``day``/``stem``/``filters`` 与本次请求完全一致：不同项目、不同车型（多项目各自数据根）、
+    不同筛选、不同导出日都不会命中。命中前再用 :func:`artifact_intact` 校验产物本身。
+    """
+    stem = file_stem(filters)
+    record = _read_record(data_dir, day, stem)
+    if record is None:
+        return None
+    if record.get("stem") != stem or record.get("day") != day:
+        return None
+    if record.get("filters") != filters.as_payload():
+        return None
+    target = artifact_path(store, record)
+    if target is None or not artifact_intact(record, target):
+        return None
+    return {**record, "day": day}
 
 
 def list_exports(data_dir: Path, store: Any, limit: int = 50) -> list[dict[str, Any]]:
@@ -343,7 +401,7 @@ def run_export(
             file_name=f"{ARCHIVE_REPORT}-manifest.json", artifact_type=MANIFEST_TYPE,
         )
         meta: dict[str, Any] = {
-            "ok": True, "report": P.REPORT_NAME, "filters": filters.as_payload(), "stem": stem,
+            "ok": True, "report": P.REPORT_NAME, "filters": filters.as_payload(), "stem": stem, "day": day,
             "runId": run_id, "relativePath": artifact.relative_path, "fileName": artifact.display_name,
             "manifestPath": manifest.relative_path,
             "sha256": artifact.sha256, "rows": result.rows, "headerCheck": check,
