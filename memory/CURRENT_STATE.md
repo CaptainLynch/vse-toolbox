@@ -7,7 +7,7 @@
 ## 当前前沿（2026-11-01 · DSH 计划第 2 波全部集成；第 1 波见下）
 
 - **DSH 第 2 波（2823848，快进合入 refactor/ux-v2）**：14 项全部完成，集成全量 **3746 passed / 7 skipped /
-  2 warnings，exit 0，477.87s**（`E:\projectse-toolbox-wt\_logs\wave2-integration-pytest.txt`）。
+  2 warnings，exit 0，477.87s**（`E:\project\vse-toolbox-wt\_logs\wave2-integration-pytest.txt`）。
   执行者两路并发未再触发网关 503；全部 Claude 评审第 1 轮 pass，主控逐项复核 diff 与聚焦测试。
   - 实现：06 wave_gate 严格 release 模式（主控补：只缺一个术语文件也判失败）；07 路由接线/响应契约测试
     （钉住 3 条读路由缺 no-store、诊断旧错误信封）；08 离线真实浏览器夹具（Edge headless + 内嵌 Node CDP，
