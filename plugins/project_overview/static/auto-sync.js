@@ -4,6 +4,17 @@
 // 不新增后端接口、不绕开任何校验：哪一项没核对上，就停在那一项并说清原因。
 import { html, useEffect, useState } from "/static/host/vendor/preact-htm.js";
 import { useStylesheet } from "/static/host/kit.js";
+import {
+  failRunningFirstSync,
+  markFirstSyncNotApplicable,
+  markFirstSyncRunning,
+  readFirstSyncRequest,
+  recoverInterruptedFirstSync,
+  readOnboardingSelection,
+  recordFirstSyncEntry,
+  requestFirstSync,
+  summarizeFirstSync,
+} from "/static/host/onboarding-selection.js";
 import { PROJECT_PHASE_ID } from "./shared/client.js";
 import { apiRequest, enc } from "./deliverable/api.js";
 import { runEnableFlow } from "./deliverable/enable-flow.js";
@@ -26,9 +37,20 @@ export function autoSyncValues(policy, capabilities, vaultConfigured, { vehicle,
   return values;
 }
 
-/** 可以一键开启的交付物：有连接器、且还没开启。 */
-export function autoSyncTargets(deliverables, policies) {
+/**
+ * 向导选择的启用范围。null = 没有向导选择（沿用全部交付物）；
+ * 空数组 = 用户明确一个都没勾选（本次不启用任何交付物）。
+ */
+export function autoSyncScope(selection) {
+  if (!selection || !Array.isArray(selection.deliverables)) return null;
+  return new Set(selection.deliverables.map((id) => String(id)));
+}
+
+/** 可以一键开启的交付物：在向导选择范围内、有连接器、且还没开启。 */
+export function autoSyncTargets(deliverables, policies, selection) {
+  const allowed = autoSyncScope(selection);
   return (deliverables || []).filter((d) => {
+    if (allowed && !allowed.has(String(d.id))) return false;
     const caps = d.sourceInfo || {};
     if (!caps.syncCapable) return false;
     const policy = policies[d.id];
@@ -36,12 +58,48 @@ export function autoSyncTargets(deliverables, policies) {
   });
 }
 
-function rowState(item, policies, progress) {
+/**
+ * 首次同步结果 → 逐项状态。只认真实任务回报：
+ * 没有结果（未开始）、失败、需要处理都不算完成。
+ */
+export function firstSyncOutcome(data) {
+  const envelope = data && typeof data === "object" ? data : {};
+  const payload = envelope.data && typeof envelope.data === "object" ? envelope.data : envelope;
+  const result = payload.result && typeof payload.result === "object" ? payload.result : {};
+  const finalState = String(result.finalState || payload.finalState || "");
+  const outcome = String(result.outcome || payload.outcome || finalState);
+  if (finalState === "success" && outcome === "completed") return { state: "success", text: "首次同步成功" };
+  if (finalState === "partial" || outcome === "partial") return { state: "partial", text: "首次同步部分成功" };
+  if (finalState === "busy" || outcome === "busy") return { state: "running", text: "首次同步进行中" };
+  const message = redactSensitiveText(result.errorMessage || payload.errorMessage || "");
+  return { state: "failed", text: message ? `首次同步失败：${message}` : "首次同步失败" };
+}
+
+/** 逐项状态 → 行样式（成功 / 进行中 / 失败或部分成功）。 */
+export function firstSyncTone(state) {
+  if (state === "success") return "ok";
+  if (state === "running") return "info";
+  return "bad";
+}
+
+function rowState(item, policies, progress, selection, request) {
+  if (progress[item.id]) return progress[item.id];
+  // 刷新页面后仍按宿主模块里记录的真实结果展示，失败不会被「已开启」盖掉。
+  const entry = request && Array.isArray(request.entries)
+    ? request.entries.find((candidate) => candidate.id === item.id)
+    : null;
+  if (entry && entry.state === "success") return { tone: "ok", text: entry.text || "首次同步成功" };
+  if (entry && entry.state === "partial") return { tone: "bad", text: entry.text || "首次同步部分成功" };
+  if (entry && entry.state === "failed") return { tone: "bad", text: entry.text || "首次同步失败" };
+  if (entry && entry.state === "running") return { tone: "info", text: entry.text || "首次同步进行中" };
+  if (entry && entry.state === "not_applicable") return { tone: "off", text: entry.text || "不参与自动同步" };
   const caps = item.sourceInfo || {};
   if (!caps.syncCapable) return { tone: "off", text: caps.syncNote || "只能手工维护" };
-  if (progress[item.id]) return progress[item.id];
   const policy = policies[item.id];
   if (policy && policy.enabled === true) return { tone: "ok", text: "已开启 ✓" };
+  const allowed = autoSyncScope(selection);
+  if (allowed && !allowed.has(String(item.id))) return { tone: "off", text: "不在向导选择范围" };
+  if (allowed) return { tone: "off", text: "未开始（等待首次同步）" };
   return { tone: "off", text: "未开启" };
 }
 
@@ -50,6 +108,12 @@ export default function AutoSyncPage({ plugin }) {
   const [load, setLoad] = useState({ loading: true, error: "", status: null, settings: null, policies: {}, project: null });
   const [vehicle, setVehicle] = useState("");
   const [departments, setDepartments] = useState(DEFAULT_DEPARTMENTS);
+  // 向导交接：勾选的交付物与首次同步请求（宿主模块负责存取，不跨插件 import）。
+  const [handoff, setHandoff] = useState(() => ({
+    selection: readOnboardingSelection(),
+    // 首次同步只在本页面内执行：重新打开时遗留的「进行中」恢复为未开始。
+    request: recoverInterruptedFirstSync(),
+  }));
   const [progress, setProgress] = useState({});
   const [running, setRunning] = useState(false);
   const [summary, setSummary] = useState(null);
@@ -75,11 +139,14 @@ export default function AutoSyncPage({ plugin }) {
   };
 
   useEffect(() => {
+    const preferred = handoff.selection || {};
     reload().then((loaded) => {
       if (!loaded) return;
       const phaseName = loaded.status && loaded.status.phase ? loaded.status.phase.displayName : "";
-      setVehicle((loaded.project && loaded.project.vehicle) || phaseName || "");
-      if (loaded.project && loaded.project.departments && loaded.project.departments.length) setDepartments(loaded.project.departments);
+      setVehicle(preferred.vehicle || (loaded.project && loaded.project.vehicle) || phaseName || "");
+      const projectDepartments = loaded.project && loaded.project.departments;
+      const wanted = preferred.departments && preferred.departments.length ? preferred.departments : projectDepartments;
+      if (wanted && wanted.length) setDepartments(wanted);
     });
   }, []);
 
@@ -91,7 +158,18 @@ export default function AutoSyncPage({ plugin }) {
 
   const deliverables = ((load.status && load.status.deliverables) || []).filter((d) => !d.retired);
   const vaultConfigured = Boolean(load.settings) && load.settings.credentialVaultConfigured === true;
-  const targets = autoSyncTargets(deliverables, load.policies);
+  // 有首次同步请求时以请求里的交付物为准，保证逐项结果与请求一一对应。
+  const scope = handoff.request ? { deliverables: handoff.request.deliverables } : handoff.selection;
+  const counts = summarizeFirstSync(handoff.request ? handoff.request.entries : []);
+  const targets = autoSyncTargets(deliverables, load.policies, scope);
+  const scopeEmpty = Boolean(scope && scope.deliverables && scope.deliverables.length === 0);
+  const buttonLabel = running
+    ? "正在开启…"
+    : targets.length
+      ? `全部开启（${targets.length} 项）`
+      : scopeEmpty
+        ? "没有可同步的交付物"
+        : (handoff.request && !counts.allDone ? "已开启（首次同步未全部成功）" : "已全部开启");
   const toggle = (dept) => setDepartments(departments.includes(dept) ? departments.filter((d) => d !== dept) : [...departments, dept]);
   const mark = (id, next) => setProgress((prev) => ({ ...prev, [id]: next }));
 
@@ -99,11 +177,40 @@ export default function AutoSyncPage({ plugin }) {
     const model = vehicle.trim();
     if (!model) { setSummary({ error: true, text: "请先填写车型，例如 F610S" }); return; }
     if (!vaultConfigured) { setSummary({ error: true, text: "还没有保存公司账号的密码：点右上角「登录 / 切换」，登录时勾选“保存至凭据保护库”，然后再回来。" }); return; }
+    // 只有真实点击开始才登记/推进首次同步请求；仅打开页面不会改任何结果。
+    if (scope && scope.deliverables && scope.deliverables.length) {
+      if (!handoff.request) {
+        requestFirstSync({
+          deliverables: scope.deliverables,
+          vehicle: model,
+          departments,
+          projectId: (load.project && load.project.id) || "",
+        });
+      }
+      // 选中但不参与自动同步的项（只能手工维护、早已开启）标为不适用，不让它们永远「未开始」。
+      const targetIds = new Set(targets.map((item) => String(item.id)));
+      const byId = new Map(deliverables.map((d) => [String(d.id), d]));
+      const notApplicable = scope.deliverables
+        .filter((id) => !targetIds.has(String(id)))
+        .map((id) => {
+          const d = byId.get(String(id));
+          const caps = (d && d.sourceInfo) || {};
+          const reason = !d ? "不在当前项目的交付物中" : !caps.syncCapable ? (caps.syncNote || "只能手工维护，不参与自动同步") : "已开启自动同步";
+          return { id, name: (d && d.name) || "", text: reason };
+        });
+      const updated = markFirstSyncNotApplicable(notApplicable);
+      setHandoff((prev) => ({ ...prev, request: updated || readFirstSyncRequest() }));
+    }
+    if (!targets.length) { setSummary({ error: false, text: "没有需要首次同步的交付物。" }); return; }
     setRunning(true);
     setSummary(null);
     window.__vseWizardBusy = true;
-    let ok = 0;
+    if (scope && scope.deliverables && scope.deliverables.length) {
+      markFirstSyncRunning(targets.map((item) => item.id));
+    }
+    let enabled = 0;
     const failed = [];
+    const blocked = [];
     try {
       // 主计划名称就是交付物的车型锚点：先对齐，自动同步才会按这个车型统计。
       const phase = load.status.phase || {};
@@ -120,22 +227,29 @@ export default function AutoSyncPage({ plugin }) {
         const precheck = wizardPrecheck(values, policy, capabilities, vaultConfigured);
         if (precheck) {
           mark(item.id, { tone: "bad", text: precheck });
-          failed.push(item.name);
+          recordFirstSyncEntry({ id: item.id, name: item.name, state: "failed", text: precheck });
+          blocked.push(item.name);
           continue;
         }
         mark(item.id, { tone: "info", text: "正在核对…" });
         try {
-          await runEnableFlow({ item, capabilities, values, vaultConfigured, say: (text) => mark(item.id, { tone: "info", text }) });
-          mark(item.id, { tone: "ok", text: "已核对 ✓ 已开启" });
-          ok += 1;
+          // 真实任务：启用流程内部调用现有 sync-now 接口，返回值就是首次同步结果。
+          const syncData = await runEnableFlow({ item, capabilities, values, vaultConfigured, say: (text) => mark(item.id, { tone: "info", text }) });
+          const outcome = firstSyncOutcome(syncData);
+          mark(item.id, { tone: firstSyncTone(outcome.state), text: outcome.text });
+          recordFirstSyncEntry({ id: item.id, name: item.name, state: outcome.state, text: outcome.text });
+          enabled += 1;
+          if (outcome.state !== "success") failed.push(item.name);
         } catch (err) {
-          mark(item.id, { tone: "bad", text: redactSensitiveText(ewoPolicyErrorMessage(err)) });
-          failed.push(item.name);
+          const text = redactSensitiveText(ewoPolicyErrorMessage(err));
+          mark(item.id, { tone: "bad", text });
+          recordFirstSyncEntry({ id: item.id, name: item.name, state: "failed", text });
+          blocked.push(item.name);
         }
       }
       // 科室回写：用户确认的科室集合在启用流程成功后写回项目默认科室（只在界面有明确科室选择时，失败不阻断流程）
       const currentProjectId = load.project && load.project.id;
-      if (ok > 0 && currentProjectId && Array.isArray(departments) && departments.length > 0) {
+      if (enabled > 0 && currentProjectId && Array.isArray(departments) && departments.length > 0) {
         try {
           await apiRequest(`/api/p/workbench/projects/${enc(currentProjectId)}`, {
             method: "PATCH",
@@ -146,6 +260,9 @@ export default function AutoSyncPage({ plugin }) {
         }
       }
     } catch (err) {
+      // 运行中途失败（如车型对齐 PATCH 失败）：仍标「进行中」的项改记失败，刷新后不会假装还在跑。
+      failRunningFirstSync("首次同步没有开始：车型对齐失败，请重试");
+      setHandoff((prev) => ({ ...prev, request: readFirstSyncRequest() }));
       setSummary({ error: true, text: `没有开始：${redactSensitiveText(ewoPolicyErrorMessage(err))}` });
       setRunning(false);
       window.__vseWizardBusy = false;
@@ -153,9 +270,28 @@ export default function AutoSyncPage({ plugin }) {
     }
     window.__vseWizardBusy = false;
     setRunning(false);
-    setSummary(failed.length
-      ? { error: true, text: `开启了 ${ok} 项；${failed.length} 项没核对上（${failed.join("、")}）。原因写在对应行里，改好车型或科室后再点一次，只会处理没开启的那几项。` }
-      : { error: false, text: ok ? `全部开启了（${ok} 项），之后每天会自动更新。` : "所有能自动同步的交付物都已经开启了。" });
+    failRunningFirstSync();
+    const request = readFirstSyncRequest();
+    setHandoff((prev) => ({ ...prev, request }));
+    if (request) {
+      const latest = summarizeFirstSync(request.entries);
+      const progressText = `向导选择的 ${latest.total} 项：成功 ${latest.success} 项，未成功 ${latest.failed + latest.partial} 项，进行中 ${latest.running} 项，未开始 ${latest.notStarted} 项${latest.notApplicable ? `，不适用 ${latest.notApplicable} 项` : ""}。`;
+      if (latest.allDone) {
+        setSummary({ error: false, text: `${progressText}首次同步已全部完成。` });
+      } else if (failed.length || blocked.length) {
+        const parts = [];
+        if (failed.length) parts.push(`${failed.length} 项首次同步没有成功（${failed.join("、")}）`);
+        if (blocked.length) parts.push(`${blocked.length} 项没有开启（${blocked.join("、")}）`);
+        setSummary({ error: true, text: `${progressText}本次已启用 ${enabled} 项；${parts.join("；")}。未开始或失败的项不会算作完成；未开启的项改好后可再点一次，已开启但同步失败的项可到交付物详情里重新同步。` });
+      } else {
+        setSummary({ error: true, text: `${progressText}仍有 ${latest.notStarted} 项未开始，未开始的项不会算作完成。` });
+      }
+    } else {
+      const issues = failed.concat(blocked);
+      setSummary(issues.length
+        ? { error: true, text: `开启了 ${enabled} 项；${issues.length} 项没有完成（${issues.join("、")}）。原因写在对应行里，改好车型或科室后再点一次，只会处理没开启的那几项。` }
+        : { error: false, text: enabled ? `全部开启了（${enabled} 项），之后每天会自动更新。` : "所有能自动同步的交付物都已经开启了。" });
+    }
     await reload();
   };
 
@@ -163,6 +299,10 @@ export default function AutoSyncPage({ plugin }) {
     <header class="vk-page-header"><div><h2>一键开启自动同步</h2>
       <p class="vk-muted" style="margin:4px 0 0">确认车型和科室 → 点「全部开启」。每一项都会先到系统里核对一遍数据，核对上了才开启。整个过程大约每项 1 分钟。</p></div>
       <div class="vk-page-actions"><a class="vk-btn" href=${BACK_HASH}>← 返回项目</a></div></header>
+
+    ${scope && scope.deliverables.length === 0 && html`<p class="as-summary is-error" role="status">向导里没有勾选任何交付物：本次不会开启或同步任何交付物。</p>`}
+    ${scope && scope.deliverables.length > 0 && !handoff.request && html`<p class="vk-muted" role="status">本次只处理向导里勾选的 ${scope.deliverables.length} 项交付物；未开始或失败的项不会算作完成。</p>`}
+    ${handoff.request && html`<p class=${counts.allDone ? "as-summary" : "as-summary is-error"} role="status">首次同步进度：成功 ${counts.success} 项，未成功 ${counts.failed + counts.partial} 项，进行中 ${counts.running} 项，未开始 ${counts.notStarted} 项${counts.notApplicable ? `，不适用 ${counts.notApplicable} 项` : ""}。${counts.allDone ? "已全部完成。" : "未开始或失败的项不会算作完成。"}</p>`}
 
     <section class="as-form">
       <label class="as-field"><span>车型</span>
@@ -173,7 +313,7 @@ export default function AutoSyncPage({ plugin }) {
           onClick=${() => toggle(dept)}>${dept}</button>`)}</div></div>
       <div class="as-actions">
         <button type="button" class="vk-btn is-primary" disabled=${running || !targets.length} onClick=${start}>
-          ${running ? "正在开启…" : targets.length ? `全部开启（${targets.length} 项）` : "已全部开启"}</button>
+          ${buttonLabel}</button>
         ${!vaultConfigured && html`<span class="vk-muted">需要先登录并保存公司账号的密码</span>`}
       </div>
       ${summary && html`<p class=${summary.error ? "as-summary is-error" : "as-summary"} role="status">${summary.text}</p>`}
@@ -181,7 +321,7 @@ export default function AutoSyncPage({ plugin }) {
 
     <section class="as-list" aria-label="交付物">
       ${deliverables.map((item) => {
-        const state = rowState(item, load.policies, progress);
+        const state = rowState(item, load.policies, progress, scope, handoff.request);
         return html`<div class="as-row" key=${item.id}>
           <div><b>${item.name}</b><small>${(item.sourceInfo && item.sourceInfo.displayName) || ""}</small></div>
           <span class=${`as-state is-${state.tone}`}>${state.text}</span>
