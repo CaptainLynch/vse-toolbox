@@ -4,7 +4,22 @@
 > 更早条目完整保存在 [归档文件](archive/CURRENT_STATE_ARCHIVE_20261023.md)。
 > 恢复状态时**不要**再通读全文；先读本节，再按需查归档。
 
-## 当前前沿（2026-11-01 · DSH 计划第 1 波已集成：V2-01/44/45/46；V2-47 待批）
+## 当前前沿（2026-11-01 · DSH 计划第 1 波全部集成：V2-01/44/45/46/47 + 遗留修复）
+
+- **第 1 波收尾（18beeb0，快进合入 refactor/ux-v2）**：集成全量 **3582 passed / 7 skipped / 2 warnings，
+  exit 0，466.15s**（`E:\project\vse-toolbox-wt\_logs\wave1b-integration-pytest.txt`）。
+  - 38b854f **V2-47**（用户批准 high 风险、主控冻结契约 C1–C5；wf-528d1b1d 第 2 轮评审 pass）：
+    pywebview 改 `--window URL --profile DIR` 独立子进程（`supervisor.run_window`，主线程，退出码 0/3/4）；
+    `open_window` 立即返回，非 daemon 监视线程 15s 宽限期内非 0 退出才降级 Edge → 浏览器；
+    端口冲突 `port_conflict` 换端口重试 ≤3 次，不记 bootFailed；自启默认关闭已核实。
+    **取舍**：第二实例开出的窗口不挂其 job（否则随短命进程被杀），长驻启动器退出时它不随之关闭。
+    **留给 02/03**：窗口子进程与 Edge 一样把含 `?boot=` 票据的 URL 放在命令行（进程列表可见）；
+    `_show_existing` 仍复用 instance.json 旧 URL。`autostart.enabled(repair=True)` 会删除损坏的自启值
+    （只读测试 test_autostart_toggle 断言此行为），与“不删除用户注册表项”的张力待裁决。
+    真机未验证：第二实例窗口在其进程退出后存活、WebView2 存储目录。
+  - 745dedd **遗留修复**：`web/app.py` 启动清理改走 `CrawlTaskRunner.cleanup_expired_artifacts`
+    （用户文件不再被启动清理删除）；`build_v2_test_install` 安装目录 rmtree 失败报告并 exit 2。
+    “旧包清理早于 exe 构建”核实为预期（先失败再构建），不改。
 
 - **DSH 第 1 波（2026-11-01）——已合入 refactor/ux-v2（7cfa1a4，快进）**：计划见
   `docs/dsh-next-20261031/`。四任务各在隔离工作树执行（DSH 执行者 deepseek-v4.1-flash，Claude 评审），
@@ -21,7 +36,7 @@
 - **执行环境教训**：本地网关并发 4 个执行者会 503 `no_healthy_account`——**串行派发**；桥已修超时杀进程树
   （`taskkill /T /F`）、执行超时 30 分钟；指纹翻转根因未定，桥已加 `~/.dsh-bridge/fp-debug.log` 诊断。
   执行者计划须写明不得用 `git add -N` 等改动索引的命令。
-- **下一步**：DSH-V2-47（启动器单实例/自启，risk_class=high）须主控冻结契约并经用户单独批准后才可派发；
+- **下一步**：第 1 波已全部完成；按 tasks.json 依赖推进第 2 波（02/06/07/08/09/12/14/24/25/26/42/48/49，串行派发）；
   其余后续波次按 tasks.json 依赖推进。W16-03 集成验收项仍未做（见下）。
 
 - **W16-03（b781066）——已提交、待集成验收（不是已交付）**：本机安全集中接入，C7 全条款落地。
