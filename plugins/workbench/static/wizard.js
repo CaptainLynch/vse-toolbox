@@ -26,6 +26,9 @@ export const NOT_MANAGED_CODE = "NotManaged";
  */
 export const AUTOSTART_CONFIRMED = ["on", "off", "failed", "unknown"];
 
+/** 宿主交接模块：把勾选的交付物与首次同步请求交给自动同步页（不跨插件 import）。 */
+const ONBOARDING_MODULE = "/static/host/onboarding-selection.js";
+
 export const STEP_NAMES = ["欢迎", "统一登录", "新建项目", "选择交付物", "开机自启", "完成"];
 
 /** 默认科室（M0 问卷 C2）；新建项目时预先勾选。 */
@@ -346,6 +349,43 @@ export async function submitAutostartChoice({ request, autostart } = {}) {
   return { ok: true, step: 5, called: true, enabled: true, confirmed: "on" };
 }
 
+/**
+ * 把向导里的交付物选择交给宿主模块（插件之间不互相 import）。
+ * request=true 时登记首次同步请求：所有项先记为「未开始」，
+ * 必须等自动同步页里的真实任务回报结果才可能变成完成。
+ */
+async function handOffOnboarding({ request, selectedDeliverables, vehicle, departments }) {
+  try {
+    const host = await import(ONBOARDING_MODULE);
+    const saved = loadWizardState() || {};
+    const payload = {
+      deliverables: Array.isArray(selectedDeliverables) ? selectedDeliverables : [],
+      vehicle: vehicle || saved.vehicle || "",
+      departments,
+      projectId: saved.projectId || "",
+    };
+    if (request && typeof host.requestFirstSync === "function") return host.requestFirstSync(payload);
+    // 「开始使用」不立即同步：若上一次首次同步请求的范围已经变了，清掉旧请求，
+    // 避免自动同步页把旧范围当成这次的选择。
+    const existing = typeof host.readFirstSyncRequest === "function" ? host.readFirstSyncRequest() : null;
+    if (existing && !sameDeliverableIds(existing.deliverables, payload.deliverables)
+      && typeof host.clearFirstSyncRequest === "function") {
+      host.clearFirstSyncRequest();
+    }
+    if (typeof host.saveOnboardingSelection === "function") return host.saveOnboardingSelection(payload);
+  } catch (_err) {
+    // 宿主模块不可用时不影响向导完成；自动同步页会按全部交付物处理。
+  }
+  return null;
+}
+
+function sameDeliverableIds(left, right) {
+  const a = new Set(Array.isArray(left) ? left.map((id) => String(id)) : []);
+  const b = new Set(Array.isArray(right) ? right.map((id) => String(id)) : []);
+  if (a.size !== b.size) return false;
+  return Array.from(a).every((id) => b.has(id));
+}
+
 export function Wizard({ projectName, onClose, initialStep }) {
   const saved = loadWizardState() || {};
 
@@ -425,7 +465,7 @@ export function Wizard({ projectName, onClose, initialStep }) {
     if (typeof onClose === "function") onClose(false);
   };
 
-  const finishWizard = () => {
+  const finishWizard = async () => {
     markWizardCompleted({
       username,
       vehicle,
@@ -434,10 +474,12 @@ export function Wizard({ projectName, onClose, initialStep }) {
       selectedDeliverables,
       autostart,
     });
+    // 即使这次不立即同步，也把勾选范围交给宿主，之后打开自动同步页仍按这个范围处理。
+    await handOffOnboarding({ request: false, selectedDeliverables, vehicle, departments });
     if (typeof onClose === "function") onClose(true);
   };
 
-  const finishAndOpenAutoSync = () => {
+  const finishAndOpenAutoSync = async () => {
     markWizardCompleted({
       username,
       vehicle,
@@ -446,6 +488,9 @@ export function Wizard({ projectName, onClose, initialStep }) {
       selectedDeliverables,
       autostart,
     });
+    // 先登记首次同步请求再跳页：请求里的每一项都是「未开始」，
+    // 只有自动同步页里的真实任务回报结果后才可能变成完成。
+    await handOffOnboarding({ request: true, selectedDeliverables, vehicle, departments });
     go("#p/project-overview/auto-sync");
     if (typeof onClose === "function") onClose(true);
   };
@@ -743,6 +788,7 @@ export function Wizard({ projectName, onClose, initialStep }) {
         <li>开机自启：${autostartText}</li>
       </ul>
       <p class="wb-sub" style="margin-top:12px">接下来可以在项目页一键开启交付物自动同步，或进入今天页查看待办与最新进度。</p>
+      <p class="wb-sub" style="margin-top:6px">点「开启自动同步」会带着已选的 ${selectedDeliverables.length} 项交付物进入自动同步页：首次同步由真实任务逐项执行，未开始或失败的项不会算作完成。</p>
       <div class="wb-row" style="margin-top:20px;justify-content:space-between">
         <button type="button" class="wb-link" onClick=${() => goToStep(4)}>上一步</button>
         <div class="wb-row">
