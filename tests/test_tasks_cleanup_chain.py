@@ -425,3 +425,35 @@ def test_task_center_effective_progress_is_display_only() -> None:
     assert data["finished"]["indeterminate"] is False
     assert data["finished"]["percent"] is None
     assert data["missing"]["percent"] is None
+
+
+# ── 启动清理（create_app）与任务完成走同一归属感知入口 ──────────────────────
+
+
+def test_create_app_startup_cleanup_keeps_user_files_and_prunes_task_artifacts(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """启动时的 7 天清理只删过期且归属 crawl 任务的产物；无法归属的用户文件保留。"""
+    db = DatabaseManager(db_path=tmp_path / "startup.db")
+    db.init_database()
+    downloads = tmp_path / "downloads"
+    old = time.time() - 30 * DAY
+    task_id = "crawl_startup0000001"
+    db.create_crawl_task(task_id, "paa_export", "aras")
+    db.update_crawl_task_status(task_id, "succeeded", artifact_path=f"{task_id}.csv")
+    task_artifact = _aged(downloads / f"{task_id}.csv", old)
+    user_file = _aged(downloads / "我的手工导出.xlsx", old, b"user data")
+
+    monkeypatch.setattr(web_app, "DatabaseManager", lambda: db)
+    monkeypatch.setattr("core.runtime_paths.app_root", lambda: tmp_path)
+    app = web_app.create_app(allowed_hosts=["aras.example"], tdc_allowed_hosts=["tdc.example"])
+    runner = app.extensions["crawl_task_runner"]
+    try:
+        report = runner.last_cleanup_report
+        assert report is not None, "启动清理必须走 runner.cleanup_expired_artifacts"
+        assert report.ok, report
+        assert not task_artifact.exists(), "过期的任务产物应在启动时删除"
+        assert user_file.exists(), "无法归属任务的用户文件不得被启动清理删除"
+        assert user_file.read_bytes() == b"user data"
+    finally:
+        runner.shutdown(wait=True)

@@ -449,15 +449,17 @@ def create_app(
     app.extensions["ewo_enrichment"] = ewo_enrichment
     register_ewo_enrichment(app, ewo_enrichment, domain_sessions, _local_web_mutation_error)
 
-    from services.crawl_task_runner import CrawlTaskRunner, prune_old_artifacts
+    from services.crawl_task_runner import CrawlTaskRunner
     crawl_downloads_dir = Path(db.db_path).parent / "downloads"
     crawl_task_runner = CrawlTaskRunner(db, downloads_dir=crawl_downloads_dir)
     swept_tasks = crawl_task_runner.startup_sweep()
     if swept_tasks > 0:
         logger.info("Crawl tasks startup sweep: %d orphan tasks marked interrupted", swept_tasks)
-    pruned_artifacts = prune_old_artifacts(crawl_downloads_dir)
-    if pruned_artifacts > 0:
-        logger.info("Startup artifact pruning: %d expired files removed", pruned_artifacts)
+    # 启动清理与任务完成后走同一入口：只删过期且归属 crawl 任务的产物，
+    # 用户文件/无法归属的文件保留；归属快照失败时不删任何文件（DSH-V2-45 契约）。
+    startup_prune = crawl_task_runner.cleanup_expired_artifacts()
+    if startup_prune.removed_count > 0:
+        logger.info("Startup artifact pruning: %d expired files removed", startup_prune.removed_count)
     app.extensions["crawl_task_runner"] = crawl_task_runner
     app.extensions["domain_credential_vault"] = credential_vault
     app.extensions["tdc_export_cache"] = tdc_export_cache
