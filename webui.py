@@ -24,6 +24,7 @@ import urllib.error
 import urllib.request
 import webbrowser
 from pathlib import Path
+from typing import Callable
 
 #: 就绪探测的最长等待（秒）：超时说明服务未能监听，放弃唤起浏览器。
 _READINESS_PROBE_TIMEOUT_SECONDS = 30.0
@@ -106,11 +107,19 @@ def _run_sync_scheduler_safely(scheduler) -> None:
         print("项目状态同步调度线程已退出（见运行日志）。")
 
 
-def _open_browser_when_ready(url: str, timeout: float = _READINESS_PROBE_TIMEOUT_SECONDS) -> None:
+def _open_browser_when_ready(
+    url: str,
+    timeout: float = _READINESS_PROBE_TIMEOUT_SECONDS,
+    *,
+    on_ready: Callable[[], None] | None = None,
+) -> None:
     """readiness probe：仅在 HTTP 服务真正监听就绪后唤起默认浏览器。
 
     探测 /api/version（只读、无副作用）；连接被拒说明尚未监听，继续等待，
     超时则放弃（不重试、不报错退出——浏览器唤起是尽力而为的体验增强）。
+
+    ``on_ready`` 在**真正打开浏览器之前**调用：开发态用它进程内预置一张
+    ``delivery="claim"`` 窗口授权（TTL 10 秒，必须紧贴打开动作）。
     """
     probe_url = f"{url.rstrip('/')}/api/version"
     deadline = time.monotonic() + timeout
@@ -119,15 +128,30 @@ def _open_browser_when_ready(url: str, timeout: float = _READINESS_PROBE_TIMEOUT
             with urllib.request.urlopen(probe_url, timeout=1.5) as response:
                 if 200 <= response.status < 500:
                     # 服务已响应（即使返回错误码也说明端口已监听）
+                    if on_ready is not None:
+                        on_ready()
                     webbrowser.open_new_tab(url)
                     return
         except urllib.error.HTTPError:
             # HTTP 错误同样证明服务已监听
+            if on_ready is not None:
+                on_ready()
             webbrowser.open_new_tab(url)
             return
         except OSError:
             pass
         time.sleep(_READINESS_PROBE_INTERVAL_SECONDS)
+
+
+def _arm_claim_grant(security) -> None:
+    """开发态：进程内预置一张 ``delivery="claim"`` 窗口授权（主控裁决 7）。
+
+    票据/授权值一律不打印、不落盘：控制台历史与日志里都不能出现凭据。
+    """
+    try:
+        security.grants.arm("claim")
+    except Exception:  # noqa: BLE001 - 授权预置失败只意味着页面需要从启动器重开
+        print("开发态窗口授权预置失败：请从开始菜单重新打开 VSE Toolbox。")
 
 
 def _resolve_port(raw_port: int | None) -> int:
@@ -154,17 +178,23 @@ def main(argv: list[str] | None = None) -> int:
     from web.app import create_app
 
     plugin_only = [item.strip() for item in (args.only or "").split(",") if item.strip()] or None
-    # C7（W16-03）：启动票据由启动器（vse_boot supervisor）经环境变量传入；
-    # 直接运行 webui.py 的开发态没有启动器，这里自行生成一枚并附在打开的
-    # URL 上。两种来源都只是「签发」，校验仍在 web.security（单次+≤10s）。
+    # C7（DSH-V2-03）：启动票据与启动器密钥都由启动器（vse_boot supervisor）经**继承的
+    # 环境变量**传入，不落盘、不进 argv、不进日志。直接运行 webui.py 的开发态没有启动器，
+    # 这里自行签发（不打印），并用进程内 `arm_grant(delivery="claim")` 让页面换取会话——
+    # 票据/授权绝不附到 URL 上（那正是本契约要修掉的泄漏面）。
     import secrets as _secrets
 
     boot_token = os.environ.get("VSE_BOOT_TOKEN") or _secrets.token_urlsafe(32)
+    launcher_secret = os.environ.get("VSE_LAUNCH_SECRET") or _secrets.token_urlsafe(32)
+    accept_legacy_boot_query = os.environ.get("VSE_LEGACY_BOOT_QUERY", "").strip() != "0"
     app = create_app(
         plugin_only=plugin_only,
         excel_roots=load_production_excel_roots(),
         boot_token=boot_token,
+        launcher_secret=launcher_secret,
+        accept_legacy_boot_query=accept_legacy_boot_query,
     )
+    security = app.extensions.get("local_web_security")
     if args.diagnostics:
         try:
             app.extensions["diagnostic_recorder"].start()
@@ -183,7 +213,8 @@ def main(argv: list[str] | None = None) -> int:
         if browser_host:
             threading.Thread(
                 target=_open_browser_when_ready,
-                args=(f"{url}?boot={boot_token}",),
+                args=(url,),
+                kwargs={"on_ready": lambda: _arm_claim_grant(security)},
                 name="webui-browser-probe",
                 daemon=True,
             ).start()

@@ -14,11 +14,26 @@ export class ApiError extends Error {
 }
 
 const STATUS_MESSAGES = {
-  401: "本地会话已失效，请关闭窗口后重新打开 VSE Toolbox",
+  401: "本地会话已失效",
   403: "该操作只允许在本机浏览器中执行",
   404: "接口不存在，插件可能未加载",
   500: "服务内部错误",
 };
+
+/** 401 SessionRequired 时通知外壳显示「恢复会话」横幅（契约 §5.8）。 */
+function notifySessionExpired(error) {
+  if (!error || error.type !== "SessionRequired") return;
+  if (typeof window === "undefined" || typeof window.dispatchEvent !== "function") return;
+  try {
+    const detail = { type: error.type, status: error.status };
+    const event = typeof CustomEvent === "function"
+      ? new CustomEvent("vse:session-expired", { detail })
+      : Object.assign(new Event("vse:session-expired"), { detail });
+    window.dispatchEvent(event);
+  } catch (_) {
+    // 事件只是提示，绝不影响错误上抛
+  }
+}
 
 export async function api(path, { method = "GET", body, query, signal } = {}) {
   let url = path;
@@ -53,12 +68,14 @@ export async function api(path, { method = "GET", body, query, signal } = {}) {
   }
   if (payload && payload.ok === true) return payload.data;
   const error = (payload && payload.error) || {};
-  throw new ApiError(error.message || STATUS_MESSAGES[response.status] || `请求失败（HTTP ${response.status}）`, {
+  const failure = new ApiError(error.message || STATUS_MESSAGES[response.status] || `请求失败（HTTP ${response.status}）`, {
     status: response.status,
     type: error.type || "http",
     code: error.code || null,
     diagnostic: error.diagnostic || null,
   });
+  notifySessionExpired(failure);
+  throw failure;
 }
 
 /** Plugin-scoped helpers: pluginApi("sor").get("rows", {query}). */

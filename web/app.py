@@ -357,6 +357,8 @@ def create_app(
     plugin_dirs: Sequence[Path] | None = None,
     plugin_only: Sequence[str] | None = None,
     boot_token: str | None = None,
+    launcher_secret: str | None = None,
+    accept_legacy_boot_query: bool = True,
 ) -> Flask:
     """Flask 应用工厂。
 
@@ -393,7 +395,12 @@ def create_app(
     # 注册顺序在 loopback/Host 守卫之后：读请求行为不变，写请求需会话+Origin。
     from web.security import install_local_security
 
-    install_local_security(app, boot_token=boot_token)
+    install_local_security(
+        app,
+        boot_token=boot_token,
+        launcher_secret=launcher_secret,
+        accept_legacy_boot_query=accept_legacy_boot_query,
+    )
 
     @app.after_request
     def _plugin_static_revalidate(response):  # type: ignore[no-untyped-def]

@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -298,8 +299,36 @@ def test_run_window_returns_zero_and_passes_storage_path(tmp_path: Path) -> None
     code = supervisor.run_window(["--window", URL, "--profile", str(profile)], webview_module=fake)
 
     assert code == 0
-    assert fake.created == [("VSE Toolbox", URL, {"width": 1280, "height": 860})]
+    assert len(fake.created) == 1
+    title, created_url, kwargs = fake.created[0]
+    assert (title, created_url) == ("VSE Toolbox", URL)
+    assert kwargs["width"] == 1280 and kwargs["height"] == 860
+    # K2：票据经 pywebview js_api 桥交付，不再依赖地址栏
+    assert isinstance(kwargs["js_api"], supervisor.BootBridge)
     assert fake.started == [{"private_mode": False, "storage_path": str(profile)}]
+
+
+def test_run_window_bridge_delivers_ticket_once_and_clears_env(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """K2：take_boot_ticket() 只交付一次，注入后 os.environ 已清除（§5.4）。"""
+    fake = FakeWebview()
+    monkeypatch.setenv("VSE_WINDOW_BOOT_TICKET", "tok_synthetic")
+
+    assert supervisor.run_window(["--window", URL, "--profile", str(tmp_path / "p")], webview_module=fake) == 0
+
+    bridge = fake.created[0][2]["js_api"]
+    assert bridge.take_boot_ticket() == "tok_synthetic"
+    assert bridge.take_boot_ticket() is None  # 单次
+    assert "VSE_WINDOW_BOOT_TICKET" not in os.environ  # 注入后立即从环境清除
+
+
+def test_run_window_without_ticket_bridge_returns_none(monkeypatch, tmp_path: Path) -> None:
+    fake = FakeWebview()
+    monkeypatch.delenv("VSE_WINDOW_BOOT_TICKET", raising=False)
+
+    assert supervisor.run_window(["--window", URL, "--profile", str(tmp_path / "p")], webview_module=fake) == 0
+    assert fake.created[0][2]["js_api"].take_boot_ticket() is None
 
 
 def test_run_window_start_error_returns_four_and_scrubs_url(capsys, tmp_path: Path) -> None:
@@ -314,6 +343,19 @@ def test_run_window_start_error_returns_four_and_scrubs_url(capsys, tmp_path: Pa
     assert "failed to load" in err
     assert "<url>" in err
     assert "secret-token" not in err
+
+
+def test_run_window_error_text_scrubs_injected_ticket(monkeypatch, capsys, tmp_path: Path) -> None:
+    """注入票据出现在异常文本里也必须脱敏（§5.13）。"""
+    monkeypatch.setenv("VSE_WINDOW_BOOT_TICKET", "tok_synthetic")
+    fake = FakeWebview(start_error=RuntimeError("bridge failed for tok_synthetic"))
+
+    code = supervisor.run_window(["--window", URL, "--profile", str(tmp_path / "p")], webview_module=fake)
+
+    assert code == 4
+    err = capsys.readouterr().err
+    assert "tok_synthetic" not in err
+    assert "<ticket>" in err
 
 
 def test_run_window_create_window_error_returns_four(capsys, tmp_path: Path) -> None:
@@ -339,10 +381,14 @@ def test_main_routes_window_flag_to_run_window(monkeypatch, tmp_path: Path) -> N
     """``__main__.main(["--window", ...])`` 在 argparse 之前路由到 run_window。"""
     fake = FakeWebview()
     monkeypatch.setitem(sys.modules, "webview", fake)
+    monkeypatch.delenv("VSE_WINDOW_BOOT_TICKET", raising=False)
     profile = tmp_path / "webview-profile"
 
     assert boot_main.main(["--window", URL, "--profile", str(profile)]) == 0
-    assert fake.created == [("VSE Toolbox", URL, {"width": 1280, "height": 860})]
+    title, created_url, kwargs = fake.created[0]
+    assert (title, created_url) == ("VSE Toolbox", URL)
+    assert kwargs["width"] == 1280 and kwargs["height"] == 860
+    assert isinstance(kwargs["js_api"], supervisor.BootBridge)
     assert fake.started == [{"private_mode": False, "storage_path": str(profile)}]
 
 
@@ -351,7 +397,9 @@ def test_run_window_without_url_forwards_none(tmp_path: Path) -> None:
     fake = FakeWebview()
 
     assert supervisor.run_window(["--profile", str(tmp_path / "p")], webview_module=fake) == 0
-    assert fake.created == [("VSE Toolbox", None, {"width": 1280, "height": 860})]
+    title, created_url, kwargs = fake.created[0]
+    assert (title, created_url) == ("VSE Toolbox", None)
+    assert kwargs["width"] == 1280 and kwargs["height"] == 860
 
 
 # ── 5. spawn_window 命令行 ─────────────────────────────────────────
@@ -472,6 +520,8 @@ class Harness:
         self.shown: list[str] = []
         self.logs: list[str] = []
         self.ports: list[int] = []
+        self.env_overrides: list[dict] = []
+        self.capabilities_data: dict | None = None
         self.port_free = lambda _port: True  # type: ignore[assignment]
         self._port_queue: list[int] = []
         self.now = 0.0
@@ -482,9 +532,10 @@ class Harness:
         self.ports.append(port)
         return port
 
-    def spawn(self, app_dir: Path, port: int, layout: InstallLayout) -> FakeChild:
+    def spawn(self, app_dir: Path, port: int, layout: InstallLayout, *, env_overrides=None) -> FakeChild:
         self.current = app_dir.name
         self.spawned.append((app_dir.name, port))
+        self.env_overrides.append(dict(env_overrides or {}))
         child = FakeChild(exit_code=1 if port in self.crash_ports else None,
                           lifetime=self.lifetime, final=self.final)
         self.children.append(child)

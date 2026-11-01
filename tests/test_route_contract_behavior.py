@@ -264,7 +264,14 @@ HOST_APP_ENDPOINTS: frozenset[str] = frozenset(
 )
 
 #: 本机安全层自己的端点（web/security.py 注册）。
-SECURITY_ENDPOINTS: frozenset[str] = frozenset({"api_security_boot_exchange"})
+SECURITY_ENDPOINTS: frozenset[str] = frozenset({
+    "api_security_boot_exchange",
+    # DSH-V2-03（DSH_LOCAL_SECURITY_CONTRACT §6.1）新增的 4 条本机安全路由。
+    "api_security_capabilities",
+    "api_security_window_grant",
+    "api_security_boot_claim",
+    "api_security_session_recover",
+})
 
 
 def _all_domain_endpoints() -> frozenset[str]:

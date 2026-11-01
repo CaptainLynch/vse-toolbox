@@ -140,9 +140,32 @@ login_required ⇄ signed_out（用户主动退出/清除）
   CSRF 不可省略。
 - WebView2 / Edge app 模式 / 默认浏览器三种模式走同一套安全契约；任何认证失败都不能退化为
   无认证访问（fail-closed：拿不到会话就显示需要登录，不放开路由）。
+- **启动票据不进入 URL（DSH-V2-03 增补）**：启动器向 app 现签一次性票据（TTL ≤10 秒、
+  单次消费），经**继承的环境变量**交给窗口子进程，再由 pywebview `js_api` 桥交给页面交换
+  会话；票据绝不进请求查询串、argv、浏览器历史、Referer、常规日志、诊断记录或
+  `instance.json`（该文件只保留可公开字段：`url`（无查询串）、`port`、`version`、`pid`、
+  `supervisorPid`、`schemaVersion`、`startedAt`、`epoch`、`securityContract`）。旧启动器
+  （2.3.x）的 `?boot=` 只在 `capabilities.legacyBootQuery` 为 true 时兼容读取，默认 true；
+  翻转为 false 必须单独批准。
+- **签发/预置入口必须认证（DSH-V2-03 增补）**：`POST /api/security/window-grant` 需要只存在
+  于 app 子进程环境里的启动器密钥（`X-VSE-Launch-Secret`，常量时间比较）+ 严格同源
+  `Origin`，并有速率限制与重放拒绝（已消费/已 supersede 一律 409，过期 401）；未配置密钥
+  时一律 `401 LauncherAuthRequired`，**不存在“无密钥即放行”的分支**。浏览器侧只能领取
+  启动器预置的一次性授权（`POST /api/security/boot-claim`），既拿不到票据也拿不到
+  `grantId`。残余风险：同一 OS 用户下的非浏览器进程可在授权存活的 ≤10 秒内伪造
+  `Origin`/`Sec-Fetch-Site` 抢先领取——这属“同用户 = 同权限”的固有上限，已由主控裁决接受
+  （DSH_LOCAL_SECURITY_CONTRACT.md §11-4）；本契约只缩小窗口与可见面，不宣称消除。
+- **窗口标记与一键恢复（DSH-V2-03 增补）**：`vse_session` 12 小时（内存态，重启即失效）；
+  `vse_window` 30 天，**仅**用于 `POST /api/security/session-recover`——12 小时会话可由同一
+  窗口标记在 30 天内一键续期；恢复不重设、不延长标记（不续期），标记缺失/过期/未知时回
+  `401 SessionRecoveryUnavailable` 并提示从启动器重开。自动化工具使用的 opt-in 票据文件
+  `state/boot-handoff.json` 仅 `VSE_BOOT_HANDOFF=1` 时创建、`ttl+5` 秒自删，其可见性依赖
+  安装根继承的当前用户私有 ACL（**不新增 ACL 操作，也不宣称 0600**）。
 
 **验证**：`tests/test_local_security.py`（无票据 401、票据单次、写操作 Origin 拒绝、CSRF 缺失拒绝、
-Cookie 属性断言）。
+Cookie 属性断言）、`tests/test_local_security_integration.py`（真实 HTTP 八场景）、
+`tests/test_boot_ticket_transport.py`（启动器 → 窗口 → 页面的票据传递链）、
+`tests/test_vse_boot_supervisor.py` / `tests/test_vse_boot_window.py`（启动器侧）。
 
 ## C8 路由兼容与发布（routes & release）
 

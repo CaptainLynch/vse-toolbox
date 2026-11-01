@@ -1430,12 +1430,56 @@
     "download": "none"
   },
   {
+    "rule": "/api/security/boot-claim",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_security_boot_claim",
+    "view_function": "api_security_boot_claim",
+    "is_write": true,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
     "rule": "/api/security/boot-exchange",
     "methods": [
       "POST"
     ],
     "endpoint": "api_security_boot_exchange",
     "view_function": "api_security_boot_exchange",
+    "is_write": true,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/api/security/capabilities",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_security_capabilities",
+    "view_function": "api_security_capabilities",
+    "is_write": false,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/api/security/session-recover",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_security_session_recover",
+    "view_function": "api_security_session_recover",
+    "is_write": true,
+    "envelope": "none",
+    "download": "none"
+  },
+  {
+    "rule": "/api/security/window-grant",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_security_window_grant",
+    "view_function": "api_security_window_grant",
     "is_write": true,
     "envelope": "none",
     "download": "none"
