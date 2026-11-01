@@ -4,7 +4,25 @@
 > 更早条目完整保存在 [归档文件](archive/CURRENT_STATE_ARCHIVE_20261023.md)。
 > 恢复状态时**不要**再通读全文；先读本节，再按需查归档。
 
-## 当前前沿（2026-11-01 · DSH 计划第 1 波全部集成：V2-01/44/45/46/47 + 遗留修复）
+## 当前前沿（2026-11-01 · DSH 计划第 2 波全部集成；第 1 波见下）
+
+- **DSH 第 2 波（2823848，快进合入 refactor/ux-v2）**：14 项全部完成，集成全量 **3746 passed / 7 skipped /
+  2 warnings，exit 0，477.87s**（`E:\projectse-toolbox-wt\_logs\wave2-integration-pytest.txt`）。
+  执行者两路并发未再触发网关 503；全部 Claude 评审第 1 轮 pass，主控逐项复核 diff 与聚焦测试。
+  - 实现：06 wave_gate 严格 release 模式（主控补：只缺一个术语文件也判失败）；07 路由接线/响应契约测试
+    （钉住 3 条读路由缺 no-store、诊断旧错误信封）；08 离线真实浏览器夹具（Edge headless + 内嵌 Node CDP，
+    无新依赖；wave_gate 尚未接入其 junit）；09 前端北京时间模块 time-format.js（暂无页面调用方；主控补斜杠日期）；
+    12 向导失败不吞、项目 ID 跨重启复用；24 TIR 复用校验 stem/day/filters + sha256（download/list 仍只验存在）；
+    25 Excel 环境自检 API + 页面（golden +1 路由）；26 Excel worker os.replace 前复核目录身份防 junction 替换
+    （主控冻结 P1–P5；services/excel_path_safety.py 生产零消费者，保留不接入）。
+  - 设计门（主控已批准）：02 `DSH_LOCAL_SECURITY_CONTRACT.md`（03 唯一依据，**03 owned_scope 需按其 §11 扩展**）；
+    14 `DSH_IDENTITY_CONTRACT.md`（15 依据；另需 15b 拆 401/403、前端 isAuthError 归 16）；
+    42 `DSH_SERVICE_SPLIT_INVENTORY.md`（补测 G1–G8 先行）。
+  - 复核文档：48 ADR-0001（仍只当前项目同步）；49 L0 Spike（**pywebview 不在 requirements/VSE-Launcher.spec，
+    打包产物实际总走 Edge 降级**，待决策）；33 性能复测（当前无需索引优化）。
+- **下一步**：第 3 波（03/10/11/13/15/18/22/27/38/41，按 tasks.json 依赖串行或两路派发）。
+
+## 第 1 波收尾（2026-11-01 · V2-01/44/45/46/47 + 遗留修复）
 
 - **第 1 波收尾（18beeb0，快进合入 refactor/ux-v2）**：集成全量 **3582 passed / 7 skipped / 2 warnings，
   exit 0，466.15s**（`E:\project\vse-toolbox-wt\_logs\wave1b-integration-pytest.txt`）。
@@ -36,7 +54,7 @@
 - **执行环境教训**：本地网关并发 4 个执行者会 503 `no_healthy_account`——**串行派发**；桥已修超时杀进程树
   （`taskkill /T /F`）、执行超时 30 分钟；指纹翻转根因未定，桥已加 `~/.dsh-bridge/fp-debug.log` 诊断。
   执行者计划须写明不得用 `git add -N` 等改动索引的命令。
-- **下一步**：第 1 波已全部完成；按 tasks.json 依赖推进第 2 波（02/06/07/08/09/12/14/24/25/26/42/48/49，串行派发）；
+- **（已完成）**第 2 波见上；
   其余后续波次按 tasks.json 依赖推进。W16-03 集成验收项仍未做（见下）。
 
 - **W16-03（b781066）——已提交、待集成验收（不是已交付）**：本机安全集中接入，C7 全条款落地。
