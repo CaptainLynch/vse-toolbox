@@ -3,7 +3,7 @@
 // route. Hashes from before the plugin refactor are redirected through
 // legacyRedirect(); anything else falls back to the first nav entry.
 import { api, pluginApi } from "./api.js";
-import { runBootExchange } from "./boot-exchange.js";
+import { recoverSession, registerBootReceiver, runBootHandshake } from "./boot-exchange.js";
 import { mountChrome } from "./chrome/index.js";
 import { sortNav } from "./chrome/TopBar.js";
 import { legacyRedirect } from "./legacy-routes.js";
@@ -12,6 +12,9 @@ import { SCHEMA_RENDERERS } from "./pages.js";
 import { html, render, useEffect, useErrorBoundary, useState } from "./vendor/preact-htm.js";
 
 export const DEFAULT_ROUTE = "#p/workbench/today";
+export const SESSION_BANNER_ID = "vse-session-banner";
+const SESSION_EXPIRED_TEXT = "本地会话已过期";
+const SESSION_UNRECOVERABLE_TEXT = "本窗口无法自动恢复，请从开始菜单重新打开 VSE Toolbox";
 
 const ROUTE = /^#p\/([a-z][a-z0-9_-]{1,39})\/([a-z][a-z0-9_-]{1,39})(?:\?.*)?$/;
 
@@ -128,7 +131,58 @@ export async function startShell(mount = document.getElementById("plugin-host"))
   return manifest;
 }
 
+/**
+ * C7 会话恢复横幅（契约 §5.8）：写请求返回 401 SessionRequired 时显示
+ * “本地会话已过期” + “恢复会话”按钮；窗口标记失效时文案切换为“请从开始菜单重新打开”。
+ * 幂等：同一文档只挂一个横幅；返回元素引用供测试驱动。
+ */
+export function mountSessionRecoveryBanner(win = window, doc = document) {
+  if (!win || !doc || typeof doc.createElement !== "function") return null;
+  if (typeof doc.getElementById === "function" && doc.getElementById(SESSION_BANNER_ID)) return null;
+  const banner = doc.createElement("div");
+  banner.id = SESSION_BANNER_ID;
+  banner.setAttribute("role", "alert");
+  banner.hidden = true;
+  banner.style.cssText =
+    "position:fixed;top:0;left:0;right:0;z-index:9999;display:flex;gap:12px;" +
+    "align-items:center;justify-content:center;padding:8px 16px;" +
+    "background:#8a2c2c;color:#fff;font-size:14px;";
+  const text = doc.createElement("span");
+  text.textContent = SESSION_EXPIRED_TEXT;
+  const button = doc.createElement("button");
+  button.type = "button";
+  button.className = "vk-btn";
+  button.textContent = "恢复会话";
+  button.addEventListener("click", async () => {
+    try {
+      await recoverSession();
+      banner.hidden = true;
+      text.textContent = SESSION_EXPIRED_TEXT;
+    } catch (error) {
+      if (error && (error.status === 401 || error.type === "SessionRecoveryUnavailable")) {
+        text.textContent = SESSION_UNRECOVERABLE_TEXT;
+        button.hidden = true;
+      }
+    }
+  });
+  banner.appendChild(text);
+  banner.appendChild(button);
+  const host = doc.body || doc.documentElement;
+  if (host && typeof host.appendChild === "function") host.appendChild(banner);
+  const show = () => {
+    banner.hidden = false;
+    text.textContent = SESSION_EXPIRED_TEXT;
+    button.hidden = false;
+  };
+  if (typeof win.addEventListener === "function") win.addEventListener("vse:session-expired", show);
+  return { banner, text, button, show };
+}
+
 if (typeof document !== "undefined") {
-  // C7：先用地址栏票据换会话 Cookie（并清理地址栏），再加载外壳。
-  runBootExchange().finally(() => startShell());
+  // C7（DSH-V2-03）：先**同步**注册宿主注入接收器（pywebview 随时可能推票据），再立即
+  // 渲染外壳；握手（K2 桥 / K3 boot-claim / 旧 ?boot= 兼容）在后台完成，绝不阻塞首屏。
+  registerBootReceiver(window);
+  mountSessionRecoveryBanner(window, document);
+  runBootHandshake(window);
+  startShell();
 }

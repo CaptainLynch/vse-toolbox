@@ -7,6 +7,10 @@ Drives the real VSE-Toolbox.exe and the real app, without opening a window
 (VSE_BOOT_NO_WINDOW=1): first install → second instance → update 2.3.1 →
 broken 2.3.2 rolls back → killing the launcher leaves no orphan → manual rollback.
 Wipes app/, state/ and data/ of the test install first.
+
+C7（DSH-V2-03）：本工具不再读 ``instance.json.bootToken``（该字段已按契约 §5.9 删除），
+改为以 ``VSE_BOOT_HANDOFF=1`` 启动启动器、读 ``state/boot-handoff.json`` 的一次性票据
+换取本机会话（契约 §5.7 / §8.4）。票据不进 URL、不进 instance.json、不进日志。
 """
 
 from __future__ import annotations
@@ -25,9 +29,12 @@ REPO = Path(__file__).resolve().parent.parent
 OUT = REPO / "dist" / "v2-test"
 INSTALL = OUT / "VSE-Toolbox"
 EXE = INSTALL / "VSE-Toolbox.exe"
-ENV = dict(os.environ, VSE_BOOT_NO_WINDOW="1")
+#: K6：只有显式打开时启动器才写一次性 handoff 文件（默认零残留）。
+ENV = dict(os.environ, VSE_BOOT_NO_WINDOW="1", VSE_BOOT_HANDOFF="1")
 ENV.pop("VSE_INSTALL_ROOT", None)
 ENV.pop("VSE_DATA_ROOT", None)
+#: 启动器写入的一次性票据文件（10 秒 TTL，ttl+5 秒后自删）。
+HANDOFF = INSTALL / "state" / "boot-handoff.json"
 
 results: list[tuple[str, bool, str]] = []
 
@@ -84,11 +91,38 @@ def _opener():
     return _OPENER
 
 
+def handoff_ticket(instance: dict, timeout: float = 15.0) -> str:
+    """读 ``state/boot-handoff.json`` 的一次性票据（K6，opt-in）。
+
+    ``epoch`` 必须与 ``instance.json`` 一致：否则那张票据属于上一个 app 子进程
+    （切换项目/重启期间），不能拿来换当前进程的会话。
+    """
+    expected_epoch = instance.get("epoch")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            payload = json.loads(HANDOFF.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            payload = None
+        if isinstance(payload, dict):
+            ticket = payload.get("ticket")
+            if isinstance(ticket, str) and ticket and payload.get("epoch") == expected_epoch:
+                return ticket
+        time.sleep(0.2)
+    raise RuntimeError(
+        "state/boot-handoff.json 未出现或 epoch 不匹配："
+        "请用支持 C7 新契约的启动器（VSE_BOOT_HANDOFF=1）重建 dist/v2-test"
+    )
+
+
 def boot_exchange(instance: dict) -> None:
-    """用启动票据换本机会话（W16-03）。票据单次+≤10s，须在启动后尽快交换。"""
-    token = instance.get("bootToken")
-    if not token:
-        raise RuntimeError("instance.json 缺少 bootToken——启动器版本过旧或启动失败")
+    """用启动器写入的一次性 handoff 票据换本机会话（契约 §5.7 / §8.4）。
+
+    票据单次 + ≤10 秒，须在启动后尽快交换；绝不从 ``instance.json`` 或 URL 取票。
+    """
+    if "bootToken" in instance:
+        raise RuntimeError("instance.json 仍含 bootToken——启动器版本过旧（新契约已删除该字段）")
+    token = handoff_ticket(instance)
     base = instance["url"].split("?")[0]
     req = urllib.request.Request(
         base + "api/security/boot-exchange",

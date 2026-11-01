@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import inspect
 import json
 import os
 import secrets
@@ -25,6 +26,7 @@ import webbrowser
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Protocol
+from urllib.parse import urlsplit
 
 from vse_boot import dbsnap, projects
 from vse_boot.layout import InstallLayout
@@ -39,6 +41,27 @@ _MAX_BOOT_ATTEMPTS = 3
 _MAX_CRASH_RESTARTS = 2
 #: 端口被其他进程占用时换端口重试的次数上限（C4）。
 _MAX_PORT_RETRIES = 3
+#: 第二实例等 owner 接手 window.request 的上限（契约 §5.6：最多 8 秒）。
+WINDOW_REQUEST_TIMEOUT_SECONDS = 8.0
+#: 等 window.request 被删除的轮询间隔（真实环境 0.2s × 40 次 = 8s）。
+WINDOW_REQUEST_POLL_SECONDS = 0.2
+#: 一次性票据/授权的 TTL（与 web/security.py 的冻结值一致，启动器不 import app 包：
+#: app 可能是任意已安装版本，启动器必须能独立判断）。
+TICKET_TTL_SECONDS = 10
+#: 自动化票据文件（K6）的删除延迟：ttl + 5 秒。
+HANDOFF_DELETE_DELAY_SECONDS = TICKET_TTL_SECONDS + 5
+HANDOFF_ENV_VAR = "VSE_BOOT_HANDOFF"
+
+#: 安全契约冻结路径/头名（与 web/security.py 逐字一致；启动器不 import app 包）。
+CAPABILITIES_PATH = "/api/security/capabilities"
+WINDOW_GRANT_PATH = "/api/security/window-grant"
+LAUNCHER_SECRET_HEADER = "X-VSE-Launch-Secret"
+SECURITY_CONTRACT_VERSION = 1
+#: instance.json 的 schemaVersion（契约 §5.9）。
+INSTANCE_SCHEMA_VERSION = 2
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
 
 
 class ChildProcess(Protocol):
@@ -71,6 +94,56 @@ def port_is_free(port: int) -> bool:
     return True
 
 
+# ── 状态文件（契约 §6.8）：均不含任何秘密 ────────────────────────────
+def window_request_path(layout: InstallLayout) -> Path:
+    """第二实例 → owner 的“请重新开窗”请求（无秘密，被 owner 消费后删除）。"""
+    return Path(layout.state_dir) / "window.request"
+
+
+def handoff_path(layout: InstallLayout) -> Path:
+    """自动化工具的一次性票据文件（仅 ``VSE_BOOT_HANDOFF=1`` 时创建）。"""
+    return Path(layout.state_dir) / "boot-handoff.json"
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    """原子写：先写 ``<name>.tmp`` 再 ``os.replace``，读者绝不会看到半个文件。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.parent / (path.name + ".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def _public_base_url(info: dict[str, Any]) -> str | None:
+    """instance.json → 可公开的本机地址；查询串一律丢弃（票据绝不从这里取用）。"""
+    port = info.get("port")
+    if isinstance(port, int) and not isinstance(port, bool) and 0 < port < 65536:
+        return f"http://127.0.0.1:{port}/"
+    url = info.get("url")
+    if not isinstance(url, str) or not url:
+        return None
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return None
+    host = (parts.hostname or "").lower()
+    if host not in _LOOPBACK_HOSTS:
+        return None
+    resolved = parts.port or (443 if parts.scheme == "https" else 80)
+    return f"http://{host}:{resolved}/"
+
+
+def _accepts_broker(callback: Callable[..., None]) -> bool:
+    """``show`` 是否支持 ``broker=``：默认 ``open_window`` 支持；老式 2 参 callable
+    （headless 日志输出、测试替身）保持原签名，不需要跟着改。"""
+    try:
+        parameters = inspect.signature(callback).parameters
+    except (TypeError, ValueError):
+        return False
+    if "broker" in parameters:
+        return True
+    return any(item.kind is inspect.Parameter.VAR_KEYWORD for item in parameters.values())
+
+
 class Controls:
     """Requests from the tray (same process) to the supervisor loop."""
 
@@ -79,7 +152,19 @@ class Controls:
         self.restart = threading.Event()
 
 
-def spawn_app(app_dir: Path, port: int, layout: InstallLayout) -> ChildProcess:
+def spawn_app(
+    app_dir: Path,
+    port: int,
+    layout: InstallLayout,
+    *,
+    env_overrides: dict[str, str] | None = None,
+) -> ChildProcess:
+    """启动 app 子进程。
+
+    C7（DSH-V2-03）：票据与启动器密钥只经**继承的环境变量**（``env=``）下发，
+    绝不写 ``os.environ``——否则它们会泄漏给启动器自身随后创建的所有子进程
+    （窗口子进程、Excel worker）。
+    """
     env = dict(os.environ)
     # 多项目：每个项目一个数据文件夹，启动前按当前项目选定（vse_boot/projects.py）。
     env["VSE_DATA_ROOT"] = str(projects.active_data_root(layout))
@@ -87,6 +172,8 @@ def spawn_app(app_dir: Path, port: int, layout: InstallLayout) -> ChildProcess:
     # vse_boot 本身所在目录（生产环境是运行时的 site-packages）；app 目录由 app_main 插到最前面。
     boot_parent = str(Path(__file__).resolve().parent.parent)
     env["PYTHONPATH"] = boot_parent + os.pathsep + env.get("PYTHONPATH", "") if env.get("PYTHONPATH") else boot_parent
+    if env_overrides:
+        env.update({str(key): str(value) for key, value in env_overrides.items()})
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     if getattr(sys, "frozen", False):
         command = [sys.executable, "--app-child", "--app-dir", str(app_dir), "--port", str(port)]
@@ -186,6 +273,61 @@ def probe_app(port: int) -> bool:
     return True
 
 
+def probe_capabilities(port: int, timeout: float = 2.0) -> dict[str, Any] | None:
+    """探测 app 是否支持新契约（``grantArm``）。
+
+    任何失败（超时 / 404 / JSON 非法 / 缺字段）都返回 None，调用方一律按
+    “旧 app”处理（契约 §8.2）。启动器不 import app 包：app 可能是任意版本。
+    """
+    url = f"http://127.0.0.1:{port}{CAPABILITIES_PATH}"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            if response.status != 200:
+                return None
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    data = payload.get("data") if isinstance(payload, dict) else None
+    return data if isinstance(data, dict) else None
+
+
+class WindowBroker:
+    """新契约下的开窗授权代理：只用启动器密钥向 app 预置一次性授权。
+
+    启动器密钥只存在于本进程内存与 app 子进程环境里：不落盘、不进 argv、
+    不进日志、绝不交给窗口子进程（契约 §5.3）。
+    """
+
+    def __init__(self, port: int, secret: str, *, timeout: float = 5.0) -> None:
+        self.base_url = f"http://127.0.0.1:{port}"
+        self._secret = secret
+        self._timeout = timeout
+
+    def arm(self, purpose: str, delivery: str) -> dict[str, Any] | None:
+        """``POST /api/security/window-grant``；失败返回 None（调用方降级，绝不放大权限）。"""
+        if not self._secret:
+            return None
+        body = json.dumps({"purpose": purpose, "delivery": delivery}).encode("utf-8")
+        request = urllib.request.Request(
+            self.base_url + WINDOW_GRANT_PATH,
+            data=body,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "Origin": self.base_url,
+                LAUNCHER_SECRET_HEADER: self._secret,
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self._timeout) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except (urllib.error.URLError, OSError, ValueError):
+            return None
+        data = payload.get("data") if isinstance(payload, dict) else None
+        return data if isinstance(data, dict) else None
+
+
 def _edge_path() -> str | None:
     candidates = [
         os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), r"Microsoft\Edge\Application\msedge.exe"),
@@ -230,13 +372,32 @@ def _parse_window_argv(argv: list[str]) -> tuple[str | None, Path | None]:
     return url, profile
 
 
+class BootBridge:
+    """pywebview ``js_api`` 桥：把宿主注入的一次性票据交给页面，只交付一次。
+
+    页面在 ``window.pywebview.api.take_boot_ticket()`` 里取票后立刻换会话；
+    票据不打印、不写日志，取走后桥内即置空（纵深防御，契约 §5.4）。
+    """
+
+    def __init__(self, ticket: str | None = None) -> None:
+        self._ticket = ticket
+        self._lock = threading.Lock()
+
+    def take_boot_ticket(self) -> str | None:
+        with self._lock:
+            ticket, self._ticket = self._ticket, None
+        return ticket
+
+
 def run_window(argv: list[str], webview_module: Any = None) -> int:
     """``--window`` 子进程入口：pywebview 必须跑在**本进程主线程**（C1）。
 
     退出码：正常关闭 0；pywebview 缺失 3；create_window/start 抛异常 4。
-    异常信息写 stderr，并抹掉 URL——查询串里有启动票据，不能进日志。
+    票据只经环境变量进入本进程，注入桥之后立即从 ``os.environ`` 清除；异常信息
+    先抹掉 URL（旧链路）与票据子串，再写 stderr——票据绝不进日志。
     """
     url, profile = _parse_window_argv(argv)
+    ticket = os.environ.pop("VSE_WINDOW_BOOT_TICKET", None)
     module = webview_module
     if module is None:
         try:
@@ -245,24 +406,37 @@ def run_window(argv: list[str], webview_module: Any = None) -> int:
             print(f"无法加载 pywebview：{exc}", file=sys.stderr)
             return 3
     try:
-        module.create_window("VSE Toolbox", url, width=1280, height=860)
+        module.create_window(
+            "VSE Toolbox", url, width=1280, height=860, js_api=BootBridge(ticket)
+        )
         module.start(private_mode=False, storage_path=str(profile) if profile is not None else None)
     except Exception as exc:  # noqa: BLE001 - 任何 GUI 失败都只值一个退出码
         detail = str(exc)
         if url:
             detail = detail.replace(url, "<url>")
+        if ticket:
+            detail = detail.replace(ticket, "<ticket>")
         print(f"窗口启动失败：{type(exc).__name__}: {detail}", file=sys.stderr)
         return 4
     return 0
 
 
-def spawn_window(url: str, profile_dir: Path, *, assign_job: bool = True) -> ChildProcess:
+def spawn_window(
+    url: str,
+    profile_dir: Path,
+    *,
+    assign_job: bool = True,
+    env: dict[str, str] | None = None,
+) -> ChildProcess:
     """把 pywebview 窗口放进独立子进程（C1）。
 
     pywebview 要求 ``start()`` 在进程主线程调用，所以窗口不能是启动器里的一个
     线程。``assign_job`` 只在**长驻的**启动器进程里为 True：窗口随它一起结束；
     第二实例进程十几秒后就会退出，把窗口挂到它的 job 上会被
     KILL_ON_JOB_CLOSE 杀掉，所以那条路径必须传 False（见 ``open_window``）。
+
+    ``env`` 只用于注入 ``VSE_WINDOW_BOOT_TICKET``；窗口子进程**绝不**继承
+    ``VSE_LAUNCH_SECRET``（契约 §5.3）。
     """
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     profile = str(profile_dir)
@@ -270,7 +444,12 @@ def spawn_window(url: str, profile_dir: Path, *, assign_job: bool = True) -> Chi
         command = [sys.executable, "--window", url, "--profile", profile]
     else:
         command = [sys.executable, "-m", "vse_boot", "--window", url, "--profile", profile]
-    child = subprocess.Popen(command, creationflags=flags)
+    child_env = dict(os.environ)
+    child_env.pop("VSE_LAUNCH_SECRET", None)
+    child_env.pop("VSE_WINDOW_BOOT_TICKET", None)
+    if env:
+        child_env.update({str(key): str(value) for key, value in env.items()})
+    child = subprocess.Popen(command, creationflags=flags, env=child_env)
     if assign_job:
         _JOB.assign(child)  # 启动器退出时窗口一起关掉，不留孤儿进程
     return child
@@ -310,6 +489,7 @@ def open_window(
     wait: Callable[[ChildProcess, float], int | None] | None = None,
     fallback: Callable[[], None] | None = None,
     assign_job: bool | None = None,
+    broker: "WindowBroker | None" = None,
 ) -> None:
     """三级回退开窗（W16-02 / DSH-V2-47 C2）：pywebview 子进程 → Edge app → 默认浏览器。
 
@@ -324,18 +504,41 @@ def open_window(
     ``assign_job`` 默认按「本进程是不是长驻的启动器」决定：只有持有实例锁的
     启动器才把窗口收进自己的 job（启动器一退窗口就退）；第二实例拿不到锁，
     它开出的窗口不能跟着这个十几秒后就退出的进程一起死。
+
+    ``broker``（契约 §5.4/§5.5）：新契约下由启动器预置一次性授权——pywebview
+    走 ``delivery="env"`` 把票据经环境变量注入窗口子进程；Edge/默认浏览器没有
+    注入通道，打开**纯 URL** 前先预置 ``delivery="claim"`` 授权。``broker`` 为
+    None 时保持旧链路（URL 自带 ``?boot=``，无授权预置）。
     """
     if assign_job is None:
         assign_job = launcher_holds_instance_lock(layout.lock_file)
-    spawn_fn = spawn or (
-        lambda target, profile: spawn_window(target, profile, assign_job=assign_job)
-    )
     available = find_webview or webview_available
     wait_fn = wait or wait_window_exit
-    fallback_fn = fallback or (lambda: _open_edge_or_browser(url, layout))
+
+    def _edge_fallback() -> None:
+        if broker is not None:
+            # 浏览器没有注入通道：先预置一次性 claim 授权，再打开纯 URL。
+            try:
+                broker.arm("open", "claim")
+            except Exception:  # noqa: BLE001 - 预置失败只让页面显示「需要启动器授权」
+                pass
+        _open_edge_or_browser(url, layout)
+
+    fallback_fn = fallback or _edge_fallback
     if not available():
         fallback_fn()
         return
+    env: dict[str, str] | None = None
+    if broker is not None:
+        data = broker.arm("open", "env") or {}
+        ticket = data.get("ticket")
+        if not isinstance(ticket, str) or not ticket:
+            fallback_fn()  # 拿不到票据就不开一个没有会话的窗口
+            return
+        env = {"VSE_WINDOW_BOOT_TICKET": ticket}
+    spawn_fn = spawn or (
+        lambda target, profile: spawn_window(target, profile, assign_job=assign_job, env=env)
+    )
     profile = layout.state_dir / "webview-profile"
     try:
         child = spawn_fn(url, profile)
@@ -437,9 +640,9 @@ class InstanceLock:
 @dataclass
 class Supervisor:
     layout: InstallLayout
-    spawn: Callable[[Path, int, InstallLayout], ChildProcess] = spawn_app
+    spawn: Callable[..., ChildProcess] = spawn_app
     probe: Callable[[int], bool] = probe_app
-    show: Callable[[str, InstallLayout], None] = open_window
+    show: Callable[..., None] = open_window
     pick_port: Callable[[], int] = free_port
     health_timeout: float = HEALTH_TIMEOUT_SECONDS
     sleep: Callable[[float], None] = time.sleep
@@ -450,8 +653,17 @@ class Supervisor:
     tray: Callable[["Supervisor"], Any] | None = None
     port_free: Callable[[int], bool] = port_is_free
     controls: Controls = field(default_factory=Controls)
+    #: 新契约探测（``grantArm``）；失败一律按旧 app 处理（契约 §8.2）。
+    capabilities: Callable[[int], dict[str, Any] | None] = probe_capabilities
+    #: 授权代理工厂：测试注入替身，生产用 ``WindowBroker``（真实 HTTP + 启动器密钥）。
+    broker_factory: Callable[[int, str], Any] = WindowBroker
     url: str | None = field(default=None, init=False)
     version: str | None = field(default=None, init=False)
+    #: 本次 app 子进程的票据/密钥/epoch：绝不打印、绝不进 instance.json。
+    boot_token: str = field(default="", init=False, repr=False)
+    launch_secret: str = field(default="", init=False, repr=False)
+    epoch: str = field(default="", init=False, repr=False)
+    contract_available: bool = field(default=False, init=False, repr=False)
     _tray_handle: Any = field(default=None, init=False, repr=False)
 
     def notify(self, text: str) -> None:
@@ -477,14 +689,60 @@ class Supervisor:
             self.layout.instance_file.unlink(missing_ok=True)
             lock.release()
 
+    # ── 第二实例：请求 owner 重开窗口（契约 §5.6 / K4） ──────────────
     def _show_existing(self) -> int:
-        try:
-            info = json.loads(self.layout.instance_file.read_text(encoding="utf-8"))
-            self.show(str(info["url"]), self.layout)
-            return 0
-        except (OSError, ValueError, KeyError):
+        """拿不到实例锁：写 ``window.request`` 请 owner 重新签发授权并开窗。
+
+        **不再**读 ``instance.json["url"]`` 直接开窗——那张票据早已被首窗消费或
+        超过 10 秒（D2）。8 秒内 owner 未接手时兜底打开**无票据**的 ``/``，页面
+        显示“需要启动器授权”横幅；绝不回退到复用旧票据或旧 URL。
+        """
+        info = self._read_instance()
+        base = _public_base_url(info) if info is not None else None
+        if base is None:
             self.log("VSE Toolbox 正在启动，请稍候再打开。")
             return 0
+        request = window_request_path(self.layout)
+        try:
+            _write_json_atomic(
+                request,
+                {
+                    "purpose": "open",
+                    "requestedAt": int(time.time() * 1000),
+                    "nonce": secrets.token_hex(16),
+                },
+            )
+        except OSError as exc:
+            self.log(f"无法请求正在运行的启动器重开窗口：{exc}")
+            return 0
+        if self._wait_window_request(request):
+            return 0  # owner 已接手：它负责签发授权并开窗
+        self.log("未能联系到正在运行的启动器，请从开始菜单重新打开 VSE Toolbox。")
+        self._show_window(base)
+        return 0
+
+    def _show_window(self, url: str, *, broker: Any = None) -> None:
+        """按 ``show`` 的能力开窗：支持 ``broker=`` 的走新契约，老式 2 参 callable 保持原样。"""
+        if broker is not None and _accepts_broker(self.show):
+            self.show(url, self.layout, broker=broker)
+        else:
+            self.show(url, self.layout)
+
+    def _read_instance(self) -> dict[str, Any] | None:
+        try:
+            info = json.loads(self.layout.instance_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return info if isinstance(info, dict) else None
+
+    def _wait_window_request(self, request: Path) -> bool:
+        """最多等 ``WINDOW_REQUEST_TIMEOUT_SECONDS``：文件被 owner 删除即视为已接手。"""
+        deadline = self.clock() + WINDOW_REQUEST_TIMEOUT_SECONDS
+        while self.clock() < deadline:
+            if not request.exists():
+                return True
+            self.sleep(WINDOW_REQUEST_POLL_SECONDS)
+        return not request.exists()
 
     def _run_locked(self) -> int:
         if self.tray is not None:
@@ -536,6 +794,9 @@ class Supervisor:
     def _boot(self, port: int, *, open_window: bool) -> tuple[str, int]:
         self.layout.restart_request.unlink(missing_ok=True)
         self.layout.quit_request.unlink(missing_ok=True)
+        # 陈旧状态文件：历史 window.request / boot-handoff.json 绝不能被误执行或复用。
+        window_request_path(self.layout).unlink(missing_ok=True)
+        handoff_path(self.layout).unlink(missing_ok=True)
         self.controls.restart.clear()
         state = BootState(self.layout)
         for version in state.install_staged():
@@ -553,12 +814,19 @@ class Supervisor:
             if trial:
                 self._snapshot_before_trial(state, version)
             self.log(f"启动 VSE Toolbox {version}{'（试用）' if trial else ''}")
-            # C7（W16-03）：启动器生成短时单次启动票据，经环境变量传给服务进程、
-            # 经 ?boot= 查询串传给页面；服务端校验单次+TTL 后换会话 Cookie。
-            # 经 os.environ 传递（不进命令行，避免本机进程列表可见）。
+            # C7（DSH-V2-03）：票据与启动器密钥**只**经继承的环境变量交给 app 子进程。
+            # 绝不写 os.environ：那会把它们泄漏给启动器随后创建的所有子进程
+            # （窗口子进程、Excel worker）。票据/密钥不落盘、不进 argv、不进日志。
             self.boot_token = secrets.token_urlsafe(32)
-            os.environ["VSE_BOOT_TOKEN"] = self.boot_token
-            child = self.spawn(app_dir, port, self.layout)
+            self.launch_secret = secrets.token_urlsafe(32)
+            self.epoch = secrets.token_hex(8)
+            self.contract_available = False
+            env_overrides = {
+                "VSE_BOOT_TOKEN": self.boot_token,  # 旧 app 兼容路径（配合 ?boot=）
+                "VSE_LAUNCH_SECRET": self.launch_secret,
+                "VSE_LEGACY_BOOT_QUERY": "0",  # 新启动器显式关闭 ?boot= 兼容读取
+            }
+            child = self.spawn(app_dir, port, self.layout, env_overrides=env_overrides)
             healthy, reason = self._wait_healthy(child, port)
             if healthy:
                 if trial:
@@ -605,16 +873,25 @@ class Supervisor:
         return False, f"{int(self.health_timeout)} 秒内没有完成启动"
 
     def _serve(self, child: ChildProcess, port: int, version: str, *, open_window: bool) -> tuple[str, int]:
-        boot_token = getattr(self, "boot_token", None) or ""
-        # 票据附在 URL 供页面交换；instance.json 同步记录（单次+10s TTL，
-        # 留存本身无价值），供重启后 _show_existing 重开窗口与本机自动化取用。
-        url = f"http://127.0.0.1:{port}/?boot={boot_token}" if boot_token else f"http://127.0.0.1:{port}/"
-        self.url, self.version = url, version
-        info = {"url": url, "port": port, "version": version, "pid": child.pid,
-                "supervisorPid": os.getpid(), "bootToken": boot_token}
-        self.layout.instance_file.write_text(json.dumps(info), encoding="utf-8")
+        # 健康检查通过之后才探测/签发：票据 TTL 从 app 侧签发时刻起算（契约 §5.3）。
+        capabilities = self.capabilities(port)
+        self.contract_available = bool(capabilities and capabilities.get("grantArm") is True)
+        if self.contract_available:
+            self.epoch = str(capabilities.get("epoch") or self.epoch)
+        broker = self.broker_factory(port, self.launch_secret) if self.contract_available else None
+        self.url, self.version = f"http://127.0.0.1:{port}/", version
+        if self.contract_available:
+            # 新链路：URL 无查询串；票据/授权只在内存与环境变量里流转。
+            url = self.url
+            handoff = self._write_handoff(broker)
+        else:
+            # 旧 app（无 grantArm）：逐字保留旧路径语义——URL 附 ?boot=、instance.json
+            # 写 bootToken。这条分支只服务“新启动器 + 旧 app”（契约 §8.1）。
+            url = f"{self.url}?boot={self.boot_token}"
+            handoff = False
+        self._write_instance(child, port, version, url, handoff=handoff)
         if open_window:
-            self.show(url, self.layout)
+            self._show_window(url, broker=broker)
         try:
             while True:
                 code = child.poll()
@@ -630,10 +907,87 @@ class Supervisor:
                     self.log("按请求重新启动程序")
                     self._stop(child)
                     return "restart", 0
+                request = window_request_path(self.layout)
+                if request.exists():
+                    # K4：第二实例请 owner 重新签发授权并开窗；先删请求再开窗。
+                    request.unlink(missing_ok=True)
+                    self.log("按请求重新打开窗口")
+                    try:
+                        self._show_window(self.url, broker=broker)
+                    except Exception as exc:  # noqa: BLE001 - 重开窗口失败不能拖垮启动器
+                        self.log(f"重新打开窗口失败：{type(exc).__name__}")
                 self.sleep(_POLL_SECONDS)
         except KeyboardInterrupt:
             self._stop(child)
             return "quit", 0
+
+    def _write_instance(
+        self,
+        child: ChildProcess,
+        port: int,
+        version: str,
+        url: str,
+        *,
+        handoff: bool,
+    ) -> None:
+        """写 ``state/instance.json``：**不含任何票据/密钥**（契约 §5.9）。"""
+        info: dict[str, Any] = {
+            "schemaVersion": INSTANCE_SCHEMA_VERSION,
+            "url": url,
+            "port": port,
+            "version": version,
+            "pid": child.pid,
+            "supervisorPid": os.getpid(),
+            "startedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "epoch": self.epoch,
+            "securityContract": SECURITY_CONTRACT_VERSION,
+        }
+        if not self.contract_available:
+            # 仅旧 app 分支：旧启动器/旧 app 只认这个字段（契约 §8.1）。
+            info["bootToken"] = self.boot_token
+        if handoff:
+            info["handoff"] = handoff_path(self.layout).name
+        _write_json_atomic(self.layout.instance_file, info)
+
+    def _write_handoff(self, broker: Any) -> bool:
+        """K6（opt-in）：把刚签发的票据写入 ``state/boot-handoff.json``，ttl+5 秒后自删。
+
+        默认**不创建**（生产零残留）；仅 ``VSE_BOOT_HANDOFF=1`` 时写入。文件权限
+        依赖安装根继承的当前用户私有 ACL——**不新增任何 ACL 操作，也不宣称 0600**
+        （主控裁决 1）。
+        """
+        if os.environ.get(HANDOFF_ENV_VAR) != "1":
+            return False
+        data = broker.arm("open", "env") if broker is not None else None
+        ticket = (data or {}).get("ticket")
+        if not isinstance(ticket, str) or not ticket:
+            self.log("启动器未能在开窗前签发自动化票据，boot-handoff.json 未写入")
+            return False
+        path = handoff_path(self.layout)
+        try:
+            _write_json_atomic(
+                path,
+                {
+                    "ticket": ticket,
+                    "expiresAt": int(time.time()) + TICKET_TTL_SECONDS,
+                    "pid": os.getpid(),
+                    "epoch": self.epoch,
+                },
+            )
+        except OSError as exc:
+            self.log(f"无法写入 boot-handoff.json：{exc}")
+            return False
+
+        def _remove() -> None:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+        timer = threading.Timer(HANDOFF_DELETE_DELAY_SECONDS, _remove)
+        timer.daemon = True
+        timer.start()
+        return True
 
     @staticmethod
     def _stop(child: ChildProcess) -> None:
