@@ -5,6 +5,7 @@
 import { html, useEffect, useRef, useState } from "/static/host/vendor/preact-htm.js";
 import { useStylesheet } from "/static/host/kit.js";
 import { ErrorCard, Skeleton, TONE } from "/static/host/ui-kit.js";
+import { formatBeijingWithZone } from "/static/host/time-format.js";
 import { DataGrid } from "./grid.js";
 import {
   FORBIDDEN_PERSIST_KEYS,
@@ -111,6 +112,14 @@ function filterSummary(modeId, payload) {
     if (shown) parts.push(`${labels.get(key) || key}: ${redactSensitiveText(shown)}`);
   });
   return parts.length ? parts.join("；") : "无筛选条件";
+}
+
+/**
+ * 结果生成时间：统一北京时间并显式标注时区（契约 C9），与浏览器所在时区/语言无关。
+ * 单独导出，让前端时间门禁能在 Node 下执行同一条显示路径。
+ */
+export function formatResultAt(value) {
+  return formatBeijingWithZone(value);
 }
 
 // ── HTTP：旧接口直接 fetch，保留 diagnosticPath 与 202 契约 ─────────────
@@ -474,7 +483,7 @@ export default function SystemQueryPage({ plugin }) {
 
   // ── 结果 ──
   const renderResult = (data, id, summary) => {
-    setResult({ data: data || {}, modeId: id, key: seq.current, at: new Date().toLocaleString("zh-CN", { hour12: false }), summary });
+    setResult({ data: data || {}, modeId: id, key: seq.current, at: formatResultAt(Date.now()), summary });
     setContextNote("");
     const m = MODES[id];
     const captured = data && data.xml;
