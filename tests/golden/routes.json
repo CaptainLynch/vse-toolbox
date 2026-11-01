@@ -517,6 +517,17 @@
     "download": "none"
   },
   {
+    "rule": "/api/p/excel-tasks/env-check",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_excel_tasks.env_check",
+    "view_function": "env_check",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
     "rule": "/api/p/project-overview/form-terms",
     "methods": [
       "GET"

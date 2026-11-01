@@ -1,6 +1,13 @@
 # -*- coding: utf-8 -*-
 """Excel 路径安全校验服务。
 
+范围说明（DSH-V2-26，P1）：本模块不是生产执行边界。生产路径的提交与执行边界是
+core.excel_tasks.ApprovedExcelRoots（ExcelTaskFileRef 规范化 + resolve_ref），
+消费点为 core/excel_tasks.py 的 create_task、core/excel_worker.py 的执行期解析，
+以及 services/excel_task_admin.py 的只读展示。本模块在生产代码中没有任何调用方，
+保留仅供既有测试（tests/test_excel_path_safety.py）与后续退役评估；不要把它接入
+生产路径，否则会形成第二套不一致的路径规则。
+
 根据 docs/refactor-v2/CONTRACTS.md C10 契约，对用户输入的路径进行安全校验：
 1. 拒绝目录穿越（.. 段）；
 2. 拒绝 UNC 网络共享路径（以 \\\\ 或 // 开头）；

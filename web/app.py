@@ -43,6 +43,7 @@ from services.project_status_analytics import ProjectStatusAnalyticsService
 from services.project_status_deliverable_analysis import ProjectStatusDeliverableAnalysisService
 from services.deliverable_form_analysis import DeliverableFormAnalysisService
 from services.scheduled_archive_admin import ScheduledArchiveAdminService
+from services.excel_env_check import check_excel_environment
 from services.excel_task_admin import ExcelTaskAdminService
 from services.excel_worker_controller import ExcelWorkerController
 from services.excel_worker_process_controller import ExcelWorkerProcessController
@@ -482,6 +483,8 @@ def create_app(
         else:
             raise ValueError("excel_worker_mode must be 'process' or 'in_process'")
     app.extensions["excel_worker_controller"] = excel_worker_controller
+    # 本机 Excel 环境自检（只读）：插件经 host.context.service("excel_env_check") 取用。
+    app.extensions["excel_env_check"] = check_excel_environment
 
     @app.route("/")
     def index():

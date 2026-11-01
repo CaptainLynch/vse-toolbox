@@ -478,3 +478,36 @@ def test_legacy_dismiss_key_compatibility() -> None:
     data = _run_node_scenario({"action": "testLegacyDismissed"})
     assert data["isDismissed"] is True
     assert data["isCompleted"] is False
+
+
+@needs_node
+def test_project_recovery_keys_persist_and_sanitize() -> None:
+    """项目恢复键（已建项目 ID / 签名 / 自启确认态）随向导状态持久化，非法值被清洗。"""
+    saved = _run_node_scenario({
+        "action": "testProgressionAndRestore",
+        "steps": [{
+            "step": 3,
+            "projectCreated": True,
+            "projectId": "proj-9",
+            "projectSignature": '["F610S","F610S",["车体科"]]',
+            "autostartConfirmed": "on",
+        }],
+    })["restoredState"]
+    assert saved["step"] == 3
+    assert saved["projectCreated"] is True
+    assert saved["projectId"] == "proj-9"
+    assert saved["projectSignature"] == '["F610S","F610S",["车体科"]]'
+    assert saved["autostartConfirmed"] == "on"
+
+    dirty = _run_node_scenario({
+        "action": "testProgressionAndRestore",
+        "steps": [{"projectId": 123, "projectSignature": None, "autostartConfirmed": "maybe"}],
+    })
+    restored = dirty["restoredState"]
+    assert restored["projectId"] == ""
+    assert restored["projectSignature"] == ""
+    assert restored["autostartConfirmed"] == "unknown"
+    assert restored["projectCreated"] is False
+    raw = dirty["storageDump"]["vse.wizardState"]
+    assert "maybe" not in raw
+    assert "123" not in raw
