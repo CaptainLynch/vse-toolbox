@@ -38,8 +38,16 @@ from tests.browser.v2_fixtures import (  # noqa: F401 - pytest fixture 注入
 #: 单项目环境（非启动器托管）点「下一步」新建项目会如实返回 409 NotManaged，
 #: 浏览器把 4xx 响应记为 network error。这是预期业务分支——而且证明写请求穿过
 #: 了会话 + Origin 防线（不是 401/403），不是页面缺陷。
+# DSH-V2-03 契约 §5.12-3：页面启动握手先 POST boot-claim 一次，无预置授权时 409
+# 是正常路径（例如直接用浏览器打开、或旧启动器的 ?boot= 兼容分支），页面静默忽略，
+# 但浏览器仍会把这次 409 记为网络 error 日志。只放行这一条精确匹配。
+BOOT_CLAIM_PROBE = re.compile(
+    r"status of 409 \(CONFLICT\) \(http://127\.0\.0\.1:\d+/api/security/boot-claim\)"
+)
+
 KNOWN_CONSOLE_ENTRIES = (
     re.compile(r"status of 409 \(CONFLICT\) \(http://127\.0\.0\.1:\d+/api/p/workbench/projects\)"),
+    BOOT_CLAIM_PROBE,
 )
 
 
@@ -83,7 +91,7 @@ def test_boot_ticket_establishes_session_and_loads_shell(
     body_text = str(page.eval("document.querySelector('#plugin-host').innerText"))
     assert "需要你处理" in body_text, page.diagnose("工作台首页主体未渲染")
 
-    assert_no_console_errors(page)
+    assert_no_console_errors(page, allow=(BOOT_CLAIM_PROBE,))
 
 
 # ── 路径 2：首次使用向导的真实点击 ─────────────────────────────────────────
@@ -165,7 +173,7 @@ def test_project_overview_report_entry_renders(
     load_error = page.eval("Boolean(document.querySelector('.project-overview .overview-load-error'))")
     assert load_error is False, page.diagnose("项目概览出现加载失败区块")
 
-    assert_no_console_errors(page)
+    assert_no_console_errors(page, allow=(BOOT_CLAIM_PROBE,))
 
 
 def test_sign_daily_report_entry_renders(
@@ -193,4 +201,4 @@ def test_sign_daily_report_entry_renders(
     page_error = page.eval("Boolean(document.querySelector('.sd-page .vk-state.is-error'))")
     assert page_error is False, page.diagnose("日报页加载即进入错误态")
 
-    assert_no_console_errors(page)
+    assert_no_console_errors(page, allow=(BOOT_CLAIM_PROBE,))
