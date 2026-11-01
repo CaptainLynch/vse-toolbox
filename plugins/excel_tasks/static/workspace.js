@@ -16,6 +16,71 @@ const POLL_MS = 4000;
 // 最多自动刷新 150 次（约 10 分钟），之后需手动刷新，避免页面挂着无限轮询。
 const POLL_MAX_TICKS = 150;
 
+// 本机环境自检（插件只读路由，检测逻辑由宿主注入的服务提供）。
+const ENV_CHECK_URL = "/api/p/excel-tasks/env-check";
+
+const ENV_CHECKING_TEXT = "正在检查运行环境…";
+const ENV_INCOMPLETE_TEXT = "没有拿到完整的环境检查结果，请点【刷新状态】重试";
+const ENV_NEED_CHECK_TEXT = "无法可靠确认激活状态，请在软件账户信息中核对";
+const ENV_NOT_INSTALLED_TEXT = "未检测到可用的表格软件";
+const ENV_UNLICENSED_TEXT = "软件尚未激活或授权已过期";
+const ENV_OK_TEXT = "表格软件已就绪，运行环境正常";
+
+/** 初始/进行中的状态：不落在“暂未提供”占位，也不伪报通过。 */
+export function envChecking() {
+  return { state: "need_check", detail: ENV_CHECKING_TEXT };
+}
+
+/**
+ * 把 GET /api/p/excel-tasks/env-check 的返回数据转换成 logic.js
+ * classifyEnvStatus 认可的输入（显式 state，避免落入“暂未提供”占位）。
+ *
+ * 转换规则（DSH-V2-25 E3）：
+ * - 未安装 → 不可用；
+ * - 激活状态无法确认（need_check 或未知值）→ 需要检查；
+ * - 已安装且激活确认 → 正常（仍有待释放的后台表格进程时转为需要检查）；
+ * - 数据缺失/不完整 → 需要检查，绝不显示正常。
+ */
+export function toEnvCardData(result) {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    return { state: "need_check", detail: ENV_INCOMPLETE_TEXT };
+  }
+
+  const activation = result.activation && typeof result.activation === "object" ? result.activation : {};
+  const activationDetail = activation.detail ? display(activation.detail) : "";
+
+  if (result.installed === false || result.install_state === "not_installed") {
+    return { state: "unavailable", detail: activationDetail || ENV_NOT_INSTALLED_TEXT };
+  }
+  if (result.installed !== true) {
+    // installed 缺失：既不能说正常，也不能说未安装，按“需要检查”处理。
+    return { state: "need_check", detail: activationDetail || ENV_INCOMPLETE_TEXT };
+  }
+
+  if (activation.state === "unlicensed") {
+    return { state: "unavailable", detail: activationDetail || ENV_UNLICENSED_TEXT };
+  }
+  if (activation.state !== "activated") {
+    return { state: "need_check", detail: activationDetail || ENV_NEED_CHECK_TEXT };
+  }
+
+  const residual = Number(result.residual_count);
+  if (Number.isFinite(residual) && residual > 0) {
+    return { state: "need_check", detail: `检测到 ${residual} 个待释放的后台表格进程` };
+  }
+  return { state: "ok", detail: activationDetail || ENV_OK_TEXT };
+}
+
+/**
+ * 请求失败时的展示数据：明确显示失败（红），绝不显示“正常”，
+ * 也不退回“暂未提供”占位把失败伪装成没有数据。
+ */
+export function toEnvCardFailure(error) {
+  const detail = error && error.message ? display(error.message) : "";
+  const suffix = detail && detail !== "-" ? `（${detail}）` : "";
+  return { state: "unavailable", detail: `环境检查没有完成，请稍后点【刷新状态】重试${suffix}` };
+}
+
 function emptyForm() {
   return {
     operation: "merge_append",
@@ -404,6 +469,8 @@ export default function ExcelWorkspace({ plugin }) {
   const [examplesOpen, setExamplesOpen] = useState(false);
   const [pollEpoch, setPollEpoch] = useState(0);
   const [pollExpired, setPollExpired] = useState(false);
+  // 环境自检：初值是“正在检查”，既不是占位“暂未提供”，也不是伪造的正常。
+  const [envCheck, setEnvCheck] = useState(envChecking);
 
   const listSeq = useRef(0);
   const detailSeq = useRef(0);
@@ -455,6 +522,17 @@ export default function ExcelWorkspace({ plugin }) {
     } catch (err) {
       if (isAbort(err)) return;
       setWorker({ unavailable: err.status === 503 ? "未配置" : "状态未知" });
+    }
+  }, [signal]);
+
+  const loadEnvCheck = useCallback(async () => {
+    setEnvCheck(envChecking());
+    try {
+      const data = await api(ENV_CHECK_URL, { signal });
+      setEnvCheck(toEnvCardData(data));
+    } catch (err) {
+      if (isAbort(err)) return;
+      setEnvCheck(toEnvCardFailure(err));
     }
   }, [signal]);
 
@@ -530,10 +608,10 @@ export default function ExcelWorkspace({ plugin }) {
     setError(null);
     setPollExpired(false);
     setPollEpoch((value) => value + 1);
-    return Promise.all([loadRoots(), loadWorker(), loadTasks({ keepSelection: true })]);
-  }, [loadRoots, loadWorker, loadTasks]);
+    return Promise.all([loadRoots(), loadWorker(), loadTasks({ keepSelection: true }), loadEnvCheck()]);
+  }, [loadRoots, loadWorker, loadTasks, loadEnvCheck]);
 
-  // 首次进入：与旧页 loadExcelTaskWorkspace 相同，三路并行加载。
+  // 首次进入：与旧页 loadExcelTaskWorkspace 相同，三路并行加载（外加环境自检）。
   useEffect(() => {
     refreshAll();
   }, []);
@@ -698,7 +776,7 @@ export default function ExcelWorkspace({ plugin }) {
       />
     </header>
 
-    <${EnvCheckCard} env=${null} />
+    <${EnvCheckCard} env=${envCheck} onRefresh=${loadEnvCheck} />
 
     <${ErrorCard} error=${error} onDismiss=${() => setError(null)} />
     <div class="xt-status" aria-live="polite">
