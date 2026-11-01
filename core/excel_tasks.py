@@ -182,6 +182,11 @@ class ApprovedExcelRoots:
         return path.is_symlink() or bool(attrs & reparse_flag)
 
     @classmethod
+    def is_reparse_point(cls, path: Path) -> bool:
+        """公开的重解析点探测（供执行期竞态防护在提交前复核使用）。"""
+        return cls._is_reparse(path)
+
+    @classmethod
     def _assert_no_reparse_in_hierarchy(cls, path: Path) -> None:
         current = path.absolute()
         while True:
