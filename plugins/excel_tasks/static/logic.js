@@ -1,4 +1,16 @@
-// Excel 文件处理：无依赖的纯函数（标签、脱敏、格式化、路径校验、请求体组装），可在 Node 下单测。
+// Excel 文件处理：纯函数（标签、脱敏、格式化、路径校验、请求体组装），可在 Node 下单测。
+// 唯一的外部依赖是宿主时间模块 /static/host/time-format.js（契约 C9），插件不复制其时区逻辑。
+
+// 宿主时间模块：时间点显示一律北京时间，与浏览器所在时区/语言无关。
+// 用动态导入 + 顶层 await 而非静态 import：本文件被既有 Node 测试以原生 ESM 直接加载，
+// 静态 "/static/host/..." 在没有宿主静态服务时无法解析。导入不可用时 formatDate 原样
+// 显示取值（绝不按宿主时区自行换算，避免静默偏移）；浏览器下宿主模块始终可用。
+let hostTime = null;
+try {
+  hostTime = await import("/static/host/time-format.js");
+} catch (_hostTimeError) {
+  hostTime = null;
+}
 
 // 与旧页 app.js 的 SENSITIVE_VALUE_PATTERNS 同口径；旧全局存在时优先复用它。
 const SENSITIVE_VALUE_PATTERNS = [
@@ -72,11 +84,21 @@ export function statusTone(status) {
   return "is-unknown";
 }
 
+/**
+ * 时间展示（契约 C9）：
+ * - 纯日期（例如 retention 截止日）原样返回，不做任何时区换算；
+ * - 带显式时区的时间点（createdAt / updatedAt / cutoffAt，均为 UTC ISO）显示北京时间；
+ * - 无时区或无法判定的取值来源不明，原样显示，绝不按宿主时区猜测。
+ */
 export function formatDate(value) {
   if (!value) return "-";
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return display(value);
-  return parsed.toLocaleString("zh-CN", { hour12: false });
+  if (!hostTime) return display(value);
+  if (hostTime.isPureDate(value)) return hostTime.formatPureDate(value);
+  try {
+    return hostTime.formatBeijingSeconds(value);
+  } catch (_err) {
+    return display(value);
+  }
 }
 
 export function formatSize(value) {

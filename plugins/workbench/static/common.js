@@ -2,6 +2,11 @@
 import { html, useCallback, useEffect, useState } from "/static/host/vendor/preact-htm.js";
 import { api } from "/static/host/api.js";
 import { useStylesheet } from "/static/host/kit.js";
+import {
+  formatBeijing,
+  formatBeijingDate,
+  parseInstant,
+} from "/static/host/time-format.js";
 
 export { html, api };
 
@@ -84,16 +89,26 @@ export function ErrorCard({ title, what, todo, actions = [] }) {
   </div>`;
 }
 
+/** 今天 = 北京时间当天（与后端 businessDate 同一口径），与浏览器所在时区无关。 */
 export function todayString() {
-  const now = new Date();
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  return formatBeijingDate(Date.now());
 }
 
+/**
+ * 时间点 -> 北京时间「MM-DD HH:mm」（列表里的紧凑写法），与浏览器时区/语言无关。
+ * 只换算带显式时区的取值（parseInstant 成功）；无时区历史值（例如 SQLite 无时区
+ * UTC 时间）来源不明，保持原有文本行为、不做任何换算，避免按宿主时区静默偏移。
+ */
 export function shortTime(value) {
   if (!value) return "";
-  const text = String(value).replace("T", " ");
-  return text.slice(5, 16);
+  const text = String(value).replace("T", " ").slice(5, 16);
+  let millis;
+  try {
+    millis = parseInstant(value);
+  } catch (_err) {
+    return text;
+  }
+  return formatBeijing(millis).slice(5, 16);
 }
 
 /** v2 页面显示的交付物：去掉已取消的（例如「子系统开发策略」）。 */
