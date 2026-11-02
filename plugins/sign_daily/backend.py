@@ -35,13 +35,16 @@ from urllib.parse import quote
 
 from flask import Response, request
 
+from core.time_rules import now_utc
 from services import data_model_watchlist as W
-from services.deliverable_form_analysis import form_definition
-from services.form_search import snapshot_schema
+from services import schedule_jobs
+from services import schedule_policy as SP
+from services.schedule_slots import SYNC_CONTROL_TABLE_PREFIX, SlotStore
 from services.xlsx_preview import XLSXPreviewError, read_xlsx_preview
 
 from . import mail as M
 from . import rules as V
+from . import scheduled as SCH
 from . import service as S
 from . import settings as SET
 
@@ -53,29 +56,13 @@ _IMPORT_MAX_ROWS = 5000
 #: 数据日期换算用的时区；None 取本机时区（测试里固定）。
 _DATA_TZ = None
 
-# 与 services/scheduled_archive_runner.py 的闭集指引码一致。
-_REMEDY_TEXT = {
-    "bind_domain_credential": "到「自动归档」页给数模设计审核报表任务选择统一域账号",
-    "enable_job": "到「自动归档」页启用数模设计审核报表任务",
-    "inspect_job_configuration": "到「自动归档」页检查数模设计审核报表任务的配置",
-    "fill_watchlist": "同步范围是「仅关注清单」但清单为空，请先在交付物明细里加入要关注的流水单号",
-    "save_domain_credential": "请登录 TDC 并勾选“保存至凭据保护库”",
-    "refresh_domain_credential": "登录信息已失效，请重新登录并保存至凭据保护库",
-    "wait_and_retry": "抓取任务正在运行，请稍后重试",
-    "retry_or_narrow_filters": "请稍后重试",
-}
-_REMEDY_BY_ERROR_TYPE = {
-    "job_not_ready": "inspect_job_configuration",
-    "missing_job": "inspect_job_configuration",
-    "credential_unavailable": "save_domain_credential",
-    "credential_invalid": "refresh_domain_credential",
-    "authentication_error": "refresh_domain_credential",
-    "lease_busy": "wait_and_retry",
-    "query_failed": "retry_or_narrow_filters",
-    "timeout": "retry_or_narrow_filters",
-}
 _DEFAULT_THRESHOLDS = {"warnDays": 7, "overdueDays": 14, "baselineMaxGapDays": S.BASELINE_MAX_GAP_DAYS}
-_DEFAULT_REGION = "车体区域"
+_DEFAULT_REGION = SCH.DEFAULT_REGION
+
+#: 与定时生成（scheduled.py）共用的纯函数：路由与作业只能有一套口径。
+scope_key = SCH.scope_key
+preferences_for = SCH.preferences_for
+sync_failure_message = SCH.sync_failure_message
 
 
 def _today() -> date:
@@ -98,15 +85,6 @@ def _default_config() -> dict[str, Any]:
         # v1 的「范围 key -> {to, cc}」，只读兜底（同范围的收件人带到 v2）
         "recipients": {},
     }
-
-
-def sync_failure_message(result: Mapping[str, Any]) -> str:
-    """归档任务结果 -> 给用户看的抓取失败原因（带闭集处理指引）。"""
-    first = (result.get("results") or [{}])[0] if isinstance(result, Mapping) else {}
-    reason = first.get("errorMessage") or first.get("errorType") or f"退出码 {result.get('exitCode')}"
-    remedy = first.get("remedy") or _REMEDY_BY_ERROR_TYPE.get(str(first.get("errorType")))
-    hint = _REMEDY_TEXT.get(str(remedy))
-    return f"TDC 抓取未完成：{hint}（{reason}）" if hint else f"TDC 抓取未完成：{reason}"
 
 
 # ── 校验 ────────────────────────────────────────────────────────────
@@ -157,7 +135,7 @@ def _int(value: Any, name: str, low: int, high: int) -> int:
 def _texts(value: Mapping[str, Any]) -> dict[str, str]:
     return {
         "region": _str(value.get("region"), "区域名", 100).strip() or _DEFAULT_REGION,
-        "greeting": _str(value.get("greeting"), "称呼", 200).strip() or "各位领导、同事：",
+        "greeting": _str(value.get("greeting"), "称呼", 200).strip() or SCH.DEFAULT_GREETING,
         "planText": _str(value.get("planText"), "计划/超期说明"),
         "feishuLink": _str(value.get("feishuLink"), "飞书链接", 2000),
     }
@@ -171,14 +149,6 @@ def _validate_request(value: Any) -> tuple[S.Scope, bool, dict[str, str]]:
     if not isinstance(watchlist_only, bool):
         raise _Invalid("只统计关注清单 必须是布尔值")
     return scope, watchlist_only, _texts(value)
-
-
-def scope_key(scope: S.Scope, watchlist_only: bool) -> str:
-    """日报偏好按范围记住；格式与 v1 相同（不开关注清单时），v1 的收件人可以直接带过来。"""
-    key: dict[str, Any] = {"projects": sorted(scope.projects), "departments": sorted(scope.departments)}
-    if watchlist_only:
-        key["watchlistOnly"] = True
-    return json.dumps(key, ensure_ascii=False)
 
 
 def _validate_config_patch(patch: Any) -> dict[str, Any]:
@@ -287,15 +257,6 @@ class Store:
                 )
 
 
-def preferences_for(config: Mapping[str, Any], key: str) -> dict[str, str]:
-    """该范围记住的文案与收件人；没有时用 v1 同范围的收件人兜底。"""
-    stored = dict((config.get("preferences") or {}).get(key) or {})
-    legacy = (config.get("recipients") or {}).get(key) or {}
-    stored.setdefault("to", legacy.get("to", ""))
-    stored.setdefault("cc", legacy.get("cc", ""))
-    return stored
-
-
 # ── 数据 ────────────────────────────────────────────────────────────
 
 
@@ -320,13 +281,6 @@ def import_rows(value: Mapping[str, Any]) -> str | list[list[Any]]:
     return _str(value.get("csv"), "CSV", _CSV_LIMIT)
 
 
-def _headers(latest: Mapping[str, Any]) -> list[str]:
-    schema = snapshot_schema(latest)
-    if not schema or not schema.get("headerRows"):
-        schema = form_definition(S.FORM_KEY)
-    return [str(h or "").strip() for h in schema["headerRows"][0]]
-
-
 # ── 路由 ────────────────────────────────────────────────────────────
 
 
@@ -336,8 +290,16 @@ def register(host):
     store = Store(ctx.db, host.table_prefix)
     snapshots = S.SnapshotStore(ctx.db, host.table_prefix)
     settings = SET.SettingsStore(ctx.db, host.table_prefix, S.seed_roster(), S.seed_rule_rows())
-    host.migrate([*store.migrations(), snapshots.migration(), settings.migration()])
+    reports = SCH.ScheduledReportStore(ctx.db, host.table_prefix)
+    host.migrate([
+        *store.migrations(),
+        snapshots.migration(),
+        settings.migration(),
+        reports.migration(),
+    ])
     settings.reconcile()
+    # 调度器的槽/绑定表由 sync-control 插件建（同一 services 层前缀），这里只读写。
+    slot_store = SlotStore(ctx.db, SYNC_CONTROL_TABLE_PREFIX, clock=now_utc)
 
     def body() -> Any:
         return request.get_json(silent=True)
@@ -368,6 +330,26 @@ def register(host):
         scope, serials = W.load_watchlist(ctx.db)
         return {"scope": scope, "serials": list(serials), "count": len(serials)}
 
+    # 工作日 08:30 日报作业（DSH-V2-23）：唯一调度器按 jobId 查注册表调用。
+    # 处理器在调度线程运行，只依赖注入的 db/存储与宿主服务，不碰 Flask 上下文。
+    daily_job = SCH.DailyReportJob(
+        db=ctx.db,
+        store=store,
+        snapshots=snapshots,
+        reports=reports,
+        effective=effective,
+        runner_factory=lambda: ctx.service("crawl_task_runner"),
+        archive_factory=lambda: ctx.service("scheduled_archive_admin"),
+        data_tz=lambda: _DATA_TZ,
+    )
+    schedule_jobs.register_job(
+        SP.DAILY_REPORT_JOB_ID,
+        make_binding=lambda project_id, times, paused: SP.daily_report_binding(
+            project_id, times=tuple(times or ()), paused=bool(paused)
+        ),
+        handler=daily_job.handle,
+    )
+
     # ── 日报 ────────────────────────────────────────────────────────
 
     @bp.get("/state")
@@ -380,7 +362,7 @@ def register(host):
         options = {"projects": [], "departments": list(V.CURRENT_DEPARTMENTS)}
         error = None
         try:
-            source = S.load_source(ctx.db, _headers, _DATA_TZ, watchlist_only=full is None)
+            source = S.load_source(ctx.db, SCH.headers_for, _DATA_TZ, watchlist_only=full is None)
             parsed = V.build_flows(source.records)
             options = S.scope_options(parsed.flows, S._Context(snapshots, [], eff))
             meta = {
@@ -414,49 +396,20 @@ def register(host):
         return ctx.json_ok({"saved": sorted(patch)})
 
     def compose(payload: Any, *, save: bool) -> tuple[dict[str, Any] | None, Any]:
+        """路由层适配：校验请求体 + 把 compose 业务失败映射成既有 HTTP 错误。
+
+        业务核心在 ``scheduled.build_report``，与工作日 08:30 定时生成共用同一套
+        计算与落快照逻辑（路由行为与响应保持不变）。
+        """
         scope, watchlist_only, texts = _validate_request(payload)
-        config = store.config()
-        watch = watchlist_state()["serials"] if watchlist_only else None
-        if watch is not None and not watch:
-            return None, ctx.json_error(409, "WatchlistEmpty", "关注清单为空，请先在交付物明细里加入要关注的流水单号")
         try:
-            source = S.load_source(ctx.db, _headers, _DATA_TZ, watchlist_only=watchlist_only)
-            result = S.compose(
-                snapshots, source, scope, region=texts["region"], effective=effective(config),
-                save_snapshot=save, today=_today(), watchlist=watch,
-                max_gap_days=int(config["thresholds"]["baselineMaxGapDays"]),
-                status_gate_enabled=bool(config.get("statusGateEnabled", True)),
+            result = SCH.build_report(
+                db=ctx.db, store=store, snapshots=snapshots, effective=effective,
+                scope=scope, watchlist_only=watchlist_only, texts=texts,
+                save=save, today=_today(), tz=_DATA_TZ,
             )
-        except S.NoData as exc:
-            return None, ctx.json_error(409, "NoData", str(exc))
-        except V.MissingColumnsError as exc:
-            return None, ctx.json_error(422, "MissingColumns", str(exc))
-        except LookupError as exc:
-            return None, ctx.json_error(404, "EmptyScope", str(exc))
-        key = scope_key(scope, watchlist_only)
-        prefs = preferences_for(config, key)
-        recipients = M.recipients(prefs.get("to"), prefs.get("cc"), config.get("addressBook"), M.owed_names(result))
-        result.update({
-            "scopeKey": key,
-            "texts": texts,
-            "thresholds": config["thresholds"],
-            "html": M.render_html(result, texts, config["thresholds"]),
-            "text": M.render_text(result, texts),
-            "chartsWithData": M.chart_keys_with_data(result),
-            "recipients": {
-                "to": [{"name": n, "address": a} for n, a in recipients["to"]],
-                "cc": [{"name": n, "address": a} for n, a in recipients["cc"]],
-                "added": [{"name": n, "address": a} for n, a in recipients["added"]],
-                "missing": recipients["missing"], "ambiguous": recipients["ambiguous"],
-            },
-            "recipientsText": {"to": prefs.get("to", ""), "cc": prefs.get("cc", "")},
-        })
-        if save:
-            store.save_config({
-                "form": {"projects": scope.projects, "departments": scope.departments,
-                         "watchlistOnly": watchlist_only, "region": texts["region"]},
-                "preferences": {**(config.get("preferences") or {}), key: {**prefs, **texts}},
-            })
+        except SCH.ReportFailure as exc:
+            return None, ctx.json_error(exc.status, exc.code, exc.message)
         return result, None
 
     @bp.post("/preview")
@@ -510,6 +463,91 @@ def register(host):
         )
         response.headers["Cache-Control"] = "no-store"
         return response
+
+    # ── 定时生成（DSH-V2-23）─────────────────────────────────────────
+
+    def schedule_payload() -> dict[str, Any]:
+        """定时生成状态：开关/时刻/暂停、下次执行、当天槽、最近一次成功生成摘要。"""
+        binding = slot_store.get_binding(SCH.DAILY_PROJECT_ID, SP.DAILY_REPORT_JOB_ID)
+        enabled = bool(binding and binding["mode"] == SP.JOB_KIND_FIXED)
+        paused = bool(binding["paused"]) if binding else False
+        times = list(binding["times"]) if enabled else []
+        configured = times[0] if times else SP.DEFAULT_DAILY_REPORT_TIME.strftime("%H:%M")
+        now = now_utc()
+        next_run_at: str | None = None
+        if enabled and not paused:
+            policy_binding = SP.daily_report_binding(
+                SCH.DAILY_PROJECT_ID,
+                times=times or (SP.DEFAULT_DAILY_REPORT_TIME,),
+                paused=paused,
+            )
+            moment = SP.next_slot_at(policy_binding, now=now)
+            next_run_at = moment.isoformat() if moment is not None else None
+        return {
+            "enabled": enabled,
+            "time": configured,
+            "paused": paused,
+            "nextRunAt": next_run_at,
+            # 租约 token / owner 是收尾 fencing 凭据，只读路由不外露。
+            "today": [
+                {
+                    "jobId": row["jobId"],
+                    "scheduledTime": row["scheduledTime"],
+                    "status": row["status"],
+                    "attempt": row["attempt"],
+                    "lastErrorCode": row["lastErrorCode"],
+                    "nextAttemptAt": row["nextAttemptAt"],
+                }
+                # 业务日期与 /generate 的「今天」同一口径（测试可注入），不用 UTC 日期。
+                for row in slot_store.list_slots(SCH.DAILY_PROJECT_ID, _today())
+            ],
+            "latest": SCH.report_summary(reports.latest()),
+        }
+
+    @bp.get("/schedule")
+    def schedule_read():
+        return ctx.json_ok(schedule_payload())
+
+    @bp.put("/schedule")
+    @guarded
+    def schedule_write():
+        payload = body()
+        if not isinstance(payload, Mapping):
+            raise _Invalid("请求体必须是 JSON 对象")
+        enabled = payload.get("enabled", False)
+        paused = payload.get("paused", False)
+        if not isinstance(enabled, bool):
+            raise _Invalid("enabled 必须是布尔值")
+        if not isinstance(paused, bool):
+            raise _Invalid("paused 必须是布尔值")
+        raw_time = payload.get("time", SP.DEFAULT_DAILY_REPORT_TIME.strftime("%H:%M"))
+        if not isinstance(raw_time, str):
+            raise _Invalid("time 必须是 'HH:MM' 文本")
+        try:
+            times = SP.daily_report_binding(SCH.DAILY_PROJECT_ID, times=(raw_time,)).times
+        except (TypeError, ValueError) as exc:
+            raise _Invalid(f"time {exc}") from None
+        if enabled:
+            slot_store.set_binding(
+                SCH.DAILY_PROJECT_ID,
+                SP.DAILY_REPORT_JOB_ID,
+                SP.JOB_KIND_FIXED,
+                [item.strftime("%H:%M") for item in times],
+                paused,
+            )
+        else:
+            # 关闭定时生成 = interval 绑定（日报没有 interval 语义，只是「不排槽」）。
+            slot_store.set_binding(
+                SCH.DAILY_PROJECT_ID, SP.DAILY_REPORT_JOB_ID, SP.JOB_KIND_INTERVAL, [], paused
+            )
+        return ctx.json_ok(schedule_payload())
+
+    @bp.get("/scheduled/latest")
+    def scheduled_latest():
+        latest = reports.latest()
+        if latest is None:
+            return ctx.json_error(404, "NotFound", "还没有定时生成的日报")
+        return ctx.json_ok(latest)
 
     # ── 长周期复核 ──────────────────────────────────────────────────
 
@@ -570,19 +608,14 @@ def register(host):
             archive = ctx.service("scheduled_archive_admin")
         except LookupError as exc:
             return ctx.json_error(409, "SyncNotReady", str(exc))
-        scope = watchlist_state()["scope"]
-        if not watchlist_only and scope == W.SCOPE_WATCHLIST:
+        blocker = SCH.refresh_scope_blocker(ctx.db, watchlist_only)
+        if blocker is not None:
             # 开关关：日报只认全量快照，一键生成要触发全量抓取；同步范围由交付物明细页维护。
-            return ctx.json_error(409, "WatchlistScope",
-                                  "数模报表的同步范围是「仅关注清单」，抓不到全量数据：请到交付物明细把同步范围改为"
-                                  "「全部表单」，或打开「只统计关注清单」")
-        for task in runner.list_tasks(source=S.TASK_SOURCE, limit=10):
-            if task.get("status") in ("queued", "running"):
-                return ctx.json_ok({**S.task_view(task), "reused": True})
-        worker = S.make_refresh_worker(archive, ctx.db, sync_failure_message)
-        task_id = runner.submit_task(S.TASK_TYPE, S.TASK_SOURCE, {}, worker_fn=worker)
-        task = runner.get_task(task_id) or {"task_id": task_id, "status": "queued"}
-        return ctx.json_ok({**S.task_view(task), "reused": False})
+            return ctx.json_error(409, "WatchlistScope", blocker)
+        view, reused = SCH.start_refresh(
+            runner=runner, archive=archive, db=ctx.db, watchlist_only=watchlist_only
+        )
+        return ctx.json_ok({**view, "reused": reused})
 
     @bp.get("/refresh/<task_id>")
     def refresh_status(task_id: str):

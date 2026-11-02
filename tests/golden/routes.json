@@ -781,6 +781,39 @@
     "download": "none"
   },
   {
+    "rule": "/api/p/sign-daily/schedule",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_sign_daily.schedule_read",
+    "view_function": "schedule_read",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/sign-daily/schedule",
+    "methods": [
+      "PUT"
+    ],
+    "endpoint": "plugin_sign_daily.schedule_write",
+    "view_function": "schedule_write",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/sign-daily/scheduled/latest",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_sign_daily.scheduled_latest",
+    "view_function": "scheduled_latest",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
     "rule": "/api/p/sign-daily/settings/<dataset>",
     "methods": [
       "GET"
