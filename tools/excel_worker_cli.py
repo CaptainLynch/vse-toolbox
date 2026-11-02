@@ -83,7 +83,11 @@ def parent_liveness_probe(parent_pid: int | None):
         synchronize = 0x00100000
         handle = kernel32.OpenProcess(synchronize, False, parent_pid)
         if not handle:
-            return lambda: False
+            # ERROR_INVALID_PARAMETER(87)：该 PID 已不存在 → 父进程已退出；
+            # 其他错误（如权限不足）无法建立观察 → 返回 None，不观察。
+            if ctypes.get_last_error() == 87:
+                return lambda: False
+            return None
         wait_timeout = 0x00000102
 
         def alive() -> bool:
@@ -241,9 +245,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     if args.stop_file is not None and args.stop_file.exists():
                         stop_event.set()
                         return
-                    if parent_alive is not None and not parent_alive():
-                        stop_event.set()
-                        return
+                    if parent_alive is not None:
+                        try:
+                            parent_gone = not parent_alive()
+                        except Exception:  # noqa: BLE001 - 单次探测失败不终止观察线程
+                            parent_gone = False
+                        if parent_gone:
+                            stop_event.set()
+                            return
             watcher = threading.Thread(target=watch_stop_file, name="excel-worker-stop-file", daemon=True)
             watcher.start()
         with _StopSignalHandlers(stop_event):
