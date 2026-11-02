@@ -75,19 +75,31 @@ def _start_sync_scheduler() -> None:
     单绑定异常均已隔离记录，线程顶层兜底同样只记录不外抛。
     """
     from core.db_manager import DatabaseManager
+    from core.time_rules import now_utc
     from services.project_status_scheduler import ProjectStatusSyncScheduler
     from services.project_status_sync_runner import (
         ProjectStatusSyncRunner,
         create_production_registry,
     )
     from services.project_status_updates import ProjectStatusUpdateService
+    from services.schedule_slots import SYNC_CONTROL_TABLE_PREFIX, SlotStore
 
     try:
         db = DatabaseManager()
         db.init_database()
         service = ProjectStatusUpdateService(db)
         runner = ProjectStatusSyncRunner(db, service, create_production_registry())
-        scheduler = ProjectStatusSyncScheduler(db, runner, register_global=True)
+        # C4（DSH-V2-20）：唯一后台调度器直接读写 sync-control 插件的槽表。
+        # 表由插件 register(host) 的增量迁移创建；插件未加载时表不存在，调度器
+        # 自行降级为纯 interval 路径（不建表、不迁移）。
+        slot_store = SlotStore(db, SYNC_CONTROL_TABLE_PREFIX, clock=now_utc)
+        scheduler = ProjectStatusSyncScheduler(
+            db,
+            runner,
+            register_global=True,
+            slot_store=slot_store,
+            clock_utc=now_utc,
+        )
     except Exception:
         print("项目状态同步调度器启动失败，将在下次启动 WebUI 时重试。")
         return
