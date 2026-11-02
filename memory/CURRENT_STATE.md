@@ -4,23 +4,33 @@
 > 更早条目完整保存在 [归档文件](archive/CURRENT_STATE_ARCHIVE_20261023.md)。
 > 恢复状态时**不要**再通读全文；先读本节，再按需查归档。
 
-## 当前前沿（2026-11-01 · DSH 计划第 2 波全部集成；第 1 波见下）
+## 当前前沿（2026-11-03 · DSH 第 3、4 波已集成；第 5 波进行中）
 
-- **DSH 第 2 波（2823848，快进合入 refactor/ux-v2）**：14 项全部完成，集成全量 **3746 passed / 7 skipped /
-  2 warnings，exit 0，477.87s**（`E:\project\vse-toolbox-wt\_logs\wave2-integration-pytest.txt`）。
-  执行者两路并发未再触发网关 503；全部 Claude 评审第 1 轮 pass，主控逐项复核 diff 与聚焦测试。
-  - 实现：06 wave_gate 严格 release 模式（主控补：只缺一个术语文件也判失败）；07 路由接线/响应契约测试
-    （钉住 3 条读路由缺 no-store、诊断旧错误信封）；08 离线真实浏览器夹具（Edge headless + 内嵌 Node CDP，
-    无新依赖；wave_gate 尚未接入其 junit）；09 前端北京时间模块 time-format.js（暂无页面调用方；主控补斜杠日期）；
-    12 向导失败不吞、项目 ID 跨重启复用；24 TIR 复用校验 stem/day/filters + sha256（download/list 仍只验存在）；
-    25 Excel 环境自检 API + 页面（golden +1 路由）；26 Excel worker os.replace 前复核目录身份防 junction 替换
-    （主控冻结 P1–P5；services/excel_path_safety.py 生产零消费者，保留不接入）。
-  - 设计门（主控已批准）：02 `DSH_LOCAL_SECURITY_CONTRACT.md`（03 唯一依据，**03 owned_scope 需按其 §11 扩展**）；
-    14 `DSH_IDENTITY_CONTRACT.md`（15 依据；另需 15b 拆 401/403、前端 isAuthError 归 16）；
-    42 `DSH_SERVICE_SPLIT_INVENTORY.md`（补测 G1–G8 先行）。
-  - 复核文档：48 ADR-0001（仍只当前项目同步）；49 L0 Spike（**pywebview 不在 requirements/VSE-Launcher.spec，
-    打包产物实际总走 Edge 降级**，待决策）；33 性能复测（当前无需索引优化）。
-- **下一步**：第 3 波（03/10/11/13/15/18/22/27/38/41，按 tasks.json 依赖串行或两路派发）。
+- **第 3 波（96bc518 → refactor/ux-v2，地图 9ee8e68）**：03/10/11/13/15/18/22/27/38/41 全部集成，全量
+  **3947 passed / 7 skipped / 2 warnings，exit 0**（`E:\projectse-toolbox-wt\_logs\wave3-integration-pytest-final.txt`）。
+  22 的 DSH 评审三次因环境崩溃无裁决，由主控人工复审放行（宿主模块按 URL 动态载入 sign_daily/chart.js，
+  失败降级为无图预览；记为已知耦合）。
+- **第 4 波（5d42388 → refactor/ux-v2，地图 048b3e2）**：04/05/16/19/29/32/39 + 27b 全部独立评审 pass 后集成，
+  全量 **4038 passed / 7 skipped / 2 warnings，exit 0**（`_logs\wave4-integration-pytest.txt`）。主控补修要点：
+  05 补契约第 4 条负向用例；16 复审两项阻断（禁跨账号复用会话、爬虫 403 不续期——`services/aras_crawler.py`
+  主控批准的只增范围例外 status_code）+ medium 竞态（每次尝试重核绑定）；19 只读路由不外露 leaseToken；
+  04 bridge 成功也清地址栏旧票据。
+  - 遗留：session_recovery.classify 未读取 aras_auth 的 recovery_code（V2-15 文件）；
+    project_status_connectors 经模块级 bind_session_renewal 取协调器；#p/deliverable-forms/* 仍可直开专家页；
+    设置页会话时间未走 time-format.js；有交付物无节点时环图/明细仍显示暂无数据。
+- **OOM 根因（已修，DSH-V2-27b）**：Excel Worker 空闲退出由宿主内控制器驱动，宿主/pytest 退出后
+  `tools/excel_worker_cli.py run` 子进程永不退出——全量测试后残留 25 个约 530MB 进程，提交内存 38/46GB，
+  DSH 执行者随之 OOM/崩溃。修复：控制器传 `--parent-pid`，Worker 持父进程句柄判活后优雅停止；
+  tests/conftest.py 默认把控制器模块的 subprocess 换成代理（Popen 惰性替身），真实子进程用例标
+  `real_excel_worker`。再遇执行者 OOM 先查 `excel_worker_cli` 残留进程。
+- **第 5 波（dsh/wave5-integration，工作树 vse-toolbox-wt/wave3-integration）**：20 已评审 pass 并合入
+  （SlotStore 下沉 services/schedule_slots.py；主控裁决：基线无 project→交付物映射，按 ADR-0001 固定槽派发
+  当前库全部启用绑定；暂停/停止打断的槽 failed 不重试）。17（wf-42c32e2f）、34（wf-34c54ab2）执行中。
+  契约草案在 `vse-toolbox-wt\_logs\contract-*.md`，状态在 `_logs\wave4-state.md`。
+- **执行纪律**：执行者计划写明“不要运行全量 pytest”（否则撞 15 分钟超时）；执行者并发 ≤2；
+  主控先提交再发“只验证”复审可规避指纹抖动。
+- **下一步**：17/34 收尾 → 第 5 波全量 → 第 6 波（21/23/30/31）→ 第 7 波（28/40/43）。
+  第 8–10 波（35 真实 exe 端到端、36 文档、37 真实办公室用户试用）需要真实环境与人员，不能自主完成。
 
 ## 第 1 波收尾（2026-11-01 · V2-01/44/45/46/47 + 遗留修复）
 
