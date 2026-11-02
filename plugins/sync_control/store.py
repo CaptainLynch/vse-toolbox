@@ -312,7 +312,7 @@ class SlotStore:
             token = uuid.uuid4().hex
             cursor = conn.execute(
                 f"UPDATE {self.slots_table} SET status = ?, attempt = attempt + 1, lease_owner = ?, "
-                "lease_token = ?, lease_expires_at = ?, updated_at = ? "
+                "lease_token = ?, lease_expires_at = ?, next_attempt_at = NULL, updated_at = ? "
                 "WHERE project_id = ? AND job_id = ? AND business_date = ? AND scheduled_time = ? "
                 "AND status = ?",
                 (
