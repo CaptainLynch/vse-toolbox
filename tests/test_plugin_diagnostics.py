@@ -87,23 +87,25 @@ def test_self_check_payload_key_whitelist_and_no_secrets(client) -> None:
 
     items = data["items"]
     assert isinstance(items, list)
-    assert len(items) == 4
+    # DSH-V2-31：原 4 项之外新增同步连接器与同步调度两项。
+    assert len(items) == 6
 
     # 单项字段白名单
-    item_whitelist = {"name", "state", "detail", "checkedAt"}
-    allowed_states = {"ok", "warn", "need_check", "unknown"}
+    item_required = {"name", "state", "detail", "checkedAt"}
+    item_whitelist = item_required | {"facts"}
+    allowed_states = {"ok", "warn", "need_check", "unknown", "not_run", "unable", "fail"}
     names = set()
 
     for item in items:
         assert isinstance(item, dict)
-        assert set(item.keys()) == item_whitelist
+        assert item_required <= set(item.keys()) <= item_whitelist
         assert isinstance(item["name"], str) and item["name"]
         assert item["state"] in allowed_states
         assert isinstance(item["detail"], str)
         assert isinstance(item["checkedAt"], str)
         names.add(item["name"])
 
-    assert names == {"统一账号会话", "表格环境", "更新通道", "项目注册表"}
+    assert names == {"统一账号会话", "表格环境", "更新通道", "项目注册表", "同步连接器", "同步调度"}
 
     # 敏感键与凭据防御断言
     raw_text = json.dumps(body, ensure_ascii=False).lower()

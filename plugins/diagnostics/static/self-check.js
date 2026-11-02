@@ -7,6 +7,11 @@ export const STATE_CONFIG = {
   need_check: { label: "需要检查", color: "#f59e0b", tone: "need_check" },
   unknown: { label: "未知", color: "#9ca3af", tone: "unknown" },
   error: { label: "异常", color: "#ef4444", tone: "error" },
+  // DSH-V2-31：新增三态。tone 复用宿主 TONE 语义（ok/warn/bad/off），
+  // 未执行与无法检查用宿主既有中性灰，失败用红色。
+  fail: { label: "失败", color: "#ef4444", tone: "bad" },
+  not_run: { label: "未执行", color: "#9ca3af", tone: "off" },
+  unable: { label: "无法检查", color: "#9ca3af", tone: "off" },
 };
 
 export async function triggerDiagnosticExport() {
