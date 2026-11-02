@@ -41,6 +41,11 @@ def pytest_configure(config: pytest.Config) -> None:
         "markers",
         "raw_security: 使用原生 test_client，不安装 tests.security_client_fixture 的已认证替身",
     )
+    # DSH-V2-27b：允许控制器真实拉起 Worker 子进程（默认被 inert_excel_worker_processes 替身）。
+    config.addinivalue_line(
+        "markers",
+        "real_excel_worker: 允许 ExcelWorkerProcessController 真实拉起 Worker 子进程",
+    )
 
 
 def _uses_raw_security_client(request: pytest.FixtureRequest) -> bool:
@@ -353,10 +358,3 @@ def inert_excel_worker_processes(request, monkeypatch):
         _controller_module, "subprocess", _ControllerSubprocessProxy(_real_subprocess)
     )
     return None
-
-
-def pytest_configure(config):
-    config.addinivalue_line(
-        "markers",
-        "real_excel_worker: 允许 ExcelWorkerProcessController 真实拉起 Worker 子进程",
-    )
