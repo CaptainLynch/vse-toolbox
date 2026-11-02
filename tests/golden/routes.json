@@ -902,6 +902,17 @@
     "download": "none"
   },
   {
+    "rule": "/api/p/sync-control/slots",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_sync_control.slots",
+    "view_function": "slots",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
     "rule": "/api/p/tir-report/config",
     "methods": [
       "POST"
