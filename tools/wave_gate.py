@@ -442,7 +442,8 @@ def find_git_worktree_root(repo_root: Path) -> Optional[Path]:
     :class:`GitCheckError` → FAIL，并带上 git 自己的 stderr，绝不静默降级。
     """
     root = Path(repo_root)
-    has_git_entry = (root / ".git").exists()
+    # lexists：悬空的 .git 符号链接/联接点也算“有 .git”，不得降级为仅验签。
+    has_git_entry = os.path.lexists(root / ".git")
     code, out, err = _git_command(root, ["rev-parse", "--show-toplevel"])
     if code != 0:
         if not has_git_entry:
