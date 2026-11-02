@@ -900,18 +900,6 @@ class ArasProjectStatusConnector:
             return None
 
     @staticmethod
-    def _account_ref(registry: Any | None, username: str) -> str:
-        """续期键 accountRef：优先复用注册表已绑定值（与统一登录同源）。"""
-        if registry is not None:
-            try:
-                _, bound = registry.identity_binding("aras")
-            except Exception:  # noqa: BLE001
-                bound = None
-            if bound:
-                return str(bound)
-        return DomainSessionRegistry.account_ref("aras", username, DEFAULT_ARAS_BASE_URL)
-
-    @staticmethod
     def _bound_root(registry: Any | None) -> str | None:
         """共享会话绑定的**原始**来源根（爬虫 base_url）；读不到用默认根。"""
         if registry is None:
@@ -935,12 +923,27 @@ class ArasProjectStatusConnector:
         shared = self._shared_session(registry)
         if shared is None:
             return None
+        # 账号必须一致（契约 §3.2，禁止跨账号复用会话）：credential_ref 解析出的
+        # 用户名派生的 accountRef 必须等于注册表绑定的 accountRef；绑定缺失或不一致
+        # 一律退回旧的自行登录路径（以 credential_ref 的账号登录）。
+        try:
+            root, bound = registry.identity_binding("aras")
+        except Exception:  # noqa: BLE001 - 绑定读取失败按"无绑定"处理
+            return None
+        if not bound or not isinstance(root, str) or not root.strip() or not username:
+            return None
+        try:
+            expected = DomainSessionRegistry.account_ref("aras", username, root)
+        except Exception:  # noqa: BLE001 - 派生失败等同不一致
+            return None
+        if expected != bound:
+            return None
         try:
             if not bool(renewal.snapshot("aras").can_renew):
                 return None
         except Exception:  # noqa: BLE001 - 观测失败不改变业务路径
             return None
-        return renewal, shared, self._account_ref(registry, username)
+        return renewal, shared, str(bound)
 
     @observed("sync_connector.ArasProjectStatusConnector.collect")
     def collect(self, context: SyncBindingContext) -> ConnectorSnapshot:

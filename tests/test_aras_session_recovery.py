@@ -135,17 +135,20 @@ class FailingLogin:
         raise self.error
 
 
-class FakeUpstreamRejection(RuntimeError):
-    """假传输：带 HTTP 状态码的上游拒绝。
+class SelfLoginAuth:
+    """旧自行登录路径用的假登录客户端：记录以哪个账号登录，返回独立会话。"""
 
-    Aras 抓取当前把 401/403 合并成 ``ArasAuthenticationError``（拆分属
-    DSH-V2-15b），所以 403 用带状态码的合成异常驱动，验证的是协调器分类
-    （403 → forbidden，永不续期）与连接器的接法。
-    """
+    base_url = ARAS_ROOT
+    instances: list["SelfLoginAuth"] = []
 
-    def __init__(self, status_code: int) -> None:
-        super().__init__(f"upstream rejected with HTTP {status_code}")
-        self.status_code = status_code
+    def __init__(self, **kwargs: object) -> None:
+        self.kwargs = kwargs
+        self.usernames: list[str] = []
+        SelfLoginAuth.instances.append(self)
+
+    def login(self, username: str, password: str):
+        self.usernames.append(str(username))
+        return SimpleNamespace(session=FakeSession("self-login"), token_expires_in=None)
 
 
 def _ewo_result():
@@ -316,7 +319,7 @@ def test_expired_401_renews_once_and_replays_read_in_place(aras_env) -> None:
     assert account_ref_before
 
     script = CrawlerScript(
-        [ArasAuthenticationError("Aras HTTP 401 expired session"), _ewo_result()]
+        [ArasAuthenticationError("Aras HTTP 401 expired session", status_code=401), _ewo_result()]
     )
     snapshot = _connector(env, secret, script).collect(_ewo_context())
 
@@ -358,7 +361,8 @@ def test_forbidden_403_never_renews_or_clears_credentials(aras_env) -> None:
     session_before = env.registry.session("aras")
     generation_before = env.registry.generation("aras")
 
-    script = CrawlerScript([FakeUpstreamRejection(403)])
+    # 真实爬虫抛出的错误类型（DSH-V2-16 主控范围例外：ArasAuthenticationError 带 status_code）。
+    script = CrawlerScript([ArasAuthenticationError("Aras HTTP 403 forbidden", status_code=403)])
     with pytest.raises(Forbidden) as excinfo:
         _connector(env, secret, script).collect(_ewo_context())
 
@@ -373,6 +377,31 @@ def test_forbidden_403_never_renews_or_clears_credentials(aras_env) -> None:
     assert env.registry.generation("aras") == generation_before
     assert env.vault.is_configured() is True            # 不清凭据
     _assert_secret_absent(secret, str(error), error.to_error_payload())
+
+
+def test_shared_session_is_not_reused_for_another_account(aras_env) -> None:
+    """契约 §3.2：注册表绑定账号 A，credential_ref 解析为账号 B → 不复用 A 的会话。"""
+    env = aras_env
+    login_response, _ = _login(env)
+    assert login_response.status_code == 200
+    route_session = env.registry.session("aras")
+    assert route_session is not None
+
+    SelfLoginAuth.instances.clear()
+    script = CrawlerScript([_ewo_result()])
+    connector = ArasProjectStatusConnector(
+        MemoryCredentialProvider({"domain": ("other.user", _runtime_opaque())}),
+        ArchiveStore({"default": env.tmp_path}, reserve_bytes=0),
+        auth_factory=SelfLoginAuth,
+        crawler_factory=script.factory,
+    )
+    snapshot = connector.collect(_ewo_context())
+
+    assert snapshot.match_state == "matched"
+    # 走旧的自行登录路径：以 credential_ref 的账号 B 登录，爬虫拿到的不是 A 的会话。
+    assert [auth.usernames for auth in SelfLoginAuth.instances] == [["other.user"]]
+    assert script.sessions[0] is not route_session
+    assert env.renewal_client.login_calls == 0
 
 
 # ── 3. 清除竞态：迟到的续期结果不回填 ───────────────────────────────────────
