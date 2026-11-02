@@ -237,17 +237,19 @@ def test_app_updates_records_show_version_beijing_time_notes_and_states(page, se
     assert by_version["2.1.0"]["state"] == "试用中"
     assert by_version["2.2.0"]["state"] == "已导入待生效（需重启）"
     assert by_version["1.8.0"]["state"] == "已回退"
-    # installFailed 的 version 是暂存目录名 app-2.0.5；同一个 2.0.5 不能再显示「未安装」。
-    assert by_version["app-2.0.5"]["state"] == "失败"
-    assert "2.0.5" not in by_version
+    # installFailed 的 version 是暂存目录名 app-2.0.5；同一个 2.0.5 只显示「失败」一行，
+    # 包仍在下载文件夹时按包版本展示并保留「安装并重启」入口以便重试。
+    assert by_version["2.0.5"]["state"] == "失败"
+    assert "app-2.0.5" not in by_version
+    assert "安装并重启" in by_version["2.0.5"]["buttons"]
     assert by_version["2.3.0"]["state"] == "未安装"
 
     # 版本 + 北京时间（Asia/Shanghai）+ 面向用户的说明。
     assert "版本 2.2.0" in by_version["2.2.0"]["text"]
     assert _beijing_from_naive_local("2026-10-24 09:00:00") in by_version["2.2.0"]["text"]
     assert "说明：待生效 <i>说明</i>" in by_version["2.2.0"]["text"]
-    assert _beijing_from_naive_local("2026-10-23 08:00:00") in by_version["app-2.0.5"]["text"]
-    assert "原因：签名无效" in by_version["app-2.0.5"]["text"]
+    assert _beijing_from_naive_local("2026-10-23 08:00:00") in by_version["2.0.5"]["text"]
+    assert "原因：签名无效" in by_version["2.0.5"]["text"]
     assert "说明：修复 <b>登录</b> 问题 & 保持纯文本" in by_version["2.3.0"]["text"]
     assert "上一版本 1.9.0（可回退）" in by_version["2.0.0"]["text"]
 
@@ -257,7 +259,7 @@ def test_app_updates_records_show_version_beijing_time_notes_and_states(page, se
 
     # 回退入口只出现在可回退项（当前生效且有上一版本）；安装/重启入口各归其位。
     assert [row["version"] for row in rows if "回到上一版本" in row["buttons"]] == ["2.0.0"]
-    assert [row["version"] for row in rows if "安装并重启" in row["buttons"]] == ["2.3.0"]
+    assert [row["version"] for row in rows if "安装并重启" in row["buttons"]] == ["2.0.5", "2.3.0"]
     assert [row["version"] for row in rows if "立即重启并更新" in row["buttons"]] == ["2.2.0"]
 
 

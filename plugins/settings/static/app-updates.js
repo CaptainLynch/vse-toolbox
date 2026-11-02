@@ -94,6 +94,18 @@ function buildRecords(data) {
   if (data.trial) add(data.trial, STATE.trial, { detail: "试用版本，启动正常后转为当前生效" });
   staged.forEach((version) => add(version, STATE.staged, { restart: true, detail: "重启 VSE Toolbox 后生效" }));
 
+  // 失败优先于已回退（与上方优先级注释一致）。失败的包若仍在下载文件夹，保留「安装」入口以便重试。
+  events.forEach((event) => {
+    if (!event) return;
+    if (event.kind === "installFailed" || event.kind === "bootFailed") {
+      const bare = String(event.version || "").trim().replace(/^app-/, "");
+      const pkg = available.find((item) => item && item.version === bare && item.file);
+      add(pkg ? pkg.version : event.version, STATE.failed, {
+        at: event.at, reason: event.reason || "",
+        file: pkg ? pkg.file : "", install: Boolean(pkg),
+      });
+    }
+  });
   events.forEach((event) => {
     if (!event) return;
     if (event.kind === "rolledBack" && event.version) {
@@ -101,12 +113,6 @@ function buildRecords(data) {
     }
     if (event.kind === "manualRollback" && event.fromVersion) {
       add(event.fromVersion, STATE.rolledBack, { at: event.at, reason: event.reason || "" });
-    }
-  });
-  events.forEach((event) => {
-    if (!event) return;
-    if (event.kind === "installFailed" || event.kind === "bootFailed") {
-      add(event.version, STATE.failed, { at: event.at, reason: event.reason || "" });
     }
   });
   available.forEach((item) => {
