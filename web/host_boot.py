@@ -30,6 +30,7 @@ from core.version import get_app_version_info
 from host.updates import PackageError
 from services.aras_auth import ArasECMAuthClient, DEFAULT_ARAS_BASE_URL
 from services.tdc_auth import TDCPasswordAuthClient
+from services.tdc_crawler import DEFAULT_TDC_BASE_URL
 
 logger = logging.getLogger(__name__)
 
@@ -90,12 +91,45 @@ def _login_result(deps: HostRouteDeps, system: str, exc: BaseException) -> dict[
 
 
 def _clear_domain_sessions(deps: HostRouteDeps, system: str | None) -> None:
-    """统一清除：经协调器 ``clear()``（代次 +1、取消在途续期）；未装配时退回注册表。"""
+    """统一清除：经协调器 ``clear()``（代次 +1、取消在途续期）；未装配时退回注册表。
+
+    任一项失败即上抛（登录前的既有全清语义：清除不成立就不继续建立新会话）。
+    """
+    targets = ("aras", "tdc") if system is None else (system,)
+    for name in targets:
+        _clear_domain_session(deps, name)
+    if system is None:
+        # 兜底：全清时再做一次注册表级 clear(None)，覆盖 aras/tdc 之外的记录。
+        deps.domain_sessions.clear(None)
+
+
+def _clear_domain_session(deps: HostRouteDeps, system: str) -> None:
+    """清除单个系统：代次 +1 → 取消在途续期 → 移除会话（契约 §7.2-1）。"""
     coordinator = deps.session_renewal
     if coordinator is not None:
         coordinator.clear(system)
         return
     deps.domain_sessions.clear(system)
+
+
+def _clear_session_results(deps: HostRouteDeps, system: str | None) -> dict[str, dict[str, object]]:
+    """逐系统清除并按项返回结果（DSH-V2-17）。
+
+    失败必须如实回报：``ok: false`` + §4.3 闭集 ``code``（分类失败时用
+    ``service_unavailable``，可稍后重试），绝不把未清除的会话伪报成已清除。
+    """
+    targets = ("aras", "tdc") if system is None else (system,)
+    results: dict[str, dict[str, object]] = {}
+    for name in targets:
+        try:
+            _clear_domain_session(deps, name)
+        except Exception as exc:  # noqa: BLE001 - 清除失败只影响该项结果，不中断其余系统
+            logger.warning("domain session clear failed for %s", name)
+            code = _recovery_code(deps, exc, name) or "service_unavailable"
+            results[name] = {"ok": False, "code": code}
+        else:
+            results[name] = {"ok": True, "code": "session_cleared"}
+    return results
 
 
 def _bump_vault_epoch(deps: HostRouteDeps) -> None:
@@ -198,7 +232,13 @@ def register_host_service_routes(app: Any, deps: HostRouteDeps) -> None:
             results["aras"] = _login_result(deps, "aras", exc)
         try:
             login_result = TDCPasswordAuthClient().login(username.strip(), password)
-            deps.domain_sessions.mark_authenticated("tdc", login_result.session)
+            # TDC 也必须有绑定身份，续期键才成立（契约 §5.1 前置条件 2、§10.2 D5）：
+            # 没有 principal/source_root 时协调器无法派生 accountRef，TDC 链就永远
+            # 走不回共享会话，401 只能失败而不能原位恢复。
+            deps.domain_sessions.mark_authenticated(
+                "tdc", login_result.session,
+                principal=username.strip(), source_root=DEFAULT_TDC_BASE_URL,
+            )
             results["tdc"] = {"ok": True}
         except Exception as exc:
             results["tdc"] = _login_result(deps, "tdc", exc)
@@ -251,7 +291,8 @@ def register_host_service_routes(app: Any, deps: HostRouteDeps) -> None:
         if system not in (None, "aras", "tdc"):
             return deps.validation_error({"system": "仅支持 aras 或 tdc"})
         # 经协调器清除：代次 +1 → 取消在途续期 → 移除会话（契约 §7.2-1）。
-        _clear_domain_sessions(deps, system)
+        # 逐系统结果如实反映（失败项 ok:false + 闭集 code），HTTP 语义不变。
+        results = _clear_session_results(deps, system)
         if system in (None, "tdc"):
             deps.tdc_export_cache.clear()
         if isinstance(payload, dict) and payload.get("clearCredentialVault"):
@@ -266,12 +307,11 @@ def register_host_service_routes(app: Any, deps: HostRouteDeps) -> None:
             except CredentialVaultError as exc:
                 return deps.json_error(503, "CredentialVaultUnavailable", deps.sanitize_error_message(exc))
             _bump_vault_epoch(deps)
-        # 增量键（既有 ok/data.sessions 与 200 不变）：逐系统清除结果带 §4.3 闭集码。
-        cleared = ("aras", "tdc") if system is None else (system,)
-        results = {name: {"ok": True, "code": "session_cleared"} for name in cleared}
+        # 增量键（既有 data.sessions 与 200 不变）：逐系统清除结果带 §4.3 闭集码。
+        # 顶层 ok 只反映"是否全部真的清除"——任何一项失败都不得伪报成功。
         response = jsonify(
             {
-                "ok": True,
+                "ok": all(item["ok"] for item in results.values()),
                 "data": {"sessions": deps.domain_sessions.payload(), "results": results},
             }
         )
