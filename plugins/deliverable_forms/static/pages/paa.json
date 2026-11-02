@@ -1,7 +1,7 @@
 {
   "renderer": "analysis",
   "title": "PAA 进度",
-  "description": "数据来自最近一次自动归档快照；逾期口径与旧表单页一致（按阶段停留天数与计划日期判定）。",
+  "description": "数据来自最近一次自动归档；逾期口径与旧表单页一致（按阶段停留天数与计划日期判定）。",
   "source": "forms/aras_paa/rows",
   "filters": [
     {

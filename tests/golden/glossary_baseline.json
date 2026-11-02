@@ -1,13 +1,4 @@
 {
-  "plugins/deliverable_forms/static/index.js": [
-    "快照"
-  ],
-  "plugins/deliverables/static/catalog.js": [
-    "Base URL"
-  ],
-  "plugins/deliverables/static/lib.js": [
-    "Base URL"
-  ],
   "plugins/project_overview/static/archive-deliverable.js": [
     "快照"
   ],
