@@ -439,7 +439,7 @@ def test_glossary_terms_gate() -> None:
 
 
 def test_baseline_whitelist_audit_is_justified() -> None:
-    """白名单逐项审计：有效项数 = 23 - 2 项过期、每条都有理由、不得新增。"""
+    """白名单逐项审计：有效项数 = 23 − 2 项过期 − 1 项已修正 = 20、每条都有理由、不得新增。"""
     assert BASELINE_FILE.is_file(), f"未找到基线文件: {BASELINE_FILE}"
     baseline_data: dict[str, list[str]] = json.loads(BASELINE_FILE.read_text(encoding="utf-8"))
     entries = {(file_rel, term) for file_rel, terms in baseline_data.items() for term in terms}
