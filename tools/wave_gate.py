@@ -10,15 +10,20 @@
 ⑤ 浏览器通道：运行 tests/browser/test_browser_channel.py，并用 ``--junit-xml`` 实际报告
    判定 verified——只看报告里的通过/失败/跳过计数，不再以「探测到浏览器可执行文件」
    代替验证；
-⑥ 打包验签：dev 模式 SKIP（留待 W17-03）；release 模式必须在 ``dist/releases/`` 找到
-   最新 ``.vsepkg`` 包，并用 ``host/trusted_keys.json``（及 ``vse_boot/trusted_keys.json``）
-   真实验签，未打包/未验签即失败。
+⑥ 打包验签与整包一致性：dev 模式 SKIP（留待 W17-03）；release 模式必须在 ``dist/releases/``
+   找到最新 ``.vsepkg`` 包，并用 ``host/trusted_keys.json``（及 ``vse_boot/trusted_keys.json``）
+   真实验签，未打包/未验签即失败。验签通过后还要核对整包一致性：包版本 = 仓库当前应用版本
+   （复用 ``core.version.get_app_version_info``）、包内已跟踪文件与 ``HEAD`` 内容一致、工作区
+   没有涉及包内文件的未提交改动；并且 ``--since REF`` 基线内有 ``vse_boot/`` / ``*.spec``
+   等启动器改动时，``dist/releases/`` 必须同时有同版本 onedir 宿主包（``*<version>*.zip``），
+   否则「启动器改动不能只发 app 包」直接失败。
 
 两种模式（``--mode dev`` 默认 / ``--mode release``，亦可用 ``--release`` 简写）：
 - dev：沿用既有轻量语义——``--focus`` 隐含跳过全量回归；SKIP 只需如实说明原因，不参与判定；
 - release：全量回归、项目地图、术语门禁、浏览器通道、打包验签是**必需项**，任一 SKIP/FAIL
   即整体退出码非 0；``--focus`` 只追加聚焦测试，**不会**隐式跳过全量回归（显式
-  ``--skip-full`` 会让必需项 SKIP，同样判定失败）。
+  ``--skip-full`` 会让必需项 SKIP，同样判定失败）；``--since REF`` 是 release 模式的
+  比较基线，缺省时打包验签步骤判定失败。
 
 任一步失败时整体退出码非 0，并打印失败步骤名与最多 40 行的输出尾部（bounded tail）。
 """
@@ -27,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, field
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -34,7 +40,7 @@ import re
 import subprocess
 import sys
 import tempfile
-from typing import Optional
+from typing import Any, Optional
 import xml.etree.ElementTree as ET
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -50,6 +56,12 @@ TERM_TEST_FILES = ("tests/test_glossary_terms.py", "tests/test_ui_kit_terms.py")
 PACKAGE_DIR = "dist/releases"
 TRUSTED_KEY_FILES = ("host/trusted_keys.json", "vse_boot/trusted_keys.json")
 APP_ENTRY = "webui.py"
+#: 启动器/运行时相关路径：改动这些文件必须整包发 onedir zip，不能只发 app 包
+#: （见 docs/refactor-v2/RELEASE_MATRIX.md 的发布通道表）。
+LAUNCHER_PATH_PREFIXES = ("vse_boot/", "runtime/")
+LAUNCHER_PATH_SUFFIXES = (".spec",)
+#: 与 app 包同版本的 onedir 宿主包命名形如 ``VSE-Toolbox-v<version>-test.zip``。
+ONEDIR_ZIP_GLOB = "*{version}*.zip"
 
 #: 各模式的「必需步骤」：必需步骤一旦 SKIP 或 FAIL，整体门禁即判定失败。
 #: dev 保持既有语义（只看有无 FAIL）；release 严格模式把这些步骤列为必需项。
@@ -360,8 +372,288 @@ def find_release_packages(repo_root: Path) -> list[Path]:
     return sorted(packages, key=lambda p: (version_key(p), p.name), reverse=True)
 
 
-def execute_package_sign_step(repo_root: Path, mode: str) -> StepResult:
-    """打包验签步骤：dev 恒 SKIP；release 必须找到包并真实验签。"""
+def find_onedir_packages(repo_root: Path, version: str) -> list[Path]:
+    """列出 ``dist/releases/`` 下与 app 包同版本的 onedir 宿主包（``*<version>*.zip``）。
+
+    文件名里的版本必须**精确**匹配：``*1.0*.zip`` 这种子串口径会让 1.0.1 的包替 1.0
+    通过启动器覆盖检查，所以 glob 之后再用数字/点边界复核一次。
+    """
+    package_dir = Path(repo_root) / PACKAGE_DIR
+    if not package_dir.is_dir():
+        return []
+    pattern = ONEDIR_ZIP_GLOB.format(version=version)
+    exact = re.compile(rf"(?<![\d.]){re.escape(version)}(?!\d|\.\d)")
+    return sorted(
+        path
+        for path in package_dir.glob(pattern)
+        if path.is_file() and exact.search(path.name)
+    )
+
+
+def is_launcher_path(path: str) -> bool:
+    """判断改动路径是否属于启动器/运行时（这类改动不能只发 app 包）。"""
+    normalized = path.replace("\\", "/")
+    for prefix in LAUNCHER_PATH_PREFIXES:
+        if normalized == prefix.rstrip("/") or normalized.startswith(prefix):
+            return True
+    lowered = normalized.lower()
+    return any(lowered.endswith(suffix) for suffix in LAUNCHER_PATH_SUFFIXES)
+
+
+def format_paths(paths: list[str], limit: int = 10) -> str:
+    """把路径列表压成一行可读文本（最多 ``limit`` 个，其余只报数量）。"""
+    shown = ", ".join(paths[:limit])
+    if len(paths) > limit:
+        return f"{shown} 等 {len(paths)} 个"
+    return shown
+
+
+def _git_command(
+    repo_root: Path, args: list[str], *, stdin: bytes = b""
+) -> tuple[int, bytes, str]:
+    """执行 git 命令（参数数组 + ``cwd=repo_root``），返回 (退出码, stdout 字节, stderr)。
+
+    ``OSError``（git 不可执行）由调用方转成 FAIL——不得把「校验跑不起来」当作通过。
+    """
+    env = os.environ.copy()
+    env.update({"GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0", "LC_ALL": "C"})
+    proc = subprocess.run(
+        ["git", *args],
+        cwd=str(repo_root),
+        input=stdin,
+        capture_output=True,
+        env=env,
+        check=False,
+    )
+    stderr = (proc.stderr or b"").decode("utf-8", "replace").strip()
+    return proc.returncode, proc.stdout or b"", stderr
+
+
+class GitCheckError(RuntimeError):
+    """git 校验无法完成（仓库损坏、被 git 拒绝、路径口径不一致）；消息可读、可直接展示。"""
+
+
+def find_git_worktree_root(repo_root: Path) -> Optional[Path]:
+    """返回与 ``repo_root`` 完全一致的 git 工作树根。
+
+    只有「目录里根本没有 ``.git``」才返回 ``None``（真的不是仓库，调用方退回仅验签语义，
+    以兼容既有测试里的临时非 git 目录）。只要有 ``.git`` 但 git 报错（损坏的 gitdir、
+    ``dubious ownership`` 拒绝等），或工作树根与 ``repo_root`` 不一致，一律抛
+    :class:`GitCheckError` → FAIL，并带上 git 自己的 stderr，绝不静默降级。
+    """
+    root = Path(repo_root)
+    has_git_entry = (root / ".git").exists()
+    code, out, err = _git_command(root, ["rev-parse", "--show-toplevel"])
+    if code != 0:
+        if not has_git_entry:
+            return None
+        raise GitCheckError(f"git 无法识别该仓库（{err or f'退出码 {code}'}）")
+    try:
+        resolved_top = Path(out.decode("utf-8").strip()).resolve()
+        resolved_root = root.resolve()
+    except (OSError, ValueError) as exc:
+        raise GitCheckError(f"无法解析 git 工作树根（{exc}）") from None
+    if os.path.normcase(str(resolved_top)) != os.path.normcase(str(resolved_root)):
+        raise GitCheckError(
+            f"仓库根不一致：git 工作树根为 {resolved_top}，门禁检查目录为 {resolved_root}"
+        )
+    return resolved_top
+
+
+def parse_porcelain_paths(raw: bytes) -> list[str]:
+    """解析 ``git status --porcelain -z``，返回已跟踪条目的路径（跳过未跟踪/忽略）。"""
+    entries = raw.split(b"\0")
+    paths: list[str] = []
+    index = 0
+    while index < len(entries):
+        entry = entries[index]
+        index += 1
+        if len(entry) < 4:
+            continue
+        status = entry[:2]
+        path = entry[3:].decode("utf-8", "replace")
+        if status in (b"??", b"!!"):
+            continue
+        paths.append(path)
+        if b"R" in status or b"C" in status:
+            # 重命名/复制条目后面紧跟一条原路径，跳过它。
+            index += 1
+    return paths
+
+
+def read_head_blobs(repo_root: Path, paths: list[str]) -> tuple[dict[str, bytes], str]:
+    """用 ``git cat-file --batch`` 一次取出 ``HEAD:<path>`` 的原始字节（按字节，不做换行转换）。"""
+    if not paths:
+        return {}, ""
+    payload = b"".join(b"HEAD:" + path.encode("utf-8") + b"\n" for path in paths)
+    code, out, err = _git_command(repo_root, ["cat-file", "--batch"], stdin=payload)
+    if code != 0:
+        return {}, f"无法读取 HEAD 内容（git cat-file 失败：{err or code}）"
+    blobs: dict[str, bytes] = {}
+    cursor = 0
+    for path in paths:
+        newline = out.find(b"\n", cursor)
+        if newline < 0:
+            return {}, "无法读取 HEAD 内容（git cat-file 输出不完整）"
+        header = out[cursor:newline].split()
+        cursor = newline + 1
+        if len(header) != 3:
+            continue  # ``<输入> missing``：HEAD 里没有这个路径
+        try:
+            size = int(header[2])
+        except ValueError:
+            return {}, "无法读取 HEAD 内容（git cat-file 输出无法解析）"
+        blobs[path] = out[cursor : cursor + size]
+        cursor += size + 1
+    return blobs, ""
+
+
+def _normalize_version(text: str) -> str:
+    return text.strip().lstrip("vV")
+
+
+def check_release_consistency(
+    repo_root: Path, verified: Any, since: Optional[str]
+) -> tuple[bool, str]:
+    """release 整包一致性校验：版本 / 提交内容 / 工作区 / 启动器覆盖。
+
+    返回 ``(是否通过, 说明)``：通过时说明是证据摘要，失败时说明是可读中文原因。
+    只有「``repo_root`` 里根本没有 ``.git``」才退回「仅验签 + 入口」的既有语义（并如实
+    写明跳过原因）；只要有 ``.git`` 却无法完成 git 校验（损坏、被 git 拒绝、工作树根与
+    ``repo_root`` 不一致）或任何 git 调用失败，一律返回 FAIL，不静默放过。
+    """
+    try:
+        worktree = find_git_worktree_root(Path(repo_root))
+    except GitCheckError as exc:
+        return False, f"无法校验提交一致性：{exc}"
+    except OSError as exc:
+        return False, f"无法执行 git 校验提交一致性（{exc}）"
+    if worktree is None:
+        return True, "非 git 工作树：跳过版本/提交一致性校验（沿用仅验签 + 入口的既有语义）"
+    if not since:
+        return False, "未指定比较基线（release 模式必须提供 --since REF）"
+
+    # ① 版本一致：包版本必须等于仓库当前应用版本（复用 core.version，不新建版本口径）。
+    try:
+        from core.version import get_app_version_info  # noqa: PLC0415 - 延迟导入
+    except Exception as exc:  # 版本口径不可用同样不能算通过
+        return False, f"版本口径不可用（core.version 导入失败：{exc}）"
+    try:
+        version_info = get_app_version_info()
+    except Exception as exc:
+        return False, f"读取仓库当前应用版本失败（{exc}）"
+    repo_version = str(version_info.get("rawVersion") or "").strip()
+    if not repo_version:
+        return (
+            False,
+            f"仓库当前应用版本未知（无 version.json/VERSION/构建注入），"
+            f"无法与包版本 v{verified.version} 比对",
+        )
+    if _normalize_version(repo_version) != _normalize_version(verified.version):
+        return (
+            False,
+            f"版本不一致：包 v{verified.version}，仓库当前应用版本 v{repo_version}",
+        )
+
+    package_paths = list(verified.files)
+
+    # ② 工作区状态：已跟踪文件的未提交改动只要涉及包内文件，包就不是当前提交的产物。
+    code, status_raw, err = _git_command(Path(repo_root), ["status", "--porcelain", "-z"])
+    if code != 0:
+        return False, f"无法读取工作区状态（git status 失败：{err or code}）"
+    dirty = set(parse_porcelain_paths(status_raw))
+    dirty_hits = sorted(path for path in package_paths if path in dirty)
+    if dirty_hits:
+        return (
+            False,
+            "工作区与包不一致：已跟踪文件有未提交改动且涉及包内文件（"
+            f"{format_paths(dirty_hits)}）",
+        )
+
+    # ③ 内容即提交：包内已跟踪文件的 sha256 必须等于 HEAD 内容（按字节，不做换行转换）。
+    code, tracked_raw, err = _git_command(Path(repo_root), ["ls-files", "-z"])
+    if code != 0:
+        return False, f"无法读取 git 跟踪文件列表（git ls-files 失败：{err or code}）"
+    tracked = {entry for entry in tracked_raw.split(b"\0") if entry}
+    tracked_package = [path for path in package_paths if path.encode("utf-8") in tracked]
+    untracked = [path for path in package_paths if path.encode("utf-8") not in tracked]
+    blobs, blob_error = read_head_blobs(Path(repo_root), tracked_package)
+    if blob_error:
+        return False, blob_error
+
+    mismatches: list[str] = []
+    checkout_normalized = 0
+    for path in tracked_package:
+        content = verified.files[path]
+        blob = blobs.get(path)
+        if blob is not None and hashlib.sha256(blob).digest() == hashlib.sha256(content).digest():
+            continue
+        worktree_file = Path(repo_root) / path
+        # 工作区与 HEAD 无内容差异（git status 已确认干净）时，字节不同只可能来自
+        # git 自己的检出换行规范化（本仓库 core.autocrlf=true：blob 存 LF、工作区是 CRLF）。
+        # 这时包内文件仍等于 HEAD 在该机器上的检出内容，如实计数但不判 FAIL。
+        try:
+            worktree_matches = worktree_file.is_file() and worktree_file.read_bytes() == content
+        except OSError:
+            worktree_matches = False
+        if worktree_matches:
+            checkout_normalized += 1
+            continue
+        mismatches.append(path)
+    if mismatches:
+        return False, f"包内容与 HEAD 不一致（{format_paths(mismatches)}）"
+
+    notes = [f"{len(tracked_package)} 个已跟踪文件与 HEAD 内容一致"]
+    if checkout_normalized:
+        notes.append(f"{checkout_normalized} 个文件按 git 检出换行规范化后一致")
+    if untracked:
+        notes.append(f"{len(untracked)} 个生成文件未被 git 跟踪（仅计数）")
+
+    # ④ 启动器覆盖：基线内动了 vse_boot/ 或 *.spec，就必须同时有同版本 onedir 宿主包。
+    #    基线先做校验：以 '-' 开头的值会被 git 当成选项（--output=... 会写文件）。
+    if since.startswith("-"):
+        return False, f"比较基线无效（{since}）：不允许以 '-' 开头的引用"
+    code, _out, err = _git_command(
+        Path(repo_root),
+        ["rev-parse", "--verify", "--end-of-options", f"{since}^{{commit}}"],
+    )
+    if code != 0:
+        return False, f"无法比较基线 {since}（git rev-parse 失败：{err or code}）"
+    code, diff_raw, err = _git_command(
+        Path(repo_root), ["diff", "--name-only", "-z", f"{since}..HEAD"]
+    )
+    if code != 0:
+        return False, f"无法比较基线 {since}（git diff 失败：{err or code}）"
+    changed = [
+        entry.decode("utf-8", "replace") for entry in diff_raw.split(b"\0") if entry
+    ]
+    launcher_changes = [path for path in changed if is_launcher_path(path)]
+    if launcher_changes:
+        onedir = find_onedir_packages(Path(repo_root), verified.version)
+        if not onedir:
+            return (
+                False,
+                "启动器改动不能只发 app 包：基线 "
+                f"{since}..HEAD 修改了启动器路径（{format_paths(launcher_changes)}），"
+                f"但 {PACKAGE_DIR}/ 下没有与包同版本的 onedir 宿主包"
+                f"（*{verified.version}*.zip）",
+            )
+        notes.append(f"启动器改动已配同版本 onedir 宿主包 {onedir[0].name}")
+    else:
+        notes.append(f"基线 {since}..HEAD 无启动器改动")
+
+    return True, "；".join(notes)
+
+
+def execute_package_sign_step(
+    repo_root: Path, mode: str, since: Optional[str] = None
+) -> StepResult:
+    """打包验签步骤：dev 恒 SKIP；release 必须找到包并真实验签 + 核对整包一致性。
+
+    ``since`` 是 release 模式的比较基线（``--since REF``）；为 ``None`` 时，release 模式在
+    有 ``.git`` 的仓库里 FAIL「未指定比较基线」；只有目录里根本没有 ``.git`` 才退回既有语义
+    （既有直接调用 ``execute_package_sign_step(repo_root, mode)`` 的单元测试不受影响）。
+    """
     display = "打包验签"
     if mode != MODE_RELEASE:
         return StepResult(
@@ -441,13 +733,33 @@ def execute_package_sign_step(repo_root: Path, mode: str) -> StepResult:
             details=f"未打包：{relative} 缺少程序入口 {APP_ENTRY}",
         )
 
+    try:
+        consistent, consistency_detail = check_release_consistency(
+            Path(repo_root), verified, since
+        )
+    except Exception as exc:  # 一致性校验异常同样不得当作通过
+        return StepResult(
+            name="package_sign",
+            display_name=display,
+            status="FAIL",
+            details=f"未通过整包一致性：{relative} 校验异常（{exc}）",
+        )
+    if not consistent:
+        return StepResult(
+            name="package_sign",
+            display_name=display,
+            status="FAIL",
+            details=f"未通过整包一致性：{relative} {consistency_detail}",
+        )
+
     return StepResult(
         name="package_sign",
         display_name=display,
         status="PASS",
         details=(
             f"{relative} 已验签 (v{verified.version}, keyId={verified.key_id}, "
-            f"{len(verified.files)} 个文件, runtime {verified.runtime})"
+            f"{len(verified.files)} 个文件, runtime {verified.runtime})；"
+            f"{consistency_detail}"
         ),
     )
 
@@ -501,6 +813,7 @@ def execute_wave_gate(
     skip_full: bool,
     out_file: Optional[str] = None,
     mode: str = MODE_DEV,
+    since: Optional[str] = None,
 ) -> int:
     """顺序执行波次门禁全套步骤并输出摘要与结果文件。"""
     if mode not in MODES:
@@ -657,7 +970,7 @@ def execute_wave_gate(
 
     # ⑥ 打包验签步骤
     print("==> [6/6] 打包验签")
-    package_step = execute_package_sign_step(REPO_ROOT, mode)
+    package_step = execute_package_sign_step(REPO_ROOT, mode, since=since)
     package_step.required = "package_sign" in required_names
     step_results.append(package_step)
     print(f"    [{package_step.status}] {package_step.details}")
@@ -793,6 +1106,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="等价于 --mode release（严格 release 门禁）",
     )
+    parser.add_argument(
+        "--since",
+        type=str,
+        default=None,
+        help=(
+            "release 模式的比较基线 REF（如 HEAD~1 / 上一个发布 tag）：基线内有启动器改动时"
+            "必须同时发同版本 onedir 宿主包；release 模式缺省即判定失败"
+        ),
+    )
     return parser
 
 
@@ -811,12 +1133,23 @@ def main(argv: Optional[list[str]] = None) -> None:
             file=sys.stderr,
         )
 
-    exit_code = execute_wave_gate(
-        focus_targets=args.focus,
-        skip_full=skip_full,
-        out_file=args.out,
-        mode=mode,
-    )
+    if mode == MODE_RELEASE and args.since is None:
+        print(
+            "警告：release 模式未提供 --since 比较基线，打包验签步骤将判定失败。",
+            file=sys.stderr,
+        )
+
+    gate_kwargs: dict[str, Any] = {
+        "focus_targets": args.focus,
+        "skip_full": skip_full,
+        "out_file": args.out,
+        "mode": mode,
+    }
+    # 未指定 --since 时不传该关键字：既有调用方/测试替身仍按旧签名接收参数，
+    # release 缺基线由打包验签步骤判定 FAIL（见 check_release_consistency）。
+    if args.since is not None:
+        gate_kwargs["since"] = args.since
+    exit_code = execute_wave_gate(**gate_kwargs)
     sys.exit(exit_code)
 
 
