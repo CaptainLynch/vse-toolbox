@@ -8,7 +8,18 @@ import {
   previewHtml, runSignDaily,
 } from "/static/host/report-controller.js";
 
-const SOURCES = { signDaily: "/api/p/sign-daily/state", tir: "/api/p/tir-report/state" };
+// 关注清单只有一份权威数据（契约 C5）：报告中心只读交付物详情用的同一个接口，
+// 不在这里另存副本，也不另算数量。字段与 project_overview 的详情面板同源。
+export const WATCHLIST_PATH = "/api/p/project-overview/watchlist";
+export const WATCHLIST_CSV_PATH = "/api/p/project-overview/watchlist.csv";
+export const WATCHLIST_DETAIL = "#p/project-overview/deliverable?id=VPI-T2-D5";
+const FORMS_LIST = "#p/project-overview/details";
+const EXPORT_PAGE = "#p/system-query/query";
+const SOURCES = {
+  signDaily: "/api/p/sign-daily/state",
+  tir: "/api/p/tir-report/state",
+  watchlist: WATCHLIST_PATH,
+};
 const DAILY_PAGE = "#p/sign-daily/report";
 const IDLE = { phase: "idle", task: null, result: null, images: {}, body: null, imagesError: "", error: null, notice: "" };
 
@@ -29,6 +40,87 @@ function Entry({ icon, title, text, status, actions = [], children }) {
       onClick=${action.onClick || (() => go(action.href))}>${action.label}</button>`)}</div>
     ${children}
   </div>`;
+}
+
+/**
+ * 关注清单只做只读摘要：count / scope / missing / configIssue / items 全部原样来自
+ * GET /api/p/project-overview/watchlist（交付物详情同一接口），报告页不自行统计。
+ */
+export function watchlistSummary(watchlist) {
+  if (!watchlist) return null;
+  return {
+    count: Number(watchlist.count) || 0,
+    scope: watchlist.scope === "watchlist" ? "仅关注清单" : "全部表单",
+    missing: Array.isArray(watchlist.missing) ? watchlist.missing.length : 0,
+    configIssue: String(watchlist.configIssue || ""),
+    items: Array.isArray(watchlist.items) ? watchlist.items : [],
+  };
+}
+
+/** 报告中心的关注清单入口：查看同一份清单，维护仍回交付物详情。 */
+export function WatchlistCard({ watchlist, error }) {
+  const summary = watchlistSummary(watchlist);
+  const status = summary
+    ? html`<${Pill} tone=${summary.configIssue ? "warn" : "info"}>${summary.count} 份 · ${summary.scope}<//>`
+    : html`<${Pill} tone="warn">暂不可用<//>`;
+  return html`<${Entry} icon="⭐" title="关注清单"
+    text="数模设计审核流程的关注单号只有一份：这里只读交付物详情用的同一接口，维护请到交付物详情。"
+    status=${status}
+    actions=${[{ label: "在交付物详情维护", href: WATCHLIST_DETAIL }]}>
+    ${summary
+      ? html`<p class="wb-muted wb-small">同步范围：${summary.scope}；共 ${summary.count} 份${summary.missing ? `；${summary.missing} 份未找到` : ""}${summary.configIssue ? `；${summary.configIssue}` : ""}</p>
+        <p class="wb-row"><a class="wb-btn" href=${WATCHLIST_CSV_PATH} download="watchlist.csv">导出 CSV</a></p>`
+      : html`<p class="wb-muted wb-small">${error ? `关注清单读取失败：${error.message || error}` : "正在读取关注清单…"}</p>`}
+  <//>`;
+}
+
+/**
+ * F5/F6/F7 的导出定位只有这一张表：报告中心只把用户送到既有实现，
+ * 不复制导出逻辑。F7 的 generation_unknown 沿用「只生成/人工核查、不自动重发」红线。
+ */
+export const EXPORT_TARGETS = Object.freeze([
+  {
+    id: "F5",
+    label: "Aras 报表",
+    detail: "EWO / PAA / NCR 进度与明细（CSV、官方工作簿）",
+    href: `${EXPORT_PAGE}?mode=ewo`,
+  },
+  {
+    id: "F6",
+    label: "TDC 报表",
+    detail: "数模 / SOR / A 面（XLSX、全量抓取、合并导出）",
+    href: `${EXPORT_PAGE}?mode=tdc-data-model`,
+  },
+  {
+    id: "F7",
+    label: "EWO 增强导表",
+    detail: "打开 EWO 交付物详情，在「数据与统计」页使用增强导表面板",
+    href: "#p/project-overview/deliverable?id=VPI-T2-D3",
+    manualCheck: "生成结果未知（generation_unknown）时只做人工核查，不自动重发。",
+  },
+]);
+
+/** F5/F6/F7 共用的定位解析：未知编号返回 null，页面据此不渲染入口。 */
+export function exportTarget(featureId) {
+  const id = String(featureId || "").toUpperCase();
+  return EXPORT_TARGETS.find((target) => target.id === id) || null;
+}
+
+/** 报告中心的统一导出卡片：三个入口都来自 EXPORT_TARGETS，不各写一份跳转。 */
+export function ExportCard() {
+  return html`<${Entry} icon="⬇️" title="业务系统报表导出"
+    text="F5/F6/F7 的导出统一从这里定位到既有实现；本页不复制导出逻辑，也不提供自动重发。">
+    <div class="wb-export-targets" style="display:grid;gap:12px">
+      ${EXPORT_TARGETS.map((target) => html`<div key=${target.id} class="wb-export-target" style="display:grid;gap:4px">
+        <div class="wb-row" style="justify-content:space-between">
+          <strong>${target.id} · ${target.label}</strong>
+          <button type="button" class="wb-btn" onClick=${() => go(target.href)}>打开 ${target.id} 导出</button>
+        </div>
+        <p class="wb-muted wb-small">${target.detail}</p>
+        ${target.manualCheck && html`<p class="wb-muted wb-small">${target.manualCheck}</p>`}
+      </div>`)}
+    </div>
+  <//>`;
 }
 
 /** 进度文案只做展示：阶段与百分比都来自后端抓取任务（task_view）。 */
@@ -155,7 +247,7 @@ export function DailyReportCard({ state, fresh, onReload }) {
 
 export default function ReportsPage() {
   useWorkbenchStyles();
-  const { data, reload } = useLoad(SOURCES);
+  const { data, errors = {}, reload } = useLoad(SOURCES);
   const daily = data.signDaily || null;
   const fresh = Boolean(daily && daily.data && daily.data.dataDate === todayString());
   return html`<div class="wb-page">
@@ -166,12 +258,11 @@ export default function ReportsPage() {
         text="从帆软报表平台导出 TIR 数据简表（Excel），当天已经导出过的直接复用。"
         status=${data.tir ? html`<${Pill} tone="info">可导出<//>` : null}
         actions=${[{ label: "导出 Excel", href: "#p/tir-report/report" }]} />
-      <${Entry} icon="⬇️" title="业务系统报表导出"
-        text="EWO / PAA / NCR、TDC 数模 / SOR / 造型 A 面的原始报表，导出为 Excel / CSV。"
-        actions=${[{ label: "选择报表导出", href: "#p/system-query/query" }]} />
+      <${ExportCard} />
+      <${WatchlistCard} watchlist=${data.watchlist} error=${errors.watchlist} />
       <${Entry} icon="🧾" title="交付物表单统计"
-        text="六张交付物表单（EWO、PAA、NCR 进度/明细、数模、SOR）的统计图和明细。"
-        actions=${[{ label: "查看统计", href: "#p/deliverable-forms/index" }]} />
+        text="六张交付物表单（EWO、PAA、NCR 进度/明细、数模、SOR）的统计图和明细只在交付物详情里查看。"
+        actions=${[{ label: "打开交付物明细", href: FORMS_LIST }]} />
     </div>
   </div>`;
 }

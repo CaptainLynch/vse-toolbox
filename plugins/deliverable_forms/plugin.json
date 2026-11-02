@@ -1,9 +1,9 @@
 {
   "id": "deliverable-forms",
   "name": "交付物表单",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "hostApi": ">=1,<2",
-  "description": "六张交付物表单的分析页（表单定义来自 core/form_registry.py；旧页面并存）",
+  "description": "六张交付物表单的分析页（表单定义来自 core/form_registry.py）；日常入口已收敛到交付物详情，本插件仅专家模式保留，旧书签由宿主重定向",
   "pages": [
     {"id": "index", "title": "交付物表单", "kind": "module", "module": "index.js"},
     {"id": "ewo", "title": "EWO 进度"},
