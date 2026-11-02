@@ -36,6 +36,7 @@ from core.project_status_contracts import (
 from core.redaction import redact_sensitive_text
 from core.section_rollup import SectionRollupStore, build_rollup_index
 from services import data_model_watchlist
+from services import user_notifications
 from services.deliverable_form_analysis import build_form_snapshot
 from services.aras_auth import ArasAuthError
 from services.aras_crawler import ArasAuthenticationError, ArasCrawlerError
@@ -627,6 +628,8 @@ class ProjectStatusSyncRunner:
                 )
             except Exception:
                 pass  # 租约已失效或 DB 临时不可用，无法结束 run；由过期抢占回收。
+            # 同步运行已最终判定失败：发布一次托盘通知（稳定分类文案，不重放任务）。
+            self._notify_sync_failure(deliverable_id, run_id, error_type)
             return BindingRunResult(
                 binding_id=binding_id,
                 deliverable_id=deliverable_id,
@@ -715,6 +718,24 @@ class ProjectStatusSyncRunner:
                 f"no connector registered for source_type={source_type}"
             ),
         )
+
+    def _notify_sync_failure(
+        self,
+        deliverable_id: str,
+        run_id: int,
+        error_type: str,
+    ) -> None:
+        """发布一次同步失败托盘通知；通知是尽力而为，绝不影响同步结果。"""
+        try:
+            user_notifications.publish(
+                "sync_failed",
+                project_id=deliverable_id,
+                key=f"{deliverable_id}:{run_id}",
+                title="项目状态同步失败",
+                body=f"同步未完成：{_stable_error_message(error_type)}",
+            )
+        except Exception:  # noqa: BLE001 - a balloon must never break the sync run
+            logger.warning("sync failure notification skipped for %s", deliverable_id)
 
     def _safe_finalize_interrupted(
         self,

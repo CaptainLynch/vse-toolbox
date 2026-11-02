@@ -7,7 +7,9 @@
 3. 纯代码注释（// 与 /* */）及 import/export 模块路径不作为界面文案参与校验；
 4. 基线控制：以 tests/golden/glossary_baseline.json 为准；
    - 基线外出现新命中 -> 测试失败并报错 文件:行 与词；
-   - 基线条目在对应文件中已不再命中 -> 发出提示，提醒人工收紧基线（测试不自动改基线文件）；
+   - 基线条目在对应文件中已不再命中 -> 测试失败，要求删除基线项
+     （DSH-V2-40 已删除 plugins/deliverables 下 2 项过期条目，不再保留过期登记）；
+   - 每一条基线项都必须在 BASELINE_AUDIT 里有一句话理由（白名单逐项审计）。
 5. 编码规范：所有 .js 文件必须以 UTF-8 读取，遇到无法解码报错。
 """
 
@@ -15,7 +17,6 @@ from __future__ import annotations
 
 import json
 import re
-import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -23,6 +24,110 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BASELINE_FILE = REPO_ROOT / "tests" / "golden" / "glossary_baseline.json"
+
+#: DSH-V2-40：任务开始时（e1f40ba）既有白名单的 (文件, 术语) 项数——21 个文件 / 23 项。
+#: 这是「白名单不得增大」的预算上限，不是当前有效条目数：本轮删除了 2 项
+#: plugins/deliverables/... 过期条目，当前有效条目数见 BASELINE_EFFECTIVE_ENTRIES。
+BASELINE_WHITELIST_ENTRIES = 23
+
+#: 本轮从基线删除的过期条目数：plugins/deliverables 插件已下线，文件不存在。
+BASELINE_STALE_ENTRIES_REMOVED = 2
+
+#: 主控补丁修正产品文案后删除的基线条目数：deliverable_forms/static/index.js「快照」。
+BASELINE_FIXED_ENTRIES_REMOVED = 1
+
+#: 删除过期与已修正条目后的基线有效条目数（20）；DOM 门禁的预算口径同用此值。
+BASELINE_EFFECTIVE_ENTRIES = (
+    BASELINE_WHITELIST_ENTRIES - BASELINE_STALE_ENTRIES_REMOVED - BASELINE_FIXED_ENTRIES_REMOVED
+)
+
+#: 既有白名单逐项审计：键 = (文件, 术语)，值 = 一句话理由（为什么允许保留）。
+#: 基线增删必须同步改这里，否则 test_baseline_whitelist_audit_is_justified 失败。
+#: 说明：这些是历史遗留的用户文案例外（部分已由 test_dsh_v2_40.py 的 DOM 门禁
+#: 单独登记为 KNOWN_VIOLATIONS）；保留基线不等于认可文案，清理需产品侧任务。
+BASELINE_AUDIT: dict[tuple[str, str], str] = {
+    (
+        "plugins/project_overview/static/archive-deliverable.js",
+        "快照",
+    ): "归档详情页「正在刷新表单快照」等后台进度提示，属既有用户可见文案，待文案清理。",
+    (
+        "plugins/project_overview/static/deliverable/analysis.js",
+        "快照",
+    ): "交付物分析页「快照时间 / 暂无分析快照」等统计口径文案，历史遗留。",
+    (
+        "plugins/project_overview/static/deliverable/detail.js",
+        "快照",
+    ): "交付物明细页「表单快照 / 正在刷新表单快照」等刷新与口径文案，历史遗留。",
+    (
+        "plugins/project_overview/static/deliverable/discovery.js",
+        "取证",
+    ): "外部同步映射「映射取证」流程提示，属产品既有术语，待文案清理。",
+    (
+        "plugins/project_overview/static/deliverable/display.js",
+        "快照",
+    ): "交付物展示层「无快照时间」空态文案，历史遗留。",
+    (
+        "plugins/project_overview/static/deliverable/evidence.js",
+        "JSON",
+    ): "证据页「下载 JSON」按钮文案，属面向高级用户的导出动作，历史遗留。",
+    (
+        "plugins/project_overview/static/deliverable/evidence.js",
+        "取证",
+    ): "证据页「读取证据失败」等取证流程提示，历史遗留。",
+    (
+        "plugins/project_overview/static/deliverable/form-analysis.js",
+        "快照",
+    ): "表单分析页多处「快照时间 / 快照方差」统计文案，历史遗留。",
+    (
+        "plugins/project_overview/static/deliverable/policy-logic.js",
+        "取证",
+    ): "同步规则页「重新抓取证据 / 映射稳定性核验」提示，历史遗留。",
+    (
+        "plugins/project_overview/static/deliverable/status-chart.js",
+        "快照",
+    ): "状态图「统计来自最近一次 EWO 快照」等口径说明，历史遗留。",
+    (
+        "plugins/project_overview/static/details/external.js",
+        "快照",
+    ): "交付物明细外部来源区块的快照口径说明，历史遗留。",
+    (
+        "plugins/project_overview/static/details/sync-settings-logic.js",
+        "JSON",
+    ): "同步筛选条件校验提示「必须是 JSON 对象」，面向配置用户，历史遗留。",
+    (
+        "plugins/project_overview/static/shared/status-logic.js",
+        "快照",
+    ): "状态文案「更新异常 · 保留上次快照」，历史遗留。",
+    (
+        "plugins/scheduled_archive/static/archive_data.js",
+        "JSON",
+    ): "归档条件校验提示「必须是 JSON 对象」，历史遗留。",
+    (
+        "plugins/scheduled_archive/static/jobs.js",
+        "JSON",
+    ): "高级下载条件「下载条件 JSON（兼容旧配置）」表单标签，历史遗留。",
+    (
+        "plugins/scheduled_archive/static/jobs.js",
+        "盘符路径",
+    ): "归档目录输入框示例占位符「例如：D:\\VSE\\archive」，是引导用户填本机路径的示例，非内部代码路径泄露。",
+    (
+        "plugins/settings/static/settings-form.js",
+        "快照",
+    ): "设置页「历史快照保留数量 / 快照策略」保留策略文案，历史遗留。",
+    (
+        "plugins/system_query/static/query.js",
+        "Base URL",
+    ): "系统查询页「请求上下文 · Base URL」字段标签，面向高级查询用户，历史遗留。",
+    (
+        "plugins/workbench/static/tools.js",
+        "Base URL",
+    ): "工具页专家模式说明「系统查询（Base URL / XML）」，历史遗留。",
+    (
+        "web/static/host/session.js",
+        "JSON",
+    ): "源级提取器把代码里的 JSON.stringify 与注释误当可见文案（该文件无面向用户的 JSON 字样）；"
+    "DOM 门禁未在宿主外壳发现该词，保留基线以免改动提取规则强度。",
+}
 
 # 禁用术语定义（与 web/static/host/glossary.js 保持一致）
 EXACT_BANNED_TERMS = ("JSON", "Base URL", "Worker", "快照", "取证")
@@ -204,25 +309,46 @@ def extract_js_visible_strings(content: str) -> list[tuple[int, str]]:
     return strings
 
 
-def scan_text_segment(text: str) -> list[tuple[str, str]]:
-    """检测一段字符串是否命中禁用术语规则，返回 [(term_name, matched_text), ...] 列表。"""
-    hits: list[tuple[str, str]] = []
+def scan_text_segment_occurrences(text: str) -> list[tuple[str, str, int]]:
+    """检测一段字符串，返回**每一次**命中 ``(term_name, matched_text, start)``。
 
-    # 精确匹配字面量词汇
+    与 ``scan_text_segment`` 不同，这里不去重：同一术语出现几次就返回几项，
+    并带上命中在原文中的起始下标。DOM 门禁需要据此区分「登记文案内」与
+    「同词其他位置」，不能用 ``(term, source)`` 去重后只留首个命中。
+    """
+    hits: list[tuple[str, str, int]] = []
+
+    # 精确匹配字面量词汇：枚举所有出现位置。
     for term in EXACT_BANNED_TERMS:
-        if term in text:
-            hits.append((term, term))
+        start = text.find(term)
+        while start >= 0:
+            hits.append((term, term, start))
+            start = text.find(term, start + len(term))
 
-    # 正则匹配 Windows 盘符代码路径特征
-    drive_match = DRIVE_PATH_REGEX.search(text)
-    if drive_match:
-        hits.append(("盘符路径", drive_match.group(0)))
+    # 正则匹配 Windows 盘符代码路径特征。
+    for match in DRIVE_PATH_REGEX.finditer(text):
+        hits.append(("盘符路径", match.group(0), match.start()))
 
-    # 正则匹配 .py 脚本文件特征
-    py_match = PY_SUFFIX_REGEX.search(text)
-    if py_match:
-        hits.append((".py 后缀", py_match.group(0)))
+    # 正则匹配 .py 脚本文件特征。
+    for match in PY_SUFFIX_REGEX.finditer(text):
+        hits.append((".py 后缀", match.group(0), match.start()))
 
+    hits.sort(key=lambda item: (item[2], item[0]))
+    return hits
+
+
+def scan_text_segment(text: str) -> list[tuple[str, str]]:
+    """检测一段字符串是否命中禁用术语规则，返回 [(term_name, matched_text), ...] 列表。
+
+    保持既有契约：每个术语最多返回一项（首次出现），供源级扫描与词表一致性测试使用。
+    """
+    hits: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for term, match, _start in scan_text_segment_occurrences(text):
+        if term in seen:
+            continue
+        seen.add(term)
+        hits.append((term, match))
     return hits
 
 
@@ -297,22 +423,43 @@ def test_glossary_terms_gate() -> None:
         )
         pytest.fail(msg)
 
-    # 2. 检查：基线条目对应文件若不再命中 -> 提示人工收紧（测试本身不改基线文件）
-    stale_reports: list[str] = []
+    # 2. 检查：基线条目若已不再命中 -> 直接失败，要求删除基线项（不再保留过期登记）
+    stale_entries: list[tuple[str, str]] = []
     for file_rel, allowed_terms in baseline_data.items():
-        actual_hits = current_hits_by_file.get(file_rel, [])
-        actual_terms = {h.term for h in actual_hits}
+        actual_terms = {h.term for h in current_hits_by_file.get(file_rel, [])}
         for term in allowed_terms:
             if term not in actual_terms:
-                stale_reports.append(f"{file_rel} -> [{term}]")
+                stale_entries.append((file_rel, term))
 
-    if stale_reports:
-        warnings.warn(
-            UserWarning(
-                "检测到已有历史页面已清理禁词，可人工收紧基线文件 tests/golden/glossary_baseline.json：\n"
-                + "\n".join(f"  - {item}" for item in stale_reports)
-            )
-        )
+    assert not stale_entries, (
+        "基线出现过期条目（对应文件已不再命中该术语）：请删除 "
+        "tests/golden/glossary_baseline.json 中的这些条目，并同步 BASELINE_AUDIT：\n"
+        + "\n".join(f"  - {file_rel} -> [{term}]" for file_rel, term in stale_entries)
+    )
+
+
+def test_baseline_whitelist_audit_is_justified() -> None:
+    """白名单逐项审计：有效项数 = 23 − 2 项过期 − 1 项已修正 = 20、每条都有理由、不得新增。"""
+    assert BASELINE_FILE.is_file(), f"未找到基线文件: {BASELINE_FILE}"
+    baseline_data: dict[str, list[str]] = json.loads(BASELINE_FILE.read_text(encoding="utf-8"))
+    entries = {(file_rel, term) for file_rel, terms in baseline_data.items() for term in terms}
+
+    assert len(entries) == BASELINE_EFFECTIVE_ENTRIES, (
+        f"基线有效项数不符：实测 {len(entries)} 项，期望 {BASELINE_EFFECTIVE_ENTRIES} 项"
+        f"（任务开始时 {BASELINE_WHITELIST_ENTRIES} 项，本轮删除 "
+        f"{BASELINE_STALE_ENTRIES_REMOVED} 项过期条目）。DSH-V2-40 要求白名单不得增大；"
+        "确需变化必须同步更新常量并在报告中说明。"
+    )
+    assert len(entries) <= BASELINE_WHITELIST_ENTRIES, (
+        f"基线项数 {len(entries)} 超过任务开始时的 {BASELINE_WHITELIST_ENTRIES} 项预算"
+    )
+    assert set(BASELINE_AUDIT) == entries, (
+        "BASELINE_AUDIT 与 tests/golden/glossary_baseline.json 不是一一对应：\n"
+        f"  缺理由={sorted(entries - set(BASELINE_AUDIT))}\n"
+        f"  多余审计={sorted(set(BASELINE_AUDIT) - entries)}"
+    )
+    unjustified = sorted(key for key, reason in BASELINE_AUDIT.items() if len(reason.strip()) < 10)
+    assert not unjustified, f"以下白名单项没有写出可核查的理由：{unjustified}"
 
 
 def test_utf8_decoding_guard(tmp_path: Path) -> None:
