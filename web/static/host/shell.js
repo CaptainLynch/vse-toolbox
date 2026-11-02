@@ -3,7 +3,7 @@
 // route. Hashes from before the plugin refactor are redirected through
 // legacyRedirect(); anything else falls back to the first nav entry.
 import { api, pluginApi } from "./api.js";
-import { recoverSession, registerBootReceiver, runBootHandshake } from "./boot-exchange.js";
+import { BOOT_FAILURE_EVENT, recoverSession, registerBootReceiver, runBootHandshake } from "./boot-exchange.js";
 import { mountChrome } from "./chrome/index.js";
 import { sortNav } from "./chrome/TopBar.js";
 import { legacyRedirect } from "./legacy-routes.js";
@@ -15,6 +15,9 @@ export const DEFAULT_ROUTE = "#p/workbench/today";
 export const SESSION_BANNER_ID = "vse-session-banner";
 const SESSION_EXPIRED_TEXT = "本地会话已过期";
 const SESSION_UNRECOVERABLE_TEXT = "本窗口无法自动恢复，请从开始菜单重新打开 VSE Toolbox";
+const BOOT_RECOVERY_HINT = "可重试；若仍失败，请从开始菜单重新打开 VSE Toolbox";
+const RECOVER_LABEL = "恢复会话";
+const RETRY_LABEL = "重试";
 
 const ROUTE = /^#p\/([a-z][a-z0-9_-]{1,39})\/([a-z][a-z0-9_-]{1,39})(?:\?.*)?$/;
 
@@ -134,6 +137,8 @@ export async function startShell(mount = document.getElementById("plugin-host"))
 /**
  * C7 会话恢复横幅（契约 §5.8）：写请求返回 401 SessionRequired 时显示
  * “本地会话已过期” + “恢复会话”按钮；窗口标记失效时文案切换为“请从开始菜单重新打开”。
+ * DSH-V2-04：启动握手失败（票据无效/超时/网络失败）时显示失败原因 + “重试”，
+ * 重试仍不可恢复则给出“从开始菜单重新打开”的明确指引，绝不把失败伪装成成功。
  * 幂等：同一文档只挂一个横幅；返回元素引用供测试驱动。
  */
 export function mountSessionRecoveryBanner(win = window, doc = document) {
@@ -143,44 +148,91 @@ export function mountSessionRecoveryBanner(win = window, doc = document) {
   banner.id = SESSION_BANNER_ID;
   banner.setAttribute("role", "alert");
   banner.hidden = true;
+  // 内联 display 会盖过 UA 的 [hidden] 规则：显式用 display 同步 hidden，
+  // 否则横幅会在每个正常页面上假报“本地会话已过期”。
   banner.style.cssText =
-    "position:fixed;top:0;left:0;right:0;z-index:9999;display:flex;gap:12px;" +
+    "position:fixed;top:0;left:0;right:0;z-index:9999;display:none;gap:12px;" +
     "align-items:center;justify-content:center;padding:8px 16px;" +
     "background:#8a2c2c;color:#fff;font-size:14px;";
   const text = doc.createElement("span");
   text.textContent = SESSION_EXPIRED_TEXT;
+  const hint = doc.createElement("span");
+  hint.textContent = BOOT_RECOVERY_HINT;
+  hint.style.cssText = "opacity:.85;font-size:13px;";
   const button = doc.createElement("button");
   button.type = "button";
   button.className = "vk-btn";
-  button.textContent = "恢复会话";
-  button.addEventListener("click", async () => {
+  button.textContent = RECOVER_LABEL;
+  let mode = "session";
+  const hide = () => {
+    banner.hidden = true;
+    banner.style.display = "none";
+  };
+  const showUnrecoverable = () => {
+    text.textContent = SESSION_UNRECOVERABLE_TEXT;
+    // 已无重试入口：撤掉“可重试”的通用提示，避免与真实状态自相矛盾。
+    hint.hidden = true;
+    button.hidden = true;
+  };
+  const recover = async () => {
     try {
       await recoverSession();
-      banner.hidden = true;
+      hide();
       text.textContent = SESSION_EXPIRED_TEXT;
     } catch (error) {
       if (error && (error.status === 401 || error.type === "SessionRecoveryUnavailable")) {
-        text.textContent = SESSION_UNRECOVERABLE_TEXT;
-        button.hidden = true;
+        showUnrecoverable();
       }
     }
-  });
+  };
+  const retry = async () => {
+    try {
+      if (await runBootHandshake(win)) {
+        hide();
+        text.textContent = SESSION_EXPIRED_TEXT;
+        return;
+      }
+    } catch (_) {
+      // 握手自身已兜底；继续尝试会话恢复。
+    }
+    await recover();
+  };
+  button.addEventListener("click", () => (mode === "boot" ? retry() : recover()));
   banner.appendChild(text);
+  banner.appendChild(hint);
   banner.appendChild(button);
   const host = doc.body || doc.documentElement;
   if (host && typeof host.appendChild === "function") host.appendChild(banner);
   const show = () => {
+    mode = "session";
     banner.hidden = false;
+    banner.style.display = "flex";
     text.textContent = SESSION_EXPIRED_TEXT;
+    hint.hidden = false;
+    button.textContent = RECOVER_LABEL;
     button.hidden = false;
   };
-  if (typeof win.addEventListener === "function") win.addEventListener("vse:session-expired", show);
-  return { banner, text, button, show };
+  const showBootFailure = (detail) => {
+    const message = detail && detail.error && detail.error.message;
+    mode = "boot";
+    banner.hidden = false;
+    banner.style.display = "flex";
+    text.textContent = message || "启动票据交换失败";
+    hint.hidden = false;
+    button.textContent = RETRY_LABEL;
+    button.hidden = false;
+  };
+  if (typeof win.addEventListener === "function") {
+    win.addEventListener("vse:session-expired", show);
+    win.addEventListener(BOOT_FAILURE_EVENT, (event) => showBootFailure(event && event.detail));
+  }
+  return { banner, text, hint, button, show, showBootFailure };
 }
 
 if (typeof document !== "undefined") {
   // C7（DSH-V2-03）：先**同步**注册宿主注入接收器（pywebview 随时可能推票据），再立即
   // 渲染外壳；握手（K2 桥 / K3 boot-claim / 旧 ?boot= 兼容）在后台完成，绝不阻塞首屏。
+  // DSH-V2-04：握手失败经 `vse:boot-failed` 走横幅（重试 / 从开始菜单重新打开）。
   registerBootReceiver(window);
   mountSessionRecoveryBanner(window, document);
   runBootHandshake(window);
