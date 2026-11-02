@@ -781,6 +781,39 @@
     "download": "none"
   },
   {
+    "rule": "/api/p/sign-daily/schedule",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_sign_daily.schedule_read",
+    "view_function": "schedule_read",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/sign-daily/schedule",
+    "methods": [
+      "PUT"
+    ],
+    "endpoint": "plugin_sign_daily.schedule_write",
+    "view_function": "schedule_write",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/sign-daily/scheduled/latest",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_sign_daily.scheduled_latest",
+    "view_function": "scheduled_latest",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
     "rule": "/api/p/sign-daily/settings/<dataset>",
     "methods": [
       "GET"
@@ -898,6 +931,28 @@
     "endpoint": "plugin_sign_daily.state",
     "view_function": "state",
     "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/sync-control/binding",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_sync_control.binding_read",
+    "view_function": "binding_read",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/sync-control/binding/<project_id>",
+    "methods": [
+      "PUT"
+    ],
+    "endpoint": "plugin_sync_control.binding_write",
+    "view_function": "binding_write",
+    "is_write": true,
     "envelope": "envelope",
     "download": "none"
   },
@@ -1853,6 +1908,17 @@
       "GET"
     ],
     "endpoint": "plugin_sign_daily_static.static",
+    "view_function": "send_static_file",
+    "is_write": false,
+    "envelope": "none",
+    "download": "download"
+  },
+  {
+    "rule": "/plugins/sync-control/static/<path:filename>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_sync_control_static.static",
     "view_function": "send_static_file",
     "is_write": false,
     "envelope": "none",
