@@ -30,6 +30,7 @@ from typing import Any, Callable, Mapping
 from core.time_rules import now_utc, pure_date
 from services import data_model_watchlist as W
 from services import schedule_policy as SP
+from services import user_notifications
 from services.deliverable_form_analysis import form_definition
 from services.form_search import snapshot_schema
 from services.schedule_jobs import JobOutcome
@@ -522,6 +523,18 @@ class DailyReportJob:
         if not saved:
             # 同槽已有一条成功结果：保持首次生成内容（INSERT OR IGNORE），本次仍算成功。
             logger.info("scheduled daily report %s already recorded; kept the first result", key.as_text())
+        try:
+            # 生成结果已写入 scheduled_reports：发布一次「日报已生成」托盘通知。
+            data_date = str(result.get("dataDate") or key.business_date.isoformat())
+            user_notifications.publish(
+                "daily_ready",
+                project_id=key.project_id,
+                key=key.as_text(),
+                title="日报已生成",
+                body=f"数据日期 {data_date}，请到报告中心查看并发送",
+            )
+        except Exception:  # noqa: BLE001 - a balloon must never change the job outcome
+            logger.warning("daily ready notification skipped for %s", key.as_text())
         return JobOutcome(True)
 
     # ── 刷新（数据新鲜度）────────────────────────────────────────────
