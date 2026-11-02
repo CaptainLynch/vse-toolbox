@@ -902,6 +902,28 @@
     "download": "none"
   },
   {
+    "rule": "/api/p/sync-control/binding",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_sync_control.binding_read",
+    "view_function": "binding_read",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/sync-control/binding/<project_id>",
+    "methods": [
+      "PUT"
+    ],
+    "endpoint": "plugin_sync_control.binding_write",
+    "view_function": "binding_write",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
     "rule": "/api/p/sync-control/slots",
     "methods": [
       "GET"
@@ -1853,6 +1875,17 @@
       "GET"
     ],
     "endpoint": "plugin_sign_daily_static.static",
+    "view_function": "send_static_file",
+    "is_write": false,
+    "envelope": "none",
+    "download": "download"
+  },
+  {
+    "rule": "/plugins/sync-control/static/<path:filename>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_sync_control_static.static",
     "view_function": "send_static_file",
     "is_write": false,
     "envelope": "none",

@@ -486,10 +486,10 @@ def test_set_binding_rejects_mixed_or_unknown_modes(env: Env) -> None:
         env.store.set_binding(PROJECT, JOB, "fixed", ["09:00"], "yes")  # type: ignore[arg-type]
 
 
-# ── 7. 真实插件宿主加载：只读路由 ────────────────────────────────────────────
+# ── 7. 真实插件宿主加载：路由面（DSH-V2-21 起含绑定读写） ────────────────────
 
 
-def test_plugin_registers_only_one_read_only_slots_route(monkeypatch, tmp_path: Path) -> None:
+def test_plugin_registers_slots_and_binding_routes(monkeypatch, tmp_path: Path) -> None:
     import web.app as web_app
 
     db_cls = web_app.DatabaseManager
@@ -505,9 +505,20 @@ def test_plugin_registers_only_one_read_only_slots_route(monkeypatch, tmp_path: 
     record = next(item for item in manifest["plugins"] if item["id"] == PLUGIN_ID)
     assert record["status"] == "loaded", record.get("error")
 
-    plugin_rules = [rule for rule in app.url_map.iter_rules() if rule.rule.startswith(f"/api/p/{PLUGIN_ID}/")]
-    assert [rule.rule for rule in plugin_rules] == [f"/api/p/{PLUGIN_ID}/slots"]
-    assert set(plugin_rules[0].methods) == {"GET", "HEAD", "OPTIONS"}
+    plugin_rules = {
+        rule.rule: set(rule.methods or ())
+        for rule in app.url_map.iter_rules()
+        if rule.rule.startswith(f"/api/p/{PLUGIN_ID}/")
+    }
+    # DSH-V2-21 增加绑定读写路由：/slots 与 /binding 仍只读，写入口只有 PUT binding。
+    assert set(plugin_rules) == {
+        f"/api/p/{PLUGIN_ID}/slots",
+        f"/api/p/{PLUGIN_ID}/binding",
+        f"/api/p/{PLUGIN_ID}/binding/<project_id>",
+    }
+    assert plugin_rules[f"/api/p/{PLUGIN_ID}/slots"] == {"GET", "HEAD", "OPTIONS"}
+    assert plugin_rules[f"/api/p/{PLUGIN_ID}/binding"] == {"GET", "HEAD", "OPTIONS"}
+    assert plugin_rules[f"/api/p/{PLUGIN_ID}/binding/<project_id>"] == {"PUT", "OPTIONS"}
 
     # 插件迁移已在本库执行：写入两个项目的槽，只读路由按 projectId 隔离返回
     module = _plugin_module("store")

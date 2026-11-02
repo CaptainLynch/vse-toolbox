@@ -1,7 +1,11 @@
 {
   "id": "sync-control",
   "name": "调度控制",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "hostApi": ">=1,<2",
-  "description": "C4 执行槽持久化与租约边界（只读槽查询；调度器接线由 DSH-V2-20 承接，本插件不启动任何定时器）"
+  "description": "C4 执行槽持久化与租约边界，以及调度时刻与暂停设置界面（读写绑定；本插件不启动任何定时器，调度由唯一后台调度器执行）",
+  "pages": [
+    {"id": "schedule", "title": "调度时刻", "kind": "module", "module": "schedule.js"}
+  ],
+  "nav": [{"title": "调度时刻", "page": "schedule", "order": 55, "expert": true, "parent": "workbench/tools"}]
 }
