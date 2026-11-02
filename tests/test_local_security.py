@@ -18,7 +18,8 @@
     `replaceState` 清理、`shell.js` 先注册接收器再渲染、401 横幅与恢复按钮。
 
 fail-closed 路径用原生 werkzeug Client（模拟"不带浏览器等价行为的客户端"），
-正常路径用 create_app 自带的等价 test client（真实走 boot-exchange 端点）。
+正常路径用 tests/security_client_fixture.py 显式安装的等价 test client（真实走
+boot-exchange 端点）；本模块是 raw_security，不会被 conftest 默认安装替身。
 """
 
 from __future__ import annotations
@@ -615,10 +616,45 @@ def test_non_loopback_exchange_stays_rejected(app, raw):
     assert response.get_json()["error"]["type"] == "LocalAccessRequired"
 
 
-# ── 8. 测试客户端等价性：写请求自动补 Origin + 真实 boot-exchange ─────────
+# ── 8. 测试客户端边界（DSH-V2-05）：生产模块不再安装已认证替身 ─────────────
 
 
-def test_default_test_client_writes_pass_through_security(app):
+def test_production_module_has_no_test_client_substitute():
+    # 回归哨兵：替身代码已移到 tests/security_client_fixture.py。
+    assert not hasattr(web_security, "install_security_aware_test_client")
+    assert not hasattr(web_security, "_SecurityAwareTestClient")
+
+
+def test_native_test_client_write_without_session_is_401(app):
+    # 本模块是 raw_security：app.test_client() 是原生客户端，未经替身补齐。
+    client = app.test_client()
+    response = client.put(
+        "/api/project-status/section-rollup",
+        json={},
+        headers=_origin_headers(),
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+    assert response.status_code == 401
+
+
+def test_native_test_client_write_without_origin_is_403(app, raw):
+    # 先真实换到会话，再以该会话发不带 Origin 的写请求（原生 Client，不补 Origin）。
+    exchanged = _exchange(raw, app.config["VSE_BOOT_TOKEN"], headers=_origin_headers())
+    assert exchanged.status_code == 200
+    response = raw.put(
+        "/api/project-status/section-rollup",
+        json={},
+        headers={"Cookie": _session_pair(exchanged)},
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+    assert response.status_code == 403
+    assert response.get_json()["error"]["type"] == "OriginRequired"
+
+
+def test_authenticated_fixture_client_writes_pass_through_security(app):
+    from tests.security_client_fixture import install_authenticated_test_client
+
+    install_authenticated_test_client(app)
     client = app.test_client()
     response = client.put("/api/project-status/section-rollup", json={})
     # 到达视图的业务校验层（而不是被安全层拒绝）。
@@ -626,7 +662,11 @@ def test_default_test_client_writes_pass_through_security(app):
 
 
 def test_each_app_instance_has_its_own_session_store(app):
+    from tests.security_client_fixture import install_authenticated_test_client
+
     other = web_app.create_app()
+    install_authenticated_test_client(app)
+    install_authenticated_test_client(other)
     client = app.test_client()
     other_client = other.test_client()
     ok = client.put("/api/project-status/section-rollup", json={})

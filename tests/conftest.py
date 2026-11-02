@@ -6,10 +6,84 @@ tests/conftest.py — 公共 pytest fixtures
     tmp_db  — 使用 tmp_path 隔离的 DatabaseManager，
               init_database() 已调用，预置若干测试行。
               不污染真实 data/vse_toolbox.db。
+    authenticated_test_client_default
+            — DSH-V2-05：为普通业务测试安装「已认证测试客户端」
+              （tests/security_client_fixture.py，原 web/security.py 里的替身）。
+              生产安全模块不再安装任何 test_client 替身。
+
+DSH-V2-05 安全边界（主控冻结契约）：
+    - 默认替身只在本文件显式声明，且经 monkeypatch 包装 ``web.security.install_local_security``
+      安装，生产代码零改动；
+    - ``@pytest.mark.raw_security`` 标记的测试、以及 ``RAW_SECURITY_MODULES`` 列出的安全
+      测试模块**不安装**替身，一律使用原生客户端——负向断言（401/403）必须来自服务端真实判定；
+    - 不对全部安全测试请求做全局自动补齐。
 """
 
 import pytest
 from core.db_manager import DatabaseManager
+
+from pathlib import Path
+
+#: DSH-V2-05：已认证测试客户端替身已移出产品安全模块（``web/security.py``）。
+#: 以下安全测试模块使用原生客户端，永不安装替身（模块名豁免，避免批量改写）。
+RAW_SECURITY_MODULES = frozenset(
+    {
+        "test_local_security",
+        "test_local_security_integration",
+        "test_boot_ticket_transport",
+    }
+)
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """注册 ``raw_security`` marker（DSH-V2-05 契约 3）。"""
+    config.addinivalue_line(
+        "markers",
+        "raw_security: 使用原生 test_client，不安装 tests.security_client_fixture 的已认证替身",
+    )
+
+
+def _uses_raw_security_client(request: pytest.FixtureRequest) -> bool:
+    """该测试是否豁免默认的已认证测试客户端（marker 或安全测试模块名）。"""
+    node = request.node
+    if node.get_closest_marker("raw_security") is not None:
+        return True
+    path = getattr(node, "path", None)
+    if path is None:
+        fspath = getattr(node, "fspath", None)
+        path = fspath if fspath is not None else ""
+    return Path(str(path)).stem in RAW_SECURITY_MODULES
+
+
+@pytest.fixture(autouse=True)
+def authenticated_test_client_default(request, monkeypatch):
+    """普通业务测试默认安装已认证测试客户端（DSH-V2-05 主控裁决 5）。
+
+    生产模块不再安装替身；这里在 ``create_app`` 装配本机安全之后安装
+    ``tests/security_client_fixture`` 的等价客户端（真实补同源 Origin、真实走
+    boot-exchange，不旁路任何服务端判定）。豁免路径保持原生客户端。
+    """
+    if _uses_raw_security_client(request):
+        return None
+    import web.security as web_security
+    from tests.security_client_fixture import install_authenticated_test_client
+
+    original = web_security.install_local_security
+
+    def install_local_security_with_test_client(app, **kwargs):
+        security = original(app, **kwargs)
+        install_authenticated_test_client(app)
+        return security
+
+    monkeypatch.setattr(
+        web_security, "install_local_security", install_local_security_with_test_client
+    )
+    return None
+
+
+#: 显式选择已认证测试客户端：``def test_x(app, authed_client)``。
+#: 实现与默认安装逻辑同在 tests/security_client_fixture.py，这里再导出供 pytest 发现。
+from tests.security_client_fixture import authed_client  # noqa: E402,F401
 
 
 @pytest.fixture
