@@ -43,6 +43,11 @@ export function classifySystemTier(session) {
   if (typeof session === "string") {
     raw = session.trim().toLowerCase();
   } else if (typeof session === "object") {
+    // 后端会话状态机（DSH_IDENTITY_CONTRACT §7.3）优先：续期在途→正在恢复；
+    // 续期失败/已清除→需要重新登录（即便记录仍在、authenticated 仍为 true）。
+    const state = typeof session.state === "string" ? session.state.trim().toLowerCase() : "";
+    if (state === "renewing") return STATUS_TIERS.RECOVERING;
+    if (state === "failed" || state === "cleared") return STATUS_TIERS.LOGIN_REQUIRED;
     if (typeof session.status === "string" && session.status) {
       raw = session.status.trim().toLowerCase();
     } else if (session.authenticated && !session.expired) {

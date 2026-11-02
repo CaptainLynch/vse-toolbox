@@ -446,13 +446,132 @@ def _emit_tdc_status_distribution(rows: Sequence[Mapping[str, Any]]) -> None:
         )
 
 
-class TDCProjectStatusConnector:
-    def __init__(self, credentials: CredentialProvider, archive: ArchiveStore, *, timeout: float = 60.0, auth_factory: Callable[..., Any] = TDCPasswordAuthClient, crawler_factory: Callable[..., Any] = TDCCrawlerClient) -> None:
+class _RenewableProjectStatusConnector:
+    """Aras/TDC 共用的统一续期接线（DSH-V2-16/17，契约 §3.2/§6/§7/§10.2）。
+
+    行为与 16 已评审的 Aras 实现逐条一致：只有「共享会话存在 + 凭据账号派生的
+    accountRef 等于注册表绑定值 + 协调器判定可续期」三者同时成立时才走协调器；
+    否则保持各连接器原有的自行登录路径（行为不变）。每次业务尝试前都重核绑定，
+    校验后被换成别的账号时绝不改用新会话。
+    """
+
+    #: 子类声明自己所属的企业系统（``aras`` / ``tdc``）。
+    _renewal_system: str = ""
+
+    def _renewal(self) -> Any | None:
+        return self.session_renewal if self.session_renewal is not None else _session_renewal
+
+    def _registry(self) -> Any | None:
+        return self.session_registry if self.session_registry is not None else _session_registry
+
+    def _shared_session(self, registry: Any | None) -> Any | None:
+        """共享内存会话（统一登录/续期建立）；读不到等同「没有共享会话」。"""
+        if registry is None:
+            return None
+        try:
+            return registry.session(self._renewal_system)
+        except Exception:  # noqa: BLE001 - 会话读取失败不得改变业务归因
+            return None
+
+    def _bound_root(self, registry: Any | None) -> str | None:
+        """共享会话绑定的**原始**来源根（爬虫 base_url）；读不到用默认根。"""
+        if registry is None:
+            return None
+        try:
+            root, _ = registry.identity_binding(self._renewal_system)
+        except Exception:  # noqa: BLE001 - 绑定读取失败按"无绑定"处理
+            return None
+        return root if isinstance(root, str) and root.strip() else None
+
+    def _current_shared(self, account_ref: str) -> Any | None:
+        """当前共享会话，仅当注册表仍绑定 ``account_ref`` 时返回；否则 None。"""
+        registry = self._registry()
+        if registry is None:
+            return None
+        try:
+            _, bound = registry.identity_binding(self._renewal_system)
+        except Exception:  # noqa: BLE001 - 绑定读取失败按"不一致"处理
+            return None
+        if not bound or str(bound) != account_ref:
+            return None
+        return self._shared_session(registry)
+
+    def _renewable(self, username: str) -> tuple[Any, Any, str] | None:
+        """``(协调器, 共享会话, accountRef)``；不可续期时 None（保持旧登录路径）。
+
+        只在「已有共享会话且注册表判定可续期（canRenew）」时启用协调器：没有
+        绑定身份/凭据时不得自动续期（契约 §3.2），此时行为与接入前完全一致。
+        """
+        renewal = self._renewal()
+        if renewal is None:
+            return None
+        registry = self._registry()
+        shared = self._shared_session(registry)
+        if shared is None:
+            return None
+        # 账号必须一致（契约 §3.2，禁止跨账号复用会话）：credential_ref 解析出的
+        # 用户名派生的 accountRef 必须等于注册表绑定的 accountRef；绑定缺失或不一致
+        # 一律退回旧的自行登录路径（以 credential_ref 的账号登录）。
+        try:
+            root, bound = registry.identity_binding(self._renewal_system)
+        except Exception:  # noqa: BLE001 - 绑定读取失败按"无绑定"处理
+            return None
+        if not bound or not isinstance(root, str) or not root.strip() or not username:
+            return None
+        try:
+            expected = DomainSessionRegistry.account_ref(self._renewal_system, username, root)
+        except Exception:  # noqa: BLE001 - 派生失败等同不一致
+            return None
+        if expected != bound:
+            return None
+        try:
+            if not bool(renewal.snapshot(self._renewal_system).can_renew):
+                return None
+        except Exception:  # noqa: BLE001 - 观测失败不改变业务路径
+            return None
+        return renewal, shared, str(bound)
+
+    def _run_renewable(
+        self,
+        renewable: tuple[Any, Any, str] | None,
+        session: Any,
+        action: Callable[[Any], Any],
+        *,
+        build: Callable[[Any], Any],
+        kind: str = IDEMPOTENT_READ,
+    ) -> Any:
+        """业务调用：装配协调器时经 ``run_with_renewal``（最多重放一次）。
+
+        每次尝试都按**当前**共享会话重新构造客户端（``build``）：续期成功后重放
+        拿到的是协调器刚写回的新会话（原位恢复，不需要调用方换参数）。
+        """
+
+        def operation() -> Any:
+            active = session
+            if renewable is not None:
+                # 每次尝试都重核绑定账号：校验后到调用前若有人以别的账号登录，
+                # 不得改用新会话（契约 §3.2），退回校验时捕获的会话。
+                active = self._current_shared(renewable[2]) or session
+            return action(build(active))
+
+        if renewable is None:
+            return operation()
+        renewal, _, account_ref = renewable
+        return renewal.run_with_renewal(self._renewal_system, account_ref, operation, kind=kind)
+
+
+class TDCProjectStatusConnector(_RenewableProjectStatusConnector):
+    _renewal_system = "tdc"
+
+    def __init__(self, credentials: CredentialProvider, archive: ArchiveStore, *, timeout: float = 60.0, auth_factory: Callable[..., Any] = TDCPasswordAuthClient, crawler_factory: Callable[..., Any] = TDCCrawlerClient, session_renewal: Any | None = None, session_registry: Any | None = None) -> None:
         self.credentials = credentials
         self.archive = archive
         self.timeout = timeout
         self.auth_factory = auth_factory
         self.crawler_factory = crawler_factory
+        #: 显式注入优先；未注入时用组合根绑定（见 ``bind_session_renewal``）。
+        self.session_renewal = session_renewal
+        self.session_registry = session_registry
 
     @observed("sync_connector.TDCProjectStatusConnector.collect")
     def collect(self, context: SyncBindingContext) -> ConnectorSnapshot:
@@ -473,24 +592,69 @@ class TDCProjectStatusConnector:
         official_rows: tuple[Mapping[str, Any], ...] = ()
         official_status = OFFICIAL_STATUS_NOT_REQUESTED
         with self.credentials.resolve(context.credential_ref) as secret:
-            login = self.auth_factory(timeout=self.timeout).login(secret.username, secret.password)
+            username = str(getattr(secret, "username", "") or "").strip()
+            renewable = self._renewable(username)
+            login = None
+            if renewable is None:
+                # 旧登录路径（保留回退）：没有共享会话/不可续期时仍自行登录。
+                login = self.auth_factory(timeout=self.timeout).login(username, secret.password)
+                session = login.session
+            else:
+                # 共享会话路径不构造登录客户端（与 Aras 已评审模式一致）。
+                session = renewable[1]
             try:
                 with tempfile.TemporaryDirectory() as temp:
-                    crawler = self.crawler_factory(session=login.session, timeout=self.timeout, output_dir=Path(temp))
+                    # 同一会话复用同一个爬虫实例（SOR 车型项目列表按实例缓存，
+                    # 重放/导出不得因此多发上游请求）；续期换会话时自然重建。
+                    crawlers: list[tuple[Any, Any]] = []
+
+                    def _crawler_for(active: Any) -> Any:
+                        for known, cached in crawlers:
+                            if known is active:
+                                return cached
+                        crawler = self.crawler_factory(
+                            session=active, timeout=self.timeout, output_dir=Path(temp)
+                        )
+                        crawlers.append((active, crawler))
+                        return crawler
+
+                    def run(action: Callable[[Any], Any], *, kind: str = IDEMPOTENT_READ) -> Any:
+                        """业务调用：装配协调器时经 ``run_with_renewal``（最多重放一次）。"""
+                        return self._run_renewable(
+                            renewable,
+                            session,
+                            action,
+                            build=_crawler_for,
+                            kind=kind,
+                        )
+
                     if report == "data_model":
                         filters = self._data_model_filters(context.match_rule)
-                        result = crawler.crawl_data_model_all(filters, max_records=_MAX_ROWS)
+                        result = run(
+                            lambda crawler: crawler.crawl_data_model_all(
+                                filters, max_records=_MAX_ROWS
+                            )
+                        )
                     else:
                         filters = self._sor_filters(context.match_rule)
-                        result = crawler.crawl_sor_all(filters, max_records=_MAX_ROWS)
+                        result = run(
+                            lambda crawler: crawler.crawl_sor_all(
+                                filters, max_records=_MAX_ROWS
+                            )
+                        )
                     _require_complete_result(result)
                     xlsx_artifact = None
                     official_path = None
                     try:
-                        official = (
-                            crawler.export_data_model(filters)
-                            if report == "data_model"
-                            else crawler.export_sor(filters)
+                        official = run(
+                            lambda crawler: (
+                                crawler.export_data_model(filters)
+                                if report == "data_model"
+                                else crawler.export_sor(filters)
+                            ),
+                            # 官方导出会在上游生成文件（契约 §6.1 unsafe_side_effect）：
+                            # 续期后**不自动重放**，按 generation_unknown 交用户确认。
+                            kind=UNSAFE_SIDE_EFFECT,
                         )
                         official_path = official.path
                         with official.path.open("rb") as handle:
@@ -521,7 +685,8 @@ class TDCProjectStatusConnector:
                                 official_path, report
                             )
             finally:
-                _close_session(login.session)
+                if login is not None:
+                    _close_session(login.session)
         # SOR 行形状边界（docs/PLAN_20260926_SOR_ROWS_RING_CLICK_NCR_SECTION_DATAMODEL_STATUS.md F1）：
         # 爬虫保留上游语义（原始行=取证/字段报告），连接器负责转换为应用语义——
         # analysis_rows 与 CSV 用规范化行（嵌套对象取标量文本，绝不 str(dict) 进
@@ -861,7 +1026,9 @@ def _filter_ncr_rows_by_department(
     return kept, len(cleaned) - len(kept)
 
 
-class ArasProjectStatusConnector:
+class ArasProjectStatusConnector(_RenewableProjectStatusConnector):
+    _renewal_system = "aras"
+
     def __init__(
         self,
         credentials: CredentialProvider,
@@ -882,81 +1049,8 @@ class ArasProjectStatusConnector:
         self.session_renewal = session_renewal
         self.session_registry = session_registry
 
-    # ── 统一续期协调器（DSH-V2-16）───────────────────────────────────────
-    def _renewal(self) -> Any | None:
-        return self.session_renewal if self.session_renewal is not None else _session_renewal
-
-    def _registry(self) -> Any | None:
-        return self.session_registry if self.session_registry is not None else _session_registry
-
-    @staticmethod
-    def _shared_session(registry: Any | None) -> Any | None:
-        """共享内存会话（统一登录/续期建立）；读不到等同「没有共享会话」。"""
-        if registry is None:
-            return None
-        try:
-            return registry.session("aras")
-        except Exception:  # noqa: BLE001 - 会话读取失败不得改变业务归因
-            return None
-
-    @staticmethod
-    def _bound_root(registry: Any | None) -> str | None:
-        """共享会话绑定的**原始**来源根（爬虫 base_url）；读不到用默认根。"""
-        if registry is None:
-            return None
-        try:
-            root, _ = registry.identity_binding("aras")
-        except Exception:  # noqa: BLE001 - 绑定读取失败按"无绑定"处理
-            return None
-        return root if isinstance(root, str) and root.strip() else None
-
-    def _current_shared(self, account_ref: str) -> Any | None:
-        """当前共享会话，仅当注册表仍绑定 ``account_ref`` 时返回；否则 None。"""
-        registry = self._registry()
-        if registry is None:
-            return None
-        try:
-            _, bound = registry.identity_binding("aras")
-        except Exception:  # noqa: BLE001 - 绑定读取失败按"不一致"处理
-            return None
-        if not bound or str(bound) != account_ref:
-            return None
-        return self._shared_session(registry)
-
-    def _renewable(self, username: str) -> tuple[Any, Any, str] | None:
-        """``(协调器, 共享会话, accountRef)``；不可续期时 None（保持旧登录路径）。
-
-        只在「已有共享会话且注册表判定可续期（canRenew）」时启用协调器：没有
-        绑定身份/凭据时不得自动续期（契约 §3.2），此时行为与接入前完全一致。
-        """
-        renewal = self._renewal()
-        if renewal is None:
-            return None
-        registry = self._registry()
-        shared = self._shared_session(registry)
-        if shared is None:
-            return None
-        # 账号必须一致（契约 §3.2，禁止跨账号复用会话）：credential_ref 解析出的
-        # 用户名派生的 accountRef 必须等于注册表绑定的 accountRef；绑定缺失或不一致
-        # 一律退回旧的自行登录路径（以 credential_ref 的账号登录）。
-        try:
-            root, bound = registry.identity_binding("aras")
-        except Exception:  # noqa: BLE001 - 绑定读取失败按"无绑定"处理
-            return None
-        if not bound or not isinstance(root, str) or not root.strip() or not username:
-            return None
-        try:
-            expected = DomainSessionRegistry.account_ref("aras", username, root)
-        except Exception:  # noqa: BLE001 - 派生失败等同不一致
-            return None
-        if expected != bound:
-            return None
-        try:
-            if not bool(renewal.snapshot("aras").can_renew):
-                return None
-        except Exception:  # noqa: BLE001 - 观测失败不改变业务路径
-            return None
-        return renewal, shared, str(bound)
+    # 统一续期协调器接线（DSH-V2-16）由 ``_RenewableProjectStatusConnector`` 共用；
+    # 本类只声明系统名，行为与 16 已评审实现逐条一致。
 
     @observed("sync_connector.ArasProjectStatusConnector.collect")
     def collect(self, context: SyncBindingContext) -> ConnectorSnapshot:
@@ -994,22 +1088,15 @@ class ArasProjectStatusConnector:
                     每次尝试都按**当前**共享会话新建爬虫：续期成功后重放拿到的是
                     协调器刚写回的新会话（原位恢复，不需要调用方换参数）。
                     """
-
-                    def operation() -> Any:
-                        active = session
-                        if renewable is not None:
-                            # 每次尝试都重核绑定账号：校验后到调用前若有人以别的账号
-                            # 登录，不得改用新会话（契约 §3.2），退回校验时捕获的会话。
-                            active = self._current_shared(renewable[2]) or session
-                        crawler = self.crawler_factory(
+                    return self._run_renewable(
+                        renewable,
+                        session,
+                        read,
+                        build=lambda active: self.crawler_factory(
                             base_url, session=active, timeout=self.timeout, prewarm=False
-                        )
-                        return read(crawler)
-
-                    if renewable is None:
-                        return operation()
-                    renewal, _, account_ref = renewable
-                    return renewal.run_with_renewal("aras", account_ref, operation, kind=kind)
+                        ),
+                        kind=kind,
+                    )
 
                 if report == "ewo":
                     filters = build_project_status_ewo_filters(context.match_rule)

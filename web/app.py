@@ -249,8 +249,10 @@ def _session_renewal_clients() -> dict[str, Any]:
     （契约 §8.2 的 ``clients`` 映射）。只返回无参可调用对象，不在此处登录。
     """
     from services.aras_auth import ArasECMAuthClient
+    from services.tdc_auth import TDCPasswordAuthClient
 
-    return {"aras": ArasECMAuthClient}
+    # DSH-V2-17（主控批准的范围例外，仅装配）：TDC 同样经协调器续期。
+    return {"aras": ArasECMAuthClient, "tdc": TDCPasswordAuthClient}
 
 
 def _query_overview(db: DatabaseManager) -> dict[str, Any]:

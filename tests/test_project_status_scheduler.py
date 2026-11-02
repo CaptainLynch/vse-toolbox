@@ -15,7 +15,10 @@ tests/test_project_status_scheduler.py — 常驻项目状态同步调度线程�
 
 from __future__ import annotations
 
+import logging
+import sqlite3
 import threading
+from datetime import datetime, timezone
 
 import pytest
 
@@ -443,3 +446,205 @@ def test_global_scheduler_registry() -> None:
     assert get_global_scheduler() is scheduler
     set_global_scheduler(None)
     assert get_global_scheduler() is None
+
+
+# ── DSH-V2-20：slot_store 注入（fixed 槽接线） ───────────────────────────────
+
+
+class BrokenSlotStore:
+    """list_bindings 直接抛错的槽存储桩：其余方法一旦被调用即为越界。"""
+
+    def __init__(self, error: BaseException) -> None:
+        self._error = error
+        self.calls: list[str | None] = []
+
+    def list_bindings(self, mode=None):
+        self.calls.append(mode)
+        raise self._error
+
+    def list_slots(self, project_id, business_date):
+        raise AssertionError("list_slots must not be called when bindings fail")
+
+    def ensure_slots(self, slots):
+        raise AssertionError("ensure_slots must not be called when bindings fail")
+
+    def lease_next(self, owner, *, lease_seconds, business_date):
+        raise AssertionError("lease_next must not be called when bindings fail")
+
+    def finish(self, key, token, *, ok, error_code=None, retry_after_seconds=None):
+        raise AssertionError("finish must not be called when bindings fail")
+
+
+class RecordingSlotStore:
+    """记录 fixed 绑定与入队槽的内存桩（真实槽行为由 test_schedule_dispatch 覆盖）。"""
+
+    def __init__(self, fixed_bindings: list[dict]) -> None:
+        self._fixed = list(fixed_bindings)
+        self.ensured: list = []
+        self.lease_calls = 0
+
+    def list_bindings(self, mode=None):
+        return [row for row in self._fixed if mode is None or row["mode"] == mode]
+
+    def list_slots(self, project_id, business_date):
+        return []
+
+    def ensure_slots(self, slots):
+        self.ensured.extend(slots)
+        return len(slots)
+
+    def lease_next(self, owner, *, lease_seconds, business_date):
+        self.lease_calls += 1
+        return None
+
+    def finish(self, key, token, *, ok, error_code=None, retry_after_seconds=None):
+        raise AssertionError("finish must not be called when nothing was leased")
+
+
+def _fixed_binding(project_id: str = "proj-1") -> dict:
+    return {
+        "projectId": project_id,
+        "jobId": "project_status_sync",
+        "mode": "fixed",
+        "times": ["09:00", "16:00"],
+        "paused": False,
+        "updatedAt": "2026-09-20T00:00:00.000000Z",
+    }
+
+
+def test_slot_store_none_keeps_legacy_status_and_interval_path() -> None:
+    """slot_store=None：get_status 报 fixedMode=off，interval 路径与旧版一致。"""
+    db = FakeDb([_binding("VPI-T2-D2", None)])
+    runner = FakeRunner()
+    scheduler = ProjectStatusSyncScheduler(db, runner, clock=FakeClock(), interval=900)
+
+    status = scheduler.get_status()
+    assert status["fixedBindings"] == 0
+    assert status["fixedMode"] == "off"
+
+    scheduler.tick()
+    assert [call["deliverable_id"] for call in runner.calls] == ["VPI-T2-D2"]
+
+
+def test_missing_slot_tables_warn_once_and_keep_interval_path(caplog) -> None:
+    """槽表不存在：一次 warning、纯 interval，不建表/不迁移；缺表判定被缓存。"""
+    store = BrokenSlotStore(
+        sqlite3.OperationalError("no such table: p_sync_control_bindings")
+    )
+    db = FakeDb([_binding("VPI-T2-D2", None)])
+    runner = FakeRunner()
+    scheduler = ProjectStatusSyncScheduler(
+        db, runner, clock=FakeClock(), interval=900, slot_store=store
+    )
+
+    with caplog.at_level(logging.WARNING, logger="vse_toolbox.sync_scheduler"):
+        scheduler.tick()
+        scheduler.tick()
+
+    # 缺表判定缓存后不再查询（避免每 tick / 每次状态轮询都打 SQLite 错误日志）。
+    assert store.calls == ["fixed"]
+    warnings = [r for r in caplog.records if "fixed slot tables are missing" in r.message]
+    assert len(warnings) == 1
+    assert [call["deliverable_id"] for call in runner.calls] == [
+        "VPI-T2-D2",
+        "VPI-T2-D2",
+    ]
+    assert scheduler.get_status()["fixedMode"] == "off"
+
+
+def test_slot_store_listing_error_keeps_interval_path(caplog) -> None:
+    """非 no-such-table 的槽表错误同样只降级 fixed，不影响 interval 派发。"""
+    store = BrokenSlotStore(RuntimeError("disk I/O error"))
+    db = FakeDb([_binding("VPI-T2-D3", None)])
+    runner = FakeRunner()
+    scheduler = ProjectStatusSyncScheduler(
+        db, runner, clock=FakeClock(), interval=900, slot_store=store
+    )
+
+    with caplog.at_level(logging.WARNING, logger="vse_toolbox.sync_scheduler"):
+        scheduler.tick()
+
+    assert [call["deliverable_id"] for call in runner.calls] == ["VPI-T2-D3"]
+    assert any("could not list fixed sync bindings" in r.message for r in caplog.records)
+
+
+def test_fixed_bindings_disable_interval_dispatch_and_count_in_status() -> None:
+    """有 fixed 绑定 → get_status fixedMode=on；interval 路径跳过（替换而非并存）。"""
+    clock_utc = lambda: datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)  # noqa: E731
+    store = RecordingSlotStore([_fixed_binding("proj-1")])
+    db = FakeDb([_binding("VPI-T2-D2", None)])
+    runner = FakeRunner()
+    scheduler = ProjectStatusSyncScheduler(
+        db,
+        runner,
+        clock=FakeClock(start=1789905600.0),
+        interval=900,
+        slot_store=store,
+        clock_utc=clock_utc,
+    )
+
+    status = scheduler.get_status()
+    assert status["fixedBindings"] == 1
+    assert status["fixedMode"] == "on"
+
+    scheduler.tick()
+
+    assert runner.calls == []  # fixed 项目的交付物不再走 interval 路径
+    assert [slot.key.as_text() for slot in store.ensured] == [
+        "proj-1/project_status_sync/2026-09-20/09:00",
+        "proj-1/project_status_sync/2026-09-20/16:00",
+    ]
+    assert store.lease_calls == 1  # 无槽可领取：只尝试一次即停止
+
+
+def test_webui_start_sync_scheduler_injects_slot_store(monkeypatch, tmp_path) -> None:
+    """webui 入口把 SlotStore（sync-control 表前缀）注入唯一后台调度器。"""
+    import types as _types
+
+    import webui
+    from core.db_manager import DatabaseManager
+    from services.schedule_slots import SYNC_CONTROL_TABLE_PREFIX, SlotStore
+
+    captured = []
+
+    class FakeThread:
+        def __init__(self, target=None, args=(), kwargs=None, name=None, daemon=None):
+            self._target = target
+            self._args = args
+            self._kwargs = kwargs or {}
+
+        def start(self):
+            self._target(*self._args, **self._kwargs)
+
+    class TempDatabaseManager(DatabaseManager):
+        """把默认库重定向到 tmp_path；保留类内静态方法引用（不能替换成函数）。"""
+
+        def __init__(self, db_path=None):
+            super().__init__(db_path or (tmp_path / "webui.db"))
+
+    monkeypatch.setattr(webui, "threading", _types.SimpleNamespace(Thread=FakeThread))
+    monkeypatch.setattr(
+        webui, "_run_sync_scheduler_safely", lambda scheduler: captured.append(scheduler)
+    )
+    monkeypatch.setattr("core.db_manager.DatabaseManager", TempDatabaseManager)
+    monkeypatch.setattr(
+        "services.project_status_sync_runner.create_production_registry", lambda: None
+    )
+
+    webui._start_sync_scheduler()
+
+    assert len(captured) == 1
+    scheduler = captured[0]
+    assert isinstance(scheduler, ProjectStatusSyncScheduler)
+    assert isinstance(scheduler._slot_store, SlotStore)
+    assert scheduler._slot_store.prefix == SYNC_CONTROL_TABLE_PREFIX
+    # 插件未加载（本测试不建插件表）：状态显示未开启，且不建表。
+    status = scheduler.get_status()
+    assert status["fixedBindings"] == 0
+    assert status["fixedMode"] == "off"
+    with scheduler._slot_store.db.get_connection() as conn:
+        tables = {
+            row["name"]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+    assert not {name for name in tables if name.startswith(SYNC_CONTROL_TABLE_PREFIX)}
