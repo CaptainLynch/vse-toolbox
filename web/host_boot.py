@@ -23,7 +23,7 @@ from core.credential_provider import (
     delete_windows_generic_credential,
     store_windows_generic_credential,
 )
-from core.domain_identity import CredentialVaultError
+from core.domain_identity import RECOVERY_ERROR_CODES, CredentialVaultError
 from core.native_folder_picker import NativeFolderPickerError, choose_native_folder
 from core.settings_store import SettingsValidationError, validate_local_directory
 from core.version import get_app_version_info
@@ -52,6 +52,57 @@ class HostRouteDeps:
     json_error: Callable[..., Any]
     sanitize_error_message: Callable[[Exception], str]
     validation_error: Callable[[dict[str, str]], Any]
+    #: 统一续期协调器（web/app.py 组合根装配；DSH-V2-16）。为 None 时退回注册表
+    #: 直连语义，登录/清除的既有响应键与状态码不变。
+    session_renewal: Any | None = None
+
+
+# ── 会话恢复闭集码（DSH-V2-16，契约 §4.3 / §8.4）────────────────────────────
+
+
+def _recovery_code(deps: HostRouteDeps, exc: BaseException, system: str) -> str | None:
+    """把登录失败异常映射到 §4.3 闭集 code；协调器未装配时返回 None（不加键）。
+
+    优先级：异常自带的 ``recovery_code``（登录客户端按契约 §4.2 登记的语义，
+    如 ``credential_invalid`` / ``login_challenge`` / ``forbidden``）→ 协调器
+    ``classify``（按 HTTP 状态与阶段兜底）。两者都只允许 §4.3 闭集值。
+    """
+    coordinator = deps.session_renewal
+    if coordinator is None:
+        return None
+    declared = getattr(exc, "recovery_code", None)
+    if isinstance(declared, str) and declared in RECOVERY_ERROR_CODES:
+        return declared
+    try:
+        return coordinator.classify(exc, system=system).code
+    except Exception:  # noqa: BLE001 - 归类失败不得改变既有错误响应
+        logger.warning("session recovery classification failed for %s", system)
+        return None
+
+
+def _login_result(deps: HostRouteDeps, system: str, exc: BaseException) -> dict[str, object]:
+    """失败结果项：既有 ``ok``/``message`` 不变，增量附 §4.3 闭集 ``code``。"""
+    item: dict[str, object] = {"ok": False, "message": deps.sanitize_error_message(exc)}
+    code = _recovery_code(deps, exc, system)
+    if code is not None:
+        item["code"] = code
+    return item
+
+
+def _clear_domain_sessions(deps: HostRouteDeps, system: str | None) -> None:
+    """统一清除：经协调器 ``clear()``（代次 +1、取消在途续期）；未装配时退回注册表。"""
+    coordinator = deps.session_renewal
+    if coordinator is not None:
+        coordinator.clear(system)
+        return
+    deps.domain_sessions.clear(system)
+
+
+def _bump_vault_epoch(deps: HostRouteDeps) -> None:
+    """凭据库写入/清除成功后递增 vaultEpoch（契约 §7.2-3）：作废在途续期结果。"""
+    bump = getattr(deps.domain_sessions, "bump_vault_epoch", None)
+    if callable(bump):
+        bump()
 
 
 def register_host_service_routes(app: Any, deps: HostRouteDeps) -> None:
@@ -135,7 +186,8 @@ def register_host_service_routes(app: Any, deps: HostRouteDeps) -> None:
         if not isinstance(username, str) or not username.strip() or not isinstance(password, str) or not password:
             return deps.validation_error({"credentials": "域用户名和密码不能为空"})
         results: dict[str, object] = {}
-        deps.domain_sessions.clear()
+        # 统一登录前的既有全清：经协调器清除 = 代次 +1 + 取消在途续期（§7.1/§7.2）。
+        _clear_domain_sessions(deps, None)
         try:
             login_result = ArasECMAuthClient().login(username.strip(), password)
             deps.domain_sessions.mark_authenticated(
@@ -143,13 +195,13 @@ def register_host_service_routes(app: Any, deps: HostRouteDeps) -> None:
             )
             results["aras"] = {"ok": True}
         except Exception as exc:
-            results["aras"] = {"ok": False, "message": deps.sanitize_error_message(exc)}
+            results["aras"] = _login_result(deps, "aras", exc)
         try:
             login_result = TDCPasswordAuthClient().login(username.strip(), password)
             deps.domain_sessions.mark_authenticated("tdc", login_result.session)
             results["tdc"] = {"ok": True}
         except Exception as exc:
-            results["tdc"] = {"ok": False, "message": deps.sanitize_error_message(exc)}
+            results["tdc"] = _login_result(deps, "tdc", exc)
         if any(isinstance(item, dict) and item.get("ok") for item in results.values()):
             deps.tdc_export_cache.clear()
         if bool(payload.get("saveForScheduled")) and any(
@@ -178,6 +230,8 @@ def register_host_service_routes(app: Any, deps: HostRouteDeps) -> None:
                     "CredentialVaultUnavailable",
                     f"登录会话已建立，但定时下载凭据保存失败：{deps.sanitize_error_message(exc)}",
                 )
+            # 凭据变更等价于清除（契约 §7.2-3）：在途续期结果作废。
+            _bump_vault_epoch(deps)
         response = jsonify(
             {
                 "ok": any(isinstance(item, dict) and item.get("ok") for item in results.values()),
@@ -196,7 +250,8 @@ def register_host_service_routes(app: Any, deps: HostRouteDeps) -> None:
         system = payload.get("system") if isinstance(payload, dict) else None
         if system not in (None, "aras", "tdc"):
             return deps.validation_error({"system": "仅支持 aras 或 tdc"})
-        deps.domain_sessions.clear(system)
+        # 经协调器清除：代次 +1 → 取消在途续期 → 移除会话（契约 §7.2-1）。
+        _clear_domain_sessions(deps, system)
         if system in (None, "tdc"):
             deps.tdc_export_cache.clear()
         if isinstance(payload, dict) and payload.get("clearCredentialVault"):
@@ -210,7 +265,16 @@ def register_host_service_routes(app: Any, deps: HostRouteDeps) -> None:
                 deps.credential_vault.clear()
             except CredentialVaultError as exc:
                 return deps.json_error(503, "CredentialVaultUnavailable", deps.sanitize_error_message(exc))
-        response = jsonify({"ok": True, "data": {"sessions": deps.domain_sessions.payload()}})
+            _bump_vault_epoch(deps)
+        # 增量键（既有 ok/data.sessions 与 200 不变）：逐系统清除结果带 §4.3 闭集码。
+        cleared = ("aras", "tdc") if system is None else (system,)
+        results = {name: {"ok": True, "code": "session_cleared"} for name in cleared}
+        response = jsonify(
+            {
+                "ok": True,
+                "data": {"sessions": deps.domain_sessions.payload(), "results": results},
+            }
+        )
         response.headers["Cache-Control"] = "no-store"
         return response
 
