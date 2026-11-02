@@ -1,7 +1,7 @@
 {
   "renderer": "analysis",
   "title": "NCR 审批明细",
-  "description": "数据来自最近一次自动归档快照；该表单不做逾期判定。",
+  "description": "数据来自最近一次自动归档；该表单不做逾期判定。",
   "source": "forms/aras_ncr_detail/rows",
   "filters": [
     {

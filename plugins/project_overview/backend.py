@@ -123,9 +123,9 @@ def _binding_setting(deliverable_id: str, policy: Mapping[str, Any]) -> dict[str
         missing.append("筛选条件")
     aggregate = isinstance(match_rule, Mapping) and match_rule.get("aggregate") is True
     if not aggregate and not str(binding.get("external_key") or "").strip():
-        missing.append("外部稳定键（在明细页完成映射取证）")
+        missing.append("外部稳定键（在明细页完成映射核对）")
     if not automatic:
-        missing.append("自动更新的字段（在明细页完成映射取证）")
+        missing.append("自动更新的字段（在明细页完成映射核对）")
     return {
         "deliverableId": deliverable_id,
         "kind": "binding",

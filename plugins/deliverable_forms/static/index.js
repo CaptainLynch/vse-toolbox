@@ -19,7 +19,7 @@ export default function FormsIndexPage({ plugin }) {
     return html`<${StateBlock} loading=${loading} error=${error} onRetry=${reload} />`;
   }
   return html`<div class="df-index">
-    <p class="df-index-note">各表单数据来自最近一次自动归档快照；同步与归档配置在「自动归档」页。</p>
+    <p class="df-index-note">各表单数据来自最近一次自动归档；同步与归档配置在「自动归档」页。</p>
     <div class="df-index-grid">
       ${forms.map((form) => html`<a key=${form.formKey} class="df-index-card" href=${`#p/${plugin.id}/${form.page}`}>
         <span class="df-index-source">${SOURCE_LABELS[form.source] || form.source}</span>
