@@ -33,6 +33,7 @@ result.
 from __future__ import annotations
 
 from core.diagnostic_recording import observed, record_http
+from core.domain_identity import RECOVERY_ERROR_CODES
 
 import json
 import logging
@@ -118,7 +119,13 @@ _CHALLENGE_MARKERS = (
 
 
 class ArasAuthError(RuntimeError):
-    """Raised when the ECM OIDC login cannot be completed safely."""
+    """Raised when the ECM OIDC login cannot be completed safely.
+
+    ``recovery_code`` 是登录被拒时按契约 §4.2 登记到 §4.3 闭集的会话恢复码
+    （如 ``credential_invalid`` / ``login_challenge`` / ``forbidden``）。它只描述
+    "这次登录失败属于哪一类"，供路由把失败结果项标注为前端可判定的闭集码；
+    401/403 的语义区分仍由 ``status_code`` 承担（403 → ``forbidden``，永不续期）。
+    """
 
     def __init__(
         self,
@@ -127,19 +134,31 @@ class ArasAuthError(RuntimeError):
         stage: str | None = None,
         request_id: str | None = None,
         status_code: int | None = None,
+        recovery_code: str | None = None,
     ) -> None:
         super().__init__(redact_sensitive_text(message))
         self.stage = stage
         self.request_id = request_id
         self.status_code = status_code
+        if recovery_code is not None and recovery_code not in RECOVERY_ERROR_CODES:
+            # 编程错误必须立刻暴露：未登记的码会污染公共错误契约（§4.3 闭集）。
+            raise ValueError("unsupported recovery error code")
+        self.recovery_code = recovery_code
 
 
 @dataclass(frozen=True)
 class ArasLoginResult:
-    """Authenticated ECM session without exposing credentials or token values."""
+    """Authenticated ECM session without exposing credentials or token values.
+
+    ``token_expires_in`` 是内层 Innovator token 的 ``expires_in``（秒，整数）。
+    续期协调器（``services/session_recovery.py`` §8.2）据此把注册表 TTL 收紧到
+    ``min(8h, expires_in - 安全余量)``；上游未给出时保持 ``None``（沿用 8h）。
+    只暴露有效期数字，绝不含 token 值。
+    """
 
     session: Any = field(repr=False)
     auth_mode: str = "password"
+    token_expires_in: int | None = None
 
 
 @dataclass
@@ -350,17 +369,20 @@ class ArasECMAuthClient:
                     login_response,
                     "challenge-required",
                     "ECM login requires CAPTCHA/MFA/OTP verification that this tool cannot complete",
+                    recovery_code="login_challenge",
                 )
             if _is_login_page(login_body):
                 self._reject(
                     login_response,
                     "credentials-rejected",
                     "ECM username/password login failed or requires additional verification",
+                    recovery_code="credential_invalid",
                 )
             self._reject(
                 login_response,
                 "credentials-rejected",
                 "ECM username/password login failed or requires additional verification",
+                recovery_code="credential_invalid",
             )
         location = _header_value(getattr(login_response.response, "headers", {}), "Location")
         callback_url = urljoin(login_url, location)
@@ -541,6 +563,10 @@ class ArasECMAuthClient:
                 "Innovator token exchange did not return an access token",
             )
         innovator_token_type = _safe_token_type(innovator_payload.get("token_type"))
+        # 续期协调器需要的有效期（§5.3-7）：只取整数秒，非法/缺失一律 None，
+        # 绝不让上游的任意值参与 TTL 计算。
+        expires_in = innovator_payload.get("expires_in")
+        token_expires_in = expires_in if type(expires_in) is int and expires_in > 0 else None
         self._accept(
             innovator_token_trace,
             validation="innovator-token-received",
@@ -557,7 +583,7 @@ class ArasECMAuthClient:
         except ArasAuthError:
             self.session.headers.pop("Authorization", None)
             raise
-        return ArasLoginResult(session=self.session)
+        return ArasLoginResult(session=self.session, token_expires_in=token_expires_in)
 
     def _validate_user(self) -> None:
         """Gate the session on the Aras SOAP ValidateUser call (bundled client shape)."""
@@ -582,10 +608,23 @@ class ArasECMAuthClient:
         )
         status = int(getattr(trace.response, "status_code", 0) or 0)
         if status not in set(range(200, 300)):
+            if status == 403:
+                # 401/403 语义必须分开（契约 §4.1-3 / §4.2）：
+                # - 401 = 会话未被接受 → 登录期失败（renewal_rejected），可续期；
+                # - 403 = 账号没有 Aras 权限 → forbidden，永不触发续期、不清凭据。
+                self._reject(
+                    trace,
+                    "validate-user-forbidden",
+                    "ECM Aras ValidateUser returned HTTP 403; the domain account lacks Aras access",
+                    recovery_code="forbidden",
+                )
             self._reject(
                 trace,
                 "validate-user-rejected",
                 f"ECM Aras ValidateUser returned HTTP {status}; the OAuth session was rejected by the ECM server",
+                # 只有 401 才是凭据/会话被拒；5xx 等其他状态交协调器 classify 兜底，
+                # 不能误标为 credential_invalid（否则前端会要求重输密码）。
+                recovery_code="credential_invalid" if status == 401 else None,
             )
         body = _response_text(trace.response)
         if _is_login_page(body.lower()):
@@ -593,6 +632,7 @@ class ArasECMAuthClient:
                 trace,
                 "validate-user-login-page",
                 "ECM Aras ValidateUser returned a login page; the OAuth session was not accepted",
+                recovery_code="credential_invalid",
             )
         if not _validate_user_response_has_id(body):
             self._reject(
@@ -602,6 +642,7 @@ class ArasECMAuthClient:
                     "ECM Aras ValidateUser did not return a valid user record; the ECM account may lack "
                     "Aras access, or this deployment differs from the verified login chain"
                 ),
+                recovery_code="forbidden",
             )
         self._accept(trace, validation="authenticated")
 
@@ -764,6 +805,7 @@ class ArasECMAuthClient:
         message: str,
         *,
         exception_type: str | None = None,
+        recovery_code: str | None = None,
     ) -> None:
         status = int(getattr(trace.response, "status_code", 0) or 0)
         self._emit(
@@ -774,7 +816,13 @@ class ArasECMAuthClient:
                 reason=message,
             )
         )
-        raise ArasAuthError(message, stage=trace.stage, request_id=trace.request_id, status_code=status)
+        raise ArasAuthError(
+            message,
+            stage=trace.stage,
+            request_id=trace.request_id,
+            status_code=status,
+            recovery_code=recovery_code,
+        )
 
     def _emit(self, event: ArasAuthHttpDiagnosticEvent) -> None:
         record_http("aras", event)

@@ -41,6 +41,8 @@ from services.project_status_updates import ProjectStatusUpdateService
 from services.project_status_discovery import MappingDiscoveryService
 from services.project_status_analytics import ProjectStatusAnalyticsService
 from services.project_status_deliverable_analysis import ProjectStatusDeliverableAnalysisService
+from services import project_status_connectors
+from services.session_recovery import SessionRenewalCoordinator
 from services.deliverable_form_analysis import DeliverableFormAnalysisService
 from services.scheduled_archive_admin import ScheduledArchiveAdminService
 from services.excel_env_check import check_excel_environment
@@ -240,6 +242,17 @@ _TDC_XLSX_MIMETYPE = "application/vnd.openxmlformats-officedocument.spreadsheetm
 #: 「导出合并结果」同样以官方工作簿为数据源：读取上限与官方预览一致（含表头行）。
 
 
+def _session_renewal_clients() -> dict[str, Any]:
+    """续期协调器的登录客户端工厂（DSH-V2-16 装配；测试可替换）。
+
+    协调器在续期时调用工厂拿到新客户端，再调用其 ``login(username, password)``
+    （契约 §8.2 的 ``clients`` 映射）。只返回无参可调用对象，不在此处登录。
+    """
+    from services.aras_auth import ArasECMAuthClient
+
+    return {"aras": ArasECMAuthClient}
+
+
 def _query_overview(db: DatabaseManager) -> dict[str, Any]:
     """从 DatabaseManager 查询概览数据，返回 dict（供 jsonify 使用）。"""
     with db.get_connection() as conn:
@@ -437,16 +450,29 @@ def create_app(
     settings_store = SettingsStore(db)
     domain_sessions = DomainSessionRegistry()
     credential_vault = WindowsDPAPICredentialVault(app_root() / "data" / "domain-credential.dpapi")
+    #: 单一 DPAPI 凭据提供者：交付物同步与续期协调器共用同一实例。
+    domain_credential_provider = DPAPICredentialProvider(credential_vault)
     tdc_export_cache = TDCExportCache()
     archive_admin_service = (
         ScheduledArchiveAdminService(db, archive_store=archive_store)
         if archive_store is not None
         else ScheduledArchiveAdminService(db)
     )
-    archive_admin_service.set_credential_provider(DPAPICredentialProvider(credential_vault))
+    archive_admin_service.set_credential_provider(domain_credential_provider)
     app.extensions["scheduled_archive_admin"] = archive_admin_service
     app.extensions["settings_store"] = settings_store
     app.extensions["domain_sessions"] = domain_sessions
+    # 统一续期协调器（DSH-V2-16，契约 §8.2/§10.2）：复用同一份
+    # DomainSessionRegistry 与 DPAPI 凭据提供者；此处只装配，不加任何路由体。
+    session_renewal = SessionRenewalCoordinator(
+        domain_sessions,
+        domain_credential_provider,
+        _session_renewal_clients(),
+    )
+    app.extensions["session_renewal"] = session_renewal
+    # 后台/项目状态连接器（生产构造点在 project_status_sync_runner，不在本任务
+    # scope 内）按此绑定取用同一协调器；未绑定时它们保持旧登录路径。
+    project_status_connectors.bind_session_renewal(session_renewal, domain_sessions)
     from core.ewo_export_jobs import EWOExportJobs
     from services.ewo_enrichment import EWOEnrichment
     from web.ewo_enrichment import register_ewo_enrichment
@@ -565,6 +591,7 @@ def create_app(
         json_error=_json_error,
         sanitize_error_message=_sanitize_error_message,
         validation_error=_project_status_validation_error,
+        session_renewal=session_renewal,
     )
     register_host_service_routes(app, host_deps)
 
