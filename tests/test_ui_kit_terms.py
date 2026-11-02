@@ -59,6 +59,14 @@ out.glossaryExports = {
   hasScanText: typeof glossary.scanText === "function",
 };
 
+// 1b. 运行时词表构成：字面量禁词与正则特征分开导出，供 Python 侧和仓库门禁比对。
+out.bannedLiterals = Array.isArray(glossary.BANNED)
+  ? glossary.BANNED.filter((item) => typeof item === "string")
+  : [];
+out.bannedPatterns = Array.isArray(glossary.BANNED)
+  ? glossary.BANNED.filter((item) => item instanceof RegExp).map((item) => item.source)
+  : [];
+
 // 2. scanText 扫描能力验证
 out.scanClean = glossary.scanText("这里是纯正通俗的普通中文文案，无任何违规");
 out.scanHitJson = glossary.scanText("请求响应失败：返回数据不是合法的 JSON 格式");
@@ -155,6 +163,42 @@ def test_ui_kit_and_glossary_exports() -> None:
     assert glossary_exports["hasBanned"] is True
     assert glossary_exports["bannedLength"] >= 5
     assert glossary_exports["hasScanText"] is True
+
+
+def test_glossary_rules_match_repository_gate() -> None:
+    """词表一致性：运行时 glossary.js 的规则必须与仓库门禁（test_glossary_terms）一致。
+
+    源级门禁与 DSH-V2-40 的 DOM 门禁都用 ``EXACT_BANNED_TERMS`` / 两个路径正则判定；
+    若只改 ``web/static/host/glossary.js`` 的词表，页面内 ``scanText`` 会变严/变松而
+    门禁不自知。这里用真实 Node 模块把两边锁在一起（不改任何规则强度）。
+    """
+    from tests.test_glossary_terms import EXACT_BANNED_TERMS, scan_text_segment
+
+    data = _run_node_suite()
+
+    literals = data["bannedLiterals"]
+    assert sorted(literals) == sorted(EXACT_BANNED_TERMS), (
+        "glossary.js 的字面量禁词与仓库门禁 EXACT_BANNED_TERMS 不一致：\n"
+        f"  运行时={sorted(literals)}\n"
+        f"  门禁={sorted(EXACT_BANNED_TERMS)}"
+    )
+
+    patterns = data["bannedPatterns"]
+    assert any("a-zA-Z]:" in pattern for pattern in patterns), (
+        f"glossary.js 缺少盘符路径特征（盘符路径规则）：{patterns}"
+    )
+    assert any("\\.py" in pattern for pattern in patterns), (
+        f"glossary.js 缺少 .py 脚本后缀特征：{patterns}"
+    )
+
+    # 两侧对同一段文本给出同样的术语名，避免只改名字导致门禁漏判。
+    samples = (
+        (data["scanHitDrive"], "例如：D:\\VSE\\archive 归档文件目录", "盘符路径"),
+        (data["scanHitPy"], "请检查并执行 python tools/tir_probe.py 取证脚本", ".py 后缀"),
+    )
+    for runtime_hits, sample, expected in samples:
+        assert expected in {hit["term"] for hit in runtime_hits}
+        assert expected in {term for term, _ in scan_text_segment(sample)}
 
 
 def test_scan_text_logic_under_node() -> None:
