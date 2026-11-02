@@ -60,6 +60,51 @@ def validate_numeric_args(lease_seconds: int, renew_interval_seconds: float | No
         raise ExcelWorkerConfigError("--poll-interval-seconds must be non-negative")
 
 
+def parent_liveness_probe(parent_pid: int | None):
+    """返回 ``alive() -> bool``；未给 PID 或无法建立观察时返回 ``None``（不观察）。
+
+    Windows：启动时就打开父进程句柄（SYNCHRONIZE），之后用
+    ``WaitForSingleObject(handle, 0)`` 判定——持有句柄可避免 PID 复用误判。
+    其他平台：``os.kill(pid, 0)``。父进程在启动时已不存在 → 立即判定为已退出。
+    """
+    if parent_pid is None:
+        return None
+    if isinstance(parent_pid, bool) or not isinstance(parent_pid, int) or parent_pid <= 0:
+        return None
+    if sys.platform == "win32":
+        import ctypes  # noqa: PLC0415
+        from ctypes import wintypes  # noqa: PLC0415
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        kernel32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+        synchronize = 0x00100000
+        handle = kernel32.OpenProcess(synchronize, False, parent_pid)
+        if not handle:
+            return lambda: False
+        wait_timeout = 0x00000102
+
+        def alive() -> bool:
+            return kernel32.WaitForSingleObject(handle, 0) == wait_timeout
+
+        return alive
+
+    import os  # noqa: PLC0415
+
+    def alive_posix() -> bool:
+        try:
+            os.kill(parent_pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+    return alive_posix
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="excel_worker_cli", description="Run the local Excel task worker")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -72,6 +117,9 @@ def build_parser() -> argparse.ArgumentParser:
         subparser.add_argument("--poll-interval-seconds", type=float, default=0.1)
         subparser.add_argument("--json", action=argparse.BooleanOptionalAction, default=True)
         subparser.add_argument("--stop-file", type=Path, default=None, help=argparse.SUPPRESS)
+        # 宿主进程 PID：宿主退出（含崩溃、pytest 结束）后 Worker 自行优雅停止，
+        # 不留孤儿进程占用 Excel COM（DSH-V2-27b）。
+        subparser.add_argument("--parent-pid", type=int, default=None, help=argparse.SUPPRESS)
 
     add_common_options(subparsers.add_parser("run-once", help="Process at most one task"))
     add_common_options(subparsers.add_parser("run", help="Poll until interrupted"))
@@ -186,10 +234,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         stop_event = threading.Event()
         watcher_stop = threading.Event()
         watcher: threading.Thread | None = None
-        if args.stop_file is not None:
+        parent_alive = parent_liveness_probe(getattr(args, "parent_pid", None))
+        if args.stop_file is not None or parent_alive is not None:
             def watch_stop_file() -> None:
                 while not watcher_stop.wait(0.1):
-                    if args.stop_file.exists():
+                    if args.stop_file is not None and args.stop_file.exists():
+                        stop_event.set()
+                        return
+                    if parent_alive is not None and not parent_alive():
                         stop_event.set()
                         return
             watcher = threading.Thread(target=watch_stop_file, name="excel-worker-stop-file", daemon=True)

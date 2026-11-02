@@ -329,6 +329,8 @@ class ExcelWorkerProcessController:
                 str(self._repository._db.db_path),
                 "--stop-file",
                 str(stop_file),
+                "--parent-pid",
+                str(os.getpid()),
             ]
             cwd = str(executable.parent)
         else:
@@ -340,6 +342,8 @@ class ExcelWorkerProcessController:
                 str(self._repository._db.db_path),
                 "--stop-file",
                 str(stop_file),
+                "--parent-pid",
+                str(os.getpid()),
             ]
             cwd = str(self._project_root)
         for root_id in roots.root_ids:

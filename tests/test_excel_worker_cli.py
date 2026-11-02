@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import signal
+import subprocess
+import sys
 import threading
 from pathlib import Path
 from typing import Any
@@ -318,3 +320,45 @@ def test_safe_error_message_hides_approved_root(tmp_path: Path) -> None:
     safe = cli._safe_task_error_message(message, repository)
     assert str(root) not in safe
     assert "<approved-root:business>" in safe
+
+
+# ── DSH-V2-27b：宿主退出后 Worker 不留孤儿进程 ──────────────────────────────
+
+
+def test_parent_liveness_probe_tracks_real_process() -> None:
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        alive = cli.parent_liveness_probe(child.pid)
+        assert alive is not None and alive() is True
+        child.kill()
+        child.wait(timeout=10)
+        assert alive() is False
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=10)
+
+
+def test_parent_liveness_probe_ignores_missing_or_invalid_pid() -> None:
+    assert cli.parent_liveness_probe(None) is None
+    assert cli.parent_liveness_probe(0) is None
+    assert cli.parent_liveness_probe(True) is None
+
+
+def test_run_stops_when_parent_process_is_gone(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait(timeout=10)
+
+    class BlockingWorker:
+        def run(self, stop_event: threading.Event) -> ExcelWorkerRunSummary:
+            # 父进程已退出：观察线程必须在超时前置位 stop_event。
+            assert stop_event.wait(5), "worker was not stopped after its parent exited"
+            return ExcelWorkerRunSummary(processed=0, succeeded=0, failed=0, lease_lost=0)
+
+    monkeypatch.setattr(cli, "_build_worker", lambda args: (BlockingWorker(), FakeRepository()))
+    exit_code = cli.main(
+        ["run", "--db", "db.sqlite", "--root", "r=C:/excel", "--parent-pid", str(dead.pid)]
+    )
+    assert exit_code == cli.EXIT_OK
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["stopped"] is True

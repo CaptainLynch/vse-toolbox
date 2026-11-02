@@ -75,6 +75,8 @@ def test_process_controller_builds_source_command(monkeypatch, repo: ExcelTaskRe
     assert "run" in cmd
     assert "--db" in cmd
     assert "--stop-file" in cmd
+    # DSH-V2-27b：宿主 PID 传给 Worker，宿主退出后 Worker 自行停止。
+    assert cmd[cmd.index("--parent-pid") + 1] == str(os.getpid())
     assert "--root" in cmd
     assert os.path.normcase(os.path.normpath(created[0].kwargs["cwd"])) == os.path.normcase(
         os.path.normpath(str(Path("C:/vse")))
@@ -115,6 +117,8 @@ def test_process_controller_builds_frozen_command(monkeypatch, repo: ExcelTaskRe
     assert "run" in cmd
     assert "--db" in cmd
     assert "--stop-file" in cmd
+    # DSH-V2-27b：宿主 PID 传给 Worker，宿主退出后 Worker 自行停止。
+    assert cmd[cmd.index("--parent-pid") + 1] == str(os.getpid())
     assert "--root" in cmd
     assert created[0].kwargs["cwd"] == str(bin_dir.resolve())
     assert controller.stop().state == "stopped"
