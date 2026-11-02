@@ -910,6 +910,19 @@ class ArasProjectStatusConnector:
             return None
         return root if isinstance(root, str) and root.strip() else None
 
+    def _current_shared(self, account_ref: str) -> Any | None:
+        """当前共享会话，仅当注册表仍绑定 ``account_ref`` 时返回；否则 None。"""
+        registry = self._registry()
+        if registry is None:
+            return None
+        try:
+            _, bound = registry.identity_binding("aras")
+        except Exception:  # noqa: BLE001 - 绑定读取失败按"不一致"处理
+            return None
+        if not bound or str(bound) != account_ref:
+            return None
+        return self._shared_session(registry)
+
     def _renewable(self, username: str) -> tuple[Any, Any, str] | None:
         """``(协调器, 共享会话, accountRef)``；不可续期时 None（保持旧登录路径）。
 
@@ -985,7 +998,9 @@ class ArasProjectStatusConnector:
                     def operation() -> Any:
                         active = session
                         if renewable is not None:
-                            active = self._shared_session(self._registry()) or session
+                            # 每次尝试都重核绑定账号：校验后到调用前若有人以别的账号
+                            # 登录，不得改用新会话（契约 §3.2），退回校验时捕获的会话。
+                            active = self._current_shared(renewable[2]) or session
                         crawler = self.crawler_factory(
                             base_url, session=active, timeout=self.timeout, prewarm=False
                         )

@@ -404,6 +404,47 @@ def test_shared_session_is_not_reused_for_another_account(aras_env) -> None:
     assert env.renewal_client.login_calls == 0
 
 
+def test_binding_switch_after_check_does_not_hand_over_new_account_session(aras_env) -> None:
+    """校验通过后、业务调用前绑定被换成别的账号：不得改用新账号的会话。"""
+    env = aras_env
+    login_response, secret = _login(env)
+    assert login_response.status_code == 200
+    captured_session = env.registry.session("aras")
+    root, bound = env.registry.identity_binding("aras")
+
+    class SwitchingRegistry:
+        """第一次读绑定返回原账号，之后模拟另一账号已登录。"""
+
+        def __init__(self, real) -> None:
+            self.real = real
+            self.binding_reads = 0
+            self.other_session = FakeSession("other-account")
+
+        def identity_binding(self, system):
+            self.binding_reads += 1
+            if self.binding_reads == 1:
+                return root, bound
+            return root, "other-account-ref"
+
+        def session(self, system):
+            return self.other_session if self.binding_reads > 1 else self.real.session(system)
+
+    switching = SwitchingRegistry(env.registry)
+    script = CrawlerScript([_ewo_result()])
+    connector = ArasProjectStatusConnector(
+        MemoryCredentialProvider({"domain": (PRINCIPAL, secret)}),
+        ArchiveStore({"default": env.tmp_path}, reserve_bytes=0),
+        auth_factory=NoLoginAuth,
+        crawler_factory=script.factory,
+        session_registry=switching,
+    )
+    snapshot = connector.collect(_ewo_context())
+
+    assert snapshot.match_state == "matched"
+    assert script.sessions[0] is captured_session
+    assert script.sessions[0] is not switching.other_session
+
+
 # ── 3. 清除竞态：迟到的续期结果不回填 ───────────────────────────────────────
 
 
