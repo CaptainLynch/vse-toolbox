@@ -3,10 +3,17 @@
 // 编辑与归档复用 workbench 后端已有接口（plugins/workbench/backend.py）：
 //   PATCH /api/p/workbench/projects/<id>        name / vehicle / departments + expectedRevision
 //   POST  /api/p/workbench/projects/<id>/archive  标记 retired，不删除任何数据
+// 车型清单（契约 C3）：GET/PUT /api/p/workbench/vehicle-models 只配置「候选」，
+// 车型输入始终可手填；清单增删绝不改写任何项目已保存的车型。
 import { useEffect, useState } from "/static/host/vendor/preact-htm.js";
 import { api, html } from "./common.js";
 
 const BASE = "/api/p/workbench/projects";
+const VEHICLE_MODELS = "/api/p/workbench/vehicle-models";
+
+/** 与后端同一上限（plugins/workbench/backend.py）。 */
+export const VEHICLE_MODELS_MAX = 200;
+export const VEHICLE_CODE_MAX_LENGTH = 40;
 
 /** 默认科室（M0 问卷 C2）；新建项目时预先勾选。 */
 export const DEFAULT_DEPARTMENTS = ["车体科", "车身科", "内饰科", "外饰科", "车体架构集成科"];
@@ -70,6 +77,132 @@ export function departmentOptions(current) {
   return result;
 }
 
+/**
+ * 车型候选 = 配置清单 ∪ 现有项目在用车车型（∪ 当前项目的车型）。
+ * 大小写不敏感去重、保留首次写法；清单为空且没有项目在用时返回空数组——
+ * 不预置、不编造任何车型代码，输入框始终可以手填。
+ */
+export function vehicleModelOptions(configured, inUse, current = "") {
+  const result = [];
+  const seen = new Set();
+  const add = (value) => {
+    const text = String(value === undefined || value === null ? "" : value).trim();
+    if (!text) return;
+    const key = text.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    result.push(text);
+  };
+  (Array.isArray(configured) ? configured : []).forEach(add);
+  (Array.isArray(inUse) ? inUse : []).forEach(add);
+  add(current);
+  return result;
+}
+
+/** 「车型清单」编辑框：一行一个（也接受逗号/顿号分隔），去空、去重（大小写不敏感）。 */
+export function parseVehicleCodes(text) {
+  const parts = String(text === undefined || text === null ? "" : text).split(/[\n,，、;；]+/);
+  return vehicleModelOptions(parts, []);
+}
+
+/**
+ * 车型清单接口。默认不加载（避免页面一打开就多发一个请求）；
+ * 调用 load() 后加载一次，reload() 重新拉取（保存成功后刷新候选）。
+ * 加载失败只降级为「没有候选」，error 里是给用户看的一行提示。
+ */
+export function useVehicleModels() {
+  const [state, setState] = useState({ configured: [], inUse: [], error: "", loaded: false, token: 0 });
+  useEffect(() => {
+    if (!state.token) return undefined;
+    let alive = true;
+    api(VEHICLE_MODELS).then(
+      (data) => {
+        if (!alive) return;
+        const payload = data && typeof data === "object" ? data : {};
+        setState((prev) => ({
+          ...prev,
+          configured: Array.isArray(payload.configured) ? payload.configured : [],
+          inUse: Array.isArray(payload.inUse) ? payload.inUse : [],
+          error: "",
+          loaded: true,
+        }));
+      },
+      (err) => {
+        if (!alive) return;
+        setState((prev) => ({ ...prev, error: (err && err.message) || "读取失败", loaded: true }));
+      },
+    );
+    return () => { alive = false; };
+  }, [state.token]);
+  const load = () => setState((prev) => (prev.token ? prev : { ...prev, token: 1 }));
+  const reload = () => setState((prev) => ({ ...prev, token: (prev.token || 0) + 1 }));
+  return { ...state, load, reload };
+}
+
+/** 车型输入：自由手填 + datalist 候选；候选加载失败只提示，不阻断输入。 */
+export function VehicleInput({ value, onChange, models, current, listId, autoFocus, style }) {
+  const options = vehicleModelOptions(models.configured, models.inUse, current);
+  const load = () => models.load();
+  return html`<label class="wb-field" style=${style}><span>车型</span>
+    <input value=${value} list=${listId} autofocus=${Boolean(autoFocus)} onFocus=${load}
+      onInput=${(e) => { load(); onChange(e.currentTarget.value); }} placeholder="例如 F610S" />
+    ${options.length > 0 && html`<datalist id=${listId}>${options.map((code) => html`<option value=${code} key=${code}></option>`)}</datalist>`}
+    ${models.loaded && models.error && html`<small class="wb-muted">车型候选没有加载成功（${models.error}），可以继续手填</small>`}
+  </label>`;
+}
+
+/**
+ * 车型清单小节：编辑配置表并保存（PUT 整表替换）。
+ * 保存失败如实显示后端 message；成功只影响候选，不改动任何项目的车型字段。
+ */
+export function VehicleModelsDialog({ onClose }) {
+  const models = useVehicleModels();
+  const [draft, setDraft] = useState(null);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { models.load(); }, []);
+  const value = draft === null ? models.configured.join("\n") : draft;
+  const blocked = Boolean(models.error);
+
+  const save = async () => {
+    const codes = parseVehicleCodes(value);
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const result = await api(VEHICLE_MODELS, { method: "PUT", body: { codes } });
+      const saved = result && Array.isArray(result.configured) ? result.configured : codes;
+      setDraft(null);
+      models.reload();
+      setNotice(`已保存车型清单（${saved.length} 项）；只影响候选，不会改动任何项目已保存的车型。`);
+    } catch (err) {
+      setError(err.message || "保存失败");
+    }
+    setBusy(false);
+  };
+
+  return html`<div class="wb-scrim"><div class="wb-modal" role="dialog" aria-label="车型清单">
+    <h2 style="margin:0 0 4px">车型清单</h2>
+    <p class="wb-sub">这里配置新建/编辑项目时车型输入框的候选。一行一个；清单里没有的车型仍然可以直接手填。</p>
+    ${blocked && html`<p class="wb-error" role="alert">车型清单读取失败：${models.error}</p>`}
+    <label class="wb-field" style="margin-top:14px"><span>车型代码（每行一个，最多 ${VEHICLE_MODELS_MAX} 个，每个不超过 ${VEHICLE_CODE_MAX_LENGTH} 个字符）</span>
+      <textarea data-field="vehicle-models" rows="8" value=${value} disabled=${busy || blocked}
+        style="border:1px solid var(--hairline-strong);border-radius:10px;padding:9px 11px;background:var(--canvas);color:var(--ink);font:inherit"
+        onInput=${(e) => setDraft(e.currentTarget.value)}></textarea></label>
+    <p class="wb-small wb-muted">正在使用（来自现有项目，只读）：${models.inUse.length ? models.inUse.join("、") : "暂无"}</p>
+    ${notice && html`<p class="wb-sub" role="status">${notice}</p>`}
+    ${error && html`<p class="wb-error" role="alert">${error}</p>`}
+    <div class="wb-row" style="margin-top:18px;justify-content:space-between">
+      <button type="button" class="wb-link" onClick=${onClose} disabled=${busy}>关闭</button>
+      <div class="wb-row">
+        ${blocked && html`<button type="button" class="wb-btn" data-action="reload-vehicle-models" onClick=${models.reload} disabled=${busy}>重试</button>`}
+        <button type="button" class="wb-btn is-primary" data-action="save-vehicle-models" onClick=${save} disabled=${busy || blocked}>${busy ? "正在保存…" : "保存清单"}</button>
+      </div>
+    </div>
+  </div></div>`;
+}
+
 export function useProjects() {
   const [state, setState] = useState({ data: null, error: null, token: 0 });
   useEffect(() => {
@@ -113,6 +246,7 @@ function Busy({ text }) {
 }
 
 export function NewProjectDialog({ onClose, onCreated }) {
+  const models = useVehicleModels();
   const [name, setName] = useState("");
   const [vehicle, setVehicle] = useState("");
   const [departments, setDepartments] = useState(DEFAULT_DEPARTMENTS);
@@ -135,8 +269,7 @@ export function NewProjectDialog({ onClose, onCreated }) {
   return html`<div class="wb-scrim"><form class="wb-modal" onSubmit=${submit} aria-label="新建项目">
     <h2 style="margin:0 0 4px">新建项目</h2>
     <p class="wb-sub">每个项目的交付物、主计划和同步记录分开保存；登录的公司账号所有项目共用。</p>
-    <label class="wb-field" style="margin-top:14px"><span>车型</span>
-      <input value=${vehicle} onInput=${(e) => setVehicle(e.currentTarget.value)} placeholder="例如 F610S" autofocus /></label>
+    ${html`<${VehicleInput} value=${vehicle} onChange=${setVehicle} models=${models} listId="wb-vehicle-models-new" autoFocus=${true} style="margin-top:14px" />`}
     <label class="wb-field"><span>项目名称（选填，默认用车型）</span>
       <input value=${name} onInput=${(e) => setName(e.currentTarget.value)} /></label>
     <div class="wb-field"><span>负责的科室</span>
@@ -156,6 +289,7 @@ export function NewProjectDialog({ onClose, onCreated }) {
  * 409 RevisionConflict 时提示「项目已被修改，请刷新后再试」，刷新按钮重新拉列表并载入最新值。
  */
 export function EditProjectDialog({ project, onClose, onSaved }) {
+  const models = useVehicleModels();
   const [baseline, setBaseline] = useState(project);
   const [name, setName] = useState(project.name || "");
   const [vehicle, setVehicle] = useState(project.vehicle || "");
@@ -225,8 +359,7 @@ export function EditProjectDialog({ project, onClose, onSaved }) {
     <p class="wb-sub">改名只改显示名称，项目编号和数据文件夹不变；只有填过的字段会提交。</p>
     <label class="wb-field" style="margin-top:14px"><span>项目名称</span>
       <input value=${name} onInput=${(e) => setName(e.currentTarget.value)} autofocus /></label>
-    <label class="wb-field"><span>车型</span>
-      <input value=${vehicle} onInput=${(e) => setVehicle(e.currentTarget.value)} placeholder="例如 F610S" /></label>
+    ${html`<${VehicleInput} value=${vehicle} onChange=${setVehicle} models=${models} current=${project.vehicle} listId="wb-vehicle-models-edit" />`}
     <div class="wb-field"><span>负责的科室</span>
       <div class="wb-row">${options.map((dept) => html`<button type="button" key=${dept}
         class=${`wb-chip${departments.includes(dept) ? " is-on" : ""}`} aria-pressed=${departments.includes(dept) ? "true" : "false"}
@@ -275,6 +408,7 @@ export function ProjectSwitcher() {
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState(null);
   const [archiving, setArchiving] = useState(null);
+  const [managingModels, setManagingModels] = useState(false);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -332,6 +466,8 @@ export function ProjectSwitcher() {
         </div>`;
       })}
       <button type="button" class="wb-project-item is-new" onClick=${() => { setOpen(false); setCreating(true); }}>＋ 新建项目</button>
+      <button type="button" class="wb-project-item" data-action="vehicle-models"
+        onClick=${() => { setOpen(false); setManagingModels(true); }}>车型清单（车型候选）</button>
     </div>`}
     ${notice && html`<span class="wb-small wb-muted" role="status">${notice}</span>`}
     ${error && html`<span class="wb-error wb-small" role="alert">${error}</span>`}
@@ -339,6 +475,7 @@ export function ProjectSwitcher() {
       onCreated=${(project) => { setCreating(false); restartInto(project, `已新建「${project.name}」，正在切换过去…`); }} />`}
     ${editing && html`<${EditProjectDialog} project=${editing} onClose=${() => setEditing(null)} onSaved=${savedProject} />`}
     ${archiving && html`<${ArchiveProjectDialog} project=${archiving} onClose=${() => setArchiving(null)} onArchived=${archivedProject} />`}
+    ${managingModels && html`<${VehicleModelsDialog} onClose=${() => setManagingModels(false)} />`}
     ${busy && html`<${Busy} text=${busy} />`}
   </div>`;
 }

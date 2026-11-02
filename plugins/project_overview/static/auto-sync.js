@@ -82,6 +82,31 @@ export function firstSyncTone(state) {
   return "bad";
 }
 
+/**
+ * 科室回写计划：只有用户显式勾选「同时把这些科室设为项目默认科室」且本次至少
+ * 成功开启一项时才写回；返回 null 表示不发任何请求（默认行为）。
+ * 带 expectedRevision 走 backend 现有的修订检查，失败由调用方如实展示。
+ */
+export function departmentWriteBackPlan({ writeBack, enabled, project, departments }) {
+  if (!writeBack || !enabled) return null;
+  const cleaned = [];
+  (Array.isArray(departments) ? departments : []).forEach((item) => {
+    const text = String(item === undefined || item === null ? "" : item).trim();
+    if (text && !cleaned.includes(text)) cleaned.push(text);
+  });
+  if (!cleaned.length) return null;
+  if (!project || !project.id) return { projectId: "", body: null, error: "没有找到当前项目" };
+  const body = { departments: cleaned };
+  if (Number.isInteger(project.revision)) body.expectedRevision = project.revision;
+  return { projectId: String(project.id), body, error: "" };
+}
+
+/** 回写失败的统一说法：页面结果区原样显示，不降级成 console.warn。 */
+export function departmentWriteBackFailure(reason) {
+  const text = redactSensitiveText(reason === undefined || reason === null ? "" : reason).trim();
+  return `科室没有写回项目默认值：${text || "未知原因"}`;
+}
+
 function rowState(item, policies, progress, selection, request) {
   if (progress[item.id]) return progress[item.id];
   // 刷新页面后仍按宿主模块里记录的真实结果展示，失败不会被「已开启」盖掉。
@@ -117,6 +142,9 @@ export default function AutoSyncPage({ plugin }) {
   const [progress, setProgress] = useState({});
   const [running, setRunning] = useState(false);
   const [summary, setSummary] = useState(null);
+  // 科室回写必须显式勾选（默认不勾）：不勾选时一键开启不会改动项目默认科室。
+  const [writeBack, setWriteBack] = useState(false);
+  const [writeBackResult, setWriteBackResult] = useState(null);
 
   const reload = async () => {
     try {
@@ -204,6 +232,7 @@ export default function AutoSyncPage({ plugin }) {
     if (!targets.length) { setSummary({ error: false, text: "没有需要首次同步的交付物。" }); return; }
     setRunning(true);
     setSummary(null);
+    setWriteBackResult(null);
     window.__vseWizardBusy = true;
     if (scope && scope.deliverables && scope.deliverables.length) {
       markFirstSyncRunning(targets.map((item) => item.id));
@@ -247,16 +276,23 @@ export default function AutoSyncPage({ plugin }) {
           blocked.push(item.name);
         }
       }
-      // 科室回写：用户确认的科室集合在启用流程成功后写回项目默认科室（只在界面有明确科室选择时，失败不阻断流程）
-      const currentProjectId = load.project && load.project.id;
-      if (enabled > 0 && currentProjectId && Array.isArray(departments) && departments.length > 0) {
-        try {
-          await apiRequest(`/api/p/workbench/projects/${enc(currentProjectId)}`, {
-            method: "PATCH",
-            body: { departments },
-          });
-        } catch (writeErr) {
-          console.warn("回写项目默认科室失败：", writeErr);
+      // 科室回写：只有用户显式勾选、且本次至少成功开启一项时才写回项目默认科室。
+      // 失败（含 409 修订冲突）在结果区如实显示，不 console.warn、不吞掉，也不影响
+      // 已开启项的结果展示；回写只改项目默认科室字段，不碰任何已验证的同步绑定。
+      const plan = departmentWriteBackPlan({ writeBack, enabled, project: load.project, departments });
+      if (plan) {
+        if (plan.error) {
+          setWriteBackResult({ error: true, text: departmentWriteBackFailure(plan.error) });
+        } else {
+          try {
+            await apiRequest(`/api/p/workbench/projects/${enc(plan.projectId)}`, {
+              method: "PATCH",
+              body: plan.body,
+            });
+            setWriteBackResult({ error: false, text: `科室已写回项目默认值：${plan.body.departments.join("、")}` });
+          } catch (writeErr) {
+            setWriteBackResult({ error: true, text: departmentWriteBackFailure(ewoPolicyErrorMessage(writeErr)) });
+          }
         }
       }
     } catch (err) {
@@ -311,12 +347,19 @@ export default function AutoSyncPage({ plugin }) {
         <div class="as-chips">${DEFAULT_DEPARTMENTS.map((dept) => html`<button type="button" key=${dept} disabled=${running}
           class=${`as-chip${departments.includes(dept) ? " is-on" : ""}`} aria-pressed=${departments.includes(dept) ? "true" : "false"}
           onClick=${() => toggle(dept)}>${dept}</button>`)}</div></div>
+      <label class="as-field" style="display:flex;flex-direction:row;align-items:center;gap:8px">
+        <input type="checkbox" data-field="write-back-departments" checked=${writeBack} disabled=${running}
+          style="max-width:none;width:16px;height:16px;margin:0"
+          onChange=${(e) => setWriteBack(e.currentTarget.checked)} />
+        <span>同时把这些科室设为项目默认科室</span></label>
+      <p class="vk-muted" style="margin:0">不勾选就不会改动项目默认科室；回写只改默认值，不会重写已经开启并验证过的同步绑定。</p>
       <div class="as-actions">
         <button type="button" class="vk-btn is-primary" disabled=${running || !targets.length} onClick=${start}>
           ${buttonLabel}</button>
         ${!vaultConfigured && html`<span class="vk-muted">需要先登录并保存公司账号的密码</span>`}
       </div>
       ${summary && html`<p class=${summary.error ? "as-summary is-error" : "as-summary"} role="status">${summary.text}</p>`}
+      ${writeBackResult && html`<p class=${writeBackResult.error ? "as-summary is-error" : "as-summary"} role=${writeBackResult.error ? "alert" : "status"}>${writeBackResult.text}</p>`}
     </section>
 
     <section class="as-list" aria-label="交付物">

@@ -1034,6 +1034,28 @@
     "download": "none"
   },
   {
+    "rule": "/api/p/workbench/vehicle-models",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_workbench.vehicle_models_list",
+    "view_function": "vehicle_models_list",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/workbench/vehicle-models",
+    "methods": [
+      "PUT"
+    ],
+    "endpoint": "plugin_workbench.vehicle_models_replace",
+    "view_function": "vehicle_models_replace",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
     "rule": "/api/project-status",
     "methods": [
       "GET"
