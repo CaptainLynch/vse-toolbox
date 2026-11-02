@@ -7,7 +7,7 @@
 ## 当前前沿（2026-11-03 · DSH 第 3、4 波已集成；第 5 波进行中）
 
 - **第 3 波（96bc518 → refactor/ux-v2，地图 9ee8e68）**：03/10/11/13/15/18/22/27/38/41 全部集成，全量
-  **3947 passed / 7 skipped / 2 warnings，exit 0**（`E:\projectse-toolbox-wt\_logs\wave3-integration-pytest-final.txt`）。
+  **3947 passed / 7 skipped / 2 warnings，exit 0**（`E:\project\vse-toolbox-wt\_logs\wave3-integration-pytest-final.txt`）。
   22 的 DSH 评审三次因环境崩溃无裁决，由主控人工复审放行（宿主模块按 URL 动态载入 sign_daily/chart.js，
   失败降级为无图预览；记为已知耦合）。
 - **第 4 波（5d42388 → refactor/ux-v2，地图 048b3e2）**：04/05/16/19/29/32/39 + 27b 全部独立评审 pass 后集成，
