@@ -4,7 +4,28 @@
 > 更早条目完整保存在 [归档文件](archive/CURRENT_STATE_ARCHIVE_20261023.md)。
 > 恢复状态时**不要**再通读全文；先读本节，再按需查归档。
 
-## 当前前沿（2026-11-03 · DSH 第 3、4 波已集成；第 5 波进行中）
+## 当前前沿（2026-11-03 · DSH 第 3–7 波已全部集成到 refactor/ux-v2；第 8–10 波需真实环境）
+
+- **refactor/ux-v2 = eccad2b**（第 7 波合入 + 地图）。各波集成全量：第 5 波 4104 passed；第 6 波 4164 passed
+  + 1 条专家导航清单断言（21 新增「调度时刻」，465d540 修正）；第 7 波 **4203 passed / 7 skipped / 1 warning**
+  （`E:\project\vse-toolbox-wt\_logs\wave7-integration-pytest.txt`）。逐任务状态与工作流 ID 在
+  `E:\project\vse-toolbox-wt\_logs\wave4-state.md`，契约在同目录 `contract-*.md`。
+- **第 5 波**：17 TDC 恢复链与统一退出（主控批准范围例外：web/app.py 续期工厂注册 TDC；SessionBadges 读取
+  后端 state——renewing→正在恢复、failed/cleared→需要重新登录）；20 固定时刻槽接入唯一调度器（SlotStore 下沉
+  services/schedule_slots.py；无 project→交付物映射，按 ADR-0001 派发当前库全部启用绑定；暂停打断槽 failed 不重试）；
+  34 release 门禁（版本/HEAD 内容哈希/--since 启动器覆盖/有 .git 但 git 报错一律 FAIL）。
+- **第 6 波**：21 调度时刻页面与 binding 读写路由；23 日报 08:30 生成（services/schedule_jobs.py 作业注册表，
+  sign_daily 注册 handler，只生成不发送，按槽 INSERT OR IGNORE，刷新等待 13 分钟 < 900 秒租约）；30 原件留存
+  核实（追踪关系已持久化，补集成测试与历史原件页签）；31 自检新增连接器/调度两项（not_run/unable/fail）。
+- **第 7 波**：28 托盘通知（应用写 layout.state_dir/notifications/<id>.json，托盘轮询消费复用 TrayHandle.notify，
+  sent 账本去重）；40 真实 DOM 可见文案门禁——主控**修正 8 处产品文案**（“自动归档快照”→“自动归档”、
+  “映射取证”→“映射核对”）而非放宽预算，现预算 20+1=21 ≤ 23；43 两个更新页的用户可见更新记录。
+- **未解决的遗留**：classify 未读 aras_auth recovery_code；connectors 经模块级 bind_session_renewal；
+  lease_lost/乐观锁冲突失败不发托盘通知；托盘侧消息写入与发布端重复约 20 行；TDC xlsx 写入失败被连接器吞掉
+  （清单不含该文件但运行记成功）；原件缺失检测按目录粒度；core 常量“外部快照驱动…”仍是登记的已知违规；
+  #p/deliverable-forms/* 仍可直开专家页。
+- **下一步（需要用户/真实环境）**：35 真实 exe 端到端（首日日报与项目流程）、36 用户文档（依赖 35）、
+  37 真实办公室用户试用——都不能在本机自主完成。真实内网 Aras/TDC 登录与续期仍为“待验证”。
 
 - **第 3 波（96bc518 → refactor/ux-v2，地图 9ee8e68）**：03/10/11/13/15/18/22/27/38/41 全部集成，全量
   **3947 passed / 7 skipped / 2 warnings，exit 0**（`E:\project\vse-toolbox-wt\_logs\wave3-integration-pytest-final.txt`）。
