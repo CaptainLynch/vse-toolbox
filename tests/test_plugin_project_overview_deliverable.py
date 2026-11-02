@@ -91,7 +91,13 @@ def _imports(path: Path) -> list[str]:
 
 
 def test_modules_import_only_shipped_files() -> None:
-    host_allowed = {"/static/host/vendor/preact-htm.js", "/static/host/kit.js", "/static/host/expert.js"}
+    host_allowed = {
+        "/static/host/vendor/preact-htm.js",
+        "/static/host/kit.js",
+        "/static/host/expert.js",
+        # DSH-V2-30：历史原件页签的北京时间复用宿主统一时间模块。
+        "/static/host/time-format.js",
+    }
     dynamic_allowed = {"/plugins/system-query/static/grid.js"}
     for rel in ALL_SOURCES:
         path = STATIC / rel
