@@ -220,3 +220,69 @@ def trace(db, label="save"):
                 restore(name, rec_slot)
         if live and not propagating:
             raise RuntimeError("trace exited with live connections")
+
+
+# ── DSH-V2-27b：测试默认不拉起真实 Excel Worker 子进程 ──────────────────────
+# create_app() 默认 process 模式，提交 Excel 任务会经 ensure_running 真实 Popen
+# 一个 Worker（约 500MB）；全量测试期间会累积大量子进程。这里只替换控制器模块
+# 自己引用的 ``subprocess``（代理对象：除 Popen 外全部委托真实模块），不影响其他
+# 测试的子进程。需要真实子进程的用例加 ``@pytest.mark.real_excel_worker``。
+# 既有用例 monkeypatch "services.excel_worker_process_controller.subprocess.Popen"
+# 会落在代理上，行为不变。
+
+
+class _InertWorkerProcess:
+    """不启动任何进程的 Worker 替身：存活直到 terminate/kill/wait。"""
+
+    _next_pid = 900000
+
+    def __init__(self, command, **kwargs):
+        self.command = command
+        self.kwargs = kwargs
+        self.pid = _InertWorkerProcess._next_pid
+        _InertWorkerProcess._next_pid += 1
+        self.returncode = None
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        if self.returncode is None:
+            self.returncode = 0
+        return self.returncode
+
+    def terminate(self):
+        self.returncode = 1
+
+    def kill(self):
+        self.returncode = -9
+
+
+class _ControllerSubprocessProxy:
+    def __init__(self, real):
+        self._real = real
+        self.Popen = _InertWorkerProcess
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+@pytest.fixture(autouse=True)
+def inert_excel_worker_processes(request, monkeypatch):
+    if request.node.get_closest_marker("real_excel_worker") is not None:
+        return None
+    import subprocess as _real_subprocess
+
+    import services.excel_worker_process_controller as _controller_module
+
+    monkeypatch.setattr(
+        _controller_module, "subprocess", _ControllerSubprocessProxy(_real_subprocess)
+    )
+    return None
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "real_excel_worker: 允许 ExcelWorkerProcessController 真实拉起 Worker 子进程",
+    )
