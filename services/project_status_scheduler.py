@@ -10,9 +10,13 @@ services/project_status_scheduler.py — WebUI 常驻项目状态同步调度线
   interval 又被 fixed 派发（见 ``tick`` 的 fixed 项目跳过）。
 - fixed 路径（注入 ``slot_store`` 时）：读 ``mode='fixed'`` 绑定 → 用
   ``services.schedule_policy`` 计算当天到点槽 → ``ensure_slots`` 落库 →
-  循环 ``lease_next`` 领取 → 对该项目下全部启用交付物逐个 ``run_once`` →
-  ``finish`` 收尾。去重完全依赖槽唯一键与租约，重启/暂停/切换当前项目都不会
-  重复派发；派发按绑定的 project_id，与“当前项目”无关。
+  循环 ``lease_next`` 领取 → 按 ``jobId`` 分派：``SYNC_JOB_ID`` 对该项目下全部
+  启用交付物逐个 ``run_once``；其它 jobId 查 ``services.schedule_jobs`` 注册表，
+  调 ``handler(slot_row)`` 并按 ``JobOutcome`` 收尾（DSH-V2-23）→ ``finish``
+  收尾。去重完全依赖槽唯一键与租约，重启/暂停/切换当前项目都不会重复派发；
+  派发按绑定的 project_id，与“当前项目”无关。未注册的非 SYNC 作业不产槽，
+  残留槽以 ``job_unavailable`` 失败（不重试）。日报这类作业的 fixed 绑定
+  不计入 ``fixed_project_ids``，因此不会关闭该项目的 interval 同步。
 - 槽表不存在（插件未加载/未迁移）时视为 0 个 fixed 绑定：记一次 warning 后
   走纯 interval 路径，不建表、不调用迁移。
 - interval 路径：通过 db.list_eligible_sync_bindings(None) 读取启用绑定；
@@ -40,6 +44,7 @@ from typing import Any, Callable, Protocol
 
 from core.redaction import redact_sensitive_text
 from core.time_rules import now_utc, to_beijing
+from services import schedule_jobs
 from services import schedule_policy as SP
 
 logger = logging.getLogger("vse_toolbox.sync_scheduler")
@@ -58,6 +63,8 @@ FIXED_RETRY_SECONDS = 300
 FIXED_FAILURE_CODE = "run_failed"
 #: 调度线程在槽执行途中被暂停/停止时的错误码（不重试，避免重复副作用）。
 FIXED_STOPPED_CODE = "scheduler_stopped"
+#: 槽的 jobId 没有注册处理器时的错误码（残留槽/插件未加载；不重试）。
+JOB_UNAVAILABLE_CODE = "job_unavailable"
 
 #: last_success_at 由 db_manager 以 UTC strftime('%Y-%m-%dT%H:%M:%fZ') 写入。
 _SUCCESS_AT_FORMATS = ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ")
@@ -470,17 +477,29 @@ class ProjectStatusSyncScheduler:
             job_id = str(row.get("jobId") or "").strip()
             if not project_id:
                 continue
-            if job_id != SP.SYNC_JOB_ID:
-                # 只派发项目状态同步任务；其它 fixed 任务（如日报）尚无 runner 接线。
-                continue
-            fixed_project_ids.add(project_id)
             try:
-                binding = SP.sync_binding(
-                    project_id,
-                    job_id=job_id,
-                    times=row.get("times") or (),
-                    paused=bool(row.get("paused")),
-                )
+                if job_id == SP.SYNC_JOB_ID:
+                    # 同步作业走既有交付物路径；只有它参与 interval 替换判定。
+                    fixed_project_ids.add(project_id)
+                    binding = SP.sync_binding(
+                        project_id,
+                        job_id=job_id,
+                        times=row.get("times") or (),
+                        paused=bool(row.get("paused")),
+                    )
+                else:
+                    # 其它 fixed 作业（如日报）只认已注册处理器；未注册不产槽。
+                    job = schedule_jobs.get_job(job_id)
+                    if job is None:
+                        logger.debug(
+                            "fixed binding %s/%s has no registered job; no slots",
+                            project_id,
+                            job_id,
+                        )
+                        continue
+                    binding = job.make_binding(
+                        project_id, row.get("times") or (), bool(row.get("paused"))
+                    )
                 existing = self._slot_store.list_slots(project_id, business_date)
                 due = SP.compute_due_slots(
                     binding, now=now_utc_value, existing_keys=existing
@@ -546,9 +565,13 @@ class ProjectStatusSyncScheduler:
     def _execute_leased_slot(
         self, leased: dict[str, Any], deliverable_ids: list[str]
     ) -> None:
-        """执行一个已领取的槽：全部交付物成功才算成功，收尾带 fencing。"""
+        """执行一个已领取的槽：按 jobId 分派到交付物路径或作业处理器。"""
         key = SP.slot_key_from_mapping(leased)
         token = str(leased.get("leaseToken") or "")
+        if key.job_id != SP.SYNC_JOB_ID:
+            # 非同步作业（如日报）：注册表处理器；失败口径由 JobOutcome 决定。
+            self._execute_job_slot(key, token, leased)
+            return
         error_code: str | None = None
         if not deliverable_ids:
             logger.info(
@@ -587,10 +610,60 @@ class ProjectStatusSyncScheduler:
                 break
         self._finish_slot(key, token, error_code)
 
+    def _execute_job_slot(self, key: Any, token: str, leased: dict[str, Any]) -> None:
+        """执行一个非同步作业槽：查注册表 → handler → 按 JobOutcome 收尾。
+
+        失败口径（主控冻结）：``JobOutcome.retry=True`` 时 300 秒退避（同一槽最多
+        重试一次）；``retry=False`` 直接 failed；处理器抛异常记异常类名、不重试；
+        未注册（插件未加载/残留槽）记 ``job_unavailable``、不重试。暂停/停止打断
+        与同步路径一致：落 failed(scheduler_stopped)，恢复后不重跑。
+        """
+        job = schedule_jobs.get_job(key.job_id)
+        if job is None:
+            logger.warning(
+                "leased slot %s has no registered job handler; failing as %s",
+                key.as_text(),
+                JOB_UNAVAILABLE_CODE,
+            )
+            self._finish_slot(key, token, JOB_UNAVAILABLE_CODE, retry=False)
+            return
+        if self._stop_event.is_set() or self._paused:
+            self._finish_slot(key, token, FIXED_STOPPED_CODE)
+            return
+        try:
+            outcome = job.handler(dict(leased))
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "scheduled job %s for %s raised %s: %s",
+                key.job_id,
+                key.as_text(),
+                type(exc).__name__,
+                redact_sensitive_text(str(exc), limit=200),
+            )
+            self._finish_slot(key, token, type(exc).__name__, retry=False)
+            return
+        if not isinstance(outcome, schedule_jobs.JobOutcome):
+            logger.warning(
+                "scheduled job %s for %s returned %s instead of JobOutcome",
+                key.job_id,
+                key.as_text(),
+                type(outcome).__name__,
+            )
+            self._finish_slot(key, token, FIXED_FAILURE_CODE, retry=False)
+            return
+        if outcome.ok:
+            self._finish_slot(key, token, None)
+            return
+        self._finish_slot(
+            key, token, outcome.error_code or FIXED_FAILURE_CODE, retry=outcome.retry
+        )
+
     def _finish_slot(
-        self, key: Any, token: str, error_code: str | None
+        self, key: Any, token: str, error_code: str | None, *, retry: bool = True
     ) -> None:
-        """收尾槽：失败带 300 秒退避；被 fencing 时只记日志，不重跑。"""
+        """收尾槽：``retry`` 默认沿用同步路径的 300 秒退避口径。"""
         try:
             finished = self._slot_store.finish(
                 key,
@@ -600,7 +673,7 @@ class ProjectStatusSyncScheduler:
                 # 暂停/停止打断不重试（不补跑，避免恢复后重复副作用）；其余失败 300 秒退避。
                 retry_after_seconds=(
                     None
-                    if error_code is None or error_code == FIXED_STOPPED_CODE
+                    if error_code is None or error_code == FIXED_STOPPED_CODE or not retry
                     else FIXED_RETRY_SECONDS
                 ),
             )
