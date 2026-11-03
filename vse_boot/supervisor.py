@@ -389,6 +389,16 @@ class BootBridge:
         return ticket
 
 
+def _redact_window_error(exc: BaseException, url: str | None, ticket: str | None) -> str:
+    """抹掉异常文本里的旧链路 URL 与票据，供窗口入口的所有失败分支复用。"""
+    detail = str(exc)
+    if url:
+        detail = detail.replace(url, "<url>")
+    if ticket:
+        detail = detail.replace(ticket, "<ticket>")
+    return detail
+
+
 def run_window(argv: list[str], webview_module: Any = None) -> int:
     """``--window`` 子进程入口：pywebview 必须跑在**本进程主线程**（C1）。
 
@@ -403,7 +413,8 @@ def run_window(argv: list[str], webview_module: Any = None) -> int:
         try:
             module = _load_webview()
         except ImportError as exc:
-            print(f"无法加载 pywebview：{exc}", file=sys.stderr)
+            detail = _redact_window_error(exc, url, ticket)
+            print(f"无法加载 pywebview：{type(exc).__name__}: {detail}", file=sys.stderr)
             return 3
     try:
         module.create_window(
@@ -411,11 +422,7 @@ def run_window(argv: list[str], webview_module: Any = None) -> int:
         )
         module.start(private_mode=False, storage_path=str(profile) if profile is not None else None)
     except Exception as exc:  # noqa: BLE001 - 任何 GUI 失败都只值一个退出码
-        detail = str(exc)
-        if url:
-            detail = detail.replace(url, "<url>")
-        if ticket:
-            detail = detail.replace(ticket, "<ticket>")
+        detail = _redact_window_error(exc, url, ticket)
         print(f"窗口启动失败：{type(exc).__name__}: {detail}", file=sys.stderr)
         return 4
     return 0

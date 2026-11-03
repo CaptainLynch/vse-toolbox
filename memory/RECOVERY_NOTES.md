@@ -1,5 +1,16 @@
 # Recovery Notes
 
+## 2026-11-03 — pywebview 导入失败分支曾绕过窗口异常脱敏（DSH-V2-03）
+
+- **已验证根因**：`run_window` 先 `pop VSE_WINDOW_BOOT_TICKET`，但 `_load_webview()` 的
+  `ImportError` 分支直接 `print(f"...{exc}")`，没有走 `create_window/start` 的 URL/ticket 替换；
+  异常文本含旧 `?boot=` URL 或票据就会泄漏到 stderr（退出码仍为 3）。
+- **修复**：抽 `_redact_window_error(exc, url, ticket)` 供 ImportError 与 GUI 失败共用；
+  保留 0/3/4 与 `ImportError` 类别。回归测试先红后绿：
+  `tests/test_vse_boot_window.py::test_run_window_import_error_redacts_legacy_url_and_ticket`。
+- **证据边界**：只证明 stderr 脱敏与既有退出码；未跑原生 pywebview/EXE；旧 `?boot=` 兼容链路
+  按契约 §8 保留，不能据此宣称旧版本零暴露。
+
 ## 2026-10-31 — Wave 8/9「迁移」复核纠偏：副本≠迁移（W13-09a 的核心发现）
 
 - **现象**：19c09cf/bd6792b 提交说明声称「TDC/表单目录路由迁入 crawler_boot（三清单冻结法重做）」，

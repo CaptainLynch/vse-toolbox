@@ -6,6 +6,14 @@
 
 ## 当前前沿（2026-11-03 · DSH 第 3–7 波已全部集成到 refactor/ux-v2；第 8–10 波需真实环境）
 
+- **DSH-V2-03 本轮（2026-11-03，`codex/dsh-v2-03-transport` @ c41dde8）**：`run_window` 的
+  `ImportError` 分支改走统一 `_redact_window_error`，旧 `?boot=` URL 与注入票据不再进入 stderr，
+  退出码 0/3/4 与 `ImportError` 类别保持不变。新增导入失败红/绿回归，以及真实 HTTP request target、
+  werkzeug 访问日志、启动器日志、冻结 `instance.json` 字段、env exchange/claim、诊断 ZIP 导出断言。
+  基线 **196 passed**；红 **1 failed**（确认原始泄漏）；绿 **199 passed**（8 个聚焦套件，exit 0）；
+  `git diff --check` exit 0。证据：`E:\project\vse-toolbox-wt\_logs\DSH-V2-03-20261103\`。
+  **限制**：未做原生 EXE/pywebview/浏览器/打包；旧启动器兼容 `?boot=` 按契约 §8 保留，不能宣称旧版本零暴露；
+  `PROJECT_MAP.md --check` 仍 exit 1（仅源指纹漂移，任务改动不在 map scope，未刷新）。
 - **refactor/ux-v2 = eccad2b**（第 7 波合入 + 地图）。各波集成全量：第 5 波 4104 passed；第 6 波 4164 passed
   + 1 条专家导航清单断言（21 新增「调度时刻」，465d540 修正）；第 7 波 **4203 passed / 7 skipped / 1 warning**
   （`E:\project\vse-toolbox-wt\_logs\wave7-integration-pytest.txt`）。逐任务状态与工作流 ID 在

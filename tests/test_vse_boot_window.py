@@ -377,6 +377,27 @@ def test_run_window_missing_pywebview_returns_three(monkeypatch, capsys) -> None
     assert "pywebview" in capsys.readouterr().err
 
 
+def test_run_window_import_error_redacts_legacy_url_and_ticket(monkeypatch, capsys) -> None:
+    """导入失败分支也必须脱敏：旧 URL 与注入票据都不能出现在 stderr。"""
+    ticket = "tok_synthetic_import_error"
+    monkeypatch.setenv("VSE_WINDOW_BOOT_TICKET", ticket)
+
+    def broken_load():
+        raise ImportError(f"webview unavailable while opening {URL} with {ticket}")
+
+    monkeypatch.setattr(supervisor, "_load_webview", broken_load)
+
+    code = supervisor.run_window(["--window", URL, "--profile", "profile-dir"])
+
+    captured = capsys.readouterr()
+    assert code == 3
+    assert "pywebview" in captured.err and "ImportError" in captured.err
+    assert ticket not in captured.out + captured.err
+    assert URL not in captured.out + captured.err
+    assert "secret-token" not in captured.out + captured.err
+    assert "VSE_WINDOW_BOOT_TICKET" not in os.environ
+
+
 def test_main_routes_window_flag_to_run_window(monkeypatch, tmp_path: Path) -> None:
     """``__main__.main(["--window", ...])`` 在 argparse 之前路由到 run_window。"""
     fake = FakeWebview()

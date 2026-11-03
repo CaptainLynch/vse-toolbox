@@ -27,13 +27,20 @@
 from __future__ import annotations
 
 import http.client
+import io
 import json
+import logging
+import os
+import re
 import threading
+import zipfile
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
+from urllib.parse import urlsplit
 
 import pytest
-from werkzeug.serving import make_server
+from werkzeug.serving import WSGIRequestHandler, make_server
 
 import vse_boot.supervisor as supervisor
 import web.app as web_app
@@ -120,6 +127,21 @@ def _exchange(port: int, ticket: str, *, cookie: str | None = None):
     return status, set_cookies, body
 
 
+def _claim(port: int, *, cookie: str | None = None):
+    """页面用预置授权领取会话（真实 HTTP，严格同源 + same-origin）。"""
+    origin = f"http://127.0.0.1:{port}"
+    cookies = {web_security.SESSION_COOKIE_NAME: cookie} if cookie else None
+    status, _headers, set_cookies, body = _http(
+        port,
+        "POST",
+        web_security.BOOT_CLAIM_PATH,
+        json_body={},
+        headers={"Origin": origin, "Sec-Fetch-Site": "same-origin"},
+        cookies=cookies,
+    )
+    return status, set_cookies, body
+
+
 def _error_type(body: bytes) -> str | None:
     try:
         return json.loads(body.decode("utf-8"))["error"]["type"]
@@ -160,6 +182,61 @@ class FakeChild:
         self.terminated = True
 
 
+class CapturingRequestHandler(WSGIRequestHandler):
+    """真实 werkzeug 处理器，额外记录服务端实际收到的 request target。"""
+
+    def log_request(self, code="-", size="-"):
+        targets = getattr(self.server, "request_targets", None)
+        if targets is not None:
+            targets.append(self.path)
+        super().log_request(code, size)
+
+
+class RecordingWindowBroker(supervisor.WindowBroker):
+    """真实 WindowBroker，只记录 arm() 的响应供断言使用。"""
+
+    def __init__(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+        super().__init__(*args, **kwargs)
+        self.arms: list[dict[str, Any]] = []
+
+    def arm(self, purpose: str, delivery: str) -> dict[str, Any] | None:
+        data = super().arm(purpose, delivery)
+        self.arms.append(dict(data or {}))
+        return data
+
+
+class _AccessLogHandler(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.messages: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.messages.append(record.getMessage())
+
+
+@contextmanager
+def capture_werkzeug_access_logs() -> Iterator[list[str]]:
+    """捕获 werkzeug 实际访问日志（handler 仍是真实 WSGIRequestHandler）。"""
+    logger = logging.getLogger("werkzeug")
+    handler = _AccessLogHandler()
+    previous_level = logger.level
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    try:
+        yield handler.messages
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous_level)
+
+
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain_access_log(messages: list[str]) -> str:
+    """去掉 werkzeug 终端着色，保留真实访问日志文本。"""
+    return _ANSI_ESCAPE.sub("", "\n".join(messages))
+
+
 # ── 传递链夹具：真实 Supervisor + 真实 app 服务 + 真实 WindowBroker ─────────
 
 
@@ -179,10 +256,16 @@ class TransportHarness:
         self.env_overrides: list[dict[str, str]] = []
         self.logs: list[str] = []
         self.shown: list[str] = []
-        self.brokers: list[Any] = []
+        self.brokers: list[RecordingWindowBroker] = []
         self.health_probe_failures = 0
         self.now = 0.0
         self.instance_snapshots: list[dict[str, Any]] = []
+        self.request_targets: list[str] = []
+        self.webview_available = True
+
+    @property
+    def grants(self) -> list[dict[str, Any]]:
+        return [arm for broker in self.brokers for arm in broker.arms]
 
     # ── 子进程 / 服务 ────────────────────────────────────────────────
     def spawn(self, app_dir: Path, port: int, layout: InstallLayout, *, env_overrides=None):
@@ -199,7 +282,10 @@ class TransportHarness:
             accept_legacy_boot_query=env.get("VSE_LEGACY_BOOT_QUERY", "1") != "0",
         )
         app.config.update(TESTING=False)
-        server = make_server("127.0.0.1", port, app, threaded=True)
+        server = make_server(
+            "127.0.0.1", port, app, threaded=True, request_handler=CapturingRequestHandler
+        )
+        server.request_targets = self.request_targets  # type: ignore[attr-defined]
         thread = threading.Thread(target=server.serve_forever, name="transport-app", daemon=True)
         thread.start()
         self.apps.append((app, server, thread))
@@ -222,7 +308,7 @@ class TransportHarness:
         return supervisor.probe_capabilities(port)
 
     def broker_factory(self, port: int, secret: str):
-        broker = supervisor.WindowBroker(port, secret)
+        broker = RecordingWindowBroker(port, secret)
         self.brokers.append(broker)
         return broker
 
@@ -233,7 +319,7 @@ class TransportHarness:
         supervisor.open_window(
             url,
             layout,
-            find_webview=lambda: True,
+            find_webview=lambda: self.webview_available,
             wait=lambda _child, _timeout: None,
             assign_job=False,
             broker=broker,
@@ -360,18 +446,38 @@ def test_transport_chain_keeps_ticket_out_of_url_and_instance_file(
     ticket = window_env.get("VSE_WINDOW_BOOT_TICKET")
     assert isinstance(ticket, str) and len(ticket) >= 32
     assert "VSE_LAUNCH_SECRET" not in window_env
+    grant = harness.grants[-1]
+    assert grant["delivery"] == "env" and grant["ticket"] == ticket
+    grant_id = grant["grantId"]
+    assert grant_id.startswith("grt_")
 
     # ③ instance.json 字段集冻结、无 bootToken、url 无查询串（契约 §5.9）。
     instance = next(info for info in harness.instance_snapshots if info is not None)
+    assert set(instance) == {
+        "schemaVersion",
+        "url",
+        "port",
+        "version",
+        "pid",
+        "supervisorPid",
+        "startedAt",
+        "epoch",
+        "securityContract",
+    }
     assert instance["url"] == f"http://127.0.0.1:{harness.port}/"
     assert "?" not in instance["url"]
-    assert "bootToken" not in instance
+    assert instance["port"] == harness.port
+    assert instance["version"] == APP_VERSION
+    assert instance["pid"] == 4242
+    assert instance["supervisorPid"] == os.getpid()
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", instance["startedAt"])
     assert instance["schemaVersion"] == 2
     assert instance["securityContract"] == 1
     assert instance["epoch"] == harness.apps[0][0].extensions["local_web_security"].epoch
     secret = harness.env_overrides[-1]["VSE_LAUNCH_SECRET"]
     assert secret and secret not in json.dumps(instance)
     assert ticket not in json.dumps(instance)
+    assert grant_id not in json.dumps(instance)
 
     # ④ 启动器日志不含票据/授权/密钥（契约 §5.13）。
     joined = "\n".join(harness.logs)
@@ -388,7 +494,10 @@ def test_transport_chain_keeps_ticket_out_of_url_and_instance_file(
     assert status == 200, body
     assert json.loads(body.decode("utf-8")) == {"ok": True, "data": {"exchanged": True}}
     cookie = _set_cookie_value(set_cookies, web_security.SESSION_COOKIE_NAME)
-    assert cookie
+    window_cookie = _set_cookie_value(set_cookies, web_security.WINDOW_COOKIE_NAME)
+    assert cookie and window_cookie
+    for value in (ticket, secret, grant_id, cookie, window_cookie):
+        assert value not in json.dumps(instance)
     assert _write(harness.port, cookie=cookie)[0] == 422
 
     # ⑦ 写保护仍拒绝缺失/错误认证。
@@ -405,6 +514,114 @@ def test_transport_chain_keeps_ticket_out_of_url_and_instance_file(
     assert replay_status == 401
     assert _error_type(replay_body) == "BootTicketInvalid"
     assert replay_cookies == []
+
+
+def test_new_flow_request_targets_and_logs_never_carry_secrets(
+    harness: TransportHarness, window_spawns: list[dict[str, Any]]
+) -> None:
+    """新链路真实 HTTP：服务端 request target、werkzeug 访问日志、启动器日志都不带秘密。"""
+    with capture_werkzeug_access_logs() as access_logs:
+        assert harness.run(stop_when=lambda: bool(window_spawns)) == 0
+        ticket = window_spawns[0]["env"]["VSE_WINDOW_BOOT_TICKET"]
+        secret = harness.env_overrides[-1]["VSE_LAUNCH_SECRET"]
+        grant_id = harness.grants[-1]["grantId"]
+
+        status, set_cookies, body = _exchange(harness.port, ticket)
+        assert status == 200, body
+        session = _set_cookie_value(set_cookies, web_security.SESSION_COOKIE_NAME)
+        window = _set_cookie_value(set_cookies, web_security.WINDOW_COOKIE_NAME)
+        assert session and window
+
+        invalid_status, _invalid_cookies, invalid_body = _exchange(harness.port, "invalid-ticket")
+        assert invalid_status == 401 and _error_type(invalid_body) == "BootTicketInvalid"
+        replay_status, _replay_cookies, replay_body = _exchange(harness.port, ticket)
+        assert replay_status == 401 and _error_type(replay_body) == "BootTicketInvalid"
+        claim_status, _claim_cookies, claim_body = _claim(harness.port)
+        assert claim_status == 409 and _error_type(claim_body) == "NoPendingGrant"
+
+    # 正向控制：真实请求确实到达了这些路由和状态。
+    access_text = _plain_access_log(access_logs)
+    assert access_text, "没有捕获到 werkzeug 访问日志"
+    assert 'POST /api/security/window-grant HTTP/1.1" 200' in access_text
+    assert 'POST /api/security/boot-exchange HTTP/1.1" 200' in access_text
+    assert 'POST /api/security/boot-exchange HTTP/1.1" 401' in access_text
+    assert 'POST /api/security/boot-claim HTTP/1.1" 409' in access_text
+    launcher_text = "\n".join(harness.logs)
+    assert launcher_text, "启动器日志为空，无法做无泄漏断言"
+
+    assert harness.request_targets, "没有捕获到真实 request target"
+    secret_values = (ticket, secret, grant_id, session, window)
+    for target in harness.request_targets:
+        assert urlsplit(target).query == "", target
+        for value in secret_values:
+            assert value not in target
+    for value in secret_values:
+        assert value not in access_text
+        assert value not in launcher_text
+
+
+def test_claim_flow_instance_schema_and_logs_never_carry_secrets(
+    harness: TransportHarness,
+    window_spawns: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """无注入通道（Edge/浏览器）走 claim：instance.json、request target 与日志都不带秘密。"""
+    harness.webview_available = False
+    opened: list[str] = []
+    monkeypatch.setattr(supervisor, "_open_edge_or_browser", lambda url, layout: opened.append(url))
+    with capture_werkzeug_access_logs() as access_logs:
+        assert harness.run(stop_when=lambda: bool(opened)) == 0
+        grant = harness.grants[-1]
+        assert grant["delivery"] == "claim"
+        assert "ticket" not in grant
+        grant_id = grant["grantId"]
+        assert grant_id.startswith("grt_")
+
+        instance = next(info for info in harness.instance_snapshots if info is not None)
+        assert set(instance) == {
+            "schemaVersion",
+            "url",
+            "port",
+            "version",
+            "pid",
+            "supervisorPid",
+            "startedAt",
+            "epoch",
+            "securityContract",
+        }
+        assert instance["url"] == f"http://127.0.0.1:{harness.port}/"
+        assert instance["port"] == harness.port
+        assert instance["version"] == APP_VERSION
+        assert "bootToken" not in instance
+
+        status, set_cookies, body = _claim(harness.port)
+        assert status == 200, body
+        session = _set_cookie_value(set_cookies, web_security.SESSION_COOKIE_NAME)
+        window = _set_cookie_value(set_cookies, web_security.WINDOW_COOKIE_NAME)
+        assert session and window
+        replay_status, replay_cookies, replay_body = _claim(harness.port)
+        assert replay_status == 409
+        assert _error_type(replay_body) == "NoPendingGrant"
+        assert replay_cookies == []
+
+    assert window_spawns == []  # 没有 pywebview 注入通道
+    access_text = _plain_access_log(access_logs)
+    assert access_text
+    assert 'POST /api/security/window-grant HTTP/1.1" 200' in access_text
+    assert 'POST /api/security/boot-claim HTTP/1.1" 200' in access_text
+    assert 'POST /api/security/boot-claim HTTP/1.1" 409' in access_text
+    launcher_text = "\n".join(harness.logs)
+    assert launcher_text
+
+    secret_values = (grant_id, session, window)
+    for target in harness.request_targets:
+        assert urlsplit(target).query == "", target
+        for value in secret_values:
+            assert value not in target
+    for value in secret_values:
+        assert value not in access_text
+        assert value not in launcher_text
+        assert value not in json.dumps(instance)
 
 
 # ── 2. 慢启动：签发在健康检查之后 ──────────────────────────────────────────
@@ -545,20 +762,54 @@ def test_diagnostics_and_state_files_never_record_ticket_or_secret(
     recorder = dr.Recorder(tmp_path / "diagnostics")
     monkeypatch.setattr(dr, "_default", recorder)
 
-    assert harness.run(stop_when=lambda: bool(window_spawns)) == 0
-    app = harness.apps[0][0]
-    assert app.extensions["diagnostic_recorder"] is recorder  # 确实是同一个记录器
-
-    ticket = window_spawns[0]["env"]["VSE_WINDOW_BOOT_TICKET"]
-    secret = harness.env_overrides[-1]["VSE_LAUNCH_SECRET"]
-
     recorder.start()
     try:
-        # 真实走一遍会碰凭据的请求：交换票据 + 一次被拒的写请求。
-        assert _exchange(harness.port, ticket)[0] == 200
+        assert harness.run(stop_when=lambda: bool(window_spawns)) == 0
+        app = harness.apps[0][0]
+        assert app.extensions["diagnostic_recorder"] is recorder  # 确实是同一个记录器
+
+        ticket = window_spawns[0]["env"]["VSE_WINDOW_BOOT_TICKET"]
+        secret = harness.env_overrides[-1]["VSE_LAUNCH_SECRET"]
+        grant_id = harness.grants[-1]["grantId"]
+
+        # 真实走一遍会碰凭据的请求：交换票据、无效/重放交换、一次被拒的写请求。
+        status, set_cookies, body = _exchange(harness.port, ticket)
+        assert status == 200, body
+        session = _set_cookie_value(set_cookies, web_security.SESSION_COOKIE_NAME)
+        window = _set_cookie_value(set_cookies, web_security.WINDOW_COOKIE_NAME)
+        assert session and window
+        assert _exchange(harness.port, "invalid-ticket")[0] == 401
+        assert _exchange(harness.port, ticket)[0] == 401
+        assert _claim(harness.port)[0] == 409
         assert _write(harness.port, cookie=None)[0] == 401
     finally:
         recorder.stop()
+
+    identity = recorder.status()["latest"]["id"]
+    assert re.fullmatch(r"[0-9a-f]{32}", identity)
+    export_status, export_headers, _cookies, bundle = _http(
+        harness.port, "GET", f"/api/diagnostics/bundles/{identity}"
+    )
+    assert export_status == 200
+    assert export_headers["content-type"].startswith("application/zip")
+
+    with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
+        assert archive.testzip() is None
+        members = {name: archive.read(name) for name in archive.namelist()}
+
+    # 正向控制：导出包确实包含记录的事件，而不是空包/空文件。
+    assert "events.jsonl" in members and "diagnostics.json" in members
+    assert "environment.json" not in members  # 禁止清单成员被过滤掉
+    events = members["events.jsonl"]
+    assert events.strip()
+    assert b"api_security_window_grant" in events
+    assert b"api_security_boot_exchange" in events
+    assert b"api_security_boot_claim" in events
+
+    secret_values = (ticket, secret, grant_id, session, window)
+    for name, data in members.items():
+        for value in secret_values:
+            assert value.encode("utf-8") not in data, (name, value)
 
     blobs = [path.read_bytes() for path in recorder.root.rglob("*") if path.is_file()]
     assert blobs, "诊断记录器没有落任何文件，扫描无意义"
@@ -566,16 +817,16 @@ def test_diagnostics_and_state_files_never_record_ticket_or_secret(
     # 正向对照：记录器确实抓到了这次交换（否则「扫描无票据」是空断言）。
     assert b"api_security_boot_exchange" in joined
     for blob in blobs:
-        assert ticket.encode("utf-8") not in blob
-        assert secret.encode("utf-8") not in blob
+        for value in secret_values:
+            assert value.encode("utf-8") not in blob
 
     # 安装根下的状态文件同样零残留（instance.json 等）。
     state_files = [path for path in harness.layout.root.rglob("*") if path.is_file()]
     assert state_files
     for path in state_files:
         data = path.read_bytes()
-        assert ticket.encode("utf-8") not in data, path
-        assert secret.encode("utf-8") not in data, path
+        for value in secret_values:
+            assert value.encode("utf-8") not in data, path
 
 
 # ── 6. 旧 app 降级：新启动器 + 旧 app 仍走 ?boot= 且 instance.json 带 bootToken ─
