@@ -27,6 +27,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import sys
+
 import pytest
 
 from core.db_manager import DatabaseManager
@@ -686,3 +688,31 @@ def test_daily_generation_survives_unwritable_inbox(daily_env: Any) -> None:
     assert outcome.ok is True
     assert _report_count(daily_env.db) == 1
     assert _message_files(daily_env.layout) == []
+
+
+def test_app_imports_under_old_launcher_without_notification_api(monkeypatch) -> None:
+    """旧版启动器（vse_boot.api 没有通知收件箱接口）上运行新应用包：不得导入失败。
+
+    回归：2.4.0 应用包装进 2.3.0 启动器时，顶层 ``from vse_boot.api import ...`` 抛
+    ImportError，应用启动即退出（用户反馈“加载测试包后闪退”）。
+    """
+    import importlib
+    import types
+
+    import services.user_notifications as module
+
+    old_api = types.ModuleType("vse_boot.api")
+    old_api.managed_layout = lambda: None  # 旧启动器只有这些既有接口
+    monkeypatch.setitem(sys.modules, "vse_boot.api", old_api)
+    try:
+        reloaded = importlib.reload(module)
+        assert reloaded.LAUNCHER_SUPPORTS_NOTIFICATIONS is False
+        assert reloaded.publish(
+            "sync_failed", project_id="p", key="k", title="t", body="b"
+        ) is False
+        with pytest.raises(ValueError):
+            reloaded.publish("bogus", project_id="p", key="k", title="t", body="b")
+    finally:
+        monkeypatch.undo()
+        importlib.reload(module)
+    assert module.LAUNCHER_SUPPORTS_NOTIFICATIONS is True

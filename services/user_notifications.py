@@ -24,13 +24,23 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from core.redaction import redact_sensitive_text
-from vse_boot.api import (
-    NOTIFICATION_EVENTS,
-    managed_layout,
-    notification_id,
-    notifications_dir,
-    sent_notifications,
-)
+#: 应用包可能运行在旧版启动器之上（分层更新：只装 app 包、不换启动器）。旧启动器的
+#: ``vse_boot.api`` 没有通知收件箱接口——导入失败时通知整体关闭（等同未托管），
+#: 绝不让应用因此启动失败。
+try:
+    from vse_boot.api import (
+        NOTIFICATION_EVENTS,
+        managed_layout,
+        notification_id,
+        notifications_dir,
+        sent_notifications,
+    )
+
+    LAUNCHER_SUPPORTS_NOTIFICATIONS = True
+except ImportError:  # 旧启动器：缺少 DSH-V2-28 的收件箱接口
+    NOTIFICATION_EVENTS = frozenset({"sync_failed", "daily_ready", "update_found"})
+    managed_layout = notification_id = notifications_dir = sent_notifications = None  # type: ignore[assignment]
+    LAUNCHER_SUPPORTS_NOTIFICATIONS = False
 
 if TYPE_CHECKING:
     from vse_boot.layout import InstallLayout
@@ -76,6 +86,8 @@ def publish(
     """
     if event not in EVENTS:
         raise ValueError(f"unsupported notification event: {event}")
+    if not LAUNCHER_SUPPORTS_NOTIFICATIONS:
+        return False
     try:
         target_layout = layout if layout is not None else managed_layout()
         if target_layout is None:
