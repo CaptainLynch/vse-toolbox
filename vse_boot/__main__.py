@@ -112,7 +112,12 @@ def _run(layout: InstallLayout, log) -> int:  # type: ignore[no-untyped-def]
     tray = None
     if headless:
         # 自动化测试 / 无人值守：不打开窗口、不显示托盘，只记录地址。
-        show = lambda url, _layout: log(f"就绪：{url}")  # noqa: E731
+        # 「新启动器 + 旧 app」兼容链路下 url 带 ``?boot=<票据>``；日志只留不含查询串的
+        # 基地址，否则票据会落到 ``state/launcher.log``（契约 §5.13）。
+        def _log_ready(url: str, _layout) -> None:  # type: ignore[no-untyped-def]
+            log(f"就绪：{url.split('?', 1)[0].split('#', 1)[0]}")
+
+        show = _log_ready
     else:
         try:
             from vse_boot.tray import start_tray

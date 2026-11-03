@@ -518,6 +518,37 @@ def test_redact_window_error_is_fail_closed() -> None:
     assert supervisor._redact_window_error(Unprintable(), URL, None) == "<unprintable>"
 
 
+def test_headless_launcher_log_omits_boot_ticket(monkeypatch, layout: InstallLayout) -> None:
+    """headless 分支只记录不含查询串的地址。
+
+    「新启动器 + 旧 app」兼容链路下 URL 带 `?boot=<票据>`，`state/launcher.log`
+    会原样落盘——违反契约 §5.13。仓库内无脚本消费这一行，可以只留基地址。
+    """
+    canary = "HEADLESS-CANARY-0123456789"
+    lines: list[str] = []
+    captured: dict[str, Any] = {}
+
+    class FakeSupervisor:
+        def __init__(self, *args, **kwargs):  # noqa: D107 - 只记录构造参数
+            captured.update(kwargs)
+
+        def run(self) -> int:
+            return 0
+
+    monkeypatch.setenv("VSE_BOOT_NO_WINDOW", "1")
+    monkeypatch.setattr(boot_main, "_first_install", lambda *args, **kwargs: None)
+    monkeypatch.setattr(supervisor, "Supervisor", FakeSupervisor)
+
+    assert boot_main._run(layout, lines.append) == 0
+    show = captured.get("show")
+    assert callable(show)
+
+    show(f"http://127.0.0.1:5000/?boot={canary}", layout)
+    joined = "\n".join(lines)
+    assert "就绪：http://127.0.0.1:5000/" in joined   # 正向控制：行仍被记录
+    assert canary not in joined                      # 但票据不得落盘
+
+
 def test_main_routes_window_flag_to_run_window(monkeypatch, tmp_path: Path) -> None:
     """``__main__.main(["--window", ...])`` 在 argparse 之前路由到 run_window。"""
     fake = FakeWebview()
