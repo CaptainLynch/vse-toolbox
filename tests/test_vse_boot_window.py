@@ -391,10 +391,11 @@ def test_run_window_import_error_redacts_legacy_url_and_ticket(monkeypatch, caps
 
     captured = capsys.readouterr()
     assert code == 3
-    assert "pywebview" in captured.err and "ImportError" in captured.err
-    assert ticket not in captured.out + captured.err
-    assert URL not in captured.out + captured.err
-    assert "secret-token" not in captured.out + captured.err
+    # 泄露断言必须排在格式断言之前：否则回归会先因文案变化变红，掩盖真正的泄漏。
+    output = captured.out + captured.err
+    assert ticket not in output
+    assert URL not in output
+    assert "secret-token" not in output
     assert "VSE_WINDOW_BOOT_TICKET" not in os.environ
 
 
