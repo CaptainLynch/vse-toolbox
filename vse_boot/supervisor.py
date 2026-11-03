@@ -13,6 +13,7 @@ import importlib.util
 import inspect
 import json
 import os
+import re
 import secrets
 import shutil
 import socket
@@ -20,6 +21,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.request
 import webbrowser
@@ -391,17 +393,22 @@ class BootBridge:
 
 #: 窗口 URL 查询串里可能承载票据的参数名（旧链路 ``?boot=``）。
 _TICKET_QUERY_KEYS = frozenset({"boot", "token"})
+#: 与 URL 解析无关的键锚定兜底：覆盖「URL 被截断」「urlsplit 抛错」「url 与 ticket 同时为空」
+#: 等拿不到完整值的形态。分隔符允许 `?`/`&` 及其百分号编码（`%3f`/`%26`）；取值集合排除
+#: `%`/引号/尖括号/分隔符，替换成 `<redacted>` 后不会二次命中。
+_TICKET_KV_RE = re.compile(r"(?i)(\?|&|%3f|%26|\s|^)(boot|token)(=|%3d)([^&#\s'\"<>%]+)")
+#: 裸值替换的最小长度门槛：只有 1~2 个字符的查询值替换会误伤无关文本。
+_MIN_BARE_VALUE_LEN = 16
 
 
-def _redact_window_error(exc: BaseException, url: str | None, ticket: str | None) -> str:
-    """抹掉异常文本里的 URL 与票据，供窗口入口的所有失败分支复用。
+def _redact_text(text: str, url: str | None, ticket: str | None) -> str:
+    """三层脱敏：整串 URL → 查询串白名单取值 → 键锚定正则兜底。
 
-    只替换「整串 URL」挡不住两种真实形态：异常文本只带 ``?boot=<ticket>`` 片段，
-    或同一地址少了尾斜杠。旧链路的窗口子进程拿不到 ``VSE_WINDOW_BOOT_TICKET``
-    （票据只在 URL 里），因此必须从 URL 的查询串反推出票据值一并替换。
-    仅对 ``_TICKET_QUERY_KEYS`` 的取值做裸值替换，避免把无关短值过度抹除。
+    只替换「整串 URL」挡不住三种真实形态：异常文本只带 ``?boot=<ticket>`` 片段、
+    同一地址少尾斜杠、URL 被截断在票据中间。旧链路的窗口子进程拿不到
+    ``VSE_WINDOW_BOOT_TICKET``（票据只在 URL 里），所以必须从查询串反推票据值。
     """
-    detail = str(exc)
+    detail = text
     if url:
         detail = detail.replace(url, "<url>")
         try:
@@ -409,14 +416,29 @@ def _redact_window_error(exc: BaseException, url: str | None, ticket: str | None
         except ValueError:
             query = ""
         for key, value in parse_qsl(query, keep_blank_values=False):
-            if not value or key not in _TICKET_QUERY_KEYS:
+            if not value or key.lower() not in _TICKET_QUERY_KEYS:
                 continue
             detail = detail.replace(f"?{key}={value}", f"?{key}=<redacted>")
             detail = detail.replace(f"{key}={value}", f"{key}=<redacted>")
-            detail = detail.replace(value, "<ticket>")
+            if len(value) >= _MIN_BARE_VALUE_LEN:
+                detail = detail.replace(value, "<ticket>")
     if ticket:
         detail = detail.replace(ticket, "<ticket>")
-    return detail
+    return _TICKET_KV_RE.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}{match.group(3)}<redacted>", detail
+    )
+
+
+def _redact_window_error(exc: BaseException, url: str | None, ticket: str | None) -> str:
+    """``_redact_text`` 的异常入口；脱敏器自身失败时 fail-closed（绝不回吐原文）。"""
+    try:
+        text = str(exc)
+    except Exception:  # noqa: BLE001 - __str__ 抛错的异常对象
+        return "<unprintable>"
+    try:
+        return _redact_text(text, url, ticket)
+    except Exception:  # noqa: BLE001 - 脱敏失败也不得把原文带出去
+        return "<unprintable>"
 
 
 def run_window(argv: list[str], webview_module: Any = None) -> int:
@@ -433,7 +455,16 @@ def run_window(argv: list[str], webview_module: Any = None) -> int:
         try:
             module = _load_webview()
         except Exception as exc:  # noqa: BLE001 - 缺模块/缺 DLL/权限等加载失败一律按不可用处理
-            detail = _redact_window_error(exc, url, ticket)
+            if isinstance(exc, (ImportError, OSError)):
+                detail = _redact_window_error(exc, url, ticket)
+            else:
+                # 非预期类型（加载期编程错误等）：保留**脱敏后**的完整 traceback，
+                # 否则退出码 3 会静默降级、错误无人可查（顾问复核意见 Q1-2）。
+                detail = _redact_text(
+                    "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+                    url,
+                    ticket,
+                )
             print(f"无法加载 pywebview：{type(exc).__name__}: {detail}", file=sys.stderr)
             return 3
     try:

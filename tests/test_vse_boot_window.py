@@ -452,6 +452,72 @@ def test_run_window_load_failure_beyond_importerror_is_redacted(monkeypatch, cap
     assert "Traceback" not in captured.err
 
 
+def test_run_window_unexpected_load_error_keeps_redacted_traceback(monkeypatch, capsys) -> None:
+    """非预期类型（加载期编程错误）要留下可查的脱敏 traceback，且仍返回 3。
+
+     退出码 3 会让启动器降级到 Edge/浏览器；若只打印一行文案，编程错误就无人可查。
+    """
+    monkeypatch.delenv("VSE_WINDOW_BOOT_TICKET", raising=False)
+
+    def broken_load():
+        raise NameError(f"name 'webview' is not defined while opening {URL}")
+
+    monkeypatch.setattr(supervisor, "_load_webview", broken_load)
+
+    assert supervisor.run_window(["--window", URL, "--profile", "profile-dir"]) == 3
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "NameError" in output          # 类型要可读
+    assert "Traceback" in output          # 有栈才能定位
+    assert "secret-token" not in output   # 但路径仍是脱敏的
+    assert "secret-toke" not in output    # 前缀也不能剩
+    assert URL not in output
+
+
+def test_run_window_redacts_truncated_boot_query(monkeypatch, capsys) -> None:
+    """URL 被截断在票据中间（`?boot=<前缀>`）：三层替换都拿不到完整值，靠键锚定兜底。"""
+    monkeypatch.delenv("VSE_WINDOW_BOOT_TICKET", raising=False)
+
+    def broken_load():
+        raise ImportError("denied at ?boot=secret-toke")
+
+    monkeypatch.setattr(supervisor, "_load_webview", broken_load)
+
+    assert supervisor.run_window(["--window", URL, "--profile", "profile-dir"]) == 3
+    assert "secret-toke" not in capsys.readouterr().err
+
+
+def test_run_window_redacts_percent_encoded_boot_query(monkeypatch, capsys) -> None:
+    """查询串被百分号编码（`%3Fboot%3D<票据>`）时同样不得泄漏。"""
+    monkeypatch.delenv("VSE_WINDOW_BOOT_TICKET", raising=False)
+
+    def broken_load():
+        raise ImportError("denied at %3Fboot%3Dsecret-token")
+
+    monkeypatch.setattr(supervisor, "_load_webview", broken_load)
+
+    assert supervisor.run_window(["--window", URL, "--profile", "profile-dir"]) == 3
+    assert "secret-token" not in capsys.readouterr().err
+
+
+def test_redact_text_survives_unparsable_url() -> None:
+    """`urlsplit` 抛 ValueError（坏 IPv6 字面量）时，仍要靠正则层抹掉票据。"""
+    detail = supervisor._redact_text(
+        "boom ?boot=secret-token", "http://[::1/?boot=secret-token", None
+    )
+    assert "secret-token" not in detail
+
+
+def test_redact_window_error_is_fail_closed() -> None:
+    """异常对象的 `__str__` 自己抛错时，脱敏器不得回吐原文。"""
+
+    class Unprintable(Exception):
+        def __str__(self):  # noqa: D105 - 故意抛错
+            raise RuntimeError("nope")
+
+    assert supervisor._redact_window_error(Unprintable(), URL, None) == "<unprintable>"
+
+
 def test_main_routes_window_flag_to_run_window(monkeypatch, tmp_path: Path) -> None:
     """``__main__.main(["--window", ...])`` 在 argparse 之前路由到 run_window。"""
     fake = FakeWebview()
