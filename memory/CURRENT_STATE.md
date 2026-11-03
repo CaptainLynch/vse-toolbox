@@ -6,35 +6,43 @@
 
 ## 当前前沿（2026-11-03 · DSH 第 3–7 波已全部集成到 refactor/ux-v2；第 8–10 波需真实环境）
 
-- **DSH-V2-03 本轮（2026-11-03，`codex/dsh-v2-03-transport` @ c41dde8，tip `7b91390`）**：主体替换流程
+- **DSH-V2-03 本轮（2026-11-03，`codex/dsh-v2-03-transport` @ c41dde8，tip `a18b2c3`；已快进合入
+  `refactor/ux-v2` = `a18b2c3`）**：主体替换流程
   （env 注入 → pywebview 桥 → 浏览器 claim → `window.request` 重开 → `session-recover`）早在 `f51c76c`
   已集成，本轮只补真实残留泄漏与证据：① `run_window` 的 pywebview `ImportError` 分支原先直接打印原始
   异常文本（含旧 `?boot=` URL / 注入票据）→ 统一走 `_redact_window_error`；② 该脱敏原先只换整串 URL 与
-  精确票据，异常文本只带 `?boot=<ticket>` 片段或少尾斜杠时仍泄漏 → 改为从 URL 查询串反推 `boot` 值一并抹除；
-  ③ `_load_webview` 的非 `ImportError` 加载失败（缺 DLL/权限）穿透成裸 traceback、退出码 1 → 脱敏后按
-  「pywebview 不可用」返回 3（走既有 Edge→浏览器降级）。
-  证据：基线 **196 passed**；导入失败红态先在**泄漏断言**处变红（`ticket not in output`），修复后绿
-  **202 passed / 8 个聚焦套件 / exit 0**（两轮独立复跑 87.61s、86.15s）；`git diff --check` exit 0；
+  精确票据，异常文本只带 `?boot=<ticket>` 片段或少尾斜杠时仍泄漏 → 改为三层（整串 URL → 查询串白名单取值 →
+  键锚定正则兜底），并对裸值替换加 16 字符门槛；③ `_load_webview` 的非 `ImportError` 加载失败（缺 DLL/权限）
+  穿透成裸 traceback、退出码 1 → 脱敏后按「pywebview 不可用」返回 3（走既有 Edge→浏览器降级），
+  非预期类型另保留**脱敏后**的完整 traceback；④ **用户批准扩 scope**：`vse_boot/__main__.py` headless 分支
+  原先 `log(f"就绪：{url}")`，「新启动器 + 旧 app」时 `?boot=` 票据落盘 `state/launcher.log` → 改为只记基地址
+  （仓库内无脚本消费该行）。
+  证据：基线 **196 passed**；导入失败红态先在**泄漏断言**处变红（`ticket not in output`）；聚焦 8 套件
+  **208 passed / exit 0**（worktree 84.12s；合并后源工作区复跑 208 passed / 98.11s）；**全量 4216 passed /
+  7 skipped / 1 warning / exit 0 / 792.88s**（`full-suite-worktree.txt`）；`git diff --check` exit 0；
   变异检验（Edge URL 注入 `?boot=leak`）claim 用例 exit 1 变红、文件 sha256 还原一致。
-  证据目录 `E:\project\vse-toolbox-wt\_logs\DSH-V2-03-20261103\`。
-  **未修的已证实缺口（超本轮 owned_scope）**：`vse_boot/__main__.py:115` headless 分支把开窗 URL 写进
-  `state/launcher.log`，「新启动器 + 旧 app」时该 URL 带 `?boot=` → 票据落盘；需批准扩 scope 后修。
-  **限制**：未做原生 EXE/pywebview/浏览器/打包；`state/app-last-run.log`（app 子进程 stdout）无泄漏未证明；
-  旧启动器兼容 `?boot=` 按契约 §8 保留，不能宣称旧版本零暴露；`PROJECT_MAP.md --check` 仍 exit 1
-  （`vse_boot/`、`tests/` 不在 source 指纹范围，任务改动不可能造成该漂移，未刷新）。
-  `flake8 vse_boot/supervisor.py` 的 5 条（E303×1、E704×4，L67-76 Protocol 桩）已核实在 `c41dde8` 同样存在。
+  证据目录 `E:\project\vse-toolbox-wt\_logs\DSH-V2-03-20261103\`。合入方式：`merge --ff-only`，源工作区
+  无关脏改动（`memory/RECOVERY_NOTES.md` +6 行指纹根因）与 8 个未跟踪项逐字保留（patch 先存后施，
+  numstat 复核 6/0）。
+  **限制**：未做原生 EXE/pywebview/浏览器/打包；`state/app-last-run.log`（app 子进程 stdout）无泄漏未证明——
+  机制已实测（werkzeug 把 `GET /?boot=<TICKET>` 写进 logging 流，`spawn_app` 把该流重定向进该文件），
+  但真实子进程端到端未跑；旧启动器兼容 `?boot=` 按契约 §8 保留，不能宣称旧版本零暴露；
+  `PROJECT_MAP.md --check` 仍 exit 1（`vse_boot/`、`tests/` 不在 source 指纹范围，任务改动不可能造成该漂移，未刷新）。
+  `flake8 vse_boot/supervisor.py` 的 5 条（E303×1、E704×4，L67-76 Protocol 桩）已核实在 `c41dde8` 同样存在；
+  `flake8 vse_boot/__main__.py` exit 0。
   **顾问复核（Claude code CLI，`expert_advisor.py --provider claude`，claude-opus-5-5 / effort xhigh，
-  run `6fc298db-7405-4061-b88e-4b393c55341d`）**：判 pass、代码 diff 未发现阻断合并问题；采纳 Q1-2/Q1-3
-  （非预期类型保留脱敏 traceback + NameError 回归）与 Q2-1/2/3（脱敏器 fail-closed、键锚定正则兜底、
-  裸值 16 字符门槛），并补截断/`%3Fboot%3D`/不可解析 url/`__str__` 抛错四条回归 → 聚焦 **207 passed**。
+  run `6fc298db-7405-4061-b88e-4b393c55341d`，裁决 1/2/3 = adopted）**：判 pass、代码 diff 未发现阻断合并问题；
+  采纳 Q1-2/Q1-3（非预期类型保留脱敏 traceback + NameError 回归）与 Q2-1/2/3（脱敏器 fail-closed、
+  键锚定正则兜底、裸值 16 字符门槛），并补截断/`%3Fboot%3D`/不可解析 url/`__str__` 抛错四条回归。
   **其 F1「1→3 会永久降级」被本地证据推翻**：`_watch_window` 对**任意非 0 退出码**在 15 秒宽限期内即降级
   （`if code:`，L503），且全链路无「不可用」状态持久化——旧行为（未捕获 traceback、退出码 1）本来也在降级。
   **其 E2 疑点排除**：诊断包成员只有 `summary.md`/`events.jsonl`/`exceptions.json`/`manifest.json`
   （`core/diagnostic_recording.py:346-351`）+ `diagnostics.json`，不含 `launcher.log`/`app-last-run.log`/profile/转储。
-  **其 F6 由机制实测确认**（`probe_werkzeug_query_log.py`）：werkzeug 把 `"GET /?boot=<TICKET> HTTP/1.1"` 写进
-  logging 流，而 `spawn_app` 把该流重定向进 `state/app-last-run.log`（L194-195）→ 兼容链路票据落盘，仍超 scope。
-  口径：验收第 1 条（票据不入 query/instance.json/常规日志/诊断）记**「部分满足」**，缺口三项：`__main__.py` headless
-  launcher.log、`app-last-run.log`、兼容链路自身载体（§8.1 已接受，但日志面未被 §8.1 显式接受）。
+  口径：验收第 1 条（票据不入 query/instance.json/常规日志/诊断）记**新链路「满足」、兼容链路「部分满足」**，
+  剩余缺口：`state/app-last-run.log` 未端到端证明、兼容链路自身载体（§8.1 已接受，但日志面未被 §8.1 显式接受）。
+  **引擎工作流 `wf-442bd00c-f741-453d-9274-f7c271d1263d` 已人工标 failed**（`r1:exec:plan` 长期
+  `processing` + 过期租约 + 无法认领，重投风暴累计 24811 条事件；用户批准后直接改协调库两行为 failed，
+  确认事件增长归零；本任务成果由主控自建评审与 Claude 复核完成）。
 - **refactor/ux-v2 = eccad2b**（第 7 波合入 + 地图）。各波集成全量：第 5 波 4104 passed；第 6 波 4164 passed
   + 1 条专家导航清单断言（21 新增「调度时刻」，465d540 修正）；第 7 波 **4203 passed / 7 skipped / 1 warning**
   （`E:\project\vse-toolbox-wt\_logs\wave7-integration-pytest.txt`）。逐任务状态与工作流 ID 在
