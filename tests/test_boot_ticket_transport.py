@@ -481,7 +481,13 @@ def test_transport_chain_keeps_ticket_out_of_url_and_instance_file(
 
     # ④ 启动器日志不含票据/授权/密钥（契约 §5.13）。
     joined = "\n".join(harness.logs)
-    assert ticket not in joined and secret not in joined
+    assert joined, "启动器日志为空，无法做无泄漏断言"
+    legacy_token = harness.env_overrides[-1]["VSE_BOOT_TOKEN"]
+    for value in (ticket, legacy_token, secret, grant_id):
+        assert value not in joined
+    assert harness.request_targets, "没有捕获到真实 request target"
+    for target in harness.request_targets:
+        assert "?" not in target, target
 
     # ⑤ capabilities 只暴露契约字段，不含任何凭据（契约 §6.2）。
     status, _headers, _cookies, body = _http(harness.port, "GET", web_security.CAPABILITIES_PATH)
@@ -550,7 +556,8 @@ def test_new_flow_request_targets_and_logs_never_carry_secrets(
     assert launcher_text, "启动器日志为空，无法做无泄漏断言"
 
     assert harness.request_targets, "没有捕获到真实 request target"
-    secret_values = (ticket, secret, grant_id, session, window)
+    legacy_token = harness.env_overrides[-1]["VSE_BOOT_TOKEN"]
+    secret_values = (ticket, legacy_token, secret, grant_id, session, window)
     for target in harness.request_targets:
         assert urlsplit(target).query == "", target
         for value in secret_values:
@@ -605,6 +612,9 @@ def test_claim_flow_instance_schema_and_logs_never_carry_secrets(
         assert replay_cookies == []
 
     assert window_spawns == []  # 没有 pywebview 注入通道
+    # Edge/默认浏览器只拿到纯 URL：`--app=` 的 argv 里不许出现查询串（契约 §5.10）。
+    assert opened == [f"http://127.0.0.1:{harness.port}/"]
+    assert "?" not in opened[0]
     access_text = _plain_access_log(access_logs)
     assert access_text
     assert 'POST /api/security/window-grant HTTP/1.1" 200' in access_text
@@ -613,7 +623,9 @@ def test_claim_flow_instance_schema_and_logs_never_carry_secrets(
     launcher_text = "\n".join(harness.logs)
     assert launcher_text
 
-    secret_values = (grant_id, session, window)
+    legacy_token = harness.env_overrides[-1]["VSE_BOOT_TOKEN"]
+    assert harness.request_targets, "没有捕获到真实 request target"
+    secret_values = (legacy_token, grant_id, session, window)
     for target in harness.request_targets:
         assert urlsplit(target).query == "", target
         for value in secret_values:
@@ -769,6 +781,7 @@ def test_diagnostics_and_state_files_never_record_ticket_or_secret(
         assert app.extensions["diagnostic_recorder"] is recorder  # 确实是同一个记录器
 
         ticket = window_spawns[0]["env"]["VSE_WINDOW_BOOT_TICKET"]
+        legacy_token = harness.env_overrides[-1]["VSE_BOOT_TOKEN"]
         secret = harness.env_overrides[-1]["VSE_LAUNCH_SECRET"]
         grant_id = harness.grants[-1]["grantId"]
 
@@ -806,7 +819,7 @@ def test_diagnostics_and_state_files_never_record_ticket_or_secret(
     assert b"api_security_boot_exchange" in events
     assert b"api_security_boot_claim" in events
 
-    secret_values = (ticket, secret, grant_id, session, window)
+    secret_values = (ticket, legacy_token, secret, grant_id, session, window)
     for name, data in members.items():
         for value in secret_values:
             assert value.encode("utf-8") not in data, (name, value)

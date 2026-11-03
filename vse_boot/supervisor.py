@@ -26,7 +26,7 @@ import webbrowser
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Protocol
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 from vse_boot import dbsnap, projects
 from vse_boot.layout import InstallLayout
@@ -389,11 +389,31 @@ class BootBridge:
         return ticket
 
 
+#: 窗口 URL 查询串里可能承载票据的参数名（旧链路 ``?boot=``）。
+_TICKET_QUERY_KEYS = frozenset({"boot", "token"})
+
+
 def _redact_window_error(exc: BaseException, url: str | None, ticket: str | None) -> str:
-    """抹掉异常文本里的旧链路 URL 与票据，供窗口入口的所有失败分支复用。"""
+    """抹掉异常文本里的 URL 与票据，供窗口入口的所有失败分支复用。
+
+    只替换「整串 URL」挡不住两种真实形态：异常文本只带 ``?boot=<ticket>`` 片段，
+    或同一地址少了尾斜杠。旧链路的窗口子进程拿不到 ``VSE_WINDOW_BOOT_TICKET``
+    （票据只在 URL 里），因此必须从 URL 的查询串反推出票据值一并替换。
+    仅对 ``_TICKET_QUERY_KEYS`` 的取值做裸值替换，避免把无关短值过度抹除。
+    """
     detail = str(exc)
     if url:
         detail = detail.replace(url, "<url>")
+        try:
+            query = urlsplit(url).query
+        except ValueError:
+            query = ""
+        for key, value in parse_qsl(query, keep_blank_values=False):
+            if not value or key not in _TICKET_QUERY_KEYS:
+                continue
+            detail = detail.replace(f"?{key}={value}", f"?{key}=<redacted>")
+            detail = detail.replace(f"{key}={value}", f"{key}=<redacted>")
+            detail = detail.replace(value, "<ticket>")
     if ticket:
         detail = detail.replace(ticket, "<ticket>")
     return detail
@@ -402,9 +422,9 @@ def _redact_window_error(exc: BaseException, url: str | None, ticket: str | None
 def run_window(argv: list[str], webview_module: Any = None) -> int:
     """``--window`` 子进程入口：pywebview 必须跑在**本进程主线程**（C1）。
 
-    退出码：正常关闭 0；pywebview 缺失 3；create_window/start 抛异常 4。
+    退出码：正常关闭 0；pywebview 缺失或加载失败 3；create_window/start 抛异常 4。
     票据只经环境变量进入本进程，注入桥之后立即从 ``os.environ`` 清除；异常信息
-    先抹掉 URL（旧链路）与票据子串，再写 stderr——票据绝不进日志。
+    先抹掉 URL（含查询串里的票据）与票据子串，再写 stderr——票据绝不进日志。
     """
     url, profile = _parse_window_argv(argv)
     ticket = os.environ.pop("VSE_WINDOW_BOOT_TICKET", None)
@@ -412,7 +432,7 @@ def run_window(argv: list[str], webview_module: Any = None) -> int:
     if module is None:
         try:
             module = _load_webview()
-        except ImportError as exc:
+        except Exception as exc:  # noqa: BLE001 - 缺模块/缺 DLL/权限等加载失败一律按不可用处理
             detail = _redact_window_error(exc, url, ticket)
             print(f"无法加载 pywebview：{type(exc).__name__}: {detail}", file=sys.stderr)
             return 3

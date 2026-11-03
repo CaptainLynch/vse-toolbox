@@ -397,6 +397,59 @@ def test_run_window_import_error_redacts_legacy_url_and_ticket(monkeypatch, caps
     assert URL not in output
     assert "secret-token" not in output
     assert "VSE_WINDOW_BOOT_TICKET" not in os.environ
+    assert "pywebview" in captured.err and "ImportError" in captured.err
+
+
+def test_run_window_redacts_bare_boot_query_fragment(monkeypatch, capsys) -> None:
+    """异常文本只含 `?boot=` 片段（没有整串 URL 可比对）时，票据同样不得出现。
+
+    旧链路（新启动器 + 旧 app）下票据只在 URL 里，窗口子进程的
+    ``VSE_WINDOW_BOOT_TICKET`` 为空——只做整串 URL 替换挡不住片段。
+    """
+    monkeypatch.delenv("VSE_WINDOW_BOOT_TICKET", raising=False)
+
+    def broken_load():
+        raise ImportError("denied while fetching /?boot=secret-token")
+
+    monkeypatch.setattr(supervisor, "_load_webview", broken_load)
+
+    assert supervisor.run_window(["--window", URL, "--profile", "profile-dir"]) == 3
+    err = capsys.readouterr().err
+    assert "secret-token" not in err
+
+
+def test_run_window_redacts_url_without_trailing_slash(monkeypatch, capsys) -> None:
+    """同一地址少一个斜杠（``host:port?boot=``）也不能绕过脱敏。"""
+    monkeypatch.delenv("VSE_WINDOW_BOOT_TICKET", raising=False)
+
+    def broken_load():
+        raise ImportError(f"denied {URL.replace('/?', '?')}")
+
+    monkeypatch.setattr(supervisor, "_load_webview", broken_load)
+
+    assert supervisor.run_window(["--window", URL, "--profile", "profile-dir"]) == 3
+    err = capsys.readouterr().err
+    assert "secret-token" not in err
+
+
+def test_run_window_load_failure_beyond_importerror_is_redacted(monkeypatch, capsys) -> None:
+    """DLL/权限等非 ImportError 的加载失败：按「pywebview 不可用」返回 3，且不打印 traceback。
+
+    真实形态是 ``OSError``（WebView2Loader 缺失）。此前它会穿透 ``run_window``
+    变成未捕获 traceback，URL 与票据原样进 stderr。
+    """
+    monkeypatch.delenv("VSE_WINDOW_BOOT_TICKET", raising=False)
+
+    def broken_load():
+        raise OSError(f"WebView2Loader.dll missing while opening {URL}")
+
+    monkeypatch.setattr(supervisor, "_load_webview", broken_load)
+
+    assert supervisor.run_window(["--window", URL, "--profile", "profile-dir"]) == 3
+    captured = capsys.readouterr()
+    assert "secret-token" not in captured.out + captured.err
+    assert URL not in captured.out + captured.err
+    assert "Traceback" not in captured.err
 
 
 def test_main_routes_window_flag_to_run_window(monkeypatch, tmp_path: Path) -> None:
