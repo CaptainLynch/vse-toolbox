@@ -6,14 +6,23 @@
 
 ## 当前前沿（2026-11-03 · DSH 第 3–7 波已全部集成到 refactor/ux-v2；第 8–10 波需真实环境）
 
-- **DSH-V2-03 本轮（2026-11-03，`codex/dsh-v2-03-transport` @ c41dde8）**：`run_window` 的
-  `ImportError` 分支改走统一 `_redact_window_error`，旧 `?boot=` URL 与注入票据不再进入 stderr，
-  退出码 0/3/4 与 `ImportError` 类别保持不变。新增导入失败红/绿回归，以及真实 HTTP request target、
-  werkzeug 访问日志、启动器日志、冻结 `instance.json` 字段、env exchange/claim、诊断 ZIP 导出断言。
-  基线 **196 passed**；红 **1 failed**（确认原始泄漏）；绿 **199 passed**（8 个聚焦套件，exit 0）；
-  `git diff --check` exit 0。证据：`E:\project\vse-toolbox-wt\_logs\DSH-V2-03-20261103\`。
-  **限制**：未做原生 EXE/pywebview/浏览器/打包；旧启动器兼容 `?boot=` 按契约 §8 保留，不能宣称旧版本零暴露；
-  `PROJECT_MAP.md --check` 仍 exit 1（仅源指纹漂移，任务改动不在 map scope，未刷新）。
+- **DSH-V2-03 本轮（2026-11-03，`codex/dsh-v2-03-transport` @ c41dde8，tip `7b91390`）**：主体替换流程
+  （env 注入 → pywebview 桥 → 浏览器 claim → `window.request` 重开 → `session-recover`）早在 `f51c76c`
+  已集成，本轮只补真实残留泄漏与证据：① `run_window` 的 pywebview `ImportError` 分支原先直接打印原始
+  异常文本（含旧 `?boot=` URL / 注入票据）→ 统一走 `_redact_window_error`；② 该脱敏原先只换整串 URL 与
+  精确票据，异常文本只带 `?boot=<ticket>` 片段或少尾斜杠时仍泄漏 → 改为从 URL 查询串反推 `boot` 值一并抹除；
+  ③ `_load_webview` 的非 `ImportError` 加载失败（缺 DLL/权限）穿透成裸 traceback、退出码 1 → 脱敏后按
+  「pywebview 不可用」返回 3（走既有 Edge→浏览器降级）。
+  证据：基线 **196 passed**；导入失败红态先在**泄漏断言**处变红（`ticket not in output`），修复后绿
+  **202 passed / 8 个聚焦套件 / exit 0**（两轮独立复跑 87.61s、86.15s）；`git diff --check` exit 0；
+  变异检验（Edge URL 注入 `?boot=leak`）claim 用例 exit 1 变红、文件 sha256 还原一致。
+  证据目录 `E:\project\vse-toolbox-wt\_logs\DSH-V2-03-20261103\`。
+  **未修的已证实缺口（超本轮 owned_scope）**：`vse_boot/__main__.py:115` headless 分支把开窗 URL 写进
+  `state/launcher.log`，「新启动器 + 旧 app」时该 URL 带 `?boot=` → 票据落盘；需批准扩 scope 后修。
+  **限制**：未做原生 EXE/pywebview/浏览器/打包；`state/app-last-run.log`（app 子进程 stdout）无泄漏未证明；
+  旧启动器兼容 `?boot=` 按契约 §8 保留，不能宣称旧版本零暴露；`PROJECT_MAP.md --check` 仍 exit 1
+  （`vse_boot/`、`tests/` 不在 source 指纹范围，任务改动不可能造成该漂移，未刷新）。
+  `flake8 vse_boot/supervisor.py` 的 5 条（E303×1、E704×4，L67-76 Protocol 桩）已核实在 `c41dde8` 同样存在。
 - **refactor/ux-v2 = eccad2b**（第 7 波合入 + 地图）。各波集成全量：第 5 波 4104 passed；第 6 波 4164 passed
   + 1 条专家导航清单断言（21 新增「调度时刻」，465d540 修正）；第 7 波 **4203 passed / 7 skipped / 1 warning**
   （`E:\project\vse-toolbox-wt\_logs\wave7-integration-pytest.txt`）。逐任务状态与工作流 ID 在

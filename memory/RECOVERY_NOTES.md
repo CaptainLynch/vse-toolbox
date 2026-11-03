@@ -8,8 +8,21 @@
 - **修复**：抽 `_redact_window_error(exc, url, ticket)` 供 ImportError 与 GUI 失败共用；
   保留 0/3/4 与 `ImportError` 类别。回归测试先红后绿：
   `tests/test_vse_boot_window.py::test_run_window_import_error_redacts_legacy_url_and_ticket`。
+- **第二层根因（独立评审 + 变异实测确认）**：只替换「整串 URL + 精确 ticket」挡不住两种真实形态——
+  异常文本只带 `?boot=<ticket>` 片段，或同一地址少一个尾斜杠（`host:port?boot=`）。旧链路（新启动器 +
+  旧 app）下窗口子进程**拿不到** `VSE_WINDOW_BOOT_TICKET`，票据只在 URL 里，`ticket` 参数为 `None`，
+  整串替换必然落空。修法：从 `urlsplit(url).query` 里按 `{"boot","token"}` 键反推票据值一并替换
+  （只对白名单键做裸值替换，避免过度抹除）。回归：`test_run_window_redacts_bare_boot_query_fragment`、
+  `test_run_window_redacts_url_without_trailing_slash`。
+- **第三层根因**：`_load_webview()` 只 `except ImportError`，真实形态的 `OSError`（WebView2Loader 缺失）
+  会穿透 `run_window` 变成未捕获 traceback，URL 与票据原样进 stderr、退出码 1。改为任何加载失败都脱敏后
+  返回 3（等价「pywebview 不可用」，走既有 Edge→浏览器降级）。回归：
+  `test_run_window_load_failure_beyond_importerror_is_redacted`。
+- **仍未修（超 owned_scope，需批准）**：`vse_boot/__main__.py:113-115` 的 headless 分支
+  `show = lambda url, _layout: log(f"就绪：{url}")` 把开窗 URL 写进 `state/launcher.log`；「新启动器 +
+  旧 app」时该 URL 带 `?boot=`，票据因此落盘。
 - **证据边界**：只证明 stderr 脱敏与既有退出码；未跑原生 pywebview/EXE；旧 `?boot=` 兼容链路
-  按契约 §8 保留，不能据此宣称旧版本零暴露。
+  按契约 §8 保留，不能据此宣称旧版本零暴露；`state/app-last-run.log`（app 子进程 stdout）未证明无泄漏。
 
 ## 2026-10-31 — Wave 8/9「迁移」复核纠偏：副本≠迁移（W13-09a 的核心发现）
 
