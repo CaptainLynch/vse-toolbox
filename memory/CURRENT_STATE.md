@@ -23,6 +23,18 @@
   旧启动器兼容 `?boot=` 按契约 §8 保留，不能宣称旧版本零暴露；`PROJECT_MAP.md --check` 仍 exit 1
   （`vse_boot/`、`tests/` 不在 source 指纹范围，任务改动不可能造成该漂移，未刷新）。
   `flake8 vse_boot/supervisor.py` 的 5 条（E303×1、E704×4，L67-76 Protocol 桩）已核实在 `c41dde8` 同样存在。
+  **顾问复核（Claude code CLI，`expert_advisor.py --provider claude`，claude-opus-5-5 / effort xhigh，
+  run `6fc298db-7405-4061-b88e-4b393c55341d`）**：判 pass、代码 diff 未发现阻断合并问题；采纳 Q1-2/Q1-3
+  （非预期类型保留脱敏 traceback + NameError 回归）与 Q2-1/2/3（脱敏器 fail-closed、键锚定正则兜底、
+  裸值 16 字符门槛），并补截断/`%3Fboot%3D`/不可解析 url/`__str__` 抛错四条回归 → 聚焦 **207 passed**。
+  **其 F1「1→3 会永久降级」被本地证据推翻**：`_watch_window` 对**任意非 0 退出码**在 15 秒宽限期内即降级
+  （`if code:`，L503），且全链路无「不可用」状态持久化——旧行为（未捕获 traceback、退出码 1）本来也在降级。
+  **其 E2 疑点排除**：诊断包成员只有 `summary.md`/`events.jsonl`/`exceptions.json`/`manifest.json`
+  （`core/diagnostic_recording.py:346-351`）+ `diagnostics.json`，不含 `launcher.log`/`app-last-run.log`/profile/转储。
+  **其 F6 由机制实测确认**（`probe_werkzeug_query_log.py`）：werkzeug 把 `"GET /?boot=<TICKET> HTTP/1.1"` 写进
+  logging 流，而 `spawn_app` 把该流重定向进 `state/app-last-run.log`（L194-195）→ 兼容链路票据落盘，仍超 scope。
+  口径：验收第 1 条（票据不入 query/instance.json/常规日志/诊断）记**「部分满足」**，缺口三项：`__main__.py` headless
+  launcher.log、`app-last-run.log`、兼容链路自身载体（§8.1 已接受，但日志面未被 §8.1 显式接受）。
 - **refactor/ux-v2 = eccad2b**（第 7 波合入 + 地图）。各波集成全量：第 5 波 4104 passed；第 6 波 4164 passed
   + 1 条专家导航清单断言（21 新增「调度时刻」，465d540 修正）；第 7 波 **4203 passed / 7 skipped / 1 warning**
   （`E:\project\vse-toolbox-wt\_logs\wave7-integration-pytest.txt`）。逐任务状态与工作流 ID 在
