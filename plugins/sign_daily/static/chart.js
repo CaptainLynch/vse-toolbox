@@ -21,6 +21,74 @@ export const PALETTES = {
   approval: { bar: "#8f959e", special: "#8f959e" }, // 图3 中性色
 };
 const FONT_STACK = "'Microsoft YaHei', 'PingFang SC', 'Source Han Sans SC', sans-serif";
+const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+
+/** 用户配色叠加默认值：坏值/缺项回落该图默认；未知的图沿用图2 默认（与旧行为一致，忽略覆盖）。 */
+export function resolvePalette(key, overrides) {
+  const known = Object.prototype.hasOwnProperty.call(PALETTES, key);
+  const base = known ? PALETTES[key] : PALETTES.sections;
+  const custom = known && overrides && typeof overrides === "object" ? overrides[key] : null;
+  const pick = (slot) => {
+    const value = custom && typeof custom === "object" ? custom[slot] : null;
+    return typeof value === "string" && HEX_COLOR.test(value) ? value.toLowerCase() : base[slot];
+  };
+  return { bar: pick("bar"), special: pick("special") };
+}
+
+/** 三张图的完整生效配色（页面状态用它，保证三张图、两个位置都有值）。 */
+export function resolveAllPalettes(overrides) {
+  return Object.fromEntries(Object.keys(PALETTES).map((key) => [key, resolvePalette(key, overrides)]));
+}
+
+/** 一键配色方案（「默认」与 PALETTES 相同）。 */
+export const CHART_PRESETS = [
+  { id: "default", name: "默认", colors: PALETTES },
+  { id: "bluegray", name: "蓝灰", colors: {
+    external: { bar: "#2f5597", special: "#2f5597" },
+    sections: { bar: "#5b7da8", special: "#a9bcd6" },
+    approval: { bar: "#5b6b7f", special: "#5b6b7f" },
+  } },
+  { id: "warm", name: "暖色", colors: {
+    external: { bar: "#d9480f", special: "#d9480f" },
+    sections: { bar: "#e08e45", special: "#f2c094" },
+    approval: { bar: "#b5651d", special: "#b5651d" },
+  } },
+  { id: "contrast", name: "高对比", colors: {
+    external: { bar: "#000000", special: "#000000" },
+    sections: { bar: "#1f4e9c", special: "#e8590c" },
+    approval: { bar: "#5f3dc4", special: "#5f3dc4" },
+  } },
+];
+
+/** 按方案 id 取完整配色；未知 id 回落默认。 */
+export function presetPalettes(id) {
+  const preset = CHART_PRESETS.find((item) => item.id === id) || CHART_PRESETS[0];
+  return resolveAllPalettes(preset.colors);
+}
+
+/** 当前配色等于哪个方案（都不是返回 ""，即「自定义」）。 */
+export function matchPreset(colors) {
+  const current = JSON.stringify(resolveAllPalettes(colors));
+  const found = CHART_PRESETS.find((item) => JSON.stringify(resolveAllPalettes(item.colors)) === current);
+  return found ? found.id : "";
+}
+
+/** 与白底的对比度（WCAG 相对亮度）；不是 #RRGGBB 返回 null。 */
+export function contrastWithWhite(hex) {
+  if (typeof hex !== "string" || !HEX_COLOR.test(hex)) return null;
+  const channel = (i) => {
+    const c = parseInt(hex.slice(i, i + 2), 16) / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  };
+  const luminance = 0.2126 * channel(1) + 0.7152 * channel(3) + 0.0722 * channel(5);
+  return 1.05 / (luminance + 0.05);
+}
+
+/** 柱子颜色太接近白色背景时为 true（只提示，不阻止）；默认配色都不触发。 */
+export function tooLight(hex, minRatio = 1.5) {
+  const ratio = contrastWithWhite(hex);
+  return ratio !== null && ratio < minRatio;
+}
 
 /** G5：按行排，每行最多 30 根柱；超出时在分组边界换行，单组超过 30 人时组内续行。 */
 export function packRows(groups, maxBars = MAX_BARS_PER_ROW) {
@@ -107,8 +175,9 @@ export function groupStatsText(group) {
   return `${group.personTimes} 人次 / ${group.flows} 份 / ${group.people} 人`;
 }
 
-/** 在 canvas 上按 2 倍像素画出整张图，返回 PNG data URI；没有数据返回 null（G6）。 */
-export function renderChartPng(groups, key, documentRef = globalThis.document) {
+/** 在 canvas 上按 2 倍像素画出整张图，返回 PNG data URI；没有数据返回 null（G6）。
+ *  palette（{bar, special}）可选：不传时与原来完全相同（按 key 取默认配色）。 */
+export function renderChartPng(groups, key, documentRef = globalThis.document, palette = undefined) {
   if (!groups || !groups.length) return null;
   const layout = layoutChart(groups);
   const canvas = documentRef.createElement("canvas");
@@ -118,7 +187,7 @@ export function renderChartPng(groups, key, documentRef = globalThis.document) {
   g.scale(PIXEL_RATIO, PIXEL_RATIO);
   g.fillStyle = "#ffffff";
   g.fillRect(0, 0, layout.width, layout.height);
-  const palette = PALETTES[key] || PALETTES.sections;
+  const colors = palette || PALETTES[key] || PALETTES.sections;
   layout.rows.forEach((row) => {
     const scale = row.plotHeight / layout.top;
     const baseY = row.plotTop + row.plotHeight;
@@ -150,7 +219,7 @@ export function renderChartPng(groups, key, documentRef = globalThis.document) {
       g.fillText(groupStatsText(seg.group), center, row.top + 29, Math.max(seg.width, 40));
       seg.bars.forEach((bar) => {
         const h = bar.count * scale;
-        g.fillStyle = special ? palette.special : palette.bar;
+        g.fillStyle = special ? colors.special : colors.bar;
         g.fillRect(bar.x, baseY - h, bar.width, h);
         g.fillStyle = "#1f2329";
         g.font = `bold 11px ${FONT_STACK}`;

@@ -10,6 +10,11 @@
 - POST preview                  预览，不写快照
 - POST generate                 生成并写当天零件级快照（D1），记住本次选择
 - POST eml                      下载 .eml 草稿（三张图由前端 Canvas 画好后以 PNG 传入，按 Content-ID 内嵌）
+- POST import-scan / import-form   用本地导出的报表出一次日报（2026-11-16 起计算日变化）：不读不写 TDC
+                                 共享快照、配置与长周期结论，只写手工导入自有的基线表
+                                 （``manual_baseline.py``；表单字段 keepBaseline=0 时只读不写；
+                                 baselineDate 指定基线，优先级 指定 > 固定 > 自动）
+- GET  manual-baselines          手工导入基线列表；POST manual-baselines/pin|unpin|delete 固定 / 取消 / 删除
 - POST refresh / GET refresh/<task_id>   后台抓取与进度（R1、R3）
 
 长周期复核（§7）：GET long-cycle?project=、POST long-cycle（确认并记住 / 单条改判）、POST long-cycle/clear
@@ -29,6 +34,7 @@ import binascii
 import hashlib
 import io
 import json
+import re
 import secrets
 from datetime import date
 from pathlib import Path
@@ -49,6 +55,7 @@ from services.xlsx_preview import REASON_ENCRYPTED_CONTAINER, XLSXPreviewError, 
 from . import excel_proxy as XP
 from . import importer as IMP
 from . import mail as M
+from . import manual_baseline as MB
 from . import rules as V
 from . import scheduled as SCH
 from . import service as S
@@ -86,6 +93,30 @@ def _today() -> date:
     return date.today()
 
 
+#: 三张图的默认配色（与 static/chart.js 的 PALETTES 必须一致，测试钉住）：图 -> {普通柱, 特殊组柱}。
+DEFAULT_CHART_COLORS: dict[str, dict[str, str]] = {
+    "external": {"bar": "#3370ff", "special": "#3370ff"},  # 图1 强调色
+    "sections": {"bar": "#8f959e", "special": "#c9cdd4"},  # 图2 中性色，特殊组浅色
+    "approval": {"bar": "#8f959e", "special": "#8f959e"},  # 图3 中性色
+}
+_HEX_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _chart_colors(stored: Any) -> dict[str, dict[str, str]]:
+    """生效配色：存储值逐图、逐项叠加在默认值上；缺项或坏值一律回落默认，绝不缺键。"""
+    result = {chart: dict(colors) for chart, colors in DEFAULT_CHART_COLORS.items()}
+    if not isinstance(stored, Mapping):
+        return result
+    for chart, colors in stored.items():
+        if chart not in result or not isinstance(colors, Mapping):
+            continue
+        for slot in ("bar", "special"):
+            value = colors.get(slot)
+            if isinstance(value, str) and _HEX_COLOR.match(value):
+                result[chart][slot] = value.lower()
+    return result
+
+
 def _default_config() -> dict[str, Any]:
     return {
         # A11：未在册人员 -> 指定区域
@@ -100,6 +131,8 @@ def _default_config() -> dict[str, Any]:
         "statusGateEnabled": True,
         # Excel 代读（2026-11-12）：用户开关，默认关；另需部署授权文件才真正生效。
         "excelProxyEnabled": False,
+        # 图表配色（2026-11-16）：图 -> {bar, special}，只影响前端出图。
+        "chartColors": _chart_colors(None),
         "form": {"projects": [], "departments": [], "watchlistOnly": False, "region": _DEFAULT_REGION},
         # v1 的「范围 key -> {to, cc}」，只读兜底（同范围的收件人带到 v2）
         "recipients": {},
@@ -194,6 +227,29 @@ def _form_list(form: Mapping[str, Any], name: str) -> Any:
         raise _Invalid(f"{name} 不是合法的 JSON 数组") from None
 
 
+def _iso_date(raw: Any, name: str) -> date:
+    """严格的 YYYY-MM-DD（不接受 20261106、2026-11-6 之类的变体）。"""
+    text = str(raw or "").strip()
+    if len(text) != 10 or text[4] != "-" or text[7] != "-":
+        raise _Invalid(f"{name}格式应为 YYYY-MM-DD")
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        raise _Invalid(f"{name}格式应为 YYYY-MM-DD") from None
+
+
+def _form_bool(form: Mapping[str, Any], name: str, *, default: bool) -> bool:
+    """multipart 表单里的开关：1/0/true/false（不分大小写），缺省或空串取默认值。"""
+    raw = str(form.get(name) or "").strip().lower()
+    if not raw:
+        return default
+    if raw in ("1", "true"):
+        return True
+    if raw in ("0", "false"):
+        return False
+    raise _Invalid(f"{name} 只能是 1/0/true/false")
+
+
 def _validate_request(value: Any) -> tuple[S.Scope, bool, dict[str, str]]:
     if not isinstance(value, Mapping):
         raise _Invalid("请求体必须是 JSON 对象")
@@ -209,7 +265,7 @@ def _validate_config_patch(patch: Any) -> dict[str, Any]:
         raise _Invalid("请求体必须是 JSON 对象")
     allowed = {
         "personAreas", "areaNames", "addressBook", "thresholds", "preferences", "statusGateEnabled",
-        "excelProxyEnabled",
+        "excelProxyEnabled", "chartColors",
     }
     unknown = set(patch) - allowed
     if unknown:
@@ -219,6 +275,8 @@ def _validate_config_patch(patch: Any) -> dict[str, Any]:
         if not isinstance(patch["excelProxyEnabled"], bool):
             raise _Invalid("Excel 代读开关必须是布尔值")
         clean["excelProxyEnabled"] = patch["excelProxyEnabled"]
+    if "chartColors" in patch:
+        clean["chartColors"] = _validate_chart_colors(patch["chartColors"])
     if "personAreas" in patch:
         clean["personAreas"] = {
             V.normalize_name(name)[0]: area for name, area in _str_map(patch["personAreas"], "未在册人员→区域").items()
@@ -265,6 +323,28 @@ def _validate_config_patch(patch: Any) -> dict[str, Any]:
     return clean
 
 
+def _validate_chart_colors(value: Any) -> dict[str, dict[str, str]]:
+    """部分更新：只认三张图、只认 bar/special、只认 #RRGGBB（统一小写）；其余一律拒绝。"""
+    if not isinstance(value, Mapping):
+        raise _Invalid("图表配色必须是对象")
+    unknown = set(value) - set(DEFAULT_CHART_COLORS)
+    if unknown:
+        raise _Invalid("未知的图：" + "、".join(sorted(str(k) for k in unknown)))
+    clean: dict[str, dict[str, str]] = {}
+    for chart, colors in value.items():
+        if not isinstance(colors, Mapping):
+            raise _Invalid("图表配色必须是对象")
+        bad = set(colors) - {"bar", "special"}
+        if bad:
+            raise _Invalid("配色只能改 bar、special：" + "、".join(sorted(str(k) for k in bad)))
+        clean[chart] = {}
+        for slot, color in colors.items():
+            if not isinstance(color, str) or not _HEX_COLOR.match(color):
+                raise _Invalid("颜色必须是 #RRGGBB 形式")
+            clean[chart][slot] = color.lower()
+    return clean
+
+
 # ── 配置存储（插件 KV）───────────────────────────────────────────────
 
 
@@ -304,6 +384,7 @@ class Store:
         config["form"] = {**_default_config()["form"], **{k: v for k, v in form.items()
                                                           if k in _default_config()["form"]}}
         config["thresholds"] = {**_DEFAULT_THRESHOLDS, **(config.get("thresholds") or {})}
+        config["chartColors"] = _chart_colors(config.get("chartColors"))
         return config
 
     def save_config(self, patch: Mapping[str, Any]) -> None:
@@ -353,11 +434,13 @@ def register(host):
     snapshots = S.SnapshotStore(ctx.db, host.table_prefix)
     settings = SET.SettingsStore(ctx.db, host.table_prefix, S.seed_roster(), S.seed_rule_rows())
     reports = SCH.ScheduledReportStore(ctx.db, host.table_prefix)
+    manual_baselines = MB.ManualBaselineStore(ctx.db, host.table_prefix)
     host.migrate([
         *store.migrations(),
         snapshots.migration(),
         settings.migration(),
         reports.migration(),
+        manual_baselines.migration(),
     ])
     settings.reconcile()
     # 调度器的槽/绑定表由 sync-control 插件建（同一 services 层前缀），这里只读写。
@@ -448,12 +531,19 @@ def register(host):
             "areaNames": {**V.AREA_DISPLAY, **(config.get("areaNames") or {})},
             "externalColumns": [c for c in V.COUNTERSIGN_COLUMNS if c not in V.INTERNAL_COLUMNS],
             "watchlist": watchlist_state(), "seedVersion": S.seed_version(),
+            "chartColors": config["chartColors"],
         })
 
     @bp.post("/config")
     @guarded
     def save_config():
         patch = _validate_config_patch(body())
+        if "chartColors" in patch:
+            # 部分更新：只改传来的图与项，其余沿用当前生效值。
+            merged_colors = store.config()["chartColors"]
+            for chart, colors in patch["chartColors"].items():
+                merged_colors[chart].update(colors)
+            patch["chartColors"] = merged_colors
         if "preferences" in patch:
             merged = dict(store.config().get("preferences") or {})
             merged.update(patch["preferences"])
@@ -494,30 +584,111 @@ def register(host):
         """手工导入失败的唯一出口：code、文案与白名单 diagnostic（reason/sizeBucket/colIndex）一起回页面。"""
         return ctx.json_error(422, exc.code, exc.message, diagnostic=exc.diagnostic or None)
 
-    def _manual_report(source, scope, texts, *, name: str, digest: str, source_format: str):
-        meta = IMP.import_meta(Path(name), source, name=name, digest=digest, source_format=source_format)
-        banner = (
-            f"手工导入｜{meta['sourceName']}｜数据截至日期 {meta['dataDate']}"
-            "（用户确认，未经系统核验）｜参与计算 %d 行｜不计算日变化" % meta["rowCount"]
-        )
+    def _manual_report(source, scope, texts, *, name: str, digest: str, source_format: str,
+                       keep_baseline: bool = True, baseline_date: date | None = None):
+        """手工导入出报（2026-11-16 起计算日变化）。
+
+        边界：TDC 共享快照、配置、长周期结论一律不读不写（``ReadOnlyStore`` + ``save_config=False``，
+        基线库 ``ManualBaselineStore`` 的结论读写恒空/抛错）；只读写手工导入自有的基线表。
+        基线挑选、旧数据判定、最长间隔与括号里的变化全部复用 ``S.compose``，与一键生成同一套口径。
+        """
+        baselines = manual_baselines.bind(source_name=name, sha256=digest)
+        # 基线日期：本次指定 > 固定 > 自动（compose 里的 _pick_baseline）。
+        if baseline_date is not None:
+            requested_mode = "explicit"
+        else:
+            baseline_date = baselines.pinned_date()
+            requested_mode = "pinned" if baseline_date is not None else "auto"
         try:
             result = SCH.build_report(
-                db=ctx.db, store=IMP.ReadOnlyStore(store), snapshots=IMP.NullStore(),
+                db=ctx.db, store=IMP.ReadOnlyStore(store), snapshots=baselines,
                 effective=effective, scope=scope, watchlist_only=False, texts=texts,
-                save=False, today=source.data_date, tz=_DATA_TZ, source=source,
+                save=keep_baseline, save_config=False, today=source.data_date, tz=_DATA_TZ, source=source,
+                baseline_date=baseline_date,
             )
         except SCH.ReportFailure as exc:
             return ctx.json_error(exc.status, exc.code, exc.message)
-        # 正文指纹：只对「不含来源声明的正文」取摘要，所以同一份数据换一种导入方式
-        # （明文 xlsx / TXT / Excel 代读）得到的指纹应当相同——真机验收靠它一眼对上，不必逐行比。
-        report_digest = hashlib.sha256(result["text"].encode("utf-8")).hexdigest()[:12]
-        # 复制正文是唯一出口（.eml 已禁），来源声明必须进正文本身，而不只是页面徽标。
-        result["html"] = f'<p><b>{banner}</b></p>' + result["html"]
-        result["text"] = banner + "\n" + result["text"]
+        baseline = None
+        if result["baseDate"]:
+            projects = sorted({
+                V.cell_text(r.get("项目/车型")) for r in source.records if V.cell_text(r.get("项目/车型"))
+            })
+            projects = [p for p in projects if not scope.projects or p in scope.projects]
+            found = baselines.source_of(projects, date.fromisoformat(result["baseDate"])) or {}
+            baseline = {
+                "mode": requested_mode,
+                "date": result["baseDate"],
+                "sourceName": found.get("sourceName", ""),
+                "sha256": str(found.get("sha256") or "")[:12],
+            }
+        # compose 的 snapshotSaved 在这里指「手工基线已写」；对外 snapshotSaved 仍只指 TDC 共享快照（恒 False）。
+        baseline_saved = bool(result["snapshotSaved"])
+        result["snapshotSaved"] = False
+        meta = IMP.import_meta(
+            Path(name), source, name=name, digest=digest, source_format=source_format,
+            baseline=baseline, baseline_saved=baseline_saved, stale=bool(result["stale"]),
+            requested=result.get("baselineRequested"), requested_mode=requested_mode,
+        )
+        banner = (
+            f"手工导入｜{meta['sourceName']}｜数据截至日期 {meta['dataDate']}"
+            "（用户确认，未经系统核验）｜参与计算 %d 行｜%s"
+            % (meta["rowCount"], meta["baselineStatement"])
+        )
+        # 正文指纹：只对「不含来源声明、不含日变化」的正文取摘要。来源声明不进指纹，所以同一份数据
+        # 换一种导入方式（明文 xlsx / TXT / Excel 代读）指纹相同；日变化（汇总段括号、间隔说明行、
+        # 每日进展段）也不进指纹，所以同一份数据有没有基线指纹都相同——真机验收靠它一眼对上。
+        plain_lines = S._summary_lines(result["projectLabel"], texts["region"], result["summary"], None)
+        digest_text = M.render_text({**result, "summaryLines": plain_lines}, texts)
+        report_digest = hashlib.sha256(digest_text.encode("utf-8")).hexdigest()[:12]
+        # 复制正文是唯一出口（.eml 已禁），来源声明必须进正文本身，而不只是页面徽标；
+        # 每日进展紧跟在来源声明之后。
+        progress = result.get("progress")
+        result["html"] = f'<p><b>{M._e(banner)}</b></p>' + M.progress_html(progress) + result["html"]
+        result["text"] = banner + "\n" + M.progress_text(progress) + result["text"]
         return ctx.json_ok({
             **result, "mode": "manual",
             "importMeta": {**meta, "banner": banner, "reportDigest": report_digest},
         })
+
+    # ── 手工导入的对比基线（列表 / 固定 / 取消固定 / 删除）────────────
+
+    def baseline_day(value: Any) -> date:
+        if not isinstance(value, Mapping):
+            raise _Invalid("请求体必须是 JSON 对象")
+        return _iso_date(_str(value.get("date"), "日期", 20), "基线日期")
+
+    def baselines_view() -> dict[str, Any]:
+        items = manual_baselines.list_baselines()
+        pinned = next((item["date"] for item in items if item["pinned"]), None)
+        return {"items": items, "pinned": pinned}
+
+    @bp.get("/manual-baselines")
+    def manual_baselines_list():
+        return ctx.json_ok(baselines_view())
+
+    @bp.post("/manual-baselines/pin")
+    @guarded
+    def manual_baselines_pin():
+        day = baseline_day(body())
+        try:
+            manual_baselines.pin(day)
+        except LookupError:
+            return ctx.json_error(404, "NotFound", f"没有 {day.isoformat()} 的手工导入基线")
+        return ctx.json_ok(baselines_view())
+
+    @bp.post("/manual-baselines/unpin")
+    @guarded
+    def manual_baselines_unpin():
+        manual_baselines.unpin()
+        return ctx.json_ok(baselines_view())
+
+    @bp.post("/manual-baselines/delete")
+    @guarded
+    def manual_baselines_delete():
+        day = baseline_day(body())
+        if not manual_baselines.delete(day):
+            return ctx.json_error(404, "NotFound", f"没有 {day.isoformat()} 的手工导入基线")
+        return ctx.json_ok(baselines_view())
 
     @bp.post("/import-scan")
     @guarded
@@ -581,9 +752,10 @@ def register(host):
     @bp.post("/import-form")
     @guarded
     def import_form():
-        """用本地导出的 TDC 数模表单出一次日报（零写库、零临时文件，不计算日变化）。
+        """用本地导出的 TDC 数模表单出一次日报（零临时文件；与此前的手工导入比日变化）。
 
-        接受官方 .xlsx，或 Excel「另存为文本」得到的 .txt（TAB 分隔）。
+        接受官方 .xlsx，或 Excel「另存为文本」得到的 .txt（TAB 分隔）。可选字段 keepBaseline
+        （默认 1）：0 时照样读基线做比较，但不把本次留作下次的基线。
         """
         form, files = _memory_form()
         upload = files.get("file")
@@ -594,12 +766,10 @@ def register(host):
         raw_date = str(form.get("dataDate") or "").strip()
         if not raw_date:
             raise _Invalid("请填写这份报表的数据截至日期（不会用导入时间代替）")
-        if len(raw_date) != 10 or raw_date[4] != "-" or raw_date[7] != "-":
-            raise _Invalid("数据截至日期格式应为 YYYY-MM-DD")
-        try:
-            data_date = date.fromisoformat(raw_date)
-        except ValueError:
-            raise _Invalid("数据截至日期格式应为 YYYY-MM-DD") from None
+        data_date = _iso_date(raw_date, "数据截至日期")
+        keep_baseline = _form_bool(form, "keepBaseline", default=True)
+        raw_baseline = str(form.get("baselineDate") or "").strip()
+        baseline_date = _iso_date(raw_baseline, "对比基线日期") if raw_baseline else None
         scope = S.Scope(
             _str_list(_form_list(form, "projects"), "项目/车型"),
             _str_list(_form_list(form, "departments"), "归属科室"),
@@ -689,6 +859,7 @@ def register(host):
             source_format = IMP.FORMAT_EXCEL_PROXY
         return _manual_report(
             parsed, scope, texts, name=source_name, digest=digest, source_format=source_format,
+            keep_baseline=keep_baseline, baseline_date=baseline_date,
         )
 
     @bp.post("/eml")

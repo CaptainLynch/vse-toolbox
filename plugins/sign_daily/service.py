@@ -462,8 +462,13 @@ def compose(
     watchlist: Sequence[str] | None = None,
     max_gap_days: int = BASELINE_MAX_GAP_DAYS,
     status_gate_enabled: bool = True,
+    baseline_date: date | None = None,
 ) -> dict[str, Any]:
     """today 是生成当天的日历日期；数据日期早于它且那天的快照已存，说明在用旧数据。
+
+    baseline_date 给出时（手工导入的「指定/固定基线」）不自动挑基线、也不受最长间隔限制：
+    它必须早于数据日期、且所选项目在那天都有覆盖今天范围的快照，否则不显示日变化
+    （``baselineRejected``），绝不悄悄退回自动挑选。旧数据（``stale``）判定照旧优先。
 
     watchlist 不为 None 时只统计流水单号在关注清单里的单（§9「只统计关注清单」）；
     清单里在数据中找不到的单号列在预览顶部，不计入统计。
@@ -499,8 +504,27 @@ def compose(
         or (today is not None and today > source.data_date and source.data_date in dates)
         for dates in stored.values()
     )
-    base_date = None if stale else _pick_baseline(store, projects, source.data_date, serials_by_project)
-    mode = {"show": False, "note": ""} if stale else V.baseline_mode(source.data_date, base_date, max_gap_days)
+    baseline_rejected = False
+    if stale:
+        base_date, mode = None, {"show": False, "note": ""}
+    elif baseline_date is not None:
+        usable = baseline_date < source.data_date and all(
+            baseline_date in stored[project]
+            and V.snapshot_covers(store.snapshot_scope(project, baseline_date) or {},
+                                  serials_by_project.get(project, ()))
+            for project in projects
+        )
+        baseline_rejected = not usable
+        base_date = baseline_date if usable else None
+        # 指定基线不受最长间隔限制；不是前一天时照常说明「括号内为较 MM-DD 的变化」。
+        if usable:
+            gap = (source.data_date - baseline_date).days
+            mode = V.baseline_mode(source.data_date, base_date, max(max_gap_days, gap))
+        else:
+            mode = {"show": False, "note": ""}
+    else:
+        base_date = _pick_baseline(store, projects, source.data_date, serials_by_project)
+        mode = V.baseline_mode(source.data_date, base_date, max_gap_days)
     base_flows: list[V.Flow] = []
     if mode["show"] and base_date is not None:
         base_parsed = V.build_flows(store.snapshot_rows(projects, base_date))
@@ -511,6 +535,10 @@ def compose(
     current = V.summary(flows, long_parts)
     base = V.summary(base_flows, long_cycle["longParts"](base_flows)) if mode["show"] else None
     delta = V.deltas(current, base)
+    # 逐单日变化（按流水单号对齐）：与 baseline 同生同灭；所有模式都算，目前只有手工导入渲染。
+    progress = None
+    if base is not None and base_date is not None:
+        progress = {**V.daily_progress(flows, base_flows), "baseDate": base_date.isoformat()}
 
     charts = V.owed_charts(flows, ctx.roster, ctx.person_areas, ctx.area_names)
     table = V.flow_rows(flows, source.data_date, ctx.roster, long_parts.keys(), ctx.person_areas, ctx.area_names)
@@ -559,6 +587,9 @@ def compose(
         "summary": _jsonable_summary(current),
         "baseline": _jsonable_summary(base),
         "delta": _jsonable_summary(delta),
+        "progress": progress,
+        "baselineRequested": baseline_date.isoformat() if baseline_date is not None else None,
+        "baselineRejected": baseline_rejected,
         "summaryLines": lines,
         "charts": charts,
         "flows": table,

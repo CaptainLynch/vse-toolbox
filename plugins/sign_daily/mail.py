@@ -17,6 +17,7 @@ from email.headerregistry import Address
 from email.message import EmailMessage
 from email.policy import SMTP
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from email.utils import getaddresses
 from typing import Any, Mapping, Sequence
 
@@ -206,6 +207,176 @@ def render_text(report: Mapping[str, Any], texts: Mapping[str, Any]) -> str:
                 html.unescape(todo), _ratio(row["countersign"]),
                 "—" if row.get("days") is None else str(row["days"]), STALL_PLACEHOLDER,
             ]))
+    return "\n".join(out) + "\n"
+
+
+# ── 每日进展（手工导入模式渲染；口径在 rules.daily_progress）──────────────
+#
+# 先一句经理一眼能读懂的话（签署率前后、待签人次增减、新签完、还剩几份），再一句明细数，
+# 再只列有变化的单（新签完 → 减少最多 → 变多 → 新增；消失的单另列一行）。增减用 ↓/↑ 文字表达，
+# 颜色只是辅助（绿 = 待签变少，红 = 变多），纯文本里照样读得通。
+
+PROGRESS_KIND_TEXT = {
+    "progress": "有人签了",
+    "regress": "待签变多（加签或退回）",
+    "new": "新增（上次没有）",
+    "completed": "新签完",
+    "unchanged": "无变化",
+}
+_PROGRESS_HEADERS = ("流水单号", "项目", "待签人数 前→后", "变化", "说明")
+_GREEN = "#2e7d32"
+_KIND_ORDER = {"completed": 0, "progress": 1, "regress": 2, "new": 3, "unchanged": 4}
+
+
+def _arrow(value: Any, unit: str = "") -> str:
+    """变化量：↓3 / ↑2 / 不变；没有可比的值写 —。"""
+    if value is None:
+        return "—"
+    if value == 0:
+        return "不变"
+    return f"{'↓' if value < 0 else '↑'}{abs(int(value))}{unit}"
+
+
+def _mmdd(base_date: Any) -> str:
+    text = str(base_date or "")
+    return text[5:10] if len(text) >= 10 else text
+
+
+def _progress_heading(base_date: Any) -> str:
+    day = _mmdd(base_date)
+    return f"每日进展（较 {day}）" if day else "每日进展"
+
+
+def _rate_change(before: Any, now: Any) -> str:
+    try:
+        diff = Decimal(str(now)) - Decimal(str(before))
+    except (InvalidOperation, ValueError):
+        return ""
+    sign = "−" if diff < 0 else "+"
+    return f"（{sign}{abs(diff)}%）"
+
+
+def progress_headline(progress: Mapping[str, Any], base_date: Any = None) -> str:
+    """一句话结论：较 MM-DD：签署率 a% → b%（±x%）；待签人次减少 n；新签完 k 份；还有 m 份未签完。"""
+    totals = progress.get("totals") or {}
+    day = _mmdd(base_date or progress.get("baseDate"))
+    parts = []
+    before, now = totals.get("rateBefore"), totals.get("rateNow")
+    if before is not None and now is not None:
+        parts.append(f"签署率 {before}% → {now}%{_rate_change(before, now)}")
+    change = int(totals.get("remainingChange") or 0)
+    if change < 0:
+        parts.append(f"待签人次减少 {-change}")
+    elif change > 0:
+        parts.append(f"待签人次增加 {change}")
+    else:
+        parts.append("待签人次没有减少")
+    parts.append(f"新签完 {len(totals.get('newlyCompleted') or [])} 份")
+    parts.append(f"还有 {totals.get('openNow', 0)} 份未签完")
+    return (f"较 {day}：" if day else "") + "；".join(parts) + "。"
+
+
+def progress_sentence(progress: Mapping[str, Any]) -> str:
+    """明细数：待签人次 X→Y（↓n）、签完 A→B 份、新签完 k 份、未签完 P→Q 份、新增 n 份、消失 m 份。"""
+    totals = progress.get("totals") or {}
+    # 前→后是两天各自的总数；括号里的增减只计两天都在的单。有新增/消失的单时两者对不上，
+    # 所以把口径直接写进括号，免得读成「9→7 却减少 5」。
+    scope = "两天都在的单 " if totals.get("newFlows") or totals.get("removedFlows") else ""
+    sentence = (
+        f"待签人次 {totals.get('remainingBefore', 0)}→{totals.get('remainingNow', 0)}"
+        f"（{scope}{_arrow(totals.get('remainingChange', 0))}）、"
+        f"签完 {totals.get('completeBefore', 0)}→{totals.get('completeNow', 0)} 份、"
+        f"新签完 {len(totals.get('newlyCompleted') or [])} 份、"
+        f"未签完 {totals.get('openBefore', 0)}→{totals.get('openNow', 0)} 份、"
+        f"新增 {len(totals.get('newFlows') or [])} 份、"
+        f"消失 {len(totals.get('removedFlows') or [])} 份。"
+    )
+    return sentence
+
+
+def progress_rows(progress: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    """只留有变化的单，排序：新签完 → 待签减少最多 → 待签变多 → 新增（同类按流水单号）。"""
+    rows = [item for item in progress.get("flows") or [] if item.get("kind") != "unchanged"]
+    return sorted(rows, key=lambda item: (
+        _KIND_ORDER.get(item.get("kind"), 9),
+        item.get("change") if item.get("kind") in ("progress", "completed") and item.get("change") is not None else 0,
+        -(item.get("change") or 0) if item.get("kind") == "regress" else 0,
+        str(item.get("serial") or ""),
+    ))
+
+
+def _before_after(item: Mapping[str, Any]) -> str:
+    before = item.get("remainingBefore")
+    return f"{'—' if before is None else before}→{item.get('remainingNow')}"
+
+
+def _unchanged_text(progress: Mapping[str, Any], base_date: Any) -> str:
+    day = _mmdd(base_date or progress.get("baseDate"))
+    return f"与 {day} 相比没有变化" if day else "没有变化"
+
+
+def progress_html(progress: Mapping[str, Any] | None, base_date: Any = None) -> str:
+    """「每日进展」段（邮件安全的行内样式，所有值转义）。"""
+    if not progress:
+        return ""
+    heading = _progress_heading(base_date or progress.get("baseDate"))
+    parts = [
+        f"<p><b>{_e(heading)}</b></p>",
+        f"<p><b>{_e(progress_headline(progress, base_date))}</b><br>{_e(progress_sentence(progress))}</p>",
+    ]
+    rows = progress_rows(progress)
+    removed = (progress.get("totals") or {}).get("removedFlows") or []
+    if not rows and not removed:
+        parts.append(f"<p>{_e(_unchanged_text(progress, base_date))}</p>")
+        return "".join(parts)
+    if rows:
+        head = "".join(
+            f'<th bgcolor="{_TH_BG}" style="{_TH}background:{_TH_BG};">{_e(h)}</th>' for h in _PROGRESS_HEADERS
+        )
+        body = []
+        for item in rows:
+            change = item.get("change")
+            color = _GREEN if change is not None and change < 0 else (_RED if change else "")
+            change_style = f"{_TD}white-space:nowrap;" + (f"color:{color};" if color else "")
+            body.append(
+                "<tr>"
+                f'<td style="{_TD}white-space:nowrap;">{_e(item.get("serial"))}</td>'
+                f'<td style="{_TD}white-space:nowrap;">{_e(item.get("project"))}</td>'
+                f'<td style="{_TD}white-space:nowrap;">{_e(_before_after(item))}</td>'
+                f'<td style="{change_style}">{_e(_arrow(change))}</td>'
+                f'<td style="{_TD}">{_e(PROGRESS_KIND_TEXT.get(item.get("kind"), item.get("kind")))}</td>'
+                "</tr>"
+            )
+        parts.append(
+            f'<table cellpadding="0" cellspacing="0" border="1" width="640" '
+            f'style="border-collapse:collapse;width:640px;{_FONT}"><tr>{head}</tr>{"".join(body)}</table>'
+        )
+    if removed:
+        parts.append(f"<p>消失的单（今天的导出里没有）：{_e('、'.join(str(s) for s in removed))}</p>")
+    return "".join(parts)
+
+
+def progress_text(progress: Mapping[str, Any] | None, base_date: Any = None) -> str:
+    """纯文本版「每日进展」：与 progress_html 同样的内容与顺序，制表符分隔。"""
+    if not progress:
+        return ""
+    out = [
+        _progress_heading(base_date or progress.get("baseDate")),
+        progress_headline(progress, base_date), progress_sentence(progress),
+    ]
+    rows = progress_rows(progress)
+    removed = (progress.get("totals") or {}).get("removedFlows") or []
+    if not rows and not removed:
+        out.append(_unchanged_text(progress, base_date))
+    if rows:
+        out.append("\t".join(_PROGRESS_HEADERS))
+        for item in rows:
+            out.append("\t".join([
+                str(item.get("serial") or ""), str(item.get("project") or ""), _before_after(item),
+                _arrow(item.get("change")), PROGRESS_KIND_TEXT.get(item.get("kind"), str(item.get("kind"))),
+            ]))
+    if removed:
+        out.append("消失的单（今天的导出里没有）：" + "、".join(str(s) for s in removed))
     return "\n".join(out) + "\n"
 
 

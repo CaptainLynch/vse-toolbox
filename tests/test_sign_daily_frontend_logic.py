@@ -166,3 +166,107 @@ console.log(JSON.stringify({rows: rows(out), calls, only: rows(only), onlyTag: o
     assert data["calls"][0] == ["F620S", "F620S产品项目"]
     assert data["calls"][1] == ["F620S"]
 
+
+def test_chart_palette_helpers():
+    """配色：坏值回落默认、未知图沿用图2 默认；方案与太浅提示；不传 palette 时出图行为不变。"""
+    out = _run(r"""
+const C = await import(process.argv[1] + "/chart.js");
+const calls = [];
+const fakeDoc = {createElement: () => ({width: 0, height: 0, toDataURL: () => "data:image/png;base64,x",
+  getContext: () => new Proxy({}, {get: (t, k) => k === "fillStyle" ? t.fill : (k in t ? t[k] : () => {}),
+    set: (t, k, v) => { if (k === "fillStyle") calls.push(v); t[k === "fillStyle" ? "fill" : k] = v; return true; }})})};
+const groups = [{group: "A", personTimes: 1, flows: 1, people: 1, bars: [{name: "x", label: "x", count: 1}]},
+                {group: "B", special: true, personTimes: 1, flows: 1, people: 1, bars: [{name: "y", label: "y", count: 1}]}];
+C.renderChartPng(groups, "sections", fakeDoc);
+const plain = calls.splice(0);
+C.renderChartPng(groups, "sections", fakeDoc, {bar: "#112233", special: "#445566"});
+const custom = calls.splice(0);
+console.log(JSON.stringify({
+  ok: C.resolvePalette("external", {external: {bar: "#ABCDEF"}}),
+  bad: C.resolvePalette("sections", {sections: {bar: "red", special: 3}}),
+  none: C.resolvePalette("approval", null),
+  unknown: C.resolvePalette("pie", {pie: {bar: "#000000"}}),
+  all: C.resolveAllPalettes({sections: {special: "#000000"}}),
+  defaults: C.PALETTES,
+  presets: C.CHART_PRESETS.map((p) => p.id),
+  presetDefault: C.presetPalettes("default"), presetUnknown: C.presetPalettes("nope"),
+  match: [C.matchPreset(C.PALETTES), C.matchPreset(C.presetPalettes("warm")), C.matchPreset({external: {bar: "#010203"}})],
+  light: [C.tooLight("#ffffff"), C.tooLight("#f5f5f5"), C.tooLight("#3370ff"), C.tooLight("#c9cdd4"), C.tooLight("bad")],
+  defaultsLight: Object.values(C.PALETTES).some((p) => C.tooLight(p.bar) || C.tooLight(p.special)),
+  plainHasDefault: plain.includes("#8f959e") && plain.includes("#c9cdd4"),
+  custom: custom.includes("#112233") && custom.includes("#445566") && !custom.includes("#8f959e"),
+}));
+""")
+    assert out["ok"] == {"bar": "#abcdef", "special": "#3370ff"}
+    assert out["bad"] == out["defaults"]["sections"]
+    assert out["none"] == out["defaults"]["approval"]
+    assert out["unknown"] == out["defaults"]["sections"]
+    assert out["all"]["sections"] == {"bar": "#8f959e", "special": "#000000"}
+    assert out["all"]["external"] == out["defaults"]["external"]
+    assert out["presets"] == ["default", "bluegray", "warm", "contrast"]
+    assert out["presetDefault"] == out["defaults"] and out["presetUnknown"] == out["defaults"]
+    assert out["match"] == ["default", "warm", ""]
+    assert out["light"] == [True, True, False, False, False]
+    assert out["defaultsLight"] is False
+    assert out["plainHasDefault"] is True and out["custom"] is True
+
+
+def test_compare_plan_and_result_text():
+    out = _run(r"""
+const L = await import(process.argv[1] + "/report-logic.js");
+const items = [
+  {date: "2026-11-15", sourceName: "a.xlsx", pinned: false},
+  {date: "2026-11-01", sourceName: "b.xlsx", pinned: false},
+];
+const pinned = [items[0], {...items[1], pinned: true}];
+console.log(JSON.stringify({
+  today: L.todayIso(new Date(2026, 0, 5)),
+  options: L.baselineOptions(pinned).map((o) => [o.value, o.label]),
+  first: L.comparePlan([], {dataDate: "2026-11-16"}),
+  auto: L.comparePlan(items, {dataDate: "2026-11-16"}),
+  gap: L.comparePlan(items, {dataDate: "2026-12-20", maxGapDays: 14}),
+  stale: L.comparePlan(items, {dataDate: "2026-11-10"}),
+  noEarlier: L.comparePlan([{date: "2026-11-16", sourceName: "c"}], {dataDate: "2026-11-16"}),
+  explicit: L.comparePlan(items, {dataDate: "2026-11-16", choice: "2026-11-01"}),
+  explicitBad: L.comparePlan(items, {dataDate: "2026-11-15", choice: "2026-11-15"}),
+  pinnedPlan: L.comparePlan(pinned, {dataDate: "2026-11-16"}),
+  explicitOverPinned: L.comparePlan(pinned, {dataDate: "2026-11-16", choice: "2026-11-15"}),
+  noDate: L.comparePlan(items, {dataDate: ""}),
+  result: [
+    L.compareResultText({baseline: {date: "2026-11-15", sourceName: "a.xlsx", mode: "auto"}, baselineSaved: true}),
+    L.compareResultText({baseline: {date: "2026-11-01", sourceName: "b.xlsx", mode: "pinned"}, baselineSaved: false}),
+    L.compareResultText({baseline: null, baselineReason: "x", baselineSaved: false}),
+    L.compareResultText({baseline: null, baselineStatement: "已有更晚日期的手工导入…", baselineSaved: false}),
+    L.compareResultText({baseline: null, baselineSaved: true}),
+  ],
+  same: [L.sameColors({external: {bar: "#AAAAAA"}}, {external: {bar: "#aaaaaa"}}),
+         L.sameColors({external: {bar: "#aaaaaa"}}, {external: {bar: "#bbbbbb"}})],
+}));
+""")
+    assert out["today"] == "2026-01-05"
+    assert out["options"] == [["", "上次导入（自动）"], ["2026-11-15", "2026-11-15 · a.xlsx"],
+                              ["2026-11-01", "2026-11-01 · b.xlsx（固定）"]]
+    assert out["first"] == {"text": "这是第一次导入，明天起才能看到每日进展", "tone": "info"}
+    assert out["auto"] == {"text": "将与 11-15 的导入（a.xlsx）对比", "tone": "ok"}
+    assert out["gap"]["tone"] == "info" and "隔了超过 14 天" in out["gap"]["text"]
+    assert out["stale"]["tone"] == "warn" and "按旧数据处理" in out["stale"]["text"]
+    assert out["noEarlier"]["text"] == "今天先导入一次，明天再导入就能看到进展"
+    assert out["explicit"] == {"text": "将与 11-01 的导入（b.xlsx）对比（你指定的）", "tone": "ok"}
+    assert out["explicitBad"] == {"text": "选的对比日期要早于本次数据日期，请改选或改回自动", "tone": "warn"}
+    assert out["pinnedPlan"] == {"text": "已固定与 11-01 的导入（b.xlsx）对比", "tone": "ok"}
+    assert out["explicitOverPinned"]["text"].startswith("将与 11-15")
+    assert out["noDate"]["tone"] == "info"
+    assert out["result"][0] == "已与 11-15 的导入（a.xlsx，自动选的上次导入）对比。本次已留作下次对比。"
+    assert "已固定的" in out["result"][1] and "没有留作" in out["result"][1]
+    assert out["result"][2].startswith("选的对比日期要早于本次数据日期")
+    assert out["result"][3].startswith("已有更晚日期的导入")
+    assert out["result"][4].startswith("没有可比的更早导入")
+    assert out["same"] == [True, False]
+
+
+def test_report_page_passes_palette_to_every_chart_render():
+    source = (STATIC / "report.js").read_text(encoding="utf-8")
+    calls = re.findall(r"renderChartPng\(([^)]*)\)", source)
+    assert calls and all(call.count(",") >= 3 for call in calls)  # 每处都传第 4 个参数（生效配色）
+    assert "renderImages(data, effectiveColors)" in source
+    assert "不计算日变化" not in source

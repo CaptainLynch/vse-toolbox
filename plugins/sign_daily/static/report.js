@@ -2,16 +2,68 @@
 // 口径和正文都在后端（rules.py、mail.py）；本页画图（chart.js，Canvas 出 PNG）并负责交互。
 import { html, useEffect, useRef, useState } from "/static/host/vendor/preact-htm.js";
 import { StateBlock, useStylesheet } from "/static/host/kit.js";
-import { renderChartPng } from "./chart.js";
+import { CHART_PRESETS, matchPreset, presetPalettes, renderChartPng, resolveAllPalettes, tooLight } from "./chart.js";
 import {
-  conclusionsPayload, exportAllowed, formatTime, initialPicks, inlineImages, migratePrefs, orphanProjects, scopeKey,
-  searchMisses, stageText, statusGateText, toggle,
+  baselineOptions, compareResultText, comparePlan, conclusionsPayload, exportAllowed, formatTime, initialPicks,
+  inlineImages, migratePrefs, orphanProjects, sameColors, scopeKey, searchMisses, stageText, statusGateText, todayIso,
+  toggle,
 } from "./report-logic.js";
 import { Chips } from "./chips.js";
 import { SettingsPanel } from "./settings-panel.js";
 
 const CHART_TITLES = { external: "图1 外区域会签未签单情况", sections: "图2 内部科室会签未签单情况", approval: "图3 审批未签单情况" };
 const POLL_MS = 1500;
+/** 配色面板：按「画的是什么」起名，不露 key。一个输入框可以同时管普通柱和特殊组柱。 */
+const COLOR_FIELDS = [
+  { id: "external", label: "图1 外区域柱子", chart: "external", slots: ["bar", "special"] },
+  { id: "sectionsBar", label: "图2 普通科室", chart: "sections", slots: ["bar"] },
+  { id: "sectionsSpecial", label: "图2 特殊组", chart: "sections", slots: ["special"] },
+  { id: "approval", label: "图3 审批柱子", chart: "approval", slots: ["bar", "special"] },
+];
+
+/** 用当前配色把结果里的三张图画成 PNG：预览、复制正文、下载图片、.eml 用的都是这一份。 */
+function renderImages(data, colors) {
+  const next = {};
+  (data.chartsWithData || []).forEach((chart) => {
+    next[chart] = renderChartPng(data.charts[chart], chart, undefined, colors ? colors[chart] : undefined);
+  });
+  return next;
+}
+
+/** 图表配色：一键方案 + 折叠的「自定义」取色；改了马上重画右侧的图，保存是可选的。 */
+function ChartColors({ colors, saved, onChange, onSave, onReset, busy }) {
+  const dirty = !sameColors(colors, saved);
+  const preset = matchPreset(colors);
+  const set = (field, value) => {
+    const next = { ...colors, [field.chart]: { ...colors[field.chart] } };
+    field.slots.forEach((slot) => { next[field.chart][slot] = value; });
+    onChange(next);
+  };
+  const light = COLOR_FIELDS.filter((field) => tooLight(colors[field.chart][field.slots[0]]));
+  return html`<details class="sd-panel sd-colors">
+    <summary>图表配色${dirty ? "（已修改，未保存）" : ""}</summary>
+    <p class="vk-muted sd-hint">点一下换一套颜色，右边的图马上跟着变；复制正文、下载图片和 .eml 都用这里的颜色。</p>
+    <div class="sd-actions" role="group" aria-label="配色方案">
+      ${CHART_PRESETS.map((item) => html`<button type="button" key=${item.id} disabled=${busy}
+        class=${`vk-btn${preset === item.id ? " is-primary" : ""}`} aria-pressed=${preset === item.id}
+        onClick=${() => onChange(presetPalettes(item.id))}>${item.name}</button>`)}
+    </div>
+    <details class="sd-colors-custom"><summary>自定义</summary>
+      <div class="sd-color-grid">${COLOR_FIELDS.map((field) => html`<label key=${field.id} class="sd-color-field">
+        <input type="color" value=${colors[field.chart][field.slots[0]]} disabled=${busy}
+          onInput=${(e) => set(field, e.target.value)} />
+        <span>${field.label}</span></label>`)}</div>
+      <p class="vk-muted sd-hint">点色块挑颜色，右边的图会马上变。</p>
+    </details>
+    ${light.length > 0 && html`<p class="sd-warn" role="status">颜色太浅，柱子可能看不清：${light.map((f) => f.label).join("、")}</p>`}
+    ${dirty && html`<p class="sd-warn" role="status">配色已修改，未保存（这次复制、下载照样用新颜色）</p>`}
+    <div class="sd-actions">
+      <button type="button" class="vk-btn is-primary" disabled=${busy || !dirty} onClick=${onSave}>保存，以后都用这套</button>
+      <button type="button" class="vk-btn" disabled=${busy} onClick=${onReset}>恢复默认</button>
+    </div>
+    <p class="vk-muted sd-hint">保存后，下次打开也是这套颜色；不保存只对这一次有效。</p>
+  </details>`;
+}
 
 /** 富文本复制：clipboard.write 同时写 text/html 和 text/plain；非安全上下文时退回选中预览区复制（§10）。 */
 async function copyRich(htmlText, plainText, fallbackNode) {
@@ -221,7 +273,14 @@ export default function Page({ plugin, api }) {
   const [proceed, setProceed] = useState(false);
   const [toast, setToast] = useState("");
   const [manualFile, setManualFile] = useState(null);
-  const [manualDate, setManualDate] = useState("");
+  // 数据截至日期默认填今天（只是前端预填，用户看得见、可以改；后端从不拿导入时间代替）。
+  const [manualDate, setManualDate] = useState(() => todayIso());
+  const [colors, setColors] = useState(null); // 生效配色（可能还没保存）
+  const [colorBusy, setColorBusy] = useState(false);
+  const [baselines, setBaselines] = useState([]); // 已存的手工导入（可以「和哪一天比」）
+  const [baselineChoice, setBaselineChoice] = useState(""); // "" = 上次导入（自动）
+  const [keepBaseline, setKeepBaseline] = useState(true);
+  const [baselineBusy, setBaselineBusy] = useState(false);
   const [scan, setScan] = useState(null);
   const fileRef = useRef(null);
   const previewRef = useRef(null);
@@ -234,13 +293,25 @@ export default function Page({ plugin, api }) {
       const data = await api.get("state");
       setState(data);
       setForm((current) => current || { ...data.form });
+      setColors((current) => current || resolveAllPalettes(data.chartColors));
       return data;
     } catch (err) {
       setLoadError(err);
       return null;
     }
   };
-  useEffect(() => { load(); }, []);
+  const loadBaselines = async () => {
+    try {
+      const data = await api.get("manual-baselines");
+      setBaselines(data.items || []);
+      return data.items || [];
+    } catch (_) {
+      return null; // 列表拿不到不影响导入：下拉只剩「自动」
+    }
+  };
+  useEffect(() => { load(); loadBaselines(); }, []);
+  // 换颜色时只在前端重画已经算好的图，不再请求后端。
+  useEffect(() => { if (result && colors) setImages(renderImages(result, colors)); }, [colors]);
 
   // 范围变了就带出该范围记住的文案（§7 日报偏好按范围记住）。
   const key = form ? scopeKey(form.projects, form.departments, form.watchlistOnly) : "";
@@ -269,9 +340,7 @@ export default function Page({ plugin, api }) {
     try {
       const data = await api.post("generate", requestBody());
       // 结果和三张图一起落定：预览、复制、.eml 用同一张 PNG，预览里也不会出现未替换的 cid: 地址。
-      const next = {};
-      data.chartsWithData.forEach((chart) => { next[chart] = renderChartPng(data.charts[chart], chart); });
-      setImages(next);
+      setImages(renderImages(data, effectiveColors));
       setResult(data);
       setProceed(false);
       setError(null);
@@ -283,7 +352,7 @@ export default function Page({ plugin, api }) {
     }
   };
 
-  // 本地报表导入（方案 B）：一次性数据源，不写快照、不计算日变化、不提供 .eml。
+  // 本地报表导入（方案 B）：不碰一键生成的数据；默认和上次导入比每日进展，不提供 .eml。
   const importFromFile = async () => {
     const scanned = scan && scan.selected;
     if (!manualFile && !scanned) {
@@ -308,18 +377,78 @@ export default function Page({ plugin, api }) {
       body.append("region", form.region || "");
       body.append("greeting", texts.greeting || "");
       body.append("planText", texts.planText || "");
+      body.append("keepBaseline", keepBaseline ? "1" : "0");
+      if (baselineChoice) body.append("baselineDate", baselineChoice);
       const data = await postForm(api.url("import-form"), body);
-      const next = {};
-      data.chartsWithData.forEach((chart) => { next[chart] = renderChartPng(data.charts[chart], chart); });
-      setImages(next);
+      setImages(renderImages(data, effectiveColors));
       setResult(data);
       setProceed(false);
+      const items = await loadBaselines();
+      if (items && baselineChoice && !items.some((item) => item.date === baselineChoice)) setBaselineChoice("");
     } catch (err) {
       setError({ message: err.message, canFallback: false, reason: err.reason || "" });
     } finally {
       setPhase("idle");
     }
   };
+
+  const savedColors = resolveAllPalettes(state.chartColors);
+  const effectiveColors = colors || savedColors;
+  const saveColors = async () => {
+    setColorBusy(true);
+    try {
+      await api.post("config", { chartColors: effectiveColors });
+      await load();
+      flash("配色已保存，以后都用这套");
+    } catch (err) {
+      flash(err.message);
+    } finally {
+      setColorBusy(false);
+    }
+  };
+  const resetColors = async () => {
+    if (!window.confirm("恢复成默认配色并保存？之前保存或刚改的配色都会被替换。")) return;
+    const defaults = presetPalettes("default");
+    setColorBusy(true);
+    try {
+      await api.post("config", { chartColors: defaults });
+      setColors(defaults);
+      await load();
+      flash("已恢复默认配色");
+    } catch (err) {
+      flash(err.message);
+    } finally {
+      setColorBusy(false);
+    }
+  };
+
+  const baselineAction = async (path, payload, done) => {
+    setBaselineBusy(true);
+    try {
+      const data = await api.post(`manual-baselines/${path}`, payload);
+      setBaselines(data.items || []);
+      flash(done);
+      return true;
+    } catch (err) {
+      flash(err.message);
+      return false;
+    } finally {
+      setBaselineBusy(false);
+    }
+  };
+  const pinChoice = () => baselineAction("pin", { date: baselineChoice },
+    `已固定：以后导入都和 ${baselineChoice} 比，直到取消固定`);
+  const unpin = () => baselineAction("unpin", {}, "已取消固定：以后自动和上次导入比");
+  const deleteChoice = async () => {
+    const date = baselineChoice;
+    if (!window.confirm(`删除 ${date} 的导入记录后，就不能再和这一天比了（你的报表文件不受影响）。确定删除？`)) return;
+    if (await baselineAction("delete", { date }, `已删除 ${date} 的导入记录`)) setBaselineChoice("");
+  };
+  const pinnedItem = baselines.find((item) => item.pinned);
+  const plan = comparePlan(baselines, {
+    dataDate: manualDate, choice: baselineChoice,
+    maxGapDays: (state.thresholds && state.thresholds.baselineMaxGapDays) || 14,
+  });
 
   const toggleExcelProxy = async (enabled) => {
     try {
@@ -339,10 +468,10 @@ export default function Page({ plugin, api }) {
         setManualFile(null);
         if (fileRef.current) fileRef.current.value = "";
       }
-      if (data.selected && !manualDate) {
-        // 只把「文件的 mtime 日期」当成日期的**建议展示**，仍要用户自己确认/修改。
-        flash(`已挑出最新文件：${data.selected.name}（数据日期请自行确认）`);
-      } else if (!data.selected) {
+      if (data.selected) {
+        // 文件的修改时间不会被当成数据日期：日期框里是什么就用什么，请用户自己确认。
+        flash(`已挑出最新文件：${data.selected.name}（请确认数据截至日期 ${manualDate || "未填"} 是否正确）`);
+      } else {
         flash(`没有可用候选：${reasonText(data.reason) || "目录里没有 .xlsx 或 .txt"}`);
       }
     } catch (err) {
@@ -469,7 +598,7 @@ export default function Page({ plugin, api }) {
         ${error.canFallback && state.data && html`<button type="button" class="vk-btn" onClick=${generate}>用最近一次数据生成（${dataTime}）</button>`}
       </div>`}
       <details class="sd-import">
-        <summary>用本地导出的报表生成（只算本次、不留存、不算日变化）</summary>
+        <summary>用本地导出的报表生成（自动和上次导入比，看每日进展）</summary>
         <p class="vk-muted sd-import-hint">文件必须是 TDC「数模设计审核流程」原样导出的 .xlsx（47 列表头）。数据日期请自己确认——程序不会用导入时间、文件修改时间或「申请日期」推断。</p>
         <p class="vk-muted sd-import-hint">如果 .xlsx 提示受终端加密保护：用 Excel 打开它，「另存为」选「Unicode 文本(*.txt)」，再选这份 .txt 导入（不要手工改内容）。</p>
         ${state.excelProxy && html`<p class="vk-muted sd-import-hint">
@@ -492,6 +621,29 @@ export default function Page({ plugin, api }) {
             }} /></label>
         <label class="sd-field"><span>数据截至日期</span>
           <input type="date" value=${manualDate} onInput=${(e) => setManualDate(e.target.value)} /></label>
+        <p class="vk-muted sd-import-hint">已预填今天；如果这份报表不是今天导出的，请改成导出那天。</p>
+        <label class="sd-check"><input type="checkbox" checked=${keepBaseline}
+          onChange=${() => setKeepBaseline(!keepBaseline)} />留作下次对比</label>
+        <p class="vk-muted sd-import-hint">勾上后，明天导入就能看到比今天进展了多少。</p>
+        <details class="sd-compare">
+          <summary>更多：指定和哪一天比</summary>
+          <label class="sd-field"><span>和哪一天比</span>
+            <select value=${baselineChoice} disabled=${busy || baselineBusy}
+              onChange=${(e) => setBaselineChoice(e.target.value)}>
+              ${baselineOptions(baselines).map((item) => html`<option key=${item.value} value=${item.value}>${item.label}</option>`)}
+            </select></label>
+          <p class="vk-muted sd-import-hint">选「上次导入（自动）」最省事；选了某一天，这次就只和那一天比。</p>
+          <div class="sd-actions">
+            <button type="button" class="vk-btn" disabled=${busy || baselineBusy || !baselineChoice} onClick=${pinChoice}>固定和这一天比</button>
+            <button type="button" class="vk-btn" disabled=${busy || baselineBusy || !pinnedItem} onClick=${unpin}>取消固定</button>
+            <button type="button" class="vk-btn" disabled=${busy || baselineBusy || !baselineChoice} onClick=${deleteChoice}>删除</button>
+          </div>
+          <p class="vk-muted sd-import-hint">
+            ${pinnedItem ? `现在固定和 ${pinnedItem.date} 比；「取消固定」后改回自动。` : "「固定」后，以后每次导入都和这一天比，直到取消固定。"}
+            「删除」只删程序里记下的那天的数据，不动你的文件。</p>
+          <p class="vk-muted sd-import-hint">两天导出时 TDC 的筛选条件要一样，否则少掉的单会显示为「消失」。</p>
+        </details>
+        <p class=${`sd-plan-line is-${plan.tone}`} role="status">${plan.text}</p>
         <div class="sd-actions">
           <button type="button" class="vk-btn" disabled=${busy} onClick=${scanDir}>扫描目录</button>
           <button type="button" class="vk-btn is-primary" disabled=${busy} onClick=${importFromFile}>用这份报表生成</button>
@@ -525,6 +677,8 @@ export default function Page({ plugin, api }) {
           <textarea rows="2" placeholder="如：计划10-10发布，已超期x天" value=${texts.planText} onInput=${setText("planText")}></textarea></label>
       </details>
     </section>
+    <${ChartColors} colors=${effectiveColors} saved=${savedColors} busy=${colorBusy}
+      onChange=${setColors} onSave=${saveColors} onReset=${resetColors} />
     <${SettingsPanel} api=${api} state=${state} onSaved=${load}
       onChanged=${() => { if (result && result.mode !== "manual") generate(); }} />
     </div>
@@ -535,11 +689,12 @@ export default function Page({ plugin, api }) {
     ${result && html`<section class="sd-result">
       ${result.mode === "manual" && html`<div class="sd-notice is-manual">
         手工导入｜${result.importMeta.sourceName}｜数据截至日期 ${result.importMeta.dataDate}（用户确认，未经系统核验）｜
-        参与计算 ${result.importMeta.rowCount} 行｜本报告只算本次、不留存、不计算日变化
+        参与计算 ${result.importMeta.rowCount} 行｜${result.importMeta.baselineStatement || ""}
+        <br /><b>${compareResultText(result.importMeta)}</b>
         ${result.importMeta.reportDigest && html`<br />正文指纹 ${result.importMeta.reportDigest}
-          （同一份数据、同样的条件，换一种导入方式生成，指纹应当相同）`}
+          （同一份数据、同样的条件，换一种导入方式或有没有对比，指纹都应当相同）`}
       </div>`}
-      ${result.stale && html`<div class="sd-notice is-stale">用的是旧数据（数据时间 ${formatTime(result.snapshotAt)}），不写快照，不显示日变化。</div>`}
+      ${result.stale && result.mode !== "manual" && html`<div class="sd-notice is-stale">用的是旧数据（数据时间 ${formatTime(result.snapshotAt)}），不写快照，不显示日变化。</div>`}
       ${result.notices.map((n) => html`<div key=${n.kind} class=${`sd-notice${n.blocking ? " is-blocking" : ""}`}>${n.text}</div>`)}
       ${gateText && html`<div class=${`sd-notice${gateBlocked ? " is-blocking" : ""}`}
         role=${gateBlocked ? "alert" : "status"}>${gateText}</div>`}

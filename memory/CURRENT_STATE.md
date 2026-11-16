@@ -4,6 +4,24 @@
 > 更早条目完整保存在 [归档文件](archive/CURRENT_STATE_ARCHIVE_20261023.md)。
 > 恢复状态时**不要**再通读全文；先读本节，再按需查归档。
 
+## 当前前沿补充（2026-11-16 · 签署日报 0.6.0：图表配色 + 本地导入每日进展）【真机待验】
+
+- **改了什么**（均在 `plugins/sign_daily/`，`refactor/ux-v2`）：
+  ① 图表配色：配置键 `chartColors`（三图各 `bar`/`special`，只认 `#rrggbb`，默认值与 `chart.js` 的 `PALETTES`
+  由测试钉住一致），页面「图表配色」面板含四套预设与自定义取色，改色只在前端用已加载的 `result.charts` 重画；
+  ② 本地导入（`/import-form`）开始计算日变化：新增 `manual_baseline.py`（`ManualBaselineStore`，迁移版本 5，
+  自有表 `manual_baseline_meta/rows`），基线优先级「本次指定 > 固定 > 自动」，指定/固定基线不受最长间隔限制、
+  不可用时不回退自动；`rules.daily_progress` 逐单对比（待签人数 = `required - signed`），正文与页面新增「每日进展」段，
+  仅手工模式渲染；新路由 `GET manual-baselines`、`POST manual-baselines/pin|unpin|delete`。
+- **边界不变**：手工导入仍不读不写 TDC 共享快照、配置、长周期结论，仍无 `.eml`；离线 CLI
+  `tools/sign_daily_local_report.py` 未改（零写库、不算日变化），其 docstring 里「与插件手工导入同一契约」已不准确，待修。
+- **证据**：签署日报 10 个测试文件 358 passed / 3 skipped / 1 failed；失败项
+  `test_import_scan_rejects_dir_outside_roots` 在改动前同样失败（Linux 上没有 `C:/Windows`，得到 `E_DIR_MISSING`）。
+  Linux 容器内用 Chromium 实走：连续两天导入 → 自动对比、进展段、预设换色重画，无控制台错误。
+  `generate_project_map.py --check` 通过；改动文件 flake8 无新增告警。
+- **未做**：Windows 真机、加密 xlsx 代读路径、签名 `.vsepkg` 打包、全量回归。
+- **下一步**：Windows 上跑全量 pytest 与真机验收，再用 `tools/build_plugin_pkg.py` 出 0.6.0 的 `.vsepkg`。
+
 ## 当前前沿（2026-11-03 · DSH 第 3–7 波已全部集成到 refactor/ux-v2；第 8–10 波需真实环境）
 
 - **DSH-V2-03 本轮（2026-11-03，`codex/dsh-v2-03-transport` @ c41dde8，tip `a18b2c3`；已快进合入

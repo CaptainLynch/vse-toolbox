@@ -538,7 +538,7 @@ def test_scope_preference_migration_keeps_other_scopes(client) -> None:  # type:
     assert after[new_key]["to"] == '"甲"<a@x.com>' and after[new_key]["planText"] == "旧范围"
 
 
-# ── 本地报表导入（方案 B：一次性数据源，零写库）────────────────────────
+# ── 本地报表导入（方案 B：共享表零写入；2026-11-16 起只写自有的手工基线表）──────
 
 
 def _workbook(tmp_path: Path, rows, *, drift: bool = False, name: str = "import.xlsx") -> Path:
@@ -584,7 +584,7 @@ def test_import_form_generates_report_and_writes_nothing(client, tmp_path) -> No
     assert report["delta"] is None and report["baseDate"] is None
     assert report["charts"]["external"]  # 欠账数据照常算
     assert report["subject"].endswith("20261106")
-    assert _snapshot_counts(db) == before  # 零写库
+    assert _snapshot_counts(db) == before  # 共享表零写入（手工基线表不在 _snapshot_counts 的模式里）
 
 
 def test_import_form_requires_confirmed_date(client, tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -955,3 +955,272 @@ def test_scan_reason_texts_cover_encrypted_code() -> None:
     js = (repo / "plugins" / "sign_daily" / "static" / "report.js").read_text(encoding="utf-8")
     assert "E_ENCRYPTED_WORKBOOK:" in js
     assert "REASON_NOTES" in js
+
+
+# ── 2026-11-16 本地导入日变化：只写自有的手工基线表 ─────────────────────
+
+
+def _manual_counts(db) -> dict[str, int]:
+    with db.get_connection() as conn:
+        names = [row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+        return {
+            name: conn.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0]
+            for name in names if fnmatch.fnmatch(name, "*manual_baseline*")
+        }
+
+
+def _signed_s2(rows):  # type: ignore[no-untyped-def]
+    """第二天：S2 审批完成（待签 1 → 0，新签完）。"""
+    for row in rows:
+        if row["流水单号"] == "S2":
+            row.update({"状态": "已完成", "已签人数": 2, "未签人数": 0, "签署率": "100%", "首席/总监": "总监辛"})
+    return rows
+
+
+def test_manual_baseline_tables_are_outside_shared_patterns(client) -> None:  # type: ignore[no-untyped-def]
+    _, _, db, _ = client
+    tables = _manual_counts(db)
+    assert sorted(tables) == ["p_sign_daily_manual_baseline_meta", "p_sign_daily_manual_baseline_rows"]
+    assert not set(tables) & set(_snapshot_counts(db))  # 共享表断言照旧有效
+
+
+def test_import_form_next_day_shows_daily_progress(client, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _, http, db, _ = client
+    _publish(db, _rows(), "2026-10-02T08:00:00Z")
+    shared = _snapshot_counts(db)
+    first = _ok(_upload(http, _workbook(tmp_path, _rows(), name="d1.xlsx"), dataDate="2026-11-06",
+                        projects='["F610M"]'))
+    assert first["delta"] is None and first["progress"] is None
+    assert first["importMeta"]["baseline"] is None and first["importMeta"]["baselineSaved"] is True
+    assert "首次导入或无可用基线，不显示日变化" in first["importMeta"]["banner"]
+    assert "不计算日变化" not in first["html"]
+    assert _manual_counts(db)["p_sign_daily_manual_baseline_meta"] == 1
+
+    second = _ok(_upload(http, _workbook(tmp_path, _signed_s2(_rows()), name="d2.xlsx"), dataDate="2026-11-07",
+                         projects='["F610M"]'))
+    assert second["baseDate"] == "2026-11-06" and second["stale"] is False
+    assert second["delta"]["total"]["complete"] == 1
+    assert "3D单完成2(+1)/4份" in second["summaryLines"][2]
+    meta = second["importMeta"]
+    assert meta["baseline"]["date"] == "2026-11-06" and meta["baseline"]["sourceName"] == "d1.xlsx"
+    assert len(meta["baseline"]["sha256"]) == 12 and meta["baselineSaved"] is True
+    assert "日变化基线（自动）：2026-11-06 的手工导入「d1.xlsx」" in meta["banner"]
+    assert meta["baseline"]["mode"] == "auto" and meta["baselineReason"] == ""
+    assert "同一套 TDC 筛选条件" in meta["note"]
+    progress = second["progress"]
+    assert progress["totals"]["newlyCompleted"] == ["S2"]
+    assert progress["totals"]["remainingChange"] == -1
+    assert {f["serial"]: f["kind"] for f in progress["flows"]}["S2"] == "completed"
+    # 每日进展紧跟来源声明，只列有变化的单
+    assert second["html"].index("每日进展（较 11-06）") < second["html"].index("各位领导")
+    assert second["text"].splitlines()[1] == "每日进展（较 11-06）"
+    assert second["text"].splitlines()[2].startswith("较 11-06：签署率 ")
+    assert "待签人次减少 1；新签完 1 份；还有 2 份未签完" in second["text"]
+    assert "S1" not in second["text"].split("各位领导")[0]
+    assert second["snapshotSaved"] is False  # 对外仍只指 TDC 共享快照
+    assert _snapshot_counts(db) == shared  # 共享表、配置、长周期结论一概不动
+    assert _manual_counts(db)["p_sign_daily_manual_baseline_meta"] == 2
+
+
+def test_import_form_older_date_after_newer_is_stale(client, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _, http, db, _ = client
+    _ok(_upload(http, _workbook(tmp_path, _rows(), name="new.xlsx"), dataDate="2026-11-07", projects='["F610M"]'))
+    before = _manual_counts(db)
+    old = _ok(_upload(http, _workbook(tmp_path, _rows(), name="old.xlsx"), dataDate="2026-11-06",
+                      projects='["F610M"]'))
+    assert old["stale"] is True and old["delta"] is None and old["progress"] is None
+    assert old["importMeta"]["baselineSaved"] is False and old["importMeta"]["baseline"] is None
+    assert "已有更晚日期的手工导入，本次按旧数据处理：不留基线、不显示日变化" in old["importMeta"]["banner"]
+    assert _manual_counts(db) == before
+
+
+def test_import_form_keep_baseline_off_reads_but_does_not_write(client, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _, http, db, _ = client
+    _ok(_upload(http, _workbook(tmp_path, _rows(), name="d1.xlsx"), dataDate="2026-11-06", projects='["F610M"]'))
+    before = _manual_counts(db)
+    second = _ok(_upload(http, _workbook(tmp_path, _signed_s2(_rows()), name="d2.xlsx"), dataDate="2026-11-07",
+                         projects='["F610M"]', keepBaseline="0"))
+    assert second["progress"] is not None and second["importMeta"]["baseline"]["date"] == "2026-11-06"
+    assert second["importMeta"]["baselineSaved"] is False
+    assert _manual_counts(db) == before
+    bad = _upload(http, _workbook(tmp_path, _rows(), name="d3.xlsx"), dataDate="2026-11-08", keepBaseline="maybe")
+    assert bad.status_code == 400
+
+
+def test_import_form_failure_writes_no_baseline(client, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _, http, db, _ = client
+    before = _manual_counts(db)
+    assert _upload(http, _workbook(tmp_path, _rows(), drift=True), dataDate="2026-11-06").status_code == 422
+    assert _upload(http, _workbook(tmp_path, _rows(), name="x.xlsx"), dataDate="2026-11-06",
+                   projects='["NOPE"]').status_code == 404
+    assert _manual_counts(db) == before
+
+
+def test_import_form_same_date_overwrites_baseline(client, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _, http, db, _ = client
+    _ok(_upload(http, _workbook(tmp_path, _rows(), name="a.xlsx"), dataDate="2026-11-06", projects='["F610M"]'))
+    again = _ok(_upload(http, _workbook(tmp_path, _rows()[:2], name="b.xlsx"), dataDate="2026-11-06",
+                        projects='["F610M"]'))
+    assert again["stale"] is False and again["importMeta"]["baselineSaved"] is True
+    with db.get_connection() as conn:
+        meta = conn.execute("SELECT source_name, row_count FROM p_sign_daily_manual_baseline_meta").fetchall()
+        rows = conn.execute("SELECT COUNT(*) FROM p_sign_daily_manual_baseline_rows").fetchone()[0]
+    assert [(m["source_name"], m["row_count"]) for m in meta] == [("b.xlsx", 2)] and rows == 2
+
+
+def test_report_digest_ignores_baseline(client, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """同一份数据、同一数据日期：有没有基线，正文指纹都相同（日变化不进指纹）。"""
+    _, http, _, _ = client
+    today = _workbook(tmp_path, _signed_s2(_rows()), name="today.xlsx")
+    alone = _ok(_upload(http, today, dataDate="2026-11-07", projects='["F610M"]', keepBaseline="0"))
+    _ok(_upload(http, _workbook(tmp_path, _rows(), name="base.xlsx"), dataDate="2026-11-06", projects='["F610M"]'))
+    compared = _ok(_upload(http, today, dataDate="2026-11-07", projects='["F610M"]'))
+    assert alone["progress"] is None and compared["progress"] is not None
+    assert compared["text"] != alone["text"]
+    assert compared["importMeta"]["reportDigest"] == alone["importMeta"]["reportDigest"]
+
+
+_F610M_ROWS = sum(1 for row in _rows() if row["项目/车型"] == "F610M")  # 基线只存所选项目的行
+
+
+def _three_days(http, tmp_path):  # type: ignore[no-untyped-def]
+    """11-01、11-05、11-06 各导入一次（S2 在 11-06 才签完）。"""
+    for day, rows in (("2026-11-01", _rows()), ("2026-11-05", _rows()), ("2026-11-06", _signed_s2(_rows()))):
+        _ok(_upload(http, _workbook(tmp_path, rows, name=f"{day}.xlsx"), dataDate=day, projects='["F610M"]'))
+
+
+def test_explicit_baseline_beats_auto_and_pinned(client, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _, http, db, _ = client
+    shared = _snapshot_counts(db)
+    _three_days(http, tmp_path)
+    today = _workbook(tmp_path, _signed_s2(_rows()), name="today.xlsx")
+    auto = _ok(_upload(http, today, dataDate="2026-11-07", projects='["F610M"]', keepBaseline="0"))
+    assert auto["baseDate"] == "2026-11-06" and auto["importMeta"]["baseline"]["mode"] == "auto"
+    explicit = _ok(_upload(http, today, dataDate="2026-11-07", projects='["F610M"]', keepBaseline="0",
+                           baselineDate="2026-11-01"))
+    assert explicit["baseDate"] == "2026-11-01" and explicit["importMeta"]["baseline"]["mode"] == "explicit"
+    assert "括号内为较 11-01 的变化" in explicit["summaryLines"]
+    assert "日变化基线（指定）：2026-11-01" in explicit["importMeta"]["banner"]
+    assert explicit["progress"]["totals"]["newlyCompleted"] == ["S2"]
+    _ok(http.post(f"{API}/manual-baselines/pin", json={"date": "2026-11-05"}))
+    pinned = _ok(_upload(http, today, dataDate="2026-11-07", projects='["F610M"]', keepBaseline="0"))
+    assert pinned["baseDate"] == "2026-11-05" and pinned["importMeta"]["baseline"]["mode"] == "pinned"
+    assert "日变化基线（固定）" in pinned["importMeta"]["banner"]
+    both = _ok(_upload(http, today, dataDate="2026-11-07", projects='["F610M"]', keepBaseline="0",
+                       baselineDate="2026-11-06"))
+    assert both["baseDate"] == "2026-11-06" and both["importMeta"]["baseline"]["mode"] == "explicit"
+    assert _snapshot_counts(db) == shared
+
+
+def test_explicit_or_pinned_baseline_ignores_max_gap(client, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _, http, _, _ = client
+    _ok(_upload(http, _workbook(tmp_path, _rows(), name="old.xlsx"), dataDate="2026-09-01", projects='["F610M"]'))
+    today = _workbook(tmp_path, _signed_s2(_rows()), name="today.xlsx")
+    auto = _ok(_upload(http, today, dataDate="2026-11-07", projects='["F610M"]', keepBaseline="0"))
+    assert auto["progress"] is None  # 自动挑选受最长间隔限制
+    explicit = _ok(_upload(http, today, dataDate="2026-11-07", projects='["F610M"]', keepBaseline="0",
+                           baselineDate="2026-09-01"))
+    assert explicit["baseDate"] == "2026-09-01" and explicit["progress"] is not None
+    _ok(http.post(f"{API}/manual-baselines/pin", json={"date": "2026-09-01"}))
+    pinned = _ok(_upload(http, today, dataDate="2026-11-07", projects='["F610M"]', keepBaseline="0"))
+    assert pinned["baseDate"] == "2026-09-01" and pinned["importMeta"]["baseline"]["mode"] == "pinned"
+
+
+def test_pinned_baseline_survives_retention(client, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _, http, db, _ = client
+    _ok(_upload(http, _workbook(tmp_path, _rows(), name="a.xlsx"), dataDate="2026-06-01", projects='["F610M"]'))
+    _ok(_upload(http, _workbook(tmp_path, _rows(), name="b.xlsx"), dataDate="2026-06-02", projects='["F610M"]'))
+    _ok(http.post(f"{API}/manual-baselines/pin", json={"date": "2026-06-01"}))
+    _ok(_upload(http, _workbook(tmp_path, _rows(), name="c.xlsx"), dataDate="2026-11-07", projects='["F610M"]'))
+    listed = _ok(http.get(f"{API}/manual-baselines"))
+    assert [item["date"] for item in listed["items"]] == ["2026-11-07", "2026-06-01"]  # 06-02 过期被清，06-01 固定保留
+    assert listed["pinned"] == "2026-06-01" and listed["items"][1]["sourceName"] == "a.xlsx"
+    with db.get_connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM p_sign_daily_manual_baseline_rows WHERE data_date = '2026-06-01'"
+                            ).fetchone()[0] == _F610M_ROWS
+
+
+def test_unusable_requested_baseline_is_reported_not_replaced(client, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _, http, _, _ = client
+    _three_days(http, tmp_path)
+    today = _workbook(tmp_path, _signed_s2(_rows()), name="today.xlsx")
+    for requested in ("2026-11-07", "2026-11-08", "2026-11-03"):  # 不早于本次 / 更晚 / 没存过
+        report = _ok(_upload(http, today, dataDate="2026-11-07", projects='["F610M"]', keepBaseline="0",
+                             baselineDate=requested))
+        assert report["progress"] is None and report["delta"] is None, requested
+        meta = report["importMeta"]
+        assert meta["baseline"] is None
+        assert meta["baselineReason"] == f"指定的基线 {requested} 不早于本次数据日期或不含所选项目，未显示日变化"
+        assert meta["baselineReason"] in meta["banner"]
+    for bad in ("20261101", "2026-11-1", "2026-13-01"):
+        response = _upload(http, today, dataDate="2026-11-07", baselineDate=bad)
+        assert response.status_code == 400, bad
+    _ok(http.post(f"{API}/manual-baselines/pin", json={"date": "2026-11-06"}))
+    same_day = _ok(_upload(http, today, dataDate="2026-11-06", projects='["F610M"]', keepBaseline="0"))
+    assert same_day["progress"] is None
+    assert same_day["importMeta"]["baselineReason"].startswith("固定的基线 2026-11-06")
+
+
+def test_manual_baseline_routes(client, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    app, http, db, _ = client
+    _three_days(http, tmp_path)
+    listed = _ok(http.get(f"{API}/manual-baselines"))
+    assert [i["date"] for i in listed["items"]] == ["2026-11-06", "2026-11-05", "2026-11-01"]
+    assert listed["pinned"] is None and listed["items"][0]["projects"] == ["F610M"]
+    assert listed["items"][0]["rowCount"] == _F610M_ROWS and len(listed["items"][0]["sha256"]) == 12
+    assert _ok(http.post(f"{API}/manual-baselines/pin", json={"date": "2026-11-05"}))["pinned"] == "2026-11-05"
+    assert _ok(http.post(f"{API}/manual-baselines/pin", json={"date": "2026-11-01"}))["pinned"] == "2026-11-01"
+    assert sum(i["pinned"] for i in _ok(http.get(f"{API}/manual-baselines"))["items"]) == 1
+    assert _ok(http.post(f"{API}/manual-baselines/unpin", json={}))["pinned"] is None
+    after = _ok(http.post(f"{API}/manual-baselines/delete", json={"date": "2026-11-05"}))
+    assert [i["date"] for i in after["items"]] == ["2026-11-06", "2026-11-01"]
+    for path in ("pin", "delete"):
+        assert http.post(f"{API}/manual-baselines/{path}", json={"date": "2026-10-30"}).status_code == 404
+        assert http.post(f"{API}/manual-baselines/{path}", json={"date": "11-05"}).status_code == 400
+        assert http.post(f"{API}/manual-baselines/{path}", json=["2026-11-06"]).status_code == 400
+    # 写路由走 local_guard：非本机来源被拒，基线不变
+    before = _manual_counts(db)
+    remote = http.post(f"{API}/manual-baselines/delete", json={"date": "2026-11-06"},
+                       environ_base={"REMOTE_ADDR": "10.0.0.9"})
+    assert remote.status_code in (401, 403)
+    assert _manual_counts(db) == before
+
+
+def test_chart_colors_config(client) -> None:  # type: ignore[no-untyped-def]
+    _, http, _, _ = client
+    backend = sys.modules["vse_plugins.sign_daily.backend"]
+    assert _ok(http.get(f"{API}/state"))["chartColors"] == backend.DEFAULT_CHART_COLORS
+    _ok(http.post(f"{API}/config", json={"chartColors": {"sections": {"special": "#ABCDEF"}}}))
+    colors = _ok(http.get(f"{API}/state"))["chartColors"]
+    assert colors["sections"] == {"bar": "#8f959e", "special": "#abcdef"}
+    assert colors["external"] == backend.DEFAULT_CHART_COLORS["external"]
+    _ok(http.post(f"{API}/config", json={"chartColors": {"external": {"bar": "#112233"}}}))
+    colors = _ok(http.get(f"{API}/state"))["chartColors"]
+    assert colors["sections"]["special"] == "#abcdef" and colors["external"]["bar"] == "#112233"
+    for bad in ({"sections": {"bar": "red"}}, {"sections": {"bar": "#12345"}}, {"pie": {"bar": "#123456"}},
+                {"sections": {"line": "#123456"}}, {"sections": "#123456"}, ["#123456"]):
+        assert http.post(f"{API}/config", json={"chartColors": bad}).status_code == 400, bad
+
+
+def test_chart_colors_survive_corrupt_storage(client) -> None:  # type: ignore[no-untyped-def]
+    _, http, db, _ = client
+    with db.get_connection() as conn:
+        conn.execute("INSERT INTO p_sign_daily_config (key, value_json) VALUES (?, ?)",
+                     ("chartColors", json.dumps({"external": {"bar": "nope"}, "sections": 3, "x": {}})))
+    backend = sys.modules["vse_plugins.sign_daily.backend"]
+    assert _ok(http.get(f"{API}/state"))["chartColors"] == backend.DEFAULT_CHART_COLORS
+
+
+def test_chart_color_defaults_match_chart_js() -> None:
+    import re
+
+    backend = sys.modules.get("vse_plugins.sign_daily.backend")
+    if backend is None:
+        pytest.skip("plugin backend not loaded")
+    source = (REPO_ROOT / "plugins" / "sign_daily" / "static" / "chart.js").read_text(encoding="utf-8")
+    source = source.split("export const PALETTES = {", 1)[1].split("};", 1)[0]
+    found = {
+        key: {"bar": bar, "special": special}
+        for key, bar, special in re.findall(r'(\w+): \{ bar: "(#[0-9a-f]{6})", special: "(#[0-9a-f]{6})" \}', source)
+    }
+    assert found == backend.DEFAULT_CHART_COLORS

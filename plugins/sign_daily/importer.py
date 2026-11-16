@@ -7,10 +7,14 @@ xlsx 本进程读不到内容，用户用 Excel 自带功能导出文本后即�
 
 设计口径（两轮 Astra-high 顾问定稿，见 `.runtime/sign-daily-import-plan-20261110.md`）：
 
-- **零持久化**：不写 `deliverable_form_snapshots`、不写日变化基线、不写长周期结论、
-  不改 `config.form`；`NullStore` 的任何写方法都会抛错，用来证明这条边界。
+- **不碰共享数据**：不读不写 `deliverable_form_snapshots`、一键生成的 TDC 快照（`snapshot_*`）、
+  长周期结论与 `config`（`ReadOnlyStore` 的写方法抛错，路由传 `save_config=False`）。
+- **只写自有基线（2026-11-16 起，推翻原「零写库、不计算日变化」）**：页面导入可以与此前的
+  手工导入比日变化，基线只存在 `manual_baseline.ManualBaselineStore` 的自有两张表里；
+  表单字段 `keepBaseline=0` 时只读基线、不写。旧数据（已有更晚日期的手工导入）不写、不显示括号。
 - **数据日期只能人给**：不接受从运行时刻、文件修改时间或行内「申请日期」推导。
-- **不计算日变化**：不读基线（不是靠 `stale` 绕过），`delta/baseline` 恒为空。
+- `NullStore` 仍保留（读全空、写抛错），供需要「完全不比较」的调用方使用；离线 CLI
+  （`tools/sign_daily_local_report.py`）自带一份同义实现，仍然零写库、不计算日变化。
 - **表结构 fail-closed**：先按官方 47 列契约逐字校验，再校验日报 36 个必需列。
 """
 
@@ -61,6 +65,7 @@ __all__ = [
     "ScanEntry",
     "ScanResult",
     "allowed_roots",
+    "baseline_statement",
     "file_sha256",
     "import_meta",
     "make_scan_token",
@@ -391,6 +396,40 @@ def ensure_direct_child(path: Path, directory: Path) -> None:
 _GBK_NOTE = "；这份是 ANSI 文本，代码页之外的生僻字可能已被 Excel 写成问号，建议改用「Unicode 文本」导出"
 
 
+#: 日变化的前提：两天导出时的 TDC 筛选条件必须相同。
+SAME_FILTER_TEXT = "两天的导出必须用同一套 TDC 筛选条件，否则少掉的单会显示为「消失」"
+
+
+#: 基线来源：本次指定 > 固定 > 自动（最近一次更早的导入）。
+BASELINE_MODE_TEXT = {"explicit": "指定", "pinned": "固定", "auto": "自动"}
+
+
+def rejected_baseline_text(requested: str, mode: str) -> str:
+    who = "指定" if mode == "explicit" else "固定"
+    return f"{who}的基线 {requested} 不早于本次数据日期或不含所选项目，未显示日变化"
+
+
+def baseline_statement(
+    baseline: Mapping[str, Any] | None,
+    *,
+    stale: bool = False,
+    requested: str | None = None,
+    requested_mode: str = "auto",
+) -> str:
+    """来源声明里关于日变化的一句：用了哪份基线（指定/固定/自动）/ 指定的基线不可用 / 没有基线 / 旧数据。"""
+    if stale:
+        return "已有更晚日期的手工导入，本次按旧数据处理：不留基线、不显示日变化"
+    if baseline:
+        mode = BASELINE_MODE_TEXT.get(str(baseline.get("mode") or "auto"), "自动")
+        return (
+            f"日变化基线（{mode}）：{baseline.get('date')} 的手工导入「{baseline.get('sourceName') or '未知文件'}」，"
+            "同为用户确认日期、未经系统核验"
+        )
+    if requested and requested_mode in ("explicit", "pinned"):
+        return rejected_baseline_text(requested, requested_mode)
+    return "首次导入或无可用基线，不显示日变化"
+
+
 def import_meta(
     path: Path,
     source: S.SourceData,
@@ -398,9 +437,19 @@ def import_meta(
     name: str | None = None,
     digest: str | None = None,
     source_format: str | None = None,
+    baseline: Mapping[str, Any] | None = None,
+    baseline_saved: bool = False,
+    stale: bool = False,
+    requested: str | None = None,
+    requested_mode: str = "auto",
 ) -> dict[str, Any]:
-    """响应里的导入元数据：来源标识 + 行数 + 内容指纹（优先用已校验的字节）。"""
-    note = "内容时点无法由系统核验；本报告只算本次、不留存、不计算日变化、不提供 .eml 草稿"
+    """响应里的导入元数据：来源标识 + 行数 + 内容指纹（优先用已校验的字节）+ 日变化基线。"""
+    note = (
+        "内容时点无法由系统核验；日变化只与此前的手工导入比较（不读写一键生成的数据）；"
+        + SAME_FILTER_TEXT + "；"
+        + ("本次已留作下次对比的基线" if baseline_saved else "本次未留作基线")
+        + "；不提供 .eml 草稿"
+    )
     if source_format == f"txt-{ENCODING_GBK}":
         note += _GBK_NOTE
     if source_format == FORMAT_EXCEL_PROXY:
@@ -414,6 +463,16 @@ def import_meta(
         "dataDateSourcedBy": "user-confirmed",
         "verified": "structure-only",
         "note": note,
+        "baseline": dict(baseline) if baseline else None,
+        "baselineSaved": bool(baseline_saved),
+        "baselineStatement": baseline_statement(
+            baseline, stale=stale, requested=requested, requested_mode=requested_mode
+        ),
+        # 指定/固定的基线不可用时的原因（不悄悄退回自动挑选）；可用或自动时为空串。
+        "baselineReason": (
+            rejected_baseline_text(requested, requested_mode)
+            if requested and not baseline and not stale and requested_mode in ("explicit", "pinned") else ""
+        ),
     }
     if source_format:
         meta["sourceFormat"] = source_format

@@ -194,6 +194,8 @@ def build_report(
     today: date,
     tz: Any = None,
     source: Any = None,
+    save_config: bool | None = None,
+    baseline_date: date | None = None,
 ) -> dict[str, Any]:
     """compose 业务核心（不调用 ``ctx.json_error``）：路由与定时作业共用。
 
@@ -201,8 +203,15 @@ def build_report(
     成功返回与 ``POST /generate`` 完全相同的响应体。
 
     ``source`` 是给「本地报表导入」留的注入口：传入时不再读库里的表单快照，
-    其余计算与渲染完全同一套（调用方必须同时传 ``save=False`` 与只读 ``snapshots``）。
+    其余计算与渲染完全同一套。
+
+    ``save`` 决定是否写快照（``snapshots.save_snapshot``）；``save_config`` 决定是否记住本次选择
+    （``store.save_config``），缺省 ``None`` 时跟随 ``save``（既有调用方行为不变）。手工导入传
+    ``save=<是否留基线>``、``save_config=False``、只读的 ``store`` 与自有基线库 ``snapshots``。
+    ``baseline_date`` 原样交给 ``S.compose``（指定/固定基线）；缺省 ``None`` 即自动挑选。
     """
+    if save_config is None:
+        save_config = save
     config = store.config()
     watch = watchlist_serials(db) if watchlist_only else None
     if watch is not None and not watch:
@@ -215,6 +224,7 @@ def build_report(
             save_snapshot=save, today=today, watchlist=watch,
             max_gap_days=int(config["thresholds"]["baselineMaxGapDays"]),
             status_gate_enabled=bool(config.get("statusGateEnabled", True)),
+            baseline_date=baseline_date,
         )
     except S.NoData as exc:
         raise ReportFailure(409, "NoData", str(exc)) from None
@@ -240,7 +250,7 @@ def build_report(
         },
         "recipientsText": {"to": prefs.get("to", ""), "cc": prefs.get("cc", "")},
     })
-    if save:
+    if save_config:
         store.save_config({
             "form": {"projects": scope.projects, "departments": scope.departments,
                      "watchlistOnly": watchlist_only, "region": texts["region"]},

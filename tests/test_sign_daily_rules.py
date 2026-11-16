@@ -551,3 +551,49 @@ def test_unknown_area_add_sign_label_is_not_doubled():  # F620S 真实导出核�
     row = R.flow_rows([flow], DATA_DATE, ROSTER)[0]
     assert "新人（加签（区域未知））" in R.todo_text(row)
     assert "加签·加签" not in R.todo_text(row)
+
+
+# ── 2026-11-16 手工导入的逐单日变化（daily_progress）──────────────────
+
+
+def _flows(*rows):
+    return R.build_flows(list(rows)).flows
+
+
+def test_daily_progress_kinds_and_totals():
+    base = _flows(
+        _row("P", 应签人数=4, 已签人数=1, 未签人数=3, 签署率="25%"),   # 有人签：3 → 1
+        _row("R", 应签人数=2, 已签人数=1, 未签人数=1),                 # 加签：1 → 2
+        _row("U", 应签人数=2, 已签人数=1, 未签人数=1),                 # 不变
+        _row("C", 应签人数=2, 已签人数=1, 未签人数=1),                 # 签完：1 → 0
+        _row("X", 应签人数=2, 已签人数=0, 未签人数=2, 签署率="0%"),    # 今天消失
+    )
+    today = _flows(
+        _row("P", 应签人数=4, 已签人数=3, 未签人数=1, 签署率="75%"),
+        _row("R", 应签人数=3, 已签人数=1, 未签人数=2, 签署率="33.33%"),
+        _row("U", 应签人数=2, 已签人数=1, 未签人数=1),
+        _row("C", 应签人数=2, 已签人数=2, 未签人数=0, 签署率="100%", 状态="已完成"),
+        _row("N", 应签人数=1, 已签人数=0, 未签人数=1, 签署率="0%"),    # 新增
+    )
+    result = R.daily_progress(today, base)
+    kinds = {item["serial"]: item["kind"] for item in result["flows"]}
+    assert kinds == {"P": "progress", "R": "regress", "U": "unchanged", "C": "completed", "N": "new"}
+    by = {item["serial"]: item for item in result["flows"]}
+    assert (by["P"]["remainingBefore"], by["P"]["remainingNow"], by["P"]["change"]) == (3, 1, -2)
+    assert by["R"]["change"] == 1 and by["C"]["completedNow"] is True
+    assert by["N"]["remainingBefore"] is None and by["N"]["change"] is None
+    totals = result["totals"]
+    # 待签 = 应签 − 已签（与 totalRate 同口径）：基线 3+1+1+1+2=8，今天 1+2+1+0+1=5
+    assert (totals["remainingBefore"], totals["remainingNow"]) == (8, 5)
+    assert totals["remainingChange"] == -2 + 1 + 0 - 1  # 只算两天都在的单
+    assert totals["newlyCompleted"] == ["C"] and totals["newFlows"] == ["N"] and totals["removedFlows"] == ["X"]
+    assert (totals["completeBefore"], totals["completeNow"]) == (0, 1)
+    assert (totals["openBefore"], totals["openNow"]) == (5, 4)
+    assert (totals["progress"], totals["unchanged"], totals["regress"]) == (1, 1, 1)
+    assert totals["rateBefore"] == str(R.display_pct(4, 12)) and totals["rateNow"] == str(R.display_pct(7, 12))
+
+
+def test_daily_progress_complete_in_both_is_not_newly_completed():
+    done = _row("D", 应签人数=1, 已签人数=1, 未签人数=0, 签署率="100%", 状态="已完成")
+    result = R.daily_progress(_flows(done), _flows(done))
+    assert result["flows"][0]["kind"] == "unchanged" and result["totals"]["newlyCompleted"] == []

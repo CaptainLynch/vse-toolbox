@@ -90,3 +90,18 @@
 .sd-scan-list { margin: 6px 0 0; padding-left: 18px; line-height: 1.7; }
 .sd-scan-list li { list-style: none; margin-left: -18px; }
 .sd-path { word-break: break-all; user-select: all; font-family: Consolas, monospace; }
+
+/* 2026-11-16 图表配色与「和哪一天比」 */
+.sd-hint { margin: 4px 0; font-size: 12px; line-height: 1.5; }
+.sd-colors { display: flex; flex-direction: column; gap: 6px; }
+.sd-colors-custom summary, .sd-compare summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.sd-color-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 6px 10px; margin-top: 6px; }
+.sd-color-field { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.sd-color-field input[type="color"] { width: 36px; height: 24px; padding: 0; border: 1px solid var(--hairline-strong); border-radius: 4px; background: none; }
+.sd-compare { border-top: 1px dashed var(--hairline); padding-top: 6px; }
+.sd-compare select { font: inherit; padding: 4px 6px; border: 1px solid var(--hairline-strong); border-radius: 6px;
+  background: var(--canvas); color: var(--ink); max-width: 100%; }
+.sd-plan-line { margin: 6px 0 0; padding: 4px 8px; border-radius: 6px; font-size: 13px; background: var(--surface-soft); }
+.sd-plan-line.is-ok { border-left: 3px solid var(--success, #2e7d32); }
+.sd-plan-line.is-info { border-left: 3px solid var(--muted); }
+.sd-plan-line.is-warn { border-left: 3px solid var(--warning, #b45309); color: var(--warning, #b45309); font-weight: 600; }

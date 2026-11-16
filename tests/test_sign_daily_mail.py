@@ -155,3 +155,60 @@ def test_no_total_rate_owed_or_first_generation_text_and_column_count():
         assert len(row_line.split("\t")) == len(M._TABLE_HEADERS)
     first_row = html_body.split("<tr>")[2]
     assert first_row.count("<td") == len(M._TABLE_HEADERS)
+
+
+# ── 2026-11-16 每日进展段（手工导入模式）────────────────────────────
+
+
+def _progress(flows, **totals):
+    base = {"remainingBefore": 10, "remainingNow": 7, "remainingChange": -3, "rateBefore": "50.0",
+            "rateNow": "65.0", "completeBefore": 1, "completeNow": 2, "newlyCompleted": ["C<1>"],
+            "openBefore": 4, "openNow": 3, "newFlows": [], "removedFlows": [], "progress": 1,
+            "unchanged": 1, "regress": 1}
+    base.update(totals)
+    return {"flows": flows, "totals": base, "baseDate": "2026-11-05"}
+
+
+def _item(serial, kind, before, now):
+    change = None if before is None else now - before
+    return {"serial": serial, "project": "F610M", "remainingBefore": before, "remainingNow": now,
+            "change": change, "completedNow": now == 0, "kind": kind}
+
+
+FLOWS = [
+    _item("U1", "unchanged", 2, 2),
+    _item("R1", "regress", 1, 2),
+    _item("P1", "progress", 3, 2),
+    _item("P2", "progress", 5, 1),
+    _item("N1", "new", None, 1),
+    _item("C<1>", "completed", 1, 0),
+]
+
+
+def test_progress_text_leads_with_headline_and_sorts_rows():
+    text = M.progress_text(_progress(FLOWS))
+    lines = text.splitlines()
+    assert lines[0] == "每日进展（较 11-05）"
+    assert lines[1] == "较 11-05：签署率 50.0% → 65.0%（+15.0%）；待签人次减少 3；新签完 1 份；还有 3 份未签完。"
+    assert lines[2].startswith("待签人次 10→7（↓3）、签完 1→2 份、新签完 1 份、未签完 4→3 份")
+    serials = [line.split("\t")[0] for line in lines[4:]]
+    assert serials == ["C<1>", "P2", "P1", "R1", "N1"]  # 新签完 → 减少最多 → 变多 → 新增；不列无变化
+    assert "U1" not in text
+    assert "↓4" in text and "↑1" in text
+
+
+def test_progress_html_escapes_and_colors_with_text():
+    body = M.progress_html(_progress(FLOWS, removedFlows=["X&Y"]))
+    assert "C&lt;1&gt;" in body and "C<1>" not in body
+    assert "X&amp;Y" in body and "消失的单" in body
+    assert "U1" not in body
+    assert "color:#2e7d32;\">↓4</td>" in body and "↑1</td>" in body
+    assert "待签人次 10→7（两天都在的单 ↓3）" in body
+
+
+def test_progress_without_changes_says_so():
+    unchanged = _progress([_item("U1", "unchanged", 2, 2)], remainingChange=0, newlyCompleted=[])
+    assert "与 11-05 相比没有变化" in M.progress_html(unchanged)
+    assert "与 11-05 相比没有变化" in M.progress_text(unchanged)
+    assert "<table" not in M.progress_html(unchanged)
+    assert M.progress_html(None) == "" and M.progress_text(None) == ""

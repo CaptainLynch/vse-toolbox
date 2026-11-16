@@ -155,3 +155,86 @@ export function stageText(task) {
   const percent = Number.isFinite(task.percent) ? `（${task.percent}%）` : "";
   return `${task.stage || "排队中"}${percent}`;
 }
+
+// ── 本地导入的「和哪一天比」（2026-11-16）：页面只说人话，不说「基线」 ──────────
+
+const mmdd = (iso) => String(iso || "").slice(5, 10);
+const daysBetween = (later, earlier) => Math.round((Date.parse(later) - Date.parse(earlier)) / 86400000);
+
+/** 本地日期 YYYY-MM-DD（数据日期输入框的默认值；只是前端预填，用户看得见、可以改）。 */
+export function todayIso(now = new Date()) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
+/** 「和哪一天比」下拉框：第一项是自动，其余每个已存的导入一项，固定的那项标出来。 */
+export function baselineOptions(items) {
+  return [
+    { value: "", label: "上次导入（自动）" },
+    ...(items || []).map((item) => ({
+      value: item.date,
+      label: `${item.date} · ${item.sourceName || "（未记录文件名）"}${item.pinned ? "（固定）" : ""}`,
+    })),
+  ];
+}
+
+/**
+ * 生成按钮上方的一句话：这次会和哪一天比（与后端同一顺序：本次指定 > 固定 > 自动）。
+ * 返回 {text, tone}，tone 是 ok（会显示每日进展）/ info（这次不比，正常）/ warn（需要用户改选择）。
+ * 只是预告：项目范围等细节以生成结果为准。
+ */
+export function comparePlan(items, { dataDate = "", choice = "", maxGapDays = 14 } = {}) {
+  const list = items || [];
+  if (!dataDate) return { text: "先填数据截至日期，就能看到这次会和哪一天比", tone: "info" };
+  const later = list.filter((item) => item.date > dataDate).map((item) => item.date).sort();
+  if (later.length) {
+    return { text: `已有更晚日期（${mmdd(later[later.length - 1])}）的导入，本次按旧数据处理，不显示每日进展`, tone: "warn" };
+  }
+  const describe = (item) => `${mmdd(item.date)} 的导入（${item.sourceName || "未记录文件名"}）`;
+  const pinned = list.find((item) => item.pinned);
+  const chosen = choice ? list.find((item) => item.date === choice) : null;
+  if (choice) {
+    if (!chosen || choice >= dataDate) {
+      return { text: "选的对比日期要早于本次数据日期，请改选或改回自动", tone: "warn" };
+    }
+    return { text: `将与 ${describe(chosen)}对比（你指定的）`, tone: "ok" };
+  }
+  if (pinned) {
+    if (pinned.date >= dataDate) {
+      return { text: `已固定与 ${mmdd(pinned.date)} 对比，但它不早于本次数据日期：请在「更多」里改选或取消固定`, tone: "warn" };
+    }
+    return { text: `已固定与 ${describe(pinned)}对比`, tone: "ok" };
+  }
+  if (!list.length) return { text: "这是第一次导入，明天起才能看到每日进展", tone: "info" };
+  const earlier = list.filter((item) => item.date < dataDate).sort((a, b) => (a.date < b.date ? 1 : -1));
+  if (!earlier.length) return { text: "今天先导入一次，明天再导入就能看到进展", tone: "info" };
+  const last = earlier[0];
+  if (daysBetween(dataDate, last.date) > maxGapDays) {
+    return { text: `上次导入是 ${mmdd(last.date)}，隔了超过 ${maxGapDays} 天，这次不自动比；需要的话在「更多」里指定这一天`, tone: "info" };
+  }
+  return { text: `将与 ${describe(last)}对比`, tone: "ok" };
+}
+
+/** 生成之后，结果区再说一遍「这次实际和哪一天比了」（以后端返回为准）。 */
+export function compareResultText(importMeta) {
+  const meta = importMeta || {};
+  const saved = meta.baselineSaved ? "本次已留作下次对比。" : "本次没有留作下次对比。";
+  const base = meta.baseline;
+  if (base) {
+    const how = { explicit: "你指定的", pinned: "已固定的", auto: "自动选的上次导入" }[base.mode] || "自动选的上次导入";
+    return `已与 ${mmdd(base.date)} 的导入（${base.sourceName || "未记录文件名"}，${how}）对比。${saved}`;
+  }
+  if (String(meta.baselineStatement || "").startsWith("已有更晚日期")) {
+    return `已有更晚日期的导入，本次按旧数据处理，没有显示每日进展。${saved}`;
+  }
+  if (meta.baselineReason) return `选的对比日期要早于本次数据日期，且要包含所选项目，请改选或改回自动。${saved}`;
+  return `没有可比的更早导入：今天先导入一次，明天再导入就能看到进展。${saved}`;
+}
+
+/** 两套配色是否相同（判断「配色已修改，未保存」）。 */
+export function sameColors(a, b) {
+  const keys = ["external", "sections", "approval"];
+  return keys.every((key) => ["bar", "special"].every(
+    (slot) => String(((a || {})[key] || {})[slot] || "").toLowerCase() === String(((b || {})[key] || {})[slot] || "").toLowerCase(),
+  ));
+}

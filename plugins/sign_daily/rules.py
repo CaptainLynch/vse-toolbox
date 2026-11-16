@@ -1182,6 +1182,78 @@ def deltas(today: Mapping[str, Any], base: Mapping[str, Any] | None) -> dict[str
     return result
 
 
+PROGRESS_KINDS = ("progress", "regress", "unchanged", "new", "completed")
+
+
+def remaining_signers(flow: Flow) -> int:
+    """待签人次 = 应签人数 − 已签人数：与 totalRate 的分子分母同一口径（以 TDC 字段为准）。"""
+    return flow.required - flow.signed
+
+
+def _pct_text(flows: Sequence[Flow]) -> str | None:
+    value = display_pct(sum(f.signed for f in flows), sum(f.required for f in flows))
+    return None if value is None else str(value)
+
+
+def daily_progress(today_flows: Sequence[Flow], base_flows: Sequence[Flow]) -> dict[str, Any]:
+    """逐单日变化（按流水单号对齐）：今天每份单较基线少了几个待签人次、是否新签完。
+
+    kind：new（基线里没有）、completed（基线未签完、今天签完）、progress（待签变少）、
+    regress（待签变多，如加签或退回）、unchanged。基线有、今天没有的单只进 removedFlows。
+    remainingBefore / remainingNow 是两天各自全部单的合计（与当天 totalRate 同口径），
+    remainingChange 只合计两天都在的单，避免新增/消失的单冒充签署进展。
+    """
+    base_by_serial = {flow.serial: flow for flow in base_flows}
+    today_serials = {flow.serial for flow in today_flows}
+    flows: list[dict[str, Any]] = []
+    counts = {kind: 0 for kind in PROGRESS_KINDS}
+    common_change = 0
+    for flow in today_flows:
+        before_flow = base_by_serial.get(flow.serial)
+        now = remaining_signers(flow)
+        before = remaining_signers(before_flow) if before_flow is not None else None
+        change = None if before is None else now - before
+        if before_flow is None:
+            kind = "new"
+        elif flow.is_complete and not before_flow.is_complete:
+            kind = "completed"
+        elif change < 0:
+            kind = "progress"
+        elif change > 0:
+            kind = "regress"
+        else:
+            kind = "unchanged"
+        if change is not None:
+            common_change += change
+        counts[kind] += 1
+        flows.append({
+            "serial": flow.serial, "project": flow.project,
+            "remainingBefore": before, "remainingNow": now, "change": change,
+            "completedNow": flow.is_complete, "kind": kind,
+        })
+    return {
+        "flows": flows,
+        "totals": {
+            "remainingBefore": sum(remaining_signers(f) for f in base_flows),
+            "remainingNow": sum(remaining_signers(f) for f in today_flows),
+            "remainingChange": common_change,
+            # 与当天汇总段「总签单率」同一口径（已签人数 / 应签人数，全部单），文本形式便于 JSON。
+            "rateBefore": _pct_text(base_flows),
+            "rateNow": _pct_text(today_flows),
+            "completeBefore": sum(1 for f in base_flows if f.is_complete),
+            "completeNow": sum(1 for f in today_flows if f.is_complete),
+            "newlyCompleted": [item["serial"] for item in flows if item["kind"] == "completed"],
+            "openBefore": sum(1 for f in base_flows if not f.is_complete),
+            "openNow": sum(1 for f in today_flows if not f.is_complete),
+            "newFlows": [item["serial"] for item in flows if item["kind"] == "new"],
+            "removedFlows": [f.serial for f in base_flows if f.serial not in today_serials],
+            "progress": counts["progress"],
+            "unchanged": counts["unchanged"],
+            "regress": counts["regress"],
+        },
+    }
+
+
 def fmt_pct(value: Decimal | None) -> str:
     return "—" if value is None else f"{value}%"
 
