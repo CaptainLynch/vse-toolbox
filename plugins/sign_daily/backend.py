@@ -93,6 +93,11 @@ def _today() -> date:
     return date.today()
 
 
+def _import_today() -> date:
+    """手工导入校验「数据截至日期不晚于今天」用的日历日（单独一个钩子：与日报的 ``_today`` 互不影响）。"""
+    return date.today()
+
+
 #: 三张图的默认配色（与 static/chart.js 的 PALETTES 必须一致，测试钉住）：图 -> {普通柱, 特殊组柱}。
 DEFAULT_CHART_COLORS: dict[str, dict[str, str]] = {
     "external": {"bar": "#3370ff", "special": "#3370ff"},  # 图1 强调色
@@ -767,6 +772,10 @@ def register(host):
         if not raw_date:
             raise _Invalid("请填写这份报表的数据截至日期（不会用导入时间代替）")
         data_date = _iso_date(raw_date, "数据截至日期")
+        if data_date > _import_today():
+            # 日期是用户手填的，而它决定基线的保留期清理（早于「该日期 − 90 天」的基线会被删）和旧数据判定：
+            # 手滑填成未来日期会删掉旧基线，并让之后每次正常导入都被当成旧数据。直接拒绝。
+            raise _Invalid(f"数据截至日期 {data_date.isoformat()} 晚于今天，请检查是否填错")
         keep_baseline = _form_bool(form, "keepBaseline", default=True)
         raw_baseline = str(form.get("baselineDate") or "").strip()
         baseline_date = _iso_date(raw_baseline, "对比基线日期") if raw_baseline else None

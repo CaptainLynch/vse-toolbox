@@ -189,7 +189,7 @@ def test_progress_text_leads_with_headline_and_sorts_rows():
     text = M.progress_text(_progress(FLOWS))
     lines = text.splitlines()
     assert lines[0] == "每日进展（较 11-05）"
-    assert lines[1] == "较 11-05：签署率 50.0% → 65.0%（+15.0%）；待签人次减少 3；新签完 1 份；还有 3 份未签完。"
+    assert lines[1] == "较 11-05：总签署率（已签/应签）50.0% → 65.0%（+15.0%）；待签人次减少 3；新签完 1 份；还有 3 份未签完。"
     assert lines[2].startswith("待签人次 10→7（↓3）、签完 1→2 份、新签完 1 份、未签完 4→3 份")
     serials = [line.split("\t")[0] for line in lines[4:]]
     assert serials == ["C<1>", "P2", "P1", "R1", "N1"]  # 新签完 → 减少最多 → 变多 → 新增；不列无变化

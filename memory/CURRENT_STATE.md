@@ -15,7 +15,10 @@
   仅手工模式渲染；新路由 `GET manual-baselines`、`POST manual-baselines/pin|unpin|delete`。
 - **边界不变**：手工导入仍不读不写 TDC 共享快照、配置、长周期结论，仍无 `.eml`；离线 CLI
   `tools/sign_daily_local_report.py` 未改（零写库、不算日变化），其 docstring 里「与插件手工导入同一契约」已不准确，待修。
-- **证据**：签署日报 10 个测试文件 358 passed / 3 skipped / 1 failed；失败项
+- **审计修复（同日）**：`/import-form` 拒绝晚于今天的数据截至日期（手填未来日期会触发保留期清理删旧基线、
+  并使之后的导入全判为旧数据；钩子 `_import_today`）；进展首句改称「总签署率（已签/应签）」以区别于汇总段的
+  会签签单率；所选文件的修改日期与填写日期不同日时页面提醒（`fileDateHint`，只提醒不改日期）。
+- **证据**：签署日报 10 个测试文件 360 passed（审计修复后；首次提交时 358） / 3 skipped / 1 failed；失败项
   `test_import_scan_rejects_dir_outside_roots` 在改动前同样失败（Linux 上没有 `C:/Windows`，得到 `E_DIR_MISSING`）。
   Linux 容器内用 Chromium 实走：连续两天导入 → 自动对比、进展段、预设换色重画，无控制台错误。
   `generate_project_map.py --check` 通过；改动文件 flake8 无新增告警。

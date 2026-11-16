@@ -270,3 +270,19 @@ def test_report_page_passes_palette_to_every_chart_render():
     assert calls and all(call.count(",") >= 3 for call in calls)  # 每处都传第 4 个参数（生效配色）
     assert "renderImages(data, effectiveColors)" in source
     assert "不计算日变化" not in source
+
+
+def test_file_date_hint_only_warns_on_mismatch():
+    out = _run(r"""
+const L = await import(process.argv[1] + "/report-logic.js");
+const at = (y, m, d) => new Date(y, m - 1, d, 10, 0, 0).getTime();
+console.log(JSON.stringify({
+  same: L.fileDateHint(at(2026, 11, 16), "2026-11-16"),
+  differs: L.fileDateHint(at(2026, 11, 15), "2026-11-16"),
+  noFile: L.fileDateHint(null, "2026-11-16"),
+  noDate: L.fileDateHint(at(2026, 11, 15), ""),
+  bad: L.fileDateHint("not a time", "2026-11-16"),
+}));
+""")
+    assert out["same"] == "" and out["noFile"] == "" and out["noDate"] == "" and out["bad"] == ""
+    assert out["differs"] == "这份文件最后修改于 2026-11-15，和填写的数据截至日期 2026-11-16 不是同一天，请确认日期没填错"

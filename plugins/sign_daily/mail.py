@@ -257,13 +257,14 @@ def _rate_change(before: Any, now: Any) -> str:
 
 
 def progress_headline(progress: Mapping[str, Any], base_date: Any = None) -> str:
-    """一句话结论：较 MM-DD：签署率 a% → b%（±x%）；待签人次减少 n；新签完 k 份；还有 m 份未签完。"""
+    """一句话结论：较 MM-DD：总签署率（已签/应签）a% → b%（±x%）；待签人次减少 n；新签完 k 份；还有 m 份未签完。"""
     totals = progress.get("totals") or {}
     day = _mmdd(base_date or progress.get("baseDate"))
     parts = []
     before, now = totals.get("rateBefore"), totals.get("rateNow")
     if before is not None and now is not None:
-        parts.append(f"签署率 {before}% → {now}%{_rate_change(before, now)}")
+        # 这里是全部单的「已签人数 / 应签人数」（TDC 的签署率口径），不是汇总段里的会签签单率，名字要写清。
+        parts.append(f"总签署率（已签/应签）{before}% → {now}%{_rate_change(before, now)}")
     change = int(totals.get("remainingChange") or 0)
     if change < 0:
         parts.append(f"待签人次减少 {-change}")

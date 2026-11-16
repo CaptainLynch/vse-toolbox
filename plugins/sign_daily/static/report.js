@@ -4,7 +4,8 @@ import { html, useEffect, useRef, useState } from "/static/host/vendor/preact-ht
 import { StateBlock, useStylesheet } from "/static/host/kit.js";
 import { CHART_PRESETS, matchPreset, presetPalettes, renderChartPng, resolveAllPalettes, tooLight } from "./chart.js";
 import {
-  baselineOptions, compareResultText, comparePlan, conclusionsPayload, exportAllowed, formatTime, initialPicks,
+  baselineOptions, compareResultText, comparePlan, conclusionsPayload, exportAllowed, fileDateHint, formatTime,
+  initialPicks,
   inlineImages, migratePrefs, orphanProjects, sameColors, scopeKey, searchMisses, stageText, statusGateText, todayIso,
   toggle,
 } from "./report-logic.js";
@@ -445,6 +446,9 @@ export default function Page({ plugin, api }) {
     if (await baselineAction("delete", { date }, `已删除 ${date} 的导入记录`)) setBaselineChoice("");
   };
   const pinnedItem = baselines.find((item) => item.pinned);
+  // 日期是预填的今天：选中的文件不是同一天改的就提醒一句，免得把昨天的报表记成今天。
+  const dateHint = fileDateHint(
+    manualFile ? manualFile.lastModified : (scan && scan.selected ? scan.selected.mtime : null), manualDate);
   const plan = comparePlan(baselines, {
     dataDate: manualDate, choice: baselineChoice,
     maxGapDays: (state.thresholds && state.thresholds.baselineMaxGapDays) || 14,
@@ -622,6 +626,7 @@ export default function Page({ plugin, api }) {
         <label class="sd-field"><span>数据截至日期</span>
           <input type="date" value=${manualDate} onInput=${(e) => setManualDate(e.target.value)} /></label>
         <p class="vk-muted sd-import-hint">已预填今天；如果这份报表不是今天导出的，请改成导出那天。</p>
+        ${dateHint && html`<p class="sd-warn" role="status">${dateHint}</p>`}
         <label class="sd-check"><input type="checkbox" checked=${keepBaseline}
           onChange=${() => setKeepBaseline(!keepBaseline)} />留作下次对比</label>
         <p class="vk-muted sd-import-hint">勾上后，明天导入就能看到比今天进展了多少。</p>

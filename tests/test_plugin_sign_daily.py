@@ -1014,7 +1014,7 @@ def test_import_form_next_day_shows_daily_progress(client, tmp_path) -> None:  #
     # 每日进展紧跟来源声明，只列有变化的单
     assert second["html"].index("每日进展（较 11-06）") < second["html"].index("各位领导")
     assert second["text"].splitlines()[1] == "每日进展（较 11-06）"
-    assert second["text"].splitlines()[2].startswith("较 11-06：签署率 ")
+    assert second["text"].splitlines()[2].startswith("较 11-06：总签署率（已签/应签）")
     assert "待签人次减少 1；新签完 1 份；还有 2 份未签完" in second["text"]
     assert "S1" not in second["text"].split("各位领导")[0]
     assert second["snapshotSaved"] is False  # 对外仍只指 TDC 共享快照
@@ -1053,6 +1053,18 @@ def test_import_form_failure_writes_no_baseline(client, tmp_path) -> None:  # ty
     assert _upload(http, _workbook(tmp_path, _rows(), drift=True), dataDate="2026-11-06").status_code == 422
     assert _upload(http, _workbook(tmp_path, _rows(), name="x.xlsx"), dataDate="2026-11-06",
                    projects='["NOPE"]').status_code == 404
+    assert _manual_counts(db) == before
+
+
+def test_import_form_rejects_future_data_date(client, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """日期手填：填成未来会让保留期清理删掉旧基线、并把之后的正常导入都判成旧数据，所以直接拒绝。"""
+    _, http, db, _ = client
+    backend = sys.modules["vse_plugins.sign_daily.backend"]
+    monkeypatch.setattr(backend, "_import_today", lambda: date(2026, 11, 6))
+    _ok(_upload(http, _workbook(tmp_path, _rows(), name="a.xlsx"), dataDate="2026-11-06"))  # 当天可以
+    before = _manual_counts(db)
+    response = _upload(http, _workbook(tmp_path, _rows(), name="b.xlsx"), dataDate="2027-11-06")
+    assert response.status_code == 400 and "晚于今天" in response.get_json()["error"]["message"]
     assert _manual_counts(db) == before
 
 

@@ -167,6 +167,19 @@ export function todayIso(now = new Date()) {
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 }
 
+/**
+ * 文件的最后修改日期与填写的数据截至日期不一致时给一句提醒（只提醒，不替用户改日期：
+ * 修改时间不等于导出时间，后端也从不拿它当数据日期）。fileTime 是毫秒时间戳或可解析的时间串。
+ */
+export function fileDateHint(fileTime, dataDate) {
+  if (fileTime === null || fileTime === undefined || fileTime === "" || !dataDate) return "";
+  const when = new Date(fileTime);
+  if (Number.isNaN(when.getTime())) return "";
+  const fileDay = todayIso(when);
+  if (fileDay === dataDate) return "";
+  return `这份文件最后修改于 ${fileDay}，和填写的数据截至日期 ${dataDate} 不是同一天，请确认日期没填错`;
+}
+
 /** 「和哪一天比」下拉框：第一项是自动，其余每个已存的导入一项，固定的那项标出来。 */
 export function baselineOptions(items) {
   return [
