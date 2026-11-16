@@ -22,7 +22,16 @@
   `test_import_scan_rejects_dir_outside_roots` 在改动前同样失败（Linux 上没有 `C:/Windows`，得到 `E_DIR_MISSING`）。
   Linux 容器内用 Chromium 实走：连续两天导入 → 自动对比、进展段、预设换色重画，无控制台错误。
   `generate_project_map.py --check` 通过；改动文件 flake8 无新增告警。
-- **未做**：Windows 真机、加密 xlsx 代读路径、签名 `.vsepkg` 打包、全量回归。
+- **0.7.0 基线文件（同日）**：本地导入区新增「指定基线文件」（选择文件上传，或粘贴任意本地完整路径——用户决定
+  不限扫描目录；只读 `.xlsx`/`.txt`、有大小上限）。校验通过后原字节备份到插件数据目录 `baseline-backup/`
+  （服务端生成文件名、原子写、只留一份），对比永远读备份；原文件不在/被改只提示并照常对比，备份也没了才不对比、
+  不回退自动。记录在单行表 `manual_baseline_file`（迁移版本 6）；`FileBaselineAdapter` 把备份包装成「那一天的
+  全量快照」，compose 未改。与「固定」互斥。新路由 `GET/POST manual-baseline-file`、`POST manual-baseline-file/clear`，
+  含本机路径的 GET 也过 `local_guard`；正文（会发给别人）不带本机路径。审计时去掉了对重解析点属性的拒绝
+  （OneDrive 按需文件会被误挡）。证据：386 passed / 3 skipped / 1 failed（同一既有失败）；Chromium 实走
+  指定 → 对比 → 原文件改名 → 备份删除四种状态。
+- **未做**：Windows 真机、加密 xlsx 代读路径（含「代读读备份目录」是否被代读的路径限制拒绝）、UNC 路径、
+  签名 `.vsepkg` 打包、全量回归。
 - **下一步**：Windows 上跑全量 pytest 与真机验收，再用 `tools/build_plugin_pkg.py` 出 0.6.0 的 `.vsepkg`。
 
 ## 当前前沿（2026-11-03 · DSH 第 3–7 波已全部集成到 refactor/ux-v2；第 8–10 波需真实环境）

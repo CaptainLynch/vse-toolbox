@@ -13,8 +13,12 @@
 - POST import-scan / import-form   用本地导出的报表出一次日报（2026-11-16 起计算日变化）：不读不写 TDC
                                  共享快照、配置与长周期结论，只写手工导入自有的基线表
                                  （``manual_baseline.py``；表单字段 keepBaseline=0 时只读不写；
-                                 baselineDate 指定基线，优先级 指定 > 固定 > 自动）
+                                 baselineDate 指定基线，优先级 指定 > 基线文件 / 固定 > 自动）
 - GET  manual-baselines          手工导入基线列表；POST manual-baselines/pin|unpin|delete 固定 / 取消 / 删除
+                                 （pin 同时取消基线文件并删除其备份；视图里带 file：当前基线文件）
+- GET  manual-baseline-file      当前基线文件 + 原文件/备份的实时状态 + 备份目录（含本机路径，所以也过 local_guard）
+- POST manual-baseline-file      指定基线文件（multipart：file 上传或 path 完整路径，加 dataDate）；同时取消固定
+- POST manual-baseline-file/clear   取消基线文件并删除备份
 - POST refresh / GET refresh/<task_id>   后台抓取与进度（R1、R3）
 
 长周期复核（§7）：GET long-cycle?project=、POST long-cycle（确认并记住 / 单条改判）、POST long-cycle/clear
@@ -79,6 +83,12 @@ _SCAN_DIRS: dict[str, Path] = {}
 _SCAN_DIRS_LIMIT = 64
 #: 数据日期换算用的时区；None 取本机时区（测试里固定）。
 _DATA_TZ = None
+
+#: 基线文件受终端加密、而 Excel 代读没开时的提示（与导入区的「另存为 txt」指引同一口径）。
+ENCRYPTED_BASELINE_TEXT = (
+    "文件受公司终端加密保护，本功能读不到内容，文件本身没有损坏。请用 Excel 打开它，「另存为」选"
+    "「Unicode 文本(*.txt)」，再把这份 .txt 指定为基线文件；或先开启「加密的 xlsx 由本机 Excel 代读」。"
+)
 
 _DEFAULT_THRESHOLDS = {"warnDays": 7, "overdueDays": 14, "baselineMaxGapDays": S.BASELINE_MAX_GAP_DAYS}
 _DEFAULT_REGION = SCH.DEFAULT_REGION
@@ -440,12 +450,14 @@ def register(host):
     settings = SET.SettingsStore(ctx.db, host.table_prefix, S.seed_roster(), S.seed_rule_rows())
     reports = SCH.ScheduledReportStore(ctx.db, host.table_prefix)
     manual_baselines = MB.ManualBaselineStore(ctx.db, host.table_prefix)
+    baseline_file = MB.BaselineFileStore(ctx.db, host.table_prefix)
     host.migrate([
         *store.migrations(),
         snapshots.migration(),
         settings.migration(),
         reports.migration(),
         manual_baselines.migration(),
+        baseline_file.migration(),
     ])
     settings.reconcile()
     # 调度器的槽/绑定表由 sync-control 插件建（同一 services 层前缀），这里只读写。
@@ -598,15 +610,26 @@ def register(host):
         基线挑选、旧数据判定、最长间隔与括号里的变化全部复用 ``S.compose``，与一键生成同一套口径。
         """
         baselines = manual_baselines.bind(source_name=name, sha256=digest)
-        # 基线日期：本次指定 > 固定 > 自动（compose 里的 _pick_baseline）。
+        compare_store: Any = baselines
+        file_info: dict[str, Any] | None = None
+        # 基线日期：本次指定 > 基线文件 / 固定（二者互斥）> 自动（compose 里的 _pick_baseline）。
         if baseline_date is not None:
             requested_mode = "explicit"
         else:
-            baseline_date = baselines.pinned_date()
-            requested_mode = "pinned" if baseline_date is not None else "auto"
+            loaded = load_file_baseline()
+            if loaded is not None:
+                file_info, records = loaded
+                requested_mode = "file"
+                baseline_date = date.fromisoformat(file_info["date"])
+                # compose 不改：基线文件的内容以「那一天的全量快照」出现；备份不可用时 records 为 None，
+                # 那一天对任何项目都不覆盖 → 不显示日变化，也不退回自动挑选。
+                compare_store = MB.FileBaselineAdapter(baselines, baseline_date, records, source.data_date)
+            else:
+                baseline_date = baselines.pinned_date()
+                requested_mode = "pinned" if baseline_date is not None else "auto"
         try:
             result = SCH.build_report(
-                db=ctx.db, store=IMP.ReadOnlyStore(store), snapshots=baselines,
+                db=ctx.db, store=IMP.ReadOnlyStore(store), snapshots=compare_store,
                 effective=effective, scope=scope, watchlist_only=False, texts=texts,
                 save=keep_baseline, save_config=False, today=source.data_date, tz=_DATA_TZ, source=source,
                 baseline_date=baseline_date,
@@ -619,13 +642,16 @@ def register(host):
                 V.cell_text(r.get("项目/车型")) for r in source.records if V.cell_text(r.get("项目/车型"))
             })
             projects = [p for p in projects if not scope.projects or p in scope.projects]
-            found = baselines.source_of(projects, date.fromisoformat(result["baseDate"])) or {}
-            baseline = {
-                "mode": requested_mode,
-                "date": result["baseDate"],
-                "sourceName": found.get("sourceName", ""),
-                "sha256": str(found.get("sha256") or "")[:12],
-            }
+            if requested_mode == "file" and file_info is not None:
+                baseline = {"mode": "file", **file_info}
+            else:
+                found = baselines.source_of(projects, date.fromisoformat(result["baseDate"])) or {}
+                baseline = {
+                    "mode": requested_mode,
+                    "date": result["baseDate"],
+                    "sourceName": found.get("sourceName", ""),
+                    "sha256": str(found.get("sha256") or "")[:12],
+                }
         # compose 的 snapshotSaved 在这里指「手工基线已写」；对外 snapshotSaved 仍只指 TDC 共享快照（恒 False）。
         baseline_saved = bool(result["snapshotSaved"])
         result["snapshotSaved"] = False
@@ -633,6 +659,7 @@ def register(host):
             Path(name), source, name=name, digest=digest, source_format=source_format,
             baseline=baseline, baseline_saved=baseline_saved, stale=bool(result["stale"]),
             requested=result.get("baselineRequested"), requested_mode=requested_mode,
+            file_baseline=file_info,
         )
         banner = (
             f"手工导入｜{meta['sourceName']}｜数据截至日期 {meta['dataDate']}"
@@ -662,14 +689,20 @@ def register(host):
             raise _Invalid("请求体必须是 JSON 对象")
         return _iso_date(_str(value.get("date"), "日期", 20), "基线日期")
 
-    def baselines_view() -> dict[str, Any]:
+    def baselines_view(*, with_paths: bool = True) -> dict[str, Any]:
         items = manual_baselines.list_baselines()
         pinned = next((item["date"] for item in items if item["pinned"]), None)
-        return {"items": items, "pinned": pinned}
+        file_view = baseline_file_view()
+        if file_view is not None and not with_paths:
+            # 列表 GET 不过 local_guard：非本机来源只给不含本机路径的摘要。
+            file_view = {key: value for key, value in file_view.items()
+                         if key not in ("originalPath", "backupPath")}
+            file_view["pathsHidden"] = True
+        return {"items": items, "pinned": pinned, "file": file_view}
 
     @bp.get("/manual-baselines")
     def manual_baselines_list():
-        return ctx.json_ok(baselines_view())
+        return ctx.json_ok(baselines_view(with_paths=ctx.local_guard() is None))
 
     @bp.post("/manual-baselines/pin")
     @guarded
@@ -679,6 +712,8 @@ def register(host):
             manual_baselines.pin(day)
         except LookupError:
             return ctx.json_error(404, "NotFound", f"没有 {day.isoformat()} 的手工导入基线")
+        # 固定与基线文件互斥：固定成功后取消基线文件并删除它的备份（页面已先请用户确认）。
+        clear_baseline_file()
         return ctx.json_ok(baselines_view())
 
     @bp.post("/manual-baselines/unpin")
@@ -694,6 +729,167 @@ def register(host):
         if not manual_baselines.delete(day):
             return ctx.json_error(404, "NotFound", f"没有 {day.isoformat()} 的手工导入基线")
         return ctx.json_ok(baselines_view())
+
+    # ── 基线文件：指定一份本地报表为固定基线（备份在插件数据目录，对比只读备份）──────
+
+    def backup_dir() -> Path:
+        return (ctx.plugin_data_dir(host.manifest.id) / MB.BACKUP_SUBDIR).resolve()
+
+    def clear_baseline_file() -> bool:
+        """删记录，再只删记录里的那份备份（白名单名字、备份目录的直接子项）。"""
+        previous = baseline_file.clear()
+        if previous is None:
+            return False
+        MB.remove_backup(backup_dir(), previous["backup_name"])
+        return True
+
+    def backup_state(record: Mapping[str, Any]) -> tuple[str, bytes | None]:
+        """备份在、读得了、内容摘要与指定时一致才算 ok。"""
+        data = MB.read_backup(backup_dir(), record["backup_name"], _FORM_FILE_LIMIT)
+        if data is None or hashlib.sha256(data).hexdigest() != record["sha256"]:
+            return MB.BACKUP_MISSING, None
+        return MB.BACKUP_OK, data
+
+    def file_info_of(record: Mapping[str, Any], backup_status: str) -> dict[str, Any]:
+        target = MB.backup_path(backup_dir(), record["backup_name"])
+        return {
+            "date": record["data_date"],
+            "sourceName": record["original_name"],
+            "sha256": str(record["sha256"])[:12],
+            "size": int(record["size"]),
+            "originalPath": record["original_path"] or None,
+            "backupPath": str(target) if target is not None else "",
+            "originalStatus": MB.probe_original(
+                record["original_path"], record["sha256"], record["size"], _FORM_FILE_LIMIT
+            ),
+            "backupStatus": backup_status,
+            "setAt": record["set_at"],
+        }
+
+    def baseline_file_view() -> dict[str, Any] | None:
+        record = baseline_file.get()
+        if record is None:
+            return None
+        return file_info_of(record, backup_state(record)[0])
+
+    def parse_baseline_bytes(data: bytes, day: date, name: str, target: Path | None):
+        """解析基线文件的字节（与导入同一套官方表头校验）；受终端加密的 xlsx 在代读开着时让 Excel 读备份。"""
+        try:
+            return IMP.source_from_bytes(data, day, name=name)
+        except IMP.ManualImportError as exc:
+            if not (
+                exc.code == "E_ENCRYPTED_WORKBOOK" and IMP.source_format(data, name) == "xlsx"
+                and target is not None and XP.ready(store.config())
+            ):
+                raise
+        parsed = IMP.source_from_excel(target, day)
+        # Excel 是按路径另开的：读完再核对一次备份的内容摘要，期间被换过就作废。
+        again = MB.read_backup(target.parent, target.name, _FORM_FILE_LIMIT)
+        if again is None or hashlib.sha256(again).hexdigest() != hashlib.sha256(data).hexdigest():
+            raise IMP.ManualImportError("E_SCAN_STALE", "基线备份在读取过程中被改动过，请重新指定")
+        return parsed
+
+    def load_file_baseline() -> tuple[dict[str, Any], list[dict[str, Any]] | None] | None:
+        """生成时用：(文件与状态, 备份解析出的行)；备份不在或认不出时行为 None；没有基线文件返回 None。"""
+        record = baseline_file.get()
+        if record is None:
+            return None
+        status, data = backup_state(record)
+        records = None
+        if data is not None:
+            try:
+                parsed = parse_baseline_bytes(
+                    data, date.fromisoformat(record["data_date"]), record["backup_name"],
+                    MB.backup_path(backup_dir(), record["backup_name"]),
+                )
+                records = list(parsed.records)
+            except IMP.ManualImportError:
+                status = MB.BACKUP_MISSING
+        return file_info_of(record, status), records
+
+    def baseline_file_payload() -> dict[str, Any]:
+        return {"file": baseline_file_view(), "backupDir": str(backup_dir())}
+
+    @bp.get("/manual-baseline-file")
+    def manual_baseline_file_get():
+        # 响应里有本机路径：读也只允许本机（与写路由同一道 local_guard）。
+        guard = ctx.local_guard()
+        if guard is not None:
+            return guard
+        return ctx.json_ok(baseline_file_payload())
+
+    @bp.post("/manual-baseline-file")
+    @guarded
+    def manual_baseline_file_set():
+        """指定基线文件：选择文件（上传）或粘贴完整路径，二选一；校验通过才备份、记录，并取消固定。"""
+        form, files = _memory_form()
+        upload = files.get("file")
+        has_upload = upload is not None and bool(upload.filename)
+        raw_path = _str(form.get("path"), "路径", 4096).strip()
+        if has_upload and raw_path:
+            raise _Invalid("「选择文件」和「粘贴完整路径」只能用一种，请清掉其中一个")
+        if not has_upload and not raw_path:
+            raise _Invalid("请选择基线文件，或粘贴它的完整路径")
+        raw_date = str(form.get("dataDate") or "").strip()
+        if not raw_date:
+            raise _Invalid("请填写这份基线文件的数据截至日期（就是导出它的那一天）")
+        day = _iso_date(raw_date, "数据截至日期")
+        if day > _import_today():
+            raise _Invalid(f"数据截至日期 {day.isoformat()} 晚于今天，请检查是否填错")
+        original_path: str | None
+        if has_upload:
+            name = re.split(r"[\\/]", str(upload.filename))[-1].strip()
+            suffix = Path(name).suffix.lower()
+            if suffix not in IMP.SUFFIXES:
+                raise _Invalid("基线文件只接受 .xlsx（TDC 官方导出）或 .txt（Excel 另存为 Unicode 文本）")
+            data = upload.stream.read(_FORM_FILE_LIMIT + 1)
+            if len(data) > _FORM_FILE_LIMIT:
+                raise _Invalid(f"文件超过 {_FORM_FILE_LIMIT // (1024 * 1024)} MB 上限")
+            if not data:
+                raise _Invalid("上传的文件是空的")
+            original_path = None  # 浏览器不给真实路径：备份就是唯一依据
+        else:
+            try:
+                resolved, data = MB.read_designated(raw_path, _FORM_FILE_LIMIT)
+            except IMP.ManualImportError as exc:
+                return import_error(exc)
+            name, suffix, original_path = resolved.name, resolved.suffix.lower(), str(resolved)
+        digest = hashlib.sha256(data).hexdigest()
+        new_backup = MB.backup_name_for(digest, suffix)
+        current = baseline_file.get()
+        encrypted = False
+        try:
+            IMP.source_from_bytes(data, day, name=name)
+        except IMP.ManualImportError as exc:
+            if exc.code != "E_ENCRYPTED_WORKBOOK" or IMP.source_format(data, name) != "xlsx":
+                return import_error(exc)
+            if not XP.ready(store.config()):
+                return ctx.json_error(422, exc.code, ENCRYPTED_BASELINE_TEXT, diagnostic=exc.diagnostic or None)
+            encrypted = True
+        target = MB.write_backup(backup_dir(), new_backup, data)
+        if encrypted:
+            # 代读只读插件数据目录里的这份备份（本机磁盘上的普通 .xlsx），原文件不交给 Excel。
+            try:
+                parse_baseline_bytes(data, day, new_backup, target)
+            except IMP.ManualImportError as exc:
+                if current is None or current["backup_name"] != new_backup:
+                    MB.remove_backup(backup_dir(), new_backup)
+                return import_error(exc)
+        baseline_file.set(
+            original_path=original_path, original_name=name, data_date=day, sha256=digest,
+            size=len(data), backup_name=new_backup,
+        )
+        if current is not None and current["backup_name"] != new_backup:
+            MB.remove_backup(backup_dir(), current["backup_name"])  # 只留一份备份
+        # 基线文件与固定互斥：设了基线文件就取消固定。
+        manual_baselines.unpin()
+        return ctx.json_ok(baseline_file_payload())
+
+    @bp.post("/manual-baseline-file/clear")
+    @guarded
+    def manual_baseline_file_clear():
+        cleared = clear_baseline_file()
+        return ctx.json_ok({**baseline_file_payload(), "cleared": cleared})
 
     @bp.post("/import-scan")
     @guarded

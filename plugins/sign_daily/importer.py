@@ -12,6 +12,8 @@ xlsx 本进程读不到内容，用户用 Excel 自带功能导出文本后即�
 - **只写自有基线（2026-11-16 起，推翻原「零写库、不计算日变化」）**：页面导入可以与此前的
   手工导入比日变化，基线只存在 `manual_baseline.ManualBaselineStore` 的自有两张表里；
   表单字段 `keepBaseline=0` 时只读基线、不写。旧数据（已有更晚日期的手工导入）不写、不显示括号。
+- **基线文件（2026-11-16）**：用户指定的一份本地报表作为固定基线（备份与记录在 `manual_baseline.py`）；
+  这里只负责来源声明的措辞（`baseline_statement` 的 file 模式、`BASELINE_BACKUP_GONE_TEXT`）。
 - **数据日期只能人给**：不接受从运行时刻、文件修改时间或行内「申请日期」推导。
 - `NullStore` 仍保留（读全空、写抛错），供需要「完全不比较」的调用方使用；离线 CLI
   （`tools/sign_daily_local_report.py`）自带一份同义实现，仍然零写库、不计算日变化。
@@ -400,11 +402,34 @@ _GBK_NOTE = "；这份是 ANSI 文本，代码页之外的生僻字可能已被 
 SAME_FILTER_TEXT = "两天的导出必须用同一套 TDC 筛选条件，否则少掉的单会显示为「消失」"
 
 
-#: 基线来源：本次指定 > 固定 > 自动（最近一次更早的导入）。
-BASELINE_MODE_TEXT = {"explicit": "指定", "pinned": "固定", "auto": "自动"}
+#: 基线来源：本次指定 > 基线文件 / 固定 > 自动（最近一次更早的导入）。
+BASELINE_MODE_TEXT = {"explicit": "指定", "pinned": "固定", "file": "文件", "auto": "自动"}
+#: 基线文件的备份不在或认不出：不显示日变化，也不退回自动挑选。
+BASELINE_BACKUP_GONE_TEXT = "基线文件和备份都不存在（或无法识别），请重新指定"
 
 
-def rejected_baseline_text(requested: str, mode: str) -> str:
+def baseline_file_status_text(info: Mapping[str, Any]) -> str:
+    """基线文件（对比照常进行时）的原文件状态说明：对比永远用指定时的备份。"""
+    original = str(info.get("originalStatus") or "")
+    if original == "missing":
+        # 这句会进正文（复制出去发给别人）：不写本机路径，路径只在页面上显示（importMeta.baseline.originalPath）。
+        return "基线文件不存在（已不在指定时的位置），已改用备份继续对比"
+    if original == "changed":
+        return "基线文件在指定后被修改过，对比用的是指定时的备份"
+    if original == "unknown":
+        return "基线文件是通过选择文件指定的，原位置未知，对比用的是指定时的备份"
+    return "原文件未变，对比用的是指定时的备份"
+
+
+def rejected_baseline_text(requested: str, mode: str, file_baseline: Mapping[str, Any] | None = None) -> str:
+    if mode == "file":
+        info = file_baseline or {}
+        if str(info.get("backupStatus") or "") != "ok":
+            return BASELINE_BACKUP_GONE_TEXT
+        return (
+            f"基线文件「{info.get('sourceName') or '未知文件'}」（{requested}）不早于本次数据日期或不含所选项目，"
+            "未显示日变化"
+        )
     who = "指定" if mode == "explicit" else "固定"
     return f"{who}的基线 {requested} 不早于本次数据日期或不含所选项目，未显示日变化"
 
@@ -415,18 +440,24 @@ def baseline_statement(
     stale: bool = False,
     requested: str | None = None,
     requested_mode: str = "auto",
+    file_baseline: Mapping[str, Any] | None = None,
 ) -> str:
-    """来源声明里关于日变化的一句：用了哪份基线（指定/固定/自动）/ 指定的基线不可用 / 没有基线 / 旧数据。"""
+    """来源声明里关于日变化的一句：用了哪份基线（指定/文件/固定/自动）/ 指定的基线不可用 / 没有基线 / 旧数据。"""
     if stale:
         return "已有更晚日期的手工导入，本次按旧数据处理：不留基线、不显示日变化"
+    if baseline and baseline.get("mode") == "file":
+        return (
+            f"日变化基线（文件）：{baseline.get('date')} 的基线文件「{baseline.get('sourceName') or '未知文件'}」，"
+            f"{baseline_file_status_text(baseline)}；同为用户确认日期、未经系统核验"
+        )
     if baseline:
         mode = BASELINE_MODE_TEXT.get(str(baseline.get("mode") or "auto"), "自动")
         return (
             f"日变化基线（{mode}）：{baseline.get('date')} 的手工导入「{baseline.get('sourceName') or '未知文件'}」，"
             "同为用户确认日期、未经系统核验"
         )
-    if requested and requested_mode in ("explicit", "pinned"):
-        return rejected_baseline_text(requested, requested_mode)
+    if requested and requested_mode in ("explicit", "pinned", "file"):
+        return rejected_baseline_text(requested, requested_mode, file_baseline)
     return "首次导入或无可用基线，不显示日变化"
 
 
@@ -442,8 +473,12 @@ def import_meta(
     stale: bool = False,
     requested: str | None = None,
     requested_mode: str = "auto",
+    file_baseline: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """响应里的导入元数据：来源标识 + 行数 + 内容指纹（优先用已校验的字节）+ 日变化基线。"""
+    """响应里的导入元数据：来源标识 + 行数 + 内容指纹（优先用已校验的字节）+ 日变化基线。
+
+    ``file_baseline``：基线文件模式下的文件与状态（不论这次比没比成都给，页面据此说明原文件/备份的情况）。
+    """
     note = (
         "内容时点无法由系统核验；日变化只与此前的手工导入比较（不读写一键生成的数据）；"
         + SAME_FILTER_TEXT + "；"
@@ -466,13 +501,16 @@ def import_meta(
         "baseline": dict(baseline) if baseline else None,
         "baselineSaved": bool(baseline_saved),
         "baselineStatement": baseline_statement(
-            baseline, stale=stale, requested=requested, requested_mode=requested_mode
+            baseline, stale=stale, requested=requested, requested_mode=requested_mode,
+            file_baseline=file_baseline,
         ),
-        # 指定/固定的基线不可用时的原因（不悄悄退回自动挑选）；可用或自动时为空串。
+        # 指定/文件/固定的基线不可用时的原因（不悄悄退回自动挑选）；可用或自动时为空串。
         "baselineReason": (
-            rejected_baseline_text(requested, requested_mode)
-            if requested and not baseline and not stale and requested_mode in ("explicit", "pinned") else ""
+            rejected_baseline_text(requested, requested_mode, file_baseline)
+            if requested and not baseline and not stale and requested_mode in ("explicit", "pinned", "file")
+            else ""
         ),
+        "baselineFile": dict(file_baseline) if file_baseline else None,
     }
     if source_format:
         meta["sourceFormat"] = source_format

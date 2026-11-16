@@ -980,7 +980,8 @@ def _signed_s2(rows):  # type: ignore[no-untyped-def]
 def test_manual_baseline_tables_are_outside_shared_patterns(client) -> None:  # type: ignore[no-untyped-def]
     _, _, db, _ = client
     tables = _manual_counts(db)
-    assert sorted(tables) == ["p_sign_daily_manual_baseline_meta", "p_sign_daily_manual_baseline_rows"]
+    assert sorted(tables) == ["p_sign_daily_manual_baseline_file", "p_sign_daily_manual_baseline_meta",
+                              "p_sign_daily_manual_baseline_rows"]
     assert not set(tables) & set(_snapshot_counts(db))  # 共享表断言照旧有效
 
 
@@ -1236,3 +1237,333 @@ def test_chart_color_defaults_match_chart_js() -> None:
         for key, bar, special in re.findall(r'(\w+): \{ bar: "(#[0-9a-f]{6})", special: "(#[0-9a-f]{6})" \}', source)
     }
     assert found == backend.DEFAULT_CHART_COLORS
+
+
+# ── 2026-11-16 基线文件：指定一份本地报表为固定基线，对比只读备份 ──────────────
+
+
+def _backup_dir(tmp_path: Path) -> Path:
+    return tmp_path / "plugins" / "sign-daily" / "baseline-backup"
+
+
+def _backups(tmp_path: Path) -> list[str]:
+    directory = _backup_dir(tmp_path)
+    return sorted(p.name for p in directory.iterdir()) if directory.exists() else []
+
+
+def _set_file_by_path(http, path, day="2026-11-01", **extra):  # type: ignore[no-untyped-def]
+    return http.post(f"{API}/manual-baseline-file", data={"path": str(path), "dataDate": day, **extra},
+                     content_type="multipart/form-data")
+
+
+def _set_file_by_upload(http, path: Path, day="2026-11-01"):  # type: ignore[no-untyped-def]
+    with path.open("rb") as handle:
+        return http.post(f"{API}/manual-baseline-file", data={"file": (handle, path.name), "dataDate": day},
+                         content_type="multipart/form-data")
+
+
+def _today_report(http, tmp_path, **form):  # type: ignore[no-untyped-def]
+    """11-07 的导入：S2 已签完（基线文件里 S2 未签完 → 每日进展里 S2 新签完）。"""
+    today = _workbook(tmp_path, _signed_s2(_rows()), name="today.xlsx")
+    fields = {"dataDate": "2026-11-07", "projects": '["F610M"]', "keepBaseline": "0", **form}
+    return _ok(_upload(http, today, **fields))
+
+
+def test_baseline_file_by_path_compares_against_backup(client, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _, http, db, _ = client
+    shared = _snapshot_counts(db)
+    original = _workbook(tmp_path, _rows(), name="base-1101.xlsx")
+    data = _ok(_set_file_by_path(http, original))
+    view = data["file"]
+    assert view["date"] == "2026-11-01" and view["sourceName"] == "base-1101.xlsx"
+    assert view["originalPath"] == str(original.resolve()) and view["originalStatus"] == "ok"
+    assert view["backupStatus"] == "ok" and len(view["sha256"]) == 12
+    assert data["backupDir"] == str(_backup_dir(tmp_path).resolve())
+    assert _backups(tmp_path) == [f"baseline-{view['sha256']}.xlsx"]
+    assert Path(view["backupPath"]).read_bytes() == original.read_bytes()
+    assert _ok(http.get(f"{API}/manual-baseline-file"))["file"] == view
+    assert _ok(http.get(f"{API}/manual-baselines"))["file"] == view  # 页面刷新一次就够
+
+    report = _today_report(http, tmp_path)
+    assert report["baseDate"] == "2026-11-01" and report["stale"] is False
+    assert report["progress"]["totals"]["newlyCompleted"] == ["S2"]
+    meta = report["importMeta"]
+    assert meta["baseline"]["mode"] == "file" and meta["baseline"]["sourceName"] == "base-1101.xlsx"
+    assert meta["baseline"]["originalStatus"] == "ok" and meta["baseline"]["backupStatus"] == "ok"
+    assert meta["baseline"]["originalPath"] == str(original.resolve())
+    assert meta["baselineFile"]["date"] == "2026-11-01" and meta["baselineReason"] == ""
+    assert "日变化基线（文件）：2026-11-01 的基线文件「base-1101.xlsx」" in meta["banner"]
+    assert "原文件未变" in meta["banner"]
+    assert _snapshot_counts(db) == shared  # 共享 TDC 表一概不动
+
+
+def test_baseline_file_by_upload_has_unknown_original(client, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _, http, _, _ = client
+    view = _ok(_set_file_by_upload(http, _workbook(tmp_path, _rows(), name="picked.xlsx")))["file"]
+    assert view["originalPath"] is None and view["originalStatus"] == "unknown"
+    assert view["backupStatus"] == "ok" and view["sourceName"] == "picked.xlsx"
+    report = _today_report(http, tmp_path)
+    assert report["progress"]["totals"]["newlyCompleted"] == ["S2"]
+    assert report["importMeta"]["baseline"]["originalStatus"] == "unknown"
+    assert "原位置未知，对比用的是指定时的备份" in report["importMeta"]["banner"]
+
+
+def test_baseline_file_original_missing_uses_backup(client, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _, http, _, _ = client
+    original = _workbook(tmp_path, _rows(), name="base.xlsx")
+    _ok(_set_file_by_path(http, original))
+    original.rename(tmp_path / "renamed.xlsx")
+    assert _ok(http.get(f"{API}/manual-baseline-file"))["file"]["originalStatus"] == "missing"
+    report = _today_report(http, tmp_path)
+    assert report["progress"]["totals"]["newlyCompleted"] == ["S2"]  # 照样有每日进展
+    meta = report["importMeta"]
+    assert meta["baseline"]["originalStatus"] == "missing"
+    assert "基线文件不存在（已不在指定时的位置），已改用备份继续对比" in meta["banner"]
+    assert str(original.resolve()) not in meta["banner"]  # 正文会发给别人：不带本机路径
+    assert meta["baseline"]["originalPath"] == str(original.resolve())  # 路径只给页面
+    (tmp_path / "renamed.xlsx").unlink()
+    again = _today_report(http, tmp_path)
+    assert again["progress"] is not None and again["importMeta"]["baseline"]["originalStatus"] == "missing"
+
+
+def test_baseline_file_original_modified_compares_backup(client, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _, http, _, _ = client
+    original = _workbook(tmp_path, _rows(), name="base.xlsx")
+    _ok(_set_file_by_path(http, original))
+    _workbook(tmp_path, _signed_s2(_rows()), name="base.xlsx")  # 原文件被改成「S2 已签完」
+    report = _today_report(http, tmp_path)
+    meta = report["importMeta"]
+    assert meta["baseline"]["originalStatus"] == "changed"
+    assert "基线文件在指定后被修改过，对比用的是指定时的备份" in meta["banner"]
+    # 若读的是原文件，S2 就不会是「新签完」：证明对比用的是备份
+    assert report["progress"]["totals"]["newlyCompleted"] == ["S2"]
+    assert report["delta"]["total"]["complete"] == 1
+
+
+def test_baseline_file_backup_gone_shows_no_progress(client, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _, http, _, _ = client
+    # 有一份可以自动挑选的更早导入：证明备份没了也不退回自动
+    _ok(_upload(http, _workbook(tmp_path, _rows(), name="d6.xlsx"), dataDate="2026-11-06", projects='["F610M"]'))
+    view = _ok(_set_file_by_path(http, _workbook(tmp_path, _rows(), name="base.xlsx")))["file"]
+    Path(view["backupPath"]).unlink()
+    assert _ok(http.get(f"{API}/manual-baseline-file"))["file"]["backupStatus"] == "missing"
+    report = _today_report(http, tmp_path)
+    assert report["progress"] is None and report["delta"] is None and report["baseDate"] is None
+    meta = report["importMeta"]
+    assert meta["baseline"] is None
+    assert meta["baselineReason"] == "基线文件和备份都不存在（或无法识别），请重新指定"
+    assert meta["baselineReason"] in meta["banner"]
+    assert meta["baselineFile"]["backupStatus"] == "missing"
+    # 备份被换成认不出的内容（摘要对不上）同样不比
+    _ok(_set_file_by_path(http, tmp_path / "base.xlsx"))
+    Path(view["backupPath"]).write_bytes(b"garbage")
+    assert _today_report(http, tmp_path)["progress"] is None
+
+
+@pytest.mark.parametrize("case", ["header", "missing", "directory", "suffix", "oversize", "future", "relative",
+                                  "nodate", "both", "encrypted"])
+def test_baseline_file_rejections_write_nothing(client, tmp_path, monkeypatch, case) -> None:  # type: ignore[no-untyped-def]
+    _, http, db, _ = client
+    backend = sys.modules["vse_plugins.sign_daily.backend"]
+    monkeypatch.setattr(backend, "_import_today", lambda: date(2026, 11, 16))
+    good = _workbook(tmp_path, _rows(), name="good.xlsx")
+    before = _manual_counts(db)
+    if case == "header":
+        response = _set_file_by_path(http, _workbook(tmp_path, _rows(), drift=True, name="drift.xlsx"))
+        assert response.get_json()["error"]["type"] == "E_HEADER_MISMATCH"
+    elif case == "missing":
+        response = _set_file_by_path(http, tmp_path / "nope.xlsx")
+        assert "找不到文件" in response.get_json()["error"]["message"]
+    elif case == "directory":
+        folder = tmp_path / "folder.xlsx"
+        folder.mkdir()
+        response = _set_file_by_path(http, folder)
+        assert "文件夹" in response.get_json()["error"]["message"]
+    elif case == "suffix":
+        other = tmp_path / "base.csv"
+        other.write_bytes(good.read_bytes())
+        response = _set_file_by_path(http, other)
+        assert response.get_json()["error"]["type"] == "E_BAD_SUFFIX"
+    elif case == "oversize":
+        monkeypatch.setattr(backend, "_FORM_FILE_LIMIT", 100)
+        response = _set_file_by_path(http, good)
+        assert response.get_json()["error"]["type"] == "E_FILE_TOO_LARGE"
+        assert _set_file_by_upload(http, good).status_code == 400
+    elif case == "future":
+        response = _set_file_by_path(http, good, day="2026-11-17")
+        assert "晚于今天" in response.get_json()["error"]["message"]
+    elif case == "relative":
+        response = _set_file_by_path(http, "good.xlsx")
+        assert response.get_json()["error"]["type"] == "E_PATH_NOT_ABSOLUTE"
+    elif case == "nodate":
+        response = _set_file_by_path(http, good, day="")
+        assert _set_file_by_path(http, good, day="2026-11-1").status_code == 400
+    elif case == "both":
+        with good.open("rb") as handle:
+            response = http.post(f"{API}/manual-baseline-file",
+                                 data={"file": (handle, "good.xlsx"), "path": str(good), "dataDate": "2026-11-01"},
+                                 content_type="multipart/form-data")
+    else:
+        response = _set_file_by_path(http, _container_sample(tmp_path / "locked.xlsx"))
+        error = response.get_json()["error"]
+        assert error["type"] == "E_ENCRYPTED_WORKBOOK" and "Unicode 文本(*.txt)" in error["message"]
+        assert set(error["diagnostic"]) <= _DIAGNOSTIC_KEYS
+        assert _CONTAINER_HEAD.hex() not in response.get_data(as_text=True).lower()
+    assert response.status_code in (400, 422), case
+    assert _manual_counts(db) == before
+    assert _ok(http.get(f"{API}/manual-baseline-file"))["file"] is None
+    assert _backups(tmp_path) == []
+
+
+def test_baseline_file_replace_and_clear(client, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _, http, _, _ = client
+    first = _ok(_set_file_by_path(http, _workbook(tmp_path, _rows(), name="a.xlsx")))["file"]
+    assert _ok(_set_file_by_path(http, tmp_path / "a.xlsx"))["file"]["sha256"] == first["sha256"]
+    assert _backups(tmp_path) == [f"baseline-{first['sha256']}.xlsx"]  # 同一份重设：备份还在
+    second = _ok(_set_file_by_upload(http, _workbook(tmp_path, _rows()[:3], name="b.xlsx"), day="2026-11-02"))["file"]
+    assert second["sha256"] != first["sha256"]
+    assert _backups(tmp_path) == [f"baseline-{second['sha256']}.xlsx"]  # 旧备份已删，只留一份
+    cleared = _ok(http.post(f"{API}/manual-baseline-file/clear", json={}))
+    assert cleared["file"] is None and cleared["cleared"] is True
+    assert _backups(tmp_path) == []
+    assert _ok(http.post(f"{API}/manual-baseline-file/clear", json={}))["cleared"] is False
+
+
+def test_baseline_file_and_pin_are_mutually_exclusive(client, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _, http, _, _ = client
+    _three_days(http, tmp_path)
+    _ok(http.post(f"{API}/manual-baselines/pin", json={"date": "2026-11-05"}))
+    _ok(_set_file_by_path(http, _workbook(tmp_path, _rows(), name="base.xlsx")))
+    listed = _ok(http.get(f"{API}/manual-baselines"))
+    assert listed["pinned"] is None and listed["file"]["sourceName"] == "base.xlsx"  # 设文件 → 取消固定
+    assert http.post(f"{API}/manual-baselines/pin", json={"date": "2026-10-30"}).status_code == 404
+    assert _ok(http.get(f"{API}/manual-baseline-file"))["file"] is not None  # 固定失败不动基线文件
+    pinned = _ok(http.post(f"{API}/manual-baselines/pin", json={"date": "2026-11-05"}))
+    assert pinned["pinned"] == "2026-11-05" and pinned["file"] is None  # 固定 → 取消基线文件
+    assert _backups(tmp_path) == []
+    report = _today_report(http, tmp_path)
+    assert report["importMeta"]["baseline"]["mode"] == "pinned"
+
+
+def test_explicit_baseline_beats_baseline_file(client, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _, http, _, _ = client
+    _three_days(http, tmp_path)
+    _ok(_set_file_by_path(http, _workbook(tmp_path, _rows(), name="base.xlsx"), day="2026-10-20"))
+    by_file = _today_report(http, tmp_path)
+    assert by_file["baseDate"] == "2026-10-20" and by_file["importMeta"]["baseline"]["mode"] == "file"
+    explicit = _today_report(http, tmp_path, baselineDate="2026-11-05")
+    assert explicit["baseDate"] == "2026-11-05" and explicit["importMeta"]["baseline"]["mode"] == "explicit"
+    assert explicit["importMeta"]["baselineFile"] is None
+
+
+def test_baseline_file_not_earlier_or_missing_project(client, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _, http, _, _ = client
+    _ok(_set_file_by_path(http, _workbook(tmp_path, _rows(), name="same.xlsx"), day="2026-11-07"))
+    same_day = _today_report(http, tmp_path)
+    assert same_day["progress"] is None and same_day["stale"] is False
+    reason = same_day["importMeta"]["baselineReason"]
+    assert reason == "基线文件「same.xlsx」（2026-11-07）不早于本次数据日期或不含所选项目，未显示日变化"
+    e50_only = [row for row in _rows() if row["项目/车型"] == "E50"]
+    _ok(_set_file_by_path(http, _workbook(tmp_path, e50_only, name="e50.xlsx")))
+    missing = _today_report(http, tmp_path)
+    assert missing["progress"] is None and missing["delta"] is None
+    assert missing["importMeta"]["baselineReason"].startswith("基线文件「e50.xlsx」（2026-11-01）")
+    # 当天的导入照常留作基线（keepBaseline 打开时）：委托给手工基线库
+    kept = _today_report(http, tmp_path, keepBaseline="1")
+    assert kept["importMeta"]["baselineSaved"] is True
+    assert "2026-11-07" in [i["date"] for i in _ok(http.get(f"{API}/manual-baselines"))["items"]]
+
+
+def test_baseline_file_report_digest_unchanged(client, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _, http, _, _ = client
+    alone = _today_report(http, tmp_path)
+    _ok(_set_file_by_path(http, _workbook(tmp_path, _rows(), name="base.xlsx")))
+    compared = _today_report(http, tmp_path)
+    assert compared["progress"] is not None and alone["progress"] is None
+    assert compared["importMeta"]["reportDigest"] == alone["importMeta"]["reportDigest"]
+
+
+def test_baseline_file_name_is_escaped_and_path_stays_out_of_body(client, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """文件名进正文要转义；本机路径不进正文（正文会发给别人），只在 importMeta 里给页面。"""
+    _, http, _, _ = client
+    folder = tmp_path / "secret-folder"
+    folder.mkdir()
+    original = _workbook(folder, _rows(), name="<b>x&y.xlsx")
+    _ok(_set_file_by_path(http, original))
+    original.unlink()
+    report = _today_report(http, tmp_path)
+    assert "<b>x&y" not in report["html"] and "&lt;b&gt;x&amp;y" in report["html"]
+    assert "<b>x&y" in report["text"]  # 纯文本照原样
+    assert "secret-folder" not in report["html"] and "secret-folder" not in report["text"]
+    assert "secret-folder" in report["importMeta"]["baseline"]["originalPath"]
+
+
+def test_baseline_file_routes_are_local_only(client, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _, http, _, _ = client
+    original = _workbook(tmp_path, _rows(), name="base.xlsx")
+    remote = {"REMOTE_ADDR": "10.0.0.9"}
+    assert http.get(f"{API}/manual-baseline-file", environ_base=remote).status_code in (401, 403)
+    response = http.post(f"{API}/manual-baseline-file", data={"path": str(original), "dataDate": "2026-11-01"},
+                         content_type="multipart/form-data", environ_base=remote)
+    assert response.status_code in (401, 403) and _backups(tmp_path) == []
+    _ok(_set_file_by_path(http, original))
+    assert http.post(f"{API}/manual-baseline-file/clear", json={}, environ_base=remote).status_code in (401, 403)
+    assert _backups(tmp_path) != []
+    # 列表 GET 本身不过插件的 local_guard（宿主对非本机来源整体拒绝）；即便放行，视图里也不带本机路径。
+    listed = http.get(f"{API}/manual-baselines", environ_base=remote)
+    assert listed.status_code in (401, 403) and str(tmp_path) not in listed.get_data(as_text=True)
+
+
+def test_backup_name_validator_blocks_traversal(client, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    mb = sys.modules["vse_plugins.sign_daily.manual_baseline"]
+    assert mb.valid_backup_name("baseline-0123456789ab.xlsx")
+    assert mb.valid_backup_name("baseline-0123456789ab.txt")
+    for bad in ("../baseline-0123456789ab.xlsx", "baseline-0123456789ab.xlsx/..", "a/baseline-0123456789ab.xlsx",
+                "..\\baseline-0123456789ab.xlsx", "baseline-0123456789AB.xlsx", "baseline-0123456789ab.csv",
+                "baseline-0123456789a.xlsx", "", None, "/etc/passwd", "baseline-0123456789ab.xlsx\x00",
+                "baseline-0123456789ab.xlsx\n"):
+        assert not mb.valid_backup_name(bad), bad
+        assert mb.backup_path(tmp_path, bad) is None
+        assert mb.remove_backup(tmp_path, bad) is False
+    victim = tmp_path / "keep.xlsx"
+    victim.write_bytes(b"x")
+    assert mb.remove_backup(tmp_path, "keep.xlsx") is False and victim.exists()
+    with pytest.raises(ValueError):
+        mb.backup_name_for("../../x", ".xlsx")
+    assert mb.backup_name_for("ABCDEF0123456789", ".XLSX") == "baseline-abcdef012345.xlsx"
+
+
+def test_encrypted_baseline_file_is_read_from_backup_via_excel(client, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """加密 xlsx：代读开着时由 Excel 读插件数据目录里的备份（不是原文件）；代读失败不留备份、不记录。"""
+    _, http, db, _ = client
+    xp = sys.modules["vse_plugins.sign_daily.excel_proxy"]
+    importer = _importer()
+    plain = importer.source_from_file(_workbook(tmp_path, _rows(), name="plain.xlsx"), date(2026, 11, 1))
+    seen: list[Path] = []
+    monkeypatch.setattr(xp, "ready", lambda config: True)
+
+    def fake_excel(path, day):  # type: ignore[no-untyped-def]
+        seen.append(Path(path))
+        return importer.S.SourceData(records=plain.records, snapshot_at=None, data_date=day,
+                                     coverage={"kind": "all"})
+
+    monkeypatch.setattr(importer, "source_from_excel", fake_excel)
+    locked = _container_sample(tmp_path / "locked.xlsx")
+    view = _ok(_set_file_by_path(http, locked))["file"]
+    assert seen and seen[-1].parent == _backup_dir(tmp_path).resolve() and seen[-1] != locked.resolve()
+    assert view["backupStatus"] == "ok"
+    report = _today_report(http, tmp_path)
+    assert report["progress"]["totals"]["newlyCompleted"] == ["S2"]
+    assert seen[-1].name == Path(view["backupPath"]).name
+
+    _ok(http.post(f"{API}/manual-baseline-file/clear", json={}))
+    before = _manual_counts(db)
+
+    def failing(path, day):  # type: ignore[no-untyped-def]
+        raise importer.ManualImportError("E_ENCRYPTED_WORKBOOK", importer.ENCRYPTED_TEXT,
+                                         diagnostic={"reason": "excel_unavailable"})
+
+    monkeypatch.setattr(importer, "source_from_excel", failing)
+    response = _set_file_by_path(http, locked)
+    assert response.status_code == 422 and response.get_json()["error"]["diagnostic"] == {"reason": "excel_unavailable"}
+    assert _backups(tmp_path) == [] and _manual_counts(db) == before

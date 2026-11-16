@@ -105,3 +105,9 @@
 .sd-plan-line.is-ok { border-left: 3px solid var(--success, #2e7d32); }
 .sd-plan-line.is-info { border-left: 3px solid var(--muted); }
 .sd-plan-line.is-warn { border-left: 3px solid var(--warning, #b45309); color: var(--warning, #b45309); font-weight: 600; }
+.sd-plan-line.is-error { border-left: 3px solid var(--error, #c64545); color: var(--error, #c64545); font-weight: 600; }
+.sd-baseline-file { margin: 6px 0; }
+.sd-bf-panel { margin-top: 6px; padding: 8px 10px; border: 1px solid var(--hairline); border-radius: 8px; }
+.sd-bf-current { padding-bottom: 6px; margin-bottom: 6px; border-bottom: 1px dashed var(--hairline); }
+.sd-bf-current p { margin: 4px 0; font-size: 13px; }
+.sd-bf-panel input:not([type]) { width: 100%; box-sizing: border-box; }

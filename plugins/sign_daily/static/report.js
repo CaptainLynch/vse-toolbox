@@ -4,7 +4,8 @@ import { html, useEffect, useRef, useState } from "/static/host/vendor/preact-ht
 import { StateBlock, useStylesheet } from "/static/host/kit.js";
 import { CHART_PRESETS, matchPreset, presetPalettes, renderChartPng, resolveAllPalettes, tooLight } from "./chart.js";
 import {
-  baselineOptions, compareResultText, comparePlan, conclusionsPayload, exportAllowed, fileDateHint, formatTime,
+  baselineFileStatus, baselineOptions, baselinePathHint, cleanPastedPath, compareResultText, comparePlan,
+  conclusionsPayload, exportAllowed, fileDateHint, formatTime,
   initialPicks,
   inlineImages, migratePrefs, orphanProjects, sameColors, scopeKey, searchMisses, stageText, statusGateText, todayIso,
   toggle,
@@ -187,6 +188,123 @@ async function postForm(url, formData) {
   throw failure;
 }
 
+/** 「指定基线文件」：选择文件或粘贴完整路径 + 数据截至日期 → 检查并设为基线；程序留一份备份，对比只读备份。 */
+function BaselineFilePanel({ api, file, pinnedDate, disabled, onChanged, flash }) {
+  const [open, setOpen] = useState(false);
+  const [how, setHow] = useState("pick"); // pick 选择文件 | path 粘贴完整路径
+  const [picked, setPicked] = useState(null);
+  const [pathText, setPathText] = useState("");
+  // 不预填今天：基线一般是以前导出的文件，必须让用户自己填那一天。
+  const [day, setDay] = useState("");
+  const [working, setWorking] = useState(false);
+  const [problem, setProblem] = useState(null); // {message, reason}
+  const pickRef = useRef(null);
+  const lock = disabled || working;
+  const pathHint = how === "path" ? baselinePathHint(pathText) : "";
+  const dayHint = how === "pick" && picked ? fileDateHint(picked.lastModified, day) : "";
+  const status = baselineFileStatus(file);
+
+  const send = async (path, upload, date) => {
+    if (pinnedDate && !window.confirm(`设为基线文件后，会取消「固定和 ${pinnedDate} 比」。确定？`)) return;
+    const body = new FormData();
+    if (path) body.append("path", path); else body.append("file", upload);
+    body.append("dataDate", date);
+    setWorking(true);
+    setProblem(null);
+    try {
+      const data = await postForm(api.url("manual-baseline-file"), body);
+      onChanged(data.file || null);
+      setPicked(null);
+      setPathText("");
+      setDay("");
+      if (pickRef.current) pickRef.current.value = "";
+      flash(`已设为基线文件：${data.file.sourceName}（${data.file.date}），以后导入都和它比，直到取消`);
+    } catch (err) {
+      setProblem({ message: err.message, reason: err.reason || "" });
+    } finally {
+      setWorking(false);
+    }
+  };
+  const submit = () => {
+    const path = how === "path" ? cleanPastedPath(pathText) : "";
+    if (how === "pick" && !picked) { setProblem({ message: "请先点「选择文件」挑一份报表" }); return; }
+    if (how === "path" && !path) { setProblem({ message: "请粘贴基线文件的完整路径" }); return; }
+    if (pathHint) { setProblem({ message: pathHint }); return; }
+    if (!day) { setProblem({ message: "请填写这份基线文件的数据截至日期（就是导出它的那一天）" }); return; }
+    send(path, picked, day);
+  };
+  const rebase = () => {
+    if (!window.confirm(`用原位置现在的内容重新设为基线（数据截至日期仍是 ${file.date}）？旧备份会被替换。`)) return;
+    send(file.originalPath, null, file.date);
+  };
+  const clear = async () => {
+    if (!window.confirm(`取消基线文件「${file.sourceName}」？程序里的备份会被删除（你的原文件不受影响），以后改回自动和上次导入比。`)) return;
+    setWorking(true);
+    try {
+      const data = await api.post("manual-baseline-file/clear", {});
+      onChanged(data.file || null);
+      flash("已取消基线文件：以后自动和上次导入比");
+    } catch (err) {
+      flash(err.message);
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  return html`<div class="sd-baseline-file">
+    <div class="sd-actions">
+      <button type="button" class="vk-btn" aria-expanded=${open} disabled=${disabled}
+        onClick=${() => setOpen(!open)}>指定基线文件${file ? `（当前：${file.sourceName}）` : ""}</button>
+    </div>
+    ${open && html`<div class="sd-bf-panel" role="region" aria-label="基线文件">
+      <p class="vk-muted sd-import-hint">把以前导出的一份报表定为固定的对比基线：以后每次导入都和它比，直到取消。
+        程序会复制一份备份，对比只读备份；原文件只用来提醒你它还在不在、有没有被改过。</p>
+      ${file && html`<div class="sd-bf-current">
+        <p><b>当前基线文件：</b>${file.sourceName}（数据截至 ${file.date}）</p>
+        <p>原位置：${file.originalPath ? html`<b class="sd-path">${file.originalPath}</b>` : "通过选择文件指定，原位置未知（以备份为准）"}</p>
+        <p>备份位置：<b class="sd-path">${file.backupPath}</b></p>
+        <p class=${`sd-plan-line is-${status.tone}`} role="status">${status.text}</p>
+        <div class="sd-actions">
+          ${file.originalPath && file.originalStatus === "changed" && html`<button type="button" class="vk-btn"
+            disabled=${lock} onClick=${rebase}>用现在的文件重新设为基线</button>`}
+          <button type="button" class="vk-btn" disabled=${lock} onClick=${clear}>取消基线文件</button>
+        </div>
+        <p class="vk-muted sd-import-hint">「取消基线文件」只删程序里的备份，不动你的原文件。下面可以换一份新的基线文件。</p>
+      </div>`}
+      <div class="sd-actions" role="radiogroup" aria-label="怎么指定">
+        <label class="sd-check"><input type="radio" name="sd-bf-how" checked=${how === "pick"} disabled=${lock}
+          onChange=${() => { setHow("pick"); setProblem(null); }} />选择文件</label>
+        <label class="sd-check"><input type="radio" name="sd-bf-how" checked=${how === "path"} disabled=${lock}
+          onChange=${() => { setHow("path"); setProblem(null); }} />粘贴完整路径</label>
+      </div>
+      ${how === "pick"
+        ? html`<label class="sd-field"><span>基线文件</span>
+            <input type="file" accept=".xlsx,.txt" ref=${pickRef} disabled=${lock}
+              onChange=${(e) => { setPicked((e.target.files && e.target.files[0]) || null); setProblem(null); }} /></label>
+            <p class="vk-muted sd-import-hint">浏览器不会告诉程序文件原来放在哪：以后无法提醒原文件是否被改过，对比以备份为准。</p>`
+        : html`<label class="sd-field"><span>完整路径</span>
+            <input value=${pathText} disabled=${lock} placeholder="例如 D:\\报表\\11-01.xlsx"
+              onInput=${(e) => { setPathText(e.target.value); setProblem(null); }} /></label>
+            <p class="vk-muted sd-import-hint">在文件上按住 Shift 点右键 →「复制文件地址」，粘贴到这里（带不带引号都行）。可以是电脑上任意位置的 .xlsx / .txt。</p>
+            ${pathHint && html`<p class="sd-warn" role="status">${pathHint}</p>`}`}
+      <label class="sd-field"><span>这份文件的数据截至日期</span>
+        <input type="date" value=${day} disabled=${lock} onInput=${(e) => { setDay(e.target.value); setProblem(null); }} /></label>
+      <p class="vk-muted sd-import-hint">填导出这份文件的那一天（不能晚于今天）。基线一般是以前的文件，所以这里不预填。</p>
+      ${dayHint && html`<p class="sd-warn" role="status">${dayHint}</p>`}
+      <div class="sd-actions">
+        <button type="button" class="vk-btn is-primary" disabled=${lock} onClick=${submit}>
+          ${working ? "正在检查…" : "检查并设为基线"}</button>
+      </div>
+      ${problem && html`<div class="vk-state is-error" role="alert">
+        <span>${problem.message}</span>
+        ${problem.reason && REASON_NOTES[problem.reason]
+          && !String(problem.message || "").includes(REASON_NOTES[problem.reason])
+          && html`<span class="vk-muted">${REASON_NOTES[problem.reason]}</span>`}
+      </div>`}
+    </div>`}
+  </div>`;
+}
+
 function LongCycleReview({ longCycle, onConfirm, onProceed, proceeding }) {
   const [picks, setPicks] = useState(() => initialPicks(longCycle));
   const [forced, setForced] = useState({});
@@ -282,6 +400,7 @@ export default function Page({ plugin, api }) {
   const [baselineChoice, setBaselineChoice] = useState(""); // "" = 上次导入（自动）
   const [keepBaseline, setKeepBaseline] = useState(true);
   const [baselineBusy, setBaselineBusy] = useState(false);
+  const [baselineFile, setBaselineFile] = useState(null); // 当前基线文件（含原文件/备份状态），没有为 null
   const [scan, setScan] = useState(null);
   const fileRef = useRef(null);
   const previewRef = useRef(null);
@@ -305,6 +424,7 @@ export default function Page({ plugin, api }) {
     try {
       const data = await api.get("manual-baselines");
       setBaselines(data.items || []);
+      setBaselineFile(data.file || null);
       return data.items || [];
     } catch (_) {
       return null; // 列表拿不到不影响导入：下拉只剩「自动」
@@ -428,6 +548,7 @@ export default function Page({ plugin, api }) {
     try {
       const data = await api.post(`manual-baselines/${path}`, payload);
       setBaselines(data.items || []);
+      setBaselineFile(data.file || null);
       flash(done);
       return true;
     } catch (err) {
@@ -437,8 +558,14 @@ export default function Page({ plugin, api }) {
       setBaselineBusy(false);
     }
   };
-  const pinChoice = () => baselineAction("pin", { date: baselineChoice },
-    `已固定：以后导入都和 ${baselineChoice} 比，直到取消固定`);
+  const pinChoice = () => {
+    // 固定与基线文件互斥：固定会取消基线文件并删除它的备份，先请用户确认。
+    if (baselineFile && !window.confirm(
+      `固定和 ${baselineChoice} 比之后，会取消基线文件「${baselineFile.sourceName}」并删除它的备份（你的原文件不受影响）。确定？`,
+    )) return null;
+    return baselineAction("pin", { date: baselineChoice },
+      `已固定：以后导入都和 ${baselineChoice} 比，直到取消固定`);
+  };
   const unpin = () => baselineAction("unpin", {}, "已取消固定：以后自动和上次导入比");
   const deleteChoice = async () => {
     const date = baselineChoice;
@@ -452,6 +579,7 @@ export default function Page({ plugin, api }) {
   const plan = comparePlan(baselines, {
     dataDate: manualDate, choice: baselineChoice,
     maxGapDays: (state.thresholds && state.thresholds.baselineMaxGapDays) || 14,
+    file: baselineFile,
   });
 
   const toggleExcelProxy = async (enabled) => {
@@ -630,6 +758,9 @@ export default function Page({ plugin, api }) {
         <label class="sd-check"><input type="checkbox" checked=${keepBaseline}
           onChange=${() => setKeepBaseline(!keepBaseline)} />留作下次对比</label>
         <p class="vk-muted sd-import-hint">勾上后，明天导入就能看到比今天进展了多少。</p>
+        <${BaselineFilePanel} api=${api} file=${baselineFile} pinnedDate=${pinnedItem ? pinnedItem.date : ""}
+          disabled=${busy || baselineBusy} onChanged=${(next) => { setBaselineFile(next); loadBaselines(); }}
+          flash=${flash} />
         <details class="sd-compare">
           <summary>更多：指定和哪一天比</summary>
           <label class="sd-field"><span>和哪一天比</span>
@@ -637,7 +768,9 @@ export default function Page({ plugin, api }) {
               onChange=${(e) => setBaselineChoice(e.target.value)}>
               ${baselineOptions(baselines).map((item) => html`<option key=${item.value} value=${item.value}>${item.label}</option>`)}
             </select></label>
-          <p class="vk-muted sd-import-hint">选「上次导入（自动）」最省事；选了某一天，这次就只和那一天比。</p>
+          <p class="vk-muted sd-import-hint">${baselineFile
+            ? `现在用基线文件「${baselineFile.sourceName}」对比；在这里选某一天，只对这一次有效。`
+            : "选「上次导入（自动）」最省事；选了某一天，这次就只和那一天比。"}</p>
           <div class="sd-actions">
             <button type="button" class="vk-btn" disabled=${busy || baselineBusy || !baselineChoice} onClick=${pinChoice}>固定和这一天比</button>
             <button type="button" class="vk-btn" disabled=${busy || baselineBusy || !pinnedItem} onClick=${unpin}>取消固定</button>

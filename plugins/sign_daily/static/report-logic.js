@@ -191,12 +191,54 @@ export function baselineOptions(items) {
   ];
 }
 
+// ── 基线文件（2026-11-16）：指定一份本地报表为固定基线，对比只读备份 ─────────────
+
+const fileLabel = (file) => `基线文件 ${(file && file.sourceName) || "（未记录文件名）"}（${mmdd(file && file.date)}）`;
+
+/** 基线文件面板里的状态行：{text, tone}（tone 同 comparePlan，另有 error：这次不会对比）。 */
+export function baselineFileStatus(file) {
+  if (!file) return { text: "", tone: "info" };
+  if (file.backupStatus !== "ok") {
+    return { text: "基线文件和备份都不存在（或无法识别），请重新指定", tone: "error" };
+  }
+  if (file.originalStatus === "missing") {
+    return { text: `原文件不在了（原路径：${file.originalPath || ""}），会改用备份继续对比`, tone: "warn" };
+  }
+  if (file.originalStatus === "changed") {
+    return { text: "原文件在指定后被修改过；对比仍用指定时的备份。要改用现在的内容，请点「用现在的文件重新设为基线」", tone: "warn" };
+  }
+  if (file.originalStatus === "unknown") {
+    return { text: "通过选择文件指定，原位置未知；对比用的是指定时的备份", tone: "ok" };
+  }
+  return { text: "原文件和备份都在，内容一致", tone: "ok" };
+}
+
+/** 粘贴的路径：去掉首尾空白和成对引号（Windows「复制文件地址」会带双引号）。与后端 clean_path_text 一致。 */
+export function cleanPastedPath(text) {
+  let value = String(text || "").trim();
+  if (value.length >= 2 && value[0] === value[value.length - 1] && (value[0] === "\"" || value[0] === "'")) {
+    value = value.slice(1, -1).trim();
+  }
+  return value;
+}
+
+/** 路径输入框下方的即时提示（只做明显错误的预检，最终以后端检查为准）；没问题时返回空串。 */
+export function baselinePathHint(text) {
+  const value = cleanPastedPath(text);
+  if (!value) return "";
+  if (!/^(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(value)) {
+    return "要粘贴从盘符开始的完整路径，例如 D:\\报表\\11-01.xlsx（在文件上按住 Shift 点右键 →「复制文件地址」）";
+  }
+  if (!/\.(xlsx|txt)$/i.test(value)) return "只接受 .xlsx 或 .txt 文件";
+  return "";
+}
+
 /**
- * 生成按钮上方的一句话：这次会和哪一天比（与后端同一顺序：本次指定 > 固定 > 自动）。
- * 返回 {text, tone}，tone 是 ok（会显示每日进展）/ info（这次不比，正常）/ warn（需要用户改选择）。
- * 只是预告：项目范围等细节以生成结果为准。
+ * 生成按钮上方的一句话：这次会和哪一天比（与后端同一顺序：本次指定 > 基线文件 / 固定 > 自动）。
+ * 返回 {text, tone}，tone 是 ok（会显示每日进展）/ info（这次不比，正常）/ warn（需要用户留意或改选择）/
+ * error（这次不会对比）。只是预告：项目范围等细节以生成结果为准。
  */
-export function comparePlan(items, { dataDate = "", choice = "", maxGapDays = 14 } = {}) {
+export function comparePlan(items, { dataDate = "", choice = "", maxGapDays = 14, file = null } = {}) {
   const list = items || [];
   if (!dataDate) return { text: "先填数据截至日期，就能看到这次会和哪一天比", tone: "info" };
   const later = list.filter((item) => item.date > dataDate).map((item) => item.date).sort();
@@ -211,6 +253,21 @@ export function comparePlan(items, { dataDate = "", choice = "", maxGapDays = 14
       return { text: "选的对比日期要早于本次数据日期，请改选或改回自动", tone: "warn" };
     }
     return { text: `将与 ${describe(chosen)}对比（你指定的）`, tone: "ok" };
+  }
+  if (file) {
+    if (file.backupStatus !== "ok") {
+      return { text: `${fileLabel(file)}和备份都不存在（或无法识别），这次不会对比：请重新指定或取消基线文件`, tone: "error" };
+    }
+    if (file.date >= dataDate) {
+      return { text: `${fileLabel(file)}不早于本次数据日期，这次不会对比：请检查日期，或重新指定基线文件`, tone: "warn" };
+    }
+    if (file.originalStatus === "missing") {
+      return { text: `将与${fileLabel(file)}对比；原文件已不在原位置，改用备份对比`, tone: "warn" };
+    }
+    if (file.originalStatus === "changed") {
+      return { text: `将与${fileLabel(file)}对比；原文件指定后被修改过，用的是指定时的备份`, tone: "warn" };
+    }
+    return { text: `将与${fileLabel(file)}对比`, tone: "ok" };
   }
   if (pinned) {
     if (pinned.date >= dataDate) {
@@ -233,6 +290,15 @@ export function compareResultText(importMeta) {
   const meta = importMeta || {};
   const saved = meta.baselineSaved ? "本次已留作下次对比。" : "本次没有留作下次对比。";
   const base = meta.baseline;
+  if (base && base.mode === "file") {
+    const note = {
+      missing: `原文件不在了（原路径：${base.originalPath || ""}），已改用备份继续对比。`,
+      changed: "原文件在指定后被修改过，对比用的是指定时的备份。",
+      unknown: "原位置未知（通过选择文件指定），对比用的是指定时的备份。",
+    }[base.originalStatus] || "对比用的是指定时的备份。";
+    return `已与${fileLabel(base)}对比。${note}${saved}`;
+  }
+  if (meta.baselineFile && meta.baselineReason) return `${meta.baselineReason}。${saved}`;
   if (base) {
     const how = { explicit: "你指定的", pinned: "已固定的", auto: "自动选的上次导入" }[base.mode] || "自动选的上次导入";
     return `已与 ${mmdd(base.date)} 的导入（${base.sourceName || "未记录文件名"}，${how}）对比。${saved}`;

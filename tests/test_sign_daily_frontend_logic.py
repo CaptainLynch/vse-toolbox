@@ -286,3 +286,66 @@ console.log(JSON.stringify({
 """)
     assert out["same"] == "" and out["noFile"] == "" and out["noDate"] == "" and out["bad"] == ""
     assert out["differs"] == "这份文件最后修改于 2026-11-15，和填写的数据截至日期 2026-11-16 不是同一天，请确认日期没填错"
+
+
+def test_baseline_file_plan_status_and_path_helpers():
+    out = _run(r"""
+const L = await import(process.argv[1] + "/report-logic.js");
+const items = [{date: "2026-11-15", sourceName: "a.xlsx", pinned: true}];
+const file = {date: "2026-11-01", sourceName: "base.xlsx", originalPath: "D:\\r\\base.xlsx",
+  originalStatus: "ok", backupStatus: "ok"};
+const plan = (f, extra = {}) => L.comparePlan(items, {dataDate: "2026-11-16", file: f, ...extra});
+console.log(JSON.stringify({
+  ok: plan(file),
+  unknown: plan({...file, originalPath: null, originalStatus: "unknown"}),
+  missing: plan({...file, originalStatus: "missing"}),
+  changed: plan({...file, originalStatus: "changed"}),
+  gone: plan({...file, backupStatus: "missing"}),
+  notEarlier: plan({...file, date: "2026-11-16"}),
+  explicitWins: plan(file, {choice: "2026-11-15"}),
+  stale: L.comparePlan([{date: "2026-11-20", sourceName: "x"}], {dataDate: "2026-11-16", file}),
+  status: ["ok", "missing", "changed", "unknown"].map((s) => L.baselineFileStatus({...file, originalStatus: s})),
+  statusGone: L.baselineFileStatus({...file, backupStatus: "missing"}),
+  statusNone: L.baselineFileStatus(null),
+  result: [
+    L.compareResultText({baseline: {...file, mode: "file"}, baselineSaved: true}),
+    L.compareResultText({baseline: {...file, mode: "file", originalStatus: "missing"}, baselineSaved: false}),
+    L.compareResultText({baseline: {...file, mode: "file", originalStatus: "changed"}, baselineSaved: false}),
+    L.compareResultText({baseline: {...file, mode: "file", originalStatus: "unknown"}, baselineSaved: false}),
+    L.compareResultText({baseline: null, baselineFile: {...file, backupStatus: "missing"},
+      baselineReason: "基线文件和备份都不存在（或无法识别），请重新指定", baselineSaved: false}),
+  ],
+  clean: [L.cleanPastedPath('  "D:\\r\\a.xlsx"  '), L.cleanPastedPath("'/x/a.txt'"), L.cleanPastedPath('"')],
+  hints: ["", "D:\\r\\a.xlsx", '"D:\\r\\a.xlsx"', "/home/a.TXT", "\\\\srv\\s\\a.xlsx", "a.xlsx", "D:a.xlsx",
+          "D:\\r\\a.csv"].map((t) => L.baselinePathHint(t)),
+}));
+""")
+    assert out["ok"] == {"text": "将与基线文件 base.xlsx（11-01）对比", "tone": "ok"}
+    assert out["unknown"]["tone"] == "ok"
+    assert out["missing"]["tone"] == "warn" and "改用备份对比" in out["missing"]["text"]
+    assert out["changed"]["tone"] == "warn" and "修改过" in out["changed"]["text"]
+    assert out["gone"]["tone"] == "error" and "这次不会对比" in out["gone"]["text"]
+    assert out["notEarlier"]["tone"] == "warn" and "不早于本次数据日期" in out["notEarlier"]["text"]
+    assert out["explicitWins"]["text"] == "将与 11-15 的导入（a.xlsx）对比（你指定的）"
+    assert out["stale"]["tone"] == "warn" and "按旧数据处理" in out["stale"]["text"]
+    assert [s["tone"] for s in out["status"]] == ["ok", "warn", "warn", "ok"]
+    assert "D:\\r\\base.xlsx" in out["status"][1]["text"] and "重新设为基线" in out["status"][2]["text"]
+    assert out["statusGone"] == {"text": "基线文件和备份都不存在（或无法识别），请重新指定", "tone": "error"}
+    assert out["statusNone"]["text"] == ""
+    assert out["result"][0] == "已与基线文件 base.xlsx（11-01）对比。对比用的是指定时的备份。本次已留作下次对比。"
+    assert "已改用备份继续对比" in out["result"][1] and "D:\\r\\base.xlsx" in out["result"][1]
+    assert "修改过" in out["result"][2] and "原位置未知" in out["result"][3]
+    assert out["result"][4].startswith("基线文件和备份都不存在（或无法识别），请重新指定。")
+    assert out["clean"] == ["D:\\r\\a.xlsx", "/x/a.txt", '"']
+    assert out["hints"][0:5] == ["", "", "", "", ""]
+    assert all(out["hints"][i].startswith("要粘贴从盘符开始的完整路径") for i in (5, 6))
+    assert out["hints"][7] == "只接受 .xlsx 或 .txt 文件"
+
+
+def test_report_page_has_baseline_file_panel():
+    source = (STATIC / "report.js").read_text(encoding="utf-8")
+    for text in ("指定基线文件", "检查并设为基线", "用现在的文件重新设为基线", "取消基线文件", "粘贴完整路径",
+                 "manual-baseline-file", "file: baselineFile"):
+        assert text in source, text
+    # 设基线文件 / 取消 / 重设 / 固定（会取消基线文件）都先确认
+    assert source.count("window.confirm(") >= 6
