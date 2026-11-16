@@ -399,7 +399,12 @@ def _read_official_snapshot_rows(
             status = OFFICIAL_STATUS_CONTRACT_MISMATCH
         else:
             kind, status = "tdc_official_rows_unavailable", OFFICIAL_STATUS_UNAVAILABLE
-        emit(kind, {"report_type": report}, name="sync_connector.TDCProjectStatusConnector.collect")
+        # 只附加原因枚举（受终端加密/损坏/格式不符由 reason 区分），状态值仍是既有闭集。
+        fields: dict[str, Any] = {"report_type": report}
+        reason = str(getattr(exc, "reason", "") or "")
+        if reason:
+            fields["reason"] = reason
+        emit(kind, fields, name="sync_connector.TDCProjectStatusConnector.collect")
         return (), status
     emit(
         "tdc_official_rows_ok",

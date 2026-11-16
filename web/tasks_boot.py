@@ -13,6 +13,7 @@ import io
 import json
 import logging
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -28,6 +29,7 @@ _CRAWL_TASK_TYPE_LABELS = {
     "paa_crawl": "Aras PAA 全量抓取",
     "paa_export": "Aras PAA 导出",
     "ewo_export": "Aras EWO 导出",
+    "ewo_export_list": "Aras EWO 导出（列表列）",
     "tdc_data_model_crawl": "TDC 数模审核全量抓取",
     "tdc_data_model_export": "TDC 数模审核导出",
     "tdc_sor_crawl": "TDC SOR 全量抓取",
@@ -105,6 +107,7 @@ class TasksRouteDeps:
         local_mutation_error: Callable[[], Any],
         json_error: Callable[..., Any],
         safe_attachment_basename: Callable[..., str],
+        ewo_resume: Callable[[str, str], bool] | None = None,
     ) -> None:
         self.db = db
         self.crawl_task_runner = crawl_task_runner
@@ -113,12 +116,14 @@ class TasksRouteDeps:
         self.local_mutation_error = local_mutation_error
         self.json_error = json_error
         self.safe_attachment_basename = safe_attachment_basename
+        self.ewo_resume = ewo_resume
 
 
 def register_tasks_routes(app: Any, deps: TasksRouteDeps) -> None:
     # 闭包别名：被搬运的实现按 create_app 内原名引用这些对象。
     crawl_task_runner = deps.crawl_task_runner
     excel_admin_service = deps.excel_admin_service
+    ewo_resume = deps.ewo_resume
     db = deps.db
     excel_repository = deps.excel_repository
     _local_web_mutation_error = deps.local_mutation_error
@@ -251,21 +256,51 @@ def register_tasks_routes(app: Any, deps: TasksRouteDeps) -> None:
             "manual_check_required": False,
         }
 
+    _ewo_jobs_cache: dict[str, Any] = {}
+
+    def _ewo_jobs():
+        from core.ewo_export_jobs import EWOExportJobs
+        key = str(db.db_path)
+        if key not in _ewo_jobs_cache:
+            _ewo_jobs_cache[key] = EWOExportJobs(db.db_path)
+        return _ewo_jobs_cache[key]
+
+    def _ewo_decision(job_id: str) -> str:
+        """任务列表与重试路由必须使用同一个裁决，避免“按钮可点但请求必失败”。"""
+        from core.ewo_export_jobs import EWOExportJobs
+        try:
+            return _ewo_jobs().decide_retry(job_id)
+        except Exception:
+            return EWOExportJobs.RETRY_FORBIDDEN
+
     def _ewo_task_entry(ej: dict[str, Any]) -> dict[str, Any]:
         raw_st = ej["state"]
-        is_active = raw_st in ("queued", "generating", "downloading")
+        is_csv_export = str(ej.get("purpose") or "") == "csv_export"
+        # CSV 导出的 generated 只是“官方文件已生成、下载尚未完成”的短暂中间态。
+        # 保留短租约（见 EWOExportJobs.generated）期间仍算在途，避免任务中心
+        # 在下载线程接手前就把任务显示成 succeeded / 可下载。
+        generated_live = (
+            is_csv_export
+            and raw_st == "generated"
+            and ej.get("lease_until") is not None
+            and float(ej["lease_until"]) > time.time()
+        )
+        is_active = raw_st in (
+            "queued", "listing", "generating", "downloading", "projecting", "writing",
+        ) or generated_live
         if raw_st == "queued":
             norm_st = "queued"
-        elif raw_st in ("generating", "downloading"):
+        elif raw_st in ("listing", "generating", "downloading", "projecting", "writing") or generated_live:
             norm_st = "running"
-        elif raw_st in ("parsed", "generated"):
+        elif raw_st in ("parsed", "exported") or (raw_st == "generated" and not generated_live):
             norm_st = "succeeded"
-        elif raw_st in ("generation_unknown",):
+        elif raw_st in ("generation_unknown", "export_failed"):
             norm_st = "failed"
+        elif raw_st in ("cancelled", "abandoned"):
+            norm_st = "cancelled"
         else:
             norm_st = raw_st
 
-        has_art = bool(ej.get("file_id") or ej.get("snapshot_ref"))
         ewo_dl_dir = (Path(db.db_path).parent / "ewo-downloads").resolve()
         cand = []
         if ewo_dl_dir.exists():
@@ -273,8 +308,11 @@ def register_tasks_routes(app: Any, deps: TasksRouteDeps) -> None:
                 if f.is_file() and ej["id"] in f.name:
                     cand.append(f)
                     break
-        if cand and cand[0].is_file():
-            has_art = True
+        # CSV 导出只有在磁盘上真的有产物时才可下载；generated 只是持有 file_id，
+        # 不能据此冒充可下载。增强导表保持原有 file_id/snapshot 口径。
+        has_art = bool(cand) if is_csv_export else bool(
+            ej.get("file_id") or ej.get("snapshot_ref")
+        )
 
         c_ts = (
             datetime.fromtimestamp(ej["created"], tz=timezone.utc).isoformat()
@@ -289,6 +327,7 @@ def register_tasks_routes(app: Any, deps: TasksRouteDeps) -> None:
 
         # W3-3 冻结重试语义：generation_unknown 仅允许人工核查，禁止自动重发。
         manual_check = raw_st == "generation_unknown"
+        decision = _ewo_decision(ej["id"])
         return {
             "id": f"ewo_{ej['id']}",
             "raw_id": ej["id"],
@@ -307,7 +346,9 @@ def register_tasks_routes(app: Any, deps: TasksRouteDeps) -> None:
             "updated_at": u_ts,
             "can_cancel": is_active,
             "can_download": has_art and norm_st == "succeeded",
-            "can_retry": raw_st in ("interrupted", "failed"),
+            "can_retry": decision == "new_job",
+            "can_resume": decision == "resume_download" and not is_active,
+            "cancel_requested": bool(ej.get("cancel_requested")),
             "manual_check_required": manual_check,
         }
 
@@ -473,7 +514,8 @@ def register_tasks_routes(app: Any, deps: TasksRouteDeps) -> None:
                         return jsonify({"ok": True, "data": {"taskId": task_id, "status": "cancelled",
                                                              "cancelRequested": True}})
                     _mark_cancel_requested(task_id, raw_ewo_id)
-                    ewo_jobs.cancel(raw_ewo_id)
+                    if not ewo_jobs.cancel(raw_ewo_id):
+                        return _json_error(409, "Conflict", f"Task is already {ej['state']}")
                     return jsonify({"ok": True, "data": {"taskId": task_id, "status": "cancelled",
                                                          "cancelRequested": True}})
             except Exception:
@@ -529,7 +571,19 @@ def register_tasks_routes(app: Any, deps: TasksRouteDeps) -> None:
                             "ManualCheckRequired",
                             "EWO 生成结果未知，禁止自动重发；请先人工核查该任务的生成状态",
                         )
-                    if ej["state"] not in ("interrupted", "failed"):
+                    # 统一由 jobs 层裁决；取消与下载中断都不允许回到“重新生成”。
+                    decision = ewo_jobs.decide_retry(raw_ewo_id)
+                    if decision == ewo_jobs.RETRY_RESUME_DOWNLOAD:
+                        resumed = bool(ewo_resume and ewo_resume(raw_ewo_id, ej["scope"]))
+                        if not resumed:
+                            return _json_error(
+                                409,
+                                "ResumeUnavailable",
+                                "该任务可继续读取官方报表，但当前没有匹配的域登录会话；"
+                                "请重新登录后重试",
+                            )
+                        return jsonify({"ok": True, "data": {"taskId": task_id, "status": "resuming"}})
+                    if decision != ewo_jobs.RETRY_NEW_JOB:
                         return _json_error(409, "Conflict", f"EWO job cannot be retried (current state: {ej['state']})")
                     try:
                         targets = json.loads(ej["item_ids"]) if ej.get("item_ids") else []

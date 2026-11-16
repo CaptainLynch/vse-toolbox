@@ -403,6 +403,23 @@ def create_app(
     version_info = get_app_version_info()
     app.config["APP_VERSION_INFO"] = version_info
     app.config["APP_VERSION"] = version_info.get("displayVersion", "开发工作区")
+    # 部署自检（2026-11-11）：以**本进程视图**校验 MANIFEST.json。公司终端 DLP 会把
+    # 经 PowerShell 复制/编辑器保存的文件容器化，宿主要能说清「装错了」，而不是抛裸栈。
+    from core.deploy_manifest import verify_manifest
+
+    deploy_check = verify_manifest()
+    app.config["DEPLOY_MANIFEST_CHECK"] = deploy_check
+    if deploy_check.status == "mismatch":
+        logger.error("部署清单校验未通过：%s", deploy_check.message)
+    elif deploy_check.status == "error":
+        logger.warning("部署清单无法解析：%s", deploy_check.message)
+    if deploy_check.extra_plugins:
+        # plugins/ 下不在清单里的 .py：可能是解压残留，也可能是有人手动放进来，都要说一声。
+        logger.warning(
+            "部署清单外有 %d 个插件源文件：%s",
+            len(deploy_check.extra_plugins),
+            ", ".join(deploy_check.extra_plugins[:5]),
+        )
     app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
     app.before_request(_enforce_local_web_access)
 
@@ -479,11 +496,34 @@ def create_app(
     from services.ewo_enrichment import EWOEnrichment
     from web.ewo_enrichment import register_ewo_enrichment
 
-    ewo_enrichment = EWOEnrichment(
-        EWOExportJobs(db.db_path), Path(db.db_path).parent / 'ewo-downloads'
-    )
-    app.extensions["ewo_enrichment"] = ewo_enrichment
-    register_ewo_enrichment(app, ewo_enrichment, domain_sessions, _local_web_mutation_error)
+    # 迁移失败（重复行阻塞索引重建、库被锁）时只禁用 EWO 导出子系统，
+    # 不让整个 WebUI 启动失败；诊断信息进日志，原因进 config 供路由返回 503。
+    ewo_resume = None
+    try:
+        ewo_jobs = EWOExportJobs(db.db_path)
+    except Exception as exc:  # noqa: BLE001 - 任何迁移失败都必须降级而不是崩溃
+        ewo_jobs = None
+        app.config["EWO_EXPORT_DISABLED"] = f"{type(exc).__name__}: {exc}"
+        logger.exception("EWO export jobs unavailable; EWO export features are disabled")
+    if ewo_jobs is not None:
+        # 上一个进程的 daemon 线程已随退出消失：启动时收敛遗留的在途任务，
+        # 否则同一选择会永久命中“活跃但无人推进”的任务（唯一索引 + 幂等 create）。
+        try:
+            recovered = ewo_jobs.recover_startup()
+            if recovered:
+                logger.info("EWO export jobs recovered at startup: %d", recovered)
+        except Exception:  # noqa: BLE001 - 恢复失败不应阻止启动，后续操作仍会报明确错误
+            logger.exception("EWO export startup recovery failed")
+        ewo_enrichment = EWOEnrichment(
+            ewo_jobs, Path(db.db_path).parent / 'ewo-downloads'
+        )
+        app.extensions["ewo_enrichment"] = ewo_enrichment
+        register_ewo_enrichment(app, ewo_enrichment, domain_sessions, _local_web_mutation_error)
+        from web.ewo_export_dispatch import build_export_resume_runner
+
+        ewo_resume = build_export_resume_runner(
+            domain_sessions, db, Path(db.db_path).parent / 'ewo-downloads'
+        )
 
     from services.crawl_task_runner import CrawlTaskRunner
     crawl_downloads_dir = Path(db.db_path).parent / "downloads"
@@ -575,6 +615,7 @@ def create_app(
             local_mutation_error=_local_web_mutation_error,
             json_error=_json_error,
             safe_attachment_basename=_safe_attachment_basename,
+            ewo_resume=ewo_resume,
         ),
     )
 
@@ -713,7 +754,12 @@ def _install_plugin_host(
         applied = []
     for item in applied:
         logger.info("Plugin package %s %s activated", item["id"], item["version"])
-    registry = PluginRegistry(plugin_dirs, only=plugin_only, overrides=updates.active_dirs())
+    registry = PluginRegistry(
+        plugin_dirs,
+        only=plugin_only,
+        overrides=updates.active_dirs(),
+        deploy_check=app.config.get("DEPLOY_MANIFEST_CHECK"),
+    )
     registry.load_all(app, context)
     for plugin_id, bundled_version in registry.superseded.items():
         logger.info("Plugin %s: bundled %s supersedes installed package", plugin_id, bundled_version)

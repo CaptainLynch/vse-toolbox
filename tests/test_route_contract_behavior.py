@@ -90,6 +90,7 @@ DOMAIN_WIRINGS: tuple[DomainWiring, ...] = (
         "register_crawler_routes",
         (
             "api_aras_ewo_export",
+            "api_aras_ewo_export_list_columns",
             "api_aras_ewo_query",
             "api_aras_ncr_detail",
             "api_aras_ncr_detail_download",

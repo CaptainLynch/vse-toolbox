@@ -310,7 +310,18 @@ def _official_workbook_rows(path: Path, report_type: str) -> tuple[dict[str, obj
     """
     try:
         return read_official_tdc_rows(path, report_type, max_rows=_TDC_MAX_RECORDS + 1)
-    except OfficialWorkbookUnreadable:
+    except OfficialWorkbookUnreadable as exc:
+        # 回退行为不变（None → 列表回退），但原因要留下：终端加密容器与"文件损坏"
+        # 的处置完全不同，吞掉 reason 就只能靠猜。
+        reason = str(getattr(exc, "reason", "") or "")
+        fields: dict[str, Any] = {"report_type": report_type}
+        if reason:
+            fields["reason"] = reason
+        emit(
+            "tdc_official_rows_unavailable",
+            fields,
+            name="scheduled_archive_connector._official_workbook_rows",
+        )
         return None
     except OfficialWorkbookTruncated as exc:
         raise _WorkbookPreviewTruncatedError(str(exc)) from exc

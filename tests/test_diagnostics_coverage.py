@@ -516,6 +516,119 @@ def test_scheduler_fixed_mode_counts_slots_and_reports_failure(
 # ── 4. 白名单导出：不含业务原文 ──────────────────────────────────────────
 
 
+def _fixed_mode_scheduler(fixed_bindings: int) -> Any:
+    from services.project_status_scheduler import set_global_scheduler
+
+    set_global_scheduler(
+        _FakeScheduler(
+            {
+                "running": True,
+                "paused": False,
+                "intervalSeconds": 900,
+                "fixedBindings": fixed_bindings,
+                "fixedMode": "on",
+                "nextRunSeconds": 30,
+            }
+        )
+    )
+
+
+def test_fixed_slot_count_not_duplicated_across_same_project_bindings(
+    client, db: DatabaseManager
+) -> None:
+    """同项目 2 个 fixed 绑定：每个槽行只计一次；failed 槽 -> 调度项 fail。
+
+    回归：槽表按项目维度返回全部 job 的槽，旧实现对每个绑定重复遍历同一份
+    槽行（N 个绑定翻 N 倍），且未按 (projectId, jobId) 过滤。
+    """
+    store = _create_slot_tables(db)
+    day = to_beijing(now_utc()).date()
+    store.set_binding("synthetic-project", "job-a", "fixed", times=("09:00",))
+    store.set_binding("synthetic-project", "job-b", "fixed", times=("10:00",))
+    store.ensure_slots(
+        [
+            SlotKey("synthetic-project", "job-a", day, time(9, 0)),
+            SlotKey("synthetic-project", "job-a", day, time(10, 0)),
+            SlotKey("synthetic-project", "job-b", day, time(10, 0)),
+            SlotKey("synthetic-project", "job-b", day, time(11, 0)),
+        ]
+    )
+    # 真实槽行：job-a 09:00 succeeded、job-a 10:00 pending、
+    # job-b 10:00 failed、job-b 11:00 pending —— 共 4 行。
+    first = store.lease_next("coverage-owner", lease_seconds=900, business_date=day)
+    assert first is not None
+    assert store.finish(first, str(first["leaseToken"]), ok=True) is True
+    second = store.lease_next("coverage-owner", lease_seconds=900, business_date=day)
+    assert second is not None
+    assert (
+        store.finish(
+            second,
+            str(second["leaseToken"]),
+            ok=False,
+            error_code="timeout",
+        )
+        is True
+    )
+    real_rows = store.list_slots("synthetic-project", day)
+    assert len(real_rows) == 4
+
+    _fixed_mode_scheduler(fixed_bindings=2)
+    scheduler = _items(client)["同步调度"]
+
+    assert scheduler["state"] == "fail"
+    facts = scheduler["facts"]
+    assert facts["slotCheck"] == "checked"
+    assert facts["slotSucceeded"] == 1
+    assert facts["slotFailed"] == 1
+    assert facts["slotPending"] == 2
+    assert facts["slotLeased"] == 0
+    assert facts["slotExpired"] == 0
+    assert facts["slotPausedSkipped"] == 0
+    assert sum(
+        facts[key]
+        for key in (
+            "slotSucceeded",
+            "slotFailed",
+            "slotPending",
+            "slotLeased",
+            "slotExpired",
+            "slotPausedSkipped",
+        )
+    ) == len(real_rows)
+
+
+def test_fixed_slot_count_excludes_non_fixed_leftover_slots(
+    client, db: DatabaseManager
+) -> None:
+    """切回 interval 的 job 遗留槽不计入 fixed 槽统计。"""
+    store = _create_slot_tables(db)
+    day = to_beijing(now_utc()).date()
+    store.set_binding("synthetic-project", "job-a", "fixed", times=("09:00",))
+    # job-b 已切回 interval，但其今日槽行仍遗留在表里。
+    store.set_binding("synthetic-project", "job-b", "interval")
+    store.ensure_slots(
+        [
+            SlotKey("synthetic-project", "job-a", day, time(9, 0)),
+            SlotKey("synthetic-project", "job-b", day, time(9, 30)),
+            SlotKey("synthetic-project", "job-b", day, time(10, 0)),
+        ]
+    )
+    assert len(store.list_slots("synthetic-project", day)) == 3
+
+    _fixed_mode_scheduler(fixed_bindings=1)
+    scheduler = _items(client)["同步调度"]
+
+    assert scheduler["state"] in NEW_STATES
+    facts = scheduler["facts"]
+    assert facts["slotCheck"] == "checked"
+    assert facts["slotPending"] == 1  # 只剩 job-a 的槽被统计
+    assert facts["slotFailed"] == 0
+    assert facts["slotSucceeded"] == 0
+
+
+# ── 4. 白名单导出：不含业务原文 ──────────────────────────────────────────
+
+
 def test_response_excludes_raw_binding_business_text(client, db: DatabaseManager) -> None:
     """注入 URL / 用户名 / 路径 / 错误原文，响应 JSON 全文不得出现。"""
     _insert_binding(

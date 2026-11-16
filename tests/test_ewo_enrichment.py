@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 from unittest.mock import Mock
+import sqlite3
 
 import pytest
 
@@ -110,3 +111,16 @@ def test_invalid_selection_never_creates_export(tmp_path, change):
     with pytest.raises(ValueError):
         service.prepare('scope-a', crawler, EWOReportFilters())
     transport.generate.assert_not_called()
+
+
+def test_enrichment_restore_never_touches_csv_export_jobs(tmp_path):
+    """共表隔离：增强导表的 restore 只收敛自己的 purpose。"""
+    service, crawler, transport, _ = setup_service(tmp_path)
+    service.prepare('scope-a', crawler, EWOReportFilters(ewo_no='E-1'))
+    export = service.jobs.create('scope-a', ['C' * 32], purpose='csv_export')
+    with sqlite3.connect(tmp_path / 'jobs.db') as conn:
+        conn.execute(
+            "UPDATE ewo_export_jobs SET state='generating',lease_token='t',lease_until=1 "
+            "WHERE id=?", (export['id'],))
+    service.restore('scope-a', EWOReportFilters(ewo_no='E-1'))
+    assert service.jobs.get(export['id'], 'scope-a')['state'] == 'generating'

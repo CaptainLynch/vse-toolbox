@@ -144,7 +144,14 @@ def register_host_service_routes(app: Any, deps: HostRouteDeps) -> None:
 
     @app.get("/api/version")
     def api_version():
-        info = app.config.get("APP_VERSION_INFO") or get_app_version_info()
+        info = dict(app.config.get("APP_VERSION_INFO") or get_app_version_info())
+        # 部署自检（2026-11-11）：版本号与 manifest_ok 同一出口，页面与运维脚本都读这里。
+        check = app.config.get("DEPLOY_MANIFEST_CHECK")
+        if check is not None:
+            deployment = check.to_payload()
+            deployment["manifestOk"] = bool(check.ok)
+            info["deployment"] = deployment
+            info["manifest_ok"] = bool(check.ok)
         response = jsonify({"ok": True, "data": info})
         response.headers["Cache-Control"] = "no-store"
         return response

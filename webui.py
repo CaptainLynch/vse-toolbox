@@ -8,6 +8,8 @@
     python webui.py --port 8000
     python webui.py --only deliverable-forms   # 只加载一个插件（单插件沙箱）
     python webui.py --excel-worker run ...     # Excel Worker 哨兵（内部使用）
+    python webui.py --sign-daily-probe <.xlsx>  # 签署日报加密表单探针（第 1 期，只读自检）
+    python webui.py --sign-daily-read-child ... # 签署日报 Excel 代读子进程（内部使用）
 
 冻结构建: pyinstaller --noconfirm VSE-WebUI.spec
 """
@@ -253,10 +255,34 @@ def _excel_worker_main(argv: list[str]) -> int:
     return worker_main(argv)
 
 
+def _sign_daily_probe_main(argv: list[str]) -> int:
+    """签署日报第 1 期探针哨兵分支：不加载 Flask 与插件，直接转发给探针服务。
+
+    VSE-WebUI.exe --sign-daily-probe <样本.xlsx> 由宿主自调起
+    --sign-daily-probe-child 子进程，在**受信进程** Excel 里只读取出 UsedRange
+    行列数与第一行表头，用于判断"VSE 拉起的子进程是否仍受终端信任"。两个哨兵
+    都转发到同一入口，由 services.sign_daily_excel_probe.main 区分父子职责。
+    """
+    from services.sign_daily_excel_probe import main as probe_main
+
+    return probe_main(argv)
+
+
+def _sign_daily_read_child_main(argv: list[str]) -> int:
+    """签署日报 Excel 代读子进程哨兵：不加载 Flask 与插件，只做一次只读取数并经管道回传。"""
+    from services.sign_daily_excel_reader import child_main
+
+    return child_main(argv)
+
+
 if __name__ == "__main__":
     # freeze_support() 必须早于哨兵判断：否则 multiprocessing 的派生进程
     # （--multiprocessing-fork）会被误判为一次宿主启动。
     multiprocessing.freeze_support()
     if len(sys.argv) > 1 and sys.argv[1] == "--excel-worker":
         raise SystemExit(_excel_worker_main(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] in ("--sign-daily-probe", "--sign-daily-probe-child"):
+        raise SystemExit(_sign_daily_probe_main(sys.argv[1:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "--sign-daily-read-child":
+        raise SystemExit(_sign_daily_read_child_main(sys.argv[2:]))
     raise SystemExit(main())

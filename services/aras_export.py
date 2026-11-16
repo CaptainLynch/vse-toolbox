@@ -97,6 +97,40 @@ def export_ewo_report_csv(
     return EWOExportResult(path=result.path, row_count=result.row_count, columns=result.fieldnames)
 
 
+#: 列表接口来源下未映射列的表头后缀：文件本身必须能区分“官方无值”与“本路径没取”。
+LIST_COLUMN_SUFFIX = "（列表导出未提供）"
+
+
+@observed("export.export_ewo_list_columns_csv")
+def export_ewo_list_columns_csv(
+    rows: Sequence[Mapping[str, object]],
+    *,
+    output_dir: Path | None = None,
+    file_name: str | None = None,
+) -> CSVExportResult:
+    """Write the list-source EWO CSV as a *separate* contract.
+
+    列表接口只覆盖 111 列中的 51 列；未映射列保留位置但表头加后缀
+    “（列表导出未提供）”，文件名带 ``_列表列``。这样转发后仍能辨认，
+    也不会与官方工作簿导出件混淆。官方数据请使用官方工作簿导出流程。
+    """
+    table = table_payload("ewo", rows)
+    table_columns = cast(list[dict[str, object]], table["columns"])
+    table_rows = cast(list[list[object]], table["rows"])
+    labels = tuple(
+        str(column["label"]) + ("" if column["sourceFields"] else LIST_COLUMN_SUFFIX)
+        for column in table_columns
+    )
+    destination = Path(output_dir or OUTPUT_DIR)
+    destination.mkdir(parents=True, exist_ok=True)
+    base_name = file_name or f"ewo_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    if not base_name.endswith("_列表列"):
+        base_name = f"{base_name}_列表列"
+    path = destination / _safe_csv_name(base_name)
+    _write_table_csv_atomically(path, labels, table_rows)
+    return CSVExportResult(path=path, row_count=len(table_rows), fieldnames=labels)
+
+
 @observed("export.export_report_contract_csv")
 def export_report_contract_csv(
     report_type: str,
@@ -182,6 +216,15 @@ def _write_table_csv_atomically(
         raise
 
 
+def write_table_csv_atomically(
+    path: Path,
+    columns: Sequence[str],
+    rows: Sequence[Sequence[object]],
+) -> None:
+    """公开的契约 CSV 写出：UTF-8 BOM、公式注入缓解、临时文件 + 原子替换 + 回读校验。"""
+    _write_table_csv_atomically(path, columns, rows)
+
+
 @observed("export._verify_csv")
 def _verify_csv(path: Path, expected_header: Sequence[str]) -> None:
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
@@ -250,4 +293,5 @@ __all__ = [
     "export_report_contract_csv",
     "export_report_csv",
     "export_ewo_report_csv",
+    "write_table_csv_atomically",
 ]

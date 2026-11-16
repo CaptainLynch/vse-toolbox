@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import base64
 import email
+import fnmatch
 import json
+import os
 import sys
 import time
 from email import policy
@@ -16,6 +18,7 @@ import pytest
 
 import web.app as web_app
 from services.deliverable_form_analysis import build_form_snapshot, form_definition
+from tests.test_ewo_official_rows import write_workbook
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 HEADERS = form_definition("tdc_data_model")["headerRows"][0]
@@ -419,7 +422,11 @@ def test_roster_import_accepts_xlsx(client) -> None:  # type: ignore[no-untyped-
     assert result["plan"]["counts"]["added"] == 1 and result["plan"]["merged"] == 1
     assert any(r["name"] == "新人甲" and r["source"] == "本地新增" for r in result["view"]["rows"])
     bad = http.post(f"{API}/settings/roster/import", json={"xlsx": base64.b64encode(b"not a zip").decode()})
-    assert bad.status_code == 400 and "另存为 CSV" in bad.get_json()["error"]["message"]
+    message = bad.get_json()["error"]["message"]
+    # 2026-11-11：不再建议「另存为 CSV」。读不了就是读不了——可能不完整/损坏/受终端加密。
+    assert bad.status_code == 400
+    assert message == _DAMAGED_TEXT
+    assert "另存为" not in message and "换浏览器" not in message and "换上传" not in message
 
 
 def test_watchlist_report_does_not_overwrite_same_day_full_snapshot(client) -> None:  # type: ignore[no-untyped-def]
@@ -531,3 +538,420 @@ def test_scope_preference_migration_keeps_other_scopes(client) -> None:  # type:
     assert after[new_key]["to"] == '"甲"<a@x.com>' and after[new_key]["planText"] == "旧范围"
 
 
+# ── 本地报表导入（方案 B：一次性数据源，零写库）────────────────────────
+
+
+def _workbook(tmp_path: Path, rows, *, drift: bool = False, name: str = "import.xlsx") -> Path:
+    header = list(HEADERS)
+    if drift:
+        header[2] = header[2] + "(旧模板)"
+    matrix = [[row.get(key) for key in header] for row in rows]
+    return write_workbook(tmp_path / name, header, matrix, sheet_name="Sheet1")
+
+
+def _upload(http, path: Path, **form):
+    with path.open("rb") as handle:
+        data = {"file": (handle, path.name), **form}
+        return http.post(f"{API}/import-form", data=data, content_type="multipart/form-data")
+
+
+def _snapshot_counts(db) -> dict[str, int]:
+    patterns = ("deliverable_form_snapshots", "*snapshot_meta*", "*snapshot_rows*", "*long_cycle_conclusion*",
+                "*_config", "*scheduled_reports*", "*_roster_local*", "*_rule_local*")
+    with db.get_connection() as conn:
+        names = [row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+        counts = {}
+        for name in names:
+            if any(fnmatch.fnmatch(name, pattern) for pattern in patterns):
+                counts[name] = conn.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0]
+        return counts
+
+
+def test_import_form_generates_report_and_writes_nothing(client, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _, http, db, _ = client
+    _publish(db, _rows(), "2026-10-02T08:00:00Z")  # 库里本来就有一份归档快照
+    before = _snapshot_counts(db)
+
+    report = _ok(_upload(http, _workbook(tmp_path, _rows()), dataDate="2026-11-06", projects='["F610M"]'))
+
+    assert report["mode"] == "manual"
+    assert report["importMeta"]["rowCount"] == len(_rows())
+    assert report["importMeta"]["dataDate"] == "2026-11-06"
+    assert report["importMeta"]["verified"] == "structure-only"
+    assert report["dataDate"] == "2026-11-06"
+    assert report["stale"] is False
+    assert report["snapshotSaved"] is False
+    assert report["delta"] is None and report["baseDate"] is None
+    assert report["charts"]["external"]  # 欠账数据照常算
+    assert report["subject"].endswith("20261106")
+    assert _snapshot_counts(db) == before  # 零写库
+
+
+def test_import_form_requires_confirmed_date(client, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _, http, _, _ = client
+    response = _upload(http, _workbook(tmp_path, _rows()), dataDate="")
+    assert response.status_code == 400
+    assert response.get_json()["error"]["type"] == "ValidationError"
+
+
+def test_import_form_rejects_drifted_header(client, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _, http, _, _ = client
+    response = _upload(http, _workbook(tmp_path, _rows(), drift=True), dataDate="2026-11-06")
+    assert response.status_code == 422
+    assert response.get_json()["error"]["type"] == "E_HEADER_MISMATCH"
+
+
+def test_eml_is_refused_for_manual_reports(client) -> None:  # type: ignore[no-untyped-def]
+    _, http, db, _ = client
+    _publish(db, _rows(), "2026-10-02T08:00:00Z")
+    response = http.post(f"{API}/eml", json={"mode": "manual", "images": {}})
+    assert response.status_code == 409
+    assert response.get_json()["error"]["type"] == "EmlUnavailableForManual"
+
+
+# ── 监控目录：以最后修改时间最晚的为准，不合格转人工 ──────────────────
+
+
+def _scan(http, directory: Path):
+    return http.post(f"{API}/import-scan", json={"dir": str(directory)})
+
+
+def _aging(path: Path, seconds: float) -> None:
+    stamp = time.time() - seconds
+    os.utime(path, (stamp, stamp))
+
+
+def test_import_scan_picks_newest(client, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    backend = sys.modules["vse_plugins.sign_daily.backend"]
+    monkeypatch.setattr(backend, "_SCAN_SETTLE_SECONDS", 0.0)
+    monkeypatch.setenv("VSE_SIGN_DAILY_IMPORT_DIRS", str(tmp_path))
+    _, http, _, _ = client
+    old = _workbook(tmp_path, _rows(), name="old.xlsx")
+    new = _workbook(tmp_path, _rows(), name="new.xlsx")
+    _aging(old, 3600)
+    _aging(new, 60)
+    (tmp_path / "~$temp.xlsx").write_bytes(b"not a workbook")
+
+    data = _ok(_scan(http, tmp_path))
+    assert data["selected"]["name"] == "new.xlsx"
+    assert data["reason"] == ""
+    assert data["selected"]["token"]
+    skipped = {entry["name"]: entry["reason"] for entry in data["entries"]}
+    assert skipped["~$temp.xlsx"]  # 临时文件被跳过并给出原因
+    assert data["roots"]
+
+
+def test_import_scan_does_not_fall_back_to_older_file(client, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    backend = sys.modules["vse_plugins.sign_daily.backend"]
+    monkeypatch.setattr(backend, "_SCAN_SETTLE_SECONDS", 0.0)
+    monkeypatch.setenv("VSE_SIGN_DAILY_IMPORT_DIRS", str(tmp_path))
+    _, http, _, _ = client
+    good = _workbook(tmp_path, _rows(), name="good.xlsx")
+    bad = _workbook(tmp_path, _rows(), drift=True, name="bad.xlsx")
+    _aging(good, 3600)
+    _aging(bad, 60)
+
+    data = _ok(_scan(http, tmp_path))
+    assert data["selected"] is None
+    assert data["reason"] == "E_HEADER_MISMATCH"  # 停在最新那份，不退回 good.xlsx
+
+
+def test_import_scan_rejects_dir_outside_roots(client) -> None:  # type: ignore[no-untyped-def]
+    _, http, _, _ = client
+    response = _scan(http, Path("C:/Windows"))
+    assert response.status_code == 422
+    assert response.get_json()["error"]["type"] == "E_DIR_NOT_ALLOWED"
+
+
+def test_import_form_accepts_scan_token(client, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    backend = sys.modules["vse_plugins.sign_daily.backend"]
+    monkeypatch.setattr(backend, "_SCAN_SETTLE_SECONDS", 0.0)
+    monkeypatch.setenv("VSE_SIGN_DAILY_IMPORT_DIRS", str(tmp_path))
+    _, http, db, _ = client
+    _publish(db, _rows(), "2026-10-02T08:00:00Z")
+    before = _snapshot_counts(db)
+    _workbook(tmp_path, _rows(), name="newest.xlsx")
+
+    scanned = _ok(_scan(http, tmp_path))
+    selected = scanned["selected"]
+    response = http.post(
+        f"{API}/import-form",
+        data={
+            "scanDirId": scanned["dirId"],
+            "scanName": selected["name"],
+            "scanToken": selected["token"],
+            "dataDate": "2026-11-06",
+            "projects": '["F610M"]',
+        },
+        content_type="multipart/form-data",
+    )
+    report = _ok(response)
+    assert report["mode"] == "manual"
+    assert report["importMeta"]["sourceName"] == "newest.xlsx"
+    assert report["dataDate"] == "2026-11-06"
+    assert _snapshot_counts(db) == before
+
+
+def test_import_form_rejects_stale_scan_token(client, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    backend = sys.modules["vse_plugins.sign_daily.backend"]
+    monkeypatch.setattr(backend, "_SCAN_SETTLE_SECONDS", 0.0)
+    monkeypatch.setenv("VSE_SIGN_DAILY_IMPORT_DIRS", str(tmp_path))
+    _, http, _, _ = client
+    target = _workbook(tmp_path, _rows(), name="newest.xlsx")
+    scanned = _ok(_scan(http, tmp_path))
+    selected = scanned["selected"]
+
+    _aging(target, 600)  # 扫描之后文件被改动 → 令牌失效
+    response = http.post(
+        f"{API}/import-form",
+        data={
+            "scanDirId": scanned["dirId"],
+            "scanName": selected["name"],
+            "scanToken": selected["token"],
+            "dataDate": "2026-11-06",
+        },
+        content_type="multipart/form-data",
+    )
+    assert response.status_code == 409
+    assert response.get_json()["error"]["type"] == "E_SCAN_STALE"
+
+
+# ── 顾问复核后新增：字节绑定、父目录校验、句柄表上界、.eml 触发面 ──────
+
+
+def _importer():
+    return sys.modules["vse_plugins.sign_daily.importer"]
+
+
+def test_read_verified_bytes_rejects_changed_file(tmp_path) -> None:
+    importer = _importer()
+    target = _workbook(tmp_path, _rows(), name="x.xlsx")
+    signature = importer.stat_signature(target)
+    assert importer.read_verified_bytes(target, signature)  # 未改动可读
+
+    _aging(target, 600)  # mtime 变了
+    with pytest.raises(importer.ManualImportError) as info:
+        importer.read_verified_bytes(target, signature)
+    assert info.value.code == "E_SCAN_STALE"
+
+
+def test_ensure_direct_child_blocks_traversal(tmp_path) -> None:
+    importer = _importer()
+    inside = _workbook(tmp_path, _rows(), name="x.xlsx")
+    importer.ensure_direct_child(inside, tmp_path)  # 正常路径不抛
+    with pytest.raises(importer.ManualImportError) as info:
+        importer.ensure_direct_child(tmp_path / ".." / "x.xlsx", tmp_path)
+    assert info.value.code == "E_DIR_NOT_ALLOWED"
+
+
+def test_import_form_rejects_traversal_scan_name(client, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    backend = sys.modules["vse_plugins.sign_daily.backend"]
+    monkeypatch.setattr(backend, "_SCAN_SETTLE_SECONDS", 0.0)
+    monkeypatch.setenv("VSE_SIGN_DAILY_IMPORT_DIRS", str(tmp_path))
+    _, http, _, _ = client
+    _workbook(tmp_path, _rows(), name="x.xlsx")
+    scanned = _ok(_scan(http, tmp_path))
+    response = http.post(
+        f"{API}/import-form",
+        data={
+            "scanDirId": scanned["dirId"],
+            "scanName": "../x.xlsx",
+            "scanToken": scanned["selected"]["token"] if scanned["selected"] else "x",
+            "dataDate": "2026-11-06",
+        },
+        content_type="multipart/form-data",
+    )
+    assert response.status_code in (409, 422)
+    assert response.get_json()["error"]["type"] in {"E_DIR_NOT_ALLOWED", "E_SCAN_STALE"}
+
+
+def test_scan_dir_cache_is_bounded(client, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    backend = sys.modules["vse_plugins.sign_daily.backend"]
+    monkeypatch.setattr(backend, "_SCAN_SETTLE_SECONDS", 0.0)
+    monkeypatch.setenv("VSE_SIGN_DAILY_IMPORT_DIRS", str(tmp_path))
+    _, http, _, _ = client
+    for index in range(backend._SCAN_DIRS_LIMIT + 6):
+        folder = tmp_path / f"d{index:03d}"
+        folder.mkdir()
+        _workbook(folder, _rows(), name="x.xlsx")
+        _ok(_scan(http, folder))
+    assert len(backend._SCAN_DIRS) <= backend._SCAN_DIRS_LIMIT
+
+
+def test_eml_payload_carries_manual_mode() -> None:
+    """服务端拒绝必须真的被触发：页面请求要带 mode，不能只靠按钮 disabled。"""
+    source = (REPO_ROOT / "plugins" / "sign_daily" / "static" / "report.js").read_text(encoding="utf-8")
+    assert 'downloadEml(api.url("eml"), { ...requestBody(), mode: result.mode' in source
+
+
+# ── 子智能体审计后补的断言 ─────────────────────────────────────────
+
+
+def test_import_meta_uses_uploaded_filename(client, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _, http, _, _ = client
+    path = _workbook(tmp_path, _rows(), name="数模审核流程-20261106.xlsx")
+    report = _ok(_upload(http, path, dataDate="2026-11-06", projects='["F610M"]'))
+    assert report["importMeta"]["sourceName"] == "数模审核流程-20261106.xlsx"
+
+
+def test_manual_body_carries_source_banner_and_no_fake_time(client, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _, http, _, _ = client
+    report = _ok(_upload(http, _workbook(tmp_path, _rows()), dataDate="2026-11-06", projects='["F610M"]'))
+    assert "手工导入" in report["html"] and "用户确认" in report["html"]
+    assert "手工导入" in report["text"]
+    assert "00:00" not in report["html"] and "00:00" not in report["text"]
+    assert report["snapshotAt"] is None  # 不伪造抓取时间
+
+
+def test_readonly_store_refuses_config_write() -> None:
+    importer = _importer()
+
+    class FakeStore:
+        def config(self):
+            return {"form": {"projects": []}}
+
+        def save_config(self, patch):  # pragma: no cover - 不应被调用
+            raise AssertionError("manual 路径不得写配置")
+
+    store = importer.ReadOnlyStore(FakeStore())
+    assert store.config()["form"] == {"projects": []}
+    with pytest.raises(RuntimeError):
+        store.save_config({"form": {}})
+
+
+def test_scan_refuses_hidden_newest(client, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    backend = sys.modules["vse_plugins.sign_daily.backend"]
+    monkeypatch.setattr(backend, "_SCAN_SETTLE_SECONDS", 0.0)
+    monkeypatch.setenv("VSE_SIGN_DAILY_IMPORT_DIRS", str(tmp_path))
+    _, http, _, _ = client
+    visible = _workbook(tmp_path, _rows(), name="visible.xlsx")
+    hidden = _workbook(tmp_path, _rows(), name=".hidden.xlsx")
+    _aging(visible, 3600)
+    _aging(hidden, 60)
+    data = _ok(_scan(http, tmp_path))
+    assert data["selected"] is None
+    assert data["reason"] == "E_NEWEST_HIDDEN"
+
+
+def test_scan_token_binds_content_digest(client, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    backend = sys.modules["vse_plugins.sign_daily.backend"]
+    monkeypatch.setattr(backend, "_SCAN_SETTLE_SECONDS", 0.0)
+    monkeypatch.setenv("VSE_SIGN_DAILY_IMPORT_DIRS", str(tmp_path))
+    _, http, _, _ = client
+    target = _workbook(tmp_path, _rows(), name="scan.xlsx")
+    scanned = _ok(_scan(http, tmp_path))
+    signature = os.stat(target)
+    original = target.read_bytes()
+    # 同长度覆盖写：内容变了、size 不变，再把 mtime 复原 → 只有内容摘要能发现
+    target.write_bytes(bytes(len(original)))
+    os.utime(target, (signature.st_atime, signature.st_mtime))
+    response = http.post(
+        f"{API}/import-form",
+        data={
+            "scanDirId": scanned["dirId"],
+            "scanName": scanned["selected"]["name"],
+            "scanToken": scanned["selected"]["token"],
+            "dataDate": "2026-11-06",
+        },
+        content_type="multipart/form-data",
+    )
+    assert response.status_code == 409
+    assert response.get_json()["error"]["type"] == "E_SCAN_STALE"
+
+
+def test_import_scan_accepts_multipart_empty_body(client, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """页面用的是空 FormData 调 import-scan，契约必须支持这种形态。"""
+    backend = sys.modules["vse_plugins.sign_daily.backend"]
+    monkeypatch.setattr(backend, "_SCAN_SETTLE_SECONDS", 0.0)
+    monkeypatch.setenv("VSE_SIGN_DAILY_IMPORT_DIRS", str(tmp_path))
+    _, http, _, _ = client
+    _workbook(tmp_path, _rows(), name="x.xlsx")
+    response = http.post(f"{API}/import-scan", data=b"", content_type="multipart/form-data")
+    assert response.status_code == 200
+    assert response.get_json()["ok"] is True
+
+# ── 2026-11-11 终端加密容器：code/文案/diagnostic 白名单 ────────────────
+
+from services.xlsx_preview import ENCRYPTED_CONTAINER_SIGNATURES  # noqa: E402
+from services.xlsx_preview import SNIFF_BYTES as _SNIFF_BYTES  # noqa: E402
+
+_CONTAINER_HEAD = ENCRYPTED_CONTAINER_SIGNATURES[0]
+_ENCRYPTED_TEXT = "文件受公司终端加密保护，本功能读不到内容，文件本身没有损坏。请改用「一键生成」。"
+_DAMAGED_TEXT = "文件无法按 xlsx 打开，可能下载不完整、已损坏或受加密。请重新导出，或改用「一键生成」。"
+_SCHEMA_TEXT = "文件可读，但表头与官方 47 列模板不一致。请确认导出的是官方签署明细且未增删改列。"
+_DIAGNOSTIC_KEYS = {"reason", "sizeBucket", "colIndex"}
+
+
+def _container_sample(path: Path) -> Path:
+    """合成容器样本：16 字节魔数 + 其余头部 + 正文；不做任何解密。"""
+    path.write_bytes(_CONTAINER_HEAD + bytes(1024 - _SNIFF_BYTES) + b"PK\x03\x04 not really")
+    return path
+
+
+def test_import_form_reports_terminal_encryption(client, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """页面拿到的是「受终端加密」而不是「文件损坏」，且诊断只含白名单键、不含十六进制。"""
+    _, http, db, _ = client
+    before = _snapshot_counts(db)
+    response = _upload(http, _container_sample(tmp_path / "encrypted.xlsx"), dataDate="2026-11-06")
+
+    assert response.status_code == 422
+    error = response.get_json()["error"]
+    assert error["type"] == "E_ENCRYPTED_WORKBOOK"
+    assert error["message"] == _ENCRYPTED_TEXT
+    assert set(error["diagnostic"]) <= _DIAGNOSTIC_KEYS
+    assert error["diagnostic"]["reason"] == "encrypted_container"
+    assert "sizeBucket" in error["diagnostic"]
+    body = response.get_data(as_text=True)
+    assert _CONTAINER_HEAD.hex() not in body.lower()
+    assert "17da5fa0" not in body.lower()
+    assert _snapshot_counts(db) == before  # 失败路径同样零写库
+
+
+def test_import_form_keeps_reason_for_unreadable_binary(client, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _, http, _, _ = client
+    junk = tmp_path / "junk.xlsx"
+    junk.write_bytes(bytes(range(64)) * 4)
+    response = _upload(http, junk, dataDate="2026-11-06")
+
+    assert response.status_code == 422
+    error = response.get_json()["error"]
+    assert error["type"] == "E_WORKBOOK_INVALID"
+    assert error["message"] == _DAMAGED_TEXT
+    assert error["diagnostic"]["reason"] == "unknown_binary"
+
+
+def test_import_form_header_drift_reports_column_index(client, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _, http, _, _ = client
+    response = _upload(http, _workbook(tmp_path, _rows(), drift=True), dataDate="2026-11-06")
+
+    assert response.status_code == 422
+    error = response.get_json()["error"]
+    assert error["type"] == "E_HEADER_MISMATCH"
+    assert error["message"] == _SCHEMA_TEXT
+    assert error["diagnostic"] == {"reason": "schema_mismatch", "colIndex": 2}
+
+
+def test_import_scan_stops_on_encrypted_newest(client, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """最新那份是加密容器时停在它上面（不退回更旧的明文文件），并给出加密码。"""
+    backend = sys.modules["vse_plugins.sign_daily.backend"]
+    monkeypatch.setattr(backend, "_SCAN_SETTLE_SECONDS", 0.0)
+    monkeypatch.setenv("VSE_SIGN_DAILY_IMPORT_DIRS", str(tmp_path))
+    _, http, _, _ = client
+    good = _workbook(tmp_path, _rows(), name="good.xlsx")
+    newest = _container_sample(tmp_path / "newest.xlsx")
+    _aging(good, 3600)
+    _aging(newest, 60)
+
+    data = _ok(_scan(http, tmp_path))
+
+    assert data["selected"] is None
+    assert data["reason"] == "E_ENCRYPTED_WORKBOOK"
+    assert data["entries"][0]["reason"] == "E_ENCRYPTED_WORKBOOK"
+
+
+def test_scan_reason_texts_cover_encrypted_code() -> None:
+    """前端/CLI 的原因码表都要有这个新码，否则用户只看到裸码。"""
+    repo = Path(__file__).resolve().parent.parent
+    js = (repo / "plugins" / "sign_daily" / "static" / "report.js").read_text(encoding="utf-8")
+    assert "E_ENCRYPTED_WORKBOOK:" in js
+    assert "REASON_NOTES" in js

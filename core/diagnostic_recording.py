@@ -71,6 +71,18 @@ _FIELDS = set('code msg message error data success status rows items total pages
 _NUMBER_FIELDS.update({'api_code', 'completed_pages'})
 _NUMBER_FIELDS.add('job_id')
 _TEXT_FIELDS.add('final_state')
+# 官方工作簿读不出来时的原因枚举（签署日报「加密表单」第 0 期）：
+# 只放闭集词，绝不放文件头字节/路径/单元格值。
+_TEXT_FIELDS.add('reason')
+_VALUES.update({
+    'encrypted_container', 'ole_container', 'empty_or_truncated', 'unknown_binary',
+    'corrupt_zip', 'schema_mismatch', 'unreadable',
+    # Excel「另存为文本」的 TXT 导入（2026-11-11）：编码认不出 / 行列结构不完整。
+    'text_encoding', 'text_malformed',
+    # 签署日报 Excel 代读（2026-11-12）的失败原因。
+    'excel_unavailable', 'excel_cannot_open', 'has_formula', 'range_not_at_a1', 'too_large',
+    'cell_error', 'unexpected_numeric', 'timeout', 'busy', 'worker_protocol_error', 'path_rejected',
+})
 # NCR 披露事件（部门过滤 / 歧义表头标签）的载荷必须可读：键走白名单、文本值走
 # 闭集词表。否则 emit 的事件名留存、data 却是 {}，等于"记录了但读不到"。
 _NUMBER_FIELDS.update({'kept_count', 'dropped_count'})

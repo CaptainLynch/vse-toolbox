@@ -56,6 +56,11 @@ hiddenimports += [
 # 通过 `--excel-worker` 哨兵自调起子进程（webui.py）。因此 Excel 自动化依赖
 # 必须收进本包——原先它们只在独立的 VSE-ExcelWorker.exe 里。
 hiddenimports += ['excel_worker_cli']
+# 第 1 期探针（2026-11-11）：webui.py 的 --sign-daily-probe 哨兵惰性导入这条模块，
+# 静态分析看不到；不显式收集，冻结包跑探针会 ImportError。
+hiddenimports += ['services.sign_daily_excel_probe']
+# Excel 代读子进程（2026-11-12）：同样由 webui.py 哨兵惰性导入。
+hiddenimports += ['services.sign_daily_excel_reader', 'services.excel_toolbox']
 hiddenimports += collect_submodules('win32com')
 hiddenimports += collect_submodules('xlwings')
 # Selenium is used only by the optional CLI intranet scraper.  The WebUI

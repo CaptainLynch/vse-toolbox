@@ -66,3 +66,27 @@
 .sd-mail-options[open] summary { margin-bottom: 8px; }
 .sd-empty { display: grid; place-items: center; text-align: center; min-height: 260px; color: var(--muted); background: var(--canvas); border: 1px dashed var(--hairline-strong); border-radius: 14px; padding: 24px; }
 .sd-empty-icon { font-size: 34px; }
+
+/* 本地报表导入（方案 B）：面板与手工导入徽标 */
+.sd-import { margin-top: 12px; padding-top: 8px; }
+.sd-import summary { cursor: pointer; font-weight: 600; }
+.sd-import-hint { margin: 6px 0 8px; font-size: 12px; line-height: 1.5; }
+.sd-notice.is-manual {
+  border-left: 3px solid var(--warning, #d97706);
+  background: var(--warning-soft, rgba(217, 119, 6, 0.12));
+  color: var(--text, inherit);
+}
+.sd-toast { margin-right: 12px; color: var(--warning, #b45309); font-weight: 600; }
+
+.sd-scan {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: var(--surface-soft, rgba(148, 163, 184, 0.12));
+  color: var(--text, inherit);
+  border-radius: 6px;
+  font-size: 12px;
+}
+.sd-scan-stop { color: var(--warning, #b45309); font-weight: 600; }
+.sd-scan-list { margin: 6px 0 0; padding-left: 18px; line-height: 1.7; }
+.sd-scan-list li { list-style: none; margin-left: -18px; }
+.sd-path { word-break: break-all; user-select: all; font-family: Consolas, monospace; }

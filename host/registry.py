@@ -24,6 +24,11 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from flask import Blueprint, Flask
 
+from core.deploy_manifest import (
+    ManifestCheck,
+    containerized_hint,
+    is_containerized_file,
+)
 from core.repos.plugin_schema import plugin_table_prefix
 
 from host.context import HostContext
@@ -112,9 +117,12 @@ class PluginRegistry:
         host_api_version: str = HOST_API_VERSION,
         only: Iterable[str] | None = None,
         overrides: Mapping[str, Path] | None = None,
+        deploy_check: ManifestCheck | None = None,
     ) -> None:
         self.search_paths = [Path(p) for p in (search_paths if search_paths is not None else default_plugin_dirs())]
         self.host_api_version = host_api_version
+        # 启动自检结果：清单校验失败的插件目录拒绝加载（见 core.deploy_manifest）。
+        self.deploy_check = deploy_check
         self.only = frozenset(only) if only is not None else None
         # 已通过签名包安装并激活的版本：{插件 id: 目录}，优先于随包内置的同 id 插件。
         self.overrides = {key: Path(value) for key, value in (overrides or {}).items()}
@@ -169,6 +177,24 @@ class PluginRegistry:
             return False  # 交给 load_dir 记录失败，并由启动回滚处理
         bundled = load_manifest(bundled_dir).version
         return tuple(int(x) for x in bundled.split(".")) >= tuple(int(x) for x in installed.split("."))
+
+    def _deploy_blocked(self, plugin_id: str, plugin_dir: Path) -> str | None:
+        """清单校验失败的**随包**插件目录：给出拒绝加载的可读原因。
+
+        已安装的补丁包（data/plugin-updates 下）不在部署清单范围内，照常加载；
+        只有随包 `plugins/<id>/` 的文件被清单判定为「被容器化/被改动」时才拒绝。
+        """
+        check = self.deploy_check
+        if check is None or check.ok:
+            return None
+        if plugin_id not in check.blocked_plugin_ids():
+            return None
+        if Path(plugin_dir).parent.name != "plugins":
+            return None
+        return (
+            f"部署清单校验未通过：{check.message}；该插件的部署文件未通过校验，已拒绝加载。"
+            "请用解压工具把整包重新解压到运行目录后重启。"
+        )
 
     def load_dir(
         self,
@@ -227,6 +253,12 @@ class PluginRegistry:
 
         if self.only is not None and manifest.id not in self.only:
             return None
+        blocked = self._deploy_blocked(manifest.id, plugin_dir)
+        if blocked is not None:
+            logger.error("Plugin %s refused by deploy manifest: %s", manifest.id, blocked)
+            return PluginRecord(
+                path=plugin_dir, status="failed", manifest=manifest, error=blocked
+            )
         if manifest.id in loaded_ids:
             return PluginRecord(path=plugin_dir, status="failed", manifest=manifest, error="插件 id 重复")
         if not host_api_compatible(manifest.host_api, self.host_api_version):
@@ -276,11 +308,49 @@ class PluginRegistry:
         except Exception as exc:  # noqa: BLE001 - one plugin must never take the host down
             _uninstall_plugin_package(package_name)
             summary = context.redact(f"{type(exc).__name__}: {exc}")[:_ERROR_SUMMARY_LIMIT]
+            # 部署纪律（2026-11-11）：公司终端 DLP 会把「PowerShell 复制/编辑器保存」的
+            # 文件容器化（明文 + 1024 字节头），Python 把 1024 字节头当源码读，报
+            # SyntaxError/ValueError(null bytes)。这类失败必须给出可读的部署错误，
+            # 不能让用户看到裸栈，也不能误导成「代码有 bug」。
+            hint = _containerized_source_hint(plugin_dir, manifest.entry, exc)
+            if hint is not None:
+                summary = context.redact(hint)[:_ERROR_SUMMARY_LIMIT]
             logger.warning("Plugin %s failed to load: %s", manifest.id, summary)
             return PluginRecord(path=plugin_dir, status="failed", manifest=manifest, error=summary)
 
         logger.info("Plugin %s %s loaded", manifest.id, manifest.version)
         return PluginRecord(path=plugin_dir, status="loaded", manifest=manifest)
+
+
+_SOURCE_ERROR_TYPES = (SyntaxError, ValueError, UnicodeDecodeError)
+
+
+def _containerized_source_hint(
+    plugin_dir: Path, entry: str, exc: BaseException
+) -> str | None:
+    """源码导入失败且源文件是加密容器时，返回可读的部署错误（否则 None）。
+
+    只在「语法/编码类」失败上做，避免把真实代码缺陷误判成部署问题；判定本身
+    只读前 16 字节，不解密、不剥头。
+    """
+    if not isinstance(exc, _SOURCE_ERROR_TYPES):
+        return None
+    directory = Path(plugin_dir)
+    entry_path = directory / f"{entry}.py"
+    candidates = [entry_path]
+    try:
+        candidates.extend(sorted(path for path in directory.rglob("*.py") if path != entry_path))
+    except OSError:  # pragma: no cover - 目录不可读时交给后续错误摘要
+        pass
+    for candidate in candidates:
+        try:
+            if not candidate.is_file() or not is_containerized_file(candidate):
+                continue
+            relative = candidate.relative_to(directory).as_posix()
+        except (OSError, ValueError):  # pragma: no cover - 仅在极端路径下发生
+            continue
+        return containerized_hint(f"plugins/{directory.name}/{relative}")
+    return None
 
 
 def _ensure_namespace_package() -> None:

@@ -563,11 +563,18 @@ def _today_fixed_slot_counts(ctx: Any) -> tuple[dict[str, int] | None, str]:
         store = SlotStore(db, SYNC_CONTROL_TABLE_PREFIX, clock=now_utc)
         business_date = to_beijing(now_utc()).date()
         counts = {status: 0 for status, _ in _SLOT_STATUS_FIELDS}
+        # 先按项目收集 fixed 的 jobId 集合：槽表按项目维度返回全部 job 的槽，
+        # 只有命中 fixed 绑定 (projectId, jobId) 对的槽行才计入，且每行只计一次。
+        fixed_jobs: dict[str, set[str]] = {}
         for binding in store.list_bindings("fixed"):
             project_id = str(binding.get("projectId") or "").strip()
-            if not project_id:
-                continue
+            job_id = str(binding.get("jobId") or "").strip()
+            if project_id and job_id:
+                fixed_jobs.setdefault(project_id, set()).add(job_id)
+        for project_id, jobs in fixed_jobs.items():
             for slot in store.list_slots(project_id, business_date):
+                if str(slot.get("jobId") or "").strip() not in jobs:
+                    continue
                 status = str(slot.get("status") or "").strip().lower()
                 if status in counts:
                     counts[status] += 1

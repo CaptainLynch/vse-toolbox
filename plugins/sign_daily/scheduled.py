@@ -193,18 +193,23 @@ def build_report(
     save: bool,
     today: date,
     tz: Any = None,
+    source: Any = None,
 ) -> dict[str, Any]:
     """compose 业务核心（不调用 ``ctx.json_error``）：路由与定时作业共用。
 
     失败统一抛 :class:`ReportFailure`，由调用方映射成 HTTP 响应或 ``JobOutcome``；
     成功返回与 ``POST /generate`` 完全相同的响应体。
+
+    ``source`` 是给「本地报表导入」留的注入口：传入时不再读库里的表单快照，
+    其余计算与渲染完全同一套（调用方必须同时传 ``save=False`` 与只读 ``snapshots``）。
     """
     config = store.config()
     watch = watchlist_serials(db) if watchlist_only else None
     if watch is not None and not watch:
         raise ReportFailure(409, "WatchlistEmpty", "关注清单为空，请先在交付物明细里加入要关注的流水单号")
     try:
-        source = S.load_source(db, headers_for, tz, watchlist_only=watchlist_only)
+        if source is None:
+            source = S.load_source(db, headers_for, tz, watchlist_only=watchlist_only)
         result = S.compose(
             snapshots, source, scope, region=texts["region"], effective=effective(config),
             save_snapshot=save, today=today, watchlist=watch,

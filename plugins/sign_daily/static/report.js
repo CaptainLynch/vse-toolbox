@@ -69,6 +69,71 @@ async function downloadEml(url, payload) {
 }
 
 /** §7 复核时序 5–7：确定命中默认勾选、疑似不勾选；排除项在折叠区可强制纳入；未命中可搜索后手工纳入。 */
+/** 扫描失败的原因码 → 用户能看懂的话（服务端只回稳定的 E_* 码）。 */
+const SCAN_REASONS = {
+  E_NO_FILE: "目录里没有 .xlsx 或 .txt",
+  E_MTIME_TIE: "有两个文件修改时间完全相同，请手动选一份",
+  E_FILE_WRITING: "最新那份还在写入（大小或时间在变），请稍后再扫描",
+  E_NEWEST_HIDDEN: "最新的是隐藏文件，已跳过；请改成普通文件或手动选",
+  E_HEADER_MISMATCH: "最新那份表头与官方 47 列不一致",
+  E_ENCRYPTED_WORKBOOK: "最新那份受公司终端加密保护，本功能读不到内容",
+  E_WORKBOOK_INVALID: "最新那份读不了（不是有效的 .xlsx）",
+  E_TEXT_INVALID: "最新那份文本读不了（请在 Excel 中重新另存为「Unicode 文本」）",
+  E_EMPTY_WORKBOOK: "最新那份没有数据行",
+  E_REQUIRED_COLUMNS: "最新那份缺少日报必需的列",
+  E_SCAN_EXPIRED: "扫描结果已失效，请重新扫描",
+  E_SCAN_STALE: "文件在扫描后被改动过，请重新扫描",
+  E_DIR_NOT_ALLOWED: "目录不在允许范围内",
+  E_DIR_MISSING: "目录不存在",
+  E_DIR_UNREADABLE: "目录读不了",
+  E_DIR_TOO_MANY: "目录项太多，请先清理",
+  E_FILE_GONE: "文件已不存在",
+  E_FILE_TOO_LARGE: "文件超过大小上限",
+  E_FILE_NOT_REGULAR: "不是普通文件",
+};
+const reasonText = (code) => SCAN_REASONS[code] || String(code || "");
+
+/** error.diagnostic.reason → 错误框里**补充**的一句说明。
+ *  只说正文没说的那部分（不复述提示语本身，避免同一句话显示两遍）；
+ *  不显示十六进制、不建议换浏览器/换上传方式。 */
+const REASON_NOTES = {
+  encrypted_container: "这不是文件损坏，也不需要重新导出。",
+  schema_mismatch: "常见原因是导出后删过列或改过列名。",
+  text_malformed: "常见原因是导出后用记事本等工具改过内容。",
+  // Excel 代读（已开启时）没有成功的原因：只说发生了什么，不显示任何表格内容。
+  excel_unavailable: "已尝试让本机 Excel 代读，但这台电脑上启动不了 Excel。",
+  excel_cannot_open: "已尝试让本机 Excel 代读，但 Excel 打不开这份文件。",
+  timeout: "已尝试让本机 Excel 代读，但在限定时间内没有读完，已停止。若任务管理器里留有后台 EXCEL.EXE，可手动结束。",
+  busy: "上一份代读还没结束，请稍后再试。",
+  worker_protocol_error: "已尝试让本机 Excel 代读，但读取过程异常中断。",
+  path_rejected: "这份文件的位置不允许代读（只接受扫描目录里的普通 .xlsx）。",
+  has_formula: "Excel 读到了公式单元格：官方导出件不应含公式，请重新导出。",
+  range_not_at_a1: "表格不是从 A1 开始的：请确认是官方原样导出件。",
+  too_large: "表格的行数或列数超过上限。",
+  cell_error: "表格里有错误值或不支持的单元格类型。",
+  unexpected_numeric: "有不该是数字的列被 Excel 当成了数字，为避免编号失真已拒绝。",
+};
+
+/** multipart 上传：宿主 api.post 只发 JSON，这里直接 fetch 并解宿主信封。 */
+async function postForm(url, formData) {
+  let response;
+  try {
+    response = await fetch(url, { method: "POST", body: formData, headers: { Accept: "application/json" } });
+  } catch (_) {
+    throw new Error("无法连接本地服务，请确认 VSE Toolbox 仍在运行");
+  }
+  let payload = null;
+  try { payload = await response.json(); } catch (_) { payload = null; }
+  if (payload && payload.ok === true) return payload.data;
+  const error = (payload && payload.error) || {};
+  // 宿主信封里 code 可能在 error.code，也可能只落在 error.type（json_error 的 type 就是码）；
+  // reason 只在 error.diagnostic.reason（闭集词）里，用于在错误框里补一句说明。
+  const failure = new Error(error.message || `请求失败（HTTP ${response.status}）`);
+  failure.code = error.code || error.type || "";
+  failure.reason = (error.diagnostic && error.diagnostic.reason) || "";
+  throw failure;
+}
+
 function LongCycleReview({ longCycle, onConfirm, onProceed, proceeding }) {
   const [picks, setPicks] = useState(() => initialPicks(longCycle));
   const [forced, setForced] = useState({});
@@ -155,6 +220,10 @@ export default function Page({ plugin, api }) {
   const [images, setImages] = useState({});
   const [proceed, setProceed] = useState(false);
   const [toast, setToast] = useState("");
+  const [manualFile, setManualFile] = useState(null);
+  const [manualDate, setManualDate] = useState("");
+  const [scan, setScan] = useState(null);
+  const fileRef = useRef(null);
   const previewRef = useRef(null);
   const alive = useRef(true);
   useEffect(() => () => { alive.current = false; }, []);
@@ -192,6 +261,10 @@ export default function Page({ plugin, api }) {
   const requestBody = () => ({ ...form, ...texts, feishuLink: "" });
 
   const generate = async () => {
+    if (result && result.mode === "manual") {
+      flash("当前是手工导入的报告：请重新选文件/扫描目录，或换一份数据源");
+      return;
+    }
     setPhase("generating");
     try {
       const data = await api.post("generate", requestBody());
@@ -207,6 +280,73 @@ export default function Page({ plugin, api }) {
       setError({ message: err.message, canFallback: false });
     } finally {
       setPhase("idle");
+    }
+  };
+
+  // 本地报表导入（方案 B）：一次性数据源，不写快照、不计算日变化、不提供 .eml。
+  const importFromFile = async () => {
+    const scanned = scan && scan.selected;
+    if (!manualFile && !scanned) {
+      flash("请选择要导入的报表文件，或先「扫描目录」挑出最新的一份");
+      return;
+    }
+    if (!manualDate) { flash("请填写这份报表的数据截至日期（不会用导入时间代替）"); return; }
+    setPhase("generating");
+    setError(null);
+    try {
+      const body = new FormData();
+      if (manualFile) {
+        body.append("file", manualFile);
+      } else {
+        body.append("scanDirId", scan.dirId || "");
+        body.append("scanName", scanned.name);
+        body.append("scanToken", scanned.token);
+      }
+      body.append("dataDate", manualDate);
+      body.append("projects", JSON.stringify(form.projects || []));
+      body.append("departments", JSON.stringify(form.departments || []));
+      body.append("region", form.region || "");
+      body.append("greeting", texts.greeting || "");
+      body.append("planText", texts.planText || "");
+      const data = await postForm(api.url("import-form"), body);
+      const next = {};
+      data.chartsWithData.forEach((chart) => { next[chart] = renderChartPng(data.charts[chart], chart); });
+      setImages(next);
+      setResult(data);
+      setProceed(false);
+    } catch (err) {
+      setError({ message: err.message, canFallback: false, reason: err.reason || "" });
+    } finally {
+      setPhase("idle");
+    }
+  };
+
+  const toggleExcelProxy = async (enabled) => {
+    try {
+      await api.post("config", { excelProxyEnabled: enabled });
+      await load();
+      setScan(null);
+    } catch (err) {
+      flash(err.message);
+    }
+  };
+
+  const scanDir = async () => {
+    try {
+      const data = await postForm(api.url("import-scan"), new FormData());
+      setScan(data);
+      if (data.selected) {
+        setManualFile(null);
+        if (fileRef.current) fileRef.current.value = "";
+      }
+      if (data.selected && !manualDate) {
+        // 只把「文件的 mtime 日期」当成日期的**建议展示**，仍要用户自己确认/修改。
+        flash(`已挑出最新文件：${data.selected.name}（数据日期请自行确认）`);
+      } else if (!data.selected) {
+        flash(`没有可用候选：${reasonText(data.reason) || "目录里没有 .xlsx 或 .txt"}`);
+      }
+    } catch (err) {
+      flash(err.message);
     }
   };
 
@@ -262,8 +402,9 @@ export default function Page({ plugin, api }) {
     }
   };
   const eml = async () => {
+    if (result && result.mode === "manual") { flash("手工导入的报告不提供 .eml，请复制正文后手动发送"); return; }
     try {
-      await downloadEml(api.url("eml"), { ...requestBody(), images, proceedWithSuggestion: proceed });
+      await downloadEml(api.url("eml"), { ...requestBody(), mode: result.mode || "", images, proceedWithSuggestion: proceed });
     } catch (err) {
       flash(err.message);
     }
@@ -297,7 +438,10 @@ export default function Page({ plugin, api }) {
     <header class="vk-page-header">
       <div><h2>3D 单签署日报</h2>
         <p class="vk-muted" style="margin:4px 0 0">选好车型和科室 → 一键生成（会先自动刷新 TDC 数据）→ 复制正文或生成邮件草稿</p></div>
-      <div class="vk-page-actions"><span class="vk-muted">数据时间：${dataTime}${state.data && state.data.coverage === "watchlist" ? "（仅关注清单）" : ""}</span></div>
+      <div class="vk-page-actions">
+        ${toast && html`<span class="sd-toast" role="status">${toast}</span>`}
+        <span class="vk-muted">数据时间：${dataTime}${state.data && state.data.coverage === "watchlist" ? "（仅关注清单）" : ""}</span>
+      </div>
     </header>
 
     <div class="sd-layout">
@@ -319,8 +463,59 @@ export default function Page({ plugin, api }) {
       ${state.dataError && !state.data && html`<p class="vk-muted">${state.dataError}</p>`}
       ${error && html`<div class="vk-state is-error" role="alert">
         <span>${error.message}</span>
+        ${error.reason && REASON_NOTES[error.reason]
+          && !String(error.message || "").includes(REASON_NOTES[error.reason])
+          && html`<span class="vk-muted">${REASON_NOTES[error.reason]}</span>`}
         ${error.canFallback && state.data && html`<button type="button" class="vk-btn" onClick=${generate}>用最近一次数据生成（${dataTime}）</button>`}
       </div>`}
+      <details class="sd-import">
+        <summary>用本地导出的报表生成（只算本次、不留存、不算日变化）</summary>
+        <p class="vk-muted sd-import-hint">文件必须是 TDC「数模设计审核流程」原样导出的 .xlsx（47 列表头）。数据日期请自己确认——程序不会用导入时间、文件修改时间或「申请日期」推断。</p>
+        <p class="vk-muted sd-import-hint">如果 .xlsx 提示受终端加密保护：用 Excel 打开它，「另存为」选「Unicode 文本(*.txt)」，再选这份 .txt 导入（不要手工改内容）。</p>
+        ${state.excelProxy && html`<p class="vk-muted sd-import-hint">
+          <label><input type="checkbox"
+            checked=${!!state.excelProxy.enabled}
+            disabled=${busy || !state.excelProxy.authorized}
+            onChange=${(e) => toggleExcelProxy(e.target.checked)} />
+            加密的 xlsx 由本机 Excel 代读（只对扫描目录里的文件生效）</label>
+          　${state.excelProxy.text}</p>`}
+        ${state.importDir && html`<p class="sd-import-hint">
+          扫描目录（把报表放进这个文件夹，再点「扫描目录」）：<b class="sd-path">${state.importDir}</b>
+          ${state.excelProxy && state.excelProxy.status === "ok" && html`<br />
+            <b>加密的 xlsx 只能放进上面这个文件夹由 Excel 代读；用下面的「报表文件」上传不会代读。</b>`}</p>`}
+        <label class="sd-field"><span>报表文件</span>
+          <input type="file" accept=".xlsx,.txt"
+            ref=${fileRef}
+            onChange=${(e) => {
+              setManualFile((e.target.files && e.target.files[0]) || null);
+              setScan(null);
+            }} /></label>
+        <label class="sd-field"><span>数据截至日期</span>
+          <input type="date" value=${manualDate} onInput=${(e) => setManualDate(e.target.value)} /></label>
+        <div class="sd-actions">
+          <button type="button" class="vk-btn" disabled=${busy} onClick=${scanDir}>扫描目录</button>
+          <button type="button" class="vk-btn is-primary" disabled=${busy} onClick=${importFromFile}>用这份报表生成</button>
+        </div>
+        ${scan && html`<div class="sd-scan">
+          <p class="vk-muted">实际扫描的文件夹：<b class="sd-path">${scan.dirPath || scan.dir}</b>　${scan.hint}</p>
+          ${scan.reason === "E_NO_FILE" && html`<p class="sd-scan-stop">
+            这个文件夹里没有可用的报表。请确认文件放进的正是上面这个路径
+            （注意文件夹名是 sign-daily，不是程序目录里的 sign_daily）。</p>`}
+          ${scan.selected
+            ? html`<p>已选中最新：<b>${scan.selected.name}</b>（修改时间 ${formatTime(scan.selected.mtime)}，内容摘要 ${scan.selected.sha256 || ""}）${scan.selected.viaExcel ? "　受终端加密，生成时由本机 Excel 代读" : ""}</p>`
+            : html`<p class="sd-scan-stop">没有自动选中：${reasonText(scan.reason)}</p>`}
+          <p class="vk-muted">将使用：${manualFile ? `手动选择的 ${manualFile.name}` : (scan.selected ? `扫描到的 ${scan.selected.name}` : "（还没有选定数据源）")}</p>
+          <ul class="sd-scan-list" aria-label="候选文件">
+            ${(scan.entries || []).slice(0, 8).map((entry) => html`<li key=${entry.name}>
+              ${entry.ok ? "合格" : "不合格"} ${entry.name}　${entry.mtime ? formatTime(entry.mtime) : ""}　${reasonText(entry.reason)}
+            </li>`)}
+          </ul>
+          ${(scan.entries || []).length > 8 && html`<p class="vk-muted">共 ${scan.entries.length} 项，只显示前 8 项。</p>`}
+          ${!scan.selected && html`<p class="vk-muted">
+            按口径不会自动退回更旧的文件：请修好最新那份，或直接用上面的「报表文件」手动选一份。</p>`}
+        </div>`}
+      </details>
+
       <details class="sd-mail-options">
         <summary>邮件内容（可选）：区域、称呼、计划说明</summary>
         <label class="sd-field"><span>区域名</span>
@@ -330,30 +525,45 @@ export default function Page({ plugin, api }) {
           <textarea rows="2" placeholder="如：计划10-10发布，已超期x天" value=${texts.planText} onInput=${setText("planText")}></textarea></label>
       </details>
     </section>
-    <${SettingsPanel} api=${api} state=${state} onSaved=${load} onChanged=${() => { if (result) generate(); }} />
+    <${SettingsPanel} api=${api} state=${state} onSaved=${load}
+      onChanged=${() => { if (result && result.mode !== "manual") generate(); }} />
     </div>
 
     <div class="sd-main">
     ${!result && html`<section class="sd-empty"><div class="sd-empty-icon" aria-hidden="true">📊</div>
       <p>选好条件后点「一键生成」，这里会显示日报预览。</p></section>`}
     ${result && html`<section class="sd-result">
+      ${result.mode === "manual" && html`<div class="sd-notice is-manual">
+        手工导入｜${result.importMeta.sourceName}｜数据截至日期 ${result.importMeta.dataDate}（用户确认，未经系统核验）｜
+        参与计算 ${result.importMeta.rowCount} 行｜本报告只算本次、不留存、不计算日变化
+        ${result.importMeta.reportDigest && html`<br />正文指纹 ${result.importMeta.reportDigest}
+          （同一份数据、同样的条件，换一种导入方式生成，指纹应当相同）`}
+      </div>`}
       ${result.stale && html`<div class="sd-notice is-stale">用的是旧数据（数据时间 ${formatTime(result.snapshotAt)}），不写快照，不显示日变化。</div>`}
       ${result.notices.map((n) => html`<div key=${n.kind} class=${`sd-notice${n.blocking ? " is-blocking" : ""}`}>${n.text}</div>`)}
       ${gateText && html`<div class=${`sd-notice${gateBlocked ? " is-blocking" : ""}`}
         role=${gateBlocked ? "alert" : "status"}>${gateText}</div>`}
-      <${LongCycleReview} key=${result.longCycle.review.map((i) => i.normalized).join("|")} longCycle=${result.longCycle}
-        onConfirm=${confirmLongCycle} onProceed=${() => setProceed(true)} proceeding=${proceed} />
+      ${result.mode === "manual"
+        ? (result.longCycle.review.length > 0 && html`<div class="sd-notice is-manual">
+            长周期初筛 ${result.longCycle.review.length} 项：手工导入模式不提供「确认并记住」（不写入记录），请人工判断；
+            清单已写进正文，确认后可复制
+            ${!proceed && html`<button type="button" class="vk-btn" onClick=${() => setProceed(true)}>
+              本次按建议继续</button>`}
+          </div>`)
+        : html`<${LongCycleReview} key=${result.longCycle.review.map((i) => i.normalized).join("|")}
+            longCycle=${result.longCycle} onConfirm=${confirmLongCycle}
+            onProceed=${() => setProceed(true)} proceeding=${proceed} />`}
       <div class="sd-preview-bar">
         <div><b>主题：</b>${result.subject}<br /><span class="vk-muted">数据日期 ${result.dataDate}${result.baseDate ? `；日变化基线 ${result.baseDate}` : ""}</span></div>
         <div class="sd-actions">
           <button type="button" class="vk-btn is-primary" disabled=${!canExport} onClick=${copy}>复制正文</button>
-          <button type="button" class="vk-btn" disabled=${!canExport} onClick=${eml}>下载 .eml 草稿</button>
+          <button type="button" class="vk-btn" disabled=${!canExport || result.mode === "manual"} onClick=${eml}>下载 .eml 草稿</button>
+          ${result.mode === "manual" && html`<span class="vk-muted">手工导入的报告不提供 .eml，请复制正文</span>`}
           ${!canExport && html`<span class="vk-muted">${gateBlocked ? "状态列是数字码，禁止发送" : "长周期初筛待确认，确认后才能复制和下载"}</span>`}
-          ${toast && html`<span class="vk-muted" role="status">${toast}</span>`}
         </div>
       </div>
       <${Recipients} key=${result.scopeKey + result.recipientsText.to + result.recipientsText.cc} result=${result}
-        onSave=${(names) => savePrefs(names)} />
+        onSave=${(names) => (result.mode === "manual" ? flash("手工导入模式不保存名单") : savePrefs(names))} />
       <${ChartTools} images=${images} onMessage=${flash} />
       <div class="sd-preview" ref=${previewRef}>
         ${gateBlocked && html`<div class="sd-preview-warning">状态列是数字码，本页数字不可直接引用；手工复制也会带上这条提示。</div>`}

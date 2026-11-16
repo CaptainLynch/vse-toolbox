@@ -62,6 +62,17 @@
     "endpoint": "api_aras_ewo_export",
     "view_function": "api_aras_ewo_export",
     "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/aras/ewo/export-list-columns",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_aras_ewo_export_list_columns",
+    "view_function": "api_aras_ewo_export_list_columns",
+    "is_write": true,
     "envelope": "none",
     "download": "none"
   },
@@ -710,6 +721,28 @@
     ],
     "endpoint": "plugin_sign_daily.generate",
     "view_function": "generate",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/sign-daily/import-form",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "plugin_sign_daily.import_form",
+    "view_function": "import_form",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/sign-daily/import-scan",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "plugin_sign_daily.import_scan",
+    "view_function": "import_scan",
     "is_write": true,
     "envelope": "envelope",
     "download": "none"

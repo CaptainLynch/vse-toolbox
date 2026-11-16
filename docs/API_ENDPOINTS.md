@@ -2,10 +2,10 @@
 
 > 状态：Generated
 > 读者：Developer、Agent（API 任务）
-> 权威来源：`web/app.py`、`web/diagnostics.py`、`web/ewo_enrichment.py` 路由装饰器；参数行为以代码和测试为准
+> 权威来源：`web/app.py` 与 `web/*.py` 中的路由装饰器；参数行为以代码和测试为准
 > 默认读取：按 API/UI 任务读取
 > 由 `tools/generate_api_endpoints.py` 从上述路由模块 AST 解析自动生成，
-> 生成时间：2026-10-02 06:31，共 102 个端点。
+> 生成时间：2026-11-11 23:08，共 105 个端点。
 > 手工新增路由后请重跑该脚本刷新本清单。
 
 通用约定：
@@ -19,6 +19,7 @@
 | 方法 | 路径 | 处理函数 |
 | --- | --- | --- |
 | POST | `/api/aras/ewo/export` | `api_aras_ewo_export` |
+| POST | `/api/aras/ewo/export-list-columns` | `api_aras_ewo_export_list_columns` |
 | POST | `/api/aras/ewo/query` | `api_aras_ewo_query` |
 | POST | `/api/aras/ncr/detail` | `api_aras_ncr_detail` |
 | POST | `/api/aras/ncr/detail/download` | `api_aras_ncr_detail_download` |
@@ -59,6 +60,7 @@
 | POST | `/api/tdc/a-face/query` | `api_tdc_a_face_query` |
 | POST | `/api/tdc/data-model/crawl-all` | `api_tdc_data_model_crawl_all` |
 | POST | `/api/tdc/data-model/export` | `api_tdc_data_model_export` |
+| POST | `/api/tdc/data-model/export-merged` | `api_tdc_data_model_export_merged` |
 | POST | `/api/tdc/data-model/query` | `api_tdc_data_model_query` |
 | POST | `/api/tdc/sor/car-type-projects` | `api_tdc_sor_car_type_projects` |
 | POST | `/api/tdc/sor/crawl-all` | `api_tdc_sor_crawl_all` |
@@ -128,17 +130,17 @@
 | GET/POST | `/` | `index` |
 | GET | `/api/host/manifest` | `api_host_manifest` |
 | GET | `/api/host/updates` | `api_host_updates` |
+| GET | `/favicon.ico` | `favicon` |
 | POST | `/api/host/updates/<plugin_id>/discard` | `api_host_updates_discard` |
 | POST | `/api/host/updates/<plugin_id>/rollback` | `api_host_updates_rollback` |
 | POST | `/api/host/updates/import` | `api_host_updates_import` |
+| GET | `/api/version` | `api_version` |
 | GET | `/api/tasks` | `api_tasks_list` |
 | GET | `/api/tasks/<task_id>` | `api_tasks_get` |
 | POST | `/api/tasks/<task_id>/cancel` | `api_tasks_cancel` |
 | GET | `/api/tasks/<task_id>/download` | `api_tasks_download` |
 | GET | `/api/tasks/<task_id>/result` | `api_tasks_result` |
 | POST | `/api/tasks/<task_id>/retry` | `api_tasks_retry` |
-| GET | `/api/version` | `api_version` |
-| GET | `/favicon.ico` | `favicon` |
 
 ## 项目状态与交付物
 
@@ -156,6 +158,7 @@
 | GET | `/api/project-status/deliverables/<deliverable_id>/mapping-discovery` | `api_project_status_mapping_discovery_history` |
 | POST | `/api/project-status/deliverables/<deliverable_id>/mapping-discovery` | `api_project_status_mapping_discovery` |
 | POST | `/api/project-status/deliverables/<deliverable_id>/mapping-discovery/cancel` | `api_project_status_mapping_discovery_cancel` |
+| POST | `/api/project-status/deliverables/<deliverable_id>/sync-by-car-type` | `api_project_status_sync_by_car_type` |
 | POST | `/api/project-status/deliverables/<deliverable_id>/sync-now` | `api_project_status_sync_now` |
 | GET | `/api/project-status/deliverables/<deliverable_id>/unified-status` | `api_project_status_unified_status` |
 | GET | `/api/project-status/deliverables/<deliverable_id>/update-policy` | `api_project_status_update_policy` |

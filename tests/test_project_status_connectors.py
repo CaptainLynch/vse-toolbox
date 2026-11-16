@@ -1805,6 +1805,8 @@ def test_tdc_official_rows_diagnostics_are_bounded_counts(tmp_path: Path, monkey
     kinds = [kind for kind, _ in events]
     assert "tdc_official_rows_contract_mismatch" in kinds
     payload = next(p for kind, p in events if kind == "tdc_official_rows_contract_mismatch")
-    assert payload == {"report_type": "data_model"}
+    # 2026-11-11：契约不符要带原因枚举（加密容器/损坏/格式不符靠 reason 区分），
+    # 状态值不变；reason 必须在诊断白名单内，其它键仍然只有报表名。
+    assert payload == {"report_type": "data_model", "reason": "schema_mismatch"}
     assert "3D-" not in repr(payload)
     assert safe_metadata(payload, "salt") == payload

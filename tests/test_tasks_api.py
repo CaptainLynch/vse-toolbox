@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import time
 from pathlib import Path
 
@@ -263,12 +264,14 @@ def test_api_tasks_cancel_ewo_job(test_env) -> None:
 
     # Check status in ewo_jobs
     reloaded = ewo_jobs.get(job_id, "default")
-    assert reloaded["state"] == "interrupted"
+    # 红线：排队中的取消不得落到任何可重试状态（旧实现写 interrupted，可被重试分支重建）。
+    assert reloaded["state"] == "cancelled"
+    assert reloaded["cancel_requested"] == 1
 
-    # Cancelling an already-completed/interrupted job returns 409 Conflict
+    # Cancelling an already-cancelled job returns 409 Conflict
     resp2 = client.post(f"/api/tasks/ewo_{job_id}/cancel")
     assert resp2.status_code == 409
-    assert "already interrupted" in resp2.get_json()["error"]["message"]
+    assert "already cancelled" in resp2.get_json()["error"]["message"]
 
 
 def test_api_tasks_download_directory_prefix_collision_blocked(test_env) -> None:
@@ -357,7 +360,7 @@ def test_api_tasks_retry_endpoints(test_env) -> None:
 
 
 def test_api_tasks_ewo_retry_frozen_semantics(test_env) -> None:
-    """红线：generation_unknown 严禁自动重发（仅人工核查）；interrupted 允许重建任务。"""
+    """红线：外部生成是否发生不可证明时，一律禁止自动重建任务。"""
     db = test_env["db"]
     client = test_env["client"]
     ewo_jobs = EWOExportJobs(db.db_path)
@@ -378,15 +381,43 @@ def test_api_tasks_ewo_retry_frozen_semantics(test_env) -> None:
     gen_task = next(t for t in listing if t["raw_id"] == job["id"])
     assert gen_task["can_retry"] is False
 
-    # interrupted（用户在生成前取消）允许重建新任务
+    # 取消不得制造“可重试”的状态：queued 取消后直接进入 cancelled，重试被拒绝。
     job2 = ewo_jobs.create("otherscope", ["6" * 32])
-    ewo_jobs.cancel(job2["id"], "otherscope")
+    assert ewo_jobs.cancel(job2["id"], "otherscope") is True
+    assert ewo_jobs.get(job2["id"], "otherscope")["state"] == "cancelled"
     resp2 = client.post(f"/api/tasks/ewo_{job2['id']}/retry")
-    assert resp2.status_code == 200
-    data2 = resp2.get_json()["data"]
-    assert data2["newTaskId"] != f"ewo_{job2['id']}"
-    new_state = ewo_jobs.get_job(data2["newTaskId"].removeprefix("ewo_"))
-    assert new_state["state"] == "queued"
+    assert resp2.status_code == 409
+    assert resp2.get_json()["error"]["type"] == "Conflict"
+
+    # 下载阶段失败但已持久化 file_id：只允许续下载，不得重新生成。
+    job3 = ewo_jobs.create("thirdscope", ["7" * 32])
+    run = ewo_jobs.claim(job3["id"], "thirdscope")
+    ewo_jobs.generated(job3["id"], "thirdscope", run["lease_token"], "B" * 32)
+    download = ewo_jobs.claim(job3["id"], "thirdscope")
+    ewo_jobs.interrupted(job3["id"], "thirdscope", download["lease_token"])
+    assert ewo_jobs.get(job3["id"], "thirdscope")["state"] == "generated"
+    resp3 = client.post(f"/api/tasks/ewo_{job3['id']}/retry")
+    assert resp3.status_code == 409
+    # 测试环境没有注入域会话执行器 → 明确提示“可续但缺会话”，而不是假装不可重试。
+    assert resp3.get_json()["error"]["type"] == "ResumeUnavailable"
+    assert ewo_jobs.decide_retry(job3["id"]) == "resume_download"
+
+    # 列表按钮必须与后端裁决一致：可续下载的显示 can_resume，不得显示可重试。
+    tasks = client.get("/api/tasks").get_json()["data"]["tasks"]
+    task3 = next(t for t in tasks if t["raw_id"] == job3["id"])
+    assert task3["can_retry"] is False
+    assert task3["can_resume"] is True
+
+    # 唯一允许“新建任务”的失败：生成之前（listing）失败。
+    job4 = ewo_jobs.create("fourthscope", ["8" * 32])
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute("UPDATE ewo_export_jobs SET state='export_failed' WHERE id=?", (job4["id"],))
+        conn.execute("INSERT OR REPLACE INTO ewo_export_failures(job_id,stage) VALUES (?,?)",
+                     (job4["id"], "listing"))
+    tasks = client.get("/api/tasks").get_json()["data"]["tasks"]
+    task4 = next(t for t in tasks if t["raw_id"] == job4["id"])
+    assert task4["can_retry"] is True
+    assert task4["can_resume"] is False
 
 
 def _wait_for_task_terminal(client, task_id: str, timeout: float = 10.0) -> dict:

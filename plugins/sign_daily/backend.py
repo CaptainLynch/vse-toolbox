@@ -26,22 +26,28 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
+import io
 import json
-import tempfile
+import secrets
 from datetime import date
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import quote
 
 from flask import Response, request
+from werkzeug.datastructures import MultiDict
+from werkzeug.formparser import FormDataParser
 
 from core.time_rules import now_utc
 from services import data_model_watchlist as W
 from services import schedule_jobs
 from services import schedule_policy as SP
 from services.schedule_slots import SYNC_CONTROL_TABLE_PREFIX, SlotStore
-from services.xlsx_preview import XLSXPreviewError, read_xlsx_preview
+from services.xlsx_preview import REASON_ENCRYPTED_CONTAINER, XLSXPreviewError, read_xlsx_preview_bytes
 
+from . import excel_proxy as XP
+from . import importer as IMP
 from . import mail as M
 from . import rules as V
 from . import scheduled as SCH
@@ -53,6 +59,17 @@ _LIST_LIMIT = 2000
 _CSV_LIMIT = 2 * 1024 * 1024
 _XLSX_LIMIT = 5 * 1024 * 1024
 _IMPORT_MAX_ROWS = 5000
+#: 本地报表导入的体积上限（官方导出件通常 < 5 MB）。
+#: 上传上限：宿主 MAX_CONTENT_LENGTH=16MB，这里留 1MB 余量，避免插件分支永远走不到。
+_FORM_FILE_LIMIT = 15 * 1024 * 1024
+#: 扫描令牌签名密钥（进程内随机）：把「扫到的那个文件」绑成不透明句柄，前端不传路径。
+_SCAN_SECRET = secrets.token_bytes(32)
+#: 扫描时对最新文件的稳定性采样间隔（秒）。
+_SCAN_SETTLE_SECONDS = 2.0
+#: 目录句柄表：页面只拿到不透明 dirId，绝对路径不出服务端（进程内有效，重启后重新扫描即可）。
+_SCAN_DIRS: dict[str, Path] = {}
+#: 目录句柄表上限（超出淘汰最久未使用的，避免无界增长）。
+_SCAN_DIRS_LIMIT = 64
 #: 数据日期换算用的时区；None 取本机时区（测试里固定）。
 _DATA_TZ = None
 
@@ -81,6 +98,8 @@ def _default_config() -> dict[str, Any]:
         "preferences": {},
         # 发送门禁（TDC-20261029）：状态列仍是数字码时禁止导出，单开关回滚。
         "statusGateEnabled": True,
+        # Excel 代读（2026-11-12）：用户开关，默认关；另需部署授权文件才真正生效。
+        "excelProxyEnabled": False,
         "form": {"projects": [], "departments": [], "watchlistOnly": False, "region": _DEFAULT_REGION},
         # v1 的「范围 key -> {to, cc}」，只读兜底（同范围的收件人带到 v2）
         "recipients": {},
@@ -141,6 +160,40 @@ def _texts(value: Mapping[str, Any]) -> dict[str, str]:
     }
 
 
+def _memory_stream(*_args: Any, **_kwargs: Any) -> io.BytesIO:
+    return io.BytesIO()
+
+
+def _memory_form() -> tuple[MultiDict, MultiDict]:
+    """把 multipart 请求体**全程在内存里**解析成 (form, files)。
+
+    不能用 ``request.form`` / ``request.files``：Werkzeug 默认把超过 500KB 的文件部分
+    spool 到临时文件，导入的报表就会在磁盘上留一份。这里换成内存流工厂，其余限制
+    （请求体总大小、表单字段内存、分片数）沿用宿主在 request 上的配置。
+    """
+    parser = FormDataParser(
+        stream_factory=_memory_stream,
+        max_form_memory_size=request.max_form_memory_size,
+        max_content_length=request.max_content_length,
+        max_form_parts=request.max_form_parts,
+    )
+    _stream, form, files = parser.parse(
+        request.stream, request.mimetype, request.content_length, request.mimetype_params
+    )
+    return form, files
+
+
+def _form_list(form: Mapping[str, Any], name: str) -> Any:
+    """multipart 表单里的数组字段：前端以 JSON 文本传，缺省/空串视为空数组。"""
+    raw = form.get(name)
+    if raw is None or not str(raw).strip():
+        return []
+    try:
+        return json.loads(raw)
+    except ValueError:
+        raise _Invalid(f"{name} 不是合法的 JSON 数组") from None
+
+
 def _validate_request(value: Any) -> tuple[S.Scope, bool, dict[str, str]]:
     if not isinstance(value, Mapping):
         raise _Invalid("请求体必须是 JSON 对象")
@@ -154,11 +207,18 @@ def _validate_request(value: Any) -> tuple[S.Scope, bool, dict[str, str]]:
 def _validate_config_patch(patch: Any) -> dict[str, Any]:
     if not isinstance(patch, Mapping):
         raise _Invalid("请求体必须是 JSON 对象")
-    allowed = {"personAreas", "areaNames", "addressBook", "thresholds", "preferences", "statusGateEnabled"}
+    allowed = {
+        "personAreas", "areaNames", "addressBook", "thresholds", "preferences", "statusGateEnabled",
+        "excelProxyEnabled",
+    }
     unknown = set(patch) - allowed
     if unknown:
         raise _Invalid("未知配置项：" + "、".join(sorted(unknown)))
     clean: dict[str, Any] = {}
+    if "excelProxyEnabled" in patch:
+        if not isinstance(patch["excelProxyEnabled"], bool):
+            raise _Invalid("Excel 代读开关必须是布尔值")
+        clean["excelProxyEnabled"] = patch["excelProxyEnabled"]
     if "personAreas" in patch:
         clean["personAreas"] = {
             V.normalize_name(name)[0]: area for name, area in _str_map(patch["personAreas"], "未在册人员→区域").items()
@@ -268,13 +328,15 @@ def import_rows(value: Mapping[str, Any]) -> str | list[list[Any]]:
             data = base64.b64decode(raw.split(",", 1)[1] if raw.startswith("data:") else raw, validate=True)
         except (binascii.Error, ValueError):
             raise _Invalid("xlsx 文件不是有效的 base64") from None
-        with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder) / "import.xlsx"
-            path.write_bytes(data)
-            try:
-                preview = read_xlsx_preview(path, max_rows=_IMPORT_MAX_ROWS + 1, max_columns=20)
-            except XLSXPreviewError:
-                raise _Invalid("读不了这个 xlsx，请另存为 CSV 再导入") from None
+        try:
+            # 在内存里读（不写临时文件）。
+            preview = read_xlsx_preview_bytes(data, max_rows=_IMPORT_MAX_ROWS + 1, max_columns=20)
+        except XLSXPreviewError as exc:
+            # 与 /import-form 用同一条文案：受终端加密与「打不开」必须分开说。
+            reason = str(getattr(exc, "reason", "") or "")
+            raise _Invalid(
+                IMP.ENCRYPTED_TEXT if reason == REASON_ENCRYPTED_CONTAINER else IMP.DAMAGED_TEXT
+            ) from None
         if preview.truncated:
             raise _Invalid(f"文件超过 {_IMPORT_MAX_ROWS} 行，请拆分后导入")
         return [list(row) for row in preview.rows]
@@ -376,6 +438,10 @@ def register(host):
         return ctx.json_ok({
             "data": meta, "dataError": error, "options": options,
             "form": config["form"], "preferences": config.get("preferences") or {},
+            "excelProxy": XP.status(config.get("excelProxyEnabled")),
+            # 默认扫描目录的完整路径：数据根随部署形态变化，必须让用户直接看到，不能靠猜。
+            # 注意目录名是插件 id（sign-daily），不是源码包名（sign_daily）。
+            "importDir": str((ctx.plugin_data_dir(host.manifest.id) / IMP.DEFAULT_SUBDIR).resolve()),
             "legacyRecipients": config.get("recipients") or {},
             "thresholds": config["thresholds"], "addressBook": config.get("addressBook") or "",
             "personAreas": config.get("personAreas") or {},
@@ -424,12 +490,218 @@ def register(host):
         result, error = compose(body(), save=True)
         return error if error is not None else ctx.json_ok(result)
 
+    def import_error(exc: IMP.ManualImportError):
+        """手工导入失败的唯一出口：code、文案与白名单 diagnostic（reason/sizeBucket/colIndex）一起回页面。"""
+        return ctx.json_error(422, exc.code, exc.message, diagnostic=exc.diagnostic or None)
+
+    def _manual_report(source, scope, texts, *, name: str, digest: str, source_format: str):
+        meta = IMP.import_meta(Path(name), source, name=name, digest=digest, source_format=source_format)
+        banner = (
+            f"手工导入｜{meta['sourceName']}｜数据截至日期 {meta['dataDate']}"
+            "（用户确认，未经系统核验）｜参与计算 %d 行｜不计算日变化" % meta["rowCount"]
+        )
+        try:
+            result = SCH.build_report(
+                db=ctx.db, store=IMP.ReadOnlyStore(store), snapshots=IMP.NullStore(),
+                effective=effective, scope=scope, watchlist_only=False, texts=texts,
+                save=False, today=source.data_date, tz=_DATA_TZ, source=source,
+            )
+        except SCH.ReportFailure as exc:
+            return ctx.json_error(exc.status, exc.code, exc.message)
+        # 正文指纹：只对「不含来源声明的正文」取摘要，所以同一份数据换一种导入方式
+        # （明文 xlsx / TXT / Excel 代读）得到的指纹应当相同——真机验收靠它一眼对上，不必逐行比。
+        report_digest = hashlib.sha256(result["text"].encode("utf-8")).hexdigest()[:12]
+        # 复制正文是唯一出口（.eml 已禁），来源声明必须进正文本身，而不只是页面徽标。
+        result["html"] = f'<p><b>{banner}</b></p>' + result["html"]
+        result["text"] = banner + "\n" + result["text"]
+        return ctx.json_ok({
+            **result, "mode": "manual",
+            "importMeta": {**meta, "banner": banner, "reportDigest": report_digest},
+        })
+
+    @bp.post("/import-scan")
+    @guarded
+    def import_scan():
+        """扫描监控目录，返回候选清单与「最后修改时间最新」的那个（不合格就转人工）。"""
+        value = body() if isinstance(body(), Mapping) else {}
+        default_dir = ctx.plugin_data_dir(host.manifest.id) / IMP.DEFAULT_SUBDIR
+        default_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            directory = IMP.resolve_scan_dir(value.get("dir"), default_dir=default_dir)
+        except IMP.ManualImportError as exc:
+            return import_error(exc)
+        try:
+            result = IMP.scan_directory(
+                directory, settle_seconds=_SCAN_SETTLE_SECONDS,
+                # Excel 代读两层开关都开着时，最新那份是加密 xlsx 也可以选中。
+                allow_encrypted=XP.ready(store.config()),
+            )
+        except IMP.ManualImportError as exc:
+            return import_error(exc)
+        dir_id = IMP.make_scan_token(_SCAN_SECRET, directory, "", (0, 0))[:16]
+        _SCAN_DIRS.pop(dir_id, None)
+        _SCAN_DIRS[dir_id] = directory
+        while len(_SCAN_DIRS) > _SCAN_DIRS_LIMIT:
+            _SCAN_DIRS.pop(next(iter(_SCAN_DIRS)), None)
+        selected = None
+        if result.selected:
+            target = directory / result.selected
+            signature = IMP.stat_signature(target)
+            try:
+                # 扫描时就把内容摘要绑进令牌：之后即使同 size 覆盖写 + 复原 mtime，导入也会被拒。
+                digest = hashlib.sha256(IMP.read_verified_bytes(target, signature)).hexdigest()
+            except IMP.ManualImportError as exc:
+                return import_error(exc)
+            selected = {
+                "name": result.selected,
+                "mtime": next((e.mtime for e in result.entries if e.name == result.selected), ""),
+                "size": signature[0],
+                "sha256": digest[:12],
+                "viaExcel": bool(result.via_excel),
+                "token": IMP.make_scan_token(
+                    _SCAN_SECRET, directory, result.selected, signature, digest
+                ),
+            }
+        return ctx.json_ok({
+            "dir": directory.name,
+            # 实际扫描的完整路径与允许根：文件放错目录树时，用户能自己对上。
+            "dirPath": str(directory),
+            "dirId": dir_id,
+            "roots": [root.name for root in IMP.allowed_roots(default_dir)],
+            "rootPaths": [str(root) for root in IMP.allowed_roots(default_dir)],
+            "entries": [
+                {"name": e.name, "mtime": e.mtime, "size": e.size, "ok": e.ok, "reason": e.reason}
+                for e in result.entries
+            ],
+            "selected": selected,
+            "reason": result.reason,
+            "hint": "只认最后修改时间最新的那份；它不合格或时间并列就转人工，不会退回更旧的文件",
+        })
+
+    @bp.post("/import-form")
+    @guarded
+    def import_form():
+        """用本地导出的 TDC 数模表单出一次日报（零写库、零临时文件，不计算日变化）。
+
+        接受官方 .xlsx，或 Excel「另存为文本」得到的 .txt（TAB 分隔）。
+        """
+        form, files = _memory_form()
+        upload = files.get("file")
+        scan_name = str(form.get("scanName") or "").strip()
+        if upload is None or not upload.filename:
+            if not scan_name:
+                raise _Invalid("请选择要导入的报表文件（TDC 数模官方导出的 .xlsx，或 Excel 另存的 .txt）")
+        raw_date = str(form.get("dataDate") or "").strip()
+        if not raw_date:
+            raise _Invalid("请填写这份报表的数据截至日期（不会用导入时间代替）")
+        if len(raw_date) != 10 or raw_date[4] != "-" or raw_date[7] != "-":
+            raise _Invalid("数据截至日期格式应为 YYYY-MM-DD")
+        try:
+            data_date = date.fromisoformat(raw_date)
+        except ValueError:
+            raise _Invalid("数据截至日期格式应为 YYYY-MM-DD") from None
+        scope = S.Scope(
+            _str_list(_form_list(form, "projects"), "项目/车型"),
+            _str_list(_form_list(form, "departments"), "归属科室"),
+        )
+        texts = _texts({
+            "region": form.get("region") or "",
+            "greeting": form.get("greeting") or "",
+            "planText": form.get("planText") or "",
+        })
+        if scan_name:
+            # 扫描句柄：前端只回传名字与令牌，真实路径由服务端重新解析并校验。
+            key = str(form.get("scanDirId") or "").strip()
+            directory = _SCAN_DIRS.get(key)
+            if directory is None:
+                return ctx.json_error(409, "E_SCAN_EXPIRED", "扫描结果已失效（程序重启过），请重新扫描")
+            default_dir = ctx.plugin_data_dir(host.manifest.id) / IMP.DEFAULT_SUBDIR
+            try:
+                # 每次访问都重新解析并重查允许根（不信任扫描时缓存的路径）
+                directory = IMP.resolve_scan_dir(str(directory), default_dir=default_dir)
+            except IMP.ManualImportError as exc:
+                return import_error(exc)
+            candidate = directory / scan_name
+            try:
+                IMP.ensure_direct_child(candidate, directory)
+                signature = IMP.stat_signature(candidate)
+            except IMP.ManualImportError as exc:
+                return import_error(exc)
+            except OSError:
+                return ctx.json_error(422, "E_FILE_GONE", "扫描到的文件已经不见了，请重新扫描")
+            try:
+                # 校验与解析必须是同一份字节：读一次句柄，之后只解析这份内容。
+                payload_bytes = IMP.read_verified_bytes(candidate, signature)
+            except IMP.ManualImportError as exc:
+                return import_error(exc)
+            digest = hashlib.sha256(payload_bytes).hexdigest()
+            if not IMP.verify_scan_token(
+                _SCAN_SECRET, form.get("scanToken") or "", directory, scan_name, signature, digest
+            ):
+                return ctx.json_error(
+                    409, "E_SCAN_STALE", "文件在扫描之后被改动或替换过，请重新扫描后再生成"
+                )
+            source_name = scan_name
+            proxy_target: tuple[Path, tuple[int, int]] | None = (candidate, signature)
+        else:
+            proxy_target = None
+            # 上传：整份读进内存（multipart 也在内存里），不写任何临时文件。
+            payload_bytes = upload.stream.read(_FORM_FILE_LIMIT + 1)
+            if len(payload_bytes) > _FORM_FILE_LIMIT:
+                raise _Invalid(f"文件超过 {_FORM_FILE_LIMIT // (1024 * 1024)} MB 上限")
+            if not payload_bytes:
+                raise _Invalid("上传的文件是空的")
+            digest = hashlib.sha256(payload_bytes).hexdigest()
+            source_name = Path(upload.filename).name
+        source_format = IMP.source_format(payload_bytes, source_name)
+        try:
+            parsed = IMP.source_from_bytes(payload_bytes, data_date, name=source_name)
+        except IMP.ManualImportError as exc:
+            # Excel 代读：只对「扫描目录里、受终端加密的 xlsx」生效，且两层开关都要开着。
+            # 上传来的密文不落盘，所以上传入口不走代读。
+            if not (
+                exc.code == "E_ENCRYPTED_WORKBOOK"
+                and proxy_target is not None
+                and source_format == "xlsx"
+                and XP.ready(store.config())
+            ):
+                if (
+                    exc.code == "E_ENCRYPTED_WORKBOOK" and proxy_target is None
+                    and source_format == "xlsx" and XP.ready(store.config())
+                ):
+                    # 代读已开启，但这份是页面上传来的：正确动作是放进扫描目录，而不是「一键生成」。
+                    return ctx.json_error(
+                        422, exc.code, IMP.ENCRYPTED_UPLOAD_TEXT, diagnostic=exc.diagnostic or None
+                    )
+                return import_error(exc)
+            target, target_signature = proxy_target
+            try:
+                parsed = IMP.source_from_excel(target, data_date)
+                # Excel 是按路径另开的：读完再核对一次本进程视图下的内容摘要，
+                # 期间文件被替换或改动过就整份作废。
+                again = hashlib.sha256(IMP.read_verified_bytes(target, target_signature)).hexdigest()
+            except IMP.ManualImportError as proxy_exc:
+                return import_error(proxy_exc)
+            if again != digest:
+                return ctx.json_error(
+                    409, "E_SCAN_STALE", "文件在扫描之后被改动或替换过，请重新扫描后再生成"
+                )
+            source_format = IMP.FORMAT_EXCEL_PROXY
+        return _manual_report(
+            parsed, scope, texts, name=source_name, digest=digest, source_format=source_format,
+        )
+
     @bp.post("/eml")
     @guarded
     def eml():
         payload = body()
         if not isinstance(payload, Mapping):
             raise _Invalid("请求体必须是 JSON 对象")
+        if str(payload.get("mode") or "") == "manual":
+            # 手工导入的报告没有服务端快照，/eml 只会重算归档数据；直接拒绝，避免发出与页面不一致的草稿。
+            return ctx.json_error(
+                409, "EmlUnavailableForManual", "手工导入的报告不提供 .eml 草稿；请复制正文后手动发送"
+            )
         proceed = payload.get("proceedWithSuggestion", False)
         images_in = payload.get("images") or {}
         if not isinstance(proceed, bool) or not isinstance(images_in, Mapping):

@@ -97,8 +97,9 @@ class FakeArasClient:
         return EWOReportPage(
             rows=[{"_no": "EWO-1", "eplmwriteneplcode": "F610S", "state": "Open"}],
             page=1,
-            item_ids=["ID-1"],
+            item_ids=["A" * 32],
             raw_xml="<xml/>",
+            complete=True,
         )
 
     def query_paa_report(self, filters, page=1, page_size=50, max_records=2000):  # type: ignore[no-untyped-def]
@@ -806,7 +807,114 @@ def _wait_for_background_task(client, task_id: str, timeout: float = 10.0) -> di
     raise AssertionError("background task did not finish in time")
 
 
-def test_ewo_export_route_creates_async_csv_artifact(client) -> None:
+def _column_letters(index: int) -> str:
+    letters = ""
+    value = index + 1
+    while value:
+        value, remainder = divmod(value - 1, 26)
+        letters = chr(65 + remainder) + letters
+    return letters
+
+
+def _write_official_workbook(path: Path) -> Path:
+    """合成官方 EWO 工作簿（111 契约表头 + 1 行，值带标签前缀便于验证列语义）。"""
+    import zipfile
+    from xml.sax.saxutils import escape
+
+    from core.report_contracts import report_contracts
+
+    labels = [str(value or "").strip() for value in report_contracts()["ewo"]["headerRows"][0]]
+    row = [f"{label}|EWO-1" for label in labels]
+    row[0] = "EWO-1"
+    strings: list[str] = []
+    lookup: dict[str, int] = {}
+
+    def sid(text: str) -> int:
+        if text not in lookup:
+            lookup[text] = len(strings)
+            strings.append(text)
+        return lookup[text]
+
+    sheet_rows = []
+    for row_index, values in enumerate([labels] + [row], start=1):
+        cells = [
+            f'<c r="{_column_letters(column)}{row_index}" t="s"><v>{sid(str(value))}</v></c>'
+            for column, value in enumerate(values)
+        ]
+        sheet_rows.append(f'<row r="{row_index}">{"".join(cells)}</row>')
+    sheet = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        f'<sheetData>{"".join(sheet_rows)}</sheetData></worksheet>'
+    )
+    workbook = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<sheets><sheet name="Innovator" sheetId="1" r:id="rId1"/></sheets></workbook>'
+    )
+    rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+        'Target="worksheets/sheet1.xml"/></Relationships>'
+    )
+    shared = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        f'count="{len(strings)}" uniqueCount="{len(strings)}">'
+        + "".join(f"<si><t>{escape(text)}</t></si>" for text in strings)
+        + "</sst>"
+    )
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("xl/workbook.xml", workbook)
+        archive.writestr("xl/_rels/workbook.xml.rels", rels)
+        archive.writestr("xl/sharedStrings.xml", shared)
+        archive.writestr("xl/worksheets/sheet1.xml", sheet)
+    return path
+
+
+class FakeOfficialTransport:
+    """官方导出 transport 替身：生成返回固定 file_id，下载落到合成工作簿。"""
+
+    generate_calls = 0
+
+    def __init__(self, client):  # type: ignore[no-untyped-def]
+        self.client = client
+
+    def generate(self, ids):  # type: ignore[no-untyped-def]
+        type(self).generate_calls += 1
+        assert ids == ["A" * 32]
+        return "B" * 32
+
+    def download(self, file_id, destination):  # type: ignore[no-untyped-def]
+        return _write_official_workbook(Path(destination) / "official.xlsx")
+
+
+def test_ewo_export_rejects_when_concurrency_limit_reached(monkeypatch, tmp_path) -> None:
+    """并发上限按 purpose 计：已有 2 个 csv_export 在途时拒绝新导出。"""
+    from core.ewo_export_jobs import EWOExportJobs
+
+    test_client = _make_test_client(monkeypatch, tmp_path, allowed_hosts=["aras.example"])
+    jobs = EWOExportJobs(tmp_path / "web-test.db")
+    for index in range(2):
+        jobs.create("scope-a", [f"{index + 1:032X}"], purpose="csv_export")
+    monkeypatch.setattr(crawler_boot, "EWOExportTransport", FakeOfficialTransport)
+    resp = test_client.post(
+        "/api/aras/ewo/export",
+        json={"base_url": "http://aras.example", "filters": {}},
+    )
+    assert resp.status_code == 409
+    assert resp.get_json()["error"]["type"] == "ExportBusy"
+
+
+def test_ewo_export_route_creates_official_csv_artifact(client, monkeypatch) -> None:
+    """主路由已切到官方工作簿：202 带 ewo_<jobId>，下载件 111 列且 BF 起有值。"""
+    FakeArasClient.calls = []
+    FakeOfficialTransport.generate_calls = 0
+    monkeypatch.setattr(crawler_boot, "EWOExportTransport", FakeOfficialTransport)
+
     resp = client.post(
         "/api/aras/ewo/export",
         json={
@@ -817,28 +925,49 @@ def test_ewo_export_route_creates_async_csv_artifact(client) -> None:
     assert resp.status_code == 202
     body = resp.get_json()
     assert body["ok"] is True
-    assert body["data"]["source"] == "aras"
     task_id = body["data"]["taskId"]
+    assert task_id.startswith("ewo_")
     assert body["data"]["statusUrl"] == f"/api/tasks/{task_id}"
 
     task = _wait_for_background_task(client, task_id)
     assert task["status"] == "succeeded"
     assert task["can_download"] is True
-
-    crawl_call = next(call for call in FakeArasClient.calls if call.get("method") == "ewo_all")
-    assert crawl_call["page_size"] == 2000
-    assert crawl_call["max_pages"] == 1000
-    assert crawl_call["max_records"] == 10000
+    assert FakeOfficialTransport.generate_calls == 1
 
     download = client.get(f"/api/tasks/{task_id}/download")
     assert download.status_code == 200
     assert "attachment" in download.headers["Content-Disposition"]
-    assert "filename=" in download.headers["Content-Disposition"]
+    text = download.get_data(as_text=True)
+    lines = text.splitlines()
+    header = lines[0].split(",")
+    row = lines[1].split(",")
+    assert len(header) == 111
+    assert header[57] == "项目生产基地汇总"
+    assert row[0] == "EWO-1"
+    # 列表来源下恒空的尾部列，现在必须来自官方工作簿。
+    assert row[57] == "项目生产基地汇总|EWO-1"
+    assert row[-1] == f"{header[-1]}|EWO-1"
+
+
+def test_ewo_list_columns_export_route_marks_unprovided_columns(client) -> None:
+    resp = client.post(
+        "/api/aras/ewo/export-list-columns",
+        json={"base_url": "http://aras.example", "filters": {"project_code": "F610S"}},
+    )
+    assert resp.status_code == 202
+    body = resp.get_json()
+    assert body["ok"] is True
+    task_id = body["data"]["taskId"]
+    task = _wait_for_background_task(client, task_id)
+    assert task["status"] == "succeeded"
+    assert task["can_download"] is True
+
+    download = client.get(f"/api/tasks/{task_id}/download")
+    assert download.status_code == 200
     csv_body = download.get_data(as_text=True)
     assert "EWO-1" in csv_body
-    assert "F610S" in csv_body
+    assert "（列表导出未提供）" in csv_body
     assert "secret-cookie" not in csv_body
-    assert "secret-auth" not in csv_body
 
 
 def test_paa_export_route_creates_async_csv_artifact_and_redacts(client) -> None:
@@ -913,34 +1042,30 @@ def test_paa_crawl_all_async_result_contract(client) -> None:
     assert "sid=abc123" not in result_text
 
 
-def test_ewo_export_marks_truncation_in_progress(monkeypatch, client) -> None:
-    def truncated_crawl(self, filters=None, page_size=2000, max_pages=1000, max_records=10000, should_stop=None, on_page=None):  # type: ignore[no-untyped-def]
-        self.__class__.calls.append(
-            {
-                "method": "ewo_all",
-                "filters": filters,
-                "page_size": page_size,
-                "max_pages": max_pages,
-                "max_records": max_records,
-            }
+def test_ewo_export_rejects_incomplete_listing_before_generation(monkeypatch, client) -> None:
+    """列表预检不完整时同步 422，绝不进入非幂等的生成阶段。"""
+    def truncated_crawl(self, filters=None, **kwargs):  # type: ignore[no-untyped-def]
+        self.__class__.calls.append({"method": "ewo_all", "filters": filters})
+        return EWOReportPage(
+            rows=[{"_no": "EWO-1"}], page=1, item_ids=["A" * 32], raw_xml="", complete=False,
         )
-        return EWOReportPage(rows=[{"_no": "EWO-1"}], page=max_pages, item_ids=["ID-1"], raw_xml="")
 
     monkeypatch.setattr(FakeArasClient, "crawl_ewo_report_all", truncated_crawl)
+    FakeOfficialTransport.generate_calls = 0
+    monkeypatch.setattr(crawler_boot, "EWOExportTransport", FakeOfficialTransport)
     resp = client.post(
         "/api/aras/ewo/export",
         json={"base_url": "http://aras.example", "filters": {}, "max_records": 100},
     )
-    assert resp.status_code == 202
-    task_id = resp.get_json()["data"]["taskId"]
-
-    task = _wait_for_background_task(client, task_id)
-    assert task["status"] == "succeeded"
-    assert "截断" in (task.get("progress") or {}).get("stage", "")
+    assert resp.status_code == 422
+    assert resp.get_json()["error"]["type"] == "IncompleteSelection"
+    assert FakeOfficialTransport.generate_calls == 0
 
 
-def test_export_artifact_lands_in_downloads_dir(monkeypatch, tmp_path) -> None:
+def test_ewo_export_artifact_lands_in_ewo_downloads_dir(monkeypatch, tmp_path) -> None:
     test_client = _make_test_client(monkeypatch, tmp_path, allowed_hosts=["aras.example"])
+    FakeOfficialTransport.generate_calls = 0
+    monkeypatch.setattr(crawler_boot, "EWOExportTransport", FakeOfficialTransport)
     resp = test_client.post(
         "/api/aras/ewo/export",
         json={"base_url": "http://aras.example", "filters": {}},
@@ -951,7 +1076,7 @@ def test_export_artifact_lands_in_downloads_dir(monkeypatch, tmp_path) -> None:
     task = _wait_for_background_task(test_client, task_id)
     assert task["status"] == "succeeded"
 
-    downloads_dir = tmp_path / "downloads"
+    downloads_dir = tmp_path / "ewo-downloads"
     files = [p.name for p in downloads_dir.iterdir() if p.is_file()]
     assert any(name.startswith("ewo_export_") and name.endswith(".csv") for name in files)
 

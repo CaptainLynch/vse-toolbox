@@ -59,7 +59,13 @@ from core.project_status_contracts import DELIVERABLE_LINK_REGISTRY
 
 from core.diagnostics import DiagnosticOptions, MarkdownDiagnosticReport
 
-from services.aras_export import export_report_contract_csv
+from services.aras_export import export_ewo_list_columns_csv, export_report_contract_csv
+from services.aras_auth import DEFAULT_ARAS_BASE_URL
+from services.ewo_csv_export import EwoExportDeps, prepare_selection
+from services.ewo_export_transport import EWOExportTransport
+from services.ewo_official_rows import EwoExportGateError
+from core.ewo_export_jobs import EWOExportJobs
+from web.ewo_export_dispatch import spawn_official_export
 from services.aras_xml import ArasXmlCaptureError, sanitize_aras_xml
 
 from services.xlsx_preview import XLSXPreviewError, read_xlsx_preview
@@ -159,6 +165,10 @@ _EXPORT_DEFAULT_MAX_PAGES = 1000
 
 
 _EXPORT_DEFAULT_MAX_RECORDS = 10000
+
+
+#: 同时运行的 EWO 官方导出上限（每次都会在服务端产生非幂等对象）。
+_EWO_EXPORT_CONCURRENCY = 2
 
 
 _INVALID_ATTACHMENT_CHARS_RE = re.compile(r'[\x00-\x1f<>:"/\\|?*]')
@@ -1074,6 +1084,110 @@ def register_crawler_routes(app: Any, deps: CrawlerRouteDeps) -> None:
 
     @app.post("/api/aras/ewo/export")
     def api_aras_ewo_export():
+        """官方工作簿导出：111 列全部取自官方报表，列表阶段失败同步返回。
+
+        顺序契约：先完成列表预检并落库 ``csv_export`` 任务（含对账用 base_rows），
+        再由后台线程执行生成/下载/门禁/写盘；202 返回 ``ewo_<jobId>``，任务中心与
+        下载端点复用既有 ``ewo_`` 前缀路由。
+        """
+        payload, error_response = _request_payload()
+        if error_response:
+            return error_response
+        assert payload is not None
+        session, gate_error = _async_session_gate("aras", payload)
+        if gate_error is not None:
+            return gate_error
+        if app.config.get("EWO_EXPORT_DISABLED"):
+            return _json_error(
+                503, "EwoExportDisabled", "EWO 导出子系统不可用（任务库迁移失败或被禁用）"
+            )
+        try:
+            base_url = str(payload["base_url"]).strip()
+            _validate_allowed_base_url(base_url, app.config["ARAS_ALLOWED_HOSTS"])
+            filters = _ewo_filters_from_payload(payload)
+        except Exception as e:
+            return _aras_error_response(e, None, "EWO export")
+        max_pages = _positive_int(payload.get("max_pages"), _EXPORT_DEFAULT_MAX_PAGES)
+        max_records = _positive_int(payload.get("max_records"), _EXPORT_DEFAULT_MAX_RECORDS)
+        try:
+            jobs = EWOExportJobs(db.db_path)
+        except Exception:
+            logger.exception("EWO export jobs unavailable")
+            return _json_error(
+                503, "EwoExportDisabled", "EWO 导出子系统不可用（任务库迁移失败或被禁用）"
+            )
+        client = ArasCrawlerClient(base_url, session=session, timeout=30.0)
+        try:
+            listing = client.crawl_ewo_report_all(
+                filters,
+                page_size=_EXPORT_PAGE_SIZE,
+                max_pages=max_pages,
+                max_records=max_records,
+            )
+        except Exception as e:
+            return _aras_error_response(e, client, "EWO export listing")
+        if not getattr(listing, "complete", False) or getattr(listing, "truncated", False):
+            return _json_error(
+                422,
+                "IncompleteSelection",
+                "列表预检不完整（结果被截断或分页不一致）；请缩小筛选范围后重试",
+            )
+        try:
+            ids, base_rows = prepare_selection(listing)
+        except EwoExportGateError as exc:
+            return _json_error(422, exc.code, exc.detail or exc.code)
+        registry = current_app.extensions.get("domain_sessions")
+        binding = (
+            registry.bound_session("aras", DEFAULT_ARAS_BASE_URL)
+            if isinstance(registry, DomainSessionRegistry)
+            else None
+        )
+        scope = binding[1] if binding else "default"
+        if jobs.count_active_jobs(purpose="csv_export") >= _EWO_EXPORT_CONCURRENCY:
+            return _json_error(
+                409,
+                "ExportBusy",
+                f"已有 {_EWO_EXPORT_CONCURRENCY} 个 EWO 官方导出在进行；请等待完成后再发起",
+            )
+        try:
+            job = jobs.create(scope, ids, purpose="csv_export", context={"base_rows": base_rows})
+        except ValueError as exc:
+            return _json_error(422, "IncompleteSelection", _sanitize_error_message(exc))
+        downloads_dir = (Path(db.db_path).parent / "ewo-downloads").resolve()
+        downloads_dir.mkdir(parents=True, exist_ok=True)
+        deps = EwoExportDeps(
+            jobs=jobs,
+            crawler=client,
+            transport=EWOExportTransport(client),
+            downloads_dir=downloads_dir,
+        )
+        if job.get("is_new"):
+            spawn_official_export(job["id"], scope, deps)
+        task_id = f"ewo_{job['id']}"
+        response = jsonify(
+            {
+                "ok": True,
+                "data": {
+                    "taskId": task_id,
+                    "source": "aras",
+                    "taskType": "ewo_export",
+                    "statusUrl": f"/api/tasks/{task_id}",
+                    "resultUrl": f"/api/tasks/{task_id}/download",
+                },
+            }
+        )
+        response.status_code = 202
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+
+    @app.post("/api/aras/ewo/export-list-columns")
+    def api_aras_ewo_export_list_columns():
+        """列表列导出：保留 111 列位置，未提供列在表头标注并落独立文件。
+
+        这是与官方工作簿导出**不同**的契约：用户显式要求“先用列表列”，
+        文件本身能自证缺列，转发后也不会被误当成完整官方报表。
+        """
         payload, error_response = _request_payload()
         if error_response:
             return error_response
@@ -1086,7 +1200,7 @@ def register_crawler_routes(app: Any, deps: CrawlerRouteDeps) -> None:
             _validate_allowed_base_url(base_url, app.config["ARAS_ALLOWED_HOSTS"])
             filters = _ewo_filters_from_payload(payload)
         except Exception as e:
-            return _aras_error_response(e, None, "EWO export")
+            return _aras_error_response(e, None, "EWO list-columns export")
         max_pages = _positive_int(payload.get("max_pages"), _EXPORT_DEFAULT_MAX_PAGES)
         max_records = _positive_int(payload.get("max_records"), _EXPORT_DEFAULT_MAX_RECORDS)
 
@@ -1104,22 +1218,14 @@ def register_crawler_routes(app: Any, deps: CrawlerRouteDeps) -> None:
                     stage=f"EWO 全量抓取第 {page_no} 页",
                 ),
             )
-            ctx.update_progress(stage="正在生成 CSV 导出文件")
-            export = export_report_contract_csv(
-                "ewo",
+            ctx.update_progress(stage="正在生成列表列 CSV（未提供列已标注）")
+            export = export_ewo_list_columns_csv(
                 page.rows,
                 output_dir=ctx.downloads_dir,
-                file_name=f"ewo_export_{ctx.task_id}.csv",
+                file_name=f"ewo_export_list_{ctx.task_id}",
             )
             ctx.set_artifact(export.path)
-            if len(page.rows) >= max_records or (
-                getattr(page, "page", None) is not None and getattr(page, "page") >= max_pages
-            ):
-                ctx.update_progress(
-                    percent=100, stage="导出完成（结果已按 max_records/max_pages 截断）"
-                )
-            else:
-                ctx.update_progress(percent=100, stage="导出完成")
+            ctx.update_progress(percent=100, stage="列表列导出完成")
 
         params = {
             "base_url": base_url,
@@ -1128,7 +1234,8 @@ def register_crawler_routes(app: Any, deps: CrawlerRouteDeps) -> None:
             "max_records": max_records,
         }
         return _submit_background_task(
-            crawl_task_runner, "ewo_export", "aras", params, worker, error_context="EWO export"
+            crawl_task_runner, "ewo_export_list", "aras", params, worker,
+            error_context="EWO list-columns export",
         )
 
 
