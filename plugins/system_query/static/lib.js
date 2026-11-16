@@ -128,8 +128,8 @@ function trimmed(values, name) {
  */
 export function buildPayload(modeId, values, connection, { operation = "query", includeXml = false } = {}) {
   const mode = MODES[modeId];
-  // 「导出合并结果」与「导出」同为导出类操作：带 file_name、不带 preview_source/分页参数。
-  const isExportLike = operation === "export" || operation === "export_merged";
+  // 「导出合并结果」与「导出」「导出列表列」同为导出类操作：带 file_name、不带 preview_source/分页参数。
+  const isExportLike = operation === "export" || operation === "export_merged" || operation === "export_list";
   const payload = {
     base_url: trimmed(connection, "base_url"),
     headers: parseHeaders(connection.headers),

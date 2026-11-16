@@ -252,6 +252,31 @@ def test_every_mode_endpoint_is_a_registered_post_route(app, node_data) -> None:
                 assert mode[key] in rules, (key, mode[key])
 
 
+def test_export_response_contract_handles_202_422_and_503() -> None:
+    """主路由改为 202 异步：前端必须走任务轮询，错误走 JSON 信封，绝不把 JSON 存成 CSV。"""
+    query = (STATIC_DIR / "query.js").read_text(encoding="utf-8")
+    lib = (STATIC_DIR / "lib.js").read_text(encoding="utf-8")
+    assert "isTaskAccepted(response.status, body)" in query
+    assert "throw toQueryError(body, response.status)" in query
+    assert 'operation === "export_list"' in lib
+    # 收到 JSON 响应时不得进入 blob 下载分支（先判断 contentType.includes("application/json")）。
+    json_guard = query.index('contentType.includes("application/json")')
+    blob_branch = query.index("await response.blob()")
+    assert json_guard < blob_branch
+
+
+def test_list_columns_export_button_is_wired_in_the_system_query_page() -> None:
+    """列表列导出必须由前端显式触发，且与官方导出按钮并列（不是替代）。"""
+    modes = (STATIC_DIR / "modes.js").read_text(encoding="utf-8")
+    query = (STATIC_DIR / "query.js").read_text(encoding="utf-8")
+    lib = (STATIC_DIR / "lib.js").read_text(encoding="utf-8")
+    assert 'listExportEndpoint: "/api/aras/ewo/export-list-columns"' in modes
+    assert 'listExportLabel: "导出列表列（未提供列已标注）"' in modes
+    assert 'data-action="export_list"' in query
+    assert 'run("export_list")' in query
+    assert 'operation === "export_list"' in lib
+
+
 def test_merged_export_button_is_wired_in_the_system_query_page() -> None:
     """多单号合并导出：模式声明端点 + 页面按钮存在（2026-10-10 用户需求，防静默丢失）。"""
     modes = (STATIC_DIR / "modes.js").read_text(encoding="utf-8")

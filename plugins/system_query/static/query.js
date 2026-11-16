@@ -522,10 +522,10 @@ export default function SystemQueryPage({ plugin }) {
     savePrefs(requestMode, values, connections[mode.system].base_url);
     setErrorState(null);
     setWarning("");
-    const isExportLike = operation === "export" || operation === "export_merged";
+    const isExportLike = operation === "export" || operation === "export_merged" || operation === "export_list";
     if (!isExportLike) setXml(null);
     setRunning(operation);
-    setStatusText(operation === "query" ? "运行中" : operation === "crawl_all" ? "全量获取中..." : operation === "export_merged" ? "合并导出中..." : "导出中");
+    setStatusText(operation === "query" ? "运行中" : operation === "crawl_all" ? "全量获取中..." : operation === "export_merged" ? "合并导出中..." : operation === "export_list" ? "列表列导出中..." : "导出中");
     if (resultRef.current && !isExportLike) {
       setContextNote(operation === "crawl_all"
         ? "保留上次查询结果 · 正在全量获取最新数据..."
@@ -566,7 +566,9 @@ export default function SystemQueryPage({ plugin }) {
     // 官方导出端点不读 document_no，无法按单号过滤。
     const endpoint = operation === "export_merged"
       ? m.mergedExportEndpoint
-      : (m.exportEndpoint || m.downloadEndpoint);
+      : operation === "export_list"
+        ? m.listExportEndpoint
+        : (m.exportEndpoint || m.downloadEndpoint);
     let response;
     try {
       response = await fetch(endpoint, {
@@ -585,7 +587,8 @@ export default function SystemQueryPage({ plugin }) {
         kickTaskCenter();
         if (!mounted.current) return;
         setTask({ taskId: id, kind: "export", modeId: requestMode, seq: requestSeq, summary, status: "queued", active: true, progress: {} });
-        setStatusText(`${operation === "export_merged" ? "合并导出" : "导出"}已转入后台任务（${id}），完成后可在此处或右上角「任务」中心下载`);
+        const exportLabel = operation === "export_merged" ? "合并导出" : operation === "export_list" ? "列表列导出" : "导出";
+        setStatusText(`${exportLabel}已转入后台任务（${id}），完成后可在此处或右上角「任务」中心下载`);
         return;
       }
       if (response.status === 202) throw toQueryError({ error: { type: "TaskError", message: "后台导出任务响应无效，请稍后重试" } }, 202);
@@ -788,6 +791,8 @@ export default function SystemQueryPage({ plugin }) {
           onClick=${() => run("crawl_all")}>${mode.crawlAllLabel || "获取全部结果"}</button>`}
         ${(mode.exportEndpoint || mode.downloadEndpoint) && html`<button class="primary-btn" type="button" data-action="export"
           disabled=${busy} onClick=${() => run("export")}>${mode.exportLabel || "导出"}</button>`}
+        ${mode.listExportEndpoint && html`<button class="primary-btn" type="button" data-action="export_list"
+          disabled=${busy} onClick=${() => run("export_list")}>${mode.listExportLabel || "导出列表列"}</button>`}
         ${mode.mergedExportEndpoint && html`<button class="primary-btn" type="button" data-action="export_merged"
           disabled=${busy} onClick=${() => run("export_merged")}>${mode.mergedExportLabel || "导出合并结果"}</button>`}
         ${mergedExportNotice && html`<div class="error-msg sq-warning" role="status">${mergedExportNotice}</div>`}
