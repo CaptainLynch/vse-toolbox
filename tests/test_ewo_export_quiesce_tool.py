@@ -41,8 +41,18 @@ def test_apply_freezes_in_flight_jobs(tmp_path, capsys):
     assert tool.main(["--db", str(path), "--apply"]) == 0
     output = json.loads(capsys.readouterr().out)
     assert output["mode"] == "applied"
-    assert output["generating"] == 1
+    assert output["to_generation_unknown"] == 1
     assert jobs.get(job["id"], "scope-a")["state"] == "generation_unknown"
+
+
+def test_apply_abandons_legacy_retryable_jobs(tmp_path, capsys):
+    path, jobs, job = _jobs_with_state(tmp_path, "failed")
+    tool = _load_tool()
+    assert tool.main(["--db", str(path), "--apply"]) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["mode"] == "applied"
+    assert output["legacy_retryable_to_abandoned"] == 1
+    assert jobs.get(job["id"], "scope-a")["state"] == "abandoned"
 
 
 def test_missing_database_is_rejected(tmp_path, capsys):

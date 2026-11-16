@@ -40,7 +40,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.apply:
         print(json.dumps({'mode': 'preview', 'active': _preview(jobs)}, ensure_ascii=False))
         return 0
-    counts = jobs.quiesce()
+    counts = jobs.quiesce(for_rollback=True)
     print(json.dumps({'mode': 'applied', **counts}, ensure_ascii=False))
     return 0
 
