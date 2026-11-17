@@ -920,7 +920,7 @@ def register(host):
         try:
             result = IMP.scan_directory(
                 directory, settle_seconds=_SCAN_SETTLE_SECONDS,
-                # Excel 代读两层开关都开着时，最新那份是加密 xlsx 也可以选中。
+                # Excel 代读开着时，最新那份是加密 xlsx 也可以选中。
                 allow_encrypted=XP.ready(store.config()),
             )
         except IMP.ManualImportError as exc:
@@ -1047,7 +1047,7 @@ def register(host):
         try:
             parsed = IMP.source_from_bytes(payload_bytes, data_date, name=source_name)
         except IMP.ManualImportError as exc:
-            # Excel 代读：只对「扫描目录里、受终端加密的 xlsx」生效，且两层开关都要开着。
+            # Excel 代读：只对「扫描目录里、受终端加密的 xlsx」生效，且代读开关要开着。
             # 上传来的密文不落盘，所以上传入口不走代读。
             if not (
                 exc.code == "E_ENCRYPTED_WORKBOOK"

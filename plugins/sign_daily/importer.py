@@ -331,7 +331,7 @@ _PROXY_EXTRA_COLUMNS = 20
 def source_from_excel(path: Path, data_date: date) -> S.SourceData:
     """让本机 Excel 代读一份（受终端加密的）xlsx，投影成一次性 ``SourceData``。
 
-    调用方必须先确认两层开关都已打开（``excel_proxy.ready``）并且路径来自扫描目录白名单。
+    调用方必须先确认代读已开启（``excel_proxy.ready``）；路径来自扫描目录白名单，或是基线文件在插件数据目录里的备份。
     任何失败都落回「受终端加密」那条既有文案与错误码，只在 diagnostic.reason 里给出
     闭集原因词；表头不符、行数超限沿用各自既有的错误码。值不落库、不落文件、不进日志。
     """
