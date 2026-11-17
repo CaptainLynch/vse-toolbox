@@ -450,7 +450,7 @@ def test_upload_txt_error_messages(client) -> None:  # type: ignore[no-untyped-d
 
     encrypted = _post_file(http, "a.txt", _container()).get_json()["error"]
     assert encrypted["type"] == "E_ENCRYPTED_WORKBOOK"
-    assert encrypted["message"] == importer.ENCRYPTED_TEXT
+    assert encrypted["message"] == sys.modules["vse_plugins.sign_daily.backend"].ENCRYPTED_PAGE_TEXT
     assert encrypted["diagnostic"]["reason"] == "encrypted_container"
 
     garbled = _post_file(http, "a.txt", b"\x81" * 8 + b"\xff" * 64).get_json()["error"]

@@ -30,6 +30,10 @@
   含本机路径的 GET 也过 `local_guard`；正文（会发给别人）不带本机路径。审计时去掉了对重解析点属性的拒绝
   （OneDrive 按需文件会被误挡）。证据：386 passed / 3 skipped / 1 failed（同一既有失败）；Chromium 实走
   指定 → 对比 → 原文件改名 → 备份删除四种状态。
+- **0.7.1（2026-11-17）**：按所有者要求去掉 Excel 代读的部署授权文件门槛（见 DECISIONS）；页面导入遇到加密 xlsx
+  且代读未开时，提示改为给出两条出路（另存为 txt / 勾选代读后放进扫描目录），共用文案 `IMP.ENCRYPTED_TEXT`
+  与离线 CLI 保持不变。新增使用说明 `docs/manual/签署日报_每日进展与配色使用说明.md`（截图在
+  `docs/images/sign-daily-guide/`，Linux 测试机样例数据）。证据：383 passed / 3 skipped / 1 failed（同一既有失败）。
 - **未做**：Windows 真机、加密 xlsx 代读路径（含「代读读备份目录」是否被代读的路径限制拒绝）、UNC 路径、
   签名 `.vsepkg` 打包、全量回归。
 - **下一步**：Windows 上跑全量 pytest 与真机验收，再用 `tools/build_plugin_pkg.py` 出 0.6.0 的 `.vsepkg`。

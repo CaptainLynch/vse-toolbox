@@ -84,6 +84,12 @@ _SCAN_DIRS_LIMIT = 64
 #: 数据日期换算用的时区；None 取本机时区（测试里固定）。
 _DATA_TZ = None
 
+#: 页面导入遇到受终端加密的 xlsx、而这次没走 Excel 代读时的提示：给出页面上的两条出路。
+ENCRYPTED_PAGE_TEXT = (
+    "文件受公司终端加密保护，本功能读不到内容，文件本身没有损坏。两种办法：① 用 Excel 打开它，另存为"
+    "「Unicode 文本(*.txt)」，再导入这份 .txt；② 勾选「加密的 xlsx 由本机 Excel 代读」，把文件放进扫描目录，"
+    "点「扫描目录」再生成（「选择文件」上传的不会代读）。"
+)
 #: 基线文件受终端加密、而 Excel 代读没开时的提示（与导入区的「另存为 txt」指引同一口径）。
 ENCRYPTED_BASELINE_TEXT = (
     "文件受公司终端加密保护，本功能读不到内容，文件本身没有损坏。请用 Excel 打开它，「另存为」选"
@@ -144,7 +150,7 @@ def _default_config() -> dict[str, Any]:
         "preferences": {},
         # 发送门禁（TDC-20261029）：状态列仍是数字码时禁止导出，单开关回滚。
         "statusGateEnabled": True,
-        # Excel 代读（2026-11-12）：用户开关，默认关；另需部署授权文件才真正生效。
+        # Excel 代读（2026-11-12）：用户开关，默认关（2026-11-17 起不再需要部署授权文件）。
         "excelProxyEnabled": False,
         # 图表配色（2026-11-16）：图 -> {bar, special}，只影响前端出图。
         "chartColors": _chart_colors(None),
@@ -599,7 +605,16 @@ def register(host):
 
     def import_error(exc: IMP.ManualImportError):
         """手工导入失败的唯一出口：code、文案与白名单 diagnostic（reason/sizeBucket/colIndex）一起回页面。"""
-        return ctx.json_error(422, exc.code, exc.message, diagnostic=exc.diagnostic or None)
+        message = exc.message
+        if (
+            exc.code == "E_ENCRYPTED_WORKBOOK" and message == IMP.ENCRYPTED_TEXT
+            and (exc.diagnostic or {}).get("reason") == IMP.REASON_ENCRYPTED_CONTAINER
+            and not XP.ready(store.config())
+        ):
+            # 共用文案（与离线 CLI 同一份）只说「改用一键生成」；代读没开时页面上其实有两条出路，直接说出来。
+            # 代读开着却没读成的情况（reason 是 Excel 那边的原因）保持原文案，由页面补充那条原因。
+            message = ENCRYPTED_PAGE_TEXT
+        return ctx.json_error(422, exc.code, message, diagnostic=exc.diagnostic or None)
 
     def _manual_report(source, scope, texts, *, name: str, digest: str, source_format: str,
                        keep_baseline: bool = True, baseline_date: date | None = None):

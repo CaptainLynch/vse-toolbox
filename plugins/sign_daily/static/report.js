@@ -736,7 +736,7 @@ export default function Page({ plugin, api }) {
         ${state.excelProxy && html`<p class="vk-muted sd-import-hint">
           <label><input type="checkbox"
             checked=${!!state.excelProxy.enabled}
-            disabled=${busy || !state.excelProxy.authorized}
+            disabled=${busy || state.excelProxy.status === "excel_unavailable"}
             onChange=${(e) => toggleExcelProxy(e.target.checked)} />
             加密的 xlsx 由本机 Excel 代读（只对扫描目录里的文件生效）</label>
           　${state.excelProxy.text}</p>`}

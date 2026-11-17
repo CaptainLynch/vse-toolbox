@@ -897,7 +897,9 @@ def test_import_form_reports_terminal_encryption(client, tmp_path) -> None:  # t
     assert response.status_code == 422
     error = response.get_json()["error"]
     assert error["type"] == "E_ENCRYPTED_WORKBOOK"
-    assert error["message"] == _ENCRYPTED_TEXT
+    # 页面给出两条出路（另存为 txt / 勾选代读后放进扫描目录），不再只说「改用一键生成」。
+    assert "另存为「Unicode 文本(*.txt)」" in error["message"] and "扫描目录" in error["message"]
+    assert "一键生成" not in error["message"]
     assert set(error["diagnostic"]) <= _DIAGNOSTIC_KEYS
     assert error["diagnostic"]["reason"] == "encrypted_container"
     assert "sizeBucket" in error["diagnostic"]

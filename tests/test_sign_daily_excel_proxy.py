@@ -13,7 +13,6 @@
 from __future__ import annotations
 
 import io
-import json
 import logging
 import os
 import subprocess
@@ -459,52 +458,20 @@ def _container(payload: bytes = b"PK\x03\x04 not really") -> bytes:
     return ENCRYPTED_CONTAINER_SIGNATURES[0] + bytes(1024 - SNIFF_BYTES) + payload
 
 
-def test_deploy_authorization_states(client, tmp_path) -> None:  # type: ignore[no-untyped-def]
+def test_status_follows_user_switch_only(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """2026-11-17 起只有用户开关一层：不再需要部署授权文件。"""
     proxy = _proxy()
-    flags = tmp_path / "deploy_flags.json"
-    assert proxy.deploy_authorization(flags) == {"authorized": False, "authRef": "", "state": "absent"}
-
-    def write(payload: object) -> dict:
-        flags.write_text(json.dumps(payload), encoding="utf-8")
-        return proxy.deploy_authorization(flags)
-
-    assert write({"signDailyExcelProxy": {"authorized": True, "authRef": "IT-2026-001"}}) == {
-        "authorized": True, "authRef": "IT-2026-001", "state": "ok",
-    }
-    for payload in (
-        {"signDailyExcelProxy": {"authorized": True}},  # 没有授权记录编号
-        {"signDailyExcelProxy": {"authorized": True, "authRef": "  "}},
-        {"signDailyExcelProxy": {"authorized": "true", "authRef": "x"}},  # 不是布尔 true
-        {"signDailyExcelProxy": {"authorized": False, "authRef": "x"}},
-        {"other": {}},
-        ["not", "an", "object"],
-    ):
-        assert write(payload)["authorized"] is False
-    flags.write_bytes(b"{not json")
-    assert proxy.deploy_authorization(flags)["state"] == "invalid"
-    flags.write_bytes(_container(b'{"signDailyExcelProxy":{"authorized":true,"authRef":"x"}}'))
-    assert proxy.deploy_authorization(flags) == {"authorized": False, "authRef": "", "state": "containerized"}
-
-
-def test_status_needs_both_switches(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    proxy = _proxy()
-    granted = {"authorized": True, "authRef": "IT-1", "state": "ok"}
-    denied = {"authorized": False, "authRef": "", "state": "absent"}
     monkeypatch.setattr(proxy, "excel_available", lambda: True)
-
-    monkeypatch.setattr(proxy, "deploy_authorization", lambda path=None: denied)
-    assert proxy.status(True)["status"] == "not_authorized"
-    assert proxy.ready({"excelProxyEnabled": True}) is False
-
-    monkeypatch.setattr(proxy, "deploy_authorization", lambda path=None: granted)
     assert proxy.status(False)["status"] == "disabled"
     assert proxy.status(None)["status"] == "disabled"
     assert proxy.status("yes")["status"] == "disabled"  # 只认布尔 true
-    assert proxy.status(True)["status"] == "ok"
+    assert proxy.status(True) == {"status": "ok", "text": proxy.STATUS_TEXT["ok"], "enabled": True}
     assert proxy.ready({"excelProxyEnabled": True}) is True
+    assert not hasattr(proxy, "deploy_authorization")
 
     monkeypatch.setattr(proxy, "excel_available", lambda: False)
     assert proxy.status(True)["status"] == "excel_unavailable"
+    assert proxy.ready({"excelProxyEnabled": True}) is False
 
 
 def _excel_matrix(rows=None, header=None) -> list[list[object]]:
@@ -564,18 +531,14 @@ def test_to_canonical_follows_the_column_whitelist(client) -> None:  # type: ign
 
 @pytest.fixture()
 def proxy_env(client, tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
-    """扫描目录 + 可控的两层开关 + 被替换的 read_via_excel。"""
+    """扫描目录 + 可控的用户开关 + 被替换的 read_via_excel。"""
     _, http, db, _ = client
     backend = sys.modules["vse_plugins.sign_daily.backend"]
     proxy = _proxy()
     monkeypatch.setattr(backend, "_SCAN_SETTLE_SECONDS", 0.0)
     monkeypatch.setenv("VSE_SIGN_DAILY_IMPORT_DIRS", str(tmp_path))
-    state = {"authorized": True, "calls": [], "result": _excel_matrix(), "hook": None}
+    state = {"calls": [], "result": _excel_matrix(), "hook": None}
     monkeypatch.setattr(proxy, "excel_available", lambda: True)
-    monkeypatch.setattr(
-        proxy, "deploy_authorization",
-        lambda path=None: {"authorized": state["authorized"], "authRef": "IT-1", "state": "ok"},
-    )
 
     def fake_read(path, *, max_rows, max_cols, **kwargs):
         state["calls"].append((Path(path), max_rows, max_cols))
@@ -615,18 +578,13 @@ def test_state_reports_proxy_status_and_config_validates(proxy_env) -> None:
     assert _ok(http.get(f"{API}/state"))["excelProxy"]["status"] == "disabled"
     proxy_env.enable()
     status = _ok(http.get(f"{API}/state"))["excelProxy"]
-    assert status["status"] == "ok" and status["enabled"] is True and status["authorized"] is True
+    assert status["status"] == "ok" and status["enabled"] is True and "authorized" not in status
     assert http.post(f"{API}/config", json={"excelProxyEnabled": "yes"}).status_code == 400
-    proxy_env.state["authorized"] = False
-    assert _ok(http.get(f"{API}/state"))["excelProxy"]["status"] == "not_authorized"
 
 
-@pytest.mark.parametrize("authorized,enabled", [(False, True), (True, False), (False, False)])
-def test_any_switch_off_means_no_excel(proxy_env, authorized, enabled) -> None:
-    """任一开关关闭：扫描照旧停在加密文件上，且根本不拉子进程。"""
-    proxy_env.state["authorized"] = True
-    proxy_env.enable(enabled)
-    proxy_env.state["authorized"] = authorized
+def test_switch_off_means_no_excel(proxy_env) -> None:
+    """开关关闭：扫描照旧停在加密文件上，且根本不拉子进程。"""
+    proxy_env.enable(False)
     scanned = proxy_env.scan()
     assert scanned["selected"] is None
     assert scanned["reason"] == "E_ENCRYPTED_WORKBOOK"
@@ -880,9 +838,10 @@ def test_uploading_encrypted_xlsx_points_to_scan_dir_when_proxy_ready(proxy_env)
             content_type="multipart/form-data",
         )
 
-    off = upload()  # 代读没开：仍是第 0 期原文案
+    off = upload()  # 代读没开：页面给出两条出路（另存为 txt / 勾选代读后放进扫描目录）
     assert off.status_code == 422 and off.get_json()["error"]["type"] == "E_ENCRYPTED_WORKBOOK"
-    assert off.get_json()["error"]["message"] == importer.ENCRYPTED_TEXT
+    backend = sys.modules["vse_plugins.sign_daily.backend"]
+    assert off.get_json()["error"]["message"] == backend.ENCRYPTED_PAGE_TEXT
 
     proxy_env.enable()
     on = upload()
