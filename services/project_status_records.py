@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import datetime
 from typing import Any, Mapping, Sequence
 
@@ -33,6 +34,40 @@ IDENTITY_FIELDS: tuple[str, ...] = (
     "NCR编号", "ncrNo", "ncr_no",
 )
 
+#: 按**报表类型**覆盖身份字段优先顺序。只覆盖有契约依据的报表，其余报表
+#: 沿用 ``IDENTITY_FIELDS``（行为逐字不变，避免影响 ARAS/EWO/NCR/SOR）。
+#:
+#: `data_model`：externalKey 的权威字段是第 0 列实例号 ``incident``
+#: （core/report_contracts.py 第 0 列、向导/运行期绑定键语义）；``formId`` 只是
+#: TDC 候选键（services/tdc_contract_probe.py），不得抢占 externalKey 语义。
+#: 上游列表行一旦开始返回 ``formId``，旧顺序会让「本地匹配到的行」与
+#: 「选中键」指向不同字段 → 命中 0 行（2026-10-10 生产事故，见
+#: docs/TDC_DM_WIZARD_DISCOVERY_ROOTCAUSE_20261010.md）。
+IDENTITY_FIELD_ORDERS: dict[str, tuple[str, ...]] = {
+    "data_model": ("incident",) + tuple(
+        field for field in IDENTITY_FIELDS if field != "incident"
+    ),
+}
+
+
+def identity_fields(report_type: str | None = None) -> tuple[str, ...]:
+    """报表类型 -> 身份字段顺序；未覆盖的报表返回默认顺序。"""
+    key = str(report_type or "").strip().lower()
+    return IDENTITY_FIELD_ORDERS.get(key, IDENTITY_FIELDS)
+
+
+#: 各报表的**权威** externalKey 字段（契约列定义）。非 None 时，单记录绑定只接受
+#: 该字段；`IDENTITY_FIELD_ORDERS` 的回退序只用于聚合与展示——否则上游一旦不再
+#: 返回该列，绑定会悄悄换成另一个键（顾问复核 2026-10-10 A1）。
+AUTHORITATIVE_IDENTITY_FIELDS: dict[str, str] = {"data_model": "incident"}
+
+
+def authoritative_identity_field(report_type: str | None = None) -> str | None:
+    """报表类型 -> 权威 externalKey 字段；无契约声明的报表返回 None（沿用回退序）。"""
+    key = str(report_type or "").strip().lower()
+    return AUTHORITATIVE_IDENTITY_FIELDS.get(key)
+
+
 _AGGREGATE_FINGERPRINT_PREFIX = "agg:"
 _IDENTITY_MAX_LEN = 1000
 MAX_AGGREGATE_RECORDS = 5000
@@ -46,11 +81,13 @@ MAX_AGGREGATE_RECORDS = 5000
 _QUERY_RULE_KEYS_BY_SOURCE: dict[str, frozenset[str]] = {
     "tdc": frozenset(
         {
-            "reportType", "aggregate", "incident", "applicant", "department",
-            "section", "applicationStart", "applicationEnd", "projectModel",
-            "partNumber", "modelNumber", "processNo", "processType",
-            "carTypeProject", "carTypeProjectId", "title", "partName", "version",
-            "sorNumber", "latestCompletedNode", "approvalStatus", "status",
+            "reportType", "aggregate", "incident", "documentNo", "documentNos",
+            "applicant",
+            "department", "section", "applicationStart", "applicationEnd",
+            "projectModel", "partNumber", "modelNumber", "processNo",
+            "processType", "carTypeProject", "carTypeProjectId", "title",
+            "partName", "version", "sorNumber", "latestCompletedNode",
+            "approvalStatus", "status",
         }
     ),
     "aras": frozenset(
@@ -88,15 +125,55 @@ def clean_identity(value: Any) -> str:
     return text
 
 
-def record_identity(row: Mapping[str, Any]) -> str:
-    """提取行业务单号（无单号返回空串）。"""
-    for field in IDENTITY_FIELDS:
+def _identity_pair(
+    row: Mapping[str, Any],
+    report_type: str | None = None,
+) -> tuple[str, str] | None:
+    """-> (命中的身份字段名, 规范化单号)；无身份返回 None。"""
+    for field in identity_fields(report_type):
         value = row.get(field)
         if value:
             cleaned = clean_identity(value)
             if cleaned:
-                return cleaned
-    return ""
+                return field, cleaned
+    return None
+
+
+def record_identity(row: Mapping[str, Any], *, report_type: str | None = None) -> str:
+    """提取行业务单号（无单号返回空串）。
+
+    ``report_type`` 只影响字段优先顺序（见 ``IDENTITY_FIELD_ORDERS``）；
+    不传时与历史行为逐字一致。
+    """
+    pair = _identity_pair(row, report_type)
+    return pair[1] if pair else ""
+
+
+def identity_field_name(row: Mapping[str, Any], *, report_type: str | None = None) -> str | None:
+    """该行实际被采用的身份字段名（诊断用；只暴露字段名，不暴露值）。"""
+    pair = _identity_pair(row, report_type)
+    return pair[0] if pair else None
+
+
+def authoritative_record_identity(
+    row: Mapping[str, Any],
+    *,
+    report_type: str | None = None,
+) -> str:
+    """**单记录绑定**用的身份：只接受权威字段（数模 = `incident`）清洗后非空的值。
+
+    `record_identity` 会按回退序取"第一个可用字段"，因此当权威字段是空白/缺失而
+    `formId` 等候选键有值时，它会回退到候选键——单记录绑定绝不允许这种回退
+    （Codex 复核 2026-10-13 P0：`incident=" "` + `formId` 非空可绕过权威字段约束）。
+    无契约声明的报表沿用 `record_identity`（行为不变）。
+    """
+    pair = _identity_pair(row, report_type)
+    if pair is None:
+        return ""
+    authoritative = authoritative_identity_field(report_type)
+    if authoritative is not None and pair[0] != authoritative:
+        return ""
+    return pair[1]
 
 
 _IDENTITY_DIGEST_LEN = 16
@@ -114,17 +191,22 @@ def identity_digest(value: str) -> str:
 
 def identified_records(
     rows: Sequence[Mapping[str, Any]],
+    *,
+    report_type: str | None = None,
 ) -> list[tuple[str, dict[str, Any]]]:
     """按单号识别记录：无单号行一致排除；按单号排序保证重排不变。
 
     重复单号不静默丢弃（保留全部内容，指纹与风险备注均可见）。
     超限（>MAX_AGGREGATE_RECORDS）时 fail-closed 抛出 ValueError。
+    ``report_type`` 只影响身份字段优先顺序（与发现端/连接器同源）。
     """
     if len(rows) > MAX_AGGREGATE_RECORDS:
         raise ValueError(
             f"record count {len(rows)} exceeds maximum {MAX_AGGREGATE_RECORDS}"
         )
-    identified = [(record_identity(row), dict(row)) for row in rows]
+    identified = [
+        (record_identity(row, report_type=report_type), dict(row)) for row in rows
+    ]
     identified = [(key, row) for key, row in identified if key]
     return sorted(identified, key=lambda item: item[0])
 
@@ -184,6 +266,34 @@ def compute_config_signature(source_type: str, match_rule: Mapping[str, Any] | N
         if key_str == "aggregate":
             if not isinstance(v, bool):
                 raise ValueError("match_rule aggregate must be a boolean")
+        elif key_str == "documentNos":
+            # 多单号集合键：列表与「空格/逗号分隔的字符串」统一规范化为
+            # 「去重排序后空格连接」的标量，保证同一集合的任意书写顺序、任意
+            # 分隔符得到同一签名。空集合 fail-closed（不做静默丢弃，避免
+            # 无效规则获得一个看起来合法的身份）。
+            if isinstance(v, str):
+                items = sorted(
+                    {item.strip() for item in re.split(r"[\s,;、\r\n]+", v) if item.strip()}
+                )
+            elif isinstance(v, (list, tuple)):
+                # 元素必须是字符串，且绝不 str() 强转：[None] / [True] / [{}] / [1, 2]
+                # 一旦被强转就会伪装成合法单号集合，甚至让 [1, 2] 与 ["1", "2"]
+                # 撞上同一签名——正是本函数下方「不要 stringify」规则禁止的事。
+                if not all(isinstance(item, str) for item in v):
+                    raise ValueError(
+                        "match_rule documentNos must be a list of strings"
+                    )
+                items = sorted({item.strip() for item in v if item.strip()})
+            else:
+                # 这里与下方其它键的 None 处理（None 被丢弃）刻意不对称：
+                # 空值必须由保存路径「省略该键」而不是持久化 null（R19 / Task 8），
+                # 若把 null 静默丢弃，一条「单号为空」的无效绑定就会与「没有单号
+                # 条件」的规则共享同一签名。故 None 与非法类型一律 fail-closed。
+                raise ValueError("match_rule documentNos must be a string or a list of strings")
+            if not items:
+                raise ValueError("match_rule documentNos must not be empty")
+            cleaned[key_str] = " ".join(items)
+            continue
         elif v is not None and not isinstance(v, str):
             # Query builders and persisted bindings use strings for every
             # source-side filter.  Do not stringify lists/dicts/numbers here:

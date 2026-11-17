@@ -1,5 +1,105 @@
 # Recovery Notes
 
+## 2026-11-03 — pywebview 导入失败分支曾绕过窗口异常脱敏（DSH-V2-03）
+
+- **已验证根因**：`run_window` 先 `pop VSE_WINDOW_BOOT_TICKET`，但 `_load_webview()` 的
+  `ImportError` 分支直接 `print(f"...{exc}")`，没有走 `create_window/start` 的 URL/ticket 替换；
+  异常文本含旧 `?boot=` URL 或票据就会泄漏到 stderr（退出码仍为 3）。
+- **修复**：抽 `_redact_window_error(exc, url, ticket)` 供 ImportError 与 GUI 失败共用；
+  保留 0/3/4 与 `ImportError` 类别。回归测试先红后绿：
+  `tests/test_vse_boot_window.py::test_run_window_import_error_redacts_legacy_url_and_ticket`。
+- **第二层根因（独立评审 + 变异实测确认）**：只替换「整串 URL + 精确 ticket」挡不住两种真实形态——
+  异常文本只带 `?boot=<ticket>` 片段，或同一地址少一个尾斜杠（`host:port?boot=`）。旧链路（新启动器 +
+  旧 app）下窗口子进程**拿不到** `VSE_WINDOW_BOOT_TICKET`，票据只在 URL 里，`ticket` 参数为 `None`，
+  整串替换必然落空。修法：从 `urlsplit(url).query` 里按 `{"boot","token"}` 键反推票据值一并替换
+  （只对白名单键做裸值替换，避免过度抹除）。回归：`test_run_window_redacts_bare_boot_query_fragment`、
+  `test_run_window_redacts_url_without_trailing_slash`。
+- **第三层根因**：`_load_webview()` 只 `except ImportError`，真实形态的 `OSError`（WebView2Loader 缺失）
+  会穿透 `run_window` 变成未捕获 traceback，URL 与票据原样进 stderr、退出码 1。改为任何加载失败都脱敏后
+  返回 3（等价「pywebview 不可用」，走既有 Edge→浏览器降级）。回归：
+  `test_run_window_load_failure_beyond_importerror_is_redacted`。
+- **仍未修（超 owned_scope，需批准）**：`vse_boot/__main__.py:113-115` 的 headless 分支
+  `show = lambda url, _layout: log(f"就绪：{url}")` 把开窗 URL 写进 `state/launcher.log`；「新启动器 +
+  旧 app」时该 URL 带 `?boot=`，票据因此落盘。
+- **证据边界**：只证明 stderr 脱敏与既有退出码；未跑原生 pywebview/EXE；旧 `?boot=` 兼容链路
+  按契约 §8 保留，不能据此宣称旧版本零暴露；`state/app-last-run.log`（app 子进程 stdout）未证明无泄漏。
+
+## 2026-10-31 — Wave 8/9「迁移」复核纠偏：副本≠迁移（W13-09a 的核心发现）
+
+- **现象**：19c09cf/bd6792b 提交说明声称「TDC/表单目录路由迁入 crawler_boot（三清单冻结法重做）」，
+  实际只向 crawler_boot **追加了 1435+304 行副本**——`register_tdc_routes`/`register_form_catalog_routes`
+  **零调用者**，app.py 原件从未删除。全量 3637 全绿是因为原件仍在服务（golden 快照对比的是路径，
+  不比对在哪注册）。
+- **为什么当时没暴露**：① 副本是死代码，AST 相似、import 成功、golden 零差异全部「通过」；
+  ② 闭包审计只覆盖了 register 子树自由名，没覆盖**模块级函数**的自由名——副本缺
+  `_DEFAULT_TDC_ALLOWED_HOSTS` 等 4 个名字，只在真实调用路径执行到才 NameError。
+- **AST 相同 ≠ 环境相同**：同一份 `_build_tdc_client_from_payload` 在 app.py 里能解析
+  `_DEFAULT_TDC_ALLOWED_HOSTS`（app.py 模块级有定义），复制到 crawler_boot 后自由名环境变了。
+  逐字复制必须连同**全部自由名的定义**一起走，或改成从单源模块导入。
+- **正确姿势（W13-09a 落地）**：① `grep register_* 调用者` 验证接线；② 全模块自由名审计
+  （对每个顶层 def 收 Load 名，减局部 Store/参数/内建/模块符号）；③ 单源化：定义只留一份
+  （boot 模块），旧宿主用 `from ... import` 别名再导出（tests 的 `web_app.X` 属性访问靠它）。
+
+## 2026-10-31 — 补丁目标对齐的三种漏网形态（W13-09b）
+
+- 单行正则 `setattr(web_app, "SYM")` 只覆盖单行形态；**多行 setattr（setattr\( 换行 web_app,）**、
+  **字符串形式** `setattr("web.app.SYM")`（pytest 会校验属性存在，漏改直接 setup 报错）、
+  **参数化动态目标** `setattr(web_app, builder_name, ...)` 三种都要扫。tripwire：
+  `monkeypatch.setattr` 目标模块 = 被测路由现属模块；消费调用点在 create_app 体内的仍指 web_app。
+- 别名再导出只保住「原地变更/直接调用」类测试（dict.clear()/["k"]=v/getattr 读）；凡
+  **patch-then-exercise**（打补丁后跑路由）必须把补丁打到路由所在的模块。
+
+## 2026-10-31 — git add -A 差点带入无关用户文件
+
+- 仓库根有用户自己的未跟踪文件（.dsh/、pelican-*.html、dsh-remote-bridge.mjs、
+  VSE-WebUI-compact.spec、.claude/launch.json、docs/dsh-remote-control/）。`git add -A` 会把它们
+  全部暂存进提交。**规则：只按路径显式 `git add <path>`；提交前 `git status --porcelain` 逐行核对
+  staged 清单**。已发生一次，soft reset + 按路径重加后重交（60eaf6b）。
+
+
+## 2026-10-31 — W13-07 手工迁移失败与止损（TDC 路由迁移回退全程）
+
+- **经过**：用 W13-06 的"闭包脚本+分段提取"迁移 11 条 /api/tdc 路由 + 52 个成员，删除 1254 行后
+  连锁暴露 6+ 层缺名（_json_error/_local_web_mutation_error/_DEFAULT_TDC_ALLOWED_HOSTS/
+  _loopback_hostname/_TDC_SOR_FIELDS/COMPLETE_RESULT_STOP_REASONS/flatten_sor_value…），
+  每层修完暴露下一层，5+ 轮不收敛 → **整体回退**（stash web/app.py+crawler_boot.py，
+  checkout 五个测试文件到 HEAD），全量即刻恢复 3612/6/0。
+- **与 W13-06 的本质差异**：Aras 路由的 40 成员闭包只含模块级函数，自包含；TDC 闭包 52 成员
+  传递依赖直通 create_app 局部符号（_json_ok/_json_error/_local_web_mutation_error 在模块级
+  有定义但 TDC 成员还引用 _loopback_hostname/_DEFAULT_TDC_ALLOWED_HOSTS/AFACE_CONTRACT_BLOCKER
+  等局部/导入符号），闭包脚本只算模块级 def 的自由名，**看不见 create_app 函数体内的局部符号图**。
+- **教训**：① 大路由域迁移前必须先做"闭包完整性证明"——把拟迁移集合在独立模块里 mock 出
+  create_app 依赖（deps 显式列出）并能 import + 全量路由快照零差异，才允许动 app.py；
+  ② 修 NameError 的迭代循环只测 `import web.app` 不够（函数体执行期才炸），要以路由快照
+  测试 + 关键域聚焦测试为准；③ 逐名补 import 的旋涡超过 3 层即止损回退，把闭包完整性分析
+  作为独立前置任务。
+- **W13-07 重做前置**：先静态提取 TDC 路由段全部自由名（含 create_app 局部名）分类为
+  [已迁入 boot / 需随迁成员 / 需 deps 注入的局部名] 三清单，冻结后再动手。
+
+## 2026-10-31 — ZCode worker 运行时对新版 GLM zcode.cjs 的协议适配（实测取证）
+
+- **症状**：supervisor 派发一律 `preflight-blocked`。逐层错误与修复（按顺序，每层修掉才见下一层）：
+  1. `Invalid params — (root): Unrecognized key: "runtimeModel"`：新版 session/create 不认识该键（旧版经它上行运行时元数据）→ 停发。
+  2. `Reasoning level is required for <provider>/<model>`（create 期）：模型引用对象要求 `{providerId, modelId, options:{reasoningLevel}}`。CLI 内字符串形式的分隔符常量 `VDe="$"`（即 `provider/model$level`）。
+  3. 同错误但发生在 session/send 后（`turnPhase: model_creation`）：回合级模型创建读**会话级顶层** `thoughtLevel`（create schema 有 `thoughtLevel` 可选键）；与第 2 条并存、缺一不可。
+  4. `Preflight model/permission mismatch`：回显 `settings.permission.mode` 恒为 `'build'`（CLI 内 `permission:{mode:this.config.mode??"build"}`，create 的 mode 不落到该回显字段）→ 回读校验只锁 providerId/modelId。工具安全不依赖 mode：预检 toolDenylist 全禁 + 审计零调用；正式会话 toolAllowlist（readonly 仅读）+ VSE_ZCODE_CONTRACT 守卫独立强制。
+- **doctor**：`validate_codex_lead_policy` 硬编码 gpt-5.6-luna 对 zcode-app-server 路线不适用（既有已知问题）→ doctor 仅在显式设置 `VSE_CODEX_CONFIG` 时校验 Codex lead；guard/runtime/Node 检查不变。
+- **安装副本同步**：`tools/agents/zcode_worker.py` 需 cp 到 `~/.zcode/worker-runtime/tools/agents/`（改两处时容易漏），备份 `zcode_worker.py.bak-20261031`。测试反转为协议锁：session 参数断言无 runtimeModel。
+- **排查手法**：CLI 是压缩 bundle——`rg -o -N ".{80}关键词.{120}"` 抓上下文；探针脚本放 `.runtime/`（probe_session_create.py / probe_network_preflight.py），用 spy 包住 host_rpc_response 与 RpcProcess.request 观察回显与反向 RPC（新版会发 `session/requestRuntimePreferences` scope=runtime-materialization 与 `interaction/requestOfficialMcpAuthHeaders`）。
+- **教训**：worker 运行时是独立安装副本，CLI 更新（此处 D:/zcode/resources/glm 换成 GLM 资源包）后必须先跑一次最小任务冒烟，不能假设 9 月验收过的协议仍成立。
+
+## 2026-10-09 — 帆软 FineReport（report.sgmw.com.cn）TIR数据简表 协议事实
+
+- Chrome 导出的 HAR 是「脱敏 HAR」：没有 Cookie/Authorization 头不代表请求不带鉴权。登录响应 `data.accessToken`，
+  前端写 `fine_auth_token` cookie + `Authorization: Bearer`。
+- `__parameters__` = encodeURIComponent(cjkEncode(JSON))，cjkEncode 同时编码 `[`、`]`（`[5b]`/`[5d]`）；浏览器提交全部
+  44 个键（22 个 LABEL*）。实现与 HAR 逐字节一致。多选值以 `','` 连接。
+- `read_w_content` 的 html：第 0 行是标题、第 1 行表头；第 14 列是隐藏空列；有不闭合的 `<td/>`——用 `.*?</td>`
+  会吞掉下一格（首行第 0 列丢失），要截到下一个 `<td`/`</tr`。`reportTotalPage=0` 表示未分页。响应里的 watermark
+  含登录用户名，HAR/日志一律不记正文。
+- 新报表 `tdc/TIR/TIR数据简表.cpt`（entry 3770a19c-…）没有地区参数；`REGION_NAME` 属旧报表 `旧TIR/整车-简表.cpt`。
+- 真实下载端点（`op=export&format=excel&extype=simple`）、登录公钥位置、sessionID 页面模式仍是假设，待 `tools/tir_probe.py`。
+
 ## 2026-10-03 — 签署日报 v2 / 数模关注清单：已核实的坑
 
 - **TDC 数模没有按流水单号查询的参数**：`incident` 是第 0 列「实例号」，流水单号是 `documentNo`（`core/report_contracts.py`）。
@@ -12,6 +112,27 @@
 - **交付物绑定 `interval_minutes` 为 NULL = 跟随调度器频率**（`_is_fresh`），不是 60；部分 PATCH 不能补默认值。
 - **Preact（本仓库 vendor 版）`<option>` 不写 value 会渲染成 `value=""`**：受控 select 选中后拿到空串。所有 option 都要显式 value。
 - **长周期记忆键必须幂等**：前端回传的是已规范化的键，后端会再规范化一次；L1 要先去标点再去 LH/RH 并循环到不变。
+## 2026-10-03 — onedir 生产包构建/冒烟的接口与工具事实
+
+- 插件化宿主 `/api/host/manifest` 返回的插件 id 是 `manifest.id`（连字符，如
+  `deliverable-forms`、`sign-daily`），与插件**目录名**（下划线 `sign_daily`）不同；
+  插件 API 前缀为 `/api/p/<manifest.id>/...`。按目录名拼 URL 会得到 404。
+- `/api/version` 响应是 `{"ok": true, "data": {...}}` 包装，`rawVersion`/`channel`/
+  `buildId`/`isFrozen` 都在 `data` 内，不在顶层。
+- 冻结模式下 Excel Worker 的查找规则：`services/excel_worker_process_controller.py`
+  要求 `VSE-ExcelWorker.exe` 与 `VSE-WebUI.exe` **同目录**（`Path(sys.executable).parent`），
+  缺失即 FileNotFoundError；官方 `VSE-WebUI.spec`（onedir）只构建宿主，
+  Worker 需另行 `VSE-ExcelWorker.spec`（onefile）构建后复制进 `dist/VSE-WebUI/`。
+- `taskkill`/`tasklist` 输出是 OEM（cp936）编码：`subprocess.run(..., text=True)`
+  在中文 Windows 上会 UnicodeDecodeError（stdout 变 None）；用字节 capture 再
+  `decode(..., errors="replace")`（只匹配 ASCII 子串时安全）。
+- 工作区未跟踪的 `VSE-WebUI-compact.spec` 是旧 onefile 方案：缺
+  `('host/trusted_keys.json', 'host')` datas，也没有 plugins 复制逻辑，
+  **勿再用于现架构**；官方 `VSE-WebUI.spec` 自 2026-10-01 起为 onedir 且自带
+  `_copy_plugins`（仓库 plugins/ 源码复制到 dist/VSE-WebUI/plugins/）。
+- main 上的 `.github/workflows/build-windows-exe.yml` 已过时：仍
+  `node --check web/static/app.js`（该文件已删），在 main 上必然失败——
+  与产品无关；有效的 CI 门禁是 build.yml（测试+构建）与 verify-project-map。
 
 ## 2026-09-25 — 诊断披露：`emit` 事件名留存不等于载荷可读
 
@@ -630,6 +751,35 @@ repo are the authoritative record.
 
 重置本地顾问额度时不要删除 ledger-*.jsonl，也不要调用 Plus 账户重置。策略 local_quota_reset_at 只过滤该时间之前的 codex-readonly 启动用于本地自然日、任务和滚动上限；--status 的 prior_launches_preserved 显示历史启动数。修改 advisor_core.py 后必须升级 broker 健康协议并重启已核实身份的本机进程；仅改策略字段则服务每次请求会重新读取。用户授权重置后，115 项离线测试及两次合成 live 已通过。
 
+## 2026-10-01 插件重构分叉遗漏生产修复链
+
+- `refactor/plugin-host@589071e` 与上个业务分支 `e2c58a3` 的共同祖先是 `d15d0f2`，后续9批业务修复未合入；迁移旧前端/删除旧源码断言也同时漏掉这段新后端与测试。当前2504通过不能证明旧r3-r7合同保留。
+- 审计用git archive导出明确生产范围和选中测试，保持当前checkout；旧分支96项全过，当前断言/缺失导入显示多项遗漏。见 `docs/BRANCH_REFACTOR_PARITY_AUDIT_20261001.md`。收集错误须与产品断言区分，兼容测试只移除不可用导入、不改断言；不能把77失败视作77个独立bug。
+- 圆环/占位/点击等部分前端修复已重实现，不能以旧提交未在历史或app.js删除直接断言全部功能丢失。筛选挂起的超时保证缺失已静态确认，现场完整点击故障未在浏览器复现。
+
+## 2026-10-01 云端恢复源分支的可达性
+
+- git ls-remote实查旧业务远端仍d15d0f2，本地修复顶端e2c58a3没有推送。云端只clone远端会拿不到9批修复，必须提供本轮Git bundle或经用户授权另行发布参考分支。bundle以d15d0f2为prerequisite，仅含之后26提交，不含真实工作区数据。
+- 远端重构d0dd01d相对审计589071e只改form-key测试路径。云端执行仍应核实最新tip，不盲目固定旧审计版本；提示词/报告尚未提交，已随ZIP显式提供。
+
+## 2026-10-02 PR #3 本地验收的已验证边界
+
+- 后台任务 deadline 必须覆盖单次 fetch、JSON body 和最终结果读取；仅在 while 循环头检查 Date.now，不能中断挂住的 await。PR f5b0df0 的 discovery.js 握手202后清除计时器，状态/结果请求不带 signal，50ms上限在300ms后仍未落定。独立复现脚本见 .runtime/pr3-windows-review/repro-discovery-hang.mjs。
+- 取消不能从未知令牌直接回落到“当前交付物的任何任务”。旧请求A过期时新任务B可能已运行；PR取消API合成复现确实取消了B。令牌应与具体任务/查询身份绑定，原令牌生命周期需延长到worker实际退出。
+- 对照e2c58a3旧app.js/web/app.py，以上两个取证缺陷在恢复来源中也存在；应列“继承的旧缺陷”，不能归为Claude此次新造业务回归。
+- 旧失败页签显示 shown.activeTab、请求却读 state.activeTab 会导致“应用筛选”漏条件；PR与d0dd01d都已真浏览器复现，不能归为PR新引入。
+- Preact useEffect 的事件守卫安装与DOM锁定属性更新之间有窗口；Windows新浏览器用例只等locked=true，首次点击blocked-count为空，600ms及5000ms截止皆复现；等200ms后锁仍true、计数为2。不能用增加超时掩盖就绪语义，也不能只把失败当CPU忙。
+- map生成器read_bytes指纹受CRLF影响：PR Windows raw指纹与Linux不同，197源文件CRLF；按LF归一后fingerprint及完整生成地图都与提交一致。检查失败应报告跨平台问题，不重写fingerprint冒称通过。
+- vendor/preact-htm.js记录的SHA也要求LF字节，Windows checkout CRLF使host_frontend checksum断言失败；d0dd01d基线305项对比只有这一失败（304通过）。PR全量2726通过、2失败、3跳过，另一失败是新增guard断言；完整浏览器37项36通过。符号链接权限不足导致3跳过，不自动提升权限。
+- 独立测试脚本放在.runtime时，Python直接运行的sys.path不含工作树，须显式PYTHONPATH指定目标checkout；合成Excel任务数据库必须先init_database。两个准备脚本的问题已纠正，冻结ExcelWorker随后真实COM合并通过；这些不计产品失败。
+- ZCode run-worker dry-run也创建task run目录，随后同task_id live会FileExistsError；可在未启动模型的情况下用明确LIVE后缀执行同合同。此次live仍因runtimeModel未知字段preflight-blocked，已停止该路由，未绕过或切换供应商。Windows打包/功能结果由直接本地验证支持。
+
+## 2026-10-02 PR #3 969e501 修复复核
+
+- 新增 `.gitattributes` 不能保证旧工作树中内容未变的 vendor 文件立刻从 CRLF 改为 LF。复用 f5 工作树切到969后仍CRLF，普通 checkout-index --force 也未刷新；全新原生工作树 vendor 为 LF，host/map17项全部通过、地图check通过。确认单个文件无用户改动后删除工作文件再 git restore 能重建LF，checksum通过；hash-object与index/HEAD完全一致。最后仅刷新该路径的index stat，工作树保持干净，没有更改记录的校验值。
+- R1独立截止探针必须让fetch模拟体响应AbortSignal；不响应signal的永久挂起Promise不代表浏览器fetch实际语义。969的status、status body、result、result body四种abort-aware探针均在50ms预算附近退出并返回retryable任务中心提示；浏览器两个新增挂起场景也通过。
+- R2独立探针应使用独立向导会话并模拟协作取消。初版两个参数场景复用会话，模拟客户端在取消后仍返回结果，第二场景未进入模拟抓取；改为独立会话且should_stop时抛CrawlCancelled后2项通过。初始token和reattach token均可取消所属任务，未知token为not_running。
+- 969 Windows全量最终2731通过、1失败、3跳过、4告警；唯一失败为guard用例第422行后续retry trend等待8s，guard拦截/解锁断言已过，不能描述为旧B2时序复发。日志再次出现policy getter→seed INSERT OR IGNORE的database is locked与GET500，repo/analytics相对d0未改；锁持有者与完整因果链未定位。用例重试还保持模拟600ms截止、只等旧DOM标题，不能证明刷新落定；单独重跑通过不证明全量稳定。应保留原guard断言，分开模拟超时与真实retry预算/就绪，同时定位SQLite锁，不能只增加DOM等待掩盖500。历史hash用例本轮全量通过，也不能宣称锁已修复。
 ## 2026-10-02 插件重构遗漏恢复：联调发现的旧实现缺陷（verified root causes）
 
 - **方法教训**：旧分支的前端/接线测试是 `app.js` 源码文本断言 + Node VM 桩，后端测试各自带满参数调用，**从未真浏览器+真后端联调**。

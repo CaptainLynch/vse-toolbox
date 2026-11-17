@@ -148,6 +148,17 @@
   margin: 8px 0;
 }
 
+/* 流水单号本地匹配的覆盖度提示（与 catalog.js 的 result-warning 同类，此前无样式）。 */
+.result-panel .result-warning {
+  margin: 0 0 9px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--warning) 10%, var(--surface-card));
+  color: var(--ink);
+  font-size: 12px;
+}
+
 .sq-grid {
   overflow: visible;
 }

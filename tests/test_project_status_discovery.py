@@ -11,6 +11,7 @@ from services.project_status_records import (
     aggregate_fingerprint,
     compute_config_signature,
     identified_records,
+    identity_digest,
     observation_is_aggregate,
 )
 from services.project_status_deliverable_analysis import EWO_DEFAULT_RSP_DEPARTMENT_EXPRESSION
@@ -614,6 +615,224 @@ def test_observe_aggregate_mode_fingerprint_semantics(tmp_db: DatabaseManager) -
     # 全部无单号 → not_found
     result_c = service.observe("VPI-T2-D5", "tdc", [{"name": "无单号"}], aggregate=True)
     assert result_c["state"] == "not_found"
+
+
+def test_observe_member_identity_baseline_ignores_row_set_growth(tmp_db: DatabaseManager) -> None:
+    """多单号绑定：证据基线是「配置单号成员身份」，行内容与行数不参与。
+
+    上游新增零件行/实例行会让行身份集合变化；若仍按行身份算聚合指纹，
+    「连续两次指纹一致」永不可达 ⇒ 绑定永远无法启用（Astra 排查结论）。
+    """
+    service = MappingDiscoveryService(tmp_db)
+    rule = {"reportType": "data_model", "aggregate": True, "documentNos": ["3D-1"]}
+    first = service.observe(
+        "VPI-T2-D5", "tdc",
+        [{"incident": "FLOW-A", "documentNo": "3D-1", "partNumber": "P-1"}],
+        None, aggregate=True, match_rule=rule, fingerprint_identities=["3D-1"],
+    )
+    second = service.observe(
+        "VPI-T2-D5", "tdc",
+        [
+            {"incident": "FLOW-A", "documentNo": "3D-1", "partNumber": "P-1"},
+            {"incident": "FLOW-A2", "documentNo": "3D-1", "partNumber": "P-2"},
+        ],
+        None, aggregate=True, match_rule=rule, fingerprint_identities=["3D-1"],
+    )
+    assert first["state"] == "matched" and second["state"] == "matched"
+    observations = tmp_db.list_mapping_observations("VPI-T2-D5", 2)
+    assert observations[0]["candidate_fingerprint"] == observations[1]["candidate_fingerprint"]
+    # 成员身份口径 = 单号集合指纹（行内容不参与），与共享算法逐字同源。
+    assert observations[0]["candidate_fingerprint"] == aggregate_fingerprint([("3D-1", {})])
+    assert second["stability"] == {"confirmed": 2, "required": 2, "ready": True}
+
+
+def test_observe_default_aggregate_fingerprint_keeps_row_identities(
+    tmp_db: DatabaseManager,
+) -> None:
+    """存量口径逐字不变：不传 fingerprint_identities 时指纹仍是行身份集合。"""
+    service = MappingDiscoveryService(tmp_db)
+    rows = [
+        {"incident": "FLOW-A", "documentNo": "3D-1", "partNumber": "P-1"},
+        {"incident": "FLOW-A2", "documentNo": "3D-1", "partNumber": "P-2"},
+    ]
+    service.observe("VPI-T2-D5", "tdc", rows, aggregate=True)
+    stored = tmp_db.list_mapping_observations("VPI-T2-D5", 1)[0]
+    assert stored["candidate_fingerprint"] == aggregate_fingerprint(
+        identified_records(rows, report_type="data_model")
+    )
+
+
+def test_observe_rejects_member_identity_baseline_without_aggregate(
+    tmp_db: DatabaseManager,
+) -> None:
+    """成员身份基线只对聚合观测成立：单记录路径传值必须立刻暴露，不得静默忽略。"""
+    with pytest.raises(ValueError):
+        MappingDiscoveryService(tmp_db).observe(
+            "VPI-T2-D5", "tdc", [{"incident": "FLOW-A"}], "FLOW-A",
+            fingerprint_identities=["3D-1"],
+        )
+
+
+def test_observe_persists_state_reason_for_partial_serial_set(tmp_db: DatabaseManager) -> None:
+    """多单号部分命中的归因必须随观测落库（历史/DB 读者不能只看到裸的 not_found）。"""
+    service = MappingDiscoveryService(tmp_db)
+    rule = {"reportType": "data_model", "aggregate": True, "documentNos": ["3D-1", "3D-9"]}
+    result = service.observe(
+        "VPI-T2-D5", "tdc", [], None, aggregate=True, match_rule=rule,
+        fingerprint_identities=["3D-1"], state_reason="serial_set_partial",
+    )
+
+    assert result["state"] == "not_found"
+    assert result["reason"] == "serial_set_partial"
+    stored = tmp_db.list_mapping_observations("VPI-T2-D5", 1)[0]
+    assert json.loads(stored["aggregated_candidate_json"])["_reason"] == "serial_set_partial"
+    assert service.history("VPI-T2-D5")["observations"][0]["reason"] == "serial_set_partial"
+
+
+def test_observe_stability_baseline_is_member_identity(tmp_db: DatabaseManager) -> None:
+    """多单号 F10 基线 = 配置单号成员身份，而不是「已命中并集」的行身份。"""
+    service = MappingDiscoveryService(tmp_db)
+    rule = {"reportType": "data_model", "aggregate": True, "documentNos": ["3D-1", "3D-2"]}
+    service.observe(
+        "VPI-T2-D5", "tdc",
+        [
+            {"incident": "FLOW-A", "documentNo": "3D-1", "applicant": "张三"},
+            {"incident": "FLOW-B", "documentNo": "3D-2", "applicant": "张三"},
+        ],
+        None, aggregate=True, match_rule=rule,
+        fingerprint_identities=["3D-1", "3D-2"], upstream_total=2,
+    )
+
+    payload = json.loads(
+        tmp_db.list_mapping_observations("VPI-T2-D5", 1)[0]["aggregated_candidate_json"]
+    )
+    assert payload["_stabilityIds"] == sorted(
+        {identity_digest("3D-1"), identity_digest("3D-2")}
+    )
+
+
+def test_observe_stability_sample_member_identities_ignore_row_and_total_drift(
+    tmp_db: DatabaseManager,
+) -> None:
+    """成员身份比对：行集/总体总数漂移不参与，集合相等即稳定（否则必然误报）。"""
+    service = MappingDiscoveryService(tmp_db)
+    rule = {"reportType": "data_model", "aggregate": True, "documentNos": ["3D-1", "3D-2"]}
+    service.observe(
+        "VPI-T2-D5", "tdc",
+        [
+            {"incident": "FLOW-A", "documentNo": "3D-1", "applicant": "张三"},
+            {"incident": "FLOW-B", "documentNo": "3D-2", "applicant": "张三"},
+        ],
+        None, aggregate=True, match_rule=rule,
+        fingerprint_identities=["3D-1", "3D-2"], upstream_total=2,
+    )
+
+    sample = service.observe_stability_sample(
+        "VPI-T2-D5", "tdc",
+        [
+            {"incident": "FLOW-A", "documentNo": "3D-1", "applicant": "张三"},
+            {"incident": "FLOW-A2", "documentNo": "3D-1", "applicant": "张三"},
+            {"incident": "FLOW-B", "documentNo": "3D-2", "applicant": "张三"},
+        ],
+        4,  # 上游新增零件行：总体总数 2 -> 4
+        aggregate=True, match_rule=rule,
+        member_identities=["3D-1", "3D-2"],
+    )
+
+    assert sample["state"] == "matched"
+    assert sample["mismatch"] is None
+    assert sample["stability"] == {"confirmed": 2, "required": 2, "ready": True}
+    # 复用基线候选数与候选缓存：预览侧「缓存条数 == 候选数」门禁不能被打破。
+    assert sample["candidateCount"] == 2
+
+
+def test_observe_stability_sample_member_identities_detect_missing_serial(
+    tmp_db: DatabaseManager,
+) -> None:
+    """成员集合真的变化（配置单号消失）时必须归因 serial_set_changed。"""
+    service = MappingDiscoveryService(tmp_db)
+    rule = {"reportType": "data_model", "aggregate": True, "documentNos": ["3D-1", "3D-2"]}
+    service.observe(
+        "VPI-T2-D5", "tdc",
+        [
+            {"incident": "FLOW-A", "documentNo": "3D-1", "applicant": "张三"},
+            {"incident": "FLOW-B", "documentNo": "3D-2", "applicant": "张三"},
+        ],
+        None, aggregate=True, match_rule=rule,
+        fingerprint_identities=["3D-1", "3D-2"], upstream_total=2,
+    )
+
+    sample = service.observe_stability_sample(
+        "VPI-T2-D5", "tdc",
+        [{"incident": "FLOW-A", "documentNo": "3D-1", "applicant": "张三"}],
+        2,
+        aggregate=True, match_rule=rule,
+        member_identities=["3D-1"],
+    )
+
+    assert sample["state"] == "key_changed"
+    assert sample["mismatch"] == {"reason": "serial_set_changed", "expected": 2, "actual": 1}
+    assert sample["stability"]["confirmed"] == 0
+
+
+def test_observe_stability_sample_member_identities_require_member_baseline(
+    tmp_db: DatabaseManager,
+) -> None:
+    """旧观测没有成员身份基线：明确返回不可用，绝不落一条假的 key_changed。"""
+    service = MappingDiscoveryService(tmp_db)
+    # 情形 1：完全旧的观测（没有 `_schema` 保留键）。
+    tmp_db.record_mapping_observation(
+        "VPI-T2-D5", "tdc", "matched", None, aggregate_fingerprint([("3D-1", {})]), 1,
+        json.dumps([{"externalKey": "3D-1", "fields": {}}], ensure_ascii=False),
+        json.dumps({"fields": ["incident"]}, ensure_ascii=False),
+    )
+
+    sample = service.observe_stability_sample(
+        "VPI-T2-D5", "tdc", [{"incident": "FLOW-A", "documentNo": "3D-1"}], 1,
+        aggregate=True, member_identities=["3D-1"],
+    )
+
+    assert sample["state"] == "not_found"
+    assert sample["reason"] == "stability_baseline_missing"
+    assert sample["observationId"] is None
+    # 没有落新观测：绑定不会被一条「假的 key_changed」卡死。
+    assert len(tmp_db.list_mapping_observations("VPI-T2-D5", 10)) == 1
+
+
+def test_observe_stability_sample_rejects_row_identity_baseline_as_member(
+    tmp_db: DatabaseManager,
+) -> None:
+    """修复前的多单号观测（`_stabilityIds` 是行身份）不得被当成成员集合比对。"""
+    service = MappingDiscoveryService(tmp_db)
+    rule = {"reportType": "data_model", "aggregate": True, "documentNos": ["3D-1"]}
+    # 修复前的写法：聚合观测但指纹/基线都按行身份（不传 fingerprint_identities）。
+    service.observe(
+        "VPI-T2-D5", "tdc",
+        [{"incident": "FLOW-A", "documentNo": "3D-1", "applicant": "张三"}],
+        None, aggregate=True, match_rule=rule, upstream_total=1,
+    )
+
+    sample = service.observe_stability_sample(
+        "VPI-T2-D5", "tdc",
+        [{"incident": "FLOW-A", "documentNo": "3D-1", "applicant": "张三"}], 1,
+        aggregate=True, match_rule=rule, member_identities=["3D-1"],
+    )
+
+    assert sample["state"] == "not_found"
+    assert sample["reason"] == "stability_baseline_missing"
+    assert sample["observationId"] is None
+    assert len(tmp_db.list_mapping_observations("VPI-T2-D5", 10)) == 1
+
+
+def test_observe_stability_sample_rejects_member_identities_without_aggregate(
+    tmp_db: DatabaseManager,
+) -> None:
+    """成员身份比对只对聚合观测成立（与 observe 的同一条不变量）。"""
+    with pytest.raises(ValueError):
+        MappingDiscoveryService(tmp_db).observe_stability_sample(
+            "VPI-T2-D5", "tdc", [{"incident": "FLOW-A"}], 1,
+            member_identities=["3D-1"],
+        )
 
 
 def test_candidate_preview_with_note_list_mapping(tmp_path):
@@ -1310,10 +1529,11 @@ def test_f10_failed_sample_then_fresh_pair_reaches_ready(tmp_path):
 
 
 def test_f10_failed_sample_row_is_never_used_as_baseline(tmp_path):
-    """顾问复核 F1：失败行（key_changed，带 _mismatch 载荷）不得被选作稳定性基线。
+    """顾问复核 F1 + 2026-10-28 生产修复：失败行不得被选作基线，也不得毒化基线。
 
-    基线选取按 result_state=="matched" 硬过滤；失败行之后直接采样必须返回
-    not_found（确认数 0），而不是把失败行当基线走新路径。
+    基线选取按 result_state=="matched" 过滤；一次失配落的 key_changed 只打断
+    连续计数（confirmed 归零），但**不能顶掉**最近一条 matched 基线 —— 否则
+    之后每次重试都只能 stability_baseline_missing，绑定永久卡死（数模生产现象）。
     """
     db = DatabaseManager(tmp_path / "db.sqlite")
     db.init_database()
@@ -1333,8 +1553,78 @@ def test_f10_failed_sample_row_is_never_used_as_baseline(tmp_path):
     after_failure = service.observe_stability_sample(
         "VPI-T2-D2", "tdc", rows[:50], 60, aggregate=True, match_rule=rule
     )
-    assert after_failure["state"] == "not_found"
-    assert after_failure["stability"] == {"confirmed": 0, "required": 2, "ready": False}
+    # 回到原始上游后可以重新比对：基线仍是首次那条 matched 观测，不是失败行。
+    assert after_failure["state"] == "matched"
+    # 失败行仍打断连续计数：这条 matched 只算 1/2，必须再核验一次才 ready。
+    assert after_failure["stability"] == {"confirmed": 1, "required": 2, "ready": False}
+    baseline = db.list_mapping_observations("VPI-T2-D2", 3)[-1]
+    assert baseline["result_state"] == "matched"
+    assert after_failure["candidates"] == json.loads(baseline["candidate_summary_json"])
+
+
+def test_f10_empty_sample_is_inconclusive_and_writes_no_observation(tmp_path):
+    """空样本（如科室收窄后第 1 页无行）不能判稳定，且不得落观测毒化基线。
+
+    空集是任何集合的子集，子集判定会空真通过 ⇒ 假 ready。这里明确返回
+    inconclusive，observationId 为 None（不写库）。
+    """
+    db = DatabaseManager(tmp_path / "db.sqlite")
+    db.init_database()
+    service = MappingDiscoveryService(db)
+    rows = [{"incident": f"SOR-{i:04d}", "approvalStatus": "审批中"} for i in range(60)]
+    rule = _sor_rule()
+    service.observe("VPI-T2-D2", "tdc", rows, aggregate=True, match_rule=rule, upstream_total=60)
+    before = len(db.list_mapping_observations("VPI-T2-D2", 100))
+
+    result = service.observe_stability_sample(
+        "VPI-T2-D2", "tdc", [], 60, aggregate=True, match_rule=rule,
+        sample_empty_reason="stability_sample_inconclusive",
+    )
+
+    assert result["observationId"] is None
+    assert result["state"] == "not_found"
+    assert result["reason"] == "stability_sample_inconclusive"
+    assert result["mismatch"] == {"reason": "inconclusive", "expected": None, "actual": 0}
+    assert result["stability"] == {"confirmed": 0, "required": 2, "ready": False}
+    assert len(db.list_mapping_observations("VPI-T2-D2", 100)) == before
+
+
+def test_f10_stability_baseline_requires_matching_config_signature(tmp_path):
+    """换绑/改规则后不得回退到旧配置的 matched 基线（否则 1 次样本就能 2/2）。
+
+    只接受「同签名」或「旧版无签名」的基线；找不到就明确 baseline_missing，
+    强制重新取证——这正是「连续两次一致证据」不变量的要求。
+    """
+    db = DatabaseManager(tmp_path / "db.sqlite")
+    db.init_database()
+    service = MappingDiscoveryService(db)
+    rows = [{"incident": f"SOR-{i:04d}", "approvalStatus": "审批中"} for i in range(60)]
+    rule_a = _sor_rule()
+    service.observe("VPI-T2-D2", "tdc", rows, aggregate=True, match_rule=rule_a, upstream_total=60)
+
+    # 规则变化（不同 config_signature）：即便样本与旧基线完全一致，也不得判稳定。
+    # 旧配置基线只用于「否定性」比对，结果必须是 key_changed 而不是 matched。
+    rule_b = {"reportType": "sor", "aggregate": True, "carTypeProject": "F620S"}
+    result = service.observe_stability_sample(
+        "VPI-T2-D2", "tdc", rows[:50], 60, aggregate=True, match_rule=rule_b
+    )
+    assert result["state"] == "key_changed"
+    assert result["mismatch"]["reason"] == "baseline_signature_mismatch"
+    assert result["stability"] == {"confirmed": 0, "required": 2, "ready": False}
+
+    # 同一规则下仍可正常比对（严格匹配只挡旧配置，不影响本配置的既有基线）。
+    # 失败采样会打断连续计数，所以要两条一致证据才能回到 ready（I4）。
+    same_rule = service.observe_stability_sample(
+        "VPI-T2-D2", "tdc", rows[:50], 60, aggregate=True, match_rule=rule_a
+    )
+    assert same_rule["state"] == "matched"
+    assert same_rule["stability"] == {"confirmed": 1, "required": 2, "ready": False}
+
+    recovered = service.observe_stability_sample(
+        "VPI-T2-D2", "tdc", rows[:50], 60, aggregate=True, match_rule=rule_a
+    )
+    assert recovered["state"] == "matched"
+    assert recovered["stability"] == {"confirmed": 2, "required": 2, "ready": True}
 
 
 @pytest.mark.parametrize(

@@ -1,0 +1,305 @@
+# -*- coding: utf-8 -*-
+"""End-to-end check of dist/v2-test (run tools/build_v2_test_install.py first).
+
+    python tools/e2e_v2_test_install.py
+
+Drives the real VSE-Toolbox.exe and the real app, without opening a window
+(VSE_BOOT_NO_WINDOW=1): first install → second instance → update 2.3.1 →
+broken 2.3.2 rolls back → killing the launcher leaves no orphan → manual rollback.
+Wipes app/, state/ and data/ of the test install first.
+
+C7（DSH-V2-03）：本工具不再读 ``instance.json.bootToken``（该字段已按契约 §5.9 删除），
+改为以 ``VSE_BOOT_HANDOFF=1`` 启动启动器、读 ``state/boot-handoff.json`` 的一次性票据
+换取本机会话（契约 §5.7 / §8.4）。票据不进 URL、不进 instance.json、不进日志。
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+OUT = REPO / "dist" / "v2-test"
+INSTALL = OUT / "VSE-Toolbox"
+EXE = INSTALL / "VSE-Toolbox.exe"
+#: K6：只有显式打开时启动器才写一次性 handoff 文件（默认零残留）。
+ENV = dict(os.environ, VSE_BOOT_NO_WINDOW="1", VSE_BOOT_HANDOFF="1")
+ENV.pop("VSE_INSTALL_ROOT", None)
+ENV.pop("VSE_DATA_ROOT", None)
+#: 启动器写入的一次性票据文件（10 秒 TTL，ttl+5 秒后自删）。
+HANDOFF = INSTALL / "state" / "boot-handoff.json"
+
+results: list[tuple[str, bool, str]] = []
+
+
+def check(name: str, ok: bool, detail: str = "") -> None:
+    results.append((name, ok, detail))
+    print(f"[{'PASS' if ok else 'FAIL'}] {name} {detail}")
+
+
+def cli(*args: str) -> str:
+    done = subprocess.run([str(EXE), *args], env=ENV, capture_output=True, timeout=60)
+    return (done.stdout or b"").decode("utf-8", "replace")
+
+
+def status() -> dict:
+    return json.loads((INSTALL / "state" / "boot.json").read_text(encoding="utf-8"))
+
+
+def pid_alive(pid: int) -> bool:
+    out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True).stdout
+    return str(pid) in out
+
+
+def start(timeout: float = 120.0) -> tuple[subprocess.Popen, dict]:
+    instance = INSTALL / "state" / "instance.json"
+    instance.unlink(missing_ok=True)
+    proc = subprocess.Popen([str(EXE)], env=ENV)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            raise RuntimeError(f"launcher exited with {proc.returncode}")
+        if instance.is_file():
+            try:
+                return proc, json.loads(instance.read_text(encoding="utf-8"))
+            except ValueError:
+                pass
+        time.sleep(0.5)
+    proc.kill()
+    raise RuntimeError("launcher did not become ready")
+
+
+import http.cookiejar
+
+_OPENER = None
+
+
+def _opener():
+    """带 Cookie 罐的 opener（C7：写接口需要启动交换票据换来的会话 Cookie）。"""
+    global _OPENER
+    if _OPENER is None:
+        _OPENER = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())
+        )
+    return _OPENER
+
+
+def handoff_ticket(instance: dict, timeout: float = 15.0) -> str:
+    """读 ``state/boot-handoff.json`` 的一次性票据（K6，opt-in）。
+
+    ``epoch`` 必须与 ``instance.json`` 一致：否则那张票据属于上一个 app 子进程
+    （切换项目/重启期间），不能拿来换当前进程的会话。
+    """
+    expected_epoch = instance.get("epoch")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            payload = json.loads(HANDOFF.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            payload = None
+        if isinstance(payload, dict):
+            ticket = payload.get("ticket")
+            if isinstance(ticket, str) and ticket and payload.get("epoch") == expected_epoch:
+                return ticket
+        time.sleep(0.2)
+    raise RuntimeError(
+        "state/boot-handoff.json 未出现或 epoch 不匹配："
+        "请用支持 C7 新契约的启动器（VSE_BOOT_HANDOFF=1）重建 dist/v2-test"
+    )
+
+
+def boot_exchange(instance: dict) -> None:
+    """用启动器写入的一次性 handoff 票据换本机会话（契约 §5.7 / §8.4）。
+
+    票据单次 + ≤10 秒，须在启动后尽快交换；绝不从 ``instance.json`` 或 URL 取票。
+    """
+    if "bootToken" in instance:
+        raise RuntimeError("instance.json 仍含 bootToken——启动器版本过旧（新契约已删除该字段）")
+    token = handoff_ticket(instance)
+    base = instance["url"].split("?")[0]
+    req = urllib.request.Request(
+        base + "api/security/boot-exchange",
+        data=json.dumps({"token": token}).encode("utf-8"),
+        method="POST",
+        headers={"Content-Type": "application/json", "Accept": "application/json",
+                 "Origin": base.rstrip("/")},
+    )
+    with _opener().open(req, timeout=10) as response:
+        if response.status != 200:
+            raise RuntimeError(f"boot-exchange 失败：HTTP {response.status}")
+
+
+def get(url: str) -> dict:
+    with _opener().open(url, timeout=10) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def post(url: str, body: dict | None = None) -> dict:
+    data = json.dumps(body or {}).encode("utf-8")
+    origin = url.split("/api/")[0] if "/api/" in url else url.rstrip("/")
+    req = urllib.request.Request(url, data=data, method="POST", headers={
+        "Content-Type": "application/json", "Accept": "application/json",
+        "Origin": origin,
+    })
+    with _opener().open(req, timeout=30) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def wait_for_version(info: dict, version: str, timeout: float = 120.0) -> dict:
+    """After an in-app restart: same port, new version (instance.json is rewritten)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            current = json.loads((INSTALL / "state" / "instance.json").read_text(encoding="utf-8"))
+            if current.get("version") == version and version in served_version(current):
+                return current
+        except (OSError, ValueError, urllib.error.URLError):
+            pass
+        time.sleep(1)
+    raise RuntimeError(f"did not restart into {version}")
+
+
+def wait_for_child(old_pid: int, timeout: float = 120.0) -> dict:
+    """After a project switch: a new app child is serving (same version, same port)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            current = json.loads((INSTALL / "state" / "instance.json").read_text(encoding="utf-8"))
+            if int(current.get("pid") or 0) != old_pid and served_version(current):
+                return current
+        except (OSError, ValueError, urllib.error.URLError):
+            pass
+        time.sleep(1)
+    raise RuntimeError("app did not restart after the project switch")
+
+
+def served_version(info: dict) -> str:
+    payload = get(info["url"] + "api/version")
+    data = payload.get("data", payload)
+    return str(data.get("version") or data.get("appVersion") or data)
+
+
+def stop(proc: subprocess.Popen, info: dict) -> None:
+    proc.kill()  # 模拟在任务管理器里结束 VSE-Toolbox.exe
+    proc.wait(timeout=10)
+    time.sleep(2)
+    check("结束启动器后 app 子进程同时退出（无孤儿进程）", not pid_alive(int(info["pid"])), f"child pid {info['pid']}")
+
+
+def main() -> int:
+    if not EXE.is_file():
+        print("先运行 python tools/build_v2_test_install.py")
+        return 2
+    for name in ("app", "state", "data", "projects"):
+        shutil.rmtree(INSTALL / name, ignore_errors=True)
+
+    # 1. 首次安装
+    proc, info = start()
+    boot_exchange(info)
+    version = served_version(info)
+    check("首次安装并启动 2.3.0", "2.3.0" in version, version)
+    home = urllib.request.urlopen(info["url"], timeout=10).status
+    check("首页可访问", home == 200)
+    check("数据目录在安装根下", (INSTALL / "data" / "vse_toolbox.db").is_file())
+    nav = [e["title"] for e in get(info["url"] + "api/host/manifest")["data"]["nav"] if not e.get("expert")]
+    check("新界面：日常导航只有 今天/项目/报告/工具/设置", nav == ["今天", "项目", "报告", "工具", "设置"], " / ".join(nav))
+
+    # 1b. 多项目：新建项目会切换并重启；新项目有自己的数据文件夹；再切回主项目
+    old_pid = int(info["pid"])
+    post(info["url"] + "api/p/workbench/projects", {"name": "", "vehicle": "F720", "departments": ["车身科"]})
+    info = wait_for_child(old_pid)
+    boot_exchange(info)
+    projects = get(info["url"] + "api/p/workbench/projects")["data"]
+    check("新建项目后自动切换并重启到新项目", projects["active"] == "p2" and [p["name"] for p in projects["projects"]] == ["默认项目", "F720"],
+          json.dumps(projects, ensure_ascii=False)[:200])
+    check("新项目有独立的数据库", (INSTALL / "projects" / "p2" / "data" / "vse_toolbox.db").is_file())
+    old_pid = int(info["pid"])
+    post(info["url"] + "api/p/workbench/projects/main/switch")
+    info = wait_for_child(old_pid)
+    boot_exchange(info)
+    check("切回主项目", get(info["url"] + "api/p/workbench/projects")["data"]["active"] == "main")
+
+    # 2. 第二次启动：不再起第二份
+    second = subprocess.run([str(EXE)], env=ENV, timeout=30)
+    check("第二次启动直接返回（单实例）", second.returncode == 0 and len(list((INSTALL / "app").iterdir())) == 1)
+
+    # 3. 在设置页里发现并安装 2.3.1，一键重启生效（不关程序）
+    received = INSTALL / "vse-app-2.3.1.vsepkg"  # 模拟"收到的更新包放在了被监视的文件夹里"
+    shutil.copy2(OUT / "updates" / "vse-app-2.3.1.vsepkg", received)
+    page = get(info["url"] + "api/p/settings/app-updates")["data"]
+    check("设置页显示受启动器管理、当前 2.3.0", page.get("managed") is True and page.get("current") == "2.3.0")
+    check("设置页发现新版本 2.3.1（签名有效）", [a["version"] for a in page.get("available", [])] == ["2.3.1"])
+    post(info["url"] + "api/p/settings/app-updates/install", {"file": received.name})
+    post(info["url"] + "api/p/settings/app-updates/restart")
+    restarted = wait_for_version(info, "2.3.1")
+    state = status()["app"]
+    check("页面内安装并重启后变成 2.3.1，端口不变", restarted["port"] == info["port"] and state["current"] == "2.3.1" and state["previous"] == "2.3.0")
+    received.unlink()
+    info = restarted
+    boot_exchange(info)
+
+    # 3b. 用命令（托盘「退出」走同一条路）正常退出
+    old_child = int(info["pid"])
+    cli("quit")
+    try:
+        code = proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        code = None
+    time.sleep(1)
+    check("退出请求：启动器与 app 都正常退出", code == 0 and not pid_alive(old_child), f"exit={code}")
+
+    # 4. 坏更新 2.3.2：自动回滚
+    print(cli("stage", str(OUT / "updates" / "vse-app-2.3.2.vsepkg")).strip())
+    proc, info = start(timeout=180)
+    boot_exchange(info)
+    version = served_version(info)
+    boot = status()
+    kinds = [e["kind"] for e in boot["events"][:3]]
+    check("坏版本 2.3.2 自动回滚到 2.3.1", "2.3.1" in version and boot["app"]["current"] == "2.3.1" and "rolledBack" in kinds, f"{version} {kinds}")
+    check("坏版本目录已清理", not (INSTALL / "app" / "2.3.2").exists())
+    check("失败原因保留在日志里", "demo: this build fails at start" in (INSTALL / "state" / "app-last-run.log").read_text(encoding="utf-8", errors="replace"))
+    stop(proc, info)
+
+    # 5. 手动回滚
+    print(cli("rollback").strip())
+    proc, info = start()
+    version = served_version(info)
+    check("手动回滚到 2.3.0", "2.3.0" in version, version)
+    stop(proc, info)
+
+    # 5b. 回滚后在页面里再次升级到 2.3.1（上一版本目录可以被覆盖）
+    proc, info = start()
+    received = INSTALL / "vse-app-2.3.1.vsepkg"
+    shutil.copy2(OUT / "updates" / "vse-app-2.3.1.vsepkg", received)
+    post(info["url"] + "api/p/settings/app-updates/install", {"file": received.name})
+    post(info["url"] + "api/p/settings/app-updates/restart")
+    info = wait_for_version(info, "2.3.1")
+    check("回滚后再次升级到 2.3.1", status()["app"]["current"] == "2.3.1")
+    received.unlink()
+    stop(proc, info)
+
+    # 6. 篡改的包被拒绝
+    tampered = OUT / "tampered.vsepkg"
+    data = bytearray((OUT / "updates" / "vse-app-2.3.1.vsepkg").read_bytes())
+    data[len(data) // 2] ^= 0xFF
+    tampered.write_bytes(bytes(data))
+    done = subprocess.run([str(EXE), "stage", str(tampered)], env=ENV, capture_output=True, timeout=60)
+    log = (INSTALL / "state" / "launcher.log").read_text(encoding="utf-8", errors="replace")
+    reason = [line for line in log.splitlines() if "tampered" in line][-1:]
+    check("篡改过的更新包被拒绝（不弹错误框、不卡住）", done.returncode == 1 and bool(reason), reason[0][-60:] if reason else "")
+    tampered.unlink()
+
+    failed = [r for r in results if not r[1]]
+    print(f"\n{len(results) - len(failed)}/{len(results)} 通过")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

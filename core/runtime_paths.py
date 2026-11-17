@@ -15,7 +15,13 @@ def app_root() -> Path:
     In source runs this is the repository root. In a PyInstaller single-file
     build this is the directory containing the generated executable, not the
     temporary extraction directory.
+
+    Under the v2 launcher the app code lives in ``app/<version>/`` and the data
+    root is passed explicitly in ``VSE_DATA_ROOT`` (see vse_boot/supervisor.py).
     """
+    explicit = os.environ.get("VSE_DATA_ROOT", "").strip()
+    if explicit:
+        return Path(explicit)
     if getattr(sys, "frozen", False):
         exe_dir = Path(sys.executable).resolve().parent
         candidates = [exe_dir]

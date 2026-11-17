@@ -128,6 +128,8 @@ function trimmed(values, name) {
  */
 export function buildPayload(modeId, values, connection, { operation = "query", includeXml = false } = {}) {
   const mode = MODES[modeId];
+  // 「导出合并结果」与「导出」「导出列表列」同为导出类操作：带 file_name、不带 preview_source/分页参数。
+  const isExportLike = operation === "export" || operation === "export_merged" || operation === "export_list";
   const payload = {
     base_url: trimmed(connection, "base_url"),
     headers: parseHeaders(connection.headers),
@@ -140,17 +142,21 @@ export function buildPayload(modeId, values, connection, { operation = "query", 
         ? value.split(",").map((item) => item.trim()).filter(Boolean)
         : value;
     });
-    const numberNames = operation === "export" ? (mode.exportNumberNames || []) : mode.numberNames;
+    const numberNames = isExportLike ? (mode.exportNumberNames || []) : mode.numberNames;
     numberNames.forEach((name) => {
       payload[name] = Number(trimmed(values, name) || 0);
     });
-    if (mode.xmlCapture && includeXml && operation !== "export") payload.include_xml = true;
+    if (mode.xmlCapture && includeXml && !isExportLike) payload.include_xml = true;
     if (mode.preview) payload.preview = true;
     return payload;
   }
   mode.filterNames.forEach((name) => {
     const value = trimmed(values, name);
-    if (value) payload.filters[name] = value;
+    if (!value) return;
+    // 流水单号（documentNo）不是 TDC 查询参数：服务端从请求体顶层读取它，然后全量
+    // 翻页做本地精确匹配。放进 filters 会被服务端按"不支持的筛选字段"拒绝。
+    if (name === "document_no") payload.document_no = value;
+    else payload.filters[name] = value;
   });
   if (modeId === "tdc-sor" && trimmed(values, "car_type_project_id")) {
     payload.filters.car_type_project_id = trimmed(values, "car_type_project_id");
@@ -162,11 +168,11 @@ export function buildPayload(modeId, values, connection, { operation = "query", 
     const value = Number(trimmed(values, name) || 0);
     if (value > 0) payload[name] = value;
   });
-  if (operation === "export") {
+  if (isExportLike) {
     const fileName = trimmed(values, "file_name") || mode.defaultFileName;
     if (fileName) payload.file_name = fileName;
   }
-  if (mode.previewSource && operation !== "export") {
+  if (mode.previewSource && !isExportLike) {
     payload.preview_source = trimmed(values, "preview_source") || "list_endpoint";
   }
   return payload;
@@ -222,6 +228,11 @@ export function validateForm(modeId, values, connection, operation = "query") {
   if (mode.system === "tdc" && operation === "export") {
     const fileName = trimmed(values, "file_name") || mode.defaultFileName;
     if (!/^[^<>:"/\\|?*\x00-\x1f]+\.xlsx$/i.test(fileName)) errors.file_name = "文件名须以 .xlsx 结尾且不含路径字符";
+  }
+  if (operation === "export_merged") {
+    if (!trimmed(values, "document_no")) {
+      errors.document_no = "请填写至少一个流水单号（多个用空格、逗号或换行分隔）";
+    }
   }
   return errors;
 }
@@ -494,6 +505,46 @@ export function resultMetaText(modeId, data) {
 export function resultRowCount(data) {
   if (data && data.count != null) return Number(data.count) || 0;
   return data && Array.isArray(data.rows) ? data.rows.length : 0;
+}
+
+/**
+ * A′ 路线（流水单号本地精确匹配）的覆盖度说明，无 serialMatch 时返回 null。
+ *
+ * complete=false 的语义是"抓取不完整，无法判定"，不是"未找到"——两者绝不能
+ * 用同一句话，否则用户会把抓取失败当成"这个流水单号不存在"。
+ */
+export function serialMatchNotice(data) {
+  const match = data && data.serialMatch;
+  if (!match || typeof match !== "object") return null;
+  const coverage = `已扫描 ${match.scannedPages ?? "-"} 页 / ${match.scanned ?? "-"} 行`;
+  if (match.complete === false && match.reason === "range_too_large") {
+    // 范围预检（2026-10-13 生产反馈）：上游声明的总行数已超过本次抓取上限时，
+    // 不必空跑 max_pages 页再报"抓取不完整"——直接给出可操作结论。
+    return `当前条件命中 ${match.total ?? "-"} 行，超过单次上限 ${match.limit ?? "-"} 行：请补充车型/日期等条件后重试；只要这些流水单号请用「导出合并结果（CSV）」（走官方报表，含全部官方列）`;
+  }
+  if (match.complete === false) {
+    const reason = match.reason && match.reason !== "crawl_incomplete" ? `（原因：${match.reason}）` : "";
+    return `抓取不完整，无法判定流水单号，请重试（${coverage}）${reason}`;
+  }
+  if (Number(match.matched) === 0) {
+    return `未找到该流水单号（${coverage}，覆盖完整）`;
+  }
+  return null;
+}
+
+// ── 查询模式守卫（与 plugins/deliverables 逐字同源，不跨插件 import）──────
+// 单号 + 官方 Excel 预览：上游查询接口不接受流水单号，后端必然拒绝
+// （SerialRequiresListSource）。前端先拦一次，并给出可执行的替代路径。
+
+export const SERIAL_REQUIRES_LIST_NOTICE =
+  "填了流水单号时，查询预览只能用「快速查询（list 接口）」：请把查询模式切回快速查询；"
+  + "需要官方 47 列全量请到交付物工作台使用「导出合并结果」。";
+
+export function serialSourceConflict(values, mode) {
+  if (!mode || !mode.previewSource) return false;
+  const hasSerial = Boolean(String((values && values.document_no) || "").trim());
+  if (!hasSerial) return false;
+  return String((values && values.preview_source) || "list_endpoint") === "official_export";
 }
 
 export function isModeId(value) {

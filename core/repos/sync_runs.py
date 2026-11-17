@@ -500,6 +500,23 @@ class SyncRunRepo:
 
             if already_processed:
                 # 幂等跳过：不更新业务行，audit result=skipped，run_state=success。
+                # 但「skipped = 已抓取上游且内容未变」仍是一次成功同步：必须刷新
+                # last_success_at / sync_state，否则界面「上次同步」永远停在首次
+                # 内容变更那一刻，调度器 _is_fresh 也会永远认为数据过期而每轮重抓。
+                # 安全前提：去重键 aggregate_last_content_version / processed_versions
+                # 都由本次上游抓取派生（connector.collect 已成功返回），不存在
+                # 「没抓上游就跳过」的路径；若将来出现该路径，必须改用 last_checked_at
+                # 新列，绝不在本分支刷新。
+                conn.execute(
+                    f"""
+                    UPDATE project_status_update_bindings
+                    SET last_success_at = ?,
+                        sync_state = ?,
+                        updated_at = {_LOCAL_NOW_SQL}
+                    WHERE id = ?
+                    """,
+                    (now, "success", binding_id),
+                )
                 self._insert_audit_row(
                     conn,
                     deliverable_id,

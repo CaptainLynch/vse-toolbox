@@ -1,0 +1,105 @@
+{
+  "enable_aras_d3_v2": {
+    "configDigest": "cfgd1:79424119948d4a5e90b9fa9cd6239df40ebbd2e23baa7454eda497af6c34952d",
+    "createdAt": "<TIMESTAMP>",
+    "credentialAvailable": true,
+    "deliverableId": "VPI-T2-D3",
+    "enabled": true,
+    "externalKey": null,
+    "fieldAuthority": {
+      "actualDate": "manual",
+      "note": "automatic",
+      "owner": "manual",
+      "plannedDate": "manual",
+      "progress": "manual",
+      "status": "manual"
+    },
+    "intervalMinutes": 60,
+    "lastAttemptAt": null,
+    "lastErrorMessage": null,
+    "lastErrorType": null,
+    "lastSuccessAt": null,
+    "latestUpdate": null,
+    "mapping": {
+      "note": "_subject"
+    },
+    "matchRule": {
+      "aggregate": true,
+      "bindingMode": "record_set",
+      "contractVersion": "2",
+      "projectCode": "F610S",
+      "reportType": "ewo"
+    },
+    "mode": "automatic",
+    "sourceType": "aras",
+    "syncState": "idle",
+    "updatedAt": "<TIMESTAMP>"
+  },
+  "enable_tdc_d5": {
+    "configDigest": "cfgd1:3cf86cd5c905293eb39dd0a2dd0d42699114869183614fc0602505373a383fa4",
+    "createdAt": "<TIMESTAMP>",
+    "credentialAvailable": true,
+    "deliverableId": "VPI-T2-D5",
+    "enabled": true,
+    "externalKey": "FM-SYNTH-1",
+    "fieldAuthority": {
+      "actualDate": "manual",
+      "note": "automatic",
+      "owner": "automatic",
+      "plannedDate": "manual",
+      "progress": "manual",
+      "status": "manual"
+    },
+    "intervalMinutes": 30,
+    "lastAttemptAt": null,
+    "lastErrorMessage": null,
+    "lastErrorType": null,
+    "lastSuccessAt": null,
+    "latestUpdate": null,
+    "mapping": {
+      "note": "approvalComment",
+      "owner": "currentApprover"
+    },
+    "matchRule": {
+      "incident": "FM-SYNTH-1",
+      "reportType": "data_model"
+    },
+    "mode": "hybrid",
+    "sourceType": "tdc",
+    "syncState": "idle",
+    "updatedAt": "<TIMESTAMP>"
+  },
+  "modify_settings_d5": {
+    "configDigest": "cfgd1:29c4d7e1d0a7f8d537f4157091edb23ff60b05c4096bb4b144bcf7c40a8d7926",
+    "createdAt": "<TIMESTAMP>",
+    "credentialAvailable": true,
+    "deliverableId": "VPI-T2-D5",
+    "enabled": true,
+    "externalKey": "FM-SYNTH-1",
+    "fieldAuthority": {
+      "actualDate": "manual",
+      "note": "manual",
+      "owner": "automatic",
+      "plannedDate": "manual",
+      "progress": "manual",
+      "status": "manual"
+    },
+    "intervalMinutes": 15,
+    "lastAttemptAt": null,
+    "lastErrorMessage": null,
+    "lastErrorType": null,
+    "lastSuccessAt": null,
+    "latestUpdate": null,
+    "mapping": {
+      "owner": "currentApprover"
+    },
+    "matchRule": {
+      "incident": "FM-SYNTH-1",
+      "reportType": "data_model"
+    },
+    "mode": "hybrid",
+    "sourceType": "tdc",
+    "syncState": "idle",
+    "updatedAt": "<TIMESTAMP>"
+  }
+}

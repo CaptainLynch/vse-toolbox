@@ -127,7 +127,7 @@ def test_candidate_key_no_actual_values() -> None:
 # 3. empty filters rejected
 def test_empty_filters_rejected() -> None:
     empty_filters = SimpleNamespace(
-        serial_number=None,
+        instance_no=None,
         applicant=None,
         department=None,
         section=None,
@@ -350,7 +350,7 @@ def test_field_not_present_in_sample_rejected() -> None:
 # 22. filter field labels
 def test_filter_field_labels() -> None:
     filters = SimpleNamespace(
-        serial_number="WF-12345",
+        instance_no="WF-12345",
         project_model="MODEL-X",
         applicant=None,
         department=None,

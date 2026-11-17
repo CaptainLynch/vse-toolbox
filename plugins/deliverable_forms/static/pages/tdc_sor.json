@@ -1,7 +1,7 @@
 {
   "renderer": "analysis",
   "title": "SOR 定点流程",
-  "description": "数据来自最近一次自动归档快照；逾期口径：审批中且申请日期滞留超过 7 天。",
+  "description": "数据来自最近一次自动归档；逾期口径：审批中且申请日期滞留超过 7 天。",
   "source": "forms/tdc_sor/rows",
   "filters": [
     {"key": "流水单号", "label": "流水单号", "type": "text"},

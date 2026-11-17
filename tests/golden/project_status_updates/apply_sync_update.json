@@ -1,0 +1,54 @@
+{
+  "ambiguous": {
+    "applied_fields": [],
+    "external_version": "ver-003",
+    "final_state": "needs_attention",
+    "message": "match_state=ambiguous; no business update applied",
+    "run_id": 3,
+    "skipped_fields": {},
+    "updated_at": null
+  },
+  "external_key_mismatch": {
+    "applied_fields": [],
+    "external_version": "ver-004",
+    "final_state": "needs_attention",
+    "message": "external_key mismatch",
+    "run_id": 4,
+    "skipped_fields": {},
+    "updated_at": null
+  },
+  "matched_success": {
+    "applied_fields": [
+      "note",
+      "owner"
+    ],
+    "external_version": "ver-001",
+    "final_state": "success",
+    "message": "sync completed",
+    "run_id": 1,
+    "skipped_fields": {},
+    "updated_at": "<TIMESTAMP>"
+  },
+  "not_found": {
+    "applied_fields": [],
+    "external_version": "ver-002",
+    "final_state": "needs_attention",
+    "message": "match_state=not_found; no business update applied",
+    "run_id": 2,
+    "skipped_fields": {},
+    "updated_at": null
+  },
+  "partial_locked_field": {
+    "applied_fields": [
+      "note"
+    ],
+    "external_version": "ver-005",
+    "final_state": "partial",
+    "message": "sync completed",
+    "run_id": 5,
+    "skipped_fields": {
+      "owner": "field is manually locked"
+    },
+    "updated_at": "<TIMESTAMP>"
+  }
+}

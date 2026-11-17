@@ -15,7 +15,6 @@ from typing import Any, Callable, Mapping, Sequence
 
 from core.archive_store import ArchiveArtifact, ArchiveStore
 from core.credential_provider import ResolvedCredential
-from core.report_contracts import report_contracts
 from core.redaction import redact_sensitive_text
 from services.aras_auth import ArasECMAuthClient
 from services.aras_crawler import (
@@ -38,9 +37,11 @@ from services.tdc_crawler import (
     TDCDataModelFilters,
     TDCSORFilters,
 )
-from services.xlsx_preview import (
-    XLSXPreviewError,
-    read_xlsx_preview,
+from services.tdc_official_rows import (
+    OfficialWorkbookContractError,
+    OfficialWorkbookTruncated,
+    OfficialWorkbookUnreadable,
+    read_official_tdc_rows,
 )
 
 _MAX_TEXT = 512
@@ -76,6 +77,8 @@ _TDC_DATA_MODEL_KEYS = {
     # syncScope/watchlist：关注清单同步范围（services/data_model_watchlist.py），不发给 TDC。
     "syncScope",
     "watchlist",
+    # documentNo：流水单号（向导规则持久化用）。它不是 TDC 查询参数，不发给上游。
+    "documentNo",
     "incident",
     "applicant",
     "department",
@@ -175,8 +178,21 @@ def _string_list(value: object) -> tuple[str, ...]:
 def _checked_filters(
     value: Mapping[str, object],
     allowed: set[str],
+    *,
+    narrow_keys: frozenset[str] = frozenset(),
 ) -> Mapping[str, object]:
+    """归档 filters 白名单校验。
+
+    ``narrow_keys`` 是「只做本地收窄、不改变上游查询」的键（数模 ``sections``）。
+    归档保存的是上游**原始导出**，没有本地收窄这一步；把这类键静默忽略会让用户
+    以为归档也是按科室收窄的，因此显式拒绝并给可执行文案。
+    """
     unknown = set(value) - allowed
+    if unknown & narrow_keys:
+        raise ValueError(
+            "归档保存的是 TDC 上游原始导出，不支持「科室范围（sections）」；"
+            "如需按归集科室查看，请在看板/交付物明细里按科室筛选"
+        )
     if unknown:
         raise ValueError("archive filters contain unsupported fields")
     return value
@@ -287,37 +303,30 @@ def _official_workbook_rows(path: Path, report_type: str) -> tuple[dict[str, obj
     readable XLSX; callers may then use the legacy list fallback.  A readable
     official workbook with a wrong header is a contract error and must not be
     silently replaced with list data.
+
+    读取语义单一来源于 `services.tdc_official_rows`（与「导出合并结果」共用），
+    本函数只做归档侧的错误映射：不可读 → ``None``（触发列表回退），
+    截断/契约不符 → 既有异常类型（runner 的闭集消息表不变）。
     """
     try:
-        preview = read_xlsx_preview(path, max_rows=_TDC_MAX_RECORDS + 1)
-    except XLSXPreviewError:
-        return None
-    if preview.truncated:
-        raise _WorkbookPreviewTruncatedError(
-            "official workbook preview truncated"
+        return read_official_tdc_rows(path, report_type, max_rows=_TDC_MAX_RECORDS + 1)
+    except OfficialWorkbookUnreadable as exc:
+        # 回退行为不变（None → 列表回退），但原因要留下：终端加密容器与"文件损坏"
+        # 的处置完全不同，吞掉 reason 就只能靠猜。
+        reason = str(getattr(exc, "reason", "") or "")
+        fields: dict[str, Any] = {"report_type": report_type}
+        if reason:
+            fields["reason"] = reason
+        emit(
+            "tdc_official_rows_unavailable",
+            fields,
+            name="scheduled_archive_connector._official_workbook_rows",
         )
-    if not preview.rows:
-        return ()
-    raw_header = preview.rows[0]
-    headers = [str(value or "").strip() for value in raw_header]
-    if report_type in {"data_model", "sor"}:
-        contract_key = f"tdc_{report_type}"
-        expected = [
-            str(value or "").strip()
-            for value in report_contracts()[contract_key]["headerRows"][0]
-        ]
-        if headers[: len(expected)] != expected or any(headers[len(expected) :]):
-            raise ValueError(f"official TDC {report_type} export header does not match the approved contract")
-        headers = expected
-    else:
-        headers = [value or f"column_{index + 1}" for index, value in enumerate(headers)]
-    result: list[dict[str, object]] = []
-    for row in preview.rows[1:]:
-        if not row or not any(value not in (None, "") for value in row):
-            continue
-        values = list(row) + [None] * max(0, len(headers) - len(row))
-        result.append({headers[index]: values[index] for index in range(len(headers))})
-    return tuple(result)
+        return None
+    except OfficialWorkbookTruncated as exc:
+        raise _WorkbookPreviewTruncatedError(str(exc)) from exc
+    except OfficialWorkbookContractError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 class TDCArchiveConnector:
@@ -475,9 +484,14 @@ class TDCArchiveConnector:
 
     @staticmethod
     def _data_model_filters(value: Mapping[str, object]) -> TDCDataModelFilters:
-        rule = _checked_filters(value, _TDC_DATA_MODEL_KEYS)
+        rule = _checked_filters(
+            value,
+            _TDC_DATA_MODEL_KEYS,
+            narrow_keys=frozenset({"sections"}),
+        )
+        # documentNo（流水单号）不是 TDC 查询参数：只读取这里列出的键，它自然被忽略。
         return TDCDataModelFilters(
-            serial_number=_text(rule.get("incident")),
+            instance_no=_text(rule.get("incident")),
             applicant=_text(rule.get("applicant")),
             department=_text(rule.get("department")),
             section=_text(rule.get("section")),

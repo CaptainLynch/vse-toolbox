@@ -85,8 +85,10 @@ from core.db_common import (  # noqa: F401
     SyncLeaseLostError,
     TABLE_DEFINITIONS,
 )
+from core.project_status_config_audit import ensure_binding_config_audit_schema
 from core.repos.archive_jobs import ArchiveRepo
 from core.repos.crawl_tasks import CrawlTaskRepo
+from core.repos.data_model_vehicle_links import DataModelVehicleLinkRepo
 from core.repos.form_snapshots import FormSnapshotRepo
 from core.repos.plugin_schema import PLUGIN_SCHEMA_VERSIONS_DDL, PluginSchemaRepo
 from core.repos.project_status import ProjectStatusRepo
@@ -95,6 +97,7 @@ from core.repos.sync_runs import SyncRunRepo
 
 class DatabaseManager(
     ProjectStatusRepo, FormSnapshotRepo, SyncRunRepo, ArchiveRepo, CrawlTaskRepo, PluginSchemaRepo,
+    DataModelVehicleLinkRepo,
 ):
     """
     SQLite 数据库管理器
@@ -165,6 +168,10 @@ class DatabaseManager(
                 self._seed_archive_jobs(conn)
 
                 conn.commit()
+
+            # B′ 绑定配置审计表：在上面的初始化事务结束后单独建表（自带 BEGIN IMMEDIATE/COMMIT）。
+            with self.get_connection() as conn:
+                ensure_binding_config_audit_schema(conn)
 
             logger.info("数据库初始化完成")
 
@@ -499,6 +506,19 @@ class DatabaseManager(
             "WHERE job_key = 'tdc_data_model' AND builtin = 1 "
             "AND display_name = 'TDC数模'"
         )
+
+        # deliverable_form_rows 逐行官方列取得状态（方案 A，纯增量列）：
+        # '' = 未知（旧快照/未标注），joined/ambiguous/unmatched/unavailable 为
+        # 官方 47 列合并器的逐行结果。旧库补列时既有行取 ''，不重建、不回填。
+        form_row_columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(deliverable_form_rows)")
+        }
+        if "official_join" not in form_row_columns:
+            conn.execute(
+                "ALTER TABLE deliverable_form_rows "
+                "ADD COLUMN official_join TEXT NOT NULL DEFAULT ''"
+            )
 
         # crawl_tasks 增量表（保持 CURRENT_SCHEMA_VERSION = 14 严格不变）
         conn.execute(

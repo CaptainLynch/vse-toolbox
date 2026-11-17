@@ -12,6 +12,8 @@ from unittest.mock import MagicMock
 import pytest
 
 import web.app as web_app
+import web.project_status_boot as ps_boot
+import web.crawler_boot as crawler_boot
 from core.db_manager import DatabaseManager
 from core.project_status_contracts import (
     PROJECT_STATUS_INVALID_MAPPING_READ_ONLY_REASON,
@@ -71,7 +73,7 @@ def fake_registry() -> ConnectorRegistry:
 def registry_factory(monkeypatch, fake_registry: ConnectorRegistry) -> MagicMock:
     """Provide a spy/mock factory for create_production_registry returning fake_registry."""
     factory = MagicMock(return_value=fake_registry)
-    monkeypatch.setattr(web_app, "create_production_registry", factory)
+    monkeypatch.setattr(ps_boot, "create_production_registry", factory)
     return factory
 
 
@@ -531,8 +533,8 @@ def test_candidate_preview_does_not_invoke_external_factories(
 
     mock_aras = MagicMock()
     mock_tdc = MagicMock()
-    monkeypatch.setattr(web_app, "_build_aras_client_from_payload", mock_aras)
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", mock_tdc)
+    monkeypatch.setattr(crawler_boot, "_build_aras_client_from_payload", mock_aras)
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", mock_tdc)
 
     resp = client.get("/api/project-status/deliverables/VPI-T2-D5/candidate-preview")
     assert resp.status_code == 200
@@ -607,6 +609,125 @@ def test_sync_now_rejects_unconfigured_deliverables_with_409_sync_not_ready(
     body = resp.get_json()
     assert body["ok"] is False
     assert body["error"]["type"] == "SyncNotReady"
+    registry_factory.assert_not_called()
+
+
+def test_sync_now_reports_legacy_multi_value_document_no_binding_as_not_ready(
+    client, test_db: DatabaseManager, registry_factory: MagicMock
+) -> None:
+    """存量多值流水单号绑定（升级前落库）：运行期显式 409，不再静默 0 命中（顾问复核 A2）。"""
+    _configure_ready_d5_binding(test_db, external_key="FM-1")
+    with test_db.get_connection() as conn:
+        conn.execute(
+            "UPDATE project_status_update_bindings SET match_rule_json = ? "
+            "WHERE deliverable_id = 'VPI-T2-D5'",
+            (
+                json.dumps(
+                    {
+                        "reportType": "data_model",
+                        "aggregate": False,
+                        "documentNo": "3D-00001018 3D-00001012",
+                    }
+                ),
+            ),
+        )
+        conn.commit()
+
+    resp = client.post(
+        "/api/project-status/deliverables/VPI-T2-D5/sync-now",
+        headers=_loopback_headers(),
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+
+    assert resp.status_code == 409
+    body = resp.get_json()
+    assert body["error"]["type"] == "SyncNotReady"
+    assert "合并统计同步暂不支持" in body["error"]["message"]
+    registry_factory.assert_not_called()  # 校验在连接器创建之前
+
+
+def _write_d5_match_rule(db: DatabaseManager, rule: dict[str, Any], *, external_key: str | None = None) -> None:
+    """直接改写已就绪 D5 绑定的匹配规则（模拟存量/手工落库，绕过 PATCH 校验）。"""
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE project_status_update_bindings SET match_rule_json = ?, external_key = ? "
+            "WHERE deliverable_id = 'VPI-T2-D5'",
+            (json.dumps(rule), external_key),
+        )
+        conn.commit()
+
+
+def test_sync_now_rejects_multi_serial_binding_when_flag_disabled(
+    client, test_db: DatabaseManager, registry_factory: MagicMock, monkeypatch
+) -> None:
+    """R22/R4：开关关闭时运行期同样 fail-closed——停跑但不停用（绑定保持 enabled）。"""
+    _configure_ready_d5_binding(test_db, external_key="FM-1")
+    _write_d5_match_rule(
+        test_db, {"reportType": "data_model", "aggregate": True, "documentNos": ["3D-1"]}
+    )
+    monkeypatch.delenv("VSE_TDC_MULTI_SERIAL_SYNC", raising=False)
+
+    resp = client.post(
+        "/api/project-status/deliverables/VPI-T2-D5/sync-now",
+        headers=_loopback_headers(),
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+
+    assert resp.status_code == 409
+    body = resp.get_json()
+    assert body["error"]["type"] == "SyncNotReady"
+    assert "功能开关关闭" in body["error"]["message"]
+    assert test_db.get_sync_binding_by_deliverable("VPI-T2-D5")["enabled"] == 1
+    registry_factory.assert_not_called()
+
+
+def test_sync_now_rejects_multi_serial_binding_with_single_serial_key(
+    client, test_db: DatabaseManager, registry_factory: MagicMock, monkeypatch
+) -> None:
+    """运行期互斥：多单号与实例号同存会在上游取交集（静默少算），必须 409。"""
+    _configure_ready_d5_binding(test_db, external_key="FM-1")
+    _write_d5_match_rule(
+        test_db,
+        {
+            "reportType": "data_model",
+            "aggregate": True,
+            "documentNos": ["3D-1"],
+            "incident": "900001",
+        },
+    )
+    monkeypatch.setenv("VSE_TDC_MULTI_SERIAL_SYNC", "1")
+
+    resp = client.post(
+        "/api/project-status/deliverables/VPI-T2-D5/sync-now",
+        headers=_loopback_headers(),
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+
+    assert resp.status_code == 409
+    assert "三选一" in resp.get_json()["error"]["message"]
+    registry_factory.assert_not_called()
+
+
+def test_sync_now_rejects_multi_serial_binding_that_is_not_aggregate(
+    client, test_db: DatabaseManager, registry_factory: MagicMock, monkeypatch
+) -> None:
+    """运行期聚合门禁：多单号集合没有单记录稳定键，aggregate 必须为 true。"""
+    _configure_ready_d5_binding(test_db, external_key="FM-1")
+    _write_d5_match_rule(
+        test_db,
+        {"reportType": "data_model", "aggregate": False, "documentNos": ["3D-1"]},
+        external_key="FM-1",
+    )
+    monkeypatch.setenv("VSE_TDC_MULTI_SERIAL_SYNC", "1")
+
+    resp = client.post(
+        "/api/project-status/deliverables/VPI-T2-D5/sync-now",
+        headers=_loopback_headers(),
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+
+    assert resp.status_code == 409
+    assert "聚合" in resp.get_json()["error"]["message"]
     registry_factory.assert_not_called()
 
 
@@ -1082,7 +1203,7 @@ def test_mapping_discovery_post_freezes_query_identity_before_rebind_and_can_ena
 
     class FakeTDC:
         def crawl_data_model_all(self, filters, **kwargs):  # type: ignore[no-untyped-def]
-            calls.append((filters.serial_number, int(kwargs["max_records"])))
+            calls.append((filters.instance_no, int(kwargs["max_records"])))
             if len(calls) == 1:
                 test_db.set_project_status_update_policy(
                     deliverable_id="VPI-T2-D5",
@@ -1099,7 +1220,7 @@ def test_mapping_discovery_post_freezes_query_identity_before_rebind_and_can_ena
                 stop_reason="reported_pages",
             )
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda *args: FakeTDC())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda *args: FakeTDC())
     payload = {
         "base_url": "https://tdc.example",
         "filters": {"serial_number": "FLOW-A"},
@@ -1174,7 +1295,7 @@ def test_mapping_discovery_post_canonicalizes_sor_and_ewo_filters(
 
     headers = _loopback_headers()
     environ = {"REMOTE_ADDR": "127.0.0.1"}
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda *args: FakeSOR())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda *args: FakeSOR())
     sor_response = client.post(
         "/api/project-status/deliverables/VPI-T2-D2/mapping-discovery",
         json={
@@ -1195,7 +1316,7 @@ def test_mapping_discovery_post_canonicalizes_sor_and_ewo_filters(
         "tdc", sor_rule
     )
 
-    monkeypatch.setattr(web_app, "_build_aras_client_from_payload", lambda *args: FakeEWO())
+    monkeypatch.setattr(ps_boot, "_build_aras_client_from_payload", lambda *args: FakeEWO())
     ewo_response = client.post(
         "/api/project-status/deliverables/VPI-T2-D3/mapping-discovery",
         json={
@@ -1214,42 +1335,55 @@ def test_mapping_discovery_post_canonicalizes_sor_and_ewo_filters(
     )
 
 
-def test_mapping_discovery_selected_key_is_sent_to_tdc_query(
+def test_mapping_discovery_selected_document_no_is_matched_locally(
     client,
     test_db: DatabaseManager,
     monkeypatch,
 ) -> None:
-    """非聚合选择的稳定键同时约束实际请求与观测签名。"""
+    """数模的稳定键是流水单号（documentNo）：不发上游，本地精确匹配收窄行集。
+
+    非聚合选择的稳定键仍必须同时约束实际请求与观测签名，只是约束方式从
+    "把值塞进 incident 查询参数"（incident 是第 0 列实例号，会查成 0 行）改成
+    "全量抓取后本地 match_serial，恰好命中 1 行才放行"。
+    """
     seen: list[str | None] = []
 
     class FakeTDC:
         def crawl_data_model_all(self, filters, **kwargs):  # type: ignore[no-untyped-def]
-            seen.append(filters.serial_number)
+            seen.append(filters.instance_no)
             return SimpleNamespace(
-                rows=[{"incident": "FLOW-A", "currentApprover": "Alice"}],
+                rows=[
+                    {"incident": "FLOW-A", "documentNo": "F610S-3D-0001", "currentApprover": "Alice"},
+                    {"incident": "FLOW-B", "documentNo": "F610S-3D-0002", "currentApprover": "Bob"},
+                ],
                 complete=True,
                 stop_reason="short_page",
             )
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda *args: FakeTDC())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda *args: FakeTDC())
     response = client.post(
         "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery",
         json={
             "base_url": "https://tdc.example",
             "aggregate": False,
             "filters": {},
-            "selectedExternalKey": "FLOW-A",
+            "selectedExternalKey": "F610S-3D-0001",
         },
         headers=_loopback_headers(),
         environ_base={"REMOTE_ADDR": "127.0.0.1"},
     )
 
     assert response.status_code == 200
-    assert seen == ["FLOW-A"]
+    assert seen == [None]  # 流水单号不是 TDC 查询参数，绝不发给上游
+    data = response.get_json()["data"]
+    assert data["state"] == "matched"
+    assert data["externalKey"] == "FLOW-A"  # 有效查询结果是命中行的实例号
+    assert data["serialMatch"]["matched"] == 1
     observed = test_db.list_mapping_observations("VPI-T2-D5", 1)[0]
+    assert observed["external_key"] == "FLOW-A"
     assert observed["config_signature"] == compute_config_signature(
         "tdc",
-        {"reportType": "data_model", "aggregate": False, "incident": "FLOW-A"},
+        {"reportType": "data_model", "aggregate": False, "documentNo": "F610S-3D-0001"},
     )
 
 
@@ -1279,7 +1413,7 @@ def test_mapping_discovery_rejects_incomplete_results_before_observing(
         def crawl_ewo_report_all(self, _filters=None, **kwargs):  # type: ignore[no-untyped-def]
             return SimpleNamespace(rows=result_rows, complete=False, stop_reason="max_records")
 
-    monkeypatch.setattr(web_app, builder_name, lambda *args: IncompleteClient())
+    monkeypatch.setattr(ps_boot, builder_name, lambda *args: IncompleteClient())
     endpoint = f"/api/project-status/deliverables/{deliverable_id}/mapping-discovery"
     response = client.post(
         endpoint,
@@ -1305,7 +1439,7 @@ def test_mapping_discovery_rejects_service_overlimit_as_recoverable_validation_e
                 stop_reason="reported_pages",
             )
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda *args: TooManyClient())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda *args: TooManyClient())
     response = client.post(
         "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery",
         json={"base_url": "https://tdc.example", "filters": {}},

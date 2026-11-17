@@ -59,9 +59,18 @@ class NavEntry:
     title: str
     page: str
     order: int = 100
+    #: 只在「专家模式」下显示在顶栏（v2 简化导航：旧的技术向入口默认收起）。
+    expert: bool = False
+    #: 默认隐藏时，这个页面归属哪个可见入口（"<plugin>/<page>"），用于顶栏高亮。
+    parent: str | None = None
 
     def to_payload(self) -> dict[str, Any]:
-        return {"title": self.title, "page": self.page, "order": self.order}
+        payload: dict[str, Any] = {"title": self.title, "page": self.page, "order": self.order}
+        if self.expert:
+            payload["expert"] = True
+        if self.parent:
+            payload["parent"] = self.parent
+        return payload
 
 
 @dataclass(frozen=True)
@@ -217,4 +226,10 @@ def _parse_nav(item: Any) -> NavEntry:
     order = item.get("order", 100)
     if not isinstance(order, int) or isinstance(order, bool):
         raise PluginManifestError("nav.order 必须是整数")
-    return NavEntry(title=_required_str(item, "title"), page=_required_str(item, "page"), order=order)
+    expert = item.get("expert", False)
+    if not isinstance(expert, bool):
+        raise PluginManifestError("nav.expert 必须是 true/false")
+    parent = item.get("parent")
+    if parent is not None and (not isinstance(parent, str) or parent.count("/") != 1):
+        raise PluginManifestError("nav.parent 必须形如 \"<插件>/<页面>\"")
+    return NavEntry(title=_required_str(item, "title"), page=_required_str(item, "page"), order=order, expert=expert, parent=parent)

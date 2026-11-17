@@ -67,14 +67,27 @@ def group_of(path: str) -> str:
 
 
 def main() -> int:
-    source = APP_SOURCE.read_text(encoding="utf-8")
-    entries = route_entries(source)
-    diagnostic_source = ROOT / "web" / "diagnostics.py"
-    if diagnostic_source.is_file():
-        entries += route_entries(diagnostic_source.read_text(encoding="utf-8"))
-    enrichment_source = ROOT / "web" / "ewo_enrichment.py"
-    if enrichment_source.is_file():
-        entries += route_entries(enrichment_source.read_text(encoding="utf-8"))
+    # 路由已按领域迁到 web/*.py（crawler_boot/tasks_boot/project_status_boot/...），
+    # 只扫 app.py 会让清单从 100+ 端点缩水到十几条——这里统一扫 web 目录。
+    sources = [APP_SOURCE] + sorted(
+        path for path in (ROOT / "web").glob("*.py") if path.name != "app.py"
+    )
+    entries: list[tuple[str, str, str]] = []
+    for source_path in sources:
+        try:
+            source_text = source_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        entries += route_entries(source_text)
+    seen: set[tuple[str, str]] = set()
+    unique: list[tuple[str, str, str]] = []
+    for path, method, func in entries:
+        key = (path, method)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append((path, method, func))
+    entries = unique
     grouped: dict[str, list[tuple[str, str, str]]] = defaultdict(list)
     for path, method, func in entries:
         grouped[group_of(path)].append((path, method, func))
@@ -84,7 +97,7 @@ def main() -> int:
         "",
         "> 状态：Generated",
         "> 读者：Developer、Agent（API 任务）",
-        "> 权威来源：`web/app.py`、`web/diagnostics.py`、`web/ewo_enrichment.py` 路由装饰器；参数行为以代码和测试为准",
+        "> 权威来源：`web/app.py` 与 `web/*.py` 中的路由装饰器；参数行为以代码和测试为准",
         "> 默认读取：按 API/UI 任务读取",
         "> 由 `tools/generate_api_endpoints.py` 从上述路由模块 AST 解析自动生成，",
         f"> 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}，共 {len(entries)} 个端点。",

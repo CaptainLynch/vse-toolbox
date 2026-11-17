@@ -6,6 +6,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
@@ -51,45 +53,61 @@ def _get_hiddenimports_literals(content: str) -> list[str]:
 def test_spec_files_exist() -> None:
     root = _repo_root()
     webui_spec = root / "VSE-WebUI.spec"
-    worker_spec = root / "VSE-ExcelWorker.spec"
     assert webui_spec.is_file(), "VSE-WebUI.spec must exist"
-    assert worker_spec.is_file(), "VSE-ExcelWorker.spec must exist"
+    # VSE-ExcelWorker.spec 保留在仓库供开发机单独构建 Worker；它已不在发布链路
+    # （单 exe 部署，2026-10-09 顾问复核方案 A），因此不再强制其存在。
 
 
-def test_webui_spec_excludes_excel_com() -> None:
+def test_webui_spec_collects_excel_com_for_single_exe() -> None:
+    """单 exe 部署：宿主同时承担 Excel Worker，必须收进 xlwings 与 win32com。"""
     content = _read_spec("VSE-WebUI.spec")
-    # Phase 5 W5-1：入口为 webui.py（readiness probe + --no-browser + 自动唤起
-    # 浏览器），经 web.app.create_app 达到同一 WebUI 运行时。
     assert "webui.py" in content
     assert "name='VSE-WebUI'" in content or 'name="VSE-WebUI"' in content
 
-    # Flask WebUI must not collect win32com or xlwings submodules
-    assert "collect_submodules('win32com')" not in content
-    assert 'collect_submodules("win32com")' not in content
-    assert "collect_submodules('xlwings')" not in content
-    assert 'collect_submodules("xlwings")' not in content
+    assert "collect_submodules('win32com')" in content or 'collect_submodules("win32com")' in content
+    assert "collect_submodules('xlwings')" in content or 'collect_submodules("xlwings")' in content
 
-    # Hiddenimports must not pull in Excel automation (xlwings). WinHTTP COM
-    # modules (pythoncom/pywintypes/win32com.client) ARE allowed and required,
-    # because services/windows_http.py drives WinHttp.WinHttpRequest.5.1 via COM.
     hidden_imports = _get_hiddenimports_literals(content)
-    forbidden_com = {
-        "xlwings",
-    }
-    for item in hidden_imports:
-        assert item not in forbidden_com, (
-            f"VSE-WebUI.spec must not include {item} in hiddenimports"
+    for item in ("pythoncom", "pywintypes", "win32com.client", "excel_worker_cli"):
+        assert item in hidden_imports, (
+            f"VSE-WebUI.spec must include {item} in hiddenimports, found: {hidden_imports!r}"
         )
 
-    # xlwings (Excel automation) must stay excluded; WinHTTP COM modules are
-    # intentionally no longer excluded so the WebUI auth stack can dispatch
-    # WinHttp.WinHttpRequest.5.1.
+    # xlwings 不能再被排除，否则 collect_submodules 的收集会被 excludes 覆盖。
     excludes = _get_analysis_excludes(content)
-    required_excludes = ["xlwings"]
-    for mod in required_excludes:
-        assert mod in excludes, (
-            f"VSE-WebUI.spec must exclude {mod!r}, found: {excludes!r}"
-        )
+    assert "xlwings" not in excludes, (
+        f"VSE-WebUI.spec must not exclude 'xlwings' in single-exe mode, found: {excludes!r}"
+    )
+    # CLI-only 集成仍应排除（它们不在 Worker 导入闭包内）。
+    for mod in ("selenium", "services.office_toolbox", "services.feishu_imap"):
+        assert mod in excludes, f"VSE-WebUI.spec should still exclude {mod!r}"
+
+
+def test_worker_spec_stays_a_subset_of_host_spec() -> None:
+    """防漂移：保留的 Worker spec 的 COM 依赖不得超出宿主已收集的范围。
+
+    两个 spec 曾各自维护依赖清单；单 exe 后宿主是唯一发布产物，Worker spec 若
+    需要额外依赖，说明合包漏收了模块——此断言把漂移变成红灯。
+    """
+    root = _repo_root()
+    worker_spec = root / "VSE-ExcelWorker.spec"
+    if not worker_spec.is_file():
+        pytest.skip("VSE-ExcelWorker.spec removed (single-exe only)")
+
+    host_hidden = set(_get_hiddenimports_literals(_read_spec("VSE-WebUI.spec")))
+    worker_hidden = set(_get_hiddenimports_literals(_read_spec("VSE-ExcelWorker.spec")))
+    # rich 是 Worker spec 的历史残留（worker 导入闭包内无 rich 导入）。
+    worker_hidden -= {"rich"}
+    missing = sorted(item for item in worker_hidden if item not in host_hidden)
+    assert not missing, f"VSE-WebUI.spec 缺少 Worker 依赖: {missing!r}"
+
+
+def test_build_script_does_not_build_a_sibling_worker() -> None:
+    """单 exe：构建脚本只建宿主，并断言产物目录不存在 VSE-ExcelWorker.exe。"""
+    script = (_repo_root() / "tools" / "build_excel_bundle.ps1").read_text(encoding="utf-8")
+    assert "VSE-ExcelWorker.spec" not in script
+    assert "VSE-ExcelWorker.exe" in script  # 仍要显式断言其不存在
+    assert "must not exist in the single-executable bundle" in script
 
 
 def test_excel_worker_spec_includes_excel_com() -> None:

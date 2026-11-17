@@ -454,6 +454,90 @@ export function AnalysisItems({ item, departments, modelFilter, onModelFilterApp
   </div>`;
 }
 
+export function CarModelAnchorBar({ item, currentAnchor, onSyncSuccess }) {
+  const [model, setModel] = useState(() => currentAnchor || "F610M");
+  const [syncing, setSyncing] = useState(false);
+  const [feedback, setFeedback] = useState(null);
+
+  const presets = ["F610M", "E262S", "F710S", "CF710P"];
+
+  const triggerSync = async (targetModel) => {
+    const carType = (targetModel || model || "").trim();
+    if (!carType) {
+      setFeedback({ text: "请输入车型名称（例如 F610M）", tone: "warning" });
+      return;
+    }
+    setSyncing(true);
+    setFeedback({ text: `正在按车型「${carType}」自动同步...`, tone: "busy" });
+    try {
+      const data = await apiRequest(`/api/project-status/deliverables/${enc(item.id)}/sync-by-car-type`, {
+        method: "POST",
+        body: { carType },
+      });
+      const outcome = data && data.outcome;
+      if (outcome === "failed") {
+        const err = data.errorMessage || "同步失败，请检查内网网络或凭据";
+        setFeedback({ text: `车型「${carType}」同步失败：${err}`, tone: "error" });
+      } else {
+        setFeedback({ text: `✅ 车型「${carType}」自动同步完成！`, tone: "success" });
+        if (onSyncSuccess) await onSyncSuccess();
+      }
+    } catch (err) {
+      setFeedback({ text: `同步请求异常：${formatApiErrorMessage(err, 500)}`, tone: "error" });
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  return html`<div class="analysis-anchor-box" aria-label="同步车型锚点控制">
+    <div class="analysis-anchor-grid">
+      <div class="analysis-anchor-label">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style=${{ verticalAlign: "-2px", marginRight: "4px" }}>
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M12 2v3m0 14v3M2 12h3m14 0h3"></path>
+        </svg>
+        <strong>同步车型锚点：</strong>
+      </div>
+      <div class="analysis-anchor-controls">
+        <input
+          type="text"
+          class="analysis-anchor-input"
+          value=${model}
+          disabled=${syncing}
+          maxLength="80"
+          placeholder="输入车型（如 F610M）"
+          onInput=${(e) => setModel(e.currentTarget.value)}
+          onKeyDown=${(e) => { if (e.key === "Enter") triggerSync(); }}
+        />
+        <div class="analysis-anchor-presets">
+          ${presets.map((p) => html`
+            <button
+              type="button"
+              key=${p}
+              class=${`analysis-anchor-chip${model === p ? " is-active" : ""}`}
+              disabled=${syncing}
+              onClick=${() => { setModel(p); triggerSync(p); }}
+            >${p}</button>
+          `)}
+        </div>
+      </div>
+      <div class="analysis-anchor-actions">
+        <button
+          type="button"
+          class="btn is-primary analysis-anchor-sync-btn"
+          disabled=${syncing}
+          onClick=${() => triggerSync()}
+        >
+          <span>${syncing ? "正在同步..." : "按此车型立即同步"}</span>
+        </button>
+      </div>
+    </div>
+    ${feedback && html`<div class=${`analysis-anchor-feedback is-${feedback.tone}`} role="status" aria-live="polite">
+      ${feedback.text}
+    </div>`}
+  </div>`;
+}
+
 export function AnalysisActionBar({ item, supported, readiness, feedback, busy, onRefresh, onSync, onBlocked }) {
   const ready = Boolean(readiness && readiness.ready);
   const message = (readiness && readiness.message) || "同步条件尚未满足";
@@ -544,12 +628,18 @@ export function AnalysisPanel({ item, version, ctl, modelFilter, setModelFilter,
     <span class="analysis-snapshot-time">${data.snapshotAt ? `快照时间: ${archiveFormatDate(data.snapshotAt)}` : "暂无分析快照"}</span>
   </div>`;
 
+  const anchorBar = html`<${CarModelAnchorBar}
+    item=${item}
+    currentAnchor=${data.carType || modelFilter.model || "F610M"}
+    onSyncSuccess=${load}
+  />`;
+
   if (!data.hasCache) {
-    return html`${head}${actionBar}
-      <p class="analysis-empty-note is-empty">暂无分析缓存数据（等待定时同步或首次抓取分析）</p>`;
+    return html`${head}${anchorBar}${actionBar}
+      <p class="analysis-empty-note is-empty">暂无分析缓存数据（可选择上方车型并点击「按此车型立即同步」）</p>`;
   }
 
-  return html`${head}${actionBar}
+  return html`${head}${anchorBar}${actionBar}
     <div class="analysis-summary-grid">
       ${[["总任务数", summary.total ?? 0], ["已完成", summary.completed ?? 0], ["未完成", summary.incomplete ?? 0]].map(([label, value]) => html`
         <div class="analysis-metric-card" key=${label}>

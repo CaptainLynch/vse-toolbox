@@ -34,7 +34,7 @@ def test_plugin_loads_with_module_page(app) -> None:
     record = next(p for p in data["plugins"] if p["id"] == "system-query")
     assert record["status"] == "loaded", record.get("error")
     assert record["pages"] == [{"id": "query", "title": "系统查询", "kind": "module", "module": "query.js"}]
-    assert data["nav"] == [{"plugin": "system-query", "title": "系统查询", "page": "query", "order": 20}]
+    assert data["nav"] == [{"plugin": "system-query", "title": "系统查询", "page": "query", "order": 20, "expert": True, "parent": "workbench/reports"}]
 
 
 @pytest.mark.parametrize("name", MODULES)
@@ -85,6 +85,12 @@ const ncrData = {
   headerRows: [["组", "组", "组"], ["NCR号", "项目", "token"]],
   rows: [["N-2", "B", "t"], ["N-10", "A", "t"]],
 };
+
+// 单号 + 官方 Excel 预览：后端必然 400（SerialRequiresListSource），前端同源守卫判定。
+const guardMode = {previewSource: true};
+const guardOfficial = {document_no: " 3D-1 ", preview_source: "official_export"};
+const guardOfficialEmpty = {document_no: "", preview_source: "official_export"};
+const guardList = {document_no: "3D-1", preview_source: "list_endpoint"};
 const objData = {rows: [{_no: "E-2", cookie: "c=1", state: "Open"}, {_no: "E-10", cookie: "c=2", state: "Closed"}]};
 const objGrid = lib.buildGridColumns(objData, objData.rows, ["_no"], "ewo");
 const objCols = lib.candidateColumns(objGrid);
@@ -101,6 +107,13 @@ console.log(JSON.stringify({
   payloadSorQuery: lib.buildPayload("tdc-sor", values.sor, tdc),
   payloadSorCrawl: lib.buildPayload("tdc-sor", values.sor, tdc, {operation: "crawl_all"}),
   payloadSorExport: lib.buildPayload("tdc-sor", values.sor, tdc, {operation: "export"}),
+  payloadDmSerial: lib.buildPayload("tdc-data-model", {serial_number: "900001", document_no: "F610S-3D-0002", page: "1", page_size: "50"}, tdc),
+  serialNotice: [
+    lib.serialMatchNotice({serialMatch: {requested: "x", scanned: 12, matched: 0, scannedPages: 3, complete: false, reason: "crawl_incomplete"}}),
+    lib.serialMatchNotice({serialMatch: {requested: "x", scanned: 12, matched: 0, scannedPages: 3, complete: true}}),
+    lib.serialMatchNotice({serialMatch: {requested: "x", scanned: 12, matched: 2, scannedPages: 3, complete: true}}),
+    lib.serialMatchNotice({rows: []}),
+  ],
   errorsEwo: lib.validateForm("ewo", {...values.ewo, page: "0"}, {base_url: "ftp://x"}),
   errorsOk: lib.validateForm("ewo", {page: "1", page_size: "50", max_records: "2000"}, aras),
   errorsTdcExport: lib.validateForm("tdc-sor", {...values.sor, file_name: "../x.csv"}, tdc, "export"),
@@ -129,6 +142,13 @@ console.log(JSON.stringify({
   accepted: [lib.isTaskAccepted(202, {ok: true, data: {taskId: "t1"}}), lib.isTaskAccepted(200, {ok: true, data: {taskId: "t1"}})],
   filename: lib.parseContentDispositionFilename("attachment; filename*=UTF-8''ncr%20detail.xlsx"),
   traversal: lib.parseContentDispositionFilename('attachment; filename="a/../b\\c.csv"'),
+  serialSourceConflict: {
+    officialWithSerial: lib.serialSourceConflict(guardOfficial, guardMode),
+    officialEmpty: lib.serialSourceConflict(guardOfficialEmpty, guardMode),
+    listWithSerial: lib.serialSourceConflict(guardList, guardMode),
+    noMode: lib.serialSourceConflict(guardOfficial, null),
+  },
+  serialSourceNotice: lib.SERIAL_REQUIRES_LIST_NOTICE,
 }));
 """
 
@@ -177,19 +197,123 @@ def test_field_groups_cover_every_filter_and_number(node_data) -> None:
 
 def test_tdc_modes_match_server_filter_contract(node_data) -> None:
     tdc, groups = node_data["tdc"], node_data["groups"]
-    assert tuple(tdc["tdc-data-model"]["filterNames"]) == web_app._TDC_DATA_MODEL_FILTER_NAMES
+    # document_no（流水单号）是前端本地精确匹配选择器：它不是 TDC 查询参数，服务端
+    # 从请求体顶层读取它，因此不在服务端 filter 名单里（见 lib.buildPayload）。
+    assert tuple(n for n in tdc["tdc-data-model"]["filterNames"] if n != "document_no") == web_app._TDC_DATA_MODEL_FILTER_NAMES
     assert tuple(tdc["tdc-sor"]["filterNames"]) + ("car_type_project_id",) == web_app._TDC_SOR_FILTER_NAMES
-    for group, server_fields in (("tdc-data-model", web_app._TDC_DATA_MODEL_FIELDS), ("tdc-sor", web_app._TDC_SOR_FIELDS)):
-        assert groups[group] == [[f["name"], f["label"], f["type"]] for f in server_fields]
+    assert groups["tdc-sor"] == [[f["name"], f["label"], f["type"]] for f in web_app._TDC_SOR_FIELDS]
+    # 数模：2026-10-09 起目录单源也含 document_no（交付物工作台接入 A′），
+    # 前端字段与目录逐字段一致（含顺序）；仅 serial_number 的前端标签改为
+    # 「实例号(incident)」以消除与流水单号的混淆，document_no 标签同为「流水单号」。
+    dm = {name: [name, label, type_] for name, label, type_ in groups["tdc-data-model"]}
+    assert [f["name"] for f in web_app._TDC_DATA_MODEL_FIELDS] == list(dm)
+    for field in web_app._TDC_DATA_MODEL_FIELDS:
+        assert dm[field["name"]][2] == field["type"], field["name"]
+        if field["name"] != "serial_number":
+            assert dm[field["name"]][1] == field["label"], field["name"]
+    assert dm["serial_number"][1] == "实例号(incident)"
+
+
+def test_tdc_data_model_document_no_field_and_incident_label(node_data) -> None:
+    tdc, groups = node_data["tdc"], node_data["groups"]
+    assert "document_no" in tdc["tdc-data-model"]["filterNames"]
+    fields = {f[0]: f for f in groups["tdc-data-model"]}
+    assert fields["document_no"][1] == "流水单号"
+    assert fields["document_no"][2] == "text"
+    assert fields["serial_number"][1] == "实例号(incident)"
+    # SOR 的 processNo 语义未受影响：标签保持「流水号」。
+    assert {f[0]: f for f in groups["tdc-sor"]}["serial_number"][1] == "流水号"
+
+
+def test_document_no_travels_at_the_payload_top_level(node_data) -> None:
+    payload = node_data["payloadDmSerial"]
+    assert payload["document_no"] == "F610S-3D-0002"
+    # 进 filters 会被服务端按"不支持的筛选字段"拒绝；它不是 TDC 查询参数。
+    assert "document_no" not in payload["filters"]
+    assert payload["filters"]["serial_number"] == "900001"  # 实例号仍走 incident 参数
+    assert payload["preview_source"] == "list_endpoint"
+
+
+def test_serial_match_notice_separates_incomplete_from_not_found(node_data) -> None:
+    incomplete, not_found, hit, absent = node_data["serialNotice"]
+    # 抓取不完整 = "无法判定"，绝不能与"未找到"共用一句话。
+    assert incomplete == "抓取不完整，无法判定流水单号，请重试（已扫描 3 页 / 12 行）"
+    assert not_found == "未找到该流水单号（已扫描 3 页 / 12 行，覆盖完整）"
+    assert hit is None and absent is None
 
 
 def test_every_mode_endpoint_is_a_registered_post_route(app, node_data) -> None:
     rules = {rule.rule for rule in app.url_map.iter_rules() if "POST" in (rule.methods or set())}
-    keys = ("endpoint", "crawlAllEndpoint", "exportEndpoint", "downloadEndpoint", "carTypeProjectsEndpoint")
+    keys = ("endpoint", "crawlAllEndpoint", "exportEndpoint", "downloadEndpoint", "carTypeProjectsEndpoint",
+            "mergedExportEndpoint")
     for mode in [*node_data["aras"].values(), *node_data["tdc"].values()]:
         for key in keys:
             if key in mode:
                 assert mode[key] in rules, (key, mode[key])
+
+
+def test_export_response_contract_handles_202_422_and_503() -> None:
+    """主路由改为 202 异步：前端必须走任务轮询，错误走 JSON 信封，绝不把 JSON 存成 CSV。"""
+    query = (STATIC_DIR / "query.js").read_text(encoding="utf-8")
+    lib = (STATIC_DIR / "lib.js").read_text(encoding="utf-8")
+    assert "isTaskAccepted(response.status, body)" in query
+    assert "throw toQueryError(body, response.status)" in query
+    assert 'operation === "export_list"' in lib
+    # 收到 JSON 响应时不得进入 blob 下载分支（先判断 contentType.includes("application/json")）。
+    json_guard = query.index('contentType.includes("application/json")')
+    blob_branch = query.index("await response.blob()")
+    assert json_guard < blob_branch
+
+
+def test_list_columns_export_button_is_wired_in_the_system_query_page() -> None:
+    """列表列导出必须由前端显式触发，且与官方导出按钮并列（不是替代）。"""
+    modes = (STATIC_DIR / "modes.js").read_text(encoding="utf-8")
+    query = (STATIC_DIR / "query.js").read_text(encoding="utf-8")
+    lib = (STATIC_DIR / "lib.js").read_text(encoding="utf-8")
+    assert 'listExportEndpoint: "/api/aras/ewo/export-list-columns"' in modes
+    assert 'listExportLabel: "导出列表列（未提供列已标注）"' in modes
+    assert 'data-action="export_list"' in query
+    assert 'run("export_list")' in query
+    assert 'operation === "export_list"' in lib
+
+
+def test_merged_export_button_is_wired_in_the_system_query_page() -> None:
+    """多单号合并导出：模式声明端点 + 页面按钮存在（2026-10-10 用户需求，防静默丢失）。"""
+    modes = (STATIC_DIR / "modes.js").read_text(encoding="utf-8")
+    query = (STATIC_DIR / "query.js").read_text(encoding="utf-8")
+    assert 'mergedExportEndpoint: "/api/tdc/data-model/export-merged"' in modes
+    assert 'data-action="export_merged"' in query
+    assert "mode.mergedExportEndpoint" in query
+    assert 'm.mergedExportEndpoint' in query
+
+
+def test_serial_source_conflict_predicate_and_notice(node_data) -> None:
+    """单号 + 官方 Excel 预览 = 后端必然拒绝（SerialRequiresListSource）：前端同源判定。"""
+    conflict = node_data["serialSourceConflict"]
+    assert conflict["officialWithSerial"] is True   # 单号（含首尾空白）trim 后非空
+    assert conflict["officialEmpty"] is False       # 没填单号不拦
+    assert conflict["listWithSerial"] is False      # 快速查询（list 接口）不拦
+    assert conflict["noMode"] is False              # 没有查询模式选择的模式不拦
+    notice = node_data["serialSourceNotice"]
+    assert "快速查询" in notice and "导出合并结果" in notice
+
+
+def test_serial_source_guard_is_wired_into_the_system_query_page() -> None:
+    """守卫必须真的接到页面上（禁用查询预览 + 主区域提示 + 执行前短路），防静默丢失。"""
+    query = (STATIC_DIR / "query.js").read_text(encoding="utf-8")
+    assert "serialSourceConflict(values, mode)" in query
+    assert "disabled=${busy || serialSourceBlocked}" in query
+    assert '${serialSourceBlocked && html`<div class="error-msg sq-warning" role="status">' in query
+    assert 'if (operation === "query" && serialSourceConflict(values, mode))' in query
+    assert "setStatusText(SERIAL_REQUIRES_LIST_NOTICE)" in query
+    # 激活位：previewSource 决定预览来源字段与守卫是否生效，删掉它守卫会静默失效。
+    modes = (STATIC_DIR / "modes.js").read_text(encoding="utf-8")
+    tdc_modes = modes[modes.index("export const TDC_MODES = {") :]
+    for mode_id in ("tdc-data-model", "tdc-sor"):
+        start = tdc_modes.index(f'"{mode_id}": {{')
+        block = tdc_modes[start : tdc_modes.index("\n  },", start)]
+        assert "previewSource: true" in block, f"{mode_id} 缺少 previewSource 激活位，止血守卫会静默失效"
+    assert "mode.previewSource &&" in query
 
 
 def test_payloads_follow_legacy_collectors(node_data) -> None:

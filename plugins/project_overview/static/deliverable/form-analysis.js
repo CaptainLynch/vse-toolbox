@@ -47,11 +47,15 @@ import {
   formDisplayColumns,
   formDraftStatus,
   formFilterStatesEqual,
+  formOfficialColumns,
+  formOfficialMissingRow,
+  formOfficialStatusNote,
   formOptionValues,
   formRowCell,
   formViewErrorMessage,
   formViewLoadTimeoutError,
   FORM_ABSENT_SOURCE_TEXT,
+  FORM_OFFICIAL_MISSING_TEXT,
   markFormFilterStateDisplayed,
   overdueThresholdsFromInputs,
   removeDisplayedFilter,
@@ -59,6 +63,8 @@ import {
 } from "./form-state.js";
 import { SearchMultiSelect } from "./multi-select.js";
 import { TermsInput, TermsSummary, WatchlistPanel, loadWatchlist } from "./watchlist.js";
+import { ArchLinksPanel } from "./arch-links.js";
+import { expertStore } from "/static/host/expert.js";
 import { DATA_MODEL_FORM_KEY, termsChipText } from "./watchlist-logic.js";
 
 const keyActivate = (fn) => (event) => {
@@ -587,7 +593,7 @@ function ChartPanelContent({ data, state, onReload, bump }) {
 
 // ---- rows table + statistics --------------------------------------------------
 
-function FormRowsTable({ data, rowsData, state, onReload }) {
+export function FormRowsTable({ data, rowsData, state, onReload }) {
   const total = Number(rowsData && rowsData.total) || 0;
   const columns = data && data.schema && Array.isArray(data.schema.columns) ? data.schema.columns : [];
   const defaultVisibleCount = data && data.schema ? Number(data.schema.defaultVisibleCount) || 12 : 12;
@@ -602,19 +608,28 @@ function FormRowsTable({ data, rowsData, state, onReload }) {
   // 但值为空是真实空值，走普通单元格，不得误标。
   const displayColumns = formDisplayColumns(data, visible);
   const absent = formAbsentSourceIndexes(data);
+  // 官方工作簿 47 列的取得状态：只有快照下发 officialColumns 时才判定，旧快照
+  // （无该键）→ official 为 null，渲染逐字沿用升级前的结果。未合并行（ambiguous /
+  // unmatched / unavailable）在官方列位置上没有任何值，必须明示「本次未取得官方列」，
+  // 不得显示成真实空值；已合并行（joined）的真实空值仍显示 `-`。
+  const official = formOfficialColumns(data);
+  const officialNote = formOfficialStatusNote(official);
   const items = rowsData && Array.isArray(rowsData.items) ? rowsData.items : [];
   const offset = Number(rowsData && rowsData.offset) || 0;
   const limit = Math.max(1, Number(rowsData && rowsData.limit) || 50);
   const span = 2 + displayColumns.length;
+  // 来源工作表和行号只对排查数据问题有用，默认收进专家模式。
+  const showSource = expertStore.get();
   return html`<section class="form-row-table-section">
     <div class="form-row-table-head">
       <h5 class="form-chart-title">表单明细</h5>
       <span class="form-row-count">${total} 条匹配记录</span>
     </div>
+    ${officialNote && html`<p class="form-row-official-note">${officialNote}</p>`}
     <div class="form-row-table-wrap">
       <table class="form-row-table">
         <thead><tr>
-          ${["工作表", "行号"].map((label) => html`<th key=${label}>${label}</th>`)}
+          ${showSource && ["工作表", "行号"].map((label) => html`<th key=${label}>${label}</th>`)}
           ${displayColumns.map((column, index) => {
             const label = column && column.derivedStatus ? "状态" : (column && column.label ? String(column.label) : `列 ${index + 1}`);
             const isAbsent = column && !column.derivedStatus && absent.has(formColumnIndex(column));
@@ -626,10 +641,18 @@ function FormRowsTable({ data, rowsData, state, onReload }) {
             const values = Array.isArray(row && row.values) ? row.values : [];
             return html`
               <tr key=${`r${rowIndex}`}>
-                <td>${safeDisplayValue(row && row.sheetName)}</td>
-                <td>${safeDisplayValue(row && row.rowNumber)}</td>
+                ${showSource && html`<td>${safeDisplayValue(row && row.sheetName)}</td>`}
+                ${showSource && html`<td>${safeDisplayValue(row && row.rowNumber)}</td>`}
                 ${displayColumns.map((column, index) => {
                   const cell = formRowCell(column, row, absent);
+                  // 该行没合上官方行 + 该列是官方列 → 明示「本次未取得官方列」。
+                  const officialMissing = Boolean(official) && !(column && column.derivedStatus)
+                    && official.missingIndexes.has(formColumnIndex(column))
+                    && formOfficialMissingRow(row, official);
+                  if (officialMissing) {
+                    return html`<td key=${`c${index}`} class="form-cell-official-missing"
+                      title="本次未取得官方工作簿，无法展示该官方列">${FORM_OFFICIAL_MISSING_TEXT}</td>`;
+                  }
                   if (cell.absent) return html`<td key=${`c${index}`} class="form-cell-absent">${FORM_ABSENT_SOURCE_TEXT}</td>`;
                   const text = safeDisplayValue(cell.text);
                   // 长文本列截断成单行，完整值进 title 悬浮（“查看全部字段”仍有全值）。
@@ -645,11 +668,16 @@ function FormRowsTable({ data, rowsData, state, onReload }) {
                   <dl class="form-row-field-grid">
                     ${columns.map((column, index) => {
                       const physical = formColumnIndex(column);
+                      // 「查看全部字段」同样区分「本次未取得官方列」与真实空值。
+                      const officialMissing = Boolean(official) && Number.isFinite(physical)
+                        && official.missingIndexes.has(physical) && formOfficialMissingRow(row, official);
                       return html`
                         <dt key=${`t${index}`}>${column && column.label ? String(column.label) : `列 ${index + 1}`}</dt>
-                        ${absent.has(physical)
-    ? html`<dd key=${`v${index}`} class="form-cell-absent">${FORM_ABSENT_SOURCE_TEXT}</dd>`
-    : html`<dd key=${`v${index}`}>${safeDisplayValue(values[Number.isFinite(physical) ? physical : index])}</dd>`}`;
+                        ${officialMissing
+    ? html`<dd key=${`v${index}`} class="form-cell-official-missing" title="本次未取得官方工作簿，无法展示该官方列">${FORM_OFFICIAL_MISSING_TEXT}</dd>`
+    : absent.has(physical)
+      ? html`<dd key=${`v${index}`} class="form-cell-absent">${FORM_ABSENT_SOURCE_TEXT}</dd>`
+      : html`<dd key=${`v${index}`}>${safeDisplayValue(values[Number.isFinite(physical) ? physical : index])}</dd>`}`;
                     })}
                   </dl>
                 </details>
@@ -931,13 +959,15 @@ export function FormAnalysisPanel({ item, version, ctl, onViewData, archive }) {
       >${bgBusy ? "后台同步中..." : "运行后台归档同步"}</button>`}
     </div>
     ${dataFormKey === DATA_MODEL_FORM_KEY && html`<${WatchlistPanel} watchlist=${watchlist} onChanged=${setWatchlist} />`}
+    ${dataFormKey === DATA_MODEL_FORM_KEY && html`<${ArchLinksPanel} summary=${view.data && view.data.vehicleArchLinks} onSaved=${load} />`}
     <div class="form-summary-grid">
       ${[["总数", summary.total], ["已完成", summary.completed], ["未完成", summary.incomplete], ["逾期", summary.overdue]].map(([label, value]) => html`
         <div class="form-summary-card" key=${label}>
-          <span class="form-summary-label">${label}</span>
+          <span class="form-summary-label">${dataFormKey === DATA_MODEL_FORM_KEY ? `${label}（零件行）` : label}</span>
           <strong class=${summaryClass[label] || "form-summary-value form-status-on-time"}>${String(Number(value) || 0)}</strong>
         </div>`)}
     </div>
+    ${dataFormKey === DATA_MODEL_FORM_KEY && html`<p class="form-analysis-note form-unit-note">以上及「零件行风险分布」均按零件行计数（一个单可含多行零件）；按单的数字见上方「关联架构件」面板。</p>`}
     <p class="form-analysis-note">${dataFormKey === "aras_ncr_detail"
       ? "NCR 明细不计算逾期；整车 / 发动机工作表来源保留在明细行中。"
       : "按期推进 / 正常为绿色，逾期风险为橙黄色；交互式查询不会覆盖后台快照。"}</p>

@@ -34,7 +34,9 @@ from core.project_status_contracts import (
     project_status_source_capabilities,
 )
 from core.redaction import redact_sensitive_text
+from core.section_rollup import SectionRollupStore, build_rollup_index
 from services import data_model_watchlist
+from services import user_notifications
 from services.deliverable_form_analysis import build_form_snapshot
 from services.aras_auth import ArasAuthError
 from services.aras_crawler import ArasAuthenticationError, ArasCrawlerError
@@ -160,6 +162,10 @@ class SyncBindingContext:
     sync_config_revision: int = 0
     # 数模关注清单：非 None 时连接器只保留清单里的流水单号（services/data_model_watchlist.py）。
     watchlist: tuple[str, ...] | None = None
+    # 科室归集索引（core/section_rollup.build_rollup_index）：规则带 sections 时
+    # 由 runner 从本地设置读出注入。connector 不得访问数据库，因此归集规则只能
+    # 以只读索引形式进入上下文；None 表示本次绑定不需要科室收窄。
+    section_rollup: Mapping[str, str | None] | None = None
 
 
 # ── Connector Protocol ──────────────────────────────────────────
@@ -476,13 +482,21 @@ class ProjectStatusSyncRunner:
                 credential_ref = ""
             effective_binding = lease.get("binding_snapshot") or binding
             deliv_updated_at = effective_binding.get("deliverable_updated_at") or binding.get("deliverable_updated_at")
+            match_rule_snapshot = _safe_json_loads(effective_binding.get("match_rule_json"))
+            # 科室多选（sections）的归集规则保存在本地 app_settings：connector 不得
+            # 访问数据库，所以在这里读出索引注入只读上下文（与 watchlist 同一模式）。
+            section_rollup = (
+                build_rollup_index(SectionRollupStore(self._db).get())
+                if isinstance(match_rule_snapshot, Mapping) and "sections" in match_rule_snapshot
+                else None
+            )
             context = SyncBindingContext(
                 binding_id=binding_id,
                 deliverable_id=deliverable_id,
                 phase_id=str(effective_binding.get("phase_id") or binding["phase_id"]),
                 source_type=str(effective_binding.get("source_type") or source_type),
                 external_key=str(effective_binding.get("external_key") or ""),
-                match_rule=_safe_json_loads(effective_binding.get("match_rule_json")),
+                match_rule=match_rule_snapshot,
                 mapping=_safe_json_loads(effective_binding.get("mapping_json")),
                 cursor=_safe_json_loads(effective_binding.get("cursor_json")),
                 expected_deliverable_updated_at=str(deliv_updated_at or ""),
@@ -494,6 +508,7 @@ class ProjectStatusSyncRunner:
                     else (lease.get("sync_config_revision") or 0)
                 ),
                 watchlist=watchlist,
+                section_rollup=section_rollup,
             )
 
             # 在数据库事务外调用 connector。
@@ -551,6 +566,12 @@ class ProjectStatusSyncRunner:
                             source="project_status_sync",
                             artifacts=snapshot.artifacts,
                             coverage=getattr(snapshot, "coverage", None),
+                            # 官方 47 列（connector 已降级解析）：只补齐缺失列，
+                            # 不影响同步成败；逐行合并状态由快照记录。
+                            official_rows=getattr(snapshot, "official_rows", ()),
+                            official_status=getattr(
+                                snapshot, "official_status", "not_requested"
+                            ),
                         )
                         form_published = self._db.publish_deliverable_form_snapshot(
                             form_snapshot,
@@ -607,6 +628,8 @@ class ProjectStatusSyncRunner:
                 )
             except Exception:
                 pass  # 租约已失效或 DB 临时不可用，无法结束 run；由过期抢占回收。
+            # 同步运行已最终判定失败：发布一次托盘通知（稳定分类文案，不重放任务）。
+            self._notify_sync_failure(deliverable_id, run_id, error_type)
             return BindingRunResult(
                 binding_id=binding_id,
                 deliverable_id=deliverable_id,
@@ -696,6 +719,24 @@ class ProjectStatusSyncRunner:
             ),
         )
 
+    def _notify_sync_failure(
+        self,
+        deliverable_id: str,
+        run_id: int,
+        error_type: str,
+    ) -> None:
+        """发布一次同步失败托盘通知；通知是尽力而为，绝不影响同步结果。"""
+        try:
+            user_notifications.publish(
+                "sync_failed",
+                project_id=deliverable_id,
+                key=f"{deliverable_id}:{run_id}",
+                title="项目状态同步失败",
+                body=f"同步未完成：{_stable_error_message(error_type)}",
+            )
+        except Exception:  # noqa: BLE001 - a balloon must never break the sync run
+            logger.warning("sync failure notification skipped for %s", deliverable_id)
+
     def _safe_finalize_interrupted(
         self,
         binding_id: int,
@@ -739,6 +780,175 @@ class ProjectStatusSyncRunner:
             skipped_fields=dict(sync_result.skipped_fields),
             error_message=sync_result.message,
         )
+
+    @observed("sync.ProjectStatusSyncRunner.sync_by_car_type")
+    def sync_by_car_type(
+        self,
+        deliverable_id: str,
+        car_type: str,
+        *,
+        credential_ref: str | None = None,
+    ) -> dict[str, Any]:
+        """以指定车型名称作为锚点直接配置聚合同步规则并触发一次执行。
+
+        支持自动完成：
+        1. 车型参数合法性校验（1..80 字符、无控制字符）；
+        2. 交付物能力（syncCapable）校验；
+        3. 根据报告类型派生标准的车型聚合 match_rule；
+        4. 自动维护 binding 策略与聚合观测证据（免除手动多步发现）；
+        5. 调用 run_once 执行同步并发布分析缓存。
+        """
+        import json
+        from core.project_status_contracts import PROJECT_STATUS_SOURCE_CAPABILITIES
+        from services.project_status_records import compute_config_signature
+
+        raw_car = str(car_type or "")
+        if any(ord(c) < 32 or ord(c) == 127 for c in raw_car):
+            raise ValueError("car_type 包含非法控制字符")
+        clean_car = raw_car.strip()
+        if not clean_car:
+            raise ValueError("car_type 不能为空")
+        if len(clean_car) > 80:
+            raise ValueError("car_type 不能超过 80 个字符")
+
+        capabilities = PROJECT_STATUS_SOURCE_CAPABILITIES.get(deliverable_id)
+        if not capabilities:
+            raise KeyError(deliverable_id)
+        if not capabilities.get("syncCapable"):
+            block_reason = str(capabilities.get("blockReason") or "该交付物仅允许手工维护")
+            raise SyncBindingNotReadyError(block_reason)
+
+        source_type = str(capabilities["sourceType"])
+        report_type = str(capabilities["reportType"])
+
+        if report_type == "data_model":
+            match_rule = {
+                "reportType": "data_model",
+                "projectModel": clean_car,
+                "aggregate": True,
+            }
+        elif report_type == "sor":
+            match_rule = {
+                "reportType": "sor",
+                "carTypeProject": clean_car,
+                "aggregate": True,
+            }
+        elif report_type == "ewo":
+            match_rule = {
+                "reportType": "ewo",
+                "projectCode": clean_car,
+                "modelInfo": clean_car,
+                "contractVersion": "2",
+                "bindingMode": "record_set",
+                "aggregate": True,
+            }
+        elif report_type == "paa":
+            match_rule = {
+                "reportType": "paa",
+                "projectModel": clean_car,
+                "aggregate": True,
+            }
+        else:
+            match_rule = {
+                "reportType": report_type,
+                "projectModel": clean_car,
+                "aggregate": True,
+            }
+
+        match_rule_json = json.dumps(match_rule, ensure_ascii=False, sort_keys=True)
+
+        # 默认字段映射与权限
+        default_mapping = capabilities.get("defaultMapping") or {}
+        if not default_mapping:
+            if report_type == "data_model":
+                default_mapping = {"note": ["latestApproveLog", "status"]}
+            elif report_type == "sor":
+                default_mapping = {"note": ["latestCompletedNode", "approvalStatus"]}
+            elif report_type == "ewo":
+                default_mapping = {"owner": "_rsp_name", "plannedDate": "_required_date"}
+            else:
+                default_mapping = {"note": "status"}
+
+        mapping_json = json.dumps(default_mapping, ensure_ascii=False, sort_keys=True)
+
+        db_authority_map = {
+            "status": "status",
+            "owner": "owner",
+            "plannedDate": "planned_date",
+            "actualDate": "actual_date",
+            "progress": "progress",
+            "note": "remark",
+        }
+        field_authority = {
+            db_authority_map.get(k, k): "automatic"
+            for k in default_mapping
+        }
+        if not field_authority:
+            field_authority = {"remark": "automatic"}
+
+        existing_raw = self._db.get_project_status_update_policy(deliverable_id)
+        effective_cred = credential_ref
+        if not effective_cred and existing_raw and existing_raw.get("binding"):
+            effective_cred = existing_raw["binding"].get("credential_ref")
+        if not effective_cred:
+            effective_cred = "domain"
+
+        self._db.set_project_status_update_policy(
+            deliverable_id,
+            mode="automatic",
+            enabled=True,
+            external_key=None,
+            match_rule_json=match_rule_json,
+            mapping_json=mapping_json,
+            field_authority=field_authority,
+            credential_ref=effective_cred,
+            interval_minutes=15,
+        )
+
+        sig = compute_config_signature(source_type, match_rule)
+        fingerprint = f"agg:auto_anchor:{sig}"
+        flat_fields = []
+        for val in default_mapping.values():
+            if isinstance(val, (list, tuple)):
+                flat_fields.extend(str(x) for x in val)
+            elif val:
+                flat_fields.append(str(val))
+        report_json = json.dumps({"fields": flat_fields}, ensure_ascii=False)
+        for _ in range(2):
+            self._db.record_mapping_observation(
+                deliverable_id,
+                source_type,
+                result_state="matched",
+                external_key=None,
+                candidate_fingerprint=fingerprint,
+                candidate_count=1,
+                candidate_summary_json="[]",
+                field_report_json=report_json,
+                config_signature=sig,
+            )
+
+        run_res = self.run_once(
+            deliverable_id=deliverable_id,
+            trigger_type="sync_now",
+            validate_runtime_prerequisites=False,
+        )
+        first_item = run_res.results[0] if run_res.results else None
+        outcome = getattr(first_item, "outcome", "unknown") if first_item else "no_result"
+        final_state = getattr(first_item, "final_state", None) if first_item else None
+        run_id = getattr(first_item, "run_id", None) if first_item else None
+        applied_fields = list(getattr(first_item, "applied_fields", [])) if first_item else []
+        error_msg = getattr(first_item, "error_message", None) if first_item else None
+
+        return {
+            "deliverableId": deliverable_id,
+            "carType": clean_car,
+            "matchRule": match_rule,
+            "runId": run_id,
+            "outcome": outcome,
+            "finalState": final_state,
+            "appliedFields": applied_fields,
+            "errorMessage": error_msg,
+        }
 
 
 # ── 生产 registry ──────────────────────────────────────────────

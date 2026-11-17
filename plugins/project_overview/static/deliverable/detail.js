@@ -37,7 +37,9 @@ import {
 } from "./policy-logic.js";
 import { InteractiveResult, StatusChart } from "./status-chart.js";
 
-const BACK_HASH = "#p/project-overview/details";
+const BACK_HASH = "#p/workbench/project";
+// v2：详情页分页签，一次只看一类信息（需求 D6/D7/D11）。
+const DETAIL_TABS = [["data", "数据与统计"], ["info", "基本信息"], ["sync", "同步设置"], ["records", "同步记录"]];
 
 function hostFn(name) {
   const fn = typeof window !== "undefined" ? window[name] : undefined;
@@ -167,6 +169,8 @@ export function DeliverableDetail({ item, overview, version, reloadOverview, rep
   const capabilities = item.sourceInfo && typeof item.sourceInfo === "object" ? item.sourceInfo : {};
   const risk = overdueRiskSummary(item);
 
+  // 各页签一直挂载、只隐藏：同步就绪状态来自「同步记录」里的面板，切换页签不能丢。
+  const [tab, setTab] = useState("data");
   const [editOpen, setEditOpen] = useState(false);
   const [editNotice, setEditNotice] = useState("");
   const draftDirty = useRef(false);
@@ -296,7 +300,7 @@ export function DeliverableDetail({ item, overview, version, reloadOverview, rep
   return html`<article class="deliverable-detail-page">
     <div class="deliverable-detail-page-head">
       <div class="deliverable-detail-page-nav">
-        <a class="segment back-to-list-btn" href=${BACK_HASH} aria-label="返回交付物列表">← 返回交付物列表</a>
+        <a class="segment back-to-list-btn" href=${BACK_HASH} aria-label="返回项目">← 返回项目</a>
       </div>
       <div class="deliverable-detail-title-row">
         <div>
@@ -343,8 +347,13 @@ export function DeliverableDetail({ item, overview, version, reloadOverview, rep
           />`)}
     </section>
 
+    <nav class="dd-tabs" role="tablist" aria-label="交付物详情">
+      ${DETAIL_TABS.map(([key, label]) => html`<button key=${key} type="button" role="tab" aria-selected=${tab === key ? "true" : "false"}
+        class=${`dd-tab${tab === key ? " is-active" : ""}`} onClick=${() => setTab(key)}>${label}</button>`)}
+    </nav>
+    <div class="dd-tabpanel" role="tabpanel" hidden=${tab !== "data"}>
     <section class="deliverable-page-meta-section overview-band">
-      <h5 class="section-sub-title">交付物配置</h5>
+      <h5 class="section-sub-title">当前状态</h5>
       <${StatusChart}
         item=${item}
         ewoData=${ewoData}
@@ -374,16 +383,7 @@ export function DeliverableDetail({ item, overview, version, reloadOverview, rep
           return apiRequest(path, { method: "POST", body });
         }}
       />`}
-      <${PropertyGrid}
-        item=${item}
-        displayItem=${displayItem}
-        phase=${overview && overview.phase}
-        latestItem=${latestItem}
-        onNoteSaved=${replaceOverview}
-      />
-      <${Associations} item=${item} />
     </section>
-
     <section class=${formKey ? "deliverable-form-analysis" : "deliverable-analysis-panel"} aria-label=${`${item.name} 各科室完成情况与明细`}>
       ${formKey
         ? html`<${FormAnalysisPanel} item=${item} version=${version} ctl=${formCtl} onViewData=${setEwoData} />`
@@ -407,7 +407,21 @@ export function DeliverableDetail({ item, overview, version, reloadOverview, rep
             />`}
           />`}
     </section>
-
+    </div>
+    <div class="dd-tabpanel" role="tabpanel" hidden=${tab !== "info"}>
+    <section class="deliverable-page-meta-section overview-band">
+      <h5 class="section-sub-title">基本信息</h5>
+      <${PropertyGrid}
+        item=${item}
+        displayItem=${displayItem}
+        phase=${overview && overview.phase}
+        latestItem=${latestItem}
+        onNoteSaved=${replaceOverview}
+      />
+      <${Associations} item=${item} />
+    </section>
+    </div>
+    <div class="dd-tabpanel" role="tabpanel" hidden=${tab !== "sync"}>
     <section class="deliverable-policy-panel" aria-label=${`${item.name} 更新方式`}>
       <${PolicyPanel}
         key=${item.id}
@@ -418,9 +432,8 @@ export function DeliverableDetail({ item, overview, version, reloadOverview, rep
         onReloadOverview=${reloadOverview}
       />
     </section>
-
-    <details class="deliverable-evidence-disclosure">
-      <summary>外部同步与技术证据（点击展开）</summary>
+    </div>
+    <div class="dd-tabpanel" role="tabpanel" hidden=${tab !== "records"}>
       <section class="deliverable-evidence-panel" aria-label=${`${item.name} 外部同步与证据`}>
         <${EvidencePanel}
           item=${item}
@@ -430,6 +443,6 @@ export function DeliverableDetail({ item, overview, version, reloadOverview, rep
           onSynced=${onEvidenceSynced}
         />
       </section>
-    </details>
+    </div>
   </article>`;
 }

@@ -2089,8 +2089,37 @@ def test_zcode_doctor_reports_codex_luna_max_policy(monkeypatch, tmp_path, capsy
     })
     assert supervisor.doctor(tmp_path) == 0
     output = capsys.readouterr().out
-    assert 'Codex lead: gpt-5.6-luna / max / native' in output
+    # 2026-10-31 doctor 契约：默认（无 VSE_CODEX_CONFIG）报告交互式 ZCode lead；
+    # 显式提供 VSE_CODEX_CONFIG 时才校验并报告 Codex lead 策略。
+    assert 'Lead: interactive ZCode' in output
     assert 'ZCode slot pro: gemini-pro-agent / high' in output
+
+
+def test_zcode_doctor_reports_explicit_codex_policy(monkeypatch, tmp_path, capsys):
+    """显式 VSE_CODEX_CONFIG 时 doctor 报告 Codex lead 模型与推理档位。"""
+    cfg = {
+        'worker_agent': 'zcode-app-server',
+        'zcode': {
+            'node_executable': str(tmp_path / 'node.exe'),
+            'cli_entry': str(tmp_path / 'zcode.cjs'),
+            'model_slots': {
+                'flash': {'model': 'gemini-3.8-flash-high', 'thinking_level': 'high'},
+            },
+        },
+    }
+    (tmp_path / 'node.exe').write_text('', encoding='utf-8')
+    (tmp_path / 'zcode.cjs').write_text('', encoding='utf-8')
+    codex_config = tmp_path / 'codex-config.toml'
+    codex_config.write_text('model = "gpt-5.6-luna"\nmodel_reasoning_effort = "max"\n', encoding='utf-8')
+    monkeypatch.setattr(supervisor, 'config', lambda _: cfg)
+    monkeypatch.setattr(supervisor.zcode_worker, 'verify_guard', lambda _: None)
+    monkeypatch.setattr(supervisor.zcode_worker, 'load_runtime', lambda _: {
+        'model': {'modelId': 'gemini-3.8-flash-high'},
+    })
+    monkeypatch.setenv('VSE_CODEX_CONFIG', str(codex_config))
+    assert supervisor.doctor(tmp_path) == 0
+    output = capsys.readouterr().out
+    assert 'Lead: gpt-5.6-luna / max / native' in output
 
 
 def test_zcode_dry_run_records_selected_pro_model_slot(monkeypatch, tmp_path):

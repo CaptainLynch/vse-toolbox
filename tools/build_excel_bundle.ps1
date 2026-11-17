@@ -65,17 +65,12 @@ $resolvedWorkDir = (Resolve-Path -LiteralPath $WorkDir).Path
 
 # Spec file checks
 $webuiSpec = Join-Path $repoRoot "VSE-WebUI.spec"
-$workerSpec = Join-Path $repoRoot "VSE-ExcelWorker.spec"
 
 if (-not (Test-Path -LiteralPath $webuiSpec -PathType Leaf)) {
     throw "Spec file not found: $webuiSpec"
 }
-if (-not (Test-Path -LiteralPath $workerSpec -PathType Leaf)) {
-    throw "Spec file not found: $workerSpec"
-}
 
 $webuiWork = Join-Path $resolvedWorkDir "webui"
-$workerWork = Join-Path $resolvedWorkDir "worker"
 
 if ($Clean) {
     Assert-SafeRuntimePath -PathToCheck $resolvedWorkDir -RuntimeRootPath $resolvedRuntime
@@ -87,11 +82,8 @@ if ($Clean) {
 if (-not (Test-Path -LiteralPath $webuiWork)) {
     New-Item -ItemType Directory -Path $webuiWork -Force | Out-Null
 }
-if (-not (Test-Path -LiteralPath $workerWork)) {
-    New-Item -ItemType Directory -Path $workerWork -Force | Out-Null
-}
 
-Write-Host "Building Excel dual-executable bundle..."
+Write-Host "Building single-executable VSE-WebUI bundle..."
 Write-Host "Output Directory: $resolvedOutputDir"
 Write-Host "Working Directory: $resolvedWorkDir"
 
@@ -108,38 +100,26 @@ if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller failed for VSE-WebUI.spec with exit code $LASTEXITCODE"
 }
 
-# VSE-WebUI is a onedir bundle (exe + _internal/ + plugins/). The Excel Worker
-# stays single-file and must sit beside VSE-WebUI.exe, where the process
-# controller looks for it.
+# VSE-WebUI is a onedir bundle (exe + _internal/ + plugins/) and now doubles as
+# the Excel Worker: the host re-launches itself with the `--excel-worker`
+# sentinel instead of a sibling executable (2026-10-09 advisor-reviewed plan A).
 $bundleDir = Join-Path $resolvedOutputDir "VSE-WebUI"
 
-# 2. Build VSE-ExcelWorker
-Write-Host "==> Building VSE-ExcelWorker executable..."
-& $PythonExecutable -m PyInstaller `
-    --clean `
-    --noconfirm `
-    --distpath $bundleDir `
-    --workpath $workerWork `
-    $workerSpec
-
-if ($LASTEXITCODE -ne 0) {
-    throw "PyInstaller failed for VSE-ExcelWorker.spec with exit code $LASTEXITCODE"
-}
-
-# 3. Verify sibling executables exist and are regular files
+# 2. Verify the host executable exists and is a regular file
 $webuiExe = Join-Path $bundleDir "VSE-WebUI.exe"
 $workerExe = Join-Path $bundleDir "VSE-ExcelWorker.exe"
 
 if (-not (Test-Path -LiteralPath $webuiExe -PathType Leaf)) {
     throw "Verification failed: '$webuiExe' does not exist or is not a regular file."
 }
-if (-not (Test-Path -LiteralPath $workerExe -PathType Leaf)) {
-    throw "Verification failed: '$workerExe' does not exist or is not a regular file."
+# 单 exe 部署：不应再产出同目录 Worker。旧目录升级时遗留的 VSE-ExcelWorker.exe
+# 不再被调用（controller 只自调起宿主），但必须显式拦下，避免误以为仍是旧布局。
+if (Test-Path -LiteralPath $workerExe) {
+    throw "Verification failed: '$workerExe' must not exist in the single-executable bundle."
 }
 
 Write-Host "Verification succeeded:"
-Write-Host "  - $webuiExe"
-Write-Host "  - $workerExe"
+Write-Host "  - $webuiExe (host + Excel Worker via --excel-worker sentinel)"
 
 $checksumFile = Join-Path $bundleDir "SHA256SUMS.txt"
 $bundlePrefix = $bundleDir.TrimEnd('\', '/').Length + 1
@@ -169,4 +149,4 @@ if ($Clean -or (-not $NoCleanup)) {
     Write-Host "Cleaned temporary work directory: $resolvedWorkDir"
 }
 
-Write-Host "Dual-executable bundle build completed successfully."
+Write-Host "Single-executable bundle build completed successfully."

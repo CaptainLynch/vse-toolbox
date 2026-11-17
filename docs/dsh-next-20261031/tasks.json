@@ -1,0 +1,4424 @@
+{
+  "schema_version": 1,
+  "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+  "source_evidence": {
+    "baseline": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+    "branch": "refactor/ux-v2",
+    "trackedDirty": false,
+    "session": {
+      "database": "C:/Users/Lynch/.zcode/cli/db/db.sqlite（主控只读检索；本修订未读取原始数据库文件）",
+      "sessionId": "sess_098394c3-715d-4051-875c-6ff7f4a3775d",
+      "title": "VSE Toolbox v2 ZCode 执行计划落实",
+      "lastOutcome": "error",
+      "sequences": {
+        "1696": "工具输出 3530 passed, 6 skipped, 13 warnings in 437.58s；这是W16-03提交前的历史全量，不是本轮复跑。",
+        "1712": "确认提交 b781066。",
+        "1715": "执行 python tools/build_v2_test_install.py > .runtime/w16_03_build.log。",
+        "1717": "exit 1。",
+        "1716/1718": "exceed quota limit。"
+      }
+    },
+    "buildFailure": {
+      "log": ".runtime/w16_03_build.log（特定构建日志）",
+      "location": "tools/build_v2_test_install.py:126 old.unlink()",
+      "error": "PermissionError WinError 5",
+      "target": "dist/v2-test/updates/vse-app-2.3.10.vsepkg",
+      "rootCause": "未定：文件被占用或ACL拒绝均可能；未验证前不得断言单一根因。"
+    },
+    "verification": "本轮DSH只读执行 tests/test_local_security.py、tests/test_route_contract_snapshot.py、tests/test_time_rules.py、tests/test_time_display_frontend.py，共44 passed in 7.71s；项目地图 python tools/generate_project_map.py --check 退出1（out of date）。头尾HEAD相同。未跑当前HEAD全量回归。",
+    "history": "CURRENT_STATE停在Wave9，记录3514 passed/6 skipped，包2.3.14未真机安装；HEAD实际新增W16-03提交b781066。历史flake8曾显示web/app.py F811重复导入，echo FLAKE-OK不能当成功，00任务先核实真实退出码与输出。不能把历史测试数算当前HEAD通过。",
+    "findings": [
+      "web/security.py及vse_boot/supervisor.py:431-435：启动票据进入?boot=和instance.json bootToken。10秒一次性票据与_show_existing重复使用旧URL、12小时会话过期需真实浏览器验证。",
+      "web/security.py:install_local_security无条件安装自动认证测试客户端，通用测试会自动补Cookie和Origin。需显式夹具与原生负向测试。",
+      "tools/wave_gate.py：package_sign始终SKIP；overall_passed仅检查无FAIL；--focus隐式skip_full。PASS不等于发布通过。",
+      "tests/test_route_contract_snapshot.py：记录路径/方法/函数名及源码形状，不是完整响应行为测试，也不检测迁移代码真正被执行。",
+      "services/project_status_scheduler.py仍按intervalSeconds循环；未在所查生产链找到固定09:00/16:00执行槽。plugins/sign_daily/backend.py未见08:30作业注册。",
+      "plugins/workbench/static/reports.js仍用go(action.href)跳转，并保留独立表单统计入口。",
+      "tests/test_time_display_frontend.py只约束zh-CN，未锁Asia/Shanghai；core/time_rules.py未在已查项目状态生产调用方消费。",
+      "plugins/workbench/static/wizard.js:330-339只阻断422，其他创建错误被吞后进入下一步；269-279标记完成后跳自动同步，选择交付物未在已查auto-sync/enable-flow中消费。",
+      "plugins/excel_tasks/static/workspace.js:701为EnvCheckCard env=null；backend.py只注册空插件；新excel_path_safety helper在已查core/excel_tasks、excel_worker、web/excel_boot没有接线。",
+      "W13实际迁到web/*_boot.py，属于模块化中间态；W14两项仅_impl.py兼容包壳，职责拆分未完成。",
+      "plugins/workbench/backend.py已有PATCH/归档接口；static/projects.js仍主要新建/切换，编辑归档和可配置车型需接通。",
+      "本轮未对B4所有潜在调用方做全仓库扫描，未在核心身份、Aras/TDC auth、同步runner和host_boot发现统一续期实现；任务先冻结契约再补链路。",
+      "tools/build_v2_test_install.py:32 OUT固定为dist/v2-test；:76-94 ensure_test_key复用既有pem；:125-126 unlink无PermissionError处理；与WinError5现场一致，根因未定。",
+      "web/static/host/chrome/TaskCenter.js轮询/api/tasks；services/crawl_task_runner.py ARTIFACT_RETENTION_DAYS=7并在任务结束后prune_old_artifacts；现有tests/test_tasks_cleanup_guard.py与tests/test_tasks_lifecycle.py，需核实真实链路。",
+      "plugins/project_overview/static/deliverable/simple.js已有排序/复制/列显隐，列身份多处key缺失回退c.index；46先核实再修缺口，不重写。",
+      "vse_boot/supervisor.py::open_window在后台线程启动pywebview，_show_existing复用instance.json URL；autostart.py写HKCU Run；free_port/port_is_free/probe_app已存在；47核实主线程兼容与降级顺序。",
+      "docs/refactor-v2/ADR-0001-multi-project-background-sync.md与L0_SPIKE_20261031.md已存在；48/49复用并补现状，不实施多项目同步或启动器替换。",
+      "托盘TrayHandle.notify已存在；W15-01已提交，Probe开发代码/TDC feishukey/workbench/feishu_tasks均保留，不重删。"
+    ]
+  },
+  "common_constraints": [
+    "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+    "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+    "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+    "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+    "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+    "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+    "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+    "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+    "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+    "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+    "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+    "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+    "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+    "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+    "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。"
+  ],
+  "tasks": [
+    {
+      "task_id": "DSH-V2-00",
+      "objective": "重建b781066的验收基线并纠正进度记录",
+      "owned_scope": [
+        "PROJECT_MAP.md",
+        "memory/CURRENT_STATE.md",
+        "docs/refactor-v2/REQ_TRACEABILITY.md"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md",
+        "tools/generate_project_map.py"
+      ],
+      "depends_on": [],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests",
+          "-q"
+        ],
+        [
+          "python",
+          "tools/generate_project_map.py",
+          "--write"
+        ],
+        [
+          "python",
+          "tools/generate_project_map.py",
+          "--check"
+        ],
+        [
+          "python",
+          "-m",
+          "flake8",
+          "web/app.py"
+        ],
+        [
+          "git",
+          "diff",
+          "--check"
+        ]
+      ],
+      "acceptance_criteria": [
+        "运行完整pytest并记录实际结果与skip原因，不修产品代码",
+        "地图生成后--check通过",
+        "先核实历史flake8记录：web/app.py F811重复导入以真实flake8退出码与输出为准，echo FLAKE-OK不能当成功",
+        "3530 passed/6 skipped/13 warnings只作W16-03提交前历史全量记录；本轮44 passed与地图--check失败单独记录，不能混写",
+        "将W16-03记为已提交待集成验收，不能把3514/6当作当前全量结果",
+        "记录构建WinError5证据但不在本任务修构建脚本（归44）",
+        "保留所有无关未跟踪文件"
+      ],
+      "risk_class": "low",
+      "execution_mode": "sync",
+      "dispatch_gate": "ready_after_dependencies",
+      "size": "small",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "PROJECT_MAP.md",
+          "memory/CURRENT_STATE.md",
+          "docs/refactor-v2/REQ_TRACEABILITY.md"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。",
+        "先核实历史flake8记录：web/app.py F811重复导入必须以真实flake8退出码与输出为准，echo FLAKE-OK不能当成功。",
+        "3530 passed/6 skipped/13 warnings是W16-03提交前历史全量；本轮44 passed与地图--check失败单独记录，不能混写。",
+        "完整pytest、地图生成、地图--check与flake8都必须有真实退出码；失败如实记录。"
+      ],
+      "wave": 0,
+      "budget_pct": 5,
+      "workflow_refs": [
+        "W0-01",
+        "W0-02"
+      ],
+      "rollback_plan": "回退本轮对PROJECT_MAP.md的重新生成与memory/CURRENT_STATE.md、docs/refactor-v2/REQ_TRACEABILITY.md的改动（按文件git checkout上一提交）；不删除任何未跟踪文件与既有日志。"
+    },
+    {
+      "task_id": "DSH-V2-01",
+      "objective": "补充未经自动认证测试客户端的本机安全集成测试",
+      "owned_scope": [
+        "tests/test_local_security_integration.py"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md",
+        "tests/test_local_security.py"
+      ],
+      "depends_on": [
+        "DSH-V2-00"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_local_security.py",
+          "tests/test_local_security_integration.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "真实HTTP或原生客户端覆盖首次启动、10秒后重开、票据重放、会话过期、多app隔离",
+        "不得使用生产代码自动补Cookie和Origin的测试客户端作为安全证明",
+        "本任务只加测试并报告失败，不削弱断言"
+      ],
+      "risk_class": "medium",
+      "execution_mode": "sync",
+      "dispatch_gate": "ready_after_dependencies",
+      "size": "small",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "tests/test_local_security_integration.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。",
+        "使用真实HTTP或原生客户端，不安装自动认证测试客户端；覆盖首次启动、10秒后重开、票据重放、会话过期、多app隔离。",
+        "本任务只加测试，不改产品代码。"
+      ],
+      "wave": 1,
+      "budget_pct": 3,
+      "workflow_refs": [
+        "W16-02"
+      ],
+      "rollback_plan": "删除新增tests/test_local_security_integration.py；产品代码未改，无需回退运行时；保留已有tests/test_local_security.py。"
+    },
+    {
+      "task_id": "DSH-V2-02",
+      "objective": "冻结启动票据传递和安全重开窗口的最小修复契约",
+      "owned_scope": [
+        "docs/refactor-v2/DSH_LOCAL_SECURITY_CONTRACT.md"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md"
+      ],
+      "depends_on": [
+        "DSH-V2-01"
+      ],
+      "verification_commands": [
+        [
+          "git",
+          "diff",
+          "--check"
+        ]
+      ],
+      "acceptance_criteria": [
+        "明确如何去掉URL查询串和instance.json明文票据",
+        "无会话的新浏览器重开和12小时会话过期有受控恢复路径",
+        "新票据签发不允许未认证任意本机页面调用",
+        "冻结接口、字段、状态、错误、旧启动器兼容和整包要求"
+      ],
+      "risk_class": "high",
+      "execution_mode": "sync",
+      "dispatch_gate": "lead_design_and_approval",
+      "size": "small",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "docs/refactor-v2/DSH_LOCAL_SECURITY_CONTRACT.md"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。",
+        "02是设计门：必须先冻结票据交换接口、字段、状态、错误码、10秒TTL、重放拒绝、12小时会话过期重开、旧启动器兼容与整包要求；未批准不得派03。",
+        "契约文本不得包含真实凭据、令牌、内部URL或用户名；示例用合成值。"
+      ],
+      "wave": 2,
+      "budget_pct": 2,
+      "workflow_refs": [
+        "W16-02",
+        "W16-03"
+      ],
+      "rollback_plan": "删除或回退docs/refactor-v2/DSH_LOCAL_SECURITY_CONTRACT.md到上一提交，并取消03派发；不触碰现有安全实现。"
+    },
+    {
+      "task_id": "DSH-V2-03",
+      "objective": "按已批准安全契约修复票据传递和受控重新打开",
+      "owned_scope": [
+        "vse_boot/supervisor.py",
+        "webui.py",
+        "web/security.py",
+        "tests/test_boot_ticket_transport.py",
+        "tests/test_local_security.py"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md",
+        "tests/test_vse_boot_supervisor.py"
+      ],
+      "depends_on": [
+        "DSH-V2-02",
+        "DSH-V2-47"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_boot_ticket_transport.py",
+          "tests/test_local_security.py",
+          "tests/test_vse_boot_supervisor.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "票据不进入请求query、instance.json、常规日志或诊断",
+        "慢启动、重复打开、重启后均能受控建立会话",
+        "原有写保护保持拒绝缺失或错误认证",
+        "只能按02已冻结接口实现"
+      ],
+      "risk_class": "high",
+      "execution_mode": "async",
+      "dispatch_gate": "requires_approved_02",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "vse_boot/supervisor.py",
+          "webui.py",
+          "web/security.py",
+          "tests/test_boot_ticket_transport.py",
+          "tests/test_local_security.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。",
+        "实现必须逐条满足02已批准契约：票据不得进入请求query、instance.json、常规日志或诊断包；重放必须返回明确错误；受控重开走一次性交换。",
+        "vse_boot/supervisor.py与webui.py的改动必须同一提交；保留旧启动器兼容；不向web/app.py添加业务路由。",
+        "03与47共同拥有vse_boot/supervisor.py：03必须在47集成后的HEAD上实施；47只负责降级/端口/自启，重开URL与票据传递由03按02契约处理。"
+      ],
+      "wave": 3,
+      "budget_pct": 3,
+      "workflow_refs": [
+        "W16-02",
+        "W16-03"
+      ],
+      "rollback_plan": "对实现提交执行git revert；恢复vse_boot/supervisor.py、webui.py、web/security.py与两份测试；若已生成app包，回退到上一已验收版本，不迁移用户数据。"
+    },
+    {
+      "task_id": "DSH-V2-04",
+      "objective": "修复前端票据清理及失败反馈",
+      "owned_scope": [
+        "web/static/host/boot-exchange.js",
+        "web/static/host/shell.js",
+        "tests/test_boot_exchange_ui.py"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md"
+      ],
+      "depends_on": [
+        "DSH-V2-03"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_boot_exchange_ui.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "从约定传递位置取票据并在网络请求前清理地址栏",
+        "交换失败返回失败状态并展示可恢复提示，不返回伪成功",
+        "刷新、已有有效Cookie、超时和服务重启均有真实浏览器场景"
+      ],
+      "risk_class": "medium",
+      "execution_mode": "async",
+      "dispatch_gate": "ready_after_dependencies",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "web/static/host/boot-exchange.js",
+          "web/static/host/shell.js",
+          "tests/test_boot_exchange_ui.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。"
+      ],
+      "wave": 4,
+      "budget_pct": 2,
+      "workflow_refs": [
+        "W16-02"
+      ],
+      "rollback_plan": "对web/static/host/boot-exchange.js、shell.js与新增测试执行git revert；前端回退到上一提交并刷新缓存；不影响票据后端。"
+    },
+    {
+      "task_id": "DSH-V2-05",
+      "objective": "将自动认证测试客户端移出产品安全模块",
+      "owned_scope": [
+        "web/security.py",
+        "tests/security_client_fixture.py",
+        "tests/conftest.py",
+        "tests/test_local_security.py"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md",
+        "tests/test_route_contract_snapshot.py"
+      ],
+      "depends_on": [
+        "DSH-V2-03"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_local_security.py",
+          "tests/test_route_contract_snapshot.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "生产模块不安装会掩盖未认证访问的test_client替身",
+        "普通业务测试显式选择已认证fixture，负向安全测试使用原生客户端",
+        "不得全局自动补齐所有安全测试请求"
+      ],
+      "risk_class": "high",
+      "execution_mode": "async",
+      "dispatch_gate": "lead_review_security_boundary",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "web/security.py",
+          "tests/security_client_fixture.py",
+          "tests/conftest.py",
+          "tests/test_local_security.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。",
+        "生产安全模块不得安装自动补Cookie/Origin的测试客户端；测试替身只允许在tests/下。",
+        "负向测试必须证明未认证请求被拒绝；不得降低local_guard或改生产安全策略来让测试通过。"
+      ],
+      "wave": 4,
+      "budget_pct": 3,
+      "workflow_refs": [
+        "W16-03"
+      ],
+      "rollback_plan": "对web/security.py、tests/security_client_fixture.py、tests/conftest.py、tests/test_local_security.py执行git revert；恢复自动测试客户端与原有负向覆盖；不删除生产安全配置。"
+    },
+    {
+      "task_id": "DSH-V2-06",
+      "objective": "为wave_gate增加严格release模式",
+      "owned_scope": [
+        "tools/wave_gate.py",
+        "tests/test_wave_gate_release.py"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md"
+      ],
+      "depends_on": [
+        "DSH-V2-00"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_wave_gate_release.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "dev与release状态明确区分",
+        "release有必需项SKIP/缺文件/未打包/未验签时退出非0",
+        "浏览器verified来自实际报告而非仅发现可执行文件",
+        "--focus不得隐式让release全量回归被跳过"
+      ],
+      "risk_class": "medium",
+      "execution_mode": "async",
+      "dispatch_gate": "ready_after_dependencies",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "tools/wave_gate.py",
+          "tests/test_wave_gate_release.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。"
+      ],
+      "wave": 2,
+      "budget_pct": 2,
+      "workflow_refs": [
+        "W17-01",
+        "W17-03"
+      ],
+      "rollback_plan": "对tools/wave_gate.py与tests/test_wave_gate_release.py执行git revert；release模式回退为dev行为；不改变已有门禁记录。"
+    },
+    {
+      "task_id": "DSH-V2-07",
+      "objective": "补充路由接线与实际响应契约测试",
+      "owned_scope": [
+        "tests/test_route_contract_behavior.py",
+        "tests/test_route_contract_snapshot.py"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md"
+      ],
+      "depends_on": [
+        "DSH-V2-00"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_route_contract_behavior.py",
+          "tests/test_route_contract_snapshot.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "验证handler所属模块和真正调用新register",
+        "分领域至少覆盖成功、失败、写保护和下载头",
+        "保持sync-now的200/ok语义",
+        "不得重写golden来掩盖意外兼容变化"
+      ],
+      "risk_class": "medium",
+      "execution_mode": "async",
+      "dispatch_gate": "ready_after_dependencies",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "tests/test_route_contract_behavior.py",
+          "tests/test_route_contract_snapshot.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。"
+      ],
+      "wave": 2,
+      "budget_pct": 2,
+      "workflow_refs": [
+        "W13-01",
+        "W13-09b"
+      ],
+      "rollback_plan": "删除tests/test_route_contract_behavior.py并回退tests/test_route_contract_snapshot.py；恢复旧快照；不影响产品路由。"
+    },
+    {
+      "task_id": "DSH-V2-08",
+      "objective": "建立可离线运行的真实浏览器关键路径夹具",
+      "owned_scope": [
+        "tests/browser/test_v2_user_paths.py",
+        "tests/browser/v2_fixtures.py",
+        "docs/refactor-v2/DSH_BROWSER_SETUP.md"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md"
+      ],
+      "depends_on": [
+        "DSH-V2-00"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/browser/test_v2_user_paths.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "使用固定离线依赖或现有浏览器，不进入生产依赖",
+        "真实DOM执行ESModule和用户点击；源文本断言不能替代",
+        "无浏览器时清楚报告缺失且release必须失败",
+        "夹具覆盖登录/向导/报告入口的能力，不访问真实内网"
+      ],
+      "risk_class": "medium",
+      "execution_mode": "async",
+      "dispatch_gate": "ready_after_dependencies",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "tests/browser/test_v2_user_paths.py",
+          "tests/browser/v2_fixtures.py",
+          "docs/refactor-v2/DSH_BROWSER_SETUP.md"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。"
+      ],
+      "wave": 2,
+      "budget_pct": 2,
+      "workflow_refs": [
+        "W17-01",
+        "W17-02"
+      ],
+      "rollback_plan": "删除tests/browser/test_v2_user_paths.py、tests/browser/v2_fixtures.py与DSH_BROWSER_SETUP.md；保留既有浏览器通道测试；不卸载本机浏览器。"
+    },
+    {
+      "task_id": "DSH-V2-09",
+      "objective": "提供北京时间统一前端格式函数和时区行为测试",
+      "owned_scope": [
+        "web/static/host/time-format.js",
+        "tests/test_beijing_time_contract.py"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md",
+        "tests/test_time_rules.py"
+      ],
+      "depends_on": [
+        "DSH-V2-00"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_beijing_time_contract.py",
+          "tests/test_time_rules.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "显示明确Asia/Shanghai，不仅zh-CN",
+        "UTC/上海/洛杉矶浏览器环境同一时刻显示一致",
+        "纯日期不位移；无时区历史值依照来源契约"
+      ],
+      "risk_class": "medium",
+      "execution_mode": "async",
+      "dispatch_gate": "ready_after_dependencies",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "web/static/host/time-format.js",
+          "tests/test_beijing_time_contract.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。"
+      ],
+      "wave": 2,
+      "budget_pct": 2,
+      "workflow_refs": [
+        "W10-01",
+        "W10-02"
+      ],
+      "rollback_plan": "对web/static/host/time-format.js与tests/test_beijing_time_contract.py执行git revert；页面回退到既有zh-CN口径。"
+    },
+    {
+      "task_id": "DSH-V2-10",
+      "objective": "接入用户页面的北京时间格式并收紧时间门禁",
+      "owned_scope": [
+        "plugins/workbench/static/common.js",
+        "plugins/system_query/static/query.js",
+        "plugins/excel_tasks/static/logic.js",
+        "plugins/excel_tasks/static/shared.js",
+        "tests/test_time_display_frontend.py"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md",
+        "tests/test_beijing_time_contract.py"
+      ],
+      "depends_on": [
+        "DSH-V2-09"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_time_display_frontend.py",
+          "tests/test_beijing_time_contract.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "只修改已定位时间显示点，更多文件需lead先扩scope",
+        "新增断言检查时区而非语言",
+        "日期与时间点分开，保存值不改"
+      ],
+      "risk_class": "medium",
+      "execution_mode": "async",
+      "dispatch_gate": "ready_after_dependencies",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "plugins/workbench/static/common.js",
+          "plugins/system_query/static/query.js",
+          "plugins/excel_tasks/static/logic.js",
+          "plugins/excel_tasks/static/shared.js",
+          "tests/test_time_display_frontend.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。"
+      ],
+      "wave": 3,
+      "budget_pct": 2,
+      "workflow_refs": [
+        "W10-02"
+      ],
+      "rollback_plan": "对plugins/workbench/static/common.js、system_query/static/query.js、excel_tasks/static/logic.js、shared.js与时间门禁测试执行git revert；保留core/time_rules.py。"
+    },
+    {
+      "task_id": "DSH-V2-11",
+      "objective": "将单一逾期规则接入项目展示真实调用链",
+      "owned_scope": [
+        "core/project_status_contracts.py",
+        "services/project_status_deliverable_analysis.py",
+        "tests/test_overdue_consumers.py"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md",
+        "tests/test_project_status_contracts.py",
+        "tests/test_time_rules.py"
+      ],
+      "depends_on": [
+        "DSH-V2-09"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_overdue_consumers.py",
+          "tests/test_project_status_contracts.py",
+          "tests/test_time_rules.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "同一输入列表和详情的逾期状态及天数一致",
+        "core/time_rules.py实际被生产调用",
+        "保持手工progress和effectiveProgress语义"
+      ],
+      "risk_class": "medium",
+      "execution_mode": "async",
+      "dispatch_gate": "ready_after_dependencies",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "core/project_status_contracts.py",
+          "services/project_status_deliverable_analysis.py",
+          "tests/test_overdue_consumers.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。"
+      ],
+      "wave": 3,
+      "budget_pct": 2,
+      "workflow_refs": [
+        "W10-01",
+        "W10-02"
+      ],
+      "rollback_plan": "对core/project_status_contracts.py、services/project_status_deliverable_analysis.py与新增测试执行git revert；恢复旧逾期展示；不改数据库。"
+    },
+    {
+      "task_id": "DSH-V2-12",
+      "objective": "修复向导失败吞掉与跨重启项目恢复",
+      "owned_scope": [
+        "plugins/workbench/static/wizard.js",
+        "tests/test_wizard_state.py",
+        "tests/test_wizard_failures.py"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md"
+      ],
+      "depends_on": [
+        "DSH-V2-00"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_wizard_state.py",
+          "tests/test_wizard_failures.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "401/403/500和网络错误不得被当作项目创建成功",
+        "保存项目ID与恢复步，不重复建项目",
+        "自启失败如实显示，勾选与未勾选不伪报生效",
+        "仅明确NotManaged可走已批准的单项目分支"
+      ],
+      "risk_class": "medium",
+      "execution_mode": "async",
+      "dispatch_gate": "ready_after_dependencies",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "plugins/workbench/static/wizard.js",
+          "tests/test_wizard_state.py",
+          "tests/test_wizard_failures.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。"
+      ],
+      "wave": 2,
+      "budget_pct": 2,
+      "workflow_refs": [
+        "W4-01"
+      ],
+      "rollback_plan": "对plugins/workbench/static/wizard.js与两份向导测试执行git revert；向导恢复旧行为并记录已知吞错缺陷，不删已保存项目。"
+    },
+    {
+      "task_id": "DSH-V2-13",
+      "objective": "把向导选择真正传给首次启用同步",
+      "owned_scope": [
+        "plugins/workbench/static/wizard.js",
+        "plugins/project_overview/static/auto-sync.js",
+        "web/static/host/onboarding-selection.js",
+        "tests/test_wizard_first_sync.py"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md"
+      ],
+      "depends_on": [
+        "DSH-V2-12"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_wizard_first_sync.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "selectedDeliverables真正约束启用范围",
+        "首次同步由真实任务触发，结果逐项展示",
+        "未开始或失败不能仅凭跳页就标记全完成",
+        "不跨插件import，用宿主模块或API交接"
+      ],
+      "risk_class": "medium",
+      "execution_mode": "async",
+      "dispatch_gate": "ready_after_dependencies",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "plugins/workbench/static/wizard.js",
+          "plugins/project_overview/static/auto-sync.js",
+          "web/static/host/onboarding-selection.js",
+          "tests/test_wizard_first_sync.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。"
+      ],
+      "wave": 3,
+      "budget_pct": 2,
+      "workflow_refs": [
+        "W4-01",
+        "W5-01"
+      ],
+      "rollback_plan": "对wizard.js、plugins/project_overview/static/auto-sync.js、web/static/host/onboarding-selection.js与测试执行git revert；保留用户已保存的交付物选择。"
+    },
+    {
+      "task_id": "DSH-V2-14",
+      "objective": "冻结企业会话续期和统一清除契约",
+      "owned_scope": [
+        "docs/refactor-v2/DSH_IDENTITY_CONTRACT.md"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md"
+      ],
+      "depends_on": [
+        "DSH-V2-00"
+      ],
+      "verification_commands": [
+        [
+          "git",
+          "diff",
+          "--check"
+        ]
+      ],
+      "acceptance_criteria": [
+        "区分401失效、403权限、网络和解析错误",
+        "并发共享续期，一次重放，未知副作用不重发",
+        "清除代次与续期竞态有状态机",
+        "明确现有DPAPI接口、fixture和错误码，禁止发明真实凭据"
+      ],
+      "risk_class": "high",
+      "execution_mode": "sync",
+      "dispatch_gate": "lead_design_and_approval",
+      "size": "small",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "docs/refactor-v2/DSH_IDENTITY_CONTRACT.md"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。",
+        "14是设计门：契约必须区分401失效、403权限、网络错误、解析错误；定义单飞续期、清除代次与并发过期只续期一次；未批准不得派15。",
+        "凭据只用DPAPI；令牌/密码不得进入日志、契约、诊断或测试夹具。"
+      ],
+      "wave": 2,
+      "budget_pct": 2,
+      "workflow_refs": [
+        "W2-01"
+      ],
+      "rollback_plan": "删除或回退docs/refactor-v2/DSH_IDENTITY_CONTRACT.md并取消15派发；保留现有会话实现与凭据。"
+    },
+    {
+      "task_id": "DSH-V2-15",
+      "objective": "实现企业会话续期协调器与清除代次",
+      "owned_scope": [
+        "services/session_recovery.py",
+        "core/domain_identity.py",
+        "tests/test_session_recovery.py"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md",
+        "tests/test_credential_provider.py"
+      ],
+      "depends_on": [
+        "DSH-V2-14"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_session_recovery.py",
+          "tests/test_credential_provider.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "10个并发过期请求只续期一次",
+        "每操作最多重放一次，取消及清除后旧请求不能回填",
+        "全部测试用假传输和内存凭据"
+      ],
+      "risk_class": "high",
+      "execution_mode": "async",
+      "dispatch_gate": "requires_approved_14",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "services/session_recovery.py",
+          "core/domain_identity.py",
+          "tests/test_session_recovery.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。",
+        "实现必须单飞续期并带清除代次：10个并发过期请求只续期一次；401/403/网络/解析分类处理；失败不得静默重试或换供应商。",
+        "不读现有keys；不改web/app.py；不把令牌写入日志或数据库明文字段。"
+      ],
+      "wave": 3,
+      "budget_pct": 3,
+      "workflow_refs": [
+        "W2-01",
+        "W3-01"
+      ],
+      "rollback_plan": "对services/session_recovery.py、core/domain_identity.py与测试执行git revert；清除代次相关迁移只增不删，回退代码后保留表但停用；不删除用户凭据。"
+    },
+    {
+      "task_id": "DSH-V2-16",
+      "objective": "接入Aras会话恢复链",
+      "owned_scope": [
+        "services/aras_auth.py",
+        "services/project_status_connectors.py",
+        "web/host_boot.py",
+        "tests/test_aras_session_recovery.py",
+        "web/app.py"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md"
+      ],
+      "depends_on": [
+        "DSH-V2-15",
+        "DSH-V2-25"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_aras_session_recovery.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "真实业务调用使用协调器，不能仅新增未消费helper",
+        "generation_unknown及不安全写操作不自动重放",
+        "登录后原位恢复受支持操作"
+      ],
+      "risk_class": "high",
+      "execution_mode": "async",
+      "dispatch_gate": "requires_approved_14",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "services/aras_auth.py",
+          "services/project_status_connectors.py",
+          "web/host_boot.py",
+          "tests/test_aras_session_recovery.py",
+          "web/app.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。",
+        "Aras真实业务调用必须消费统一续期协调器，禁止只新增未消费helper；web/app.py只做接线且与其他web/app.py任务串行。",
+        "保留旧登录路径回退；真实内网登录/续期不在本任务验收，保持待验证。",
+        "16与25共同拥有web/app.py：16必须在25集成后的HEAD上实施，web/app.py同一时间只允许一个写任务。"
+      ],
+      "wave": 4,
+      "budget_pct": 2,
+      "workflow_refs": [
+        "W2-01"
+      ],
+      "rollback_plan": "对services/aras_auth.py、services/project_status_connectors.py、web/host_boot.py、web/app.py的接线提交执行git revert（web/app.py必须整提交回退，不手工剪裁）；恢复旧Aras会话路径。"
+    },
+    {
+      "task_id": "DSH-V2-17",
+      "objective": "接入TDC恢复及统一退出清除",
+      "owned_scope": [
+        "services/tdc_auth.py",
+        "services/project_status_connectors.py",
+        "web/host_boot.py",
+        "tests/test_tdc_session_recovery.py"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md"
+      ],
+      "depends_on": [
+        "DSH-V2-16"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_tdc_session_recovery.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "TDC链实际消费统一恢复服务",
+        "清除会话与凭据结果准确；失败不伪报成功",
+        "保留feishukey协议字段和日报状态门禁",
+        "W3顶栏三档会话徽章（已连接/正在恢复/需要重新登录）与点击原位登录复用LoginDialog纳入验收"
+      ],
+      "risk_class": "high",
+      "execution_mode": "async",
+      "dispatch_gate": "requires_approved_14",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "services/tdc_auth.py",
+          "services/project_status_connectors.py",
+          "web/host_boot.py",
+          "tests/test_tdc_session_recovery.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。",
+        "TDC链必须消费统一恢复服务；统一退出清除覆盖Aras/TDC/身份/同步runner/host_boot；不得只改单一入口。",
+        "W3顶栏三档徽章（已连接/正在恢复/需要重新登录）与点击原位登录复用LoginDialog必须纳入验收；不改web/app.py。"
+      ],
+      "wave": 5,
+      "budget_pct": 3,
+      "workflow_refs": [
+        "W2-01",
+        "W3-01"
+      ],
+      "rollback_plan": "对services/tdc_auth.py、project_status_connectors.py、web/host_boot.py与测试执行git revert；恢复TDC旧路径与旧退出清除；不删统一退出所需配置。"
+    },
+    {
+      "task_id": "DSH-V2-18",
+      "objective": "实现固定时刻及当天补跑的纯计算模块",
+      "owned_scope": [
+        "services/schedule_policy.py",
+        "tests/test_schedule_policy.py"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md"
+      ],
+      "depends_on": [
+        "DSH-V2-09"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_schedule_policy.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "北京时间09:00和16:00，日报周一至周五08:30",
+        "支持增删时刻和暂停，开机/睡眠恢复不补过去日期",
+        "时钟回拨和跨午夜不重复生成同一执行槽"
+      ],
+      "risk_class": "medium",
+      "execution_mode": "async",
+      "dispatch_gate": "ready_after_dependencies",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "services/schedule_policy.py",
+          "tests/test_schedule_policy.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。"
+      ],
+      "wave": 3,
+      "budget_pct": 2,
+      "workflow_refs": [
+        "W6-01"
+      ],
+      "rollback_plan": "对services/schedule_policy.py与tests/test_schedule_policy.py执行git revert；不触碰调度器与槽数据。"
+    },
+    {
+      "task_id": "DSH-V2-19",
+      "objective": "冻结并实现执行槽持久化与租约边界",
+      "owned_scope": [
+        "plugins/sync_control/plugin.json",
+        "plugins/sync_control/backend.py",
+        "plugins/sync_control/store.py",
+        "tests/test_schedule_slots.py"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md"
+      ],
+      "depends_on": [
+        "DSH-V2-18"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_schedule_slots.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "lead先冻结(projectId,jobId,date,time)唯一键及崩溃恢复规则",
+        "使用host.table_prefix与增量host.migrate",
+        "旧版本可读，失败不得静默完成槽",
+        "禁止旧新两套调度同时执行"
+      ],
+      "risk_class": "high",
+      "execution_mode": "async",
+      "dispatch_gate": "lead_approves_storage_contract",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "plugins/sync_control/plugin.json",
+          "plugins/sync_control/backend.py",
+          "plugins/sync_control/store.py",
+          "tests/test_schedule_slots.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。",
+        "19是存储契约门：lead先冻结(projectId,jobId,date,time)唯一键、租约、崩溃恢复、当天补跑与暂停语义；未批准不得派20。",
+        "迁移只增不删；槽表不设全局单例，projectId必须是键的一部分；已有数据可回退读取。"
+      ],
+      "wave": 4,
+      "budget_pct": 3,
+      "workflow_refs": [
+        "W6-01"
+      ],
+      "rollback_plan": "对plugins/sync_control的plugin.json/backend.py/store.py与测试执行git revert；槽表迁移只增不删，回退后保留表但停用；已产生的槽记录先导出备份再停用。"
+    },
+    {
+      "task_id": "DSH-V2-20",
+      "objective": "将固定时刻执行槽接入唯一后台调度器",
+      "owned_scope": [
+        "services/project_status_scheduler.py",
+        "webui.py",
+        "tests/test_project_status_scheduler.py",
+        "tests/test_schedule_dispatch.py"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md"
+      ],
+      "depends_on": [
+        "DSH-V2-19",
+        "DSH-V2-03"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_project_status_scheduler.py",
+          "tests/test_schedule_dispatch.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "替换间隔派发主路径而非并存",
+        "重启/暂停/当前项目切换不重复派发",
+        "0个绑定显示未开启",
+        "不引入Windows计划任务"
+      ],
+      "risk_class": "high",
+      "execution_mode": "async",
+      "dispatch_gate": "requires_approved_19",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "services/project_status_scheduler.py",
+          "webui.py",
+          "tests/test_project_status_scheduler.py",
+          "tests/test_schedule_dispatch.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。",
+        "必须替换intervalSeconds主路径而不是新旧并存；保留暂停/恢复与单实例；webui.py改动串行。",
+        "调度失败不得重复创建副作用；旧调度数据在回退后可读。",
+        "20与03共同拥有webui.py：20必须在03集成后的HEAD上实施，不得回退03的票据/安全接线。"
+      ],
+      "wave": 5,
+      "budget_pct": 3,
+      "workflow_refs": [
+        "W6-01"
+      ],
+      "rollback_plan": "对services/project_status_scheduler.py、webui.py与调度测试执行git revert；恢复intervalSeconds旧循环；停用固定槽，保留槽数据。"
+    },
+    {
+      "task_id": "DSH-V2-21",
+      "objective": "提供调度时刻与暂停设置界面",
+      "owned_scope": [
+        "plugins/sync_control/static/schedule.js",
+        "plugins/sync_control/plugin.json",
+        "tests/test_schedule_ui.py"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md"
+      ],
+      "depends_on": [
+        "DSH-V2-20"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_schedule_ui.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "能增删时刻、暂停与恢复",
+        "显示下次执行北京时间和当天补跑状态",
+        "通过真实API保存且错误可原位处理"
+      ],
+      "risk_class": "medium",
+      "execution_mode": "async",
+      "dispatch_gate": "ready_after_dependencies",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "plugins/sync_control/static/schedule.js",
+          "plugins/sync_control/plugin.json",
+          "tests/test_schedule_ui.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。"
+      ],
+      "wave": 6,
+      "budget_pct": 1,
+      "workflow_refs": [
+        "W6-01"
+      ],
+      "rollback_plan": "对plugins/sync_control/static/schedule.js、plugin.json与测试执行git revert；保留后端槽与暂停设置数据。"
+    },
+    {
+      "task_id": "DSH-V2-22",
+      "objective": "实现报告中心原位一键生成",
+      "owned_scope": [
+        "plugins/workbench/static/reports.js",
+        "web/static/host/report-controller.js",
+        "tests/test_report_center_inline.py"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md"
+      ],
+      "depends_on": [
+        "DSH-V2-08"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_report_center_inline.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "报告页实际提交生成并展示进度、预览、复制或邮件草稿",
+        "不是跳转链接冒充一键生成",
+        "复用现有API，不复制日报规则或跨插件import",
+        "保留StatusGateBlocked和孤儿项目规则"
+      ],
+      "risk_class": "medium",
+      "execution_mode": "async",
+      "dispatch_gate": "ready_after_dependencies",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "plugins/workbench/static/reports.js",
+          "web/static/host/report-controller.js",
+          "tests/test_report_center_inline.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。"
+      ],
+      "wave": 3,
+      "budget_pct": 2,
+      "workflow_refs": [
+        "W7-01"
+      ],
+      "rollback_plan": "对plugins/workbench/static/reports.js、web/static/host/report-controller.js与测试执行git revert；报告页回到旧跳转入口。"
+    },
+    {
+      "task_id": "DSH-V2-23",
+      "objective": "接入日报工作日08:30生成与补生成",
+      "owned_scope": [
+        "plugins/sign_daily/scheduled.py",
+        "plugins/sign_daily/backend.py",
+        "tests/test_sign_daily_schedule.py"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md",
+        "tests/test_plugin_sign_daily.py"
+      ],
+      "depends_on": [
+        "DSH-V2-20"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_sign_daily_schedule.py",
+          "tests/test_plugin_sign_daily.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "生成前保证数据新鲜，不等待09:00同步",
+        "一天同槽不重复生成；只生成不发送",
+        "会话失效可等待登录且不能伪报成功"
+      ],
+      "risk_class": "high",
+      "execution_mode": "async",
+      "dispatch_gate": "lead_approves_report_job_contract",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "plugins/sign_daily/scheduled.py",
+          "plugins/sign_daily/backend.py",
+          "tests/test_sign_daily_schedule.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。",
+        "23是日报作业契约门：lead先冻结工作日08:30、生成前数据新鲜、不等待09:00同步、当天补生成与幂等键；未批准不得实现。",
+        "失败保留上次成功日报；不覆盖已生成文件；不改web/app.py。"
+      ],
+      "wave": 6,
+      "budget_pct": 2,
+      "workflow_refs": [
+        "W6-01",
+        "W7-01"
+      ],
+      "rollback_plan": "对plugins/sign_daily/scheduled.py、backend.py与测试执行git revert；停用08:30作业；已生成日报文件保留不删。"
+    },
+    {
+      "task_id": "DSH-V2-24",
+      "objective": "审查并补强TIR同日复用条件",
+      "owned_scope": [
+        "plugins/tir_report/service.py",
+        "tests/test_tir_reuse_integrity.py"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md",
+        "tests/test_plugin_tir_report.py"
+      ],
+      "depends_on": [
+        "DSH-V2-00"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_tir_reuse_integrity.py",
+          "tests/test_plugin_tir_report.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "先核实既有复用；无缺陷不重写",
+        "项目/车型/筛选/日期隔离",
+        "文件丢失或哈希不符不能返回复用成功"
+      ],
+      "risk_class": "medium",
+      "execution_mode": "async",
+      "dispatch_gate": "ready_after_dependencies",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "plugins/tir_report/service.py",
+          "tests/test_tir_reuse_integrity.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。"
+      ],
+      "wave": 2,
+      "budget_pct": 1,
+      "workflow_refs": [
+        "W7-01"
+      ],
+      "rollback_plan": "对plugins/tir_report/service.py与tests/test_tir_reuse_integrity.py执行git revert；恢复旧同日复用条件；保留已导出原件。"
+    },
+    {
+      "task_id": "DSH-V2-25",
+      "objective": "接通Excel环境自检API与页面",
+      "owned_scope": [
+        "plugins/excel_tasks/backend.py",
+        "plugins/excel_tasks/static/workspace.js",
+        "services/excel_env_check.py",
+        "tests/test_excel_env_api.py",
+        "web/app.py"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md",
+        "tests/test_excel_env_check.py"
+      ],
+      "depends_on": [
+        "DSH-V2-00"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_excel_env_api.py",
+          "tests/test_excel_env_check.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "页面获得真实后端自检结果而非静态占位",
+        "通过host.context注入，不自行绕过宿主服务",
+        "无法确定激活状态显示需要检查",
+        "不结束用户Excel"
+      ],
+      "risk_class": "medium",
+      "execution_mode": "async",
+      "dispatch_gate": "ready_after_dependencies",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "plugins/excel_tasks/backend.py",
+          "plugins/excel_tasks/static/workspace.js",
+          "services/excel_env_check.py",
+          "tests/test_excel_env_api.py",
+          "web/app.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。"
+      ],
+      "wave": 2,
+      "budget_pct": 2,
+      "workflow_refs": [
+        "W12-01",
+        "W12-02"
+      ],
+      "rollback_plan": "对plugins/excel_tasks/backend.py、static/workspace.js、services/excel_env_check.py、web/app.py接线与测试执行git revert；恢复静态占位；不删Excel任务数据。"
+    },
+    {
+      "task_id": "DSH-V2-26",
+      "objective": "核实并接入Excel路径安全实际执行边界",
+      "owned_scope": [
+        "core/excel_tasks.py",
+        "core/excel_worker.py",
+        "services/excel_path_safety.py",
+        "tests/test_excel_path_integration.py"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md",
+        "tests/test_excel_path_safety.py",
+        "tests/test_excel_tasks.py"
+      ],
+      "depends_on": [
+        "DSH-V2-00"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_excel_path_integration.py",
+          "tests/test_excel_path_safety.py",
+          "tests/test_excel_tasks.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "先证明helper实际消费位置，禁止新增死代码",
+        "提交和执行边界均验证受管路径",
+        "junction/重解析点替换有实际场景测试，单次resolve不能当竞态证明",
+        "用户输入原件保持不变"
+      ],
+      "risk_class": "high",
+      "execution_mode": "async",
+      "dispatch_gate": "lead_approves_path_contract",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "core/excel_tasks.py",
+          "core/excel_worker.py",
+          "services/excel_path_safety.py",
+          "tests/test_excel_path_integration.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。",
+        "26是路径安全契约门：lead先批准白名单根目录、穿越/UNC/ADS/越界判定与失败文案；未批准不得接线。",
+        "必须先证明helper实际消费位置，禁止新增死代码；不结束用户Excel；不改ACL；不读现有keys。"
+      ],
+      "wave": 2,
+      "budget_pct": 1,
+      "workflow_refs": [
+        "W12-01"
+      ],
+      "rollback_plan": "对core/excel_tasks.py、core/excel_worker.py、services/excel_path_safety.py的接线与测试执行git revert；恢复旧路径校验；不删白名单设置与用户文件。"
+    },
+    {
+      "task_id": "DSH-V2-27",
+      "objective": "补齐Excel提交自动启动与空闲退出",
+      "owned_scope": [
+        "services/excel_worker_process_controller.py",
+        "web/excel_boot.py",
+        "tests/test_excel_autolifecycle.py"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md"
+      ],
+      "depends_on": [
+        "DSH-V2-26"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_excel_autolifecycle.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "隐藏按钮之外，提交确实启动唯一处理进程",
+        "空闲退出、崩溃恢复、并发提交行为确定",
+        "只清理本工具拥有的进程和任务"
+      ],
+      "risk_class": "high",
+      "execution_mode": "async",
+      "dispatch_gate": "lead_approves_process_contract",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "services/excel_worker_process_controller.py",
+          "web/excel_boot.py",
+          "tests/test_excel_autolifecycle.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。",
+        "27是进程契约门：lead先冻结提交自动启动唯一worker、空闲退出、崩溃恢复、单实例与失败回退；未批准不得实现。",
+        "不结束用户Excel或非本工具进程；不改ACL；失败保留手动启动路径。"
+      ],
+      "wave": 3,
+      "budget_pct": 2,
+      "workflow_refs": [
+        "W12-01"
+      ],
+      "rollback_plan": "对services/excel_worker_process_controller.py、web/excel_boot.py与测试执行git revert；停止自动启动，保留手动启动；不结束用户Excel。"
+    },
+    {
+      "task_id": "DSH-V2-28",
+      "objective": "接通同步失败、日报完成、更新发现的托盘通知",
+      "owned_scope": [
+        "services/user_notifications.py",
+        "vse_boot/tray.py",
+        "vse_boot/api.py",
+        "tests/test_user_notifications.py"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md"
+      ],
+      "depends_on": [
+        "DSH-V2-17",
+        "DSH-V2-23"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_user_notifications.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "lead先冻结应用与托盘进程通信接口",
+        "三类真实事件均到达托盘，不仅存在notify函数",
+        "按项目和事件去重，错误脱敏",
+        "不重放业务任务以补通知"
+      ],
+      "risk_class": "high",
+      "execution_mode": "async",
+      "dispatch_gate": "lead_approves_notification_contract",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "services/user_notifications.py",
+          "vse_boot/tray.py",
+          "vse_boot/api.py",
+          "tests/test_user_notifications.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。",
+        "28是通知契约门：lead先冻结应用与托盘进程通信接口、三类事件（同步失败/日报完成/更新发现）的幂等键与去重；未批准不得实现。",
+        "托盘TrayHandle.notify已存在，复用不重写；通知失败不得阻塞主流程；不引入新通知服务。"
+      ],
+      "wave": 7,
+      "budget_pct": 2,
+      "workflow_refs": [
+        "W11-01",
+        "W6-01"
+      ],
+      "rollback_plan": "对services/user_notifications.py、vse_boot/tray.py、vse_boot/api.py与测试执行git revert；关闭新增通知；保留已有TrayHandle.notify行为。"
+    },
+    {
+      "task_id": "DSH-V2-29",
+      "objective": "补齐关注清单入口并收敛表单及导出入口",
+      "owned_scope": [
+        "plugins/workbench/static/reports.js",
+        "plugins/deliverable_forms/plugin.json",
+        "web/static/host/legacy-routes.js",
+        "tests/test_single_form_entry.py"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md"
+      ],
+      "depends_on": [
+        "DSH-V2-22"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_single_form_entry.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "报告中心关注入口与详情使用同一数据",
+        "表单日常入口仅交付物详情，旧书签兼容",
+        "F5/F6/F7导出定位统一实现，保留人工核查门禁"
+      ],
+      "risk_class": "medium",
+      "execution_mode": "async",
+      "dispatch_gate": "ready_after_dependencies",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "plugins/workbench/static/reports.js",
+          "plugins/deliverable_forms/plugin.json",
+          "web/static/host/legacy-routes.js",
+          "tests/test_single_form_entry.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。"
+      ],
+      "wave": 4,
+      "budget_pct": 1,
+      "workflow_refs": [
+        "W7-01",
+        "W9-01"
+      ],
+      "rollback_plan": "对reports.js、plugins/deliverable_forms/plugin.json、web/static/host/legacy-routes.js与测试执行git revert；恢复旧入口与跳转。"
+    },
+    {
+      "task_id": "DSH-V2-30",
+      "objective": "核实同步与历史原件留存真正闭环",
+      "owned_scope": [
+        "services/project_status_sync_runner.py",
+        "services/scheduled_archive_runner.py",
+        "plugins/project_overview/static/archive-deliverable.js",
+        "tests/test_sync_originals_integration.py"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md",
+        "tests/test_archive_store.py"
+      ],
+      "depends_on": [
+        "DSH-V2-20"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_sync_originals_integration.py",
+          "tests/test_archive_store.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "明确同步运行与原件的可追踪关联",
+        "不通过第二次抓取冒充同次同步原件",
+        "历史原件保留与临时7天清理分离",
+        "错误不假报已留存"
+      ],
+      "risk_class": "high",
+      "execution_mode": "async",
+      "dispatch_gate": "lead_approves_originals_contract",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "services/project_status_sync_runner.py",
+          "services/scheduled_archive_runner.py",
+          "plugins/project_overview/static/archive-deliverable.js",
+          "tests/test_sync_originals_integration.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。",
+        "30是原件契约门：lead先冻结同步运行与原件关联、失败保留、历史原件页签与追踪键；未批准不得实现。",
+        "原件留存只增不删；不迁移旧数据；失败保留上次成功原件。"
+      ],
+      "wave": 6,
+      "budget_pct": 1,
+      "workflow_refs": [
+        "W6-02",
+        "W7-01"
+      ],
+      "rollback_plan": "对services/project_status_sync_runner.py、services/scheduled_archive_runner.py、archive-deliverable.js与测试执行git revert；已归档原件保留不删，不迁移旧数据。"
+    },
+    {
+      "task_id": "DSH-V2-31",
+      "objective": "补齐自检连接器和调度覆盖",
+      "owned_scope": [
+        "plugins/diagnostics/backend.py",
+        "plugins/diagnostics/static/self-check.js",
+        "tests/test_diagnostics_coverage.py"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md",
+        "tests/test_diagnostics_whitelist.py"
+      ],
+      "depends_on": [
+        "DSH-V2-17",
+        "DSH-V2-20",
+        "DSH-V2-25"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_diagnostics_coverage.py",
+          "tests/test_diagnostics_whitelist.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "现有会话/Excel/更新/项目检查之外覆盖连接器和调度",
+        "区分未执行、无法检查和失败",
+        "仅白名单安全字段导出，不采集真实业务原文"
+      ],
+      "risk_class": "medium",
+      "execution_mode": "async",
+      "dispatch_gate": "ready_after_dependencies",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "plugins/diagnostics/backend.py",
+          "plugins/diagnostics/static/self-check.js",
+          "tests/test_diagnostics_coverage.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。"
+      ],
+      "wave": 6,
+      "budget_pct": 1,
+      "workflow_refs": [
+        "W1-01",
+        "W1-02",
+        "W12-01"
+      ],
+      "rollback_plan": "对plugins/diagnostics/backend.py、static/self-check.js与测试执行git revert；自检回到原覆盖；保留已有诊断白名单。"
+    },
+    {
+      "task_id": "DSH-V2-32",
+      "objective": "补齐项目与设置旧页面的体验覆盖",
+      "owned_scope": [
+        "plugins/project_overview/static/details.js",
+        "plugins/project_overview/static/status.js",
+        "plugins/settings/static/general.js",
+        "tests/test_remaining_pages_behavior.py"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md"
+      ],
+      "depends_on": [
+        "DSH-V2-08",
+        "DSH-V2-10"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_remaining_pages_behavior.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "开始前确认页面实际入口，若路径不同先修订契约不可扩写",
+        "正常/空数据/加载/错误/未配置均用真实DOM测试",
+        "术语与状态色合规，不以源码含组件名为验收",
+        "旧页面顶栏三档会话徽章与原位登录入口与W3-01保持一致"
+      ],
+      "risk_class": "medium",
+      "execution_mode": "async",
+      "dispatch_gate": "ready_after_dependencies",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "plugins/project_overview/static/details.js",
+          "plugins/project_overview/static/status.js",
+          "plugins/settings/static/general.js",
+          "tests/test_remaining_pages_behavior.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。",
+        "W3顶栏三档徽章与原位登录入口在旧页面保持一致；只改已定位页面，更多文件需lead扩scope。"
+      ],
+      "wave": 4,
+      "budget_pct": 2,
+      "workflow_refs": [
+        "W8-02b",
+        "W8-03",
+        "W3-01"
+      ],
+      "rollback_plan": "对plugins/project_overview/static/details.js、status.js、plugins/settings/static/general.js与测试执行git revert；旧页面回退到上一提交。"
+    },
+    {
+      "task_id": "DSH-V2-33",
+      "objective": "按现有基准复测并确定是否需要索引优化",
+      "owned_scope": [
+        "tools/perf_baseline.py",
+        "docs/refactor-v2/DSH_PERFORMANCE_RESULTS.md"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md"
+      ],
+      "depends_on": [
+        "DSH-V2-00"
+      ],
+      "verification_commands": [
+        [
+          "git",
+          "diff",
+          "--check"
+        ]
+      ],
+      "acceptance_criteria": [
+        "先同机测create_app、首页和大表分页",
+        "记录样本数/中位数/P95和数据规模",
+        "只对有证据瓶颈另发单索引任务，不批量猜测加索引"
+      ],
+      "risk_class": "low",
+      "execution_mode": "sync",
+      "dispatch_gate": "ready_after_dependencies",
+      "size": "small",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "tools/perf_baseline.py",
+          "docs/refactor-v2/DSH_PERFORMANCE_RESULTS.md"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。"
+      ],
+      "wave": 2,
+      "budget_pct": 1,
+      "workflow_refs": [
+        "W18-01",
+        "W18-03"
+      ],
+      "rollback_plan": "删除或回退tools/perf_baseline.py变更与docs/refactor-v2/DSH_PERFORMANCE_RESULTS.md；保留PERF_BASELINE_20261031.md历史基线。"
+    },
+    {
+      "task_id": "DSH-V2-34",
+      "objective": "补齐正式发布门禁的包验签与整包一致性",
+      "owned_scope": [
+        "tools/wave_gate.py",
+        "tests/test_release_package_gate.py"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md",
+        "tests/test_vse_boot_packages.py",
+        "tests/test_vse_boot_state.py",
+        "tools/build_v2_test_install.py"
+      ],
+      "depends_on": [
+        "DSH-V2-04",
+        "DSH-V2-05",
+        "DSH-V2-06",
+        "DSH-V2-07",
+        "DSH-V2-08",
+        "DSH-V2-44"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_release_package_gate.py",
+          "tests/test_vse_boot_packages.py",
+          "tests/test_vse_boot_state.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "启动器改动不能只发不包含vse_boot的app包",
+        "版本/运行时/提交/文件哈希一致",
+        "篡改、错误运行时、启动失败和试用回退有负向测试",
+        "已生效版本手动回退不覆盖新业务数据",
+        "不读取既有测试私钥，使用临时测试信任链",
+        "构建输出隔离由44先行，34只读消费，不修改构建脚本"
+      ],
+      "risk_class": "high",
+      "execution_mode": "async",
+      "dispatch_gate": "lead_approves_release_matrix",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "tools/wave_gate.py",
+          "tests/test_release_package_gate.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。",
+        "34是发布门禁契约门：lead先批准RELEASE_MATRIX与整包一致性口径；未批准不得实现。",
+        "版本/运行时/提交/文件哈希必须一致；篡改、错误运行时、启动失败、试用回退必须有负向测试；测试信任链临时生成，不读既有私钥。",
+        "tools/build_v2_test_install.py只读，构建输出收尾归44；不发布、不安装、不删除dist。"
+      ],
+      "wave": 5,
+      "budget_pct": 2,
+      "workflow_refs": [
+        "W17-01",
+        "W17-03",
+        "W16-03"
+      ],
+      "rollback_plan": "对tools/wave_gate.py与tests/test_release_package_gate.py执行git revert；不发布；已生成包保留但标记未验收；不删除dist或既有私钥。"
+    },
+    {
+      "task_id": "DSH-V2-35",
+      "objective": "扩展真实exe端到端到首次日报和项目隔离",
+      "owned_scope": [
+        "tools/e2e_v2_test_install.py",
+        "tests/browser/test_release_journey.py"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md"
+      ],
+      "depends_on": [
+        "DSH-V2-13",
+        "DSH-V2-17",
+        "DSH-V2-21",
+        "DSH-V2-22",
+        "DSH-V2-23",
+        "DSH-V2-25",
+        "DSH-V2-27",
+        "DSH-V2-28",
+        "DSH-V2-29",
+        "DSH-V2-30",
+        "DSH-V2-31",
+        "DSH-V2-32",
+        "DSH-V2-34",
+        "DSH-V2-39",
+        "DSH-V2-40",
+        "DSH-V2-43",
+        "DSH-V2-45",
+        "DSH-V2-46",
+        "DSH-V2-47"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/browser/test_release_journey.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "无系统Python依赖的安装启动",
+        "完整向导选择真的同步且生成有效日报",
+        "项目切换、重开窗口、登录失效、升级回退有实际路径",
+        "本地合成系统结果不标作真实内网验证",
+        "45/46/47的验收结果作为端到端前置"
+      ],
+      "risk_class": "high",
+      "execution_mode": "async",
+      "dispatch_gate": "lead_approves_release_candidate",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "tools/e2e_v2_test_install.py",
+          "tests/browser/test_release_journey.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。",
+        "35需要已验收RC与34门禁通过；真实exe端到端覆盖首次日报与项目隔离；无系统Python依赖。",
+        "45/46/47未验收不得派35；本地合成系统结果不得标作真实内网验证；失败回退上一验收包；不自动merge/push。"
+      ],
+      "wave": 8,
+      "budget_pct": 2,
+      "workflow_refs": [
+        "W17-02",
+        "W17-03",
+        "W20-02"
+      ],
+      "rollback_plan": "对tools/e2e_v2_test_install.py、tests/browser/test_release_journey.py执行git revert；不发布；安装目录回退到上一已验收包；保留用户数据。"
+    },
+    {
+      "task_id": "DSH-V2-36",
+      "objective": "更新中文手册和发布操作说明",
+      "owned_scope": [
+        "docs/manual/新用户验收脚本.md",
+        "docs/manual/真机核对清单.md",
+        "docs/PRODUCTION_OPERATION_GUIDE.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md"
+      ],
+      "depends_on": [
+        "DSH-V2-35"
+      ],
+      "verification_commands": [
+        [
+          "git",
+          "diff",
+          "--check"
+        ]
+      ],
+      "acceptance_criteria": [
+        "截图来自合成项目且无秘密",
+        "写清app包与启动器整包差异",
+        "覆盖重新登录、首次使用、更新和回退",
+        "不把代码支持写成真机验证通过"
+      ],
+      "risk_class": "low",
+      "execution_mode": "async",
+      "dispatch_gate": "ready_after_dependencies",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "docs/manual/新用户验收脚本.md",
+          "docs/manual/真机核对清单.md",
+          "docs/PRODUCTION_OPERATION_GUIDE.md",
+          "docs/refactor-v2/RELEASE_MATRIX.md"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。",
+        "只改已列出的手册文件与发布说明；不整目录授权，不改docs/manual/验收记录表.md（归37）。"
+      ],
+      "wave": 9,
+      "budget_pct": 1,
+      "workflow_refs": [
+        "W19-01",
+        "W19-02"
+      ],
+      "rollback_plan": "回退docs/manual/新用户验收脚本.md、docs/manual/真机核对清单.md、docs/PRODUCTION_OPERATION_GUIDE.md、RELEASE_MATRIX.md的本次改动；保留旧手册与历史截图；不触碰docs/manual/验收记录表.md（归37）。"
+    },
+    {
+      "task_id": "DSH-V2-37",
+      "objective": "真实办公电脑和三名新用户验收",
+      "owned_scope": [
+        "docs/refactor-v2/DSH_FIELD_RESULTS.md",
+        "docs/manual/验收记录表.md"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md"
+      ],
+      "depends_on": [
+        "DSH-V2-35",
+        "DSH-V2-36"
+      ],
+      "verification_commands": [
+        [
+          "git",
+          "diff",
+          "--check"
+        ]
+      ],
+      "acceptance_criteria": [
+        "用户提供真实环境与三名首次使用者",
+        "每人独立10分钟首份有效日报",
+        "记录失败和未执行项，不代填通过",
+        "DSH仅准备与汇总，不能自行假定有真实系统权限"
+      ],
+      "risk_class": "high",
+      "execution_mode": "human",
+      "dispatch_gate": "lead_approves_field_acceptance",
+      "dsh_tool": "manual",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "docs/refactor-v2/DSH_FIELD_RESULTS.md",
+          "docs/manual/验收记录表.md"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。",
+        "37是human模式：lead只准备材料与汇总，不假定拥有真实系统权限；必须真实办公电脑与三名首次使用者。",
+        "10分钟内首份有效日报；失败按中止判据记录；不得伪造或代填验收结果。"
+      ],
+      "wave": 10,
+      "budget_pct": 1,
+      "workflow_refs": [
+        "W20-01",
+        "W20-02"
+      ],
+      "rollback_plan": "作废本次验收记录并恢复docs/manual/验收记录表.md上一版本；不修改产品；真实环境数据按用户要求保留或删除。"
+    },
+    {
+      "task_id": "DSH-V2-38",
+      "objective": "接通现有项目编辑和归档后端的用户界面",
+      "owned_scope": [
+        "plugins/workbench/static/projects.js",
+        "tests/test_dsh_v2_38.py"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md"
+      ],
+      "depends_on": [
+        "DSH-V2-12"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_dsh_v2_38.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "复用已存在PATCH与archive接口，不另造注册表",
+        "expectedRevision冲突提示刷新，省略字段不清空",
+        "归档保留数据，当前项目不能直接归档",
+        "完成后项目切换和向导回归通过"
+      ],
+      "risk_class": "medium",
+      "execution_mode": "async",
+      "dispatch_gate": "ready_after_dependencies",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "plugins/workbench/static/projects.js",
+          "tests/test_dsh_v2_38.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。"
+      ],
+      "wave": 3,
+      "budget_pct": 2,
+      "workflow_refs": [
+        "W5-01",
+        "W5-02"
+      ],
+      "rollback_plan": "对plugins/workbench/static/projects.js与tests/test_dsh_v2_38.py执行git revert；恢复只新建/切换；不删项目注册表。"
+    },
+    {
+      "task_id": "DSH-V2-39",
+      "objective": "补齐可配置车型列表和科室回写交互",
+      "owned_scope": [
+        "plugins/workbench/static/projects.js",
+        "plugins/project_overview/static/auto-sync.js",
+        "plugins/workbench/backend.py",
+        "tests/test_dsh_v2_39.py"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md"
+      ],
+      "depends_on": [
+        "DSH-V2-13",
+        "DSH-V2-38"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_dsh_v2_39.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "车型列表配置可读写且不编造48个代码",
+        "始终可手填，既有车型不因清单变化丢失",
+        "一键开启科室显式更新项目默认值，失败如实显示",
+        "不静默重写已验证绑定"
+      ],
+      "risk_class": "medium",
+      "execution_mode": "async",
+      "dispatch_gate": "ready_after_dependencies",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "plugins/workbench/static/projects.js",
+          "plugins/project_overview/static/auto-sync.js",
+          "plugins/workbench/backend.py",
+          "tests/test_dsh_v2_39.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。",
+        "48车型配置以用户输入或可配置列表兜底，不编造48个代码；科室回写只写已确认字段。"
+      ],
+      "wave": 4,
+      "budget_pct": 2,
+      "workflow_refs": [
+        "W5-01",
+        "W4-01"
+      ],
+      "rollback_plan": "对projects.js、auto-sync.js、plugins/workbench/backend.py与测试执行git revert；保留用户已保存的车型/科室配置。"
+    },
+    {
+      "task_id": "DSH-V2-40",
+      "objective": "收紧可见文案和剩余页面行为门禁",
+      "owned_scope": [
+        "tests/test_glossary_terms.py",
+        "tests/test_ui_kit_terms.py",
+        "tests/test_dsh_v2_40.py"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md"
+      ],
+      "depends_on": [
+        "DSH-V2-08",
+        "DSH-V2-29",
+        "DSH-V2-32"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_dsh_v2_40.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "检查真实可见文本和aria标签，不仅源码字符串",
+        "既有白名单逐项有理由且不得增大掩盖回归",
+        "列出未覆盖页面，源级断言不冒充DOM行为验收"
+      ],
+      "risk_class": "medium",
+      "execution_mode": "async",
+      "dispatch_gate": "ready_after_dependencies",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "tests/test_glossary_terms.py",
+          "tests/test_ui_kit_terms.py",
+          "tests/test_dsh_v2_40.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。"
+      ],
+      "wave": 7,
+      "budget_pct": 1,
+      "workflow_refs": [
+        "W8-01",
+        "W8-02b",
+        "W8-03"
+      ],
+      "rollback_plan": "对术语/UI门禁测试执行git revert；白名单回退需lead批准，且只减不增原则不倒退；不改页面文案。"
+    },
+    {
+      "task_id": "DSH-V2-41",
+      "objective": "冻结web模块化到插件化的后续边界",
+      "owned_scope": [
+        "docs/refactor-v2/DSH_PLUGINIZATION_ADR.md"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md"
+      ],
+      "depends_on": [
+        "DSH-V2-07"
+      ],
+      "verification_commands": [
+        [
+          "git",
+          "diff",
+          "--check"
+        ]
+      ],
+      "acceptance_criteria": [
+        "明确web/*_boot.py是阶段性模块化，不宣称业务插件化完成",
+        "输出每领域现handler/deps/目标插件/旧URL别名和测试清单",
+        "平台安全/更新接口保留host，不移入可禁用插件",
+        "拆为每次最多4条路由，所有web/app.py接线串行",
+        "不在本任务移动生产路由"
+      ],
+      "risk_class": "high",
+      "execution_mode": "async",
+      "dispatch_gate": "lead_design_and_approval",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "docs/refactor-v2/DSH_PLUGINIZATION_ADR.md"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。",
+        "41是架构设计门：只冻结ADR与拆分清单，不移动生产路由；明确web/*_boot.py是阶段性模块化，不宣称业务插件化完成。",
+        "其后每批最多4条路由或单一职责，由lead批准新增有界任务；web/app.py接线串行；平台安全/更新接口保留host。"
+      ],
+      "wave": 3,
+      "budget_pct": 2,
+      "workflow_refs": [
+        "W13-09b",
+        "W14-01",
+        "W14-03"
+      ],
+      "rollback_plan": "删除或回退DSH_PLUGINIZATION_ADR.md；不移动任何生产路由；取消由该ADR派生的后续任务；web/app.py保持不变。"
+    },
+    {
+      "task_id": "DSH-V2-42",
+      "objective": "冻结大服务渐进拆分清单并验证现有黄金测试缺口",
+      "owned_scope": [
+        "docs/refactor-v2/DSH_SERVICE_SPLIT_INVENTORY.md"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md"
+      ],
+      "depends_on": [
+        "DSH-V2-00"
+      ],
+      "verification_commands": [
+        [
+          "git",
+          "diff",
+          "--check"
+        ]
+      ],
+      "acceptance_criteria": [
+        "区分_impl包壳与职责拆分",
+        "列出表单分析、项目更新、Aras、TDC、发现、交付物分析的符号依赖",
+        "每后续任务只拆一个内聚职责，先明确公开符号与黄金断言",
+        "本任务不移动生产代码"
+      ],
+      "risk_class": "medium",
+      "execution_mode": "async",
+      "dispatch_gate": "lead_design_and_approval",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "docs/refactor-v2/DSH_SERVICE_SPLIT_INVENTORY.md"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。",
+        "42是架构设计门：只出拆分清单，不移动生产代码；区分_impl包壳与职责拆分。",
+        "每后续任务只拆一个内聚职责，先明确公开符号与黄金断言，由lead批准。"
+      ],
+      "wave": 2,
+      "budget_pct": 1,
+      "workflow_refs": [
+        "W14-01",
+        "W14-03"
+      ],
+      "rollback_plan": "删除或回退DSH_SERVICE_SPLIT_INVENTORY.md；不移动生产代码；保留_impl包壳现状。"
+    },
+    {
+      "task_id": "DSH-V2-43",
+      "objective": "补齐用户可见更新记录",
+      "owned_scope": [
+        "plugins/settings/static/updates.js",
+        "tests/test_dsh_v2_43.py"
+      ],
+      "read_only_scope": [
+        "AGENTS.md",
+        "PROJECT_MAP.md",
+        "docs/refactor-v2/CONTRACTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md"
+      ],
+      "depends_on": [
+        "DSH-V2-32"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_dsh_v2_43.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "显示版本、北京时间、面向用户说明和回退入口",
+        "实际更新状态来自现有API，操作遵守本机会话保护",
+        "未安装/待生效/已回退状态不混淆"
+      ],
+      "risk_class": "medium",
+      "execution_mode": "async",
+      "dispatch_gate": "ready_after_dependencies",
+      "size": "medium",
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "plugins/settings/static/updates.js",
+          "tests/test_dsh_v2_43.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      },
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。"
+      ],
+      "wave": 7,
+      "budget_pct": 1,
+      "workflow_refs": [
+        "W19-02"
+      ],
+      "rollback_plan": "对plugins/settings/static/updates.js与tests/test_dsh_v2_43.py执行git revert；恢复旧更新记录展示。"
+    },
+    {
+      "task_id": "DSH-V2-44",
+      "objective": "收尾构建输出隔离：修复build_v2_test_install.py的WinError5失败路径并隔离测试输出",
+      "owned_scope": [
+        "tools/build_v2_test_install.py",
+        "tests/test_build_output_isolation.py"
+      ],
+      "read_only_scope": [
+        "tools/release.py",
+        "vse_boot/packages.py",
+        "VSE-Launcher.spec",
+        "tests/test_vse_boot_packages.py",
+        "tests/test_vse_boot_state.py"
+      ],
+      "depends_on": [
+        "DSH-V2-00"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_build_output_isolation.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "输出根可通过参数或环境变量配置，默认仍为dist/v2-test，测试只写临时目录",
+        "在临时目录模拟access-denied：unlink抛PermissionError时保留旧包并输出明确路径、错误类型与下一步，退出非零",
+        "不读取既有keys，测试信任链在临时输出根生成；不改ACL、不杀进程、不删除现有dist",
+        "成功路径清理本次构建的旧包，失败路径不静默吞掉任何OSError",
+        "34只读依赖本任务，本任务不发布、不安装"
+      ],
+      "risk_class": "medium",
+      "execution_mode": "sync",
+      "dispatch_gate": "ready_after_dependencies",
+      "size": "small",
+      "wave": 1,
+      "workflow_refs": [
+        "W16-03"
+      ],
+      "budget_pct": 3,
+      "rollback_plan": "对tools/build_v2_test_install.py与tests/test_build_output_isolation.py执行git revert；保留现有dist、keys与已生成包；不删除任何构建产物。",
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。",
+        "输出根必须可配置（参数或环境变量），默认保持dist/v2-test兼容；测试在临时目录运行，不写现有dist。",
+        "用monkeypatch或临时目录模拟access-denied，不修改ACL、不杀进程、不删除现有dist或keys。",
+        "失败时保留旧包并输出明确路径、错误类型与下一步；不得静默继续或吞掉PermissionError。",
+        "不读取既有keys；测试信任链在临时输出根生成。"
+      ],
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "tools/build_v2_test_install.py",
+          "tests/test_build_output_isolation.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      }
+    },
+    {
+      "task_id": "DSH-V2-45",
+      "objective": "核实并修复任务中心进度与产物7天清理的真实链路",
+      "owned_scope": [
+        "web/static/host/chrome/TaskCenter.js",
+        "services/crawl_task_runner.py",
+        "tests/test_tasks_cleanup_chain.py"
+      ],
+      "read_only_scope": [
+        "web/tasks_boot.py",
+        "tests/test_tasks_cleanup_guard.py",
+        "tests/test_tasks_lifecycle.py",
+        "tests/test_tasks_api.py"
+      ],
+      "depends_on": [
+        "DSH-V2-00"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_tasks_cleanup_chain.py",
+          "tests/test_tasks_cleanup_guard.py",
+          "tests/test_tasks_lifecycle.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "先核实TaskCenter.js→/api/tasks→crawl_task_runner的真实链路，已有实现复用，只修缺口",
+        "7天清理只删过期且非活跃任务产物；活跃任务产物、历史原件与用户文件不删",
+        "清理失败保留产物并明确报错，不静默吞掉",
+        "新增测试覆盖6/8天边界、活跃任务排除、历史原件隔离",
+        "不改web/app.py与数据库迁移"
+      ],
+      "risk_class": "medium",
+      "execution_mode": "async",
+      "dispatch_gate": "ready_after_dependencies",
+      "size": "medium",
+      "wave": 1,
+      "workflow_refs": [
+        "W11-01",
+        "W13-03"
+      ],
+      "budget_pct": 3,
+      "rollback_plan": "对web/static/host/chrome/TaskCenter.js、services/crawl_task_runner.py与测试执行git revert；7天清理回到旧行为；不删历史产物与活跃任务文件。",
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。",
+        "先核实TaskCenter.js→/api/tasks→crawl_task_runner的真实链路，已有实现复用，只修缺口。",
+        "7天清理只删过期且非活跃任务产物；活跃任务产物、历史原件与用户文件不得删除；失败保留并明确报错。"
+      ],
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "web/static/host/chrome/TaskCenter.js",
+          "services/crawl_task_runner.py",
+          "tests/test_tasks_cleanup_chain.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      }
+    },
+    {
+      "task_id": "DSH-V2-46",
+      "objective": "核实并修复交付物详情表格排序、复制、列显隐与列key缺失回退",
+      "owned_scope": [
+        "plugins/project_overview/static/deliverable/simple.js",
+        "plugins/project_overview/static/deliverable/simple-logic.js",
+        "tests/test_deliverable_detail_table.py"
+      ],
+      "read_only_scope": [
+        "plugins/project_overview/static/deliverable/display.js",
+        "plugins/project_overview/static/deliverable/format.js",
+        "plugins/project_overview/static/deliverable/api.js",
+        "tests/test_session_status_frontend.py"
+      ],
+      "depends_on": [
+        "DSH-V2-00"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_deliverable_detail_table.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "复用已有排序/复制/列显隐实现，只修缺口，不重写",
+        "列key缺失时排序/显隐/复制/表头key统一回退c.index",
+        "排序稳定、复制单号可用、列显隐至少保留一列",
+        "测试通过Node执行真实simple-logic.js，不做源码包含断言",
+        "不改后端契约或数据库"
+      ],
+      "risk_class": "medium",
+      "execution_mode": "async",
+      "dispatch_gate": "ready_after_dependencies",
+      "size": "small",
+      "wave": 1,
+      "workflow_refs": [
+        "W9-01",
+        "W13-09b"
+      ],
+      "budget_pct": 3,
+      "rollback_plan": "对simple.js、simple-logic.js与新增测试执行git revert；表格交互回到旧实现；不改后端契约。",
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。",
+        "复用已有排序/复制/列显隐实现，不重写；列key缺失时所有列身份统一回退c.index。",
+        "至少保留一列；排序稳定；复制单号可用；不改后端契约或数据库。"
+      ],
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "plugins/project_overview/static/deliverable/simple.js",
+          "plugins/project_overview/static/deliverable/simple-logic.js",
+          "tests/test_deliverable_detail_table.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      }
+    },
+    {
+      "task_id": "DSH-V2-47",
+      "objective": "核实并修复启动器pywebview主线程兼容、降级顺序、单实例重开、端口冲突与当前用户自启",
+      "owned_scope": [
+        "vse_boot/supervisor.py",
+        "vse_boot/__main__.py",
+        "vse_boot/autostart.py",
+        "tests/test_vse_boot_window.py"
+      ],
+      "read_only_scope": [
+        "vse_boot/state.py",
+        "vse_boot/layout.py",
+        "vse_boot/tray.py",
+        "tests/test_vse_boot_supervisor.py",
+        "tests/test_autostart_toggle.py",
+        "webui.py"
+      ],
+      "depends_on": [
+        "DSH-V2-00"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "tests/test_vse_boot_window.py",
+          "tests/test_vse_boot_supervisor.py",
+          "tests/test_autostart_toggle.py",
+          "-q"
+        ]
+      ],
+      "acceptance_criteria": [
+        "pywebview启动不阻塞supervise主循环；失败按pywebview→Edge app→默认浏览器降级",
+        "单实例第二次启动只唤起已有实例、不启动第二份；重开窗口的URL/票据传递归02冻结契约与03实现，本任务不得新增或固化instance.json票据/旧URL复用",
+        "端口冲突零干预（free_port/probe/health）",
+        "当前用户HKCU自启默认关闭，向导/设置可选，无管理员",
+        "不杀进程、不改ACL、不删除用户注册表项；测试全mock"
+      ],
+      "risk_class": "high",
+      "execution_mode": "sync",
+      "dispatch_gate": "lead_approves_launcher_contract",
+      "size": "medium",
+      "wave": 1,
+      "workflow_refs": [
+        "W16-02",
+        "W16-01"
+      ],
+      "budget_pct": 3,
+      "rollback_plan": "对vse_boot/supervisor.py、__main__.py、autostart.py与窗口测试执行git revert；启动器回到上一提交；不删除用户HKCU自启项（除非用户显式关闭）、不杀进程、不改ACL。",
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。",
+        "47是启动器契约门：lead先批准主线程兼容、降级顺序、单实例重开、端口冲突与自启集成口径；未批准不得实现。",
+        "降级顺序固定为pywebview→Edge app→默认浏览器；pywebview失败不得阻塞supervise主循环。",
+        "单实例第二次启动只唤起已有实例、不启动第二份；重开窗口的URL/票据传递归02冻结契约与03实现，本任务不得新增或固化instance.json票据/旧URL复用；端口冲突零干预。",
+        "自启只用当前用户HKCU且默认关闭；不改ACL、不杀进程、不删除用户注册表项。"
+      ],
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "vse_boot/supervisor.py",
+          "vse_boot/__main__.py",
+          "vse_boot/autostart.py",
+          "tests/test_vse_boot_window.py"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      }
+    },
+    {
+      "task_id": "DSH-V2-48",
+      "objective": "复核并冻结多项目后台同步设计（仅设计，不实现）",
+      "owned_scope": [
+        "docs/refactor-v2/ADR-0001-multi-project-background-sync.md"
+      ],
+      "read_only_scope": [
+        "services/project_status_scheduler.py",
+        "services/project_status_sync_runner.py",
+        "vse_boot/projects.py",
+        "docs/refactor-v2/CONTRACTS.md"
+      ],
+      "depends_on": [
+        "DSH-V2-00"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-c",
+          "from pathlib import Path; assert Path('docs/refactor-v2/ADR-0001-multi-project-background-sync.md').read_text(encoding='utf-8').strip()"
+        ],
+        [
+          "git",
+          "diff",
+          "--check"
+        ]
+      ],
+      "acceptance_criteria": [
+        "复用ADR-0001，明确当前仍只当前项目后台同步",
+        "只设计不实现；不新增进程、调度代码或数据迁移",
+        "给出A/B/C取舍、升级触发条件与用户拍板点",
+        "与C4槽表projectId键兼容，不要求迁移",
+        "不宣称多项目同步已实现"
+      ],
+      "risk_class": "low",
+      "execution_mode": "sync",
+      "dispatch_gate": "ready_after_dependencies",
+      "size": "small",
+      "wave": 2,
+      "workflow_refs": [
+        "W0-02"
+      ],
+      "budget_pct": 1,
+      "rollback_plan": "恢复ADR-0001上一版本；不实施任何多项目同步代码或进程。",
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。",
+        "仅设计，不实现多项目后台同步；当前仍只当前项目运行，离开项目不后台同步。",
+        "复用ADR-0001；不新增进程、调度代码或数据迁移；升级触发条件与用户拍板点保留。"
+      ],
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "docs/refactor-v2/ADR-0001-multi-project-background-sync.md"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      }
+    },
+    {
+      "task_id": "DSH-V2-49",
+      "objective": "复核L0原生启动器现状与选型Spike报告（已有则复用，不实施替换）",
+      "owned_scope": [
+        "docs/refactor-v2/L0_SPIKE_20261031.md"
+      ],
+      "read_only_scope": [
+        "vse_boot/supervisor.py",
+        "tests/test_vse_boot_window.py",
+        "docs/refactor-v2/REQUIREMENTS.md",
+        "docs/refactor-v2/RELEASE_MATRIX.md"
+      ],
+      "depends_on": [
+        "DSH-V2-00"
+      ],
+      "verification_commands": [
+        [
+          "python",
+          "-c",
+          "from pathlib import Path; assert Path('docs/refactor-v2/L0_SPIKE_20261031.md').read_text(encoding='utf-8').strip()"
+        ],
+        [
+          "git",
+          "diff",
+          "--check"
+        ]
+      ],
+      "acceptance_criteria": [
+        "复用L0_SPIKE_20261031.md，核实三级回退/单实例/端口现状",
+        "不实施启动器替换、不新增依赖、不宣称L0已落地",
+        "给出L0收益/成本/重评触发条件",
+        "结论与本轮证据一致，缺证据处标待验证",
+        "与47实现边界分开"
+      ],
+      "risk_class": "low",
+      "execution_mode": "sync",
+      "dispatch_gate": "ready_after_dependencies",
+      "size": "small",
+      "wave": 2,
+      "workflow_refs": [
+        "W16-02",
+        "W17-02"
+      ],
+      "budget_pct": 1,
+      "rollback_plan": "恢复L0_SPIKE_20261031.md上一版本；不替换启动器、不新增依赖。",
+      "constraints": [
+        "任务属于后续执行计划；当前文档生成工作流不执行本任务。派发前核对依赖的已评审集成提交，禁止依赖另一个仍运行的工作区。",
+        "每个修改任务使用dsh_workflow_start并保留独立评审。同步表示启动后等终态，异步表示保存workflow_id后轮询；两者都不是跳过评审。dsh_execute只用于明确只读或单命令核验。",
+        "写任务使用独立工作区；同一工作区同一时间只允许一个写workflow，避免指纹失效。当前workspace只作源基线，派发前替换成任务隔离目录。",
+        "只修改owned_scope；read_only_scope和本任务需要的直接调用方只读。需求超scope时停下报告，不能自行扩写。",
+        "保留无关改动及未跟踪文件；不git add -A、不push、不合并main、不自动集成。passed之后主控仍须阅读latestReview、实际diff及测试结果。",
+        "不向web/app.py添加业务路由体，不向core/db_manager.py添加代码；新功能插件共享服务经host.context，禁止跨插件或web.* import。",
+        "凭据只用DPAPI；不读现有keys、真实数据库、原始HAR/XML/XLSX或生产环境变量；合成测试，秘密不得入日志、契约及诊断。",
+        "保持progress/effectiveProgress分离、sync-now HTTP200/ok、稳定性失败不覆盖matched基线、孤儿项目只可取消、EWO禁止负责人/计划日期映射、generation_unknown不自动重发。",
+        "Excel仅COM，不结束用户Excel；feishu_tasks、retired交付物和归档项目数据保留；TDC feishukey保留；不重新引入计划任务。",
+        "新测试路径是计划交付物，不是声称已有文件。测试必须执行实际调用链，不能只检查源码包含符号或只测试未接线helper。",
+        "risk_class=high需要lead冻结契约后才能派发有界实现；不得改词降级绕过风险控制。最多两轮针对性修复，再交主控裁决。",
+        "不调用其他agent、Codex、AGY或ZCode来递归委派；使用指定DSH执行路线，不因故障静默换供应商。失败或超时恢复同一workflow，不重复创建副作用。",
+        "仅内部开发与测试，不对外分发、发邮件、真实内网操作。当前任务未授权的真实验证保持待验证。",
+        "证据口径：3530 passed/6 skipped/13 warnings 是W16-03提交前的历史全量，本轮只有44 passed/7.71s；项目地图--check失败；构建WinError5根因未定。不得把历史数字或局部通过当作当前全量，也不得把“范围内未查到”写成全局不存在。",
+        "复用优先：新增任务先核实既有实现与文档，已有则复用并只修缺口；不得宣称所有新增任务都是从零新建。",
+        "复用L0_SPIKE_20261031.md；不实施启动器替换、不新增依赖、不宣称L0已落地。",
+        "只补现状证据与重评触发条件；与47的实现边界分开。"
+      ],
+      "baseline_commit": "b781066d4f83dc38546a56049b4777c74e2bc9d7",
+      "workspace": "E:\\project\\vse-toolbox",
+      "dsh_tool": "dsh_workflow_start",
+      "max_review_cycles": 2,
+      "scope": {
+        "allowed": [
+          "docs/refactor-v2/L0_SPIKE_20261031.md"
+        ],
+        "forbidden": [
+          "dist/**",
+          "build/**",
+          "error data/**",
+          "crawl source/**",
+          "爬虫源文件/**",
+          ".runtime/**",
+          ".agents/**",
+          ".zcode/**"
+        ]
+      }
+    }
+  ]
+}

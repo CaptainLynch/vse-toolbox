@@ -84,7 +84,10 @@ export const FIELD_GROUPS = {
   },
   "tdc-data-model": {
     fields: [
-      text("serial_number", "流水号"),
+      // serial_number 是 API 层键名，语义是第 0 列实例号 incident（纯数字），不是流水单号；
+      // 流水单号（documentNo）不是 TDC 查询参数，只能全量抓取后本地精确匹配。
+      text("serial_number", "实例号(incident)"),
+      text("document_no", "流水单号", { placeholder: "例如 3D-00001193；填写后走全量抓取 + 本地精确匹配，较慢" }),
       text("applicant", "申请人"),
       text("department", "部门"),
       text("section", "科室"),
@@ -139,6 +142,9 @@ export const ARAS_MODES = {
     label: "EWO",
     endpoint: "/api/aras/ewo/query",
     exportEndpoint: "/api/aras/ewo/export",
+    listExportEndpoint: "/api/aras/ewo/export-list-columns",
+    listExportLabel: "导出列表列（未提供列已标注）",
+    listExportFileName: "aras-ewo-export-list-columns.csv",
     exportNumberNames: ["max_records", "max_pages"],
     exportLabel: "全量导出 CSV",
     defaultFileName: "aras-ewo-export.csv",
@@ -209,11 +215,15 @@ export const TDC_MODES = {
     crawlAllEndpoint: "/api/tdc/data-model/crawl-all",
     exportEndpoint: "/api/tdc/data-model/export",
     exportLabel: "导出 XLSX",
+    // 多流水单号合并导出：官方 XLSX 导出不按单号过滤（上游无该查询参数），
+    // 这里走全量抓取 + 本地集合匹配 → 合并成一张 CSV。
+    mergedExportEndpoint: "/api/tdc/data-model/export-merged",
+    mergedExportLabel: "导出合并结果（CSV）",
     crawlAllLabel: "全量抓取",
     defaultFileName: "tdc_data_model.xlsx",
     submitLabel: "查询预览",
     fieldGroup: "tdc-data-model",
-    filterNames: ["serial_number", "applicant", "department", "section", "application_start", "application_end", "project_model", "part_number", "model_number", "status"],
+    filterNames: ["serial_number", "document_no", "applicant", "department", "section", "application_start", "application_end", "project_model", "part_number", "model_number", "status"],
     numberNames: ["page", "page_size"],
     crawlNumberNames: ["page_size", "max_pages", "max_records"],
     preferredColumns: [],

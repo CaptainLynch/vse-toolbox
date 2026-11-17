@@ -1,0 +1,58 @@
+{
+  "data_model_document_no_and_incident_conflict": {
+    "error_str": "project status policy validation failed",
+    "fields": {
+      "matchRule": "流水单号与实例号二选一：请只保留其中一项"
+    }
+  },
+  "data_model_section_scope_conflict": {
+    "error_str": "project status policy validation failed",
+    "fields": {
+      "matchRule": "包含不允许的匹配键"
+    }
+  },
+  "enable_without_evidence": {
+    "error_str": "project status policy validation failed",
+    "fields": {
+      "enabled": "启用同步前需要连续两次无歧义且目标一致的映射发现证据"
+    }
+  },
+  "invalid_interval_and_credential": {
+    "error_str": "project status policy validation failed",
+    "fields": {
+      "credentialRef": "凭据引用必须是非空别名或 null",
+      "intervalMinutes": "同步周期必须是正整数分钟"
+    }
+  },
+  "invalid_mode": {
+    "error_str": "project status policy validation failed",
+    "fields": {
+      "mode": "模式必须是 manual、automatic 或 hybrid"
+    }
+  },
+  "manual_mode_with_auto_fields": {
+    "error_str": "project status policy validation failed",
+    "fields": {
+      "fieldAuthority": "手动模式下不能配置自动字段归属"
+    }
+  },
+  "non_sync_target_auto_forbidden": {
+    "error_str": "project status policy validation failed",
+    "fields": {
+      "fieldAuthority": "此交付物当前禁止自动字段归属",
+      "mode": "此交付物当前保持手工或映射发现模式"
+    }
+  },
+  "unknown_match_keys": {
+    "error_str": "project status policy validation failed",
+    "fields": {
+      "matchRule": "包含不允许的匹配键"
+    }
+  },
+  "unknown_request_keys": {
+    "error_str": "project status policy validation failed",
+    "fields": {
+      "request": "包含不允许修改的字段"
+    }
+  }
+}

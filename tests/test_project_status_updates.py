@@ -665,6 +665,57 @@ def test_data_model_status_in_match_rule_is_allowed(tmp_db: DatabaseManager) -> 
     assert policy["matchRule"]["status"] == "审批完成"
 
 
+def test_data_model_document_no_and_incident_are_mutually_exclusive(tmp_db: DatabaseManager) -> None:
+    """数模流水单号与实例号二选一（2026-10-09）：同填落库 fail-closed。"""
+    service = ProjectStatusUpdateService(tmp_db)
+    match_rule = {
+        "reportType": "data_model",
+        "aggregate": False,
+        "incident": "51553863",
+        "documentNo": "3D-00001018",
+    }
+    with pytest.raises(Exception) as excinfo:
+        service.update_update_policy("VPI-T2-D5", {
+            "mode": "automatic",
+            "enabled": True,
+            "credentialRef": "test-alias",
+            "matchRule": match_rule,
+            "mapping": {"note": ["latestApproveLog"]},
+            "fieldAuthority": {"note": "automatic"},
+        })
+    fields = getattr(excinfo.value, "fields", None) or {}
+    assert "二选一" in str(fields.get("matchRule") or excinfo.value)
+
+
+def test_data_model_document_no_only_binding_is_accepted(tmp_db: DatabaseManager) -> None:
+    """只填流水单号的绑定合法：单记录模式经既有 external_key 校验路径落库。"""
+    service = ProjectStatusUpdateService(tmp_db)
+    match_rule = {
+        "reportType": "data_model",
+        "aggregate": False,
+        "documentNo": "3D-00001018",
+    }
+    sig = compute_config_signature("tdc", match_rule)
+    summary = json.dumps([{"externalKey": "900001", "fields": {"latestApproveLog": "ok"}}])
+    report = json.dumps({"fields": ["latestApproveLog"]})
+    for _ in range(2):
+        tmp_db.record_mapping_observation(
+            "VPI-T2-D5", "tdc", "matched", "900001", "900001", 1,
+            summary, report, config_signature=sig,
+        )
+    policy = service.update_update_policy("VPI-T2-D5", {
+        "mode": "automatic",
+        "enabled": True,
+        "credentialRef": "test-alias",
+        "externalKey": "900001",
+        "matchRule": match_rule,
+        "mapping": {"note": ["latestApproveLog"]},
+        "fieldAuthority": {"note": "automatic"},
+    })
+    assert policy["enabled"] is True
+    assert policy["matchRule"]["documentNo"] == "3D-00001018"
+
+
 def test_assert_sync_ready_is_strictly_read_only(tmp_db: DatabaseManager) -> None:
     """assert_sync_ready 必须是纯只读校验，严禁在校验方法内部静默修改 SQLite 绑定。"""
     service = ProjectStatusUpdateService(tmp_db)

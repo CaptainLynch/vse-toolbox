@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import web.app as web_app
+import web.host_boot as web_host_boot  # noqa: F401  W13-02 迁移后：域登录/凭据实现在宿主模块
 from core.credential_provider import CredentialProviderError
 from core.db_manager import DatabaseManager
 from core.domain_identity import (
@@ -467,15 +468,15 @@ def test_api_settings_domain_login_and_clear_lifecycle(client: Any, monkeypatch:
     mock_tdc = MagicMock()
     mock_tdc.login.return_value = MagicMock(session="tdc_session")
 
-    monkeypatch.setattr(web_app, "ArasECMAuthClient", lambda: mock_aras)
-    monkeypatch.setattr(web_app, "TDCPasswordAuthClient", lambda: mock_tdc)
+    monkeypatch.setattr(web_host_boot, "ArasECMAuthClient", lambda: mock_aras)
+    monkeypatch.setattr(web_host_boot, "TDCPasswordAuthClient", lambda: mock_tdc)
     monkeypatch.setattr(
-        web_app,
+        web_host_boot,
         "store_windows_generic_credential",
         lambda ref, username, password: None,
     )
     monkeypatch.setattr(
-        web_app,
+        web_host_boot,
         "delete_windows_generic_credential",
         lambda ref: True,
     )
@@ -524,18 +525,18 @@ def test_domain_login_save_writes_and_clear_removes_windows_credential(
     mock_aras.login.return_value = MagicMock(session="aras_session")
     mock_tdc = MagicMock()
     mock_tdc.login.return_value = MagicMock(session="tdc_session")
-    monkeypatch.setattr(web_app, "ArasECMAuthClient", lambda: mock_aras)
-    monkeypatch.setattr(web_app, "TDCPasswordAuthClient", lambda: mock_tdc)
+    monkeypatch.setattr(web_host_boot, "ArasECMAuthClient", lambda: mock_aras)
+    monkeypatch.setattr(web_host_boot, "TDCPasswordAuthClient", lambda: mock_tdc)
 
     stored: list[tuple[str, str, str]] = []
     deleted: list[str] = []
     monkeypatch.setattr(
-        web_app,
+        web_host_boot,
         "store_windows_generic_credential",
         lambda ref, username, password: stored.append((ref, username, password)),
     )
     monkeypatch.setattr(
-        web_app,
+        web_host_boot,
         "delete_windows_generic_credential",
         lambda ref: deleted.append(ref) or True,
     )
@@ -567,13 +568,13 @@ def test_domain_login_windows_credential_failure_returns_503(
     mock_aras.login.return_value = MagicMock(session="aras_session")
     mock_tdc = MagicMock()
     mock_tdc.login.return_value = MagicMock(session="tdc_session")
-    monkeypatch.setattr(web_app, "ArasECMAuthClient", lambda: mock_aras)
-    monkeypatch.setattr(web_app, "TDCPasswordAuthClient", lambda: mock_tdc)
+    monkeypatch.setattr(web_host_boot, "ArasECMAuthClient", lambda: mock_aras)
+    monkeypatch.setattr(web_host_boot, "TDCPasswordAuthClient", lambda: mock_tdc)
 
     def _fail(ref: str, username: str, password: str) -> None:
         raise CredentialProviderError("Windows Credential Manager is unavailable")
 
-    monkeypatch.setattr(web_app, "store_windows_generic_credential", _fail)
+    monkeypatch.setattr(web_host_boot, "store_windows_generic_credential", _fail)
 
     resp = client.post(
         "/api/settings/domain-login",
@@ -596,12 +597,12 @@ def test_domain_login_dpapi_failure_rolls_back_windows_credential(
     mock_aras.login.return_value = MagicMock(session="aras_session")
     mock_tdc = MagicMock()
     mock_tdc.login.return_value = MagicMock(session="tdc_session")
-    monkeypatch.setattr(web_app, "ArasECMAuthClient", lambda: mock_aras)
-    monkeypatch.setattr(web_app, "TDCPasswordAuthClient", lambda: mock_tdc)
-    monkeypatch.setattr(web_app, "store_windows_generic_credential", lambda ref, u, p: None)
+    monkeypatch.setattr(web_host_boot, "ArasECMAuthClient", lambda: mock_aras)
+    monkeypatch.setattr(web_host_boot, "TDCPasswordAuthClient", lambda: mock_tdc)
+    monkeypatch.setattr(web_host_boot, "store_windows_generic_credential", lambda ref, u, p: None)
     deleted: list[str] = []
     monkeypatch.setattr(
-        web_app,
+        web_host_boot,
         "delete_windows_generic_credential",
         lambda ref: deleted.append(ref) or True,
     )

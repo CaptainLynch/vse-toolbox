@@ -276,6 +276,7 @@ def test_chrome_pure_logic_under_node() -> None:
     ]
     assert nav["emptied"] is None
     assert nav["fallback"] == [
-        "#p/project-overview/deliverable?id=D3", "#p/a/y", "#p/project-overview/status", "#p/project-overview/status",
+        # 空哈希（直接打开程序）进入 v2「今天」
+        "#p/project-overview/deliverable?id=D3", "#p/a/y", "#p/workbench/today", "#p/project-overview/status",
     ]
     assert data["theme"] == ["dark", "dark", "light", "深色"]

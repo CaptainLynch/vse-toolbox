@@ -272,6 +272,21 @@ def test_api_version_endpoint(client: FlaskClient) -> None:
     assert "detail" in data["data"]
 
 
+def test_api_version_reports_deploy_manifest_status(client: FlaskClient) -> None:
+    """部署自检结论与版本同一个出口（2026-11-11）：页面和运维脚本都读 data.manifest_ok。"""
+    data = client.get("/api/version").get_json()["data"]
+    assert "deployment" in data and "manifest_ok" in data
+    deployment = data["deployment"]
+    assert deployment["status"] in {"ok", "absent", "mismatch", "error"}
+    assert isinstance(deployment["manifestOk"], bool)
+    assert data["manifest_ok"] is deployment["ok"]
+    for key in ("containerized", "mismatched", "missing", "extraPlugins", "checked"):
+        assert isinstance(deployment[key], int)
+    if deployment["status"] == "absent":
+        # 开发工作区没有清单：不冒充"通过"，但也不阻断启动。
+        assert "未提供部署清单" in deployment["message"]
+
+
 def test_dashboard_renders_usability_elements(client: FlaskClient) -> None:
     """首页把版本号交给宿主顶栏；会话徽章、版本详情与原位登录由宿主 chrome 渲染。"""
     resp = client.get("/")

@@ -25,7 +25,7 @@ OWN_MODULES = sorted(
     + list((STATIC / "details").glob("*.js"))
     + list((STATIC / "shared").glob("status-*.js"))
 )
-HOST_IMPORTS = {"/static/host/vendor/preact-htm.js", "/static/host/kit.js"}
+HOST_IMPORTS = {"/static/host/vendor/preact-htm.js", "/static/host/kit.js", "/static/host/expert.js"}
 
 
 @pytest.fixture()

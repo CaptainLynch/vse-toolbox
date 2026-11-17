@@ -4,6 +4,8 @@
 // It calls the existing /api/aras, /api/tdc and /api/tasks endpoints.
 import { html, useEffect, useRef, useState } from "/static/host/vendor/preact-htm.js";
 import { useStylesheet } from "/static/host/kit.js";
+import { ErrorCard, Skeleton, TONE } from "/static/host/ui-kit.js";
+import { formatBeijingWithZone } from "/static/host/time-format.js";
 import { DataGrid } from "./grid.js";
 import {
   FORBIDDEN_PERSIST_KEYS,
@@ -20,6 +22,9 @@ import {
   resultMetaText,
   resultRowCount,
   safeDisplayValue,
+  serialMatchNotice,
+  serialSourceConflict,
+  SERIAL_REQUIRES_LIST_NOTICE,
   SENSITIVE_COLUMNS,
   taskPercent,
   taskProgressText,
@@ -98,12 +103,23 @@ function initialGroupValues(modeId) {
 function filterSummary(modeId, payload) {
   const labels = new Map(fieldsForGroup(MODES[modeId].fieldGroup).map((f) => [f.name, f.label]));
   const parts = [];
-  Object.entries(payload.filters || {}).forEach(([key, value]) => {
+  const entries = Object.entries(payload.filters || {});
+  // 流水单号在请求体顶层（不是 filters），但它仍是用户填写的筛选条件。
+  if (payload.document_no) entries.push(["document_no", payload.document_no]);
+  entries.forEach(([key, value]) => {
     if (key === "car_type_project_id") return;
     const shown = Array.isArray(value) ? value.join(",") : String(value ?? "").trim();
     if (shown) parts.push(`${labels.get(key) || key}: ${redactSensitiveText(shown)}`);
   });
   return parts.length ? parts.join("；") : "无筛选条件";
+}
+
+/**
+ * 结果生成时间：统一北京时间并显式标注时区（契约 C9），与浏览器所在时区/语言无关。
+ * 单独导出，让前端时间门禁能在 Node 下执行同一条显示路径。
+ */
+export function formatResultAt(value) {
+  return formatBeijingWithZone(value);
 }
 
 // ── HTTP：旧接口直接 fetch，保留 diagnosticPath 与 202 契约 ─────────────
@@ -157,25 +173,16 @@ const sleep = (ms, signal) => new Promise((resolve) => {
 
 // ── 小组件 ─────────────────────────────────────────────────────────────
 
-function ErrorCard({ card }) {
-  return html`<div class="structured-error-card" role="alert" aria-live="polite">
-    <div class="structured-error-head">
-      <span class="error-badge-icon" aria-hidden="true">!</span>
-      <div class="error-head-text">
-        <div class="error-summary">${card.summary}</div>
-        <div class="error-impact">${card.impact}</div>
-      </div>
-    </div>
-    ${card.actions && card.actions.length > 0 && html`<div class="error-actions">
-      ${card.actions.map((act) => html`<button key=${act.label} type="button"
-        class=${`error-action-btn ${act.primary ? "is-primary" : ""}`} onClick=${act.action}>${act.label}</button>`)}
-    </div>`}
-    ${card.technical && html`<details class="error-technical-details">
-      <summary>技术详情（维护与排查问题使用）</summary>
-      <div class="error-technical-content">${redactSensitiveText(card.technical)}</div>
-    </details>`}
-  </div>`;
-}
+const TASK_STATUS_TONES = {
+  queued: TONE.warn,
+  leased: TONE.warn,
+  running: TONE.warn,
+  succeeded: TONE.ok,
+  failed: TONE.bad,
+  cancelled: TONE.off,
+  interrupted: TONE.bad,
+  timeout: TONE.bad,
+};
 
 function EmptyNotice({ title, desc }) {
   return html`<div class="empty-result-card">
@@ -241,7 +248,7 @@ function TaskStrip({ task, onCancel }) {
     <div class="sq-task-head">
       <strong>后台${task.kind === "export" ? "导出" : "全量抓取"}任务</strong>
       <span class="sq-task-id">${task.taskId}</span>
-      <span class=${`sq-task-status is-${task.status || "queued"}`}>${statusText}</span>
+      <span class=${`sq-task-status is-${task.status || "queued"} tone-${TASK_STATUS_TONES[task.status] || TONE.off}`}>${statusText}</span>
       ${task.active && html`<button type="button" class="secondary-btn" disabled=${task.cancelling} onClick=${onCancel}>
         ${task.cancelling ? "取消中..." : "取消任务"}</button>`}
       ${task.downloadUrl && html`<a class="secondary-btn sq-task-download" href=${task.downloadUrl} download>下载结果文件</a>`}
@@ -476,7 +483,7 @@ export default function SystemQueryPage({ plugin }) {
 
   // ── 结果 ──
   const renderResult = (data, id, summary) => {
-    setResult({ data: data || {}, modeId: id, key: seq.current, at: new Date().toLocaleString(), summary });
+    setResult({ data: data || {}, modeId: id, key: seq.current, at: formatResultAt(Date.now()), summary });
     setContextNote("");
     const m = MODES[id];
     const captured = data && data.xml;
@@ -491,6 +498,11 @@ export default function SystemQueryPage({ plugin }) {
   // ── 操作 ──
   const run = async (operation) => {
     if (running) return;
+    // 单号 + 官方 Excel 预览：后端必然 400（SerialRequiresListSource），入口先短路。
+    if (operation === "query" && serialSourceConflict(values, mode)) {
+      setStatusText(SERIAL_REQUIRES_LIST_NOTICE);
+      return;
+    }
     const errors = validateForm(modeId, values, connections[mode.system], operation);
     const invalid = Object.entries(errors).filter(([, msg]) => msg);
     if (invalid.length) {
@@ -510,17 +522,18 @@ export default function SystemQueryPage({ plugin }) {
     savePrefs(requestMode, values, connections[mode.system].base_url);
     setErrorState(null);
     setWarning("");
-    if (operation !== "export") setXml(null);
+    const isExportLike = operation === "export" || operation === "export_merged" || operation === "export_list";
+    if (!isExportLike) setXml(null);
     setRunning(operation);
-    setStatusText(operation === "query" ? "运行中" : operation === "crawl_all" ? "全量获取中..." : "导出中");
-    if (resultRef.current && operation !== "export") {
+    setStatusText(operation === "query" ? "运行中" : operation === "crawl_all" ? "全量获取中..." : operation === "export_merged" ? "合并导出中..." : operation === "export_list" ? "列表列导出中..." : "导出中");
+    if (resultRef.current && !isExportLike) {
       setContextNote(operation === "crawl_all"
         ? "保留上次查询结果 · 正在全量获取最新数据..."
         : "保留上次查询结果 · 正在获取最新数据...");
     }
     try {
-      if (operation === "export") {
-        await runExport(requestMode, payload, requestSeq, summary, stillCurrent);
+      if (isExportLike) {
+        await runExport(requestMode, payload, requestSeq, summary, stillCurrent, operation);
       } else {
         const endpoint = operation === "crawl_all" ? mode.crawlAllEndpoint : mode.endpoint;
         const { status, ok, body } = await postJson(endpoint, payload);
@@ -539,7 +552,7 @@ export default function SystemQueryPage({ plugin }) {
       }
     } catch (err) {
       if (!stillCurrent() || (err && err.name === "AbortError")) return;
-      setStatusText(operation === "export" ? "导出失败" : "操作失败");
+      setStatusText(isExportLike ? "导出失败" : "操作失败");
       showError(err && err.type ? err : toQueryError({ error: { message: String(err && err.message) } }, 0), operation);
     } finally {
       clearPayloadSecrets(payload);
@@ -547,9 +560,15 @@ export default function SystemQueryPage({ plugin }) {
     }
   };
 
-  const runExport = async (requestMode, payload, requestSeq, summary, stillCurrent) => {
+  const runExport = async (requestMode, payload, requestSeq, summary, stillCurrent, operation = "export") => {
     const m = MODES[requestMode];
-    const endpoint = m.exportEndpoint || m.downloadEndpoint;
+    // 「导出合并结果」走专用端点（全量抓取 + 本地多单号匹配 → 合并 CSV）；
+    // 官方导出端点不读 document_no，无法按单号过滤。
+    const endpoint = operation === "export_merged"
+      ? m.mergedExportEndpoint
+      : operation === "export_list"
+        ? m.listExportEndpoint
+        : (m.exportEndpoint || m.downloadEndpoint);
     let response;
     try {
       response = await fetch(endpoint, {
@@ -568,7 +587,8 @@ export default function SystemQueryPage({ plugin }) {
         kickTaskCenter();
         if (!mounted.current) return;
         setTask({ taskId: id, kind: "export", modeId: requestMode, seq: requestSeq, summary, status: "queued", active: true, progress: {} });
-        setStatusText(`导出已转入后台任务（${id}），完成后可在此处或右上角「任务」中心下载`);
+        const exportLabel = operation === "export_merged" ? "合并导出" : operation === "export_list" ? "列表列导出" : "导出";
+        setStatusText(`${exportLabel}已转入后台任务（${id}），完成后可在此处或右上角「任务」中心下载`);
         return;
       }
       if (response.status === 202) throw toQueryError({ error: { type: "TaskError", message: "后台导出任务响应无效，请稍后重试" } }, 202);
@@ -681,6 +701,14 @@ export default function SystemQueryPage({ plugin }) {
   const connection = connections[mode.system];
   const busy = Boolean(running);
   const shownResult = result && result.modeId === modeId ? result : null;
+  const serialNotice = shownResult ? serialMatchNotice(shownResult.data) : null;
+  // 官方 XLSX 导出不读顶层 document_no（上游无该查询参数）：填了单号时明确指向合并导出，
+  // 否则用户会拿到"其它条件下的全部行"却以为已按单号过滤（2026-10-10 用户反馈）。
+  const mergedExportNotice = modeId === "tdc-data-model" && String(values.document_no || "").trim()
+    ? "官方「导出 XLSX」不按流水单号过滤（会导出其它条件下的全部行）；只导出这些单号请用「导出合并结果（CSV）」——它从官方报表里按单号精确筛选，含全部官方列；范围过大时请先补充车型/日期等条件。"
+    : "";
+  // 填了单号还选官方 Excel 预览：查询预览必然被后端拒绝，直接禁用并给出可执行引导。
+  const serialSourceBlocked = serialSourceConflict(values, mode);
   const deepLinkActive = deepLink.from === "overview";
 
   return html`<div class="aras-workbench sq-page">
@@ -757,11 +785,17 @@ export default function SystemQueryPage({ plugin }) {
       </section>
 
       <section class="form-block actions-block">
-        <button class="primary-btn" type="submit" data-action="query" disabled=${busy}>${mode.submitLabel || "执行查询"}</button>
+        <button class="primary-btn" type="submit" data-action="query" disabled=${busy || serialSourceBlocked}>${mode.submitLabel || "执行查询"}</button>
+        ${serialSourceBlocked && html`<div class="error-msg sq-warning" role="status">${SERIAL_REQUIRES_LIST_NOTICE}</div>`}
         ${mode.crawlAllEndpoint && html`<button class="primary-btn" type="button" data-action="crawl_all" disabled=${busy}
           onClick=${() => run("crawl_all")}>${mode.crawlAllLabel || "获取全部结果"}</button>`}
         ${(mode.exportEndpoint || mode.downloadEndpoint) && html`<button class="primary-btn" type="button" data-action="export"
           disabled=${busy} onClick=${() => run("export")}>${mode.exportLabel || "导出"}</button>`}
+        ${mode.listExportEndpoint && html`<button class="primary-btn" type="button" data-action="export_list"
+          disabled=${busy} onClick=${() => run("export_list")}>${mode.listExportLabel || "导出列表列"}</button>`}
+        ${mode.mergedExportEndpoint && html`<button class="primary-btn" type="button" data-action="export_merged"
+          disabled=${busy} onClick=${() => run("export_merged")}>${mode.mergedExportLabel || "导出合并结果"}</button>`}
+        ${mergedExportNotice && html`<div class="error-msg sq-warning" role="status">${mergedExportNotice}</div>`}
         ${mode.xmlCapture && html`<label class="xml-capture-toggle">
           <input type="checkbox" checked=${includeXml} onChange=${(event) => setIncludeXml(event.currentTarget.checked)} />
           <span>保存 Aras XML（请求 + 返回）</span>
@@ -782,7 +816,30 @@ export default function SystemQueryPage({ plugin }) {
         <p class="eyebrow">结果</p>
         <span class="sq-result-kind">${shownResult ? (RESULT_KIND_LABELS[mode.resultKind] || mode.resultKind) : "就绪"}</span>
       </div>
-      ${card && html`<${ErrorCard} card=${card} />`}
+      ${card && html`<${ErrorCard}
+        what=${html`<div>
+          <div>${card.summary}</div>
+          ${card.technical && html`<details class="error-technical-details" style="margin-top:6px">
+            <summary>技术详情（维护与排查问题使用）</summary>
+            <div class="error-technical-content">${redactSensitiveText(card.technical)}</div>
+          </details>`}
+        </div>`}
+        todo=${html`<div>
+          <div>${card.impact}</div>
+          ${((card.actions || []).filter((a) => !a.primary)).map((act) => html`<button
+            key=${act.label}
+            type="button"
+            class="vk-btn"
+            style="margin-top:6px;margin-right:6px"
+            onClick=${act.action}
+          >${act.label}</button>`)}
+        </div>`}
+        onFix=${(card.actions || []).find((a) => a.primary) ? {
+          label: (card.actions || []).find((a) => a.primary).label,
+          onClick: (card.actions || []).find((a) => a.primary).action,
+        } : null}
+      />`}
+      ${busy && html`<div style="padding:16px 0"><${Skeleton} rows=${4} /></div>`}
       ${warning && html`<div class="error-msg sq-warning" role="status">${warning}</div>`}
       ${contextNote && html`<div class="deliverable-preview-context">${contextNote}</div>`}
       ${!shownResult && html`<div class="is-empty">暂无结果</div>`}
@@ -791,6 +848,7 @@ export default function SystemQueryPage({ plugin }) {
         <p class="result-output-meta">预览生成时间：${shownResult.at} · 筛选条件：${shownResult.summary}</p>
         ${mode.resultKind === "rows" ? html`
           <p class="result-meta">${resultMetaText(modeId, shownResult.data)}</p>
+          ${serialNotice && html`<p class="result-meta result-warning" role="status">${serialNotice}</p>`}
           ${shownResult.data.mappingComplete === false && Array.isArray(shownResult.data.unmappedColumns)
             && shownResult.data.unmappedColumns.length > 0 && html`<p class="result-meta result-warning">
               ${mode.system === "tdc"

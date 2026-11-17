@@ -30,7 +30,8 @@ class EWOEnrichment:
 
     def restore(self, scope, filters, *, source_item_id=None):
         job_id = self.jobs.latest(scope, self._signature(filters, source_item_id))
-        self.jobs.recover()
+        # 只收敛增强导表自己的在途任务；CSV 导出任务由它自己的编排器与启动恢复负责。
+        self.jobs.recover(purpose='enrichment')
         return self.status(job_id, scope)
 
     def prepare(self, scope, crawler, filters, *, source_item_id=None):
@@ -76,7 +77,7 @@ class EWOEnrichment:
     def run(self, job_id, scope, crawler):
         # Recovery never changes unknown generation back to queued.
         self.jobs.get(job_id, scope)
-        self.jobs.recover()
+        self.jobs.recover(purpose='enrichment')
         job = self.jobs.get(job_id, scope)
         context, _ = self.jobs.data(job_id, scope)
         if not context.get('base_rows'):

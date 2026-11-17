@@ -18,6 +18,7 @@ from typing import Any, Mapping, Sequence
 from core.db_manager import DatabaseManager
 from core.project_status_contracts import project_status_source_capabilities
 from core.redaction import redact_sensitive_text
+from core.time_rules import overdue_state
 from services.deliverable_form_analysis import TDC_DATA_MODEL_COMPLETED_STATUSES
 
 # EWO 的业务范围由来源系统的 `_rsp_smt` 字段决定。这里的常量同时供
@@ -632,13 +633,30 @@ def _aras_record_close(source_type: str, status: str) -> bool:
     )
 
 
+#: 交付物分析「临期」窗口（天）。列表汇总与详情行共用同一常量，
+#: 不允许两条路径各自定义到期窗口。
+ANALYSIS_DUE_SOON_DAYS = 7
+
+
 def _alert_type(
     item: Mapping[str, Any],
     today: date,
-    due_soon_days: int = 7,
+    due_soon_days: int = ANALYSIS_DUE_SOON_DAYS,
     *,
     source_type: object = None,
 ) -> tuple[str | None, int | None]:
+    """逾期/临期状态：唯一实现委托 ``core.time_rules.overdue_state``。
+
+    列表路径（``summarize_analysis_items`` 的汇总计数）与详情路径
+    （``items()`` 的逐行 ``alertType``/``days``）都只经本函数，因此同一输入
+    在两条路径得到的逾期状态与天数必然一致；本模块不再保留第二套日期比较。
+
+    完成/来源语义先行（EWO 阶段机、``is_completed``），未完成行再交给内核：
+    - ``missing_due_date``：未设置计划日期（内核 ``unset``），days 为 None；
+    - ``overdue``：计划日期早于今天，days 为逾期天数；
+    - ``due_soon``：今天到期或剩余天数在窗口内，days 为剩余天数；
+    - ``None``：未到期，days 仍为剩余天数（历史口径不变）。
+    """
     if is_ewo_source_type(_item_source_type(item, source_type)):
         # EWO 的状态机决定完成与否；不得用通用状态文本或日期把 open、
         # close、未知阶段误报为逾期。
@@ -647,16 +665,23 @@ def _alert_type(
             return None, None
     elif bool(item.get("is_completed")):
         return None, None
+    # 纯日期语义：``_iso_date`` 已把缓存值归一为 YYYY-MM-DD，绝不带时区。
     planned = _iso_date(item.get("planned_date"))
-    if planned is None:
+    # completed=False 是安全的：完成态已在上面按来源语义提前返回，
+    # 内核在这里只负责未完成行的日期比较（单一逾期规则）。
+    state = overdue_state(
+        planned,
+        False,
+        today=today,
+        due_soon_days=due_soon_days,
+    )
+    if state.unset:
         return "missing_due_date", None
-    planned_date = date.fromisoformat(planned)
-    delta = (planned_date - today).days
-    if delta < 0:
-        return "overdue", abs(delta)
-    if delta <= due_soon_days:
-        return "due_soon", delta
-    return None, delta
+    if state.state == "overdue":
+        return "overdue", state.days
+    if state.state == "due_soon":
+        return "due_soon", state.days
+    return None, state.days
 
 
 def normalize_analysis_rows(

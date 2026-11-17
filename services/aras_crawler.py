@@ -181,7 +181,16 @@ class ArasCrawlerError(RuntimeError):
 
 
 class ArasAuthenticationError(ArasCrawlerError):
-    """Raised when Aras redirects to login or rejects the supplied browser session."""
+    """Raised when Aras redirects to login or rejects the supplied browser session.
+
+    ``status_code`` 是触发该错误的 HTTP 状态（401/403）；登录页重定向等非状态码判定
+    保持 ``None``。会话恢复协调器据此区分 401（可续期）与 403（forbidden，永不续期），
+    契约 DSH_IDENTITY_CONTRACT §4.1-3（DSH-V2-16 主控批准的范围例外，只增不改）。
+    """
+
+    def __init__(self, *args: object, status_code: int | None = None) -> None:
+        super().__init__(*args)
+        self.status_code = status_code
 
 
 class ArasNcrExportContractError(ArasCrawlerError):
@@ -650,7 +659,7 @@ class ArasCrawlerClient:
         )
         status = int(getattr(response, "status_code", 200) or 200)
         if status in {401, 403}:
-            raise ArasAuthenticationError(_format_http_error(response))
+            raise ArasAuthenticationError(_format_http_error(response), status_code=status)
         if status >= 400:
             raise ArasCrawlerError(_format_http_error(response))
         response.raise_for_status()
@@ -728,7 +737,9 @@ class ArasCrawlerClient:
         )
         status = int(getattr(response, "status_code", 200) or 200)
         if status in {401, 403}:
-            raise ArasAuthenticationError(f"Aras HTTP {status} during NCR progress file download")
+            raise ArasAuthenticationError(
+                f"Aras HTTP {status} during NCR progress file download", status_code=status
+            )
         if status >= 400:
             raise ArasCrawlerError(f"Aras HTTP {status} during NCR progress file download")
         response.raise_for_status()
@@ -982,7 +993,7 @@ class ArasCrawlerClient:
         )
         status = int(getattr(response, "status_code", 200) or 200)
         if status in {401, 403}:
-            raise ArasAuthenticationError(_format_http_error(response))
+            raise ArasAuthenticationError(_format_http_error(response), status_code=status)
         if status >= 400:
             raise ArasCrawlerError(_format_http_error(response))
         response.raise_for_status()
@@ -1024,7 +1035,9 @@ class ArasCrawlerClient:
         self._emit_diagnostic(_event_from_response("prewarm", "GET", url, headers, None, response, started))
         status = int(getattr(response, "status_code", 200) or 200)
         if status in {401, 403}:
-            raise ArasAuthenticationError(f"Aras context warmup failed: {_format_http_error(response)}")
+            raise ArasAuthenticationError(
+                f"Aras context warmup failed: {_format_http_error(response)}", status_code=status
+            )
         if status >= 400:
             raise ArasCrawlerError(f"Aras context warmup failed: {_format_http_error(response)}")
         response.raise_for_status()

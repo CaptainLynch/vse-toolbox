@@ -7,6 +7,7 @@ from zipfile import ZipFile
 import pytest
 
 import web.app as web_app
+import web.crawler_boot as crawler_boot
 from services.tdc_auth import TDCAuthError, TDCLoginResult
 from services.tdc_crawler import TDCCrawlerError, TDCExportResult, TDCPagedResult
 
@@ -328,11 +329,11 @@ def client(monkeypatch, tmp_path):  # type: ignore[no-untyped-def]
     FakeTDCWebClient.export_outside = False
     FakeTDCWebAuthClient.calls = []
     FakeTDCWebAuthClient.fail = None
-    monkeypatch.setattr(web_app, "TDCCrawlerClient", FakeTDCWebClient)
-    monkeypatch.setattr(web_app, "TDCPasswordAuthClient", FakeTDCWebAuthClient)
+    monkeypatch.setattr(crawler_boot, "TDCCrawlerClient", FakeTDCWebClient)
+    monkeypatch.setattr(crawler_boot, "TDCPasswordAuthClient", FakeTDCWebAuthClient)
     db_cls = web_app.DatabaseManager
     monkeypatch.setattr(web_app, "DatabaseManager", lambda: db_cls(tmp_path / "deliverables-test.db"))
-    monkeypatch.setattr(web_app, "DIAGNOSTIC_DIR", tmp_path / "diagnostics")
+    monkeypatch.setattr(crawler_boot, "DIAGNOSTIC_DIR", tmp_path / "diagnostics")
     app = web_app.create_app(tdc_allowed_hosts=["tdc.example"])
     app.config.update(TESTING=True)
     # 后台异步路径需要已建立的统一域会话
@@ -457,6 +458,7 @@ def test_catalog_links_follow_deliverable_registry(client) -> None:
         assert by_id[catalog_id]["links"] == links
     assert [field["name"] for field in by_id["tdc-data-model"]["fields"]] == [
         "serial_number",
+        "document_no",
         "applicant",
         "department",
         "section",
@@ -634,7 +636,7 @@ def test_tdc_data_model_query_password_mode(client) -> None:
     assert init_call["headers"] == {"X-Test": "yes"}
     query_call = next(call for call in FakeTDCWebClient.calls if call["method"] == "data_model_query")
     filters = query_call["filters"]
-    assert filters.serial_number == "WF-1"
+    assert filters.instance_no == "WF-1"
     assert filters.applicant == "Alice"
     assert filters.department == "Engineering"
     assert filters.section == "Body"
@@ -645,6 +647,291 @@ def test_tdc_data_model_query_password_mode(client) -> None:
     assert filters.model_number == "DM-1"
     assert query_call["page"] == 2
     assert query_call["page_size"] == 25
+
+
+def _stub_data_model_crawl(
+    monkeypatch,
+    rows,
+    *,
+    complete=True,
+    stop_reason="reported_pages",
+    fetched_pages=2,
+    total=None,
+):
+    """把 /api/tdc/data-model/query 的全量抓取换成固定行集（本地匹配专用）。"""
+    def crawl(self, filters, page_size=50, max_pages=100, max_records=10000, should_stop=None, on_page=None):  # type: ignore[no-untyped-def]
+        FakeTDCWebClient.calls.append({
+            "method": "data_model_crawl",
+            "filters": filters,
+            "page_size": page_size,
+            "max_pages": max_pages,
+            "max_records": max_records,
+        })
+        return TDCPagedResult(
+            report_type="data_model",
+            rows=list(rows),
+            page=fetched_pages,
+            page_size=page_size,
+            total=len(rows) if total is None else total,
+            pages=1,
+            fetched_pages=fetched_pages,
+            unique_count=len(rows),
+            duplicate_count=0,
+            stop_reason=stop_reason,
+            record_granularity="part_detail",
+            complete=complete,
+        )
+
+    monkeypatch.setattr(FakeTDCWebClient, "crawl_data_model_all", crawl)
+
+
+def test_tdc_data_model_query_document_no_range_precheck_stops_before_full_crawl(client, monkeypatch) -> None:
+    """范围预检（2026-10-13 生产反馈）：上游 total 超过本次上限时立即给出可操作结论。
+
+    现场表现：不填车型时上游 55,335 行 > 100 页上限，同步请求空跑数分钟后只报
+    "抓取不完整"。预检用首页 total 直接判定，并保留"无法判定"语义（绝不落到"未找到"）。
+    """
+    rows = [{"incident": "900001", "documentNo": "F610S-3D-0001", "partNumber": "P-1"}]
+    _stub_data_model_crawl(monkeypatch, rows, complete=True, total=55335)
+
+    resp = _document_no_query(client, "F610S-3D-0002", max_pages=100, max_records=10000)
+
+    assert resp.status_code == 200
+    data = resp.get_json()["data"]
+    assert data["rows"] == []
+    assert data["serialMatch"] == {
+        "requested": "F610S-3D-0002",
+        "scanned": 0,
+        "matched": 0,
+        "scannedPages": 2,
+        "complete": False,
+        "reason": "range_too_large",
+        "total": 55335,
+        "limit": 5000,
+    }
+    # 只发了预检那一次请求：不再空跑 max_pages 页
+    crawls = [call for call in FakeTDCWebClient.calls if call["method"] == "data_model_crawl"]
+    assert [call["max_pages"] for call in crawls] == [1]
+
+
+def _document_no_query(client, document_no, **extra):  # type: ignore[no-untyped-def]
+    payload = {
+        "base_url": "https://tdc.example",
+        "auth_mode": "password",
+        "username": "fictional-user",
+        "password": "fictional-password-secret",
+        "filters": {"project_model": "F610S"},
+        "document_no": document_no,
+    }
+    payload.update(extra)
+    return client.post("/api/tdc/data-model/query", json=payload)
+
+
+def test_tdc_data_model_query_document_no_matches_locally(client, monkeypatch) -> None:
+    """流水单号不发上游：全量翻页后本地精确匹配，响应加 serialMatch。"""
+    rows = [
+        {"incident": "900001", "documentNo": "F610S-3D-0001", "partNumber": "P-1"},
+        {"incident": "900002", "documentNo": "F610S-3D-0002", "partNumber": "P-2"},
+    ]
+    _stub_data_model_crawl(monkeypatch, rows, complete=True)
+
+    resp = _document_no_query(client, "F610S-3D-0002", max_pages=7, max_records=500)
+
+    assert resp.status_code == 200
+    data = resp.get_json()["data"]
+    assert data["report_type"] == "data_model"
+    assert data["data_source"] == "list_endpoint"
+    assert len(data["rows"]) == 1
+    assert data["rows"][0][0] == "900002"  # 第 0 列实例号
+    assert data["rows"][0][2] == "F610S-3D-0002"  # 第 2 列流水单号
+    assert data["serialMatch"] == {
+        "requested": "F610S-3D-0002",
+        "scanned": 2,
+        "matched": 1,
+        "scannedPages": 2,
+        "complete": True,
+    }
+    crawls = [call for call in FakeTDCWebClient.calls if call["method"] == "data_model_crawl"]
+    # 首次调用是范围预检（只取首页拿 total），随后才是真正的全量抓取。
+    assert crawls[0]["max_pages"] == 1
+    assert crawls[-1]["filters"].instance_no is None  # document_no 绝不作为 incident 发上游
+    assert crawls[-1]["max_pages"] == 7 and crawls[-1]["max_records"] == 500  # 复用既有上限
+
+
+def test_tdc_data_model_query_document_no_zero_match_is_empty_not_incomplete(client, monkeypatch) -> None:
+    """抓取完整但匹配 0 行 = 真正的"未找到"（不是"无法判定"）。"""
+    rows = [{"incident": "900001", "documentNo": "F610S-3D-0001"}]
+    _stub_data_model_crawl(monkeypatch, rows, complete=True)
+
+    resp = _document_no_query(client, "F610S-3D-9999")
+
+    assert resp.status_code == 200
+    data = resp.get_json()["data"]
+    assert data["rows"] == []
+    assert data["serialMatch"] == {
+        "requested": "F610S-3D-9999",
+        "scanned": 1,
+        "matched": 0,
+        "scannedPages": 2,
+        "complete": True,
+    }
+
+
+def test_tdc_data_model_query_document_no_incomplete_is_fail_closed(client, monkeypatch) -> None:
+    """抓取不完整：即使能匹配上也不放行——200 + 空行 + complete=false + reason。"""
+    rows = [{"incident": "900001", "documentNo": "F610S-3D-0001"}]
+    _stub_data_model_crawl(monkeypatch, rows, complete=False, stop_reason="max_pages")
+
+    resp = _document_no_query(client, "F610S-3D-0001")
+
+    assert resp.status_code == 200
+    data = resp.get_json()["data"]
+    assert data["rows"] == []
+    assert data["serialMatch"] == {
+        "requested": "F610S-3D-0001",
+        "scanned": 1,
+        "matched": 0,
+        "scannedPages": 2,
+        "complete": False,
+        "reason": "crawl_incomplete",
+    }
+
+
+def test_tdc_data_model_query_document_no_rejects_official_export_source(client) -> None:
+    """官方导出预览是另一种数据源：不能静默忽略 document_no 后把全量行当结果。"""
+    resp = _document_no_query(client, "F610S-3D-0001", preview_source="official_export")
+    assert resp.status_code == 400
+    body = resp.get_json()
+    assert body["error"]["type"] == "SerialRequiresListSource"
+    assert "快速查询" in body["error"]["message"]
+    assert "导出合并结果" in body["error"]["message"]
+
+
+def test_tdc_data_model_official_preview_without_serial_skips_guard(client, monkeypatch) -> None:
+    """缺省/空白单号不是本地匹配请求：官方预览必须照常可用。"""
+    seen = []
+
+    def fake_preview(payload, filters, allowed_hosts, **kwargs):
+        seen.append(kwargs["operation"])
+        return {"report_type": "data_model", "data_source": "official_export", "rows": []}
+
+    monkeypatch.setattr(crawler_boot, "_tdc_official_data_model_preview", fake_preview)
+    for extra in ({}, {"document_no": ""}, {"document_no": "   "}):
+        payload = {
+            "base_url": "https://tdc.example", "auth_mode": "password",
+            "username": "fictional-user", "password": "fictional-password-secret",
+            "filters": {"project_model": "F610S"}, "preview_source": "official_export",
+            **extra,
+        }
+        resp = client.post("/api/tdc/data-model/query", json=payload)
+        assert resp.status_code == 200
+    assert seen == ["query", "query", "query"]
+
+
+def test_crawl_all_ignores_document_no_and_reports_full_scope(client, monkeypatch) -> None:
+    """全量抓取按定义忽略流水单号（两种数据源都是），返回的是条件范围内的全部行。"""
+    rows = [{"incident": "900001", "documentNo": "F610S-3D-0001"}]
+    _stub_data_model_crawl(monkeypatch, rows, complete=True)
+    payload = {
+        "base_url": "https://tdc.example", "auth_mode": "browser",
+        "filters": {"project_model": "F610S"}, "document_no": "F610S-3D-0002",
+    }
+
+    # list 接口：后台全量抓取，单号不参与过滤也不进结果簿记。
+    resp = client.post("/api/tdc/data-model/crawl-all", json=payload)
+    assert resp.status_code == 202
+    task_id = resp.get_json()["data"]["taskId"]
+    assert _wait_for_tdc_background_task(client, task_id)["status"] == "succeeded"
+    data = client.get(f"/api/tasks/{task_id}/result").get_json()["data"]
+    assert len(data["rows"]) == 1
+    assert "F610S-3D-0001" in data["rows"][0]  # 未按单号过滤：非请求单号的行照常返回
+    assert "serialMatch" not in data
+
+    # 官方导出预览：同步 200，同样不读单号。
+    def fake_preview(payload, filters, allowed_hosts, **kwargs):
+        return {"report_type": "data_model", "data_source": "official_export", "rows": []}
+
+    monkeypatch.setattr(crawler_boot, "_tdc_official_data_model_preview", fake_preview)
+    official = client.post(
+        "/api/tdc/data-model/crawl-all", json={**payload, "preview_source": "official_export"}
+    )
+    assert official.status_code == 200
+    assert "serialMatch" not in official.get_json()["data"]
+
+
+def test_tdc_data_model_query_document_no_in_filters_rejected_not_dropped(client) -> None:
+    """fail-open 防护：document_no 混进 filters 必须拒绝，绝不允许静默丢弃后返回无过滤全量。"""
+    payload = {
+        "base_url": "https://tdc.example",
+        "auth_mode": "browser",
+        "cookie": "sid=secret-cookie",
+        "filters": {"document_no": "3D-00001018"},
+    }
+    resp = client.post("/api/tdc/data-model/query", json=payload)
+
+    assert resp.status_code == 400
+    assert resp.get_json()["error"]["type"] == "ValidationError"
+
+
+def test_tdc_data_model_query_document_no_multiple_serials_matches_union(client, monkeypatch) -> None:
+    """多流水单号：集合本地匹配，命中行合并；簿记含 per-serial 明细与 missing。"""
+    rows = [
+        {"incident": "900001", "documentNo": "3D-00001018"},
+        {"incident": "900002", "documentNo": "3D-00001193"},
+        {"incident": "900003", "documentNo": "3D-00001200"},
+    ]
+    _stub_data_model_crawl(monkeypatch, rows, complete=True)
+
+    resp = _document_no_query(client, "3D-00001018 3D-00001193")
+
+    assert resp.status_code == 200
+    data = resp.get_json()["data"]
+    assert len(data["rows"]) == 2
+    serial_match = data["serialMatch"]
+    assert serial_match["complete"] is True
+    assert serial_match["scanned"] == 3
+    assert serial_match["matched"] == 2
+    assert serial_match["requested"] == ["3D-00001018", "3D-00001193"]
+    assert serial_match["found"] == ["3D-00001018", "3D-00001193"]
+    assert serial_match["missing"] == []
+
+
+def test_tdc_data_model_query_document_no_multiple_reports_missing(client, monkeypatch) -> None:
+    """多流水单号部分未命中：命中行照常返回，未命中单号进 missing（S8：只展示不删除）。"""
+    rows = [{"incident": "900001", "documentNo": "3D-00001018"}]
+    _stub_data_model_crawl(monkeypatch, rows, complete=True)
+
+    resp = _document_no_query(client, "3D-00001018, 3D-00009999")
+
+    assert resp.status_code == 200
+    data = resp.get_json()["data"]
+    assert len(data["rows"]) == 1
+    serial_match = data["serialMatch"]
+    assert serial_match["matched"] == 1
+    assert serial_match["found"] == ["3D-00001018"]
+    assert serial_match["missing"] == ["3D-00009999"]
+
+
+def test_tdc_data_model_query_document_no_multiple_incomplete_fail_closed(client, monkeypatch) -> None:
+    """多流水单号抓取不完整：fail-closed 不变，缺 found/missing 明细但 reason 明示。"""
+    rows = [{"incident": "900001", "documentNo": "3D-00001018"}]
+    _stub_data_model_crawl(monkeypatch, rows, complete=False, stop_reason="max_pages")
+
+    resp = _document_no_query(client, "3D-00001018 3D-00001193")
+
+    assert resp.status_code == 200
+    data = resp.get_json()["data"]
+    assert data["rows"] == []
+    assert data["serialMatch"]["complete"] is False
+    assert data["serialMatch"]["reason"] == "crawl_incomplete"
+
+
+def test_tdc_data_model_query_document_no_too_many_serials_rejected(client) -> None:
+    """多单号上限沿用 parse_terms（100）：超限部分被丢弃时 400，不做静默放行。"""
+    resp = _document_no_query(client, " ".join(f"3D-{i:08d}" for i in range(101)))
+
+    assert resp.status_code == 400
+    assert resp.get_json()["error"]["type"] == "ValidationError"
 
 
 def test_tdc_data_model_query_uses_official_export_preview_when_requested(client, monkeypatch) -> None:
@@ -1186,3 +1473,19 @@ def test_tdc_disabled_a_face_routes_are_contract_blocked(client) -> None:
 
     missing = client.post("/api/tdc/dm-change-form/query", json={"base_url": "https://tdc.example", "filters": {}})
     assert missing.status_code == 404
+
+
+def test_merged_export_button_is_wired_in_the_system_query_page() -> None:
+    """综合查询页「合并导出」能力 + 端点映射存在（防静默丢失）。
+
+    W15-01 下线旧交付物工作台（plugins/deliverables）后，TDC 合并导出的
+    前端接线由 plugins/system_query 承接。
+    """
+    from pathlib import Path
+
+    static = Path(__file__).resolve().parent.parent / "plugins" / "system_query" / "static"
+    modes = (static / "modes.js").read_text(encoding="utf-8")
+    query = (static / "query.js").read_text(encoding="utf-8")
+    assert 'mergedExportEndpoint: "/api/tdc/data-model/export-merged"' in modes
+    assert "export_merged" in query
+    assert "mergedExportEndpoint" in query

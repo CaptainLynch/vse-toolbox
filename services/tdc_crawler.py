@@ -205,7 +205,9 @@ class TDCHttpDiagnosticEvent:
 
 @dataclass(frozen=True)
 class TDCDataModelFilters:
-    serial_number: str | None = None
+    #: 第 0 列「实例号」（core/report_contracts.py）。线上查询参数仍是 incident，
+    #: 契约零变化；流水单号（documentNo，第 2 列）不在 TDC 查询参数里，只能本地匹配。
+    instance_no: str | None = None
     applicant: str | None = None
     department: str | None = None
     section: str | None = None
@@ -220,7 +222,7 @@ class TDCDataModelFilters:
         _validate_date_range(self.application_start, self.application_end, "application date")
         return _compact_params(
             {
-                "incident": self.serial_number,
+                "incident": self.instance_no,
                 "applicant": self.applicant,
                 "superDepartment": self.department,
                 "department": self.section,

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
+import stat
 import threading
 import time
 import uuid
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -127,27 +129,184 @@ def sanitize_task_params(params: Mapping[str, Any] | None) -> dict[str, Any]:
     return sanitized
 
 
-def prune_old_artifacts(directory: Path | str, *, max_age_days: int = ARTIFACT_RETENTION_DAYS) -> int:
-    """
-    Delete artifact files older than max_age_days (mtime-based, 7-day rotation).
+#: 下载中的临时文件后缀：正在写入的文件即使 mtime 过期也不进清理候选（契约 C6 清理保护）。
+_PARTIAL_DOWNLOAD_SUFFIXES = (
+    ".part",
+    ".partial",
+    ".tmp",
+    ".download",
+    ".crdownload",
+    ".!ut",
+)
 
-    Only plain files directly inside `directory` are considered; subdirectories
-    and undeletable entries are skipped silently. Returns the removed count.
+#: 活跃任务状态：其产物一律不进清理候选（契约 C6「运行中任务的产物不在 7 天清理范围」）。
+ACTIVE_TASK_STATUSES = ("queued", "leased", "running")
+
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+
+
+@dataclass(frozen=True)
+class ArtifactRegistry:
+    """crawl_tasks 的产物归属快照（只读）：用于区分「任务产物」与「用户文件/历史原件」。
+
+    - ``task_ids``：任何状态的任务 ID；文件名里带这些 ID 的文件视为任务产物。
+    - ``active_task_ids``：活跃任务的 ID；其产物（含尚未写回 artifact_path 的）受保护。
+    - ``artifact_paths`` / ``active_artifact_paths``：数据库已登记的产物相对路径。
     """
-    cutoff = time.time() - max_age_days * 86400
-    removed = 0
+
+    task_ids: frozenset[str] = frozenset()
+    active_task_ids: frozenset[str] = frozenset()
+    artifact_paths: frozenset[str] = frozenset()
+    active_artifact_paths: frozenset[str] = frozenset()
+
+    @staticmethod
+    def _mentions(name: str, task_ids: frozenset[str]) -> bool:
+        return any(tid and tid in name for tid in task_ids)
+
+    def owns(self, name: str, relative_path: str) -> bool:
+        """该文件是否可证明属于某个 crawl 任务（否则视为用户文件/历史原件）。"""
+        if relative_path in self.artifact_paths:
+            return True
+        return self._mentions(name, self.task_ids)
+
+    def protects(self, name: str, relative_path: str) -> bool:
+        """该文件是否属于活跃任务（运行中/排队/租约），必须保留。"""
+        if relative_path in self.active_artifact_paths:
+            return True
+        return self._mentions(name, self.active_task_ids)
+
+
+@dataclass(frozen=True)
+class ArtifactPruneReport:
+    """一次产物清理的可核查结果：删了什么、保留了什么、失败在哪。"""
+
+    directory: str
+    removed: tuple[str, ...] = ()
+    retained: tuple[str, ...] = ()
+    failures: tuple[tuple[str, str], ...] = ()
+    scanned: int = 0
+    error: str | None = None
+
+    @property
+    def removed_count(self) -> int:
+        return len(self.removed)
+
+    @property
+    def ok(self) -> bool:
+        return self.error is None and not self.failures
+
+
+def _is_link(entry: Path) -> bool:
+    """符号链接/重解析点：不跟随、不删除，避免清理越界到历史原件根。"""
     try:
-        entries = list(Path(directory).iterdir())
+        info = entry.lstat()
     except OSError:
-        return 0
+        return True
+    if entry.is_symlink():
+        return True
+    attrs = int(getattr(info, "st_file_attributes", 0))
+    return bool(attrs & _FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def prune_expired_artifacts(
+    directory: Path | str,
+    *,
+    max_age_days: int = ARTIFACT_RETENTION_DAYS,
+    now: float | None = None,
+    registry: ArtifactRegistry | None = None,
+) -> ArtifactPruneReport:
+    """清理 `directory` 下已过期（mtime 早于 max_age_days）的任务产物。
+
+    清理范围与保护边界（契约 C5/C6）：
+    - 只处理 `directory` 的直接子文件，不递归；子目录、链接/重解析点一律保留，
+      因此历史原件（ArchiveStore 独立根）与用户文件天然隔离。
+    - 传入 `registry` 时只删「可证明属于 crawl 任务」的文件；无法归属的文件
+      （用户自放文件、历史原件）保留。未传 `registry` 时保持既有目录级 mtime
+      轮换语义（启动清理用，此时任务已 sweep 为终态）。
+    - 活跃任务产物、正在下载的临时文件（*.part/*.tmp/...）保留。
+    - 删除失败不吞掉：文件保留，失败记入 report.failures 并写 WARNING 日志。
+    """
+    root = Path(directory)
+    current = time.time() if now is None else float(now)
+    cutoff = current - max_age_days * 86400
+    try:
+        root_resolved = root.resolve()
+        entries = sorted(root.iterdir(), key=lambda p: p.name)
+    except OSError as exc:
+        message = f"{type(exc).__name__}: {exc}"
+        logger.warning("Artifact prune skipped: %s is unreadable (%s)", root, message)
+        return ArtifactPruneReport(directory=str(root), error=message)
+
+    removed: list[str] = []
+    retained: list[str] = []
+    failures: list[tuple[str, str]] = []
+    scanned = 0
     for entry in entries:
+        name = entry.name
         try:
-            if entry.is_file() and entry.stat().st_mtime < cutoff:
-                entry.unlink()
-                removed += 1
-        except OSError:
+            info = entry.lstat()
+        except OSError as exc:
+            failures.append((name, f"{type(exc).__name__}: {exc}"))
+            logger.warning("Artifact prune could not stat %s: %s (file retained)", entry, exc)
             continue
-    return removed
+        if _is_link(entry) or not stat.S_ISREG(info.st_mode):
+            retained.append(name)
+            continue
+        scanned += 1
+        try:
+            if not entry.resolve().is_relative_to(root_resolved):
+                retained.append(name)
+                continue
+        except (OSError, RuntimeError, ValueError):
+            retained.append(name)
+            continue
+        if name.lower().endswith(_PARTIAL_DOWNLOAD_SUFFIXES):
+            retained.append(name)
+            continue
+        if registry is not None and (
+            registry.protects(name, name) or not registry.owns(name, name)
+        ):
+            retained.append(name)
+            continue
+        if info.st_mtime >= cutoff:
+            retained.append(name)
+            continue
+        try:
+            entry.unlink()
+        except OSError as exc:
+            failures.append((name, f"{type(exc).__name__}: {exc}"))
+            logger.warning(
+                "Artifact prune failed for %s: %s (file retained)", entry, exc
+            )
+            continue
+        removed.append(name)
+
+    return ArtifactPruneReport(
+        directory=str(root),
+        removed=tuple(removed),
+        retained=tuple(retained),
+        failures=tuple(failures),
+        scanned=scanned,
+    )
+
+
+def prune_old_artifacts(
+    directory: Path | str,
+    *,
+    max_age_days: int = ARTIFACT_RETENTION_DAYS,
+    now: float | None = None,
+    registry: ArtifactRegistry | None = None,
+) -> int:
+    """7 天轮换清理的计数入口（保留既有 int 返回，失败写 WARNING 日志不静默）。
+
+    需要「删了什么/失败在哪」时用 :func:`prune_expired_artifacts` 取完整报告。
+    """
+    report = prune_expired_artifacts(
+        directory, max_age_days=max_age_days, now=now, registry=registry
+    )
+    if report.error:
+        logger.warning("Artifact prune error in %s: %s", directory, report.error)
+    return report.removed_count
 
 
 class CrawlTaskContext:
@@ -229,12 +388,17 @@ class CrawlTaskRunner:
         db: DatabaseManager,
         downloads_dir: Path | str | None = None,
         max_workers: int = 2,
+        *,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         self._db = db
         self._downloads_dir = (
             Path(downloads_dir) if downloads_dir else (app_root() / "data" / "downloads")
         )
         self._downloads_dir.mkdir(parents=True, exist_ok=True)
+        # 可注入时钟：7 天保留边界需要确定性时间（测试与回溯共用同一实现）。
+        self._clock: Callable[[], float] = clock or time.time
+        self.last_cleanup_report: ArtifactPruneReport | None = None
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers,
             thread_name_prefix="crawl-task-worker",
@@ -283,6 +447,84 @@ class CrawlTaskRunner:
         except Exception as exc:
             logger.critical("Fail-closed startup sweep failed: %s", exc)
             raise
+
+    def _artifact_registry(self) -> ArtifactRegistry:
+        """读取 crawl_tasks 的产物归属快照（只读）；失败时抛给调用方决定 fail-closed。"""
+        task_ids: set[str] = set()
+        active_ids: set[str] = set()
+        artifact_paths: set[str] = set()
+        active_artifact_paths: set[str] = set()
+        with self._db.get_connection() as conn:
+            rows = conn.execute(
+                "SELECT task_id, status, artifact_path FROM crawl_tasks"
+            ).fetchall()
+        for row in rows:
+            tid = str(row["task_id"] or "").strip()
+            if not tid:
+                continue
+            task_ids.add(tid)
+            is_active = str(row["status"] or "") in ACTIVE_TASK_STATUSES
+            if is_active:
+                active_ids.add(tid)
+            art = str(row["artifact_path"] or "").replace("\\", "/").strip()
+            if art:
+                artifact_paths.add(art)
+                if is_active:
+                    active_artifact_paths.add(art)
+        # 进程内已提交但尚未落库为 running 的任务同样受保护。
+        with self._lock:
+            active_ids.update(self._active_tasks.keys())
+            task_ids.update(self._active_tasks.keys())
+        return ArtifactRegistry(
+            task_ids=frozenset(task_ids),
+            active_task_ids=frozenset(active_ids),
+            artifact_paths=frozenset(artifact_paths),
+            active_artifact_paths=frozenset(active_artifact_paths),
+        )
+
+    def cleanup_expired_artifacts(
+        self,
+        *,
+        max_age_days: int = ARTIFACT_RETENTION_DAYS,
+        now: float | None = None,
+    ) -> ArtifactPruneReport:
+        """统一 7 天产物清理入口：只删过期且非活跃任务的产物，失败保留并报错。
+
+        归属快照不可用时 fail-closed（不删任何文件），并返回带 error 的报告，
+        绝不退化为「目录里所有旧文件都删」。
+        """
+        current = self._clock() if now is None else float(now)
+        try:
+            registry = self._artifact_registry()
+        except Exception as exc:  # 快照失败：宁可不清，也不越权删除
+            message = f"ownership snapshot unavailable: {type(exc).__name__}: {exc}"
+            logger.error(
+                "Artifact prune skipped for %s: %s (no file removed)",
+                self._downloads_dir,
+                message,
+            )
+            report = ArtifactPruneReport(directory=str(self._downloads_dir), error=message)
+            self.last_cleanup_report = report
+            return report
+
+        report = prune_expired_artifacts(
+            self._downloads_dir,
+            max_age_days=max_age_days,
+            now=current,
+            registry=registry,
+        )
+        self.last_cleanup_report = report
+        if report.removed_count:
+            logger.info("Pruned %d expired download artifacts", report.removed_count)
+        if report.error:
+            logger.error(
+                "Artifact prune error in %s: %s", self._downloads_dir, report.error
+            )
+        for name, reason in report.failures:
+            logger.error(
+                "Artifact %s kept after prune failure: %s", name, reason
+            )
+        return report
 
     def _get_source_lock(self, source: str) -> threading.Lock:
         src = (source or "general").lower().strip()
@@ -410,11 +652,9 @@ class CrawlTaskRunner:
                             task_id, "failed", error_message=safe_msg
                         )
                 if not stop_event.is_set():
-                    # 统一工件 7 天轮换清理：任务完成后淘汰过期下载工件。
+                    # 统一工件 7 天轮换清理：任务完成后淘汰过期且非活跃任务的产物。
                     try:
-                        removed = prune_old_artifacts(self._downloads_dir)
-                        if removed:
-                            logger.info("Pruned %d expired download artifacts", removed)
+                        self.cleanup_expired_artifacts()
                     except Exception:
                         logger.exception("Artifact pruning failed after task %s", task_id)
         finally:

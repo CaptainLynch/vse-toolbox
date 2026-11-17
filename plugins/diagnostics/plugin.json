@@ -1,0 +1,13 @@
+{
+  "id": "diagnostics",
+  "name": "自检",
+  "version": "0.1.0",
+  "hostApi": ">=1,<2",
+  "description": "专家模式自检插件：聚合系统关键服务只读状态与诊断导出",
+  "pages": [
+    {"id": "self-check", "title": "自检", "kind": "module", "module": "self-check.js"}
+  ],
+  "nav": [
+    {"title": "自检", "page": "self-check", "order": 85, "expert": true, "parent": "workbench/tools"}
+  ]
+}

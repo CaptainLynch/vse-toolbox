@@ -51,6 +51,71 @@ def test_apply_watchlist_reads_both_row_shapes_and_keeps_missing():  # S8
     assert W.apply_watchlist([{"incident": "A-1"}], "watchlist", ["A-1"])[0] == []
 
 
+def test_match_serial_is_exact_and_returns_bookkeeping() -> None:
+    """本地匹配是流水单号的唯一判定依据：精确相等 + 首尾 strip + 区分大小写。"""
+    rows = [
+        {"incident": "900001", "documentNo": "F610S-3D-0001"},
+        {"incident": "900002", "documentNo": "F610S-3D-0002"},
+        {"incident": "900003", "documentNo": "F610S-3D-0002"},
+        {"流水单号": " F610S-3D-0003 "},
+    ]
+
+    matched, book = W.match_serial(rows, " F610S-3D-0001 ")
+    assert matched == [rows[0]]
+    assert book == {
+        "serial": "F610S-3D-0001", "scanned": 4, "matched": 1, "matched_instances": ["900001"],
+    }
+
+    matched, book = W.match_serial(rows, "F610S-3D-0002")
+    assert matched == rows[1:3]
+    assert book["matched"] == 2 and book["scanned"] == 4
+    assert book["matched_instances"] == ["900002", "900003"]
+
+    # 表头「流水单号」与接口 documentNo 都可匹配，行值自身也 strip
+    assert W.match_serial(rows, "F610S-3D-0003")[0] == [rows[3]]
+    assert W.match_serial(rows, "F610S-3D-0003")[1]["matched_instances"] == []  # 无 incident 不贡献
+
+    matched, book = W.match_serial(rows, "F610S-3D-9999")
+    assert matched == [] and book["matched"] == 0 and book["scanned"] == 4
+    assert book["matched_instances"] == []
+
+
+def test_match_serial_never_degrades_to_prefix_or_case_insensitive() -> None:
+    rows = [{"documentNo": "F610S-3D-0001"}, {"documentNo": "f610s-3d-0001"}]
+
+    assert W.match_serial(rows, "F610S-3D-000")[0] == []  # 前缀不算
+    assert W.match_serial(rows, "610S-3D-0001")[0] == []  # 包含不算
+    assert W.match_serial(rows, "F610S-3D-0001")[0] == [rows[0]]  # 区分大小写
+
+
+def test_match_serial_rejects_empty_target() -> None:
+    """空单号绝不退化成"匹配全部行"。"""
+    rows = [{"documentNo": "A-1"}]
+    for bad in ("", "   ", None):
+        with pytest.raises(W.WatchlistError):
+            W.match_serial(rows, bad)
+
+
+def test_load_watchlist_fallback_is_unchanged_and_emits_diagnostics(monkeypatch) -> None:
+    """回退行为不变（按全部处理），但走既有诊断渠道发一次事件。"""
+    events: list[str] = []
+    monkeypatch.setattr(
+        W, "emit", lambda kind, data=None, **kwargs: events.append(kind)
+    )
+
+    class _UnreadableJobs:
+        def list_archive_jobs(self):
+            raise RuntimeError("boom")
+
+    class _BrokenSettings:
+        def list_archive_jobs(self):
+            return [{"job_key": W.JOB_KEY, "filters_json": "{not json"}]
+
+    assert W.load_watchlist(_UnreadableJobs()) == ("all", ())
+    assert W.load_watchlist(_BrokenSettings()) == ("all", ())
+    assert events == ["watchlist_load_jobs_failed", "watchlist_load_settings_failed"]
+
+
 def test_form_snapshot_records_coverage_and_latest_full_lookup():  # S11
     watch = build_form_snapshot("tdc_data_model", [], snapshot_at="2026-10-03T08:00:00Z", source_run_id=1,
                                 source="test", coverage={"kind": "watchlist", "serials": ["A-1"], "missing": []})
@@ -121,7 +186,7 @@ def test_archive_connector_keeps_only_watchlist_rows(tmp_path: Path):
     assert [row["documentNo"] for row in collection.form_rows] == ["A-1"]
     assert collection.form_coverage == {"kind": "watchlist", "serials": ["A-1", "Z-9"], "missing": ["Z-9"]}
     assert collection.record_count == 2  # 归档原始件仍是全量
-    assert crawlers[0].filters.serial_number is None  # 清单不发给 TDC
+    assert crawlers[0].filters.instance_no is None  # 清单不发给 TDC
 
     full = connector.collect(_archive_context({}), credential)
     assert len(full.form_rows) == 2 and full.form_coverage == {"kind": "all"}
@@ -172,3 +237,86 @@ def test_project_status_connector_filters_rows_before_progress(tmp_path: Path): 
     assert len(full.analysis_rows) == 2 and full.coverage is None
     assert [row["documentNo"] for row in watched.analysis_rows] == ["B-2"]
     assert watched.coverage == {"kind": "watchlist", "serials": ["B-2"], "missing": []}
+
+
+# ── 多值流水单号规范化（合并统计绑定共用，Task 5） ─────────────────────────────
+
+
+def test_normalize_serial_set_dedupes_and_sorts():
+    assert W.normalize_serial_set("3D-2, 3D-1 3D-2") == ["3D-1", "3D-2"]
+    assert W.normalize_serial_set(["3D-2", "3D-1"]) == ["3D-1", "3D-2"]
+    # 签名稳定性依赖排序：同一集合不同输入顺序必须得到同一结果。
+    assert W.normalize_serial_set(["3D-3", "3D-1", "3D-2"]) == W.normalize_serial_set("3D-2 3D-3 3D-1")
+
+
+def test_normalize_serial_set_rejects_bad_members():
+    for bad in ([], "", ["3D-1", "3D-1 3D-2"], ["3D-1", "  "]):
+        with pytest.raises(W.WatchlistError):
+            W.normalize_serial_set(bad)
+
+
+def test_normalize_serial_set_rejects_non_string_members():
+    """JSON null / 数字不得被 str() 强转成 "None" / "123" 这类幽灵单号（与 watchlist_settings 同严格度）。"""
+    for bad in ([None], [123], ["3D-1", None], ["3D-1", 7], [True]):
+        with pytest.raises(W.WatchlistError) as excinfo:
+            W.normalize_serial_set(bad)
+        assert "必须是字符串" in str(excinfo.value)
+
+
+def test_normalize_serial_set_splits_on_every_search_separator():
+    """字符串分支与 parse_terms 同一组分隔符：空白/逗号/分号/顿号/换行/制表符。"""
+    assert W.normalize_serial_set("3D-1、3D-2;3D-3\n3D-4\t3D-5 3D-6") == [
+        "3D-1", "3D-2", "3D-3", "3D-4", "3D-5", "3D-6",
+    ]
+    assert W.normalize_serial_set("  3D-1  ") == ["3D-1"]
+
+
+def test_normalize_serial_set_reuses_single_value_rules():
+    """逐项走 normalize_single_serial：全角/不可见字符/非字符串容器同样 fail-closed。"""
+    for bad in (["３Ｄ-００００１０１８"], ["3D-1\u200b"], ["x" * 65], None, 7, {"3D-1"}):
+        with pytest.raises(W.WatchlistError):
+            W.normalize_serial_set(bad)
+    assert W.normalize_serial_set([" 3D-1 ", "3D-1"]) == ["3D-1"]
+
+
+def test_normalize_serial_set_caps_at_max_watchlist():
+    assert len(W.normalize_serial_set([f"S{i}" for i in range(W.MAX_WATCHLIST)])) == W.MAX_WATCHLIST
+    with pytest.raises(W.WatchlistError):
+        W.normalize_serial_set([f"S{i}" for i in range(W.MAX_WATCHLIST + 1)])
+
+
+# ── 多单号同步功能开关（Task 8，R22/R4：单一实现，服务与 Web 共用） ─────────────
+
+
+def test_multi_serial_enabled_defaults_to_off(monkeypatch):
+    """缺省关闭：未设置、空串、非真值都视为关闭（第 2 批能力默认不开放）。"""
+    monkeypatch.delenv(W.MULTI_SERIAL_SYNC_ENV, raising=False)
+    assert W.multi_serial_enabled() is False
+    for raw in ("", "0", "no", "off", "enabled"):
+        assert W.multi_serial_enabled({W.MULTI_SERIAL_SYNC_ENV: raw}) is False
+
+
+def test_multi_serial_enabled_accepts_truthy_values():
+    for raw in ("1", "true", "yes", " TRUE ", "Yes"):
+        assert W.multi_serial_enabled({W.MULTI_SERIAL_SYNC_ENV: raw}) is True
+
+
+def test_multi_serial_enabled_reads_process_env(monkeypatch):
+    monkeypatch.setenv(W.MULTI_SERIAL_SYNC_ENV, "1")
+    assert W.multi_serial_enabled() is True
+    monkeypatch.setenv(W.MULTI_SERIAL_SYNC_ENV, "0")
+    assert W.multi_serial_enabled() is False
+
+
+def test_normalize_serial_set_string_cap_is_500_after_dedupe():
+    """字符串形式与数组同一上限 500，且按去重后计数（不再沿用 parse_terms 的 100 词上限）。"""
+    assert len(W.normalize_serial_set(" ".join(f"S{i}" for i in range(150)))) == 150
+    assert len(W.normalize_serial_set(" ".join(f"S{i}" for i in range(W.MAX_WATCHLIST)))) == W.MAX_WATCHLIST
+    assert W.normalize_serial_set(" ".join(["3D-1"] * 600)) == ["3D-1"]  # 去重后只有 1 个，不占额度
+    for bad in (
+        " ".join(f"S{i}" for i in range(W.MAX_WATCHLIST + 1)),
+        [f"S{i}" for i in range(W.MAX_WATCHLIST + 1)],
+    ):
+        with pytest.raises(W.WatchlistError) as excinfo:
+            W.normalize_serial_set(bad)
+        assert str(W.MAX_WATCHLIST) in str(excinfo.value)

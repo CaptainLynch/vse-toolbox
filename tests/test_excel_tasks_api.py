@@ -656,6 +656,11 @@ def test_post_create_same_key_same_request_replay(
     task2 = resp2.get_json()["data"]
 
     assert task1["id"] == task2["id"]
+    # DSH-V2-27：workerAutoStart 是每次提交时的进程状态旁路信息（首次 started、
+    # 重放时 already_running），不属于任务本身；任务字段必须逐字一致。
+    auto1 = task1.pop("workerAutoStart", None)
+    auto2 = task2.pop("workerAutoStart", None)
+    assert auto1 is not None and auto2 is not None
     assert task1 == task2
 
     with test_db.get_connection() as conn:

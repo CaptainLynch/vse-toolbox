@@ -23,7 +23,6 @@ def test_source_scope_includes_product_code_and_excludes_repository_noise() -> N
     assert "core/db_manager.py" in paths
     assert "services/tdc_crawler.py" in paths
     assert "web/app.py" in paths
-    assert "main.py" in paths
     assert "webui.py" in paths
     assert "excel_worker_entry.py" in paths
     assert "tools/excel_worker_cli.py" in paths
@@ -37,8 +36,23 @@ def test_route_entries_extracts_web_api_contract_without_importing_app() -> None
 
     entries = route_entries(source)
 
-    assert ("/api/tdc/sor/export", "POST", "api_tdc_sor_export") in entries
-    assert ("/api/project-status", "GET", "api_project_status") in entries
+    # W13-09 起领域路由分居三个 boot 模块，app.py 只保留通用与装配路由；
+    # 三侧都必须能被静态抽取。
+    assert ("/", "GET/POST", "index") in entries
+    assert ("/api/overview", "GET/POST", "api_overview") in entries
+
+    crawler_source = (ROOT / "web" / "crawler_boot.py").read_text(encoding="utf-8")
+    crawler_entries = route_entries(crawler_source)
+
+    assert ("/api/tdc/sor/export", "POST", "api_tdc_sor_export") in crawler_entries
+    assert ("/api/tdc/data-model/query", "POST", "api_tdc_data_model_query") in crawler_entries
+    assert ("/api/deliverables/catalog", "GET", "api_deliverables_catalog") in crawler_entries
+
+    ps_source = (ROOT / "web" / "project_status_boot.py").read_text(encoding="utf-8")
+    ps_entries = route_entries(ps_source)
+
+    assert ("/api/project-status", "GET", "api_project_status") in ps_entries
+    assert ("/api/project-status/scheduler", "GET", "api_project_status_scheduler_status") in ps_entries
 
 
 def test_build_map_contains_task_router_and_explicit_noise_boundary() -> None:

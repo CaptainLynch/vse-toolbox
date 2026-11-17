@@ -6,8 +6,19 @@ from datetime import date
 import json
 from typing import Mapping, Sequence, TypedDict
 
+from core.time_rules import overdue_state
+
 
 MILESTONE_STATUSES = ("未开始", "进行中", "已完成", "已超期")
+
+#: 同步配置字段契约版本（前后端对齐用）。
+#:
+#: 只在前端/后端对 ``matchRule`` 键的**解释**发生变化时递增（新增键、键语义
+#: 改变、默认值来源改变）；纯文案调整不递增。经 ``sourceInfo.matchFieldContract``
+#: 下发，前端与自身常量不一致时提示「重启 VSE-WebUI 并强制刷新」——
+#: 这是「代码已改但界面还是旧的」最常见的成因（onedir 包未重建 / 浏览器 ES
+#: module 缓存 / 后端进程未重启），比让用户猜要快。
+MATCH_FIELD_CONTRACT = "2026-10-27.1"
 
 
 class DeliverableLink(TypedDict, total=False):
@@ -171,6 +182,9 @@ def deliverable_display_state(
         state, label = "snapshot", "快照同步"
 
     # 快照态的有效状态换算（与前端 deliverableFormDisplay 同规则）。
+    # 这里的 overdue 只是**消费**单一内核的计数（由
+    # services.project_status_deliverable_analysis 的列表/详情同源汇总给出），
+    # 本函数不重算任何逾期天数。
     effective_status = str(status_baseline)
     if state == "snapshot" and display_summary:
         if total and int(display_summary.get("completed") or 0) >= total:
@@ -180,6 +194,39 @@ def deliverable_display_state(
         else:
             effective_status = "进行中"
     return state, label, effective_status
+
+
+def derive_effective_progress(
+    display_state: str,
+    display_summary: Mapping[str, object] | None,
+    manual_progress: object,
+) -> tuple[int | None, str]:
+    """交付物进度的单一派生口径：快照态按明细换算，其余状态保留手工值。
+
+    为什么单独成一个纯函数：同一响应里 ``progress`` 是**手工字段**（编辑表单
+    预填它并原样保存），若把派生值写回该键，用户点一次"保存"就会把派生数字
+    固化成手工值 —— 那是没有审计的数据写入。因此派生值只走新键
+    （``effectiveProgress`` / ``progressSource``），由这里唯一实现。
+
+    - snapshot 且 total>0 → round(completed/total*100)，source=``snapshot``；
+    - snapshot 但 total==0（无有效明细）→ None，前端显示"—"，不显示 0%；
+    - 其它状态 → 手工值（可能为 None），source=``manual``。
+    """
+    state = str(display_state or "")
+    if state == "snapshot":
+        summary = display_summary if isinstance(display_summary, Mapping) else None
+        total = int(summary.get("total") or 0) if summary is not None else 0
+        if total <= 0:
+            return None, "snapshot"
+        completed = int(summary.get("completed") or 0) if summary is not None else 0
+        return min(100, max(0, round(completed / total * 100))), "snapshot"
+    if manual_progress is None or isinstance(manual_progress, bool):
+        return None, "manual"
+    try:
+        value = int(manual_progress)
+    except (TypeError, ValueError):
+        return None, "manual"
+    return min(100, max(0, value)), "manual"
 
 
 # These are deliberately user-facing strings.  The API exposes the reason
@@ -623,6 +670,14 @@ PROJECT_STATUS_SOURCE_CAPABILITIES: dict[str, dict[str, object]] = {
         "completenessPolicy": "paged_result",
         "defaultDepartment": None,
         "supportsRecordSet": False,
+        # sections：科室多选筛选（list[str]，默认现行五科室）。它**不是上游查询
+        # 参数**——TDC 的 department（科室）参数只接受单值，多值能力未验证——
+        # 因此在抓取后按报表行内科室列本地收窄，归集口径与看板「科室归集规则」
+        # 同源（core/section_rollup.resolve_section）。存在 sections 时单值 section
+        # 不再发往上游，避免单值条件把其它科室的行提前丢弃（静默少算）。
+        # 因不进上游查询，它不列入 filterKeys（那里只放真正改变上游过滤器的键），
+        # 只列入 matchKeys（配置键/签名/审计）。
+        "sectionPresets": True,
         "filterKeys": (
             "incident", "applicant", "department", "section",
             "applicationStart", "applicationEnd", "projectModel",
@@ -638,12 +693,24 @@ PROJECT_STATUS_SOURCE_CAPABILITIES: dict[str, dict[str, object]] = {
         },
         "syncNote": None,
         "matchKeys": (
-            "incident", "applicant", "department", "section",
-            "applicationStart", "applicationEnd", "projectModel",
+            # documentNos：多单号集合键（list[str]，与单值 documentNo 互斥）。
+            # 契约键、discovery 过滤名映射、UI 输入项与运行期接线现由同一批交付
+            # （保存/发现/运行期 fail-closed 由 VSE_TDC_MULTI_SERIAL_SYNC 兜底）。
+            # sections：科室多选（list[str]）。与 sectionScope（NCR 的声明式范围）
+            # 不同，它**参与同步收窄**：连接器在抓取后按行内科室列归集求交。
+            "incident", "documentNo", "documentNos", "applicant", "department", "section",
+            "sections", "applicationStart", "applicationEnd", "projectModel",
             "partNumber", "modelNumber", "status", "aggregate", "reportType",
         ),
         "matchFields": (
-            ("incident", "流程编号", "serial_number", "建议优先填写流程编号"),
+            # 流水单号（documentNo）不是 TDC 查询参数：填写后走全量抓取+本地精确
+            # 匹配；与实例号（incident）、多单号（documentNos）三选一，不得同时填写。
+            ("documentNo", "流水单号（选填）", "document_no", "例如 3D-00001018；填写后走全量抓取+本地匹配，较慢"),
+            # 多单号（documentNos）是独立输入：单值框继续 fail-closed，绝不接受
+            # 多值整串；集合在本地精确匹配后合并统计。与单值流水单号、实例号
+            # 三选一（三者互斥，后端保存/发现/运行期同一判定）。
+            ("documentNos", "流水单号（多个，合并统计）", "document_nos", "空格或逗号分隔，如 3D-00001018 3D-00001193；与单个流水单号/实例号三选一"),
+            ("incident", "实例号(incident)（选填）", "serial_number", "纯数字实例号；与单个流水单号/多单号三选一"),
             ("applicant", "申请人", "applicant", "可选"),
             ("department", "部门", "department", "可选"),
             ("section", "科室", "section", "可选"),
@@ -820,6 +887,15 @@ def project_status_default_policy_mode(deliverable_id: str) -> str:
     return "automatic" if capabilities.get("syncCapable") else "manual"
 
 
+#: 已取消的交付物（用户 2026-10-28：「子系统开发策略这项交付物取消」）。数据保留在库里
+#: （不做破坏性删除，审计与历史仍可查），v2 页面不再显示、也不计入完成数。
+PROJECT_STATUS_RETIRED_DELIVERABLES: frozenset[str] = frozenset({"VPI-T2-D1"})
+
+
+def project_status_retired(deliverable_id: str) -> bool:
+    return str(deliverable_id or "") in PROJECT_STATUS_RETIRED_DELIVERABLES
+
+
 def project_status_board_visible(deliverable_id: str) -> bool:
     """交付物是否进入两块看板（首页卡片区与交付物明细表）。
 
@@ -872,6 +948,13 @@ def project_status_default_department(deliverable_id: str) -> str | None:
 
 
 def milestone_display_status(status: object, milestone_date: object, today: date) -> str:
+    """节点展示状态：已完成覆盖一切，逾期判定委托 core.time_rules 单一内核。
+
+    项目状态看板（列表）与阶段详情共用本函数，``已超期`` 不再各自实现
+    ``planned < today``：未完成节点统一由 ``overdue_state`` 判定，避免列表与
+    详情出现两套逾期口径（契约 C5/C9）。日期解析仍留在本层，解析失败与
+    未设置日期都回落到既有文案（不伪造逾期）。
+    """
     normalized = {
         "done": "已完成",
         "current": "进行中",
@@ -882,11 +965,15 @@ def milestone_display_status(status: object, milestone_date: object, today: date
     }.get(str(status), str(status))
     if normalized == "已完成":
         return normalized
+    fallback = normalized if normalized in MILESTONE_STATUSES else "未开始"
     try:
         planned = date.fromisoformat(str(milestone_date))
-    except ValueError:
-        return normalized if normalized in MILESTONE_STATUSES else "未开始"
-    return "已超期" if planned < today else normalized
+    except (TypeError, ValueError):
+        return fallback
+    # completed=False 是安全的：未完成节点才走到这里（上面已提前返回）。
+    if overdue_state(planned, False, today=today).state == "overdue":
+        return "已超期"
+    return normalized
 
 
 def current_stage_label(

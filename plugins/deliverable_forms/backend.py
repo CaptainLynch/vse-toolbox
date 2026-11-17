@@ -12,6 +12,7 @@ Routes (mounted at /api/p/deliverable-forms/):
 from __future__ import annotations
 
 from core import form_registry
+from services import data_model_attribution as attribution
 from services.deliverable_form_analysis import form_definition
 
 # 与旧页面 overdueStateLabels 保持同一口径。
@@ -35,6 +36,17 @@ def _cell(values, index):
 # 归一化维度展平为 _<维度> 字段，页面按维度筛选/分组，不依赖各表单列名。
 DIMENSIONS = ("department", "section", "model", "stage")
 
+# 数模设计审核流程（D5）专属归集维度，见 services/data_model_attribution.py。
+# 只有该表单展平这些键：其他交付物不出现 _dataSource/_vehicle 等字段。
+DATA_MODEL_DIMENSIONS = ("dataSource", "vehicle", "attribution", "archPlatform")
+DATA_MODEL_FORM_KEY = "tdc_data_model"
+
+
+def _dimensions_for(form_key):
+    if form_key == DATA_MODEL_FORM_KEY:
+        return DIMENSIONS + DATA_MODEL_DIMENSIONS
+    return DIMENSIONS
+
 
 def _column_indexes(form_key, definition):
     by_label = {}
@@ -50,6 +62,7 @@ def flatten_rows(form_key, snapshot_rows):
     definition = form_definition(form_key)
     terminal = form_registry.get_form(form_key).terminal_statuses
     columns = _column_indexes(form_key, definition)
+    dimensions_exported = _dimensions_for(form_key)
     flattened = []
     for position, row in enumerate(snapshot_rows):
         values = row.get("values") or []
@@ -57,8 +70,12 @@ def flatten_rows(form_key, snapshot_rows):
         item = {"id": row.get("rowKey") or f"row-{position}"}
         for label, index in columns:
             item[label] = _cell(values, index)
-        for dimension in DIMENSIONS:
+        for dimension in dimensions_exported:
             item["_" + dimension] = dimensions.get(dimension) or None
+        if form_key == DATA_MODEL_FORM_KEY:
+            # 复合分组键：同一车型下项目件/架构件并列，平台池独立成组。
+            # 与阶段图、筛选使用同一个 group_label 原语，避免口径分叉。
+            item["_group"] = attribution.group_label(dimensions) if dimensions else None
         item["_submitted"] = row.get("submittedDate") or None
         status = dimensions.get("status") or None
         item["_status"] = status
@@ -75,7 +92,10 @@ def registry_entry(spec):
         "title": spec.title,
         "source": spec.source,
         "report": spec.report,
-        "dimensionLabels": {key: spec.dimension_label(key) for key in ("status",) + DIMENSIONS},
+        "dimensionLabels": {
+            key: spec.dimension_label(key)
+            for key in ("status",) + _dimensions_for(spec.form_key)
+        },
         "pageColumns": list(spec.page_columns),
         "terminalStatuses": sorted(spec.terminal_statuses),
     }

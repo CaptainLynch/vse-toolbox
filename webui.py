@@ -7,19 +7,26 @@
     python webui.py --host 0.0.0.0      # 允许局域网访问（写操作仅限本机回环）
     python webui.py --port 8000
     python webui.py --only deliverable-forms   # 只加载一个插件（单插件沙箱）
+    python webui.py --excel-worker run ...     # Excel Worker 哨兵（内部使用）
+    python webui.py --sign-daily-probe <.xlsx>  # 签署日报加密表单探针（第 1 期，只读自检）
+    python webui.py --sign-daily-read-child ... # 签署日报 Excel 代读子进程（内部使用）
 
-冻结构建: pyinstaller --noconfirm webui.spec
+冻结构建: pyinstaller --noconfirm VSE-WebUI.spec
 """
 
 from __future__ import annotations
 
 import argparse
+import multiprocessing
 import os
+import sys
 import threading
 import time
 import urllib.error
 import urllib.request
 import webbrowser
+from pathlib import Path
+from typing import Callable
 
 #: 就绪探测的最长等待（秒）：超时说明服务未能监听，放弃唤起浏览器。
 _READINESS_PROBE_TIMEOUT_SECONDS = 30.0
@@ -70,19 +77,31 @@ def _start_sync_scheduler() -> None:
     单绑定异常均已隔离记录，线程顶层兜底同样只记录不外抛。
     """
     from core.db_manager import DatabaseManager
+    from core.time_rules import now_utc
     from services.project_status_scheduler import ProjectStatusSyncScheduler
     from services.project_status_sync_runner import (
         ProjectStatusSyncRunner,
         create_production_registry,
     )
     from services.project_status_updates import ProjectStatusUpdateService
+    from services.schedule_slots import SYNC_CONTROL_TABLE_PREFIX, SlotStore
 
     try:
         db = DatabaseManager()
         db.init_database()
         service = ProjectStatusUpdateService(db)
         runner = ProjectStatusSyncRunner(db, service, create_production_registry())
-        scheduler = ProjectStatusSyncScheduler(db, runner, register_global=True)
+        # C4（DSH-V2-20）：唯一后台调度器直接读写 sync-control 插件的槽表。
+        # 表由插件 register(host) 的增量迁移创建；插件未加载时表不存在，调度器
+        # 自行降级为纯 interval 路径（不建表、不迁移）。
+        slot_store = SlotStore(db, SYNC_CONTROL_TABLE_PREFIX, clock=now_utc)
+        scheduler = ProjectStatusSyncScheduler(
+            db,
+            runner,
+            register_global=True,
+            slot_store=slot_store,
+            clock_utc=now_utc,
+        )
     except Exception:
         print("项目状态同步调度器启动失败，将在下次启动 WebUI 时重试。")
         return
@@ -102,11 +121,19 @@ def _run_sync_scheduler_safely(scheduler) -> None:
         print("项目状态同步调度线程已退出（见运行日志）。")
 
 
-def _open_browser_when_ready(url: str, timeout: float = _READINESS_PROBE_TIMEOUT_SECONDS) -> None:
+def _open_browser_when_ready(
+    url: str,
+    timeout: float = _READINESS_PROBE_TIMEOUT_SECONDS,
+    *,
+    on_ready: Callable[[], None] | None = None,
+) -> None:
     """readiness probe：仅在 HTTP 服务真正监听就绪后唤起默认浏览器。
 
     探测 /api/version（只读、无副作用）；连接被拒说明尚未监听，继续等待，
     超时则放弃（不重试、不报错退出——浏览器唤起是尽力而为的体验增强）。
+
+    ``on_ready`` 在**真正打开浏览器之前**调用：开发态用它进程内预置一张
+    ``delivery="claim"`` 窗口授权（TTL 10 秒，必须紧贴打开动作）。
     """
     probe_url = f"{url.rstrip('/')}/api/version"
     deadline = time.monotonic() + timeout
@@ -115,15 +142,30 @@ def _open_browser_when_ready(url: str, timeout: float = _READINESS_PROBE_TIMEOUT
             with urllib.request.urlopen(probe_url, timeout=1.5) as response:
                 if 200 <= response.status < 500:
                     # 服务已响应（即使返回错误码也说明端口已监听）
+                    if on_ready is not None:
+                        on_ready()
                     webbrowser.open_new_tab(url)
                     return
         except urllib.error.HTTPError:
             # HTTP 错误同样证明服务已监听
+            if on_ready is not None:
+                on_ready()
             webbrowser.open_new_tab(url)
             return
         except OSError:
             pass
         time.sleep(_READINESS_PROBE_INTERVAL_SECONDS)
+
+
+def _arm_claim_grant(security) -> None:
+    """开发态：进程内预置一张 ``delivery="claim"`` 窗口授权（主控裁决 7）。
+
+    票据/授权值一律不打印、不落盘：控制台历史与日志里都不能出现凭据。
+    """
+    try:
+        security.grants.arm("claim")
+    except Exception:  # noqa: BLE001 - 授权预置失败只意味着页面需要从启动器重开
+        print("开发态窗口授权预置失败：请从开始菜单重新打开 VSE Toolbox。")
 
 
 def _resolve_port(raw_port: int | None) -> int:
@@ -145,11 +187,28 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     port = _resolve_port(args.port)
     # 延迟导入：--help 无需加载应用；冻结后模块由打包器收集。
+    from core.excel_tasks import load_production_excel_roots
     from core.runtime_paths import app_root
     from web.app import create_app
 
     plugin_only = [item.strip() for item in (args.only or "").split(",") if item.strip()] or None
-    app = create_app(plugin_only=plugin_only)
+    # C7（DSH-V2-03）：启动票据与启动器密钥都由启动器（vse_boot supervisor）经**继承的
+    # 环境变量**传入，不落盘、不进 argv、不进日志。直接运行 webui.py 的开发态没有启动器，
+    # 这里自行签发（不打印），并用进程内 `arm_grant(delivery="claim")` 让页面换取会话——
+    # 票据/授权绝不附到 URL 上（那正是本契约要修掉的泄漏面）。
+    import secrets as _secrets
+
+    boot_token = os.environ.get("VSE_BOOT_TOKEN") or _secrets.token_urlsafe(32)
+    launcher_secret = os.environ.get("VSE_LAUNCH_SECRET") or _secrets.token_urlsafe(32)
+    accept_legacy_boot_query = os.environ.get("VSE_LEGACY_BOOT_QUERY", "").strip() != "0"
+    app = create_app(
+        plugin_only=plugin_only,
+        excel_roots=load_production_excel_roots(),
+        boot_token=boot_token,
+        launcher_secret=launcher_secret,
+        accept_legacy_boot_query=accept_legacy_boot_query,
+    )
+    security = app.extensions.get("local_web_security")
     if args.diagnostics:
         try:
             app.extensions["diagnostic_recorder"].start()
@@ -169,6 +228,7 @@ def main(argv: list[str] | None = None) -> int:
             threading.Thread(
                 target=_open_browser_when_ready,
                 args=(url,),
+                kwargs={"on_ready": lambda: _arm_claim_grant(security)},
                 name="webui-browser-probe",
                 daemon=True,
             ).start()
@@ -178,5 +238,51 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def _excel_worker_main(argv: list[str]) -> int:
+    """Excel Worker 哨兵分支：不加载 Flask 与插件，直接转发给 Worker CLI。
+
+    单 exe 部署（2026-10-09 顾问复核方案 A）下，宿主用 `--excel-worker` 自调起
+    一个 Worker 子进程，取代原先同目录的独立 `VSE-ExcelWorker.exe`——进程隔离、
+    可终止、Excel COM 不进宿主进程这三点都不变。源码态等价于直接运行
+    `python tools/excel_worker_cli.py <argv>`。
+    """
+    if not getattr(sys, "frozen", False):
+        tools_dir = Path(__file__).resolve().parent / "tools"
+        if tools_dir.is_dir() and str(tools_dir) not in sys.path:
+            sys.path.insert(0, str(tools_dir))
+    from excel_worker_cli import main as worker_main
+
+    return worker_main(argv)
+
+
+def _sign_daily_probe_main(argv: list[str]) -> int:
+    """签署日报第 1 期探针哨兵分支：不加载 Flask 与插件，直接转发给探针服务。
+
+    VSE-WebUI.exe --sign-daily-probe <样本.xlsx> 由宿主自调起
+    --sign-daily-probe-child 子进程，在**受信进程** Excel 里只读取出 UsedRange
+    行列数与第一行表头，用于判断"VSE 拉起的子进程是否仍受终端信任"。两个哨兵
+    都转发到同一入口，由 services.sign_daily_excel_probe.main 区分父子职责。
+    """
+    from services.sign_daily_excel_probe import main as probe_main
+
+    return probe_main(argv)
+
+
+def _sign_daily_read_child_main(argv: list[str]) -> int:
+    """签署日报 Excel 代读子进程哨兵：不加载 Flask 与插件，只做一次只读取数并经管道回传。"""
+    from services.sign_daily_excel_reader import child_main
+
+    return child_main(argv)
+
+
 if __name__ == "__main__":
+    # freeze_support() 必须早于哨兵判断：否则 multiprocessing 的派生进程
+    # （--multiprocessing-fork）会被误判为一次宿主启动。
+    multiprocessing.freeze_support()
+    if len(sys.argv) > 1 and sys.argv[1] == "--excel-worker":
+        raise SystemExit(_excel_worker_main(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] in ("--sign-daily-probe", "--sign-daily-probe-child"):
+        raise SystemExit(_sign_daily_probe_main(sys.argv[1:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "--sign-daily-read-child":
+        raise SystemExit(_sign_daily_read_child_main(sys.argv[2:]))
     raise SystemExit(main())

@@ -27,7 +27,9 @@ playwright_sync = pytest.importorskip("playwright.sync_api")
 # route handlers are discarded at teardown and would otherwise surface as unraisable warnings.
 pytestmark = pytest.mark.filterwarnings("ignore::pytest.PytestUnraisableExceptionWarning")
 
-import web.app as web_app  # noqa: E402
+import web.app as web_app
+import web.project_status_boot as ps_boot
+import web.crawler_boot as crawler_boot  # noqa: E402
 from core.db_manager import DatabaseManager  # noqa: E402
 from services.deliverable_form_analysis import build_form_snapshot, form_definition  # noqa: E402
 from werkzeug.serving import make_server  # noqa: E402
@@ -418,7 +420,8 @@ def test_view_timeout_unlocks_interaction_and_offers_retry(session: Session) -> 
     # the failed switch fell back to the last good tab (filters shown == filters applied)
     assert "is-active" in (_tab(page, "项目状态").get_attribute("class") or "")
     page.get_by_role("button", name="刷新表单数据").first.click()
-    page.wait_for_selector(".form-chart-title:has-text('项目状态')")
+    # 数模表的阶段图标题已改为「零件行风险分布」（与按单口径区分）。
+    page.wait_for_selector(".form-chart-title:has-text('零件行风险分布')")
     _tab(page, "数量趋势").click()
     page.wait_for_selector(".form-trend-chart")
     assert page.locator(".form-view-load-error").count() == 0
@@ -900,8 +903,8 @@ def test_wizard_end_to_end_against_real_backend_task_contract(session: Session, 
             actions.append("query_page")
             return SimpleNamespace(rows=ordered[:page_size], total=12, page=page, page_size=page_size)
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda payload, hosts: FakeTDCClient())
-    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda payload, hosts: FakeTDCClient())
+    monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: object())
     web_app._MAPPING_DISCOVERY_TASKS.clear()
     page = session.page
     page.route("**/api/settings", lambda r: _json_response(r, {"ok": True, "data": {"credentialVaultConfigured": True}})
@@ -1049,8 +1052,8 @@ def test_ncr_wizard_end_to_end_saves_section_scope_declaration(session: Session,
         return list(rows)
 
     monkeypatch.setattr(ArasProjectStatusConnector, "_collect_ncr_rows", classmethod(fake_collect))
-    monkeypatch.setattr(web_app, "_build_aras_client_from_payload", lambda payload, hosts: object())
-    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    monkeypatch.setattr(crawler_boot, "_build_aras_client_from_payload", lambda payload, hosts: object())
+    monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: object())
     web_app._MAPPING_DISCOVERY_TASKS.clear()
     page = session.page
     page.route("**/api/settings", lambda r: _json_response(r, {"ok": True, "data": {"credentialVaultConfigured": True}})
@@ -1124,8 +1127,8 @@ def test_sor_wizard_end_to_end_with_status_filter_and_real_binding(session: Sess
         def query_sor_page(self, filters, page=1, page_size=50):  # type: ignore[no-untyped-def]
             return SimpleNamespace(rows=rows[:page_size], total=5, page=page, page_size=page_size)
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda payload, hosts: FakeTDCClient())
-    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda payload, hosts: FakeTDCClient())
+    monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: object())
     web_app._MAPPING_DISCOVERY_TASKS.clear()
     text = _run_wizard_to_end(
         session, "VPI-T2-D2",
@@ -1156,8 +1159,8 @@ def test_client_deadline_cancels_the_running_crawl_on_the_server(session: Sessio
                 time.sleep(0.05)
             return SimpleNamespace(rows=[], total=0, complete=False, stop_reason="cancelled")
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda payload, hosts: SlowTDCClient())
-    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: None)   # no unified session: synchronous path
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda payload, hosts: SlowTDCClient())
+    monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: None)   # no unified session: synchronous path
     page = session.page
     page.route("**/api/settings", lambda r: _json_response(r, {"ok": True, "data": {"credentialVaultConfigured": True}})
                if r.request.method == "GET" else r.fallback())
@@ -1194,8 +1197,8 @@ def test_cancelling_the_background_task_ends_the_wizard_with_a_restart_hint(sess
                 time.sleep(0.05)
             return SimpleNamespace(rows=[], total=0, complete=False, stop_reason="cancelled")
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda payload, hosts: SlowTDCClient())
-    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda payload, hosts: SlowTDCClient())
+    monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: object())
     web_app._MAPPING_DISCOVERY_TASKS.clear()
     page = session.page
     page.route("**/api/settings", lambda r: _json_response(r, {"ok": True, "data": {"credentialVaultConfigured": True}})

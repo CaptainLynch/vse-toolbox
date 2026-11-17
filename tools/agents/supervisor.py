@@ -1169,12 +1169,19 @@ def doctor(root: Path) -> int:
     if cfg.get("worker_agent") == "zcode-app-server":
         settings = cfg["zcode"]
         try:
-            lead = validate_codex_lead_policy()
+            # 2026-10-31：worker_agent=zcode-app-server 时 lead 是交互式 ZCode（用户当前选择），
+            # ~/.codex/config.toml 的 Codex lead 策略不再适用；仅在显式要求时校验。
+            codex_policy_path = Path(os.environ.get("VSE_CODEX_CONFIG", "")) or None
+            if codex_policy_path and codex_policy_path.is_file():
+                lead = validate_codex_lead_policy(codex_policy_path)
+                lead_text = f"{lead['model']} / {lead['reasoning_effort']} / {lead['context_policy']}"
+            else:
+                lead_text = "interactive ZCode (user-selected; Codex policy check not applicable)"
             zcode_worker.verify_guard(root)
             runtime = zcode_worker.load_runtime(settings)
             print("Worker runtime: zcode-app-server")
             print("Model: " + runtime["model"]["modelId"])
-            print("Codex lead: " + lead["model"] + " / " + lead["reasoning_effort"] + " / " + lead["context_policy"])
+            print("Lead: " + lead_text)
             slots = settings.get("model_slots", {})
             if isinstance(slots, dict):
                 for slot in ("flash", "pro"):

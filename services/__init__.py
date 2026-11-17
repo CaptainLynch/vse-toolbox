@@ -1,31 +1,11 @@
 ﻿# -*- coding: utf-8 -*-
 """Service package exports.
 
-The package itself stays import-light so focused tools can import one service
-without also loading unrelated integrations such as Excel or IMAP.
+The package stays import-light so focused tools can import one service
+without also loading unrelated integrations such as Excel. 旧 CLI 专属的
+内网爬虫、飞书 IMAP 与 Office 工具箱已随 W15-01 下线移除。
 """
 
 from __future__ import annotations
 
-import sys
-from typing import Any
-
-__all__ = ["IntranetScraper", "FeishuImapParser", "OfficeToolbox"]
-
-
-def __getattr__(name: str) -> Any:
-    if name == "IntranetScraper":
-        from services.intranet_scraper import IntranetScraper
-
-        return IntranetScraper
-    if name == "FeishuImapParser":
-        from services.feishu_imap import FeishuImapParser
-
-        return FeishuImapParser
-    if name == "OfficeToolbox":
-        if sys.platform != "win32":
-            return None
-        from services.office_toolbox import OfficeToolbox
-
-        return OfficeToolbox
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+__all__: list[str] = []

@@ -11,18 +11,26 @@ import json
 import logging
 import tempfile
 import time
+from functools import lru_cache
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from core.archive_store import ArchiveStore
 from core.credential_provider import CredentialProvider
+from core.domain_identity import DomainSessionRegistry
+from core.section_rollup import (
+    DEFAULT_SECTION_ROLLUP,
+    build_rollup_index,
+    normalize_section_selection,
+    resolve_section,
+)
 from services import data_model_watchlist
 from core.project_status_contracts import (
     project_status_default_department,
     project_status_supports_record_set,
 )
-from services.aras_auth import ArasECMAuthClient
+from services.aras_auth import ArasECMAuthClient, DEFAULT_ARAS_BASE_URL
 from services.aras_crawler import (
     ArasCrawlerClient,
     EWOReportFilters,
@@ -37,6 +45,11 @@ from services.project_status_deliverable_analysis import (
 )
 from services.scope_exclusion import exclude_paa_cancel_rows, exclude_tdc_scope_rows
 from services.tdc_auth import TDCPasswordAuthClient
+from services.tdc_official_rows import (
+    OfficialWorkbookContractError,
+    OfficialWorkbookTruncated,
+    read_official_tdc_rows,
+)
 from services.tdc_crawler import (
     TDCCrawlerClient,
     TDCDataModelFilters,
@@ -52,13 +65,35 @@ from services.project_status_records import (
     MAX_AGGREGATE_RECORDS,
     aggregate_content_version,
     aggregate_fingerprint,
+    authoritative_record_identity,
     build_aggregate_candidate_values,
     identified_records,
     record_identity as _record_identity,
 )
+from services.session_recovery import (
+    IDEMPOTENT_READ,
+    UNSAFE_SIDE_EFFECT,
+    SessionRecoveryError,
+)
+
 _MAX_ROWS = MAX_AGGREGATE_RECORDS
 logger = logging.getLogger(__name__)
 _TRANSIENT_ERRORS = (ConnectionError, TimeoutError, OSError, WinHTTPError)
+
+# ── 统一续期协调器接入（DSH-V2-16，契约 §10.2）──────────────────────────────
+# 组合根 ``web/app.py`` 在 create_app 时绑定「同一份」DomainSessionRegistry 与
+# 协调器；后台/项目状态连接器的生产构造点在 ``project_status_sync_runner``
+# （不在本任务 scope 内），因此这里用显式装配入口注入，运行期按绑定取用。
+# 未绑定（None）时连接器保持原有「自行登录 + 直接调用」路径，行为不变。
+_session_renewal: Any | None = None
+_session_registry: Any | None = None
+
+
+def bind_session_renewal(coordinator: Any | None, registry: Any | None = None) -> None:
+    """绑定统一续期协调器与共享会话注册表（装配入口，只由 web/app.py 调用）。"""
+    global _session_renewal, _session_registry
+    _session_renewal = coordinator
+    _session_registry = registry
 
 #: PAA 未显式配置责任部门时的默认值（能力注册表单一来源）。
 _PAA_DELIVERABLE_ID = "VPI-T2-D6"
@@ -101,14 +136,65 @@ def _require_complete_result(result: Any) -> None:
         raise ValueError(f"external query is incomplete ({reason})")
 
 
+#: 报表行内科室列的候选键：契约列是第 5 列 ``department``（科室级），
+#: 其余键只在导出/结构漂移时兜底，绝不用 ``superDepartment``（部门级）。
+_ROW_SECTION_KEYS = ("department", "科室", "sectionName")
+
+
+def _section_filter_values(rule: Mapping[str, Any]) -> tuple[str, ...]:
+    """绑定规则里的科室多选（``sections``）-> 规范化后的有序去重元组。
+
+    规范化与边界由 ``core.section_rollup.normalize_section_selection`` 单一来源
+    提供（与保存校验、映射发现同一实现）。fail-closed：运行期遇到脏值直接
+    raise，绝不「当作没配置」退化成不限科室（那会静默多算）。
+    """
+    return normalize_section_selection(rule.get("sections"))
+
+
+@lru_cache(maxsize=1)
+def _default_section_index() -> Mapping[str, str | None]:
+    """内置默认归集索引（未注入用户规则时的兜底，绝不让所有行落「未归集」）。"""
+    return build_rollup_index(DEFAULT_SECTION_ROLLUP)
+
+
+def _row_section_value(row: Mapping[str, Any]) -> str | None:
+    for key in _ROW_SECTION_KEYS:
+        text = _clean_scalar(row.get(key))
+        if text:
+            return text
+    return None
+
+def _raise_if_serial_column_missing(rows: Sequence[Mapping[str, Any]]) -> None:
+    """行集完全没有流水单号列时按「结构漂移」归因并 raise（不落「未匹配」）。
+
+    单值与多单号收窄共用：两者都靠上游行里的流水单号列本地精确匹配，列整体
+    消失时继续走下去只会得到误导性的 not_found。
+    """
+    if rows and not any(data_model_watchlist.row_serial(row) for row in rows):
+        emit(
+            "tdc_document_no_structure_drift",
+            {"report_type": "data_model", "row_count": len(rows)},
+            name="sync_connector.TDCProjectStatusConnector.collect",
+        )
+        raise ValueError(
+            "同步行缺少流水单号列（documentNo/流水单号），无法按流水单号匹配；"
+            "上游结构可能已变化，请重新进行映射发现"
+        )
+
+
 def _stable_version(row: Mapping[str, Any]) -> str:
     normalized = {str(key): _clean_scalar(value) for key, value in sorted(row.items())}
     payload = json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _identity(row: Mapping[str, Any]) -> str:
-    return _record_identity(row)
+def _identity(row: Mapping[str, Any], report: str | None = None) -> str:
+    """行身份（externalKey）。``report`` 只决定身份字段优先顺序，与发现端同源。
+
+    单记录路径只接受**权威字段**（数模 = 第 0 列实例号 incident）：权威字段空白/缺失时
+    不得回退到 formId 等候选键（Codex 复核 2026-10-13 P0）。
+    """
+    return authoritative_record_identity(row, report_type=report)
 
 
 def _close_session(session: Any) -> None:
@@ -135,7 +221,7 @@ def _snapshot(
         return _ewo_v2_snapshot(context, rows, artifacts, analysis_rows, report=report)
     if context.match_rule.get("aggregate") is True:
         return _aggregate_snapshot(context, rows, artifacts, analysis_rows, report=report)
-    matches = [dict(row) for row in rows if _identity(row) == context.external_key]
+    matches = [dict(row) for row in rows if _identity(row, report) == context.external_key]
     fetched = _now()
     if len(matches) != 1:
         marker = hashlib.sha256(f"{len(matches)}:{context.external_key}".encode()).hexdigest()
@@ -145,7 +231,7 @@ def _snapshot(
         )
     row = matches[0]
     version = _stable_version(row)
-    values = _mapping_values(row, context.mapping)
+    values = _mapping_values(row, context.mapping, report=report)
     candidate = ConnectorCandidate(context.external_key, version, values, fetched)
     return ConnectorSnapshot(
         "matched", (candidate,), version, fetched,
@@ -181,9 +267,14 @@ def _ewo_v2_snapshot(context, rows, artifacts, analysis_rows, report=None):
                              context.expected_deliverable_updated_at, artifacts, analysis_rows)
 
 
-def _mapping_values(row: Mapping[str, Any], mapping: Mapping[str, Any]) -> dict[str, str | None]:
+def _mapping_values(
+    row: Mapping[str, Any],
+    mapping: Mapping[str, Any],
+    *,
+    report: str | None = None,
+) -> dict[str, str | None]:
     """按绑定映射提取字段值；note 允许列表型来源字段（多列合并）。"""
-    identity = _record_identity(row)
+    identity = _record_identity(row, report_type=report)
     return build_aggregate_candidate_values([(identity, row)], mapping)
 
 
@@ -205,7 +296,7 @@ def _aggregate_snapshot(
     fetched = _now()
     # 与 discovery 口径一致（GPT 终审任务 3）：共享记录规范化——仅纳入
     # 有业务单号的记录、按单号排序（重排不变）；全部无单号 → not_found。
-    identified = identified_records(rows)
+    identified = identified_records(rows, report_type=report)
     if not identified:
         marker = hashlib.sha256(b"aggregate:empty").hexdigest()
         return ConnectorSnapshot(
@@ -249,6 +340,12 @@ class RetryingConnector:
 
 def _has_transient_cause(exc: BaseException) -> bool:
     """Recognize transport exceptions wrapped by a crawler error."""
+    if isinstance(exc, SessionRecoveryError):
+        # 会话恢复闭集错误：只有网络类（retryable）沿用既有有界重试；
+        # generation_unknown / forbidden / session_cleared / 登录被拒一律不重试
+        # （契约 §6.4：副作用未知禁止自动重发）。闭集错误的 ``__context__`` 仍指向
+        # 原始传输异常，因此必须先于因果链判定拦截。
+        return bool(exc.retryable)
     seen: set[int] = set()
     current: BaseException | None = exc
     while current is not None and id(current) not in seen:
@@ -264,6 +361,57 @@ def _has_transient_cause(exc: BaseException) -> bool:
 # SOR 行状态键是 processInstanceStatus 而非 status，旧实现因此对 SOR 静默空转）。
 # 此处保留既有私有名以稳定引用面（既有测试与调用点）。
 _exclude_tdc_scope_rows = exclude_tdc_scope_rows
+
+
+#: 官方列取得状态（ConnectorSnapshot.official_status 的闭集）。
+#: 只描述"官方 47 列补齐"这一步，绝不改变列表同步本身的成败。
+OFFICIAL_STATUS_NOT_REQUESTED = "not_requested"
+OFFICIAL_STATUS_OK = "ok"
+OFFICIAL_STATUS_UNAVAILABLE = "unavailable"
+OFFICIAL_STATUS_TRUNCATED = "truncated"
+OFFICIAL_STATUS_CONTRACT_MISMATCH = "contract_mismatch"
+OFFICIAL_STATUS_EXPORT_FAILED = "export_failed"
+
+
+def _read_official_snapshot_rows(
+    path: Path,
+    report: str,
+) -> tuple[tuple[Mapping[str, Any], ...], str]:
+    """把官方导出工作簿投影为契约行；任何失败只降级状态，绝不 raise。
+
+    官方工作簿是本轮唯一能提供全部 47 列的数据源（列表接口只覆盖 20 列），
+    但它只是"补齐"：解析失败不得阻断同步，也不得让部分行冒充完整结果。
+
+    - 行数超上限 → ``truncated``：本次不补齐（不返回部分行）；
+    - 表头与已批准契约不符 → ``contract_mismatch``：官方行**整批丢弃**；
+    - 工作簿读不出来（非 XLSX/超限/无表）→ ``unavailable``。
+
+    诊断只落报表名与有界计数，不含单号明文（``core.diagnostic_recording``
+    的白名单口径）。
+    """
+    try:
+        rows = read_official_tdc_rows(path, report, max_rows=_MAX_ROWS + 1)
+    except Exception as exc:  # noqa: BLE001 — 官方列只作补齐，读取故障一律降级
+        if isinstance(exc, OfficialWorkbookTruncated):
+            kind, status = "tdc_official_rows_truncated", OFFICIAL_STATUS_TRUNCATED
+        elif isinstance(exc, OfficialWorkbookContractError):
+            kind = "tdc_official_rows_contract_mismatch"
+            status = OFFICIAL_STATUS_CONTRACT_MISMATCH
+        else:
+            kind, status = "tdc_official_rows_unavailable", OFFICIAL_STATUS_UNAVAILABLE
+        # 只附加原因枚举（受终端加密/损坏/格式不符由 reason 区分），状态值仍是既有闭集。
+        fields: dict[str, Any] = {"report_type": report}
+        reason = str(getattr(exc, "reason", "") or "")
+        if reason:
+            fields["reason"] = reason
+        emit(kind, fields, name="sync_connector.TDCProjectStatusConnector.collect")
+        return (), status
+    emit(
+        "tdc_official_rows_ok",
+        {"report_type": report, "row_count": len(rows)},
+        name="sync_connector.TDCProjectStatusConnector.collect",
+    )
+    return tuple(rows), OFFICIAL_STATUS_OK
 
 
 _TDC_KNOWN_DATA_MODEL_CODES = frozenset({"2", "4"}) | TDC_SYNC_EXCLUDED_STATUSES
@@ -303,13 +451,132 @@ def _emit_tdc_status_distribution(rows: Sequence[Mapping[str, Any]]) -> None:
         )
 
 
-class TDCProjectStatusConnector:
-    def __init__(self, credentials: CredentialProvider, archive: ArchiveStore, *, timeout: float = 60.0, auth_factory: Callable[..., Any] = TDCPasswordAuthClient, crawler_factory: Callable[..., Any] = TDCCrawlerClient) -> None:
+class _RenewableProjectStatusConnector:
+    """Aras/TDC 共用的统一续期接线（DSH-V2-16/17，契约 §3.2/§6/§7/§10.2）。
+
+    行为与 16 已评审的 Aras 实现逐条一致：只有「共享会话存在 + 凭据账号派生的
+    accountRef 等于注册表绑定值 + 协调器判定可续期」三者同时成立时才走协调器；
+    否则保持各连接器原有的自行登录路径（行为不变）。每次业务尝试前都重核绑定，
+    校验后被换成别的账号时绝不改用新会话。
+    """
+
+    #: 子类声明自己所属的企业系统（``aras`` / ``tdc``）。
+    _renewal_system: str = ""
+
+    def _renewal(self) -> Any | None:
+        return self.session_renewal if self.session_renewal is not None else _session_renewal
+
+    def _registry(self) -> Any | None:
+        return self.session_registry if self.session_registry is not None else _session_registry
+
+    def _shared_session(self, registry: Any | None) -> Any | None:
+        """共享内存会话（统一登录/续期建立）；读不到等同「没有共享会话」。"""
+        if registry is None:
+            return None
+        try:
+            return registry.session(self._renewal_system)
+        except Exception:  # noqa: BLE001 - 会话读取失败不得改变业务归因
+            return None
+
+    def _bound_root(self, registry: Any | None) -> str | None:
+        """共享会话绑定的**原始**来源根（爬虫 base_url）；读不到用默认根。"""
+        if registry is None:
+            return None
+        try:
+            root, _ = registry.identity_binding(self._renewal_system)
+        except Exception:  # noqa: BLE001 - 绑定读取失败按"无绑定"处理
+            return None
+        return root if isinstance(root, str) and root.strip() else None
+
+    def _current_shared(self, account_ref: str) -> Any | None:
+        """当前共享会话，仅当注册表仍绑定 ``account_ref`` 时返回；否则 None。"""
+        registry = self._registry()
+        if registry is None:
+            return None
+        try:
+            _, bound = registry.identity_binding(self._renewal_system)
+        except Exception:  # noqa: BLE001 - 绑定读取失败按"不一致"处理
+            return None
+        if not bound or str(bound) != account_ref:
+            return None
+        return self._shared_session(registry)
+
+    def _renewable(self, username: str) -> tuple[Any, Any, str] | None:
+        """``(协调器, 共享会话, accountRef)``；不可续期时 None（保持旧登录路径）。
+
+        只在「已有共享会话且注册表判定可续期（canRenew）」时启用协调器：没有
+        绑定身份/凭据时不得自动续期（契约 §3.2），此时行为与接入前完全一致。
+        """
+        renewal = self._renewal()
+        if renewal is None:
+            return None
+        registry = self._registry()
+        shared = self._shared_session(registry)
+        if shared is None:
+            return None
+        # 账号必须一致（契约 §3.2，禁止跨账号复用会话）：credential_ref 解析出的
+        # 用户名派生的 accountRef 必须等于注册表绑定的 accountRef；绑定缺失或不一致
+        # 一律退回旧的自行登录路径（以 credential_ref 的账号登录）。
+        try:
+            root, bound = registry.identity_binding(self._renewal_system)
+        except Exception:  # noqa: BLE001 - 绑定读取失败按"无绑定"处理
+            return None
+        if not bound or not isinstance(root, str) or not root.strip() or not username:
+            return None
+        try:
+            expected = DomainSessionRegistry.account_ref(self._renewal_system, username, root)
+        except Exception:  # noqa: BLE001 - 派生失败等同不一致
+            return None
+        if expected != bound:
+            return None
+        try:
+            if not bool(renewal.snapshot(self._renewal_system).can_renew):
+                return None
+        except Exception:  # noqa: BLE001 - 观测失败不改变业务路径
+            return None
+        return renewal, shared, str(bound)
+
+    def _run_renewable(
+        self,
+        renewable: tuple[Any, Any, str] | None,
+        session: Any,
+        action: Callable[[Any], Any],
+        *,
+        build: Callable[[Any], Any],
+        kind: str = IDEMPOTENT_READ,
+    ) -> Any:
+        """业务调用：装配协调器时经 ``run_with_renewal``（最多重放一次）。
+
+        每次尝试都按**当前**共享会话重新构造客户端（``build``）：续期成功后重放
+        拿到的是协调器刚写回的新会话（原位恢复，不需要调用方换参数）。
+        """
+
+        def operation() -> Any:
+            active = session
+            if renewable is not None:
+                # 每次尝试都重核绑定账号：校验后到调用前若有人以别的账号登录，
+                # 不得改用新会话（契约 §3.2），退回校验时捕获的会话。
+                active = self._current_shared(renewable[2]) or session
+            return action(build(active))
+
+        if renewable is None:
+            return operation()
+        renewal, _, account_ref = renewable
+        return renewal.run_with_renewal(self._renewal_system, account_ref, operation, kind=kind)
+
+
+class TDCProjectStatusConnector(_RenewableProjectStatusConnector):
+    _renewal_system = "tdc"
+
+    def __init__(self, credentials: CredentialProvider, archive: ArchiveStore, *, timeout: float = 60.0, auth_factory: Callable[..., Any] = TDCPasswordAuthClient, crawler_factory: Callable[..., Any] = TDCCrawlerClient, session_renewal: Any | None = None, session_registry: Any | None = None) -> None:
         self.credentials = credentials
         self.archive = archive
         self.timeout = timeout
         self.auth_factory = auth_factory
         self.crawler_factory = crawler_factory
+        #: 显式注入优先；未注入时用组合根绑定（见 ``bind_session_renewal``）。
+        self.session_renewal = session_renewal
+        self.session_registry = session_registry
 
     @observed("sync_connector.TDCProjectStatusConnector.collect")
     def collect(self, context: SyncBindingContext) -> ConnectorSnapshot:
@@ -318,25 +585,83 @@ class TDCProjectStatusConnector:
         ))
         if report not in {"data_model", "sor"}:
             raise ValueError("TDC reportType must be data_model or sor")
+        if (
+            context.match_rule.get("documentNos")
+            and not data_model_watchlist.multi_serial_enabled()
+        ):
+            # R26：多单号功能开关缺省关闭，运行期遇到 documentNos 一律 fail-closed。
+            # 与保存/发现入口同一判定与文案（不另写一份），且在解析凭据、发上游
+            # 请求之前停跑：开关关闭时绝不以多单号语义少算。
+            raise ValueError(data_model_watchlist.MULTI_SERIAL_DISABLED_MESSAGE)
+        # 官方 47 列补齐结果（只读）：默认不请求，解析失败只降级状态。
+        official_rows: tuple[Mapping[str, Any], ...] = ()
+        official_status = OFFICIAL_STATUS_NOT_REQUESTED
         with self.credentials.resolve(context.credential_ref) as secret:
-            login = self.auth_factory(timeout=self.timeout).login(secret.username, secret.password)
+            username = str(getattr(secret, "username", "") or "").strip()
+            renewable = self._renewable(username)
+            login = None
+            if renewable is None:
+                # 旧登录路径（保留回退）：没有共享会话/不可续期时仍自行登录。
+                login = self.auth_factory(timeout=self.timeout).login(username, secret.password)
+                session = login.session
+            else:
+                # 共享会话路径不构造登录客户端（与 Aras 已评审模式一致）。
+                session = renewable[1]
             try:
                 with tempfile.TemporaryDirectory() as temp:
-                    crawler = self.crawler_factory(session=login.session, timeout=self.timeout, output_dir=Path(temp))
+                    # 同一会话复用同一个爬虫实例（SOR 车型项目列表按实例缓存，
+                    # 重放/导出不得因此多发上游请求）；续期换会话时自然重建。
+                    crawlers: list[tuple[Any, Any]] = []
+
+                    def _crawler_for(active: Any) -> Any:
+                        for known, cached in crawlers:
+                            if known is active:
+                                return cached
+                        crawler = self.crawler_factory(
+                            session=active, timeout=self.timeout, output_dir=Path(temp)
+                        )
+                        crawlers.append((active, crawler))
+                        return crawler
+
+                    def run(action: Callable[[Any], Any], *, kind: str = IDEMPOTENT_READ) -> Any:
+                        """业务调用：装配协调器时经 ``run_with_renewal``（最多重放一次）。"""
+                        return self._run_renewable(
+                            renewable,
+                            session,
+                            action,
+                            build=_crawler_for,
+                            kind=kind,
+                        )
+
                     if report == "data_model":
                         filters = self._data_model_filters(context.match_rule)
-                        result = crawler.crawl_data_model_all(filters, max_records=_MAX_ROWS)
+                        result = run(
+                            lambda crawler: crawler.crawl_data_model_all(
+                                filters, max_records=_MAX_ROWS
+                            )
+                        )
                     else:
                         filters = self._sor_filters(context.match_rule)
-                        result = crawler.crawl_sor_all(filters, max_records=_MAX_ROWS)
+                        result = run(
+                            lambda crawler: crawler.crawl_sor_all(
+                                filters, max_records=_MAX_ROWS
+                            )
+                        )
                     _require_complete_result(result)
                     xlsx_artifact = None
+                    official_path = None
                     try:
-                        official = (
-                            crawler.export_data_model(filters)
-                            if report == "data_model"
-                            else crawler.export_sor(filters)
+                        official = run(
+                            lambda crawler: (
+                                crawler.export_data_model(filters)
+                                if report == "data_model"
+                                else crawler.export_sor(filters)
+                            ),
+                            # 官方导出会在上游生成文件（契约 §6.1 unsafe_side_effect）：
+                            # 续期后**不自动重放**，按 generation_unknown 交用户确认。
+                            kind=UNSAFE_SIDE_EFFECT,
                         )
+                        official_path = official.path
                         with official.path.open("rb") as handle:
                             xlsx = self.archive.write_stream(
                                 handle, source="tdc", report=report, run_id=context.run_id,
@@ -354,14 +679,37 @@ class TDCProjectStatusConnector:
                             {"report_type": report, "outcome": "failed"},
                             name="sync_connector.TDCProjectStatusConnector.collect",
                         )
+                    if report == "data_model":
+                        # 归档写失败不影响解析（工作簿仍在临时目录里）；只有导出
+                        # 本身没产出文件才归为 export_failed。解析在临时目录销毁
+                        # 之前完成，绝不新增上游请求。
+                        if official_path is None:
+                            official_status = OFFICIAL_STATUS_EXPORT_FAILED
+                        else:
+                            official_rows, official_status = _read_official_snapshot_rows(
+                                official_path, report
+                            )
             finally:
-                _close_session(login.session)
+                if login is not None:
+                    _close_session(login.session)
         # SOR 行形状边界（docs/PLAN_20260926_SOR_ROWS_RING_CLICK_NCR_SECTION_DATAMODEL_STATUS.md F1）：
         # 爬虫保留上游语义（原始行=取证/字段报告），连接器负责转换为应用语义——
         # analysis_rows 与 CSV 用规范化行（嵌套对象取标量文本，绝不 str(dict) 进
         # cell），归档 JSON 保留原始行作原始取证。
         application_rows = (
             flatten_sor_rows(list(result.rows)) if report == "sor" else list(result.rows)
+        )
+        # 绑定带流水单号（documentNo）或多单号集合（documentNos）时按其本地精确
+        # 收窄（爬虫完整性已在 _require_complete_result 把关；原始归档行
+        # result.rows 不收窄——取证职责）。
+        application_rows = self._narrow_by_document_no(application_rows, context.match_rule)
+        # 科室多选（sections）在单号精确收窄之后按行内科室列本地收窄：单号收窄
+        # 保持既有零命中归因，科室只缩小范围。归集索引由 runner 注入（与看板
+        # 「科室归集规则」同源），未注入时用内置默认，绝不让全部行落「未归集」。
+        application_rows = self._narrow_by_sections(
+            application_rows,
+            context.match_rule,
+            getattr(context, "section_rollup", None),
         )
         # F3（2026-09-29 生产反馈）：同步范围剔除已废弃/已撤回表单（用户口径，
         # docs/PLAN_20260929_R5_SIX_ISSUES.md）。只剔"已证实映射"的状态文本——
@@ -400,7 +748,15 @@ class TDCProjectStatusConnector:
             )
         )
         snapshot = _snapshot(context, application_rows, artifacts, report=report)
-        return dataclasses.replace(snapshot, coverage=coverage) if coverage else snapshot
+        # 官方列结果与覆盖范围一并并入既有返回值（dataclasses.replace）：
+        # 快照形状只增不改，同步成败与候选匹配语义完全不变。
+        updates: dict[str, Any] = {
+            "official_rows": official_rows,
+            "official_status": official_status,
+        }
+        if coverage:
+            updates["coverage"] = coverage
+        return dataclasses.replace(snapshot, **updates)
 
     def _normalized(
         self,
@@ -420,14 +776,168 @@ class TDCProjectStatusConnector:
 
     @staticmethod
     def _data_model_filters(rule: Mapping[str, Any]) -> TDCDataModelFilters:
+        # incident 是第 0 列实例号；documentNo（流水单号）不是 TDC 查询参数，不在这里消费。
+        # sections（科室多选）同样不是查询参数：TDC 的 department 只接受单值，
+        # 多科室只能在抓取后本地收窄（_narrow_by_sections）。因此 sections 存在时
+        # 单值 section 一律不发上游——否则上游会先丢掉其它科室的行，本地再收窄
+        # 就变成静默少算。
+        sections = _section_filter_values(rule)
         return TDCDataModelFilters(
-            serial_number=_clean_scalar(rule.get("incident")), applicant=_clean_scalar(rule.get("applicant")),
-            department=_clean_scalar(rule.get("department")), section=_clean_scalar(rule.get("section")),
+            instance_no=_clean_scalar(rule.get("incident")), applicant=_clean_scalar(rule.get("applicant")),
+            department=_clean_scalar(rule.get("department")),
+            section=None if sections else _clean_scalar(rule.get("section")),
             application_start=_clean_scalar(rule.get("applicationStart")), application_end=_clean_scalar(rule.get("applicationEnd")),
             project_model=_clean_scalar(rule.get("projectModel")), part_number=_clean_scalar(rule.get("partNumber")),
             model_number=_clean_scalar(rule.get("modelNumber")),
             status=_clean_scalar(rule.get("status")),
         )
+
+    @staticmethod
+    def _narrow_by_document_no(
+        rows: Sequence[Mapping[str, Any]],
+        rule: Mapping[str, Any],
+    ) -> list[Mapping[str, Any]]:
+        """绑定带流水单号（documentNo/documentNos）时按其本地精确收窄行集。
+
+        流水单号不是 TDC 查询参数（查询参数 incident 是第 0 列实例号）：同步
+        路径与映射发现（web/app.py run_observation）同走「全量抓取 → 本地精确
+        匹配」。抓取完整性由调用方的 ``_require_complete_result`` 在收窄前把关。
+        行身份（externalKey=incident）与候选匹配机制不因收窄改变。
+
+        空集归因（顾问复核 2026-10-09）：输入非空而输出为空时区分「行集完全
+        没有流水单号列（结构漂移，raise 不落 not_found）」与「有列但无匹配
+        （真正的 not_found）」；命中 0 行时发一次有界诊断。
+
+        多单号集合（``documentNos``，聚合绑定）按「键存在即多号语义」判定：空集/
+        非法集由 ``normalize_serial_set`` 抛出可执行中文错误（``WatchlistError``
+        是 ``ValueError`` 子类，这里统一转成 ``ValueError``），**绝不**因为集合为
+        空就跳过收窄、把全表当成聚合结果（少算/多算都不允许）。集合内**全部未
+        命中**与**部分缺失**走同一条 fail-closed 路径：先发有界零命中诊断，再
+        raise 停跑——不写入本次结果、保留上次快照；已命中子集也绝不当作本次结果
+        （少算比停跑更糟）。缺失单号补齐后下一次 tick 自愈。诊断 payload 只放
+        有界计数（不落单号明文）。单值路径的零命中仍返回空行集（既有约定）。
+        """
+        if "documentNos" in rule:
+            try:
+                normalized = data_model_watchlist.normalize_serial_set(
+                    rule.get("documentNos")
+                )
+            except data_model_watchlist.WatchlistError as exc:
+                # 与部分缺失同一条 fail-closed 路径：键存在就是多号绑定，
+                # 空集/非法集必须停跑，不得退化成不过滤。
+                raise ValueError(str(exc)) from None
+            _raise_if_serial_column_missing(rows)
+            matched, bookkeeping = data_model_watchlist.match_serials(rows, normalized)
+            if not matched:
+                emit(
+                    "tdc_document_nos_zero_match",
+                    {
+                        "report_type": "data_model",
+                        "record_count": bookkeeping["scanned"],
+                        "expected_count": len(normalized),
+                        "actual_count": 0,
+                    },
+                    name="sync_connector.TDCProjectStatusConnector.collect",
+                )
+                raise ValueError(
+                    "配置的流水单号全部未命中：本次不写入、保留上次结果，"
+                    "请核对单号或筛选条件后重试"
+                )
+            missing = [str(item) for item in bookkeeping.get("missing", [])]
+            if missing:
+                emit(
+                    "tdc_document_nos_partial_missing",
+                    {
+                        "report_type": "data_model",
+                        "expected_count": len(normalized),
+                        "actual_count": len(normalized) - len(missing),
+                        "failed_count": len(missing),
+                    },
+                    name="sync_connector.TDCProjectStatusConnector.collect",
+                )
+                # 异常文案点名最多 5 个缺失单号：其余用「等」收口，保持有界。
+                listed = "、".join(missing[:5])
+                if len(missing) > 5:
+                    listed += f" 等 {len(missing)} 个单号"
+                raise ValueError(
+                    "部分流水单号未命中：" + listed
+                    + "；本次不写入部分结果，请核对单号或补充车型/日期后重试"
+                )
+            return list(matched)
+        document_no = str(rule.get("documentNo") or "").strip()
+        if not document_no:
+            return list(rows)
+        matched, bookkeeping = data_model_watchlist.match_serial(rows, document_no)
+        if not matched:
+            _raise_if_serial_column_missing(rows)
+            emit(
+                "tdc_document_no_zero_match",
+                {"report_type": "data_model", "scanned": bookkeeping["scanned"]},
+                name="sync_connector.TDCProjectStatusConnector.collect",
+            )
+        return list(matched)
+
+    @staticmethod
+    def _narrow_by_sections(
+        rows: Sequence[Mapping[str, Any]],
+        rule: Mapping[str, Any],
+        rollup: Mapping[str, str | None] | None,
+    ) -> list[Mapping[str, Any]]:
+        """按科室多选（``sections``）本地收窄行集；未配置 = 不限科室。
+
+        为什么在本地：TDC 数模查询的科室参数（HTTP ``department``）只接受单值，
+        多值能力未经验证；绑定「五科室」只能一次抓取后按行内科室列求交。
+
+        口径：行内科室值经 ``resolve_section`` 归集到现行科室名（与看板「科室归集
+        规则」同一原语，历史名如「结构工程科」「BE 车身科」按规则归到目标科室）。
+        归集不到的行计入诊断计数后被排除——用户选的是现行科室，未登记的历史值
+        必须先在看板登记规则，绝不在这里猜。
+
+        fail-closed：整批行都没有科室列时按「结构漂移」raise（与流水单号列缺失
+        同一归因），不返回空行集让同步写出一份「零行成功」。
+        """
+        selected = _section_filter_values(rule)
+        if not selected:
+            return list(rows)
+        index = rollup if rollup is not None else _default_section_index()
+        wanted = set(selected)
+        kept: list[Mapping[str, Any]] = []
+        unassigned = 0
+        missing = 0
+        for row in rows:
+            raw = _row_section_value(row)
+            if raw is None:
+                missing += 1
+                continue
+            target = resolve_section(raw, index)
+            if target is None:
+                unassigned += 1
+                continue
+            if target in wanted:
+                kept.append(row)
+        if rows and missing == len(rows):
+            emit(
+                "tdc_section_column_missing",
+                {"report_type": "data_model", "row_count": len(rows)},
+                name="sync_connector.TDCProjectStatusConnector.collect",
+            )
+            raise ValueError(
+                "同步行缺少科室列（department/科室），无法按科室筛选；"
+                "上游结构可能已变化，请重新进行映射发现"
+            )
+        emit(
+            "tdc_section_narrowed",
+            {
+                "report_type": "data_model",
+                "row_count": len(rows),
+                "kept_count": len(kept),
+                "unassigned_count": unassigned,
+                "missing_count": missing,
+                "selected_count": len(selected),
+            },
+            name="sync_connector.TDCProjectStatusConnector.collect",
+        )
+        return kept
 
     @staticmethod
     def _sor_filters(rule: Mapping[str, Any]) -> TDCSORFilters:
@@ -521,13 +1031,31 @@ def _filter_ncr_rows_by_department(
     return kept, len(cleaned) - len(kept)
 
 
-class ArasProjectStatusConnector:
-    def __init__(self, credentials: CredentialProvider, archive: ArchiveStore, *, timeout: float = 60.0, auth_factory: Callable[..., Any] = ArasECMAuthClient, crawler_factory: Callable[..., Any] = ArasCrawlerClient) -> None:
+class ArasProjectStatusConnector(_RenewableProjectStatusConnector):
+    _renewal_system = "aras"
+
+    def __init__(
+        self,
+        credentials: CredentialProvider,
+        archive: ArchiveStore,
+        *,
+        timeout: float = 60.0,
+        auth_factory: Callable[..., Any] = ArasECMAuthClient,
+        crawler_factory: Callable[..., Any] = ArasCrawlerClient,
+        session_renewal: Any | None = None,
+        session_registry: Any | None = None,
+    ) -> None:
         self.credentials = credentials
         self.archive = archive
         self.timeout = timeout
         self.auth_factory = auth_factory
         self.crawler_factory = crawler_factory
+        #: 显式注入优先；未注入时用组合根绑定（见 ``bind_session_renewal``）。
+        self.session_renewal = session_renewal
+        self.session_registry = session_registry
+
+    # 统一续期协调器接线（DSH-V2-16）由 ``_RenewableProjectStatusConnector`` 共用；
+    # 本类只声明系统名，行为与 16 已评审实现逐条一致。
 
     @observed("sync_connector.ArasProjectStatusConnector.collect")
     def collect(self, context: SyncBindingContext) -> ConnectorSnapshot:
@@ -543,14 +1071,44 @@ class ArasProjectStatusConnector:
             raise ValueError(f"Aras project-status connector does not support {report}")
 
         with self.credentials.resolve(context.credential_ref) as secret:
-            auth = self.auth_factory(timeout=self.timeout)
-            login = auth.login(secret.username, secret.password)
+            username = str(getattr(secret, "username", "") or "").strip()
+            renewable = self._renewable(username)
+            login = None
+            auth = None
+            if renewable is None:
+                # 旧登录路径（保留回退）：没有共享会话/不可续期时仍自行登录。
+                auth = self.auth_factory(timeout=self.timeout)
+                login = auth.login(username, secret.password)
+                session = login.session
+                base_url = auth.base_url
+            else:
+                # 共享会话路径不构造登录客户端（win32 下会建原生传输会话）：
+                # 爬虫基地址直接用注册表里该会话绑定的来源根。
+                session = renewable[1]
+                base_url = self._bound_root(self._registry()) or DEFAULT_ARAS_BASE_URL
             try:
-                crawler = self.crawler_factory(auth.base_url, session=login.session, timeout=self.timeout, prewarm=False)
+                def run(read: Callable[[Any], Any], *, kind: str = IDEMPOTENT_READ) -> Any:
+                    """业务读调用：装配协调器时经 ``run_with_renewal``（最多重放一次）。
+
+                    每次尝试都按**当前**共享会话新建爬虫：续期成功后重放拿到的是
+                    协调器刚写回的新会话（原位恢复，不需要调用方换参数）。
+                    """
+                    return self._run_renewable(
+                        renewable,
+                        session,
+                        read,
+                        build=lambda active: self.crawler_factory(
+                            base_url, session=active, timeout=self.timeout, prewarm=False
+                        ),
+                        kind=kind,
+                    )
+
                 if report == "ewo":
                     filters = build_project_status_ewo_filters(context.match_rule)
-                    result = crawler.crawl_ewo_report_all(
-                        filters, max_records=MAX_AGGREGATE_RECORDS
+                    result = run(
+                        lambda crawler: crawler.crawl_ewo_report_all(
+                            filters, max_records=MAX_AGGREGATE_RECORDS
+                        )
                     )
                     _require_complete_result(result)
                     rows = result.rows
@@ -561,17 +1119,27 @@ class ArasProjectStatusConnector:
                         rows = result.rows
                 elif report == "paa":
                     paa_filters = self._paa_filters(context.match_rule)
-                    result = crawler.crawl_paa_report_all(
-                        paa_filters, max_records=MAX_AGGREGATE_RECORDS
+                    result = run(
+                        lambda crawler: crawler.crawl_paa_report_all(
+                            paa_filters, max_records=MAX_AGGREGATE_RECORDS
+                        )
                     )
                     _require_complete_result(result)
                     rows = result.rows
                 elif report in {"ncr_progress", "ncr_detail"}:
-                    rows = self._collect_ncr_rows(crawler, report, context.match_rule)
+                    # 官方 NCR 导出会在上游生成文件（契约 §6.1 unsafe_side_effect）：
+                    # 续期后**不自动重放**，按 generation_unknown 交用户确认。
+                    rows = run(
+                        lambda crawler: self._collect_ncr_rows(
+                            crawler, report, context.match_rule
+                        ),
+                        kind=UNSAFE_SIDE_EFFECT,
+                    )
                 else:
                     rows = []
             finally:
-                _close_session(login.session)
+                if login is not None:
+                    _close_session(login.session)
         # TASK-20260930-R7-G2：PAA 同步范围剔除——CANCEL 行（trim+upper 判等，
         # state/current_state__name 任一命中）不进 CSV 与快照；JSON 归档仍写
         # 原始行（镜像 TDC 契约：原始取证职责不变）。

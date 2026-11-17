@@ -6,7 +6,9 @@ import pytest
 
 from services.aras_crawler import EWOReportPage
 from services.aras_export import (
+    LIST_COLUMN_SUFFIX,
     CSVExportResult,
+    export_ewo_list_columns_csv,
     export_ewo_report_csv,
     export_report_contract_csv,
     export_report_csv,
@@ -59,6 +61,33 @@ def test_export_empty_ewo_csv_still_writes_stable_headers(tmp_path) -> None:
     assert result.row_count == 0
     assert "_no" in result.columns
     assert result.path.read_text(encoding="utf-8-sig").startswith("_affect_3c,")
+
+
+def test_export_ewo_list_columns_marks_unmapped_columns_and_names_file(tmp_path) -> None:
+    """列表列导出是独立契约：未提供列表头带后缀、文件名带 _列表列。"""
+    rows = [
+        {
+            "_no": "EWO-1",
+            "_subject": "Subject",
+            "_area": "基地A",
+            "state": "PROC",
+        }
+    ]
+    result = export_ewo_list_columns_csv(rows, output_dir=tmp_path, file_name="demo")
+    assert result.path.name == "demo_列表列.csv"
+    header = result.fieldnames
+    assert len(header) == 111
+    # 有映射的列不加后缀；未映射的列（含第 58 列起全部）必须自证缺列。
+    assert header[0] == "EWO编号"
+    assert header[56] == "影响的基地"
+    assert not header[56].endswith(LIST_COLUMN_SUFFIX)
+    assert header[57] == f"项目生产基地汇总{LIST_COLUMN_SUFFIX}"
+    assert all(label.endswith(LIST_COLUMN_SUFFIX) for label in header[57:])
+    text = result.path.read_text(encoding="utf-8-sig")
+    assert text.startswith("EWO编号,")
+    assert "EWO-1" in text
+    # 111 列中 60 列在列表来源下无映射：尾部 54 列（57..110）+ 中途 6 个缺口（7/11/27/29/54/55）。
+    assert text.splitlines()[0].count(LIST_COLUMN_SUFFIX) == 60
 
 
 def test_export_report_contract_csv_uses_chinese_headers_and_source_keys(tmp_path) -> None:

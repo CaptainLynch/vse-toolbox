@@ -16,8 +16,12 @@ TDC 查询参数里没有流水单号：``incident`` 对应的是第 0 列「实
 from __future__ import annotations
 
 import json
+import os
+import re
+import unicodedata
 from typing import Any, Iterable, Mapping, Sequence
 
+from core.diagnostic_recording import emit
 from services.form_search import snapshot_schema
 
 JOB_KEY = "tdc_data_model"
@@ -41,6 +45,93 @@ def normalize_serial(value: Any) -> str:
     if not text or len(text) > MAX_SERIAL_LENGTH or any(ord(ch) < 32 for ch in text):
         raise WatchlistError("流水单号必须是 1–64 个可见字符")
     return text
+
+
+#: 零宽/方向控制类不可见字符：`strip()` 去不掉，但会让上游精确匹配必然失败。
+_INVISIBLE_SERIAL_CHARS = "\u200b\u200c\u200d\u2060\ufeff\u00ad"
+#: 多值分隔符：与 ``services/form_search._SEPARATORS`` 同一组（空白/逗号/分号/顿号）。
+_SERIAL_SEPARATORS = re.compile(r"[\s,;、]+")
+
+#: 用户可见文案（前端 ``policy-logic.js`` 逐字同源，只多句末句号；parity 用例钉住）。
+MULTI_SERIAL_MESSAGE = (
+    "多单号合并统计同步暂不支持（开发中）；当前可用「导出合并结果」按多个单号取数"
+)
+FULL_WIDTH_SERIAL_MESSAGE = "流水单号含全角或兼容字符，请改成报表里的半角原文单号"
+
+#: 多单号合并统计同步的功能开关（第 2 批能力，缺省关闭）。
+#: 单一实现：``services/project_status_updates``（保存 + 运行期）与 ``web/app.py``
+#: （发现入口）都导入这里的判定，禁止各处另写一份。
+MULTI_SERIAL_SYNC_ENV = "VSE_TDC_MULTI_SERIAL_SYNC"
+_MULTI_SERIAL_TRUTHY = frozenset({"1", "true", "yes"})
+MULTI_SERIAL_DISABLED_MESSAGE = (
+    "多单号同步已被功能开关关闭：请改为单值绑定或联系维护人员开启"
+)
+#: 多单号集合没有单记录稳定键：保存侧（``_multi_serial_rule_error``）与发现侧
+#: （``web/app.py`` 的 ``_mapping_discovery_query_identity``）共用这一条文案，
+#: 单一来源，禁止各处另写一份。
+MULTI_SERIAL_EXTERNAL_KEY_MESSAGE = "多单号绑定不接受单记录外部键"
+
+
+def multi_serial_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """多单号同步是否已开启（``VSE_TDC_MULTI_SERIAL_SYNC`` = 1/true/yes）。
+
+    缺省关闭：开关关闭时 ``documentNos`` 在保存与运行期一律 fail-closed
+    （停跑但不停用存量绑定，人工改规则或重新开启后自愈）。
+    """
+    source: Mapping[str, str] = os.environ if env is None else env
+    return str(source.get(MULTI_SERIAL_SYNC_ENV) or "").strip().lower() in _MULTI_SERIAL_TRUTHY
+
+
+def normalize_single_serial(value: Any) -> str:
+    """写入入口共用的**单值**流水单号校验（发现/启用/保存三处同源）。
+
+    fail-closed：多值（空格/逗号/分号/顿号/换行/制表符分隔）、空值、含不可见
+    字符、或经 NFKC 归一后与原值不同（全角/兼容字符）一律拒绝——绝不静默截断
+    成第一个。2026-10-10 生产事故：向导单值字段收到「两个单号 + 一个空格」的
+    整串，本地精确匹配必然 0 行，却只报「未匹配」。
+
+    诊断文案按原因分流（R17）：全角/兼容字符单独一句——对这类输入，用户要做的是
+    换回报表里的半角原文，而不是去看合并导出；只有真正的多值才引导到导出合并结果。
+    """
+    text = str(value or "").strip()
+    if not text:
+        raise WatchlistError("流水单号不能为空")
+    if any(ord(ch) < 32 or ch in _INVISIBLE_SERIAL_CHARS for ch in text):
+        raise WatchlistError("流水单号含不可见字符，请只填报表里的原文单号")
+    if unicodedata.normalize("NFKC", text) != text:
+        raise WatchlistError(FULL_WIDTH_SERIAL_MESSAGE)
+    if _SERIAL_SEPARATORS.search(text):
+        raise WatchlistError(MULTI_SERIAL_MESSAGE)
+    if len(text) > MAX_SERIAL_LENGTH:
+        raise WatchlistError(f"流水单号不能超过 {MAX_SERIAL_LENGTH} 个字符")
+    return text
+
+
+def normalize_serial_set(value: Any) -> list[str]:
+    """多值流水单号（合并统计绑定）：逐项走单值校验，去重后排序保证签名稳定。
+
+    字符串按与检索词同一套分隔符（空格/逗号/分号/顿号/换行/制表符）拆开，数组逐项
+    校验；任一项不是合法单值就整体拒绝——绝不静默丢掉某一项。上限与数组形式统一为
+    ``MAX_WATCHLIST``，且**去重之后**才计数（重复单号不占额度，也不沿用检索框
+    100 词上限）。排序是契约的一部分：``compute_config_signature`` 逐字比对
+    matchRule，同一组单号的不同输入顺序必须得到同一个签名。
+    """
+    if isinstance(value, str):
+        tokens = [token.strip() for token in _SERIAL_SEPARATORS.split(value)]
+        terms = list(dict.fromkeys(token for token in tokens if token))
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            if not isinstance(item, str):
+                # 不做 str() 强转：JSON null/数字会变成 "None"/"123" 这类幽灵单号。
+                raise WatchlistError("流水单号数组里的每一项都必须是字符串")
+        terms = list(dict.fromkeys(item.strip() for item in value))
+    else:
+        raise WatchlistError("流水单号必须是字符串或字符串数组")
+    if not terms:
+        raise WatchlistError("流水单号不能为空")
+    if len(terms) > MAX_WATCHLIST:
+        raise WatchlistError(f"流水单号一次最多 {MAX_WATCHLIST} 个，请分批处理")
+    return sorted(normalize_single_serial(term) for term in terms)
 
 
 def watchlist_settings(filters: Mapping[str, Any] | None) -> tuple[str, tuple[str, ...]]:
@@ -105,11 +196,94 @@ def apply_watchlist(
     }
 
 
+def _row_instance(row: Mapping[str, Any]) -> str:
+    """接口行的实例号（incident，第 0 列）；缺列或空值返回空串。"""
+    value = row.get("incident")
+    if value in (None, ""):
+        return ""
+    return str(value).strip()
+
+
+def match_serial(
+    rows: Iterable[Mapping[str, Any]],
+    serial: str | None,
+) -> tuple[list[Mapping[str, Any]], dict[str, Any]]:
+    """按流水单号精确匹配行（本地匹配是正确性的唯一保证）。
+
+    TDC 查询参数里没有流水单号，只有实例号 ``incident``；因此目标单号只能对
+    全量抓取结果本地匹配。精确相等、区分大小写、只去首尾空白——严禁前缀或
+    包含匹配。纯函数：不做 IO、不翻页。
+
+    -> (命中行列表, 簿记 dict)；簿记含 ``serial``/``scanned``/``matched`` 与
+    命中行的实例号列表 ``matched_instances``（缺 incident 的命中行不贡献条目）。
+
+    空目标单号抛 ``WatchlistError``：绝不退化成"匹配全部行"。
+    """
+    target = str(serial or "").strip()
+    if not target:
+        raise WatchlistError("流水单号不能为空")
+    scanned_rows = list(rows)
+    matched = [row for row in scanned_rows if row_serial(row) == target]
+    return matched, {
+        "serial": target,
+        "scanned": len(scanned_rows),
+        "matched": len(matched),
+        "matched_instances": [
+            instance for row in matched if (instance := _row_instance(row))
+        ],
+    }
+
+
+def match_serials(
+    rows: Iterable[Mapping[str, Any]],
+    serials: Sequence[str],
+) -> tuple[list[Mapping[str, Any]], dict[str, Any]]:
+    """多流水单号集合本地精确匹配（match_serial 的集合版，单次全量抓取共用）。
+
+    -> (命中行列表, 簿记 dict)；簿记含 ``requested``（去重后的目标单号）、
+    ``found``（扫描结果中命中的单号）、``missing``（已扫描但查不到的单号，
+    S8 语义：只展示不删除）、``scanned``/``matched``。命中行按目标单号顺序
+    合并、行不重复。空目标列表抛 ``WatchlistError``：绝不退化成"匹配全部行"。
+    """
+    wanted = list(dict.fromkeys(str(s or "").strip() for s in serials))
+    wanted = [s for s in wanted if s]
+    if not wanted:
+        raise WatchlistError("流水单号不能为空")
+    scanned_rows = list(rows)
+    serial_by_index = {index: row_serial(row) for index, row in enumerate(scanned_rows)}
+    matched_rows: list[Mapping[str, Any]] = []
+    used_indexes: set[int] = set()
+    found: list[str] = []
+    missing: list[str] = []
+    for serial in wanted:
+        hits = [index for index, value in serial_by_index.items() if value == serial]
+        if hits:
+            found.append(serial)
+            matched_rows.extend(scanned_rows[index] for index in hits if index not in used_indexes)
+            used_indexes.update(hits)
+        else:
+            missing.append(serial)
+    return matched_rows, {
+        "requested": wanted,
+        "found": found,
+        "missing": missing,
+        "scanned": len(scanned_rows),
+        "matched": len(matched_rows),
+    }
+
+
 def load_watchlist(db: Any) -> tuple[str, tuple[str, ...]]:
     """从 tdc_data_model 归档任务读同步范围和清单；任务缺失或配置非法时按全部处理。"""
     try:
         jobs = db.list_archive_jobs()
-    except Exception:  # noqa: BLE001 - 读不到配置时不改变既有同步行为
+    except Exception as exc:  # noqa: BLE001 - 读不到配置时不改变既有同步行为
+        # 回退行为不变，但静默回退会让"关注清单被忽略"无法定位：发一次有界诊断事件。
+        emit(
+            "watchlist_load_jobs_failed",
+            {"state": "failed"},
+            name="data_model_watchlist.load_watchlist",
+            exception=exc,
+        )
         return SCOPE_ALL, ()
     job = next((item for item in jobs if item.get("job_key") == JOB_KEY), None)
     if job is None:
@@ -117,7 +291,13 @@ def load_watchlist(db: Any) -> tuple[str, tuple[str, ...]]:
     try:
         filters = json.loads(job.get("filters_json") or "{}")
         return watchlist_settings(filters if isinstance(filters, Mapping) else {})
-    except (ValueError, WatchlistError):
+    except (ValueError, WatchlistError) as exc:
+        emit(
+            "watchlist_load_settings_failed",
+            {"state": "failed"},
+            name="data_model_watchlist.load_watchlist",
+            exception=exc,
+        )
         return SCOPE_ALL, ()
 
 

@@ -3,11 +3,14 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
 
 import web.app as web_app
+import web.project_status_boot as ps_boot
+import web.crawler_boot as crawler_boot
 from core.db_manager import DatabaseManager
 
 MILESTONE_TEMPLATE_NAMES = (
@@ -658,6 +661,654 @@ def test_tdc_data_model_mapping_discovery_supports_status_filter() -> None:
     assert values["status"] == "审批中"
 
 
+# ===== 数模流水单号：不发上游，全量抓取后本地精确匹配（A′ 路线） =====
+
+
+def _document_no_rule(document_no: str) -> tuple[dict, dict]:
+    from web.app import _mapping_discovery_query_identity
+
+    return _mapping_discovery_query_identity(
+        {"filters": {"document_no": document_no}, "aggregate": False}, "VPI-T2-D5"
+    )
+
+
+def test_document_no_rule_is_never_sent_to_tdc() -> None:
+    """规则里保留 documentNo（绑定依据），但 values 里不带它——它没有上游参数。"""
+    rule, values = _document_no_rule("F610S-3D-0001")
+
+    assert rule["documentNo"] == "F610S-3D-0001"
+    assert "document_no" not in values
+    assert "incident" not in rule  # 不再把流水单号写进 incident
+
+
+def _document_no_discovery(monkeypatch, rows, *, complete=True, stop_reason="reported_pages"):  # type: ignore[no-untyped-def]
+    seen: list[str | None] = []
+
+    class FakeTDCClient:
+        def crawl_data_model_all(self, filters, max_records=5000, should_stop=None):  # type: ignore[no-untyped-def]
+            seen.append(filters.instance_no)
+            return SimpleNamespace(rows=list(rows), complete=complete, stop_reason=stop_reason)
+
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    return seen
+
+
+def _post_document_no_discovery(client, document_no: str):  # type: ignore[no-untyped-def]
+    return client.post(
+        "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery",
+        json={
+            "base_url": "https://tdc.sgmw.com.cn",
+            "filters": {"document_no": document_no},
+            "aggregate": False,
+        },
+    )
+
+
+def test_document_no_discovery_passes_on_exactly_one_local_match(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    rows = [
+        {"incident": "FLOW-A", "documentNo": "F610S-3D-0001"},
+        {"incident": "FLOW-B", "documentNo": "F610S-3D-0002"},
+    ]
+    seen = _document_no_discovery(monkeypatch, rows)
+
+    response = _post_document_no_discovery(client, "F610S-3D-0001")
+
+    assert response.status_code == 200
+    assert seen == [None]  # 流水单号绝不发给上游
+    data = response.get_json()["data"]
+    assert data["state"] == "matched"
+    assert data["externalKey"] == "FLOW-A"  # 有效查询结果是命中行的实例号
+    assert data["serialMatch"] == {
+        "serial": "F610S-3D-0001",
+        "scanned": 2,
+        "matched": 1,
+        "matched_instances": ["FLOW-A"],
+    }
+
+
+def test_document_no_discovery_zero_match_keeps_not_found_with_coverage(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    rows = [{"incident": "FLOW-A", "documentNo": "F610S-3D-0001"}]
+    _document_no_discovery(monkeypatch, rows)
+
+    response = _post_document_no_discovery(client, "F610S-3D-9999")
+
+    assert response.status_code == 200
+    data = response.get_json()["data"]
+    assert data["state"] == "not_found"  # 既有「映射发现未匹配」路径
+    assert data["serialMatch"]["matched"] == 0
+    assert data["serialMatch"]["scanned"] == 1  # 附覆盖范围
+
+
+def test_document_no_discovery_rejects_multiple_matches(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """多行且**身份不同**：按身份不唯一 fail-closed（2026-10-10 起文案更精确）。"""
+    rows = [
+        {"incident": "FLOW-A", "documentNo": "F610S-3D-0001"},
+        {"incident": "FLOW-B", "documentNo": "F610S-3D-0001"},
+    ]
+    _document_no_discovery(monkeypatch, rows)
+
+    response = _post_document_no_discovery(client, "F610S-3D-0001")
+
+    assert response.status_code == 400
+    assert "该流水单号命中了多行且身份不唯一，请核对后重试" in response.get_json()["error"]["message"]
+
+
+def test_document_no_discovery_rejects_multiple_part_rows_of_one_workflow(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """同一实例多行（part_detail 粒度）：身份唯一但仍不能构成单记录绑定，保留旧文案。"""
+    rows = [
+        {"incident": "FLOW-A", "documentNo": "F610S-3D-0001", "partNumber": "P-1"},
+        {"incident": "FLOW-A", "documentNo": "F610S-3D-0001", "partNumber": "P-2"},
+    ]
+    _document_no_discovery(monkeypatch, rows)
+
+    response = _post_document_no_discovery(client, "F610S-3D-0001")
+
+    assert response.status_code == 400
+    assert "该流水单号命中多行，请核对后重试" in response.get_json()["error"]["message"]
+
+
+def test_document_no_discovery_matches_when_row_also_carries_form_id(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """生产事故回归（2026-10-10）：命中行含 formId 时选中键仍必须是实例号 incident。
+
+    旧实现取 matched_instances[0]（incident）当 selected，而候选过滤用 record_identity
+    （formId 优先）→ 命中行被过滤掉 → 「未匹配（命中 0 行，字段数 60）」。
+    """
+    rows = [
+        {"formId": "FORM-9", "incident": "50667733", "documentNo": "3D-00001018"},
+        {"formId": "FORM-8", "incident": "50738964", "documentNo": "3D-00001012"},
+    ]
+    seen = _document_no_discovery(monkeypatch, rows)
+
+    response = _post_document_no_discovery(client, "3D-00001018")
+
+    assert response.status_code == 200
+    assert seen == [None]
+    data = response.get_json()["data"]
+    assert data["state"] == "matched"
+    assert data["externalKey"] == "50667733"
+    assert data["serialDiagnostic"]["identityFieldUsed"] == ["incident"]
+    assert data["serialDiagnostic"]["distinctIdentities"] == 1
+
+
+def test_document_no_discovery_without_identity_field_is_fail_closed(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """命中行没有任何身份字段：显式 422 + 原因码，不再 500 也不再静默 not_found。"""
+    rows = [{"流水单号": "3D-00001018", "partNumber": "P-1"}]
+    _document_no_discovery(monkeypatch, rows)
+
+    response = _post_document_no_discovery(client, "3D-00001018")
+
+    assert response.status_code == 422
+    body = response.get_json()
+    assert body["error"]["type"] == "IdentityMissing"
+    assert "没有可用的权威业务单号字段" in body["error"]["message"]
+    assert body["error"]["diagnostic"]["identityFieldsPresent"] == []
+    assert body["error"]["diagnostic"]["matched"] == 1
+
+
+def test_document_no_discovery_zero_match_reports_reason_and_coverage(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    rows = [{"incident": "FLOW-A", "documentNo": "F610S-3D-0001"}]
+    _document_no_discovery(monkeypatch, rows)
+
+    response = _post_document_no_discovery(client, "F610S-3D-9999")
+
+    data = response.get_json()["data"]
+    assert data["state"] == "not_found"
+    assert data["reason"] == "serial_no_match"
+    assert data["serialMatch"]["scanned"] == 1
+    assert data["serialDiagnostic"]["matchedRows"] == 0
+    assert data["serialDiagnostic"]["identityFieldsPresent"] == ["documentNo", "incident"]
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("3D-00001018 3D-00001012", "合并统计同步暂不支持"),
+        ("3D-00001018\u200b", "不可见字符"),
+        ("３Ｄ-００００１０１８", "含全角或兼容字符"),
+    ],
+)
+def test_document_no_discovery_rejects_multi_value_before_crawl(client, monkeypatch, value, expected) -> None:  # type: ignore[no-untyped-def]
+    """单值 fail-closed（2026-10-10）：多值/不可见字符/全角在抓取前拒绝，不白跑全量抓取。"""
+    seen = _document_no_discovery(monkeypatch, [])
+
+    response = _post_document_no_discovery(client, value)
+
+    assert response.status_code == 400
+    assert expected in response.get_json()["error"]["message"]
+    assert seen == []
+
+
+def test_document_no_discovery_requires_authoritative_incident_field(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """单记录绑定只认权威字段 incident：命中行缺它时 fail-closed，不悄悄改用 formId。"""
+    rows = [{"formId": "FORM-9", "documentNo": "3D-00001018", "partNumber": "P-1"}]
+    _document_no_discovery(monkeypatch, rows)
+
+    response = _post_document_no_discovery(client, "3D-00001018")
+
+    assert response.status_code == 422
+    body = response.get_json()
+    assert body["error"]["type"] == "IdentityMissing"
+    assert "权威业务单号字段" in body["error"]["message"]
+    assert body["error"]["diagnostic"]["authoritativeField"] == "incident"
+    # 权威字段不可用 → 不产生"已用身份"；行里实际存在哪些身份字段看 identityFieldsPresent
+    assert body["error"]["diagnostic"]["identityFieldUsed"] == []
+    assert "formId" in body["error"]["diagnostic"]["identityFieldsPresent"]
+
+
+def test_document_no_discovery_rejects_whitespace_incident_without_form_id_fallback(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Codex 复核 P0：`incident` 只有空白时不得回退到 formId 建立绑定。"""
+    rows = [{"formId": "FORM-9", "incident": "   ", "documentNo": "3D-00001018"}]
+    _document_no_discovery(monkeypatch, rows)
+
+    response = _post_document_no_discovery(client, "3D-00001018")
+
+    assert response.status_code == 422
+    body = response.get_json()
+    assert body["error"]["type"] == "IdentityMissing"
+    assert body["error"]["diagnostic"]["identityFieldUsed"] == []
+
+
+def test_document_no_discovery_incomplete_crawl_wins_over_zero_match(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """抓取不完整优先于「未找到」：serial_no_match 只在完整抓取时才允许出现。"""
+    rows = [{"incident": "FLOW-A", "documentNo": "F610S-3D-0001"}]
+    _document_no_discovery(monkeypatch, rows, complete=False, stop_reason="max_pages")
+
+    response = _post_document_no_discovery(client, "F610S-3D-9999")
+
+    assert response.status_code == 422
+    body = response.get_json()
+    assert body["error"]["type"] == "IncompleteDiscovery"
+    assert body["error"]["type"] != "IdentityMissing"  # 机器码可区分，供消费者分发
+
+
+def test_document_no_discovery_diagnostic_has_no_business_values(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """诊断只给字段名与计数；字段报告仍由行键构成（60 列不被新键污染）。"""
+    row = {"formId": "FORM-9", "incident": "50667733", "documentNo": "3D-00001018"}
+    for index in range(57):
+        row[f"extraField{index:02d}"] = f"v{index}"
+    _document_no_discovery(monkeypatch, [row])
+
+    response = _post_document_no_discovery(client, "3D-00001018")
+
+    assert response.status_code == 200
+    data = response.get_json()["data"]
+    assert data["state"] == "matched"
+    assert len(data["fieldReport"]["fields"]) == 60
+    diagnostic = data["serialDiagnostic"]
+    assert diagnostic["identityFieldUsed"] == ["incident"]
+    assert diagnostic["authoritativeField"] == "incident"  # 字段名，不是业务值
+    assert diagnostic["matchedRows"] == 1
+    assert all(
+        value is None or isinstance(value, (int, list))
+        for key, value in diagnostic.items()
+        if key != "authoritativeField"
+    )
+    serialized = json.dumps(diagnostic, ensure_ascii=False)
+    assert "3D-00001018" not in serialized
+    assert "50667733" not in serialized
+    assert "FORM-9" not in serialized
+
+
+def test_document_no_discovery_rejects_incomplete_crawl(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    rows = [{"incident": "FLOW-A", "documentNo": "F610S-3D-0001"}]
+    _document_no_discovery(monkeypatch, rows, complete=False, stop_reason="max_pages")
+
+    response = _post_document_no_discovery(client, "F610S-3D-0001")
+
+    assert response.status_code == 422
+    assert "抓取不完整，无法判定流水单号，请重试" in response.get_json()["error"]["message"]
+
+
+def test_document_no_discovery_rejects_incident_and_document_no_together(client) -> None:
+    """服务端互斥（2026-10-09 顾问复核）：同填流水单号与实例号在发现入口即拒绝。"""
+    response = client.post(
+        "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery",
+        json={
+            "base_url": "https://tdc.sgmw.com.cn",
+            "filters": {"document_no": "3D-00001018", "serial_number": "900001"},
+            "aggregate": False,
+        },
+    )
+
+    assert response.status_code == 400
+    assert "二选一" in response.get_json()["error"]["message"]
+
+
+def test_document_no_discovery_stability_sample_uses_same_local_match(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """F10 采样必须与首次观测同源（全量抓取 + 本地匹配），否则永远无法就绪。"""
+    rows = [
+        {"incident": "FLOW-A", "documentNo": "F610S-3D-0001", "currentApprover": "Alice"},
+        {"incident": "FLOW-B", "documentNo": "F610S-3D-0002", "currentApprover": "Bob"},
+    ]
+    seen = _document_no_discovery(monkeypatch, rows)
+
+    first = _post_document_no_discovery(client, "F610S-3D-0001")
+    assert first.status_code == 200
+    assert first.get_json()["data"]["stability"]["confirmed"] == 1
+
+    second = client.post(
+        "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery",
+        json={
+            "base_url": "https://tdc.sgmw.com.cn",
+            "filters": {"document_no": "F610S-3D-0001"},
+            "aggregate": False,
+            "stabilityCheck": True,
+        },
+    )
+
+    assert second.status_code == 200
+    data = second.get_json()["data"]
+    assert data["state"] == "matched"
+    assert data["stability"] == {"confirmed": 2, "required": 2, "ready": True}
+    assert seen == [None, None]  # 两次都不把流水单号发上游
+
+
+# ===== 多单号（documentNos）：聚合观测 + 成员身份证据 + 部分命中归因 =====
+
+_MULTI_SERIAL_DISCOVERY_URL = "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery"
+
+
+def _enable_multi_serial(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """多单号功能开关缺省关闭；本组用例显式开启（R26 开关语义另有用例）。"""
+    monkeypatch.setenv("VSE_TDC_MULTI_SERIAL_SYNC", "1")
+
+
+def _stub(monkeypatch, rows, *, complete=True, stop_reason="reported_pages"):  # type: ignore[no-untyped-def]
+    """桩掉 D5 全量抓取；返回上游实际收到的查询参数（断言单号绝不外发）。"""
+    seen: list[dict] = []
+
+    class FakeTDCClient:
+        def crawl_data_model_all(self, filters, max_records=5000, should_stop=None):  # type: ignore[no-untyped-def]
+            seen.append(filters.to_params())
+            return SimpleNamespace(rows=list(rows), complete=complete, stop_reason=stop_reason)
+
+    monkeypatch.setattr(
+        ps_boot,
+        "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient()
+    )
+    return seen
+
+
+def _post_multi_serial_discovery(client, document_nos, **extra):  # type: ignore[no-untyped-def]
+    payload = {
+        "base_url": "https://tdc.sgmw.com.cn",
+        "filters": {"document_nos": document_nos},
+        "aggregate": True,
+    }
+    payload.update(extra)
+    return client.post(_MULTI_SERIAL_DISCOVERY_URL, json=payload)
+
+
+def test_multi_serial_discovery_matches_union_as_aggregate(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """全部命中：并集行按聚合观测落证据，无单记录外部键，单号绝不发上游。"""
+    _enable_multi_serial(monkeypatch)
+    rows = [
+        {"incident": "FLOW-A", "documentNo": "3D-1", "partNumber": "P-1"},
+        {"incident": "FLOW-B", "documentNo": "3D-2", "partNumber": "P-1"},
+        {"incident": "FLOW-C", "documentNo": "3D-3", "partNumber": "P-1"},
+    ]
+    seen = _stub(monkeypatch, rows, complete=True)
+
+    response = _post_multi_serial_discovery(client, ["3D-1", "3D-2"])
+
+    assert response.status_code == 200
+    body = response.get_json()["data"]
+    assert body["serialMatch"] == {
+        "requested": ["3D-1", "3D-2"],
+        "found": ["3D-1", "3D-2"],
+        "missing": [],
+        "scanned": 3,
+        "matched": 2,
+        "complete": True,
+    }
+    assert body["state"] == "matched"
+    assert body["externalKey"] is None  # 聚合绑定没有单记录稳定键
+    assert body["candidateCount"] == 2
+    # 流水单号集合绝不作为上游查询参数（与单值同一条红线）：集合里每个单号都要断言。
+    assert seen
+    for params in seen:
+        for serial in ("3D-1", "3D-2"):
+            assert serial not in repr(params)
+
+
+def test_multi_serial_discovery_partial_match_is_not_found(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """部分命中：not_found + serial_set_partial，不得静默按已命中子集建绑定。"""
+    _enable_multi_serial(monkeypatch)
+    rows = [{"incident": "FLOW-A", "documentNo": "3D-1", "partNumber": "P-1"}]
+    _stub(monkeypatch, rows, complete=True)
+
+    response = _post_multi_serial_discovery(client, ["3D-1", "3D-9"])
+
+    assert response.status_code == 200
+    body = response.get_json()["data"]
+    assert body["serialMatch"]["found"] == ["3D-1"]
+    assert body["serialMatch"]["missing"] == ["3D-9"]
+    assert body["state"] == "not_found"
+    assert body["reason"] == "serial_set_partial"
+    # 部分命中不得为「少算」的范围背书：候选与外部键都不得成立。
+    assert body["externalKey"] is None
+    assert body["candidateCount"] == 0
+
+
+def test_multi_serial_discovery_all_missing_is_not_found(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """全部缺失：同样是 serial_set_partial（归因指向单号集合，而不是「未匹配」）。"""
+    _enable_multi_serial(monkeypatch)
+    _stub(monkeypatch, [{"incident": "FLOW-A", "documentNo": "3D-1"}], complete=True)
+
+    response = _post_multi_serial_discovery(client, ["3D-9"])
+
+    body = response.get_json()["data"]
+    assert body["state"] == "not_found"
+    assert body["reason"] == "serial_set_partial"
+    assert body["serialMatch"]["missing"] == ["3D-9"]
+    assert body["serialMatch"]["found"] == []
+
+
+def test_multi_serial_evidence_survives_new_part_rows(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """同一批单号，上游多出一行零件行，证据指纹必须不变（否则永远无法启用）。"""
+    _enable_multi_serial(monkeypatch)
+    first = [
+        {"incident": "FLOW-A", "documentNo": "3D-1", "partNumber": "P-1", "applicant": "张三"}
+    ]
+    second = [
+        {"incident": "FLOW-A", "documentNo": "3D-1", "partNumber": "P-1", "applicant": "张三"},
+        {"incident": "FLOW-A2", "documentNo": "3D-1", "partNumber": "P-2", "applicant": "张三"},
+    ]
+    _stub(monkeypatch, first, complete=True)
+    assert _post_multi_serial_discovery(client, ["3D-1"]).get_json()["data"]["state"] == "matched"
+    _stub(monkeypatch, second, complete=True)
+    assert _post_multi_serial_discovery(client, ["3D-1"]).get_json()["data"]["state"] == "matched"
+    # 两次观测指纹一致 ⇒ 允许启用
+    response = client.patch(
+        "/api/project-status/deliverables/VPI-T2-D5/update-policy",
+        json={
+            "matchRule": {"reportType": "data_model", "aggregate": True, "documentNos": ["3D-1"]},
+            "enabled": True,
+            "credentialRef": "alias",
+            "mapping": {"owner": "applicant"},
+            "fieldAuthority": {"owner": "automatic"},
+        },
+    )
+    assert response.status_code == 200
+
+
+def test_multi_serial_discovery_rejects_selected_key_before_crawl(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """R27.3：与保存侧对齐——多单号绑定不接受单记录外部键，抓取前就拒绝。"""
+    _enable_multi_serial(monkeypatch)
+    seen = _stub(monkeypatch, [])
+
+    response = _post_multi_serial_discovery(client, ["3D-1"], selectedExternalKey="FLOW-A")
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["message"] == "多单号绑定不接受单记录外部键"
+    assert seen == []  # 不白跑一次全量抓取
+
+
+def test_multi_serial_discovery_rejects_oversized_set_before_crawl(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """R27.1：发现侧单号集合字节上限对齐保存侧 match_rule 的 4000 字符上限。"""
+    _enable_multi_serial(monkeypatch)
+    seen = _stub(monkeypatch, [])
+    serials = [f"3D-{index:017d}" for index in range(200)]  # 约 4.6 KB > 4000 字节
+
+    response = _post_multi_serial_discovery(client, serials)
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["message"] == "多单号集合过长，请分批处理（单次最多 4000 字节）"
+    assert seen == []
+
+
+def test_multi_serial_discovery_flag_disabled_fails_closed(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """R26：功能开关默认关闭，发现路径命中 documentNos 时必须在抓取前 fail-closed。"""
+    monkeypatch.delenv("VSE_TDC_MULTI_SERIAL_SYNC", raising=False)
+    seen = _stub(monkeypatch, [])
+
+    response = _post_multi_serial_discovery(client, ["3D-1"])
+
+    assert response.status_code == 400
+    assert (
+        response.get_json()["error"]["message"]
+        == "多单号同步已被功能开关关闭：请改为单值绑定或联系维护人员开启"
+    )
+    assert seen == []
+
+
+def test_source_info_exposes_the_multi_serial_flag(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """开关状态必须由后端能力下发：前端据此决定是否引导用户使用多单号。
+
+    缺省关闭，因此向导不得渲染多单号输入（后端仍会 fail-closed 兜底）。
+    """
+    monkeypatch.delenv("VSE_TDC_MULTI_SERIAL_SYNC", raising=False)
+    caps = {item["id"]: item["sourceInfo"] for item in _status(client)["deliverables"]}
+    assert caps["VPI-T2-D5"]["multiSerialSyncEnabled"] is False
+
+    monkeypatch.setenv("VSE_TDC_MULTI_SERIAL_SYNC", "1")
+    caps = {item["id"]: item["sourceInfo"] for item in _status(client)["deliverables"]}
+    assert caps["VPI-T2-D5"]["multiSerialSyncEnabled"] is True
+    # 只有数模 D5 支持多单号：其它交付物一律为 False（不是 None）。
+    assert caps["VPI-T2-D2"]["multiSerialSyncEnabled"] is False
+
+
+def test_multi_serial_discovery_incomplete_crawl_is_fail_closed(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """抓取不完整不能判定单号集合缺失：422 + 精确文案（与单值同一条 fail-closed）。"""
+    _enable_multi_serial(monkeypatch)
+    _stub(
+        monkeypatch,
+        [{"incident": "FLOW-A", "documentNo": "3D-1"}],
+        complete=False,
+        stop_reason="max_pages",
+    )
+
+    response = _post_multi_serial_discovery(client, ["3D-1", "3D-9"])
+
+    assert response.status_code == 422
+    body = response.get_json()
+    assert body["error"]["type"] == "IncompleteDiscovery"
+    assert body["error"]["message"] == "抓取不完整，无法判定流水单号集合，请重试"
+
+
+# ----- F10 多单号稳定性（R28）：全量抓取 + match_serials + 成员身份比对 -----
+
+_MULTI_SERIAL_HITS = [
+    {"incident": "FLOW-A", "documentNo": "3D-1", "partNumber": "P-1", "applicant": "张三"},
+    {"incident": "FLOW-B", "documentNo": "3D-2", "partNumber": "P-1", "applicant": "张三"},
+]
+
+
+def _multi_serial_stability_stub(monkeypatch, snapshots, *, complete=True):  # type: ignore[no-untyped-def]
+    """桩掉 D5 全量抓取（按调用顺序取快照）与第 1 页查询（记录是否被调用）。
+
+    第 1 页查询保留在桩里，是为了让「拿全量第 1 页去比命中并集」的旧实现
+    真的跑出错误结果，而不是因为桩缺方法而崩成 500。
+    """
+    actions: list[str] = []
+    pending = [list(snapshot) for snapshot in snapshots]
+
+    class FakeTDCClient:
+        def crawl_data_model_all(self, filters, max_records=5000, should_stop=None):  # type: ignore[no-untyped-def]
+            actions.append("crawl_all")
+            rows = pending.pop(0) if len(pending) > 1 else pending[0]
+            return SimpleNamespace(
+                rows=list(rows), total=len(rows), complete=complete, stop_reason="reported_pages"
+            )
+
+        def query_data_model_page(self, filters, page=1, page_size=50):  # type: ignore[no-untyped-def]
+            actions.append("query_page")
+            rows = pending[0]
+            return SimpleNamespace(
+                rows=list(rows)[:page_size], total=len(rows), page=page, page_size=page_size
+            )
+
+    monkeypatch.setattr(
+        ps_boot,
+        "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient()
+    )
+    return actions
+
+
+def test_multi_serial_stability_check_uses_member_identity(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """F10 多单号：采样必须与首次观测同源（全量抓取 + match_serials）。
+
+    拿「全量第 1 页」去比「命中并集」必然报 sample_not_in_baseline，卡在两条
+    matched 之间让多单号绑定永远无法就绪（R28）。
+    """
+    _enable_multi_serial(monkeypatch)
+    others = [
+        {"incident": f"INC-{index:04d}", "documentNo": f"9D-{index:04d}", "partNumber": "P-9"}
+        for index in range(60)
+    ]
+    actions = _multi_serial_stability_stub(
+        monkeypatch, [others[:20] + _MULTI_SERIAL_HITS + others[20:]]
+    )
+
+    first = _post_multi_serial_discovery(client, ["3D-1", "3D-2"])
+    assert first.status_code == 200
+    assert first.get_json()["data"]["stability"]["confirmed"] == 1
+
+    second = _post_multi_serial_discovery(client, ["3D-1", "3D-2"], stabilityCheck=True)
+    assert second.status_code == 200
+    data = second.get_json()["data"]
+    assert data["state"] == "matched"
+    assert data["mismatch"] is None
+    assert data["stability"] == {"confirmed": 2, "required": 2, "ready": True}
+    # 采样走全量抓取 + 本地匹配，绝不拿全量第 1 页当样本。
+    assert actions == ["crawl_all", "crawl_all"]
+
+    # 验收面：两条一致证据之后绑定必须能启用（旧实现永远卡在 key_changed）。
+    enabled = client.patch(
+        "/api/project-status/deliverables/VPI-T2-D5/update-policy",
+        json={
+            "matchRule": {
+                "reportType": "data_model",
+                "aggregate": True,
+                "documentNos": ["3D-1", "3D-2"],
+            },
+            "enabled": True,
+            "credentialRef": "alias",
+            "mapping": {"owner": "applicant"},
+            "fieldAuthority": {"owner": "automatic"},
+        },
+    )
+    assert enabled.status_code == 200
+
+
+def test_multi_serial_stability_check_tolerates_new_part_rows(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """上游多出一行零件行（总体总数变化）不得让成员身份比对误报不稳定。"""
+    _enable_multi_serial(monkeypatch)
+    base = _MULTI_SERIAL_HITS + [
+        {"incident": "OTHER-1", "documentNo": "9D-1", "partNumber": "P-9"}
+    ]
+    grown = base + [
+        {"incident": "FLOW-A2", "documentNo": "3D-1", "partNumber": "P-2", "applicant": "张三"}
+    ]
+    actions = _multi_serial_stability_stub(monkeypatch, [base, grown])
+
+    assert _post_multi_serial_discovery(client, ["3D-1", "3D-2"]).status_code == 200
+    second = _post_multi_serial_discovery(client, ["3D-1", "3D-2"], stabilityCheck=True)
+
+    assert second.status_code == 200
+    data = second.get_json()["data"]
+    assert data["state"] == "matched"
+    assert data["mismatch"] is None
+    assert data["stability"] == {"confirmed": 2, "required": 2, "ready": True}
+    assert actions == ["crawl_all", "crawl_all"]
+
+
+def test_multi_serial_stability_check_reports_serial_set_changed(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """成员集合真的变化（某个配置单号消失）时必须明确归因，而不是静默通过。"""
+    _enable_multi_serial(monkeypatch)
+    base = _MULTI_SERIAL_HITS + [
+        {"incident": "OTHER-1", "documentNo": "9D-1", "partNumber": "P-9"}
+    ]
+    shrunk = [
+        {"incident": "FLOW-A", "documentNo": "3D-1", "partNumber": "P-1", "applicant": "张三"},
+        {"incident": "OTHER-1", "documentNo": "9D-1", "partNumber": "P-9"},
+    ]
+    _multi_serial_stability_stub(monkeypatch, [base, shrunk])
+
+    assert _post_multi_serial_discovery(client, ["3D-1", "3D-2"]).status_code == 200
+    second = _post_multi_serial_discovery(client, ["3D-1", "3D-2"], stabilityCheck=True)
+
+    assert second.status_code == 200
+    data = second.get_json()["data"]
+    assert data["state"] == "key_changed"
+    assert data["mismatch"] == {"reason": "serial_set_changed", "expected": 2, "actual": 1}
+    assert data["stability"]["confirmed"] == 0
+
+
+def test_multi_serial_stability_check_incomplete_crawl_is_fail_closed(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """采样抓取不完整不能判定单号集合：422 + 精确文案（与首次观测同一条 fail-closed）。"""
+    _enable_multi_serial(monkeypatch)
+    _multi_serial_stability_stub(monkeypatch, [_MULTI_SERIAL_HITS], complete=False)
+
+    assert _post_multi_serial_discovery(client, ["3D-1", "3D-2"]).status_code == 422
+    second = _post_multi_serial_discovery(client, ["3D-1", "3D-2"], stabilityCheck=True)
+
+    assert second.status_code == 422
+    body = second.get_json()
+    assert body["error"]["type"] == "IncompleteDiscovery"
+    assert body["error"]["message"] == "抓取不完整，无法判定流水单号集合，请重试"
+
+
 # ===== 映射取证的协作式取消（前端 abort 必须让服务端真的停下来） =====
 
 
@@ -741,7 +1392,7 @@ def test_mapping_discovery_f9a_session_cache_deduplicates(client, monkeypatch) -
                 stop_reason="reported_pages",
             )
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
         "wizardSessionId": "wiz-sess-test-01",
@@ -792,7 +1443,7 @@ def test_mapping_discovery_f10_stability_sampling_verification(client, monkeypat
                 page_size=50,
             )
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
         "wizardSessionId": "wiz-stability-01",
@@ -837,7 +1488,7 @@ def test_mapping_discovery_f10_stability_detects_total_mismatch(client, monkeypa
                 page_size=50,
             )
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
         "wizardSessionId": "wiz-stability-mismatch",
@@ -858,6 +1509,267 @@ def test_mapping_discovery_f10_stability_detects_total_mismatch(client, monkeypa
     assert data2["state"] == "key_changed"
     assert data2["stability"]["confirmed"] == 0
     assert data2["stability"]["ready"] is False
+
+
+def test_mapping_discovery_f10_stability_sample_narrows_sections(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """2026-10-28 生产缺陷：稳定性采样必须与首次取证同源（同一科室收窄）。
+
+    取证基线 = 全量行按 sections 收窄后的身份集；采样若拿未收窄的第 1 页去比，
+    其它科室的行永远不在基线里 ⇒ 永久 sample_not_in_baseline，绑定无法就绪。
+    """
+    rows = [
+        {"incident": "INC-001", "projectModel": "F610S", "department": "车体科"},
+        {"incident": "INC-002", "projectModel": "F610S", "department": "内饰科"},
+    ]
+
+    class FakeTDCClient:
+        def crawl_data_model_all(self, filters, max_records=5000, should_stop=None):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(rows=list(rows), complete=True, stop_reason="reported_pages")
+
+        def query_data_model_page(self, filters, page=1, page_size=50):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(rows=list(rows), total=2, page=1, page_size=50)
+
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    payload = {
+        "base_url": "https://tdc.sgmw.com.cn",
+        "wizardSessionId": "wiz-stability-sections",
+        "filters": {"project_model": "F610S", "sections": ["车体科"]},
+        "aggregate": True,
+    }
+
+    resp1 = client.post("/api/project-status/deliverables/VPI-T2-D5/mapping-discovery", json=payload)
+    assert resp1.status_code == 200
+    assert resp1.get_json()["data"]["stability"]["confirmed"] == 1
+
+    resp2 = client.post(
+        "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery",
+        json={**payload, "stabilityCheck": True},
+    )
+    assert resp2.status_code == 200
+    data2 = resp2.get_json()["data"]
+    assert data2["state"] == "matched", data2
+    assert data2["stability"] == {"confirmed": 2, "required": 2, "ready": True}
+
+
+def test_mapping_discovery_f10_stability_sample_empty_is_inconclusive(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """收窄后采样为空不能判稳定：空集是任何集合的子集，直接比对会空真通过。"""
+    crawl_rows = [
+        {"incident": "INC-001", "projectModel": "F610S", "department": "车体科"},
+        {"incident": "INC-002", "projectModel": "F610S", "department": "内饰科"},
+    ]
+    page_rows = [{"incident": "INC-002", "projectModel": "F610S", "department": "内饰科"}]
+
+    class FakeTDCClient:
+        def crawl_data_model_all(self, filters, max_records=5000, should_stop=None):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(rows=list(crawl_rows), complete=True, stop_reason="reported_pages")
+
+        def query_data_model_page(self, filters, page=1, page_size=50):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(rows=list(page_rows), total=2, page=1, page_size=50)
+
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    payload = {
+        "base_url": "https://tdc.sgmw.com.cn",
+        "wizardSessionId": "wiz-stability-empty",
+        "filters": {"project_model": "F610S", "sections": ["车体科"]},
+        "aggregate": True,
+    }
+
+    resp1 = client.post("/api/project-status/deliverables/VPI-T2-D5/mapping-discovery", json=payload)
+    assert resp1.status_code == 200
+
+    resp2 = client.post(
+        "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery",
+        json={**payload, "stabilityCheck": True},
+    )
+    assert resp2.status_code == 200
+    data2 = resp2.get_json()["data"]
+    assert data2["state"] != "matched"
+    assert data2["observationId"] is None
+    assert data2["reason"] == "stability_sample_inconclusive"
+    assert data2["mismatch"] == {"reason": "inconclusive", "expected": None, "actual": 0}
+    assert data2["stability"]["ready"] is False
+
+
+def _inject_sor_sections(monkeypatch, sections):  # type: ignore[no-untyped-def]
+    """SOR 契约目前没有 sections 过滤名（API 层会 400），这里在规则冻结处注入，
+    覆盖采样分支对「规则里带 sections」的防御性收窄。"""
+    original = web_app._mapping_discovery_query_identity
+
+    def patched(payload, deliverable_id, selected_external_key=None):  # type: ignore[no-untyped-def]
+        rule, values = original(payload, deliverable_id, selected_external_key)
+        rule["sections"] = list(sections)
+        return rule, values
+
+    monkeypatch.setattr(ps_boot, "_mapping_discovery_query_identity", patched)
+
+
+def test_mapping_discovery_f10_stability_sor_sample_narrows_sections(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """SOR（D2）分页采样同样按 sections 收窄，其它科室的行不再造成 sample_not_in_baseline。"""
+    rows = [
+        {"processNo": "SOR-001", "carTypeProject": "F610S", "department": "车体科"},
+        {"processNo": "SOR-002", "carTypeProject": "F610S", "department": "内饰科"},
+    ]
+
+    class FakeTDCClient:
+        def crawl_sor_all(self, filters, **kwargs):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(rows=list(rows), complete=True, stop_reason="reported_pages", total=2)
+
+        def query_sor_page(self, filters, page=1, page_size=50):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(rows=list(rows), total=2, page=page, page_size=page_size)
+
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    _inject_sor_sections(monkeypatch, ["车体科"])
+    payload = {
+        "base_url": "https://tdc.sgmw.com.cn",
+        "wizardSessionId": "wiz-stability-sor-sections",
+        "filters": {"car_type_project": "F610S"},
+        "aggregate": True,
+    }
+
+    resp1 = client.post("/api/project-status/deliverables/VPI-T2-D2/mapping-discovery", json=payload)
+    assert resp1.status_code == 200, resp1.get_json()
+    assert resp1.get_json()["data"]["stability"]["confirmed"] == 1
+
+    resp2 = client.post(
+        "/api/project-status/deliverables/VPI-T2-D2/mapping-discovery",
+        json={**payload, "stabilityCheck": True},
+    )
+    assert resp2.status_code == 200
+    data2 = resp2.get_json()["data"]
+    assert data2["state"] == "matched", data2
+    assert data2["stability"] == {"confirmed": 2, "required": 2, "ready": True}
+
+
+def test_mapping_discovery_f10_stability_pages_until_section_hit(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """第 1 页没有所选科室的行时继续翻页：用第 2 页的命中行判稳定，总数仍取上游未收窄总数。"""
+    page_requests: list[int] = []
+    crawl_rows = [
+        {"incident": "INC-001", "projectModel": "F610S", "department": "车体科"},
+        {"incident": "INC-002", "projectModel": "F610S", "department": "内饰科"},
+    ]
+    pages = {
+        1: [{"incident": "INC-002", "projectModel": "F610S", "department": "内饰科"}],
+        2: [{"incident": "INC-001", "projectModel": "F610S", "department": "车体科"}],
+    }
+
+    class FakeTDCClient:
+        def crawl_data_model_all(self, filters, max_records=5000, should_stop=None):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(
+                rows=list(crawl_rows), complete=True, stop_reason="reported_pages", total=120
+            )
+
+        def query_data_model_page(self, filters, page=1, page_size=50):  # type: ignore[no-untyped-def]
+            page_requests.append(page)
+            return SimpleNamespace(
+                rows=list(pages.get(page, [])), total=120, page=page, page_size=page_size
+            )
+
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    payload = {
+        "base_url": "https://tdc.sgmw.com.cn",
+        "wizardSessionId": "wiz-stability-paging",
+        "filters": {"project_model": "F610S", "sections": ["车体科"]},
+        "aggregate": True,
+    }
+
+    resp1 = client.post("/api/project-status/deliverables/VPI-T2-D5/mapping-discovery", json=payload)
+    assert resp1.status_code == 200, resp1.get_json()
+    assert resp1.get_json()["data"]["stability"]["confirmed"] == 1
+
+    resp2 = client.post(
+        "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery",
+        json={**payload, "stabilityCheck": True},
+    )
+    assert resp2.status_code == 200
+    data2 = resp2.get_json()["data"]
+    assert page_requests == [1, 2]  # 第 2 页命中即停，不再多翻
+    assert data2["state"] == "matched", data2
+    assert data2["observationId"] is not None
+    assert data2["stability"] == {"confirmed": 2, "required": 2, "ready": True}
+
+
+def test_mapping_discovery_f10_stability_paging_is_bounded(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """翻页有界：窗口内始终无命中 → inconclusive，且请求页数不超过上限。"""
+    page_requests: list[int] = []
+    crawl_rows = [
+        {"processNo": "SOR-001", "carTypeProject": "F610S", "department": "车体科"},
+        {"processNo": "SOR-002", "carTypeProject": "F610S", "department": "内饰科"},
+    ]
+
+    class FakeTDCClient:
+        def crawl_sor_all(self, filters, **kwargs):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(
+                rows=list(crawl_rows), complete=True, stop_reason="reported_pages", total=100000
+            )
+
+        def query_sor_page(self, filters, page=1, page_size=50):  # type: ignore[no-untyped-def]
+            page_requests.append(page)
+            return SimpleNamespace(
+                rows=[{"processNo": f"SOR-X{page}", "carTypeProject": "F610S", "department": "内饰科"}],
+                total=100000,
+                page=page,
+                page_size=page_size,
+            )
+
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    _inject_sor_sections(monkeypatch, ["车体科"])
+    payload = {
+        "base_url": "https://tdc.sgmw.com.cn",
+        "wizardSessionId": "wiz-stability-bounded",
+        "filters": {"car_type_project": "F610S"},
+        "aggregate": True,
+    }
+
+    resp1 = client.post("/api/project-status/deliverables/VPI-T2-D2/mapping-discovery", json=payload)
+    assert resp1.status_code == 200, resp1.get_json()
+
+    resp2 = client.post(
+        "/api/project-status/deliverables/VPI-T2-D2/mapping-discovery",
+        json={**payload, "stabilityCheck": True},
+    )
+    assert resp2.status_code == 200
+    data2 = resp2.get_json()["data"]
+    assert len(page_requests) == web_app._STABILITY_SAMPLE_MAX_PAGES
+    assert page_requests == list(range(1, web_app._STABILITY_SAMPLE_MAX_PAGES + 1))
+    assert data2["observationId"] is None
+    assert data2["reason"] == "stability_sample_inconclusive"
+    assert data2["mismatch"] == {"reason": "inconclusive", "expected": None, "actual": 0}
+    assert data2["stability"]["ready"] is False
+
+
+def test_mapping_discovery_f10_stability_missing_section_column_is_422(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """采样侧缺科室列必须 422（配置错误），不能被吞成 inconclusive。
+
+    收窄函数对「整批行都没有科室列」是 fail-closed（结构漂移）；采样路径必须把
+    同一个 ValueError 映射成 422，否则用户看到的是永远"无法判定"。
+    """
+    with_section = [{"incident": "INC-001", "projectModel": "F610S", "department": "车体科"}]
+    without_section = [{"incident": "INC-001", "projectModel": "F610S"}]
+
+    class FakeTDCClient:
+        def crawl_data_model_all(self, filters, max_records=5000, should_stop=None):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(rows=list(with_section), complete=True, stop_reason="reported_pages")
+
+        def query_data_model_page(self, filters, page=1, page_size=50):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(rows=list(without_section), total=1, page=1, page_size=50)
+
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    payload = {
+        "base_url": "https://tdc.sgmw.com.cn",
+        "wizardSessionId": "wiz-stability-no-section",
+        "filters": {"project_model": "F610S", "sections": ["车体科"]},
+        "aggregate": True,
+    }
+
+    resp1 = client.post("/api/project-status/deliverables/VPI-T2-D5/mapping-discovery", json=payload)
+    assert resp1.status_code == 200
+
+    resp2 = client.post(
+        "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery",
+        json={**payload, "stabilityCheck": True},
+    )
+    assert resp2.status_code == 422
+    assert resp2.get_json()["error"]["type"] == "SectionColumnMissing"
 
 
 def test_mapping_discovery_f10_stability_aggregate_over_one_page(client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -893,7 +1805,7 @@ def test_mapping_discovery_f10_stability_aggregate_over_one_page(client, monkeyp
                 page_size=page_size,
             )
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
         "wizardSessionId": "wiz-stability-60",
@@ -938,7 +1850,7 @@ def test_mapping_discovery_f10_stability_mismatch_structure_reported(client, mon
             drifted = [{"incident": "INC-9000", "projectModel": "F610S"}] + ordered[:49]
             return SimpleNamespace(rows=drifted, total=60, page=page, page_size=page_size)
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
         "wizardSessionId": "wiz-stability-drift",
@@ -990,7 +1902,7 @@ def test_mapping_discovery_f10_stability_cache_hit_keeps_declared_total(client, 
                 rows=ordered[:page_size], total=62, page=page, page_size=page_size
             )
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
         "wizardSessionId": "wiz-stability-cache-total",
@@ -1051,8 +1963,8 @@ def test_mapping_discovery_async_202_contract_and_isomorphic_result(client, monk
                 total=1,
             )
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
-    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: object())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
         "wizardSessionId": "wiz-sess-async-01",
@@ -1102,8 +2014,8 @@ def test_mapping_discovery_async_same_params_reattach_and_conflict(client, monke
                 stop_reason="reported_pages", total=1,
             )
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: BlockingTDCClient())
-    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: BlockingTDCClient())
+    monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: object())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
         "wizardSessionId": "wiz-sess-async-02",
@@ -1158,8 +2070,8 @@ def test_mapping_discovery_async_cooperative_cancel(client, monkeypatch) -> None
                 _time.sleep(0.02)
             return SimpleNamespace(rows=[], complete=True, stop_reason="reported_pages", total=0)
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: SlowTDCClient())
-    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: SlowTDCClient())
+    monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: object())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
         "wizardSessionId": "wiz-sess-async-03",
@@ -1199,8 +2111,8 @@ def test_mapping_discovery_password_mode_stays_sync(client, monkeypatch) -> None
                 stop_reason="reported_pages", total=1,
             )
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
-    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: object())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
         "wizardSessionId": "wiz-sess-async-04",
@@ -1242,8 +2154,8 @@ def test_mapping_discovery_cancel_endpoint_cancels_background_task(client, monke
                 stop_reason="reported_pages", total=1,
             )
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: BlockingTDCClient())
-    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: BlockingTDCClient())
+    monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: object())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
         "wizardSessionId": "wiz-sess-async-05",
@@ -1302,8 +2214,8 @@ def test_mapping_discovery_cookie_mode_stays_sync(client, monkeypatch) -> None: 
                 stop_reason="reported_pages", total=1,
             )
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
-    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: object())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
         "wizardSessionId": "wiz-sess-async-06",
@@ -1336,8 +2248,8 @@ def test_mapping_discovery_async_artifact_redline_on_async_path(client, monkeypa
                 stop_reason="reported_pages", total=1,
             )
 
-    monkeypatch.setattr(web_app, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
-    monkeypatch.setattr(web_app, "_shared_domain_session", lambda system: object())
+    monkeypatch.setattr(ps_boot, "_build_tdc_client_from_payload", lambda p, hosts: FakeTDCClient())
+    monkeypatch.setattr(crawler_boot, "_shared_domain_session", lambda system: object())
     payload = {
         "base_url": "https://tdc.sgmw.com.cn",
         "wizardSessionId": "wiz-sess-async-07",
@@ -1396,7 +2308,7 @@ def test_stale_cancel_token_cannot_cancel_a_later_task(client, monkeypatch) -> N
         def cancel_task(self, task_id):  # type: ignore[no-untyped-def]
             cancelled.append(task_id)
 
-    monkeypatch.setattr(web_app, "_crawl_runner_from_request", lambda: FakeRunner())
+    monkeypatch.setattr(ps_boot, "_crawl_runner_from_request", lambda: FakeRunner())
     web_app._MAPPING_DISCOVERY_TASKS.clear()
     web_app._MAPPING_DISCOVERY_TASKS["VPI-T2-D5"] = {"task_id": "NEW-TASK-B", "params_hash": "NEW-QUERY-B", "tokens": ["disc-token-b"]}
     url = "/api/project-status/deliverables/VPI-T2-D5/mapping-discovery/cancel"

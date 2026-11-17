@@ -90,6 +90,14 @@ console.log(JSON.stringify({
   gbk: L.decodeCsv(new Uint8Array([0xd0, 0xd5, 0xc3, 0xfb])),
   utf8: L.decodeCsv(new TextEncoder().encode("﻿姓名")),
   stage: L.stageText({stage: "正在抓取", percent: 5}),
+  gate: [L.exportAllowed({exportBlocked: false, statusGate: {blocked: true}}, true),
+         L.exportAllowed({exportBlocked: false, statusGate: {blocked: false}})],
+  gateText: [L.statusGateText({statusGate: {blocked: true, text: "X"}}),
+             L.statusGateText({statusGate: {blocked: false, text: "X"}}), L.statusGateText(null),
+             L.statusGateText({statusGate: {blocked: false, codes: [{code: "6", flows: 2}]}})],
+  orphans: L.orphanProjects(["F620S", "F620S产品项目"], ["F610S", "F620S", "F620S产品项目", "F610S"]),
+  migrate: [L.migratePrefs({a: {to: "x"}, b: {to: "y"}}, "a", "b"),
+            L.migratePrefs({a: {to: "x"}}, "a", "c"), L.migratePrefs({a: {to: "x"}}, "a", "a")],
 }));
 """)
     # 与 backend.scope_key（Python json.dumps）逐字一致
@@ -106,3 +114,238 @@ console.log(JSON.stringify({
     assert out["formatted"] == "尾门=背门、后背门"
     assert out["gbk"] == "姓名" and out["utf8"] == "姓名"
     assert out["stage"] == "正在抓取（5%）"
+    # 状态门禁不提供「继续」选项；孤儿项目只披露、不自动删除；新范围有记忆时不覆盖
+    assert out["gate"] == [False, True]
+    assert out["gateText"] == ["X", "", "", "门禁已关闭，状态列仍是数字码（6：2 份）：数字仅供参考，发出去就是错数"]
+    assert out["orphans"] == ["F610S"]
+    assert out["migrate"] == [None, {"to": "x"}, None]
+
+
+def test_chips_renders_orphans(tmp_path):
+    """门禁：孤儿 chip 排在 options 之后、class 带 is-on 与 is-orphan、点一下取消；无 options 时仍渲染。"""
+    root = STATIC.parents[2]
+    (tmp_path / "preact-htm.js").write_text(
+        (root / "web" / "static" / "host" / "vendor" / "preact-htm.js").read_text(encoding="utf-8"),
+        encoding="utf-8")
+    (tmp_path / "report-logic.js").write_text(
+        (STATIC / "report-logic.js").read_text(encoding="utf-8"), encoding="utf-8")
+    (tmp_path / "chips.mjs").write_text(
+        (STATIC / "chips.js").read_text(encoding="utf-8").replace(
+            '"/static/host/vendor/preact-htm.js"', '"./preact-htm.js"'),
+        encoding="utf-8")
+    harness = """
+import { Chips } from "./chips.mjs";
+const flatten = (v) => v.props.children.filter(Boolean).flat(Infinity);
+const rows = (v) => flatten(v).map((x) => ({
+  cls: x.props.class, title: x.props.title || "",
+  checked: x.props.children.find((c) => c && c.type === "input").props.checked,
+  text: x.props.children.filter((c) => typeof c === "string").join(""),
+}));
+const input = (node) => node.props.children.find((c) => c && c.type === "input");
+const calls = [];
+const out = Chips({options: ["F620S", "F620S产品项目"], value: ["F620S", "F620S产品项目", "F610S"],
+  onChange: (v) => calls.push(v), emptyText: "空", orphans: ["F610S"]});
+input(flatten(out).find((x) => String(x.props.class).includes("is-orphan"))).props.onChange();
+const dup = Chips({options: ["F620S"], value: ["F620S", "F610S", "F610S"], onChange: (v) => calls.push(v),
+  emptyText: "空", orphans: ["F610S"]});
+input(flatten(dup).find((x) => String(x.props.class).includes("is-orphan"))).props.onChange();
+const only = Chips({options: [], value: ["F610S"], onChange: () => {}, emptyText: "空", orphans: ["F610S"]});
+console.log(JSON.stringify({rows: rows(out), calls, only: rows(only), onlyTag: only.type}));
+"""
+    (tmp_path / "run.mjs").write_text(harness, encoding="utf-8")
+    result = subprocess.run(["node", str(tmp_path / "run.mjs")], capture_output=True, text=True,
+                            encoding="utf-8", check=False)
+    assert result.returncode == 0, result.stderr[-2000:]
+    data = json.loads(result.stdout.strip().splitlines()[-1])
+    # 不变量 1：孤儿只出现一次、排在 options 之后、class 同时含 is-on 与 is-orphan，普通 chip 不受影响
+    assert [r["cls"] for r in data["rows"]] == ["sd-chip is-on", "sd-chip is-on", "sd-chip is-on is-orphan"]
+    assert data["rows"][2]["title"] and "取消" in data["rows"][2]["title"]
+    # 不变量 2：options 为空、只有孤儿时仍渲染 chip（不是 emptyText 的 span）
+    assert data["onlyTag"] == "div" and [r["cls"] for r in data["only"]] == ["sd-chip is-on is-orphan"]
+    # 不变量 3：点掉孤儿后该项完全移除（含重复），其余选择与顺序不变
+    assert data["calls"][0] == ["F620S", "F620S产品项目"]
+    assert data["calls"][1] == ["F620S"]
+
+
+def test_chart_palette_helpers():
+    """配色：坏值回落默认、未知图沿用图2 默认；方案与太浅提示；不传 palette 时出图行为不变。"""
+    out = _run(r"""
+const C = await import(process.argv[1] + "/chart.js");
+const calls = [];
+const fakeDoc = {createElement: () => ({width: 0, height: 0, toDataURL: () => "data:image/png;base64,x",
+  getContext: () => new Proxy({}, {get: (t, k) => k === "fillStyle" ? t.fill : (k in t ? t[k] : () => {}),
+    set: (t, k, v) => { if (k === "fillStyle") calls.push(v); t[k === "fillStyle" ? "fill" : k] = v; return true; }})})};
+const groups = [{group: "A", personTimes: 1, flows: 1, people: 1, bars: [{name: "x", label: "x", count: 1}]},
+                {group: "B", special: true, personTimes: 1, flows: 1, people: 1, bars: [{name: "y", label: "y", count: 1}]}];
+C.renderChartPng(groups, "sections", fakeDoc);
+const plain = calls.splice(0);
+C.renderChartPng(groups, "sections", fakeDoc, {bar: "#112233", special: "#445566"});
+const custom = calls.splice(0);
+console.log(JSON.stringify({
+  ok: C.resolvePalette("external", {external: {bar: "#ABCDEF"}}),
+  bad: C.resolvePalette("sections", {sections: {bar: "red", special: 3}}),
+  none: C.resolvePalette("approval", null),
+  unknown: C.resolvePalette("pie", {pie: {bar: "#000000"}}),
+  all: C.resolveAllPalettes({sections: {special: "#000000"}}),
+  defaults: C.PALETTES,
+  presets: C.CHART_PRESETS.map((p) => p.id),
+  presetDefault: C.presetPalettes("default"), presetUnknown: C.presetPalettes("nope"),
+  match: [C.matchPreset(C.PALETTES), C.matchPreset(C.presetPalettes("warm")), C.matchPreset({external: {bar: "#010203"}})],
+  light: [C.tooLight("#ffffff"), C.tooLight("#f5f5f5"), C.tooLight("#3370ff"), C.tooLight("#c9cdd4"), C.tooLight("bad")],
+  defaultsLight: Object.values(C.PALETTES).some((p) => C.tooLight(p.bar) || C.tooLight(p.special)),
+  plainHasDefault: plain.includes("#8f959e") && plain.includes("#c9cdd4"),
+  custom: custom.includes("#112233") && custom.includes("#445566") && !custom.includes("#8f959e"),
+}));
+""")
+    assert out["ok"] == {"bar": "#abcdef", "special": "#3370ff"}
+    assert out["bad"] == out["defaults"]["sections"]
+    assert out["none"] == out["defaults"]["approval"]
+    assert out["unknown"] == out["defaults"]["sections"]
+    assert out["all"]["sections"] == {"bar": "#8f959e", "special": "#000000"}
+    assert out["all"]["external"] == out["defaults"]["external"]
+    assert out["presets"] == ["default", "bluegray", "warm", "contrast"]
+    assert out["presetDefault"] == out["defaults"] and out["presetUnknown"] == out["defaults"]
+    assert out["match"] == ["default", "warm", ""]
+    assert out["light"] == [True, True, False, False, False]
+    assert out["defaultsLight"] is False
+    assert out["plainHasDefault"] is True and out["custom"] is True
+
+
+def test_compare_plan_and_result_text():
+    out = _run(r"""
+const L = await import(process.argv[1] + "/report-logic.js");
+const items = [
+  {date: "2026-11-15", sourceName: "a.xlsx", pinned: false},
+  {date: "2026-11-01", sourceName: "b.xlsx", pinned: false},
+];
+const pinned = [items[0], {...items[1], pinned: true}];
+console.log(JSON.stringify({
+  today: L.todayIso(new Date(2026, 0, 5)),
+  options: L.baselineOptions(pinned).map((o) => [o.value, o.label]),
+  first: L.comparePlan([], {dataDate: "2026-11-16"}),
+  auto: L.comparePlan(items, {dataDate: "2026-11-16"}),
+  gap: L.comparePlan(items, {dataDate: "2026-12-20", maxGapDays: 14}),
+  stale: L.comparePlan(items, {dataDate: "2026-11-10"}),
+  noEarlier: L.comparePlan([{date: "2026-11-16", sourceName: "c"}], {dataDate: "2026-11-16"}),
+  explicit: L.comparePlan(items, {dataDate: "2026-11-16", choice: "2026-11-01"}),
+  explicitBad: L.comparePlan(items, {dataDate: "2026-11-15", choice: "2026-11-15"}),
+  pinnedPlan: L.comparePlan(pinned, {dataDate: "2026-11-16"}),
+  explicitOverPinned: L.comparePlan(pinned, {dataDate: "2026-11-16", choice: "2026-11-15"}),
+  noDate: L.comparePlan(items, {dataDate: ""}),
+  result: [
+    L.compareResultText({baseline: {date: "2026-11-15", sourceName: "a.xlsx", mode: "auto"}, baselineSaved: true}),
+    L.compareResultText({baseline: {date: "2026-11-01", sourceName: "b.xlsx", mode: "pinned"}, baselineSaved: false}),
+    L.compareResultText({baseline: null, baselineReason: "x", baselineSaved: false}),
+    L.compareResultText({baseline: null, baselineStatement: "已有更晚日期的手工导入…", baselineSaved: false}),
+    L.compareResultText({baseline: null, baselineSaved: true}),
+  ],
+  same: [L.sameColors({external: {bar: "#AAAAAA"}}, {external: {bar: "#aaaaaa"}}),
+         L.sameColors({external: {bar: "#aaaaaa"}}, {external: {bar: "#bbbbbb"}})],
+}));
+""")
+    assert out["today"] == "2026-01-05"
+    assert out["options"] == [["", "上次导入（自动）"], ["2026-11-15", "2026-11-15 · a.xlsx"],
+                              ["2026-11-01", "2026-11-01 · b.xlsx（固定）"]]
+    assert out["first"] == {"text": "这是第一次导入，明天起才能看到每日进展", "tone": "info"}
+    assert out["auto"] == {"text": "将与 11-15 的导入（a.xlsx）对比", "tone": "ok"}
+    assert out["gap"]["tone"] == "info" and "隔了超过 14 天" in out["gap"]["text"]
+    assert out["stale"]["tone"] == "warn" and "按旧数据处理" in out["stale"]["text"]
+    assert out["noEarlier"]["text"] == "今天先导入一次，明天再导入就能看到进展"
+    assert out["explicit"] == {"text": "将与 11-01 的导入（b.xlsx）对比（你指定的）", "tone": "ok"}
+    assert out["explicitBad"] == {"text": "选的对比日期要早于本次数据日期，请改选或改回自动", "tone": "warn"}
+    assert out["pinnedPlan"] == {"text": "已固定与 11-01 的导入（b.xlsx）对比", "tone": "ok"}
+    assert out["explicitOverPinned"]["text"].startswith("将与 11-15")
+    assert out["noDate"]["tone"] == "info"
+    assert out["result"][0] == "已与 11-15 的导入（a.xlsx，自动选的上次导入）对比。本次已留作下次对比。"
+    assert "已固定的" in out["result"][1] and "没有留作" in out["result"][1]
+    assert out["result"][2].startswith("选的对比日期要早于本次数据日期")
+    assert out["result"][3].startswith("已有更晚日期的导入")
+    assert out["result"][4].startswith("没有可比的更早导入")
+    assert out["same"] == [True, False]
+
+
+def test_report_page_passes_palette_to_every_chart_render():
+    source = (STATIC / "report.js").read_text(encoding="utf-8")
+    calls = re.findall(r"renderChartPng\(([^)]*)\)", source)
+    assert calls and all(call.count(",") >= 3 for call in calls)  # 每处都传第 4 个参数（生效配色）
+    assert "renderImages(data, effectiveColors)" in source
+    assert "不计算日变化" not in source
+
+
+def test_file_date_hint_only_warns_on_mismatch():
+    out = _run(r"""
+const L = await import(process.argv[1] + "/report-logic.js");
+const at = (y, m, d) => new Date(y, m - 1, d, 10, 0, 0).getTime();
+console.log(JSON.stringify({
+  same: L.fileDateHint(at(2026, 11, 16), "2026-11-16"),
+  differs: L.fileDateHint(at(2026, 11, 15), "2026-11-16"),
+  noFile: L.fileDateHint(null, "2026-11-16"),
+  noDate: L.fileDateHint(at(2026, 11, 15), ""),
+  bad: L.fileDateHint("not a time", "2026-11-16"),
+}));
+""")
+    assert out["same"] == "" and out["noFile"] == "" and out["noDate"] == "" and out["bad"] == ""
+    assert out["differs"] == "这份文件最后修改于 2026-11-15，和填写的数据截至日期 2026-11-16 不是同一天，请确认日期没填错"
+
+
+def test_baseline_file_plan_status_and_path_helpers():
+    out = _run(r"""
+const L = await import(process.argv[1] + "/report-logic.js");
+const items = [{date: "2026-11-15", sourceName: "a.xlsx", pinned: true}];
+const file = {date: "2026-11-01", sourceName: "base.xlsx", originalPath: "D:\\r\\base.xlsx",
+  originalStatus: "ok", backupStatus: "ok"};
+const plan = (f, extra = {}) => L.comparePlan(items, {dataDate: "2026-11-16", file: f, ...extra});
+console.log(JSON.stringify({
+  ok: plan(file),
+  unknown: plan({...file, originalPath: null, originalStatus: "unknown"}),
+  missing: plan({...file, originalStatus: "missing"}),
+  changed: plan({...file, originalStatus: "changed"}),
+  gone: plan({...file, backupStatus: "missing"}),
+  notEarlier: plan({...file, date: "2026-11-16"}),
+  explicitWins: plan(file, {choice: "2026-11-15"}),
+  stale: L.comparePlan([{date: "2026-11-20", sourceName: "x"}], {dataDate: "2026-11-16", file}),
+  status: ["ok", "missing", "changed", "unknown"].map((s) => L.baselineFileStatus({...file, originalStatus: s})),
+  statusGone: L.baselineFileStatus({...file, backupStatus: "missing"}),
+  statusNone: L.baselineFileStatus(null),
+  result: [
+    L.compareResultText({baseline: {...file, mode: "file"}, baselineSaved: true}),
+    L.compareResultText({baseline: {...file, mode: "file", originalStatus: "missing"}, baselineSaved: false}),
+    L.compareResultText({baseline: {...file, mode: "file", originalStatus: "changed"}, baselineSaved: false}),
+    L.compareResultText({baseline: {...file, mode: "file", originalStatus: "unknown"}, baselineSaved: false}),
+    L.compareResultText({baseline: null, baselineFile: {...file, backupStatus: "missing"},
+      baselineReason: "基线文件和备份都不存在（或无法识别），请重新指定", baselineSaved: false}),
+  ],
+  clean: [L.cleanPastedPath('  "D:\\r\\a.xlsx"  '), L.cleanPastedPath("'/x/a.txt'"), L.cleanPastedPath('"')],
+  hints: ["", "D:\\r\\a.xlsx", '"D:\\r\\a.xlsx"', "/home/a.TXT", "\\\\srv\\s\\a.xlsx", "a.xlsx", "D:a.xlsx",
+          "D:\\r\\a.csv"].map((t) => L.baselinePathHint(t)),
+}));
+""")
+    assert out["ok"] == {"text": "将与基线文件 base.xlsx（11-01）对比", "tone": "ok"}
+    assert out["unknown"]["tone"] == "ok"
+    assert out["missing"]["tone"] == "warn" and "改用备份对比" in out["missing"]["text"]
+    assert out["changed"]["tone"] == "warn" and "修改过" in out["changed"]["text"]
+    assert out["gone"]["tone"] == "error" and "这次不会对比" in out["gone"]["text"]
+    assert out["notEarlier"]["tone"] == "warn" and "不早于本次数据日期" in out["notEarlier"]["text"]
+    assert out["explicitWins"]["text"] == "将与 11-15 的导入（a.xlsx）对比（你指定的）"
+    assert out["stale"]["tone"] == "warn" and "按旧数据处理" in out["stale"]["text"]
+    assert [s["tone"] for s in out["status"]] == ["ok", "warn", "warn", "ok"]
+    assert "D:\\r\\base.xlsx" in out["status"][1]["text"] and "重新设为基线" in out["status"][2]["text"]
+    assert out["statusGone"] == {"text": "基线文件和备份都不存在（或无法识别），请重新指定", "tone": "error"}
+    assert out["statusNone"]["text"] == ""
+    assert out["result"][0] == "已与基线文件 base.xlsx（11-01）对比。对比用的是指定时的备份。本次已留作下次对比。"
+    assert "已改用备份继续对比" in out["result"][1] and "D:\\r\\base.xlsx" in out["result"][1]
+    assert "修改过" in out["result"][2] and "原位置未知" in out["result"][3]
+    assert out["result"][4].startswith("基线文件和备份都不存在（或无法识别），请重新指定。")
+    assert out["clean"] == ["D:\\r\\a.xlsx", "/x/a.txt", '"']
+    assert out["hints"][0:5] == ["", "", "", "", ""]
+    assert all(out["hints"][i].startswith("要粘贴从盘符开始的完整路径") for i in (5, 6))
+    assert out["hints"][7] == "只接受 .xlsx 或 .txt 文件"
+
+
+def test_report_page_has_baseline_file_panel():
+    source = (STATIC / "report.js").read_text(encoding="utf-8")
+    for text in ("指定基线文件", "检查并设为基线", "用现在的文件重新设为基线", "取消基线文件", "粘贴完整路径",
+                 "manual-baseline-file", "file: baselineFile"):
+        assert text in source, text
+    # 设基线文件 / 取消 / 重设 / 固定（会取消基线文件）都先确认
+    assert source.count("window.confirm(") >= 6

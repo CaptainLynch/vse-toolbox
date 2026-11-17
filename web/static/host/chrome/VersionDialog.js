@@ -33,6 +33,17 @@ export function closeVersionDialog() {
   focusChip();
 }
 
+/**
+ * 部署自检结论：manifest_ok 为真才算通过；清单缺失（开发态）要说清是"未提供"，
+ * 不能显示成绿色通过——否则真机部署失败会被误读成正常。
+ */
+function deploymentText(deployment) {
+  if (!deployment) return "未提供部署清单（开发工作区）";
+  if (deployment.status === "absent") return "未提供部署清单（开发工作区或旧部署包）";
+  if (deployment.ok) return `通过：${deployment.checked || 0} 个文件`;
+  return `未通过：${deployment.message || "部署文件被容器化或被改动"}`;
+}
+
 export function VersionChip() {
   const { data, initialText } = useStore(versionStore);
   const text = data ? data.displayVersion || DEFAULT_VERSION : initialText;
@@ -88,6 +99,7 @@ export function VersionDialog() {
           <dt>运行形态</dt><dd>${info.channel || "source"}</dd>
           <dt>构建标识</dt><dd>${info.buildId || "无独立构建标识"}</dd>
           <dt>运行环境详情</dt><dd>${info.detail || "-"}</dd>
+          <dt>部署自检</dt><dd>${deploymentText(info.deployment)}</dd>
         </dl>
         <p class="hc-field-note">维护提示：反馈问题时可复制上述版本标识并附带生成的诊断报告。</p>
       </div>

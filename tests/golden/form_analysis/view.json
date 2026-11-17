@@ -1,0 +1,2935 @@
+{
+  "VPI-T2-D3": {
+    "artifacts": [],
+    "charts": {
+      "departmentStatus": {
+        "stages": [
+          {
+            "label": "DRAFT1",
+            "onTime": 0,
+            "overdue": 0,
+            "unknown": 0
+          },
+          {
+            "label": "DRAFT2",
+            "onTime": 0,
+            "overdue": 0,
+            "unknown": 0
+          },
+          {
+            "label": "EDIT1",
+            "onTime": 0,
+            "overdue": 0,
+            "unknown": 0
+          },
+          {
+            "label": "EDIT2",
+            "onTime": 0,
+            "overdue": 0,
+            "unknown": 0
+          },
+          {
+            "label": "PROC",
+            "onTime": 0,
+            "overdue": 0,
+            "unknown": 2
+          },
+          {
+            "label": "IMPL",
+            "onTime": 0,
+            "overdue": 0,
+            "unknown": 0
+          },
+          {
+            "label": "CLOSE",
+            "onTime": 1,
+            "overdue": 0,
+            "unknown": 0
+          }
+        ],
+        "unrecognizedStageCount": 0
+      },
+      "quantityTrend": [
+        {
+          "day": "2026-09-14",
+          "incomplete": 1,
+          "overdue": 0,
+          "snapshotAt": "2026-09-14T10:00:00Z",
+          "total": 2
+        },
+        {
+          "day": "2026-09-15",
+          "incomplete": 2,
+          "overdue": 0,
+          "snapshotAt": "2026-09-15T10:00:00Z",
+          "total": 3
+        }
+      ],
+      "sectionStatus": [
+        {
+          "label": "制动科",
+          "onTime": 1,
+          "overdue": 0,
+          "total": 1,
+          "unknown": 0
+        },
+        {
+          "label": "车门科",
+          "onTime": 0,
+          "overdue": 0,
+          "total": 2,
+          "unknown": 2
+        }
+      ]
+    },
+    "filters": {
+      "applied": {},
+      "fields": [
+        "keyword",
+        "status",
+        "department",
+        "section",
+        "model",
+        "stage",
+        "dateStart",
+        "dateEnd",
+        "overdueState",
+        "isCompleted"
+      ],
+      "options": {
+        "department": [
+          "底盘工程部",
+          "车身工程部"
+        ],
+        "model": [
+          "F610S",
+          "F620S"
+        ],
+        "overdueState": [
+          "not_applicable",
+          "unknown"
+        ],
+        "section": [
+          "制动科",
+          "车门科"
+        ],
+        "stage": [
+          "CLOSE",
+          "PROC"
+        ],
+        "status": [
+          "CLOSE",
+          "PROC"
+        ]
+      }
+    },
+    "formKey": "VPI-T2-D3",
+    "matchedRowCount": 3,
+    "overdueThresholds": null,
+    "reportType": "ewo",
+    "rowCount": 3,
+    "schema": {
+      "chartFields": [
+        "DRAFT1",
+        "DRAFT2",
+        "EDIT1",
+        "EDIT2",
+        "PROC",
+        "IMPL",
+        "CLOSE"
+      ],
+      "columns": [
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 0,
+          "key": "column_1",
+          "label": "EWO编号",
+          "sourceFields": [
+            "_no",
+            "keyed_name"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 1,
+          "key": "column_2",
+          "label": "二级WO类别",
+          "sourceFields": [
+            "_sort_sub_type"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 2,
+          "key": "column_3",
+          "label": "起草人",
+          "sourceFields": [
+            "created_by_id__keyed_name"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 3,
+          "key": "column_4",
+          "label": "责任工程师名称",
+          "sourceFields": [
+            "_rsp_name"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 4,
+          "key": "column_5",
+          "label": "责任工程师专业科室",
+          "sourceFields": [
+            "_rsp_smt"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 5,
+          "key": "column_6",
+          "label": "主题",
+          "sourceFields": [
+            "_subject"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 6,
+          "key": "column_7",
+          "label": "车型信息",
+          "sourceFields": [
+            "_modelinfo"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 7,
+          "key": "column_8",
+          "label": "费用出处",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 8,
+          "key": "column_9",
+          "label": "创建时间",
+          "sourceFields": [
+            "created_on"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 9,
+          "key": "column_10",
+          "label": "状态",
+          "sourceFields": [
+            "state",
+            "current_state__name",
+            "current_state__keyed_name"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 10,
+          "key": "column_11",
+          "label": "已反写EPL",
+          "sourceFields": [
+            "eplmwriteneplcode"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 11,
+          "key": "column_12",
+          "label": "ECR编号",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 12,
+          "key": "column_13",
+          "label": "提交日期",
+          "sourceFields": [
+            "_submit_time"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 13,
+          "key": "column_14",
+          "label": "电话",
+          "sourceFields": [
+            "_rsp_phone"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 14,
+          "key": "column_15",
+          "label": "部门",
+          "sourceFields": [
+            "_rsp_department"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 15,
+          "key": "column_16",
+          "label": "国内设计分区代码",
+          "sourceFields": [
+            "_division"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 16,
+          "key": "column_17",
+          "label": "要求完成时间",
+          "sourceFields": [
+            "_required_date"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 17,
+          "key": "column_18",
+          "label": "工作指令类型",
+          "sourceFields": [
+            "_wo_type"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 18,
+          "key": "column_19",
+          "label": "WO类别",
+          "sourceFields": [
+            "_sort_type"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 19,
+          "key": "column_20",
+          "label": "设计变更目的",
+          "sourceFields": [
+            "_change_purpose"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 20,
+          "key": "column_21",
+          "label": "项目类型",
+          "sourceFields": [
+            "_project_type"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 21,
+          "key": "column_22",
+          "label": "更改原因描述",
+          "sourceFields": [
+            "_change_reason_description"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 22,
+          "key": "column_23",
+          "label": "更改描述",
+          "sourceFields": [
+            "_change_description"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 23,
+          "key": "column_24",
+          "label": "关联其他零件更改",
+          "sourceFields": [
+            "_coordinated_change"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 24,
+          "key": "column_25",
+          "label": "关联更改的零件名称",
+          "sourceFields": [
+            "_coordinated_part_name"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 25,
+          "key": "column_26",
+          "label": "EWO关联实施说明",
+          "sourceFields": [
+            "_coordinated_implement_comments"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 26,
+          "key": "column_27",
+          "label": "关联工作指令",
+          "sourceFields": [
+            "_coordinated_wo"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 27,
+          "key": "column_28",
+          "label": "原始授权文件",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 28,
+          "key": "column_29",
+          "label": "关联生产措施授权",
+          "sourceFields": [
+            "_coordinated_paa"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 29,
+          "key": "column_30",
+          "label": "是否涉及国内项目与海外项目共用件更改",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 30,
+          "key": "column_31",
+          "label": "成型试制/样件试制",
+          "sourceFields": [
+            "_mockup"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 31,
+          "key": "column_32",
+          "label": "试装",
+          "sourceFields": [
+            "_test_lab"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 32,
+          "key": "column_33",
+          "label": "道路测试",
+          "sourceFields": [
+            "_road_test"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 33,
+          "key": "column_34",
+          "label": "台架试验",
+          "sourceFields": [
+            "_ptr"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 34,
+          "key": "column_35",
+          "label": "影响制造",
+          "sourceFields": [
+            "_affect_manufacture"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 35,
+          "key": "column_36",
+          "label": "影响OTS",
+          "sourceFields": [
+            "_affect_ots"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 36,
+          "key": "column_37",
+          "label": "影响OTS时间",
+          "sourceFields": [
+            "_affect_ots_time"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 37,
+          "key": "column_38",
+          "label": "影响FE",
+          "sourceFields": [
+            "_affect_fe"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 38,
+          "key": "column_39",
+          "label": "影响PPAP",
+          "sourceFields": [
+            "_affect_ppap"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 39,
+          "key": "column_40",
+          "label": "影响PPAP时间",
+          "sourceFields": [
+            "_affect_ppap_time"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 40,
+          "key": "column_41",
+          "label": "影响售后",
+          "sourceFields": [
+            "_affect_service"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 41,
+          "key": "column_42",
+          "label": "影响售后类型",
+          "sourceFields": [
+            "_affect_service_type"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 42,
+          "key": "column_43",
+          "label": "影响整车参数",
+          "sourceFields": [
+            "_vehicle_param"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 43,
+          "key": "column_44",
+          "label": "影响公告",
+          "sourceFields": [
+            "_affect_notice"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 44,
+          "key": "column_45",
+          "label": "影响环保",
+          "sourceFields": [
+            "_affect_green"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 45,
+          "key": "column_46",
+          "label": "影响3C",
+          "sourceFields": [
+            "_affect_3c"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 46,
+          "key": "column_47",
+          "label": "影响3C证书",
+          "sourceFields": [
+            "_affect_3c_cert"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 47,
+          "key": "column_48",
+          "label": "整车参数、公告、环保、3C、3C证书更改描述",
+          "sourceFields": [
+            "_cvcev"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 48,
+          "key": "column_49",
+          "label": "自制",
+          "sourceFields": [
+            "_is_self_made"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 49,
+          "key": "column_50",
+          "label": "采购",
+          "sourceFields": [
+            "_is_buy"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 50,
+          "key": "column_51",
+          "label": "零件国产化策略",
+          "sourceFields": [
+            "_kdlc_strategy"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 51,
+          "key": "column_52",
+          "label": "影响产线在线配置、或售后刷新",
+          "sourceFields": [
+            "_affect_online_config"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 52,
+          "key": "column_53",
+          "label": "涉及整车基础数据",
+          "sourceFields": [
+            "_affect_vehicle_basic_data"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 53,
+          "key": "column_54",
+          "label": "影响车辆外观及车辆照片采集",
+          "sourceFields": [
+            "_affect_appearance"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 54,
+          "key": "column_55",
+          "label": "数模更新",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 55,
+          "key": "column_56",
+          "label": "图纸更新",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 56,
+          "key": "column_57",
+          "label": "影响的基地",
+          "sourceFields": [
+            "_area"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 57,
+          "key": "column_58",
+          "label": "项目生产基地汇总",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 58,
+          "key": "column_59",
+          "label": "涉及数模更新",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 59,
+          "key": "column_60",
+          "label": "涉及图纸更新",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 60,
+          "key": "column_61",
+          "label": "数模完成情况",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 61,
+          "key": "column_62",
+          "label": "图纸完成情况",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 62,
+          "key": "column_63",
+          "label": "OTS完成情况",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 63,
+          "key": "column_64",
+          "label": "PPAP完成情况",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 64,
+          "key": "column_65",
+          "label": "是否做断点控制",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 65,
+          "key": "column_66",
+          "label": "断点完成情况",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 66,
+          "key": "column_67",
+          "label": "到达DRAFT1的日期",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 67,
+          "key": "column_68",
+          "label": "到达DRAFT2的日期",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 68,
+          "key": "column_69",
+          "label": "到达EDIT1的日期",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 69,
+          "key": "column_70",
+          "label": "到达EDIT2的日期",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 70,
+          "key": "column_71",
+          "label": "到达PROC的日期",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 71,
+          "key": "column_72",
+          "label": "到达IMPL的日期",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 72,
+          "key": "column_73",
+          "label": "CLOZ的日期",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 73,
+          "key": "column_74",
+          "label": "在DRAFT1的天数",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 74,
+          "key": "column_75",
+          "label": "在DRAFT2的天数",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 75,
+          "key": "column_76",
+          "label": "在EDIT1的天数",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 76,
+          "key": "column_77",
+          "label": "在EDIT2的天数",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 77,
+          "key": "column_78",
+          "label": "在PROC的天数",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 78,
+          "key": "column_79",
+          "label": "在IMPL的天数",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 79,
+          "key": "column_80",
+          "label": "当前阶段未签署的角色",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 80,
+          "key": "column_81",
+          "label": "当前阶段未签署的角色&人员",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 81,
+          "key": "column_82",
+          "label": "LEADER",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 82,
+          "key": "column_83",
+          "label": "MANAGER",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 83,
+          "key": "column_84",
+          "label": "MAJORDOMO",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 84,
+          "key": "column_85",
+          "label": "SPEC",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 85,
+          "key": "column_86",
+          "label": "CML",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 86,
+          "key": "column_87",
+          "label": "VCE",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 87,
+          "key": "column_88",
+          "label": "PEM",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 88,
+          "key": "column_89",
+          "label": "CO-AUTHOR",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 89,
+          "key": "column_90",
+          "label": "PEBS",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 90,
+          "key": "column_91",
+          "label": "ME",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 91,
+          "key": "column_92",
+          "label": "ME-基地",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 92,
+          "key": "column_93",
+          "label": "SERVICE",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 93,
+          "key": "column_94",
+          "label": "BUYER",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 94,
+          "key": "column_95",
+          "label": "SQE",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 95,
+          "key": "column_96",
+          "label": "SQE-基地",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 96,
+          "key": "column_97",
+          "label": "BJ PCL",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 97,
+          "key": "column_98",
+          "label": "CQ PCL",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 98,
+          "key": "column_99",
+          "label": "HX PCL",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 99,
+          "key": "column_100",
+          "label": "INDONESIA PCL",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 100,
+          "key": "column_101",
+          "label": "QD PCL",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 101,
+          "key": "column_102",
+          "label": "ENGINE PCL",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 102,
+          "key": "column_103",
+          "label": "QUALITY",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 103,
+          "key": "column_104",
+          "label": "QUALITY-基地",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 104,
+          "key": "column_105",
+          "label": "FINANCE",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 105,
+          "key": "column_106",
+          "label": "MATHDATA",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 106,
+          "key": "column_107",
+          "label": "DRAWING",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 107,
+          "key": "column_108",
+          "label": "DDE",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 108,
+          "key": "column_109",
+          "label": "VDS",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 109,
+          "key": "column_110",
+          "label": "PC",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 110,
+          "key": "column_111",
+          "label": "STAKEHOLDER",
+          "sourceFields": []
+        }
+      ],
+      "dataHeaderRow": 0,
+      "defaultVisibleCount": 12,
+      "filterFields": [
+        "keyword",
+        "status",
+        "department",
+        "section",
+        "model",
+        "stage",
+        "dateStart",
+        "dateEnd"
+      ],
+      "formKey": "VPI-T2-D3",
+      "headerRows": [
+        [
+          "EWO编号",
+          "二级WO类别",
+          "起草人",
+          "责任工程师名称",
+          "责任工程师专业科室",
+          "主题",
+          "车型信息",
+          "费用出处",
+          "创建时间",
+          "状态",
+          "已反写EPL",
+          "ECR编号",
+          "提交日期",
+          "电话",
+          "部门",
+          "国内设计分区代码",
+          "要求完成时间",
+          "工作指令类型",
+          "WO类别",
+          "设计变更目的",
+          "项目类型",
+          "更改原因描述",
+          "更改描述",
+          "关联其他零件更改",
+          "关联更改的零件名称",
+          "EWO关联实施说明",
+          "关联工作指令",
+          "原始授权文件",
+          "关联生产措施授权",
+          "是否涉及国内项目与海外项目共用件更改",
+          "成型试制/样件试制",
+          "试装",
+          "道路测试",
+          "台架试验",
+          "影响制造",
+          "影响OTS",
+          "影响OTS时间",
+          "影响FE",
+          "影响PPAP",
+          "影响PPAP时间",
+          "影响售后",
+          "影响售后类型",
+          "影响整车参数",
+          "影响公告",
+          "影响环保",
+          "影响3C",
+          "影响3C证书",
+          "整车参数、公告、环保、3C、3C证书更改描述",
+          "自制",
+          "采购",
+          "零件国产化策略",
+          "影响产线在线配置、或售后刷新",
+          "涉及整车基础数据",
+          "影响车辆外观及车辆照片采集",
+          "数模更新",
+          "图纸更新",
+          "影响的基地",
+          "项目生产基地汇总",
+          "涉及数模更新",
+          "涉及图纸更新",
+          "数模完成情况",
+          "图纸完成情况",
+          "OTS完成情况",
+          "PPAP完成情况",
+          "是否做断点控制",
+          "断点完成情况",
+          "到达DRAFT1的日期",
+          "到达DRAFT2的日期",
+          "到达EDIT1的日期",
+          "到达EDIT2的日期",
+          "到达PROC的日期",
+          "到达IMPL的日期",
+          "CLOZ的日期",
+          "在DRAFT1的天数",
+          "在DRAFT2的天数",
+          "在EDIT1的天数",
+          "在EDIT2的天数",
+          "在PROC的天数",
+          "在IMPL的天数",
+          "当前阶段未签署的角色",
+          "当前阶段未签署的角色&人员",
+          "LEADER",
+          "MANAGER",
+          "MAJORDOMO",
+          "SPEC",
+          "CML",
+          "VCE",
+          "PEM",
+          "CO-AUTHOR",
+          "PEBS",
+          "ME",
+          "ME-基地",
+          "SERVICE",
+          "BUYER",
+          "SQE",
+          "SQE-基地",
+          "BJ PCL",
+          "CQ PCL",
+          "HX PCL",
+          "INDONESIA PCL",
+          "QD PCL",
+          "ENGINE PCL",
+          "QUALITY",
+          "QUALITY-基地",
+          "FINANCE",
+          "MATHDATA",
+          "DRAWING",
+          "DDE",
+          "VDS",
+          "PC",
+          "STAKEHOLDER"
+        ]
+      ],
+      "keyColumns": [
+        0,
+        9,
+        14,
+        4,
+        6,
+        5,
+        12,
+        16
+      ],
+      "overdueRules": {
+        "lateDays": 30,
+        "lateLabel": "PROC 阶段",
+        "note": "IMPL 只比较要求完成时间；CLOSE=完成；日期缺失=未判定",
+        "stageDays": 7,
+        "stageLabel": "起草/编辑阶段"
+      },
+      "reportType": "ewo",
+      "sheetNames": [
+        "Innovator"
+      ],
+      "stageLabels": {
+        "CLOSE": "已关闭",
+        "DRAFT1": "起草",
+        "DRAFT2": "起草（二轮）",
+        "EDIT1": "编辑",
+        "EDIT2": "编辑（二轮）",
+        "IMPL": "实施中",
+        "PROC": "审批中"
+      }
+    },
+    "snapshot": {
+      "id": 2,
+      "rowCount": 3,
+      "snapshotAt": "2026-09-15T10:00:00Z",
+      "snapshotKey": "VPI-T2-D3:2:2026-09-15T10:00:00Z",
+      "sourceRunId": 2
+    },
+    "snapshotAt": "2026-09-15T10:00:00Z",
+    "sourceAbsentIndexes": [],
+    "summary": {
+      "completed": 1,
+      "departmentStatus": {
+        "stages": [
+          {
+            "label": "DRAFT1",
+            "onTime": 0,
+            "overdue": 0,
+            "unknown": 0
+          },
+          {
+            "label": "DRAFT2",
+            "onTime": 0,
+            "overdue": 0,
+            "unknown": 0
+          },
+          {
+            "label": "EDIT1",
+            "onTime": 0,
+            "overdue": 0,
+            "unknown": 0
+          },
+          {
+            "label": "EDIT2",
+            "onTime": 0,
+            "overdue": 0,
+            "unknown": 0
+          },
+          {
+            "label": "PROC",
+            "onTime": 0,
+            "overdue": 0,
+            "unknown": 2
+          },
+          {
+            "label": "IMPL",
+            "onTime": 0,
+            "overdue": 0,
+            "unknown": 0
+          },
+          {
+            "label": "CLOSE",
+            "onTime": 1,
+            "overdue": 0,
+            "unknown": 0
+          }
+        ],
+        "unrecognizedStageCount": 0
+      },
+      "incomplete": 2,
+      "overdue": 0,
+      "sectionStatus": [
+        {
+          "label": "制动科",
+          "onTime": 1,
+          "overdue": 0,
+          "total": 1,
+          "unknown": 0
+        },
+        {
+          "label": "车门科",
+          "onTime": 0,
+          "overdue": 0,
+          "total": 2,
+          "unknown": 2
+        }
+      ],
+      "snapshotAt": "2026-09-15T10:00:00Z",
+      "total": 3,
+      "unknown": 2
+    },
+    "sync": {
+      "credentialConfigured": false,
+      "enabled": false,
+      "jobKey": "aras_ewo",
+      "lastAttemptAt": null,
+      "lastErrorMessage": null,
+      "lastErrorType": null,
+      "lastSuccessAt": null,
+      "state": "idle"
+    },
+    "trend": [
+      {
+        "day": "2026-09-14",
+        "incomplete": 1,
+        "overdue": 0,
+        "snapshotAt": "2026-09-14T10:00:00Z",
+        "total": 2
+      },
+      {
+        "day": "2026-09-15",
+        "incomplete": 2,
+        "overdue": 0,
+        "snapshotAt": "2026-09-15T10:00:00Z",
+        "total": 3
+      }
+    ]
+  },
+  "aras_ncr_progress": {
+    "artifacts": [],
+    "charts": {
+      "departmentStatus": {
+        "stages": [
+          {
+            "label": "PE提交",
+            "onTime": 0,
+            "overdue": 0,
+            "unknown": 0
+          },
+          {
+            "label": "NCR管理员",
+            "onTime": 1,
+            "overdue": 1,
+            "unknown": 0
+          },
+          {
+            "label": "PE科室经理",
+            "onTime": 0,
+            "overdue": 0,
+            "unknown": 0
+          },
+          {
+            "label": "价值工程师",
+            "onTime": 0,
+            "overdue": 0,
+            "unknown": 0
+          },
+          {
+            "label": "价值工程经理",
+            "onTime": 0,
+            "overdue": 0,
+            "unknown": 0
+          },
+          {
+            "label": "PE部门总监",
+            "onTime": 0,
+            "overdue": 0,
+            "unknown": 0
+          },
+          {
+            "label": "财务工程师",
+            "onTime": 0,
+            "overdue": 0,
+            "unknown": 0
+          },
+          {
+            "label": "平台项目管理专家",
+            "onTime": 0,
+            "overdue": 0,
+            "unknown": 0
+          },
+          {
+            "label": "海外项目总监",
+            "onTime": 0,
+            "overdue": 0,
+            "unknown": 0
+          },
+          {
+            "label": "平台首席",
+            "onTime": 0,
+            "overdue": 0,
+            "unknown": 0
+          },
+          {
+            "label": "动力平台首席",
+            "onTime": 0,
+            "overdue": 0,
+            "unknown": 0
+          },
+          {
+            "label": "财务部总监",
+            "onTime": 0,
+            "overdue": 0,
+            "unknown": 0
+          },
+          {
+            "label": "CLOSE",
+            "onTime": 1,
+            "overdue": 0,
+            "unknown": 0
+          }
+        ],
+        "unrecognizedStageCount": 0
+      },
+      "quantityTrend": [
+        {
+          "day": "2026-09-14",
+          "incomplete": 1,
+          "overdue": 0,
+          "snapshotAt": "2026-09-14T10:00:00Z",
+          "total": 2
+        },
+        {
+          "day": "2026-09-15",
+          "incomplete": 2,
+          "overdue": 1,
+          "snapshotAt": "2026-09-15T10:00:00Z",
+          "total": 3
+        }
+      ],
+      "sectionStatus": [
+        {
+          "label": "底盘工程科",
+          "onTime": 0,
+          "overdue": 1,
+          "total": 1,
+          "unknown": 0
+        },
+        {
+          "label": "车身工程科",
+          "onTime": 2,
+          "overdue": 0,
+          "total": 2,
+          "unknown": 0
+        }
+      ]
+    },
+    "filters": {
+      "applied": {},
+      "fields": [
+        "keyword",
+        "status",
+        "department",
+        "section",
+        "model",
+        "stage",
+        "dateStart",
+        "dateEnd",
+        "relationEwo",
+        "overdueState",
+        "isCompleted"
+      ],
+      "options": {
+        "department": [],
+        "model": [
+          "F610S",
+          "F620S"
+        ],
+        "overdueState": [
+          "not_applicable",
+          "on_time",
+          "overdue"
+        ],
+        "section": [
+          "底盘工程科",
+          "车身工程科"
+        ],
+        "stage": [
+          "CLOSE",
+          "NCR管理员"
+        ],
+        "status": [
+          "审批中",
+          "已完成"
+        ]
+      }
+    },
+    "formKey": "aras_ncr_progress",
+    "matchedRowCount": 3,
+    "overdueThresholds": null,
+    "reportType": "ncr_progress",
+    "rowCount": 3,
+    "schema": {
+      "chartFields": [
+        "PE提交",
+        "NCR管理员",
+        "PE科室经理",
+        "价值工程师",
+        "价值工程经理",
+        "PE部门总监",
+        "财务工程师",
+        "平台项目管理专家",
+        "海外项目总监",
+        "平台首席",
+        "动力平台首席",
+        "财务部总监",
+        "CLOSE"
+      ],
+      "columns": [
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 0,
+          "key": "column_1",
+          "label": "状态",
+          "sourceFields": [
+            "状态"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 1,
+          "key": "column_2",
+          "label": "序号",
+          "sourceFields": [
+            "序号"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 2,
+          "key": "column_3",
+          "label": "提交日期",
+          "sourceFields": [
+            "提交日期"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 3,
+          "key": "column_4",
+          "label": "项目",
+          "sourceFields": [
+            "项目"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 4,
+          "key": "column_5",
+          "label": "更改主题",
+          "sourceFields": [
+            "更改主题"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 5,
+          "key": "column_6",
+          "label": "更改类别",
+          "sourceFields": [
+            "更改类别"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 6,
+          "key": "column_7",
+          "label": "区域",
+          "sourceFields": [
+            "区域"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 7,
+          "key": "column_8",
+          "label": "NCR编号",
+          "sourceFields": [
+            "NCR编号"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 8,
+          "key": "column_9",
+          "label": "PE提交",
+          "sourceFields": [
+            "PE提交"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 9,
+          "key": "column_10",
+          "label": "NCR管理员审核",
+          "sourceFields": [
+            "NCR管理员审核"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 10,
+          "key": "column_11",
+          "label": "PE科室经理审核",
+          "sourceFields": [
+            "PE科室经理审核"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 11,
+          "key": "column_12",
+          "label": "价值工程师审核",
+          "sourceFields": [
+            "价值工程师审核"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 12,
+          "key": "column_13",
+          "label": "价值工程经理审核",
+          "sourceFields": [
+            "价值工程经理审核"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 13,
+          "key": "column_14",
+          "label": "PE部门总监审批",
+          "sourceFields": [
+            "PE部门总监审批"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 14,
+          "key": "column_15",
+          "label": "财务工程师审核",
+          "sourceFields": [
+            "财务工程师审核"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 15,
+          "key": "column_16",
+          "label": "平台项目管理专家审核",
+          "sourceFields": [
+            "平台项目管理专家审核"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 16,
+          "key": "column_17",
+          "label": "海外项目总监批准",
+          "sourceFields": [
+            "海外项目总监批准"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 17,
+          "key": "column_18",
+          "label": "平台首席批准",
+          "sourceFields": [
+            "平台首席批准"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 18,
+          "key": "column_19",
+          "label": "动力平台首席批准",
+          "sourceFields": [
+            "动力平台首席批准"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 19,
+          "key": "column_20",
+          "label": "财务总监批准",
+          "sourceFields": [
+            "财务总监批准"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 20,
+          "key": "column_21",
+          "label": "是否审批完成",
+          "sourceFields": [
+            "是否审批完成"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 21,
+          "key": "column_22",
+          "label": "EWO号",
+          "sourceFields": [
+            "EWO号"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 22,
+          "key": "column_23",
+          "label": "EWO是否到PROC阶段",
+          "sourceFields": [
+            "EWO是否到PROC阶段"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 23,
+          "key": "column_24",
+          "label": "流转采购时间",
+          "sourceFields": [
+            "流转采购时间"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 24,
+          "key": "column_25",
+          "label": "是否需申请PR",
+          "sourceFields": [
+            "是否需申请PR"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 25,
+          "key": "column_26",
+          "label": "PR号",
+          "sourceFields": [
+            "PR号"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 26,
+          "key": "column_27",
+          "label": "PR金额",
+          "sourceFields": [
+            "PR金额"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 27,
+          "key": "column_28",
+          "label": "所有零件是否已上JPC",
+          "sourceFields": [
+            "所有零件是否已上JPC"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 28,
+          "key": "column_29",
+          "label": "SAP是否定价",
+          "sourceFields": [
+            "SAP是否定价"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 29,
+          "key": "column_30",
+          "label": "PO号",
+          "sourceFields": [
+            "PO号"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 30,
+          "key": "column_31",
+          "label": "当前审批人",
+          "sourceFields": [
+            "当前审批人"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 31,
+          "key": "column_32",
+          "label": "当前节点及通知时间",
+          "sourceFields": [
+            "当前节点及通知时间"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 32,
+          "key": "column_33",
+          "label": "当前审批人滞留天数",
+          "sourceFields": [
+            "当前审批人滞留天数"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 33,
+          "key": "column_34",
+          "label": "在库天数",
+          "sourceFields": [
+            "在库天数"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 34,
+          "key": "column_35",
+          "label": "备注",
+          "sourceFields": [
+            "备注"
+          ]
+        },
+        {
+          "chartable": false,
+          "filterable": false,
+          "index": 35,
+          "key": "column_36",
+          "label": "",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 36,
+          "key": "column_37",
+          "label": "PE填写",
+          "sourceFields": [
+            "PE填写"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 37,
+          "key": "column_38",
+          "label": "NCR管理员",
+          "sourceFields": [
+            "NCR管理员"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 38,
+          "key": "column_39",
+          "label": "PE科室经理",
+          "sourceFields": [
+            "PE科室经理"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 39,
+          "key": "column_40",
+          "label": "价值工程师",
+          "sourceFields": [
+            "价值工程师"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 40,
+          "key": "column_41",
+          "label": "价值工程经理",
+          "sourceFields": [
+            "价值工程经理"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 41,
+          "key": "column_42",
+          "label": "PE部门总监",
+          "sourceFields": [
+            "PE部门总监"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 42,
+          "key": "column_43",
+          "label": "财务工程师",
+          "sourceFields": [
+            "财务工程师"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 43,
+          "key": "column_44",
+          "label": "平台项目管理专家",
+          "sourceFields": [
+            "平台项目管理专家"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 44,
+          "key": "column_45",
+          "label": "海外项目总监",
+          "sourceFields": [
+            "海外项目总监"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 45,
+          "key": "column_46",
+          "label": "平台首席",
+          "sourceFields": [
+            "平台首席"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 46,
+          "key": "column_47",
+          "label": "动力平台首席",
+          "sourceFields": [
+            "动力平台首席"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 47,
+          "key": "column_48",
+          "label": "财务部总监",
+          "sourceFields": [
+            "财务部总监"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 48,
+          "key": "column_49",
+          "label": "审批完成",
+          "sourceFields": [
+            "审批完成"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 49,
+          "key": "column_50",
+          "label": "EWO到PROC阶段",
+          "sourceFields": [
+            "EWO到PROC阶段"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 50,
+          "key": "column_51",
+          "label": "定价",
+          "sourceFields": [
+            "定价"
+          ]
+        },
+        {
+          "chartable": false,
+          "filterable": false,
+          "index": 51,
+          "key": "column_52",
+          "label": "",
+          "sourceFields": []
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 52,
+          "key": "column_53",
+          "label": "NCR管理员",
+          "sourceFields": [
+            "NCR管理员"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 53,
+          "key": "column_54",
+          "label": "PE科室经理",
+          "sourceFields": [
+            "PE科室经理"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 54,
+          "key": "column_55",
+          "label": "价值工程师",
+          "sourceFields": [
+            "价值工程师"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 55,
+          "key": "column_56",
+          "label": "价值工程经理",
+          "sourceFields": [
+            "价值工程经理"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 56,
+          "key": "column_57",
+          "label": "PE部门总监",
+          "sourceFields": [
+            "PE部门总监"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 57,
+          "key": "column_58",
+          "label": "财务工程师",
+          "sourceFields": [
+            "财务工程师"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 58,
+          "key": "column_59",
+          "label": "平台项目管理专家",
+          "sourceFields": [
+            "平台项目管理专家"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 59,
+          "key": "column_60",
+          "label": "海外项目总监",
+          "sourceFields": [
+            "海外项目总监"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 60,
+          "key": "column_61",
+          "label": "平台首席",
+          "sourceFields": [
+            "平台首席"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 61,
+          "key": "column_62",
+          "label": "动力平台首席",
+          "sourceFields": [
+            "动力平台首席"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 62,
+          "key": "column_63",
+          "label": "财务部总监",
+          "sourceFields": [
+            "财务部总监"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 63,
+          "key": "column_64",
+          "label": "采购员",
+          "sourceFields": [
+            "采购员"
+          ]
+        }
+      ],
+      "dataHeaderRow": 1,
+      "defaultVisibleCount": 12,
+      "filterFields": [
+        "keyword",
+        "status",
+        "department",
+        "section",
+        "model",
+        "stage",
+        "dateStart",
+        "dateEnd",
+        "relationEwo"
+      ],
+      "formKey": "aras_ncr_progress",
+      "headerRows": [
+        [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          "办理时间",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          "执行人",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        [
+          "状态",
+          "序号",
+          "提交日期",
+          "项目",
+          "更改主题",
+          "更改类别",
+          "区域",
+          "NCR编号",
+          "PE提交",
+          "NCR管理员审核",
+          "PE科室经理审核",
+          "价值工程师审核",
+          "价值工程经理审核",
+          "PE部门总监审批",
+          "财务工程师审核",
+          "平台项目管理专家审核",
+          "海外项目总监批准",
+          "平台首席批准",
+          "动力平台首席批准",
+          "财务总监批准",
+          "是否审批完成",
+          "EWO号",
+          "EWO是否到PROC阶段",
+          "流转采购时间",
+          "是否需申请PR",
+          "PR号",
+          "PR金额",
+          "所有零件是否已上JPC",
+          "SAP是否定价",
+          "PO号",
+          "当前审批人",
+          "当前节点及通知时间",
+          "当前审批人滞留天数",
+          "在库天数",
+          "备注",
+          null,
+          "PE填写",
+          "NCR管理员",
+          "PE科室经理",
+          "价值工程师",
+          "价值工程经理",
+          "PE部门总监",
+          "财务工程师",
+          "平台项目管理专家",
+          "海外项目总监",
+          "平台首席",
+          "动力平台首席",
+          "财务部总监",
+          "审批完成",
+          "EWO到PROC阶段",
+          "定价",
+          null,
+          "NCR管理员",
+          "PE科室经理",
+          "价值工程师",
+          "价值工程经理",
+          "PE部门总监",
+          "财务工程师",
+          "平台项目管理专家",
+          "海外项目总监",
+          "平台首席",
+          "动力平台首席",
+          "财务部总监",
+          "采购员"
+        ]
+      ],
+      "keyColumns": [
+        7,
+        0,
+        31,
+        6,
+        3,
+        2,
+        20,
+        32,
+        21
+      ],
+      "overdueRules": {
+        "lateDays": 7,
+        "lateLabel": "后续审批节点",
+        "note": "财务总监批准=审批完成；节点日期缺失=未判定",
+        "stageDays": 3,
+        "stageLabel": "前两个节点（NCR管理员 / PE科室经理）"
+      },
+      "reportType": "ncr_progress",
+      "sheetNames": [
+        "Sheet1",
+        "Sheet2"
+      ],
+      "stageLabels": {}
+    },
+    "snapshot": {
+      "id": 6,
+      "rowCount": 3,
+      "snapshotAt": "2026-09-15T10:00:00Z",
+      "snapshotKey": "aras_ncr_progress:2:2026-09-15T10:00:00Z",
+      "sourceRunId": 2
+    },
+    "snapshotAt": "2026-09-15T10:00:00Z",
+    "sourceAbsentIndexes": [],
+    "summary": {
+      "completed": 1,
+      "departmentStatus": {
+        "stages": [
+          {
+            "label": "PE提交",
+            "onTime": 0,
+            "overdue": 0,
+            "unknown": 0
+          },
+          {
+            "label": "NCR管理员",
+            "onTime": 1,
+            "overdue": 1,
+            "unknown": 0
+          },
+          {
+            "label": "PE科室经理",
+            "onTime": 0,
+            "overdue": 0,
+            "unknown": 0
+          },
+          {
+            "label": "价值工程师",
+            "onTime": 0,
+            "overdue": 0,
+            "unknown": 0
+          },
+          {
+            "label": "价值工程经理",
+            "onTime": 0,
+            "overdue": 0,
+            "unknown": 0
+          },
+          {
+            "label": "PE部门总监",
+            "onTime": 0,
+            "overdue": 0,
+            "unknown": 0
+          },
+          {
+            "label": "财务工程师",
+            "onTime": 0,
+            "overdue": 0,
+            "unknown": 0
+          },
+          {
+            "label": "平台项目管理专家",
+            "onTime": 0,
+            "overdue": 0,
+            "unknown": 0
+          },
+          {
+            "label": "海外项目总监",
+            "onTime": 0,
+            "overdue": 0,
+            "unknown": 0
+          },
+          {
+            "label": "平台首席",
+            "onTime": 0,
+            "overdue": 0,
+            "unknown": 0
+          },
+          {
+            "label": "动力平台首席",
+            "onTime": 0,
+            "overdue": 0,
+            "unknown": 0
+          },
+          {
+            "label": "财务部总监",
+            "onTime": 0,
+            "overdue": 0,
+            "unknown": 0
+          },
+          {
+            "label": "CLOSE",
+            "onTime": 1,
+            "overdue": 0,
+            "unknown": 0
+          }
+        ],
+        "unrecognizedStageCount": 0
+      },
+      "incomplete": 2,
+      "overdue": 1,
+      "sectionStatus": [
+        {
+          "label": "底盘工程科",
+          "onTime": 0,
+          "overdue": 1,
+          "total": 1,
+          "unknown": 0
+        },
+        {
+          "label": "车身工程科",
+          "onTime": 2,
+          "overdue": 0,
+          "total": 2,
+          "unknown": 0
+        }
+      ],
+      "snapshotAt": "2026-09-15T10:00:00Z",
+      "total": 3,
+      "unknown": 0
+    },
+    "sync": {
+      "credentialConfigured": false,
+      "enabled": false,
+      "jobKey": "aras_ncr_progress",
+      "lastAttemptAt": null,
+      "lastErrorMessage": null,
+      "lastErrorType": null,
+      "lastSuccessAt": null,
+      "state": "idle"
+    },
+    "trend": [
+      {
+        "day": "2026-09-14",
+        "incomplete": 1,
+        "overdue": 0,
+        "snapshotAt": "2026-09-14T10:00:00Z",
+        "total": 2
+      },
+      {
+        "day": "2026-09-15",
+        "incomplete": 2,
+        "overdue": 1,
+        "snapshotAt": "2026-09-15T10:00:00Z",
+        "total": 3
+      }
+    ]
+  },
+  "tdc_sor": {
+    "artifacts": [],
+    "charts": {
+      "departmentStatus": {
+        "stages": [
+          {
+            "label": "F610S",
+            "onTime": 2,
+            "overdue": 0,
+            "unknown": 0
+          },
+          {
+            "label": "F620S",
+            "onTime": 0,
+            "overdue": 1,
+            "unknown": 1
+          }
+        ],
+        "unrecognizedStageCount": 0
+      },
+      "quantityTrend": [
+        {
+          "day": "2026-09-14",
+          "incomplete": 1,
+          "overdue": 0,
+          "snapshotAt": "2026-09-14T10:00:00Z",
+          "total": 2
+        },
+        {
+          "day": "2026-09-15",
+          "incomplete": 2,
+          "overdue": 1,
+          "snapshotAt": "2026-09-15T10:00:00Z",
+          "total": 4
+        }
+      ],
+      "sectionStatus": [
+        {
+          "label": "车体科",
+          "onTime": 2,
+          "overdue": 0,
+          "total": 2,
+          "unknown": 0
+        },
+        {
+          "label": "转向科",
+          "onTime": 0,
+          "overdue": 1,
+          "total": 2,
+          "unknown": 1
+        }
+      ]
+    },
+    "filters": {
+      "applied": {},
+      "fields": [
+        "keyword",
+        "status",
+        "department",
+        "section",
+        "model",
+        "stage",
+        "dateStart",
+        "dateEnd",
+        "overdueState",
+        "isCompleted"
+      ],
+      "options": {
+        "department": [
+          "底盘工程部",
+          "车身工程部"
+        ],
+        "model": [
+          "变更",
+          "新建"
+        ],
+        "overdueState": [
+          "not_applicable",
+          "on_time",
+          "overdue"
+        ],
+        "section": [
+          "车体科",
+          "转向科"
+        ],
+        "stage": [
+          "F610S",
+          "F620S"
+        ],
+        "status": [
+          "审批中",
+          "已完成",
+          "已终止"
+        ]
+      }
+    },
+    "formKey": "tdc_sor",
+    "matchedRowCount": 4,
+    "overdueThresholds": null,
+    "reportType": "tdc_sor",
+    "rowCount": 4,
+    "schema": {
+      "chartFields": [],
+      "columns": [
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 0,
+          "key": "column_1",
+          "label": "流水单号",
+          "sourceFields": [
+            "processNo"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 1,
+          "key": "column_2",
+          "label": "车型项目",
+          "sourceFields": [
+            "carTypeProject"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 2,
+          "key": "column_3",
+          "label": "类型",
+          "sourceFields": [
+            "processType",
+            "bizName",
+            "type"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 3,
+          "key": "column_4",
+          "label": "SOR号",
+          "sourceFields": [
+            "sorNo"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 4,
+          "key": "column_5",
+          "label": "版本号",
+          "sourceFields": [
+            "version"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 5,
+          "key": "column_6",
+          "label": "标题",
+          "sourceFields": [
+            "title"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 6,
+          "key": "column_7",
+          "label": "零件号",
+          "sourceFields": [
+            "sorPartNo"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 7,
+          "key": "column_8",
+          "label": "零件名称",
+          "sourceFields": [
+            "sorPartName"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 8,
+          "key": "column_9",
+          "label": "申请人",
+          "sourceFields": [
+            "startUser",
+            "startUserName"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 9,
+          "key": "column_10",
+          "label": "部门",
+          "sourceFields": [
+            "deptName"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 10,
+          "key": "column_11",
+          "label": "科室",
+          "sourceFields": [
+            "sectionName"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 11,
+          "key": "column_12",
+          "label": "申请日期",
+          "sourceFields": [
+            "startTime"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 12,
+          "key": "column_13",
+          "label": "最新完成节点",
+          "sourceFields": [
+            "latestCompletedNode",
+            "sorProcessStatus"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 13,
+          "key": "column_14",
+          "label": "审批状态",
+          "sourceFields": [
+            "processInstanceStatus"
+          ]
+        },
+        {
+          "chartable": true,
+          "filterable": true,
+          "index": 14,
+          "key": "column_15",
+          "label": "当前待办人",
+          "sourceFields": [
+            "currentAssigneeNameList"
+          ]
+        }
+      ],
+      "dataHeaderRow": 0,
+      "defaultVisibleCount": 15,
+      "filterFields": [
+        "keyword",
+        "status",
+        "department",
+        "section",
+        "model",
+        "stage",
+        "dateStart",
+        "dateEnd"
+      ],
+      "formKey": "tdc_sor",
+      "headerRows": [
+        [
+          "流水单号",
+          "车型项目",
+          "类型",
+          "SOR号",
+          "版本号",
+          "标题",
+          "零件号",
+          "零件名称",
+          "申请人",
+          "部门",
+          "科室",
+          "申请日期",
+          "最新完成节点",
+          "审批状态",
+          "当前待办人"
+        ]
+      ],
+      "keyColumns": [
+        0,
+        13,
+        1,
+        2,
+        10,
+        9,
+        6,
+        7,
+        11,
+        12,
+        3
+      ],
+      "overdueRules": {
+        "lateDays": 7,
+        "lateLabel": "审批中滞留",
+        "note": "已完成/已终止=完成；申请日期缺失=未判定",
+        "stageDays": 7,
+        "stageLabel": "审批中（申请日期起）"
+      },
+      "reportType": "tdc_sor",
+      "sheetNames": [
+        "Sheet1"
+      ],
+      "stageLabels": {}
+    },
+    "snapshot": {
+      "id": 4,
+      "rowCount": 4,
+      "snapshotAt": "2026-09-15T10:00:00Z",
+      "snapshotKey": "tdc_sor:2:2026-09-15T10:00:00Z",
+      "sourceRunId": 2
+    },
+    "snapshotAt": "2026-09-15T10:00:00Z",
+    "sourceAbsentIndexes": [
+      4,
+      5,
+      12,
+      14
+    ],
+    "summary": {
+      "completed": 1,
+      "departmentStatus": {
+        "stages": [
+          {
+            "label": "F610S",
+            "onTime": 2,
+            "overdue": 0,
+            "unknown": 0
+          },
+          {
+            "label": "F620S",
+            "onTime": 0,
+            "overdue": 1,
+            "unknown": 1
+          }
+        ],
+        "unrecognizedStageCount": 0
+      },
+      "incomplete": 2,
+      "overdue": 1,
+      "sectionStatus": [
+        {
+          "label": "车体科",
+          "onTime": 2,
+          "overdue": 0,
+          "total": 2,
+          "unknown": 0
+        },
+        {
+          "label": "转向科",
+          "onTime": 0,
+          "overdue": 1,
+          "total": 2,
+          "unknown": 1
+        }
+      ],
+      "snapshotAt": "2026-09-15T10:00:00Z",
+      "total": 4,
+      "unknown": 0
+    },
+    "sync": {
+      "credentialConfigured": false,
+      "enabled": false,
+      "jobKey": "tdc_sor",
+      "lastAttemptAt": null,
+      "lastErrorMessage": null,
+      "lastErrorType": null,
+      "lastSuccessAt": null,
+      "state": "idle"
+    },
+    "trend": [
+      {
+        "day": "2026-09-14",
+        "incomplete": 1,
+        "overdue": 0,
+        "snapshotAt": "2026-09-14T10:00:00Z",
+        "total": 2
+      },
+      {
+        "day": "2026-09-15",
+        "incomplete": 2,
+        "overdue": 1,
+        "snapshotAt": "2026-09-15T10:00:00Z",
+        "total": 4
+      }
+    ]
+  }
+}

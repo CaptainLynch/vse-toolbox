@@ -1,12 +1,60 @@
 // 系统设置 (plugin module page). Parity port of the legacy #settings-panel;
 // all reads/writes go through the existing /api/settings endpoints.
 import { html, useCallback, useEffect, useRef, useState } from "/static/host/vendor/preact-htm.js";
-import { StateBlock, useStylesheet } from "/static/host/kit.js";
-import { refreshGlobalBadges, request } from "./client.js";
-import { ErrorCard } from "./error-card.js";
+import { useStylesheet } from "/static/host/kit.js";
+import { ErrorCard, Skeleton, TONE } from "/static/host/ui-kit.js";
+import { isAuthError, legacyGlobal, refreshGlobalBadges, request } from "./client.js";
 import { SettingsForm } from "./settings-form.js";
 import { SessionsCard } from "./sessions.js";
-import { ExcelServiceCard, VersionCard } from "./service-status.js";
+import { AutostartCard, ExcelServiceCard, VersionCard } from "./service-status.js";
+
+export const SETTINGS_TONE = {
+  ok: TONE.ok,
+  warn: TONE.warn,
+  bad: TONE.bad,
+  off: TONE.off,
+};
+
+export function formatErrorWhat(error) {
+  if (!error) return "";
+  const auth = isAuthError(error);
+  if (auth) return "企业认证会话已失效";
+  return error.summary || error.message || "系统设置操作未成功";
+}
+
+export function formatErrorTodo(error) {
+  if (!error) return "";
+  const auth = isAuthError(error);
+  if (auth) {
+    const openLogin = legacyGlobal("openInPlaceLogin");
+    return openLogin
+      ? "本地系统设置未受影响，但企业会话需要重新验证。请点击【重新登录】。"
+      : "本地系统设置未受影响，但企业会话需要重新验证。请在下方「统一域账号登录」中重新登录。";
+  }
+  return error.impact || "表单中已输入的内容已完整保留，未覆盖未修改的配置项。";
+}
+
+export function errorFixAction(error, reloadAll, retrySave) {
+  if (!error) return null;
+  const auth = isAuthError(error);
+  const openLogin = legacyGlobal("openInPlaceLogin");
+  if (auth && openLogin) {
+    return {
+      label: "重新登录",
+      onClick: () => openLogin({
+        notice: "企业会话已失效，请重新登录企业域账号。",
+        onLoginSuccess: () => reloadAll && reloadAll(),
+      }),
+    };
+  }
+  if (retrySave) {
+    return { label: "重试保存", onClick: retrySave };
+  }
+  if (reloadAll) {
+    return { label: "重新加载", onClick: reloadAll };
+  }
+  return null;
+}
 
 export default function SettingsGeneralPage({ plugin }) {
   useStylesheet(`/plugins/${plugin.id}/static/settings.css`);
@@ -42,29 +90,36 @@ export default function SettingsGeneralPage({ plugin }) {
   if (!data) {
     return html`<div class="vk-page st-page">
       <header class="vk-page-header"><h2>系统设置</h2></header>
-      ${error ? html`<${ErrorCard} error=${error} onReload=${reloadAll} />` : html`<${StateBlock} loading=${loading} />`}
+      ${error
+        ? html`<${ErrorCard}
+            what=${formatErrorWhat(error)}
+            todo=${formatErrorTodo(error)}
+            onFix=${errorFixAction(error, reloadAll, null)}
+          />`
+        : html`<${Skeleton} rows=${6} />`}
     </div>`;
   }
 
   return html`<div class="vk-page st-page">
     <header class="vk-page-header">
       <div>
-        <p class="st-eyebrow">本地配置</p>
-        <h2>系统设置</h2>
+        <h2>设置</h2>
+        <p class="vk-muted" style="margin:4px 0 0">大部分情况下不需要改这里。</p>
       </div>
       <div class="vk-page-actions">
         <span class="vk-muted" aria-live="polite">${loading ? "正在读取系统设置…" : ""}</span>
-        <a class="vk-btn" href="#p/settings/updates">插件更新</a>
-        <button type="button" class="vk-btn" disabled=${loading} onClick=${reloadAll}>刷新设置</button>
+        <a class="vk-btn" href="#p/settings/updates">程序与插件更新</a>
+        <button type="button" class="vk-btn" disabled=${loading} onClick=${reloadAll}>刷新</button>
       </div>
     </header>
 
-    <${ErrorCard}
-      error=${error}
-      onReload=${reloadAll}
-      onRetrySave=${error && error.fields ? () => { setError(null); setSaveSignal((v) => v + 1); } : null}
-      onDismiss=${() => setError(null)}
-    />
+    ${error && html`<${ErrorCard}
+      what=${formatErrorWhat(error)}
+      todo=${formatErrorTodo(error)}
+      onFix=${errorFixAction(error, reloadAll, error && error.fields ? () => { setError(null); setSaveSignal((v) => v + 1); } : null)}
+    />`}
+
+    ${loading && html`<div style="margin-bottom:12px"><${Skeleton} rows=${2} /></div>`}
 
     <div class="st-layout">
       <${SettingsForm}
@@ -75,6 +130,7 @@ export default function SettingsGeneralPage({ plugin }) {
         onError=${setError}
       />
       <div class="st-side">
+        <${AutostartCard} seed=${seed} onError=${setError} />
         <${SessionsCard}
           sessions=${data.sessions}
           vaultConfigured=${Boolean(data.credentialVaultConfigured)}

@@ -19,6 +19,7 @@ from core.excel_tasks import (
     DEFAULT_LEASE_SECONDS,
     LEASE_MAX_SECONDS,
     LEASE_MIN_SECONDS,
+    ApprovedExcelRoots,
     ExcelInvalidStateError,
     ExcelLeaseLostError,
     ExcelPathSafetyError,
@@ -99,6 +100,55 @@ def _file_integrity(path: Path) -> tuple[int, str]:
             digest.update(chunk)
         size_bytes = os.fstat(stream.fileno()).st_size
     return int(size_bytes), digest.hexdigest()
+
+
+@dataclass(frozen=True)
+class _DirectoryIdentity:
+    """Snapshot of one guarded directory used to detect mid-execution replacement."""
+
+    device: int
+    inode: int
+    resolved_path: Path
+
+
+def _replacement_error(role_label: str, directory: Path, reason: str) -> ExcelPathSafetyError:
+    """Build the path-safety error raised when a guarded directory was swapped."""
+    if role_label == "output":
+        detail = (
+            "输出目录在执行期间被替换 "
+            f"(output directory was replaced during execution): {directory}"
+        )
+    else:
+        detail = (
+            f"directory for role {role_label!r} was replaced during execution: {directory}"
+        )
+    return ExcelPathSafetyError(f"{detail} [{reason}]")
+
+
+def _capture_directory_identity(directory: Path, *, role_label: str) -> _DirectoryIdentity:
+    """Record ``(st_dev, st_ino)`` and the resolved path of one guarded directory."""
+    try:
+        info = os.stat(directory)
+        resolved = directory.resolve(strict=True)
+    except OSError as exc:
+        raise _replacement_error(role_label, directory, "identity unavailable") from exc
+    return _DirectoryIdentity(int(info.st_dev), int(info.st_ino), resolved)
+
+
+def _assert_directory_identity_unchanged(
+    directory: Path,
+    identity: _DirectoryIdentity,
+    *,
+    role_label: str,
+) -> None:
+    """Reject a guarded directory that became a reparse point or changed identity."""
+    if ApprovedExcelRoots.is_reparse_point(directory):
+        raise _replacement_error(role_label, directory, "reparse point")
+    current = _capture_directory_identity(directory, role_label=role_label)
+    if (current.device, current.inode) != (identity.device, identity.inode):
+        raise _replacement_error(role_label, directory, "device/inode changed")
+    if current.resolved_path != identity.resolved_path:
+        raise _replacement_error(role_label, directory, "resolved path changed")
 
 
 class ExcelTaskWorker:
@@ -201,6 +251,7 @@ class ExcelTaskWorker:
             output_ref: ExcelTaskFileRef | None = None
 
             sorted_refs = sorted(file_refs, key=lambda r: (r.role, r.ordinal))
+            guarded_dirs: list[tuple[str, Path]] = []
             for ref in sorted_refs:
                 resolved = roots.resolve_ref(ref, check_role=True)
                 if ref.role == "source":
@@ -212,6 +263,8 @@ class ExcelTaskWorker:
                 elif ref.role == "output":
                     output_path = resolved
                     output_ref = ref
+                if ref.role != "output":
+                    guarded_dirs.append((f"{ref.role}[{ref.ordinal}]", resolved.parent))
 
             if output_path is None or output_ref is None:
                 raise ExcelPathSafetyError("task request is missing required output file reference")
@@ -232,6 +285,18 @@ class ExcelTaskWorker:
                 if _is_same_or_alias(output_path, baseline_path):
                     raise ExcelPathSafetyError(f"output path aliases with baseline file: {output_path}")
 
+            # Execution-time race guard (contract P4): snapshot the identity of
+            # every directory this task reads from or commits into before the
+            # executor is allowed to run, so a swap during COM work is visible
+            # at commit time.
+            output_parent_identity = _capture_directory_identity(
+                output_path.parent, role_label="output"
+            )
+            guarded_identities = [
+                (label, parent, _capture_directory_identity(parent, role_label=label))
+                for label, parent in guarded_dirs
+            ]
+
             token = secrets.token_hex(8)
             temp_path = output_path.parent / f".tmp_{task_id}_{run_id}_{token}{output_path.suffix}"
             _cleanup_temp(temp_path)
@@ -251,6 +316,27 @@ class ExcelTaskWorker:
                 executor.diff_against_baseline(target_path, baseline_path, output_path=temp_path)
             else:
                 raise ValueError(f"unsupported operation: {operation}")
+
+            # Execution-time race guard (contract P4): the executor has produced
+            # its temporary file, so re-run the production containment check and
+            # confirm no guarded directory was swapped after the snapshot before
+            # anything is committed. The temp-file probe itself goes through the
+            # output parent, so the guard must run first.
+            try:
+                roots.resolve_ref(output_ref, check_role=True)
+            except ExcelPathSafetyError as exc:
+                raise _replacement_error(
+                    "output",
+                    output_path.parent,
+                    f"revalidation failed: {exc}",
+                ) from exc
+            _assert_directory_identity_unchanged(
+                output_path.parent,
+                output_parent_identity,
+                role_label="output",
+            )
+            for label, parent, identity in guarded_identities:
+                _assert_directory_identity_unchanged(parent, identity, role_label=label)
 
             if not temp_path.exists() or not temp_path.is_file():
                 raise FileNotFoundError(f"executor failed to produce temporary output file: {temp_path}")

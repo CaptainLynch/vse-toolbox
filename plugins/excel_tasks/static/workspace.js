@@ -3,17 +3,83 @@
 //   /api/excel-artifacts/<id>/{download,download-audit}, /api/excel-artifacts/retention-plan,
 //   /api/tasks/excel_<id>/cancel（统一任务中心的取消入口）。
 import { html, useCallback, useEffect, useRef, useState } from "/static/host/vendor/preact-htm.js";
+import { expertStore } from "/static/host/expert.js";
 import { api, ApiError } from "/static/host/api.js";
 import { DataTable, StateBlock, useStylesheet } from "/static/host/kit.js";
 import { ExamplesDialog } from "./examples.js";
 import {
-  ACTIVE_TASK_STATES, ErrorCard, OPERATIONS, STATUS_FILTERS, StatusChip,
+  ACTIVE_TASK_STATES, EnvCheckCard, ErrorCard, OPERATIONS, STATUS_FILTERS, StatusChip,
   buildTaskPayload, display, formFromTask, formatDate, formatSize, newIdempotencyKey, operationLabel,
 } from "./shared.js";
 
 const POLL_MS = 4000;
 // 最多自动刷新 150 次（约 10 分钟），之后需手动刷新，避免页面挂着无限轮询。
 const POLL_MAX_TICKS = 150;
+
+// 本机环境自检（插件只读路由，检测逻辑由宿主注入的服务提供）。
+const ENV_CHECK_URL = "/api/p/excel-tasks/env-check";
+
+const ENV_CHECKING_TEXT = "正在检查运行环境…";
+const ENV_INCOMPLETE_TEXT = "没有拿到完整的环境检查结果，请点【刷新状态】重试";
+const ENV_NEED_CHECK_TEXT = "无法可靠确认激活状态，请在软件账户信息中核对";
+const ENV_NOT_INSTALLED_TEXT = "未检测到可用的表格软件";
+const ENV_UNLICENSED_TEXT = "软件尚未激活或授权已过期";
+const ENV_OK_TEXT = "表格软件已就绪，运行环境正常";
+
+/** 初始/进行中的状态：不落在“暂未提供”占位，也不伪报通过。 */
+export function envChecking() {
+  return { state: "need_check", detail: ENV_CHECKING_TEXT };
+}
+
+/**
+ * 把 GET /api/p/excel-tasks/env-check 的返回数据转换成 logic.js
+ * classifyEnvStatus 认可的输入（显式 state，避免落入“暂未提供”占位）。
+ *
+ * 转换规则（DSH-V2-25 E3）：
+ * - 未安装 → 不可用；
+ * - 激活状态无法确认（need_check 或未知值）→ 需要检查；
+ * - 已安装且激活确认 → 正常（仍有待释放的后台表格进程时转为需要检查）；
+ * - 数据缺失/不完整 → 需要检查，绝不显示正常。
+ */
+export function toEnvCardData(result) {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    return { state: "need_check", detail: ENV_INCOMPLETE_TEXT };
+  }
+
+  const activation = result.activation && typeof result.activation === "object" ? result.activation : {};
+  const activationDetail = activation.detail ? display(activation.detail) : "";
+
+  if (result.installed === false || result.install_state === "not_installed") {
+    return { state: "unavailable", detail: activationDetail || ENV_NOT_INSTALLED_TEXT };
+  }
+  if (result.installed !== true) {
+    // installed 缺失：既不能说正常，也不能说未安装，按“需要检查”处理。
+    return { state: "need_check", detail: activationDetail || ENV_INCOMPLETE_TEXT };
+  }
+
+  if (activation.state === "unlicensed") {
+    return { state: "unavailable", detail: activationDetail || ENV_UNLICENSED_TEXT };
+  }
+  if (activation.state !== "activated") {
+    return { state: "need_check", detail: activationDetail || ENV_NEED_CHECK_TEXT };
+  }
+
+  const residual = Number(result.residual_count);
+  if (Number.isFinite(residual) && residual > 0) {
+    return { state: "need_check", detail: `检测到 ${residual} 个待释放的后台表格进程` };
+  }
+  return { state: "ok", detail: activationDetail || ENV_OK_TEXT };
+}
+
+/**
+ * 请求失败时的展示数据：明确显示失败（红），绝不显示“正常”，
+ * 也不退回“暂未提供”占位把失败伪装成没有数据。
+ */
+export function toEnvCardFailure(error) {
+  const detail = error && error.message ? display(error.message) : "";
+  const suffix = detail && detail !== "-" ? `（${detail}）` : "";
+  return { state: "unavailable", detail: `环境检查没有完成，请稍后点【刷新状态】重试${suffix}` };
+}
 
 function emptyForm() {
   return {
@@ -74,6 +140,13 @@ function WorkerControls({ worker, busy, onStart, onStop, onRefresh, onExamples, 
     chip = html`<${StatusChip} status=${worker.state} text=${text} />`;
   }
   const state = worker.state;
+  if (!expertStore.get()) {
+    // 日常模式不暴露"处理服务"启停：提交任务时由程序处理，这里只留刷新和示例。
+    return html`<div class="xt-worker" aria-label="Excel 处理">
+      <button type="button" class="vk-btn" disabled=${refreshing} onClick=${onRefresh}>刷新</button>
+      <button type="button" class="vk-btn" onClick=${onExamples}>查看操作示例</button>
+    </div>`;
+  }
   return html`<div class="xt-worker" aria-label="文件处理服务控制">
     <span class="xt-worker-label">处理服务</span>
     ${chip}
@@ -86,7 +159,7 @@ function WorkerControls({ worker, busy, onStart, onStop, onRefresh, onExamples, 
 
 function RootSelect({ value, roots, onChange }) {
   return html`<select value=${value} disabled=${roots.length === 0} onChange=${(event) => onChange(event.currentTarget.value)}>
-    ${roots.length === 0 && html`<option value="">（无可用位置）</option>`}
+    ${roots.length === 0 && html`<option value="">（还没有设置 Excel 工作文件夹）</option>`}
     ${roots.map((root) => html`<option key=${root} value=${root}>${root}</option>`)}
   </select>`;
 }
@@ -161,7 +234,7 @@ function CreateForm({ form, setForm, roots, rootsError, creating, onSubmit }) {
 
 function TaskList({ tasks, state, selectedId, onSelect, filter, onFilter }) {
   let body;
-  if (state.notConfigured) body = html`<div class="vk-state is-empty">未配置 approved roots，Excel 文件处理服务不可用</div>`;
+  if (state.notConfigured) body = html`<div class="vk-state is-empty">还没有设置 Excel 工作文件夹：到「设置」里选一个文件夹后就能使用</div>`;
   else if (state.loading && tasks.length === 0) body = html`<${StateBlock} loading=${true} />`;
   else if (state.error && tasks.length === 0) body = html`<div class="vk-state is-empty">获取处理记录失败，请点击上方【刷新】重试</div>`;
   else if (tasks.length === 0) body = html`<div class="vk-state is-empty">暂无处理记录。您可在上方选择处理方式并点击【开始处理】创建任务。</div>`;
@@ -211,7 +284,7 @@ const RUN_COLUMNS = [
 
 function AuditBox({ audit }) {
   if (audit.loading) return html`<div class="xt-audit is-empty">加载下载记录中…</div>`;
-  if (audit.error) return html`<div class="xt-audit is-empty is-error">${display(audit.error.message)}</div>`;
+  if (audit.error) return html`<div class="xt-audit is-empty"><${ErrorCard} error=${audit.error} /></div>`;
   const rows = audit.rows || [];
   if (rows.length === 0) return html`<div class="xt-audit is-empty">暂无下载记录</div>`;
   return html`<div class="xt-audit">
@@ -396,6 +469,8 @@ export default function ExcelWorkspace({ plugin }) {
   const [examplesOpen, setExamplesOpen] = useState(false);
   const [pollEpoch, setPollEpoch] = useState(0);
   const [pollExpired, setPollExpired] = useState(false);
+  // 环境自检：初值是“正在检查”，既不是占位“暂未提供”，也不是伪造的正常。
+  const [envCheck, setEnvCheck] = useState(envChecking);
 
   const listSeq = useRef(0);
   const detailSeq = useRef(0);
@@ -415,7 +490,7 @@ export default function ExcelWorkspace({ plugin }) {
       const data = await api("/api/excel-roots", { signal });
       const ids = Array.isArray(data) ? data.map((item) => item && item.rootId).filter((item) => typeof item === "string" && item) : [];
       setRoots(ids);
-      setRootsError(ids.length === 0 ? "未配置可用的文件位置（approved roots），暂不能创建任务。" : "");
+      setRootsError(ids.length === 0 ? "还没有设置 Excel 工作文件夹：到「设置」里选一个文件夹后就能创建任务。" : "");
       setForm((prev) => {
         const pick = (value) => (ids.includes(value) ? value : ids[0] || "");
         return {
@@ -429,7 +504,7 @@ export default function ExcelWorkspace({ plugin }) {
     } catch (err) {
       if (isAbort(err)) return;
       setRoots([]);
-      setRootsError(err.status === 503 ? "未配置可用的文件位置（approved roots），暂不能创建任务。" : `文件位置加载失败：${display(err.message)}`);
+      setRootsError(err.status === 503 ? "还没有设置 Excel 工作文件夹：到「设置」里选一个文件夹后就能创建任务。" : `文件位置加载失败：${display(err.message)}`);
     }
   }, [signal]);
 
@@ -447,6 +522,17 @@ export default function ExcelWorkspace({ plugin }) {
     } catch (err) {
       if (isAbort(err)) return;
       setWorker({ unavailable: err.status === 503 ? "未配置" : "状态未知" });
+    }
+  }, [signal]);
+
+  const loadEnvCheck = useCallback(async () => {
+    setEnvCheck(envChecking());
+    try {
+      const data = await api(ENV_CHECK_URL, { signal });
+      setEnvCheck(toEnvCardData(data));
+    } catch (err) {
+      if (isAbort(err)) return;
+      setEnvCheck(toEnvCardFailure(err));
     }
   }, [signal]);
 
@@ -510,7 +596,7 @@ export default function ExcelWorkspace({ plugin }) {
         setSelectedId(null);
         loadDetail(null);
         setListState({ loading: false, error: null, notConfigured: true });
-        setNotice("Excel 文件处理服务未配置");
+        setNotice("Excel 处理还没准备好：先到「设置」里选择 Excel 工作文件夹。");
         return;
       }
       setListState((prev) => ({ ...prev, loading: false, error: err }));
@@ -522,10 +608,10 @@ export default function ExcelWorkspace({ plugin }) {
     setError(null);
     setPollExpired(false);
     setPollEpoch((value) => value + 1);
-    return Promise.all([loadRoots(), loadWorker(), loadTasks({ keepSelection: true })]);
-  }, [loadRoots, loadWorker, loadTasks]);
+    return Promise.all([loadRoots(), loadWorker(), loadTasks({ keepSelection: true }), loadEnvCheck()]);
+  }, [loadRoots, loadWorker, loadTasks, loadEnvCheck]);
 
-  // 首次进入：与旧页 loadExcelTaskWorkspace 相同，三路并行加载。
+  // 首次进入：与旧页 loadExcelTaskWorkspace 相同，三路并行加载（外加环境自检）。
   useEffect(() => {
     refreshAll();
   }, []);
@@ -678,7 +764,7 @@ export default function ExcelWorkspace({ plugin }) {
 
   return html`<div class="vk-page xt-page">
     <header class="vk-page-header xt-header">
-      <p class="vk-muted xt-intro">合并、套模板或与基准比对受控目录中的 Excel 文件；处理由本机处理服务（Excel COM）执行。</p>
+      <p class="vk-muted xt-intro">把 Excel 工作文件夹里的文件合并、套模板，或者和基准文件比对。处理时程序会在后台打开 Excel，不用手动操作。</p>
       <${WorkerControls}
         worker=${worker}
         busy=${workerBusy}
@@ -689,6 +775,8 @@ export default function ExcelWorkspace({ plugin }) {
         onExamples=${() => setExamplesOpen(true)}
       />
     </header>
+
+    <${EnvCheckCard} env=${envCheck} onRefresh=${loadEnvCheck} />
 
     <${ErrorCard} error=${error} onDismiss=${() => setError(null)} />
     <div class="xt-status" aria-live="polite">

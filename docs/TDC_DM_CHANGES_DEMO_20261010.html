@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>数模同步修复 · 可操作验证 Demo（2026-10-10）</title>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --line:#e2e6ea; --ink:#1f2328; --muted:#5b636e;
+          --accent:#0b62d6; --ok:#116329; --okbg:#e6f4ea; --bad:#b3261e; --badbg:#fdecea;
+          --warn:#b45309; --warnbg:#fdf3e3; --info:#1b4f9c; --infobg:#e8eef7; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:15px/1.65 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif; }
+  header { background:#0d1b2a; color:#fff; padding:22px 26px 18px; }
+  header h1 { margin:0 0 6px; font-size:20px; }
+  header .sub { color:#b9c4d0; font-size:12.5px; }
+  main { max-width:1280px; margin:0 auto; padding:18px 16px 60px; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:10px;
+            padding:16px 18px; margin:0 0 16px; }
+  h2 { font-size:16px; margin:0 0 10px; padding-bottom:7px; border-bottom:1px solid var(--line); }
+  h3 { font-size:13px; margin:12px 0 6px; color:var(--muted); }
+  .grid { display:grid; gap:14px; }
+  .cols-2 { grid-template-columns:1fr 1fr; }
+  .cols-3 { grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); }
+  label { display:block; font-size:12.5px; color:var(--muted); margin:8px 0 3px; }
+  input[type=text], textarea, select { width:100%; padding:7px 9px; border:1px solid var(--line);
+    border-radius:7px; font:13px/1.5 Consolas,"Microsoft YaHei",monospace; background:#fcfdfe; }
+  textarea { min-height:170px; resize:vertical; }
+  button { cursor:pointer; border:1px solid var(--line); background:#fff; color:var(--ink);
+           border-radius:7px; padding:5px 10px; font-size:12.5px; margin:0 5px 5px 0; }
+  button:hover { border-color:var(--accent); color:var(--accent); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+  button.primary:hover { background:#0a55ba; color:#fff; }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; }
+  .chips button { margin:0; }
+  .hint { font-size:12px; color:var(--muted); margin-top:6px; }
+  .badge { display:inline-block; padding:2px 10px; border-radius:999px; font-size:12.5px; font-weight:600; }
+  .b-ok { background:var(--okbg); color:var(--ok); }
+  .b-bad { background:var(--badbg); color:var(--bad); }
+  .b-warn { background:var(--warnbg); color:var(--warn); }
+  .b-info { background:var(--infobg); color:var(--info); }
+  .card { border:1px solid var(--line); border-radius:9px; padding:12px 14px; background:#fbfcfd; }
+  .card.old { border-top:3px solid #b3261e; }
+  .card.new { border-top:3px solid #116329; }
+  .card h4 { margin:0 0 8px; font-size:13.5px; }
+  .kv { display:grid; grid-template-columns:auto 1fr; gap:3px 10px; font-size:13px; }
+  .kv .k { color:var(--muted); }
+  .kv .v { font-family:Consolas,"Microsoft YaHei",monospace; }
+  .msg { margin-top:10px; padding:9px 11px; border-radius:7px; font-size:13px;
+         background:#f4f6f8; border-left:3px solid var(--accent); }
+  .msg.bad { background:var(--badbg); border-left-color:var(--bad); }
+  .msg.ok { background:var(--okbg); border-left-color:var(--ok); }
+  .msg.warn { background:var(--warnbg); border-left-color:var(--warn); }
+  .steps { list-style:none; margin:0; padding:0; font-size:13px; }
+  .steps li { padding:5px 0 5px 22px; position:relative; border-bottom:1px dashed #eef1f4; }
+  .steps li:last-child { border-bottom:none; }
+  .steps li::before { position:absolute; left:2px; top:5px; font-size:12px; }
+  .steps li.s-ok::before { content:"✔"; color:var(--ok); }
+  .steps li.s-bad::before { content:"✖"; color:var(--bad); }
+  .steps li.s-warn::before { content:"!"; color:var(--warn); font-weight:700; }
+  .steps li.s-info::before { content:"•"; color:var(--muted); }
+  .steps .d { color:var(--muted); }
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  th, td { border:1px solid var(--line); padding:6px 8px; text-align:left; vertical-align:top; }
+  th { background:#f1f3f6; }
+  code { background:#f1f3f6; padding:1px 5px; border-radius:4px;
+         font:12.5px/1.5 Consolas,"Courier New",monospace; }
+  .pass { color:var(--ok); font-weight:600; }
+  .fail { color:var(--bad); font-weight:600; }
+  .banner { background:var(--warnbg); border:1px solid #f0d9b5; color:#7c4a03;
+            border-radius:9px; padding:10px 13px; font-size:13px; margin-bottom:14px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>数模同步修复 · 可操作验证 Demo</h1>
+  <div class="sub">2026-10-10 · 按「修复前 / 修复后」两套判定规则逐条复刻的<b>逻辑仿真</b>（同一份输入，并排看两种结果）·
+    真实程序的回归证据见 <code>docs/TDC_DM_CHANGES_REVIEW_20261010.html</code> 与全量 <b>2966 passed</b></div>
+</header>
+<main>
+  <div class="banner">
+    <b>这不是真实程序</b>：本页在浏览器里用 JS 复刻了修复前后两条判定链（输入校验 → 全量抓取 → 本地精确匹配 → 身份解析 → 观测落库），
+    用来让你自己动手确认「为什么填两个单号会失败」「为什么只填一个单号也会失败」「修复后为什么能成」。
+  </div>
+
+  <section>
+    <h2>1. 输入（可改）</h2>
+    <div class="grid cols-2">
+      <div>
+        <label>流水单号（向导「流水单号」框）</label>
+        <input id="serial" type="text" value="3D-00001018">
+        <div class="chips" style="margin-top:6px">
+          <button data-serial="3D-00001018">单值（正常）</button>
+          <button data-serial="3D-00001018 3D-00001012">你第一次填的双值</button>
+          <button data-serial="3D-00001018,3D-00001012">逗号分隔</button>
+          <button data-serial="3D-00001018&#8203;">含零宽字符</button>
+          <button data-serial="３Ｄ-００００１０１８">全角数字</button>
+          <button data-serial="">留空（聚合模式）</button>
+        </div>
+        <label>车型项目 / 车型信息</label>
+        <input id="model" type="text" value="AR-N">
+        <div class="hint">上游对车型大小写不敏感：填 <code>ar-n</code> / <code>AR-N</code> 都能查到（报表里显示 <code>Ar-N</code>）。</div>
+      </div>
+      <div>
+        <label>上游返回的行（全量抓取结果，JSON 数组；可编辑）</label>
+        <textarea id="rows" spellcheck="false"></textarea>
+        <div class="chips" style="margin-top:6px">
+          <button data-preset="prod">生产现场（含 formId，60 列）</button>
+          <button data-preset="chinese">导出风格（只有中文键）</button>
+          <button data-preset="noidentity">无身份字段</button>
+          <button data-preset="multipart">同实例多行（多零件）</button>
+          <button data-preset="distinct">多行身份不同</button>
+          <button data-preset="mixed">混合行（一行有身份一行无）</button>
+          <button data-preset="none">单号不在范围内</button>
+        </div>
+        <div class="hint" id="rowsHint"></div>
+      </div>
+    </div>
+    <div style="margin-top:12px">
+      <button class="primary" id="run">▶ 运行仿真（并排对比）</button>
+      <button id="reset">重置为生产现场</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>2. 结果对比</h2>
+    <div class="grid cols-2" id="cards"></div>
+  </section>
+
+  <section>
+    <h2>3. 判定链逐步追踪</h2>
+    <div class="grid cols-2" id="traces"></div>
+  </section>
+
+  <section>
+    <h2>4. 验收清单 <span id="selfCheckSummary" class="badge b-info">自检：计算中…</span></h2>
+    <p class="hint" style="margin:0 0 8px">下表用固定场景夹具自动跑一遍仿真并给出 PASS/FAIL（与 Node 侧独立断言同源，当前 9/9 通过）；
+      点「代入并运行」会把该场景写进第 1 节的输入框并重跑上方对比。</p>
+    <table id="checklist">
+      <thead><tr><th style="width:26%">场景</th><th style="width:17%">修复前（期望）</th><th style="width:22%">修复后（期望）</th><th style="width:20%">自检结果</th><th>操作</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+</main>
+
+<script id="sim-core">
+/* ── 仿真核心：与 Python/JS 生产代码逐条对应 ─────────────────────────────
+   身份字段默认顺序：services/project_status_records.py IDENTITY_FIELDS
+   数模顺序：IDENTITY_FIELD_ORDERS["data_model"]（incident 提到首位）
+   权威字段：AUTHORITATIVE_IDENTITY_FIELDS["data_model"] = "incident"
+   单值校验：services/data_model_watchlist.normalize_single_serial
+   匹配：services/data_model_watchlist.match_serial / row_serial
+   观测：services/project_status_discovery.observe
+   端点：web/app.py api_project_status_mapping_discovery
+   ──────────────────────────────────────────────────────────────────── */
+const IDENTITY_FIELDS = ["_no","formId","incident","documentNo","processInstanceId","processNo",
+                         "id","ewo_no","item_number","itemNumber","NCR编号","ncrNo","ncr_no"];
+const DATA_MODEL_ORDER = ["incident", ...IDENTITY_FIELDS.filter((f) => f !== "incident")];
+const AUTHORITATIVE = { data_model: "incident" };
+const SERIAL_KEYS = ["流水单号", "documentNo"];
+const INVISIBLE = new Set(["\u200b","\u200c","\u200d","\u2060","\ufeff","\u00ad"]);
+
+function cleanIdentity(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "object") return "";          // dict/list 不算身份
+  const text = String(value).trim();
+  return text;
+}
+function identityPair(row, reportType) {
+  const order = reportType === "data_model" ? DATA_MODEL_ORDER : IDENTITY_FIELDS;
+  for (const field of order) {
+    const value = row[field];
+    if (value === null || value === undefined || value === "") continue;
+    const cleaned = cleanIdentity(value);
+    if (cleaned) return { field, value: cleaned };
+  }
+  return null;
+}
+function recordIdentity(row, reportType) {
+  const pair = identityPair(row, reportType);
+  return pair ? pair.value : "";
+}
+function rowSerial(row) {
+  for (const key of SERIAL_KEYS) {
+    const value = row[key];
+    if (value !== null && value !== undefined && value !== "") return String(value).trim();
+  }
+  return "";
+}
+function rowInstance(row) {
+  const value = row.incident;
+  return value === null || value === undefined || value === "" ? "" : String(value).trim();
+}
+function matchSerial(rows, target) {
+  const matched = rows.filter((row) => rowSerial(row) === target);
+  return {
+    matched,
+    bookkeeping: {
+      serial: target,
+      scanned: rows.length,
+      matched: matched.length,
+      matched_instances: matched.map(rowInstance).filter(Boolean),
+    },
+  };
+}
+/* Python: parse_terms（NFKC + [\s,;、]+ 分割、去重、上限 100） */
+function parseTerms(text) {
+  const normalized = String(text === null || text === undefined ? "" : text).normalize("NFKC");
+  const terms = [];
+  for (let token of normalized.split(/[\s,;、]+/)) {
+    token = token.trim().slice(0, 200);
+    if (token && !terms.some((t) => t.toLowerCase() === token.toLowerCase())) terms.push(token);
+    if (terms.length >= 100) break;
+  }
+  return terms;
+}
+function normalizeSingleSerial(value) {
+  const text = String(value === null || value === undefined ? "" : value).trim();
+  if (!text) return { ok: false, message: "流水单号不能为空" };
+  for (const ch of text) {
+    if (ch.charCodeAt(0) < 32 || INVISIBLE.has(ch)) {
+      return { ok: false, message: "流水单号含不可见字符，请只填报表里的原文单号" };
+    }
+  }
+  const terms = parseTerms(text);
+  if (terms.length !== 1 || terms[0] !== text) {
+    return { ok: false, message: "流水单号一次只能填一个（检测到多个单号或全角字符）；如需同步多个单号，请逐个配置绑定" };
+  }
+  if (text.length > 64) return { ok: false, message: "流水单号不能超过 64 个字符" };
+  return { ok: true, value: text };
+}
+function fieldReport(rows) {
+  const fields = [...new Set(rows.flatMap((row) => Object.keys(row)))].sort();
+  return { fields };
+}
+/* Python: MappingDiscoveryService.observe（非聚合 / 聚合两条分支） */
+function observe({ rows, selected, aggregate, reportType }) {
+  const keyed = rows.map((row) => ({ key: recordIdentity(row, reportType), row })).filter((p) => p.key);
+  let state, externalKey = selected === null || selected === undefined ? null : selected;
+  let candidateRows = [], reason = null;
+  if (aggregate) {
+    const records = keyed;
+    candidateRows = records.map((p) => p.row);
+    if (!records.length) { state = "not_found"; externalKey = null; }
+    else { state = "matched"; externalKey = null; }
+  } else {
+    const candidates = keyed.filter((p) => selected === null || selected === undefined || p.key === selected);
+    candidateRows = candidates.map((p) => p.row);
+    if (!candidates.length) {
+      state = "not_found";
+      if (selected !== null && selected !== undefined && keyed.length) reason = "selected_not_in_candidates";
+    } else if (candidates.length > 1) {
+      state = "ambiguous";
+    } else {
+      state = "matched";
+      externalKey = candidates[0].key;
+    }
+  }
+  const report = fieldReport(candidateRows.length ? candidateRows : rows);
+  return { state, externalKey, candidateCount: candidateRows.length, fields: report.fields, reason };
+}
+function identityFacts(rows, reportType, usedFields) {
+  const present = [...new Set(rows.flatMap((row) =>
+    (reportType === "data_model" ? DATA_MODEL_ORDER : IDENTITY_FIELDS).filter((f) => row[f] !== null && row[f] !== undefined && row[f] !== "")
+  ))].sort();
+  return { present, used: [...new Set(usedFields)].sort(), authoritative: AUTHORITATIVE[reportType] || null };
+}
+
+/* ── 修复前的判定链（HEAD 版 web/app.py） ── */
+/* ── 修复前的判定链（HEAD 版 web/app.py） ──
+   注意：旧版没有按报表类型解析身份顺序，record_identity 用默认序（formId 优先），
+   因此这里显式传 "default"，与旧代码逐条对应。 */
+function runOld(input) {
+  const trace = [], rows = input.rows, serial = input.serial.trim();
+  trace.push({ s: "info", t: "输入校验", d: "旧版：无单值校验，多值/不可见字符直接放行" });
+  trace.push({ s: "info", t: "全量抓取", d: `上游返回 ${rows.length} 行（车型 ${input.model || "（空）"}）` });
+  if (!serial) {
+    const obs = observe({ rows, selected: null, aggregate: true, reportType: "default" });
+    trace.push({ s: "info", t: "聚合观测", d: `state=${obs.state}，候选 ${obs.candidateCount}` });
+    return { kind: obs.state === "matched" ? "ok" : "notfound", obs, trace, calls: 1, scanned: rows.length, matchedRows: 0 };
+  }
+  const { matched, bookkeeping } = matchSerial(rows, serial);
+  trace.push({ s: matched.length ? "ok" : "bad", t: "本地精确匹配",
+    d: `整串相等：命中 ${matched.length} 行 / 扫描 ${bookkeeping.scanned} 行` });
+  if (matched.length > 1) {
+    trace.push({ s: "bad", t: "多行拦截", d: "400 该流水单号命中多行，请核对后重试" });
+    return { kind: "error400", message: "该流水单号命中多行，请核对后重试", trace, calls: 1, scanned: rows.length, matchedRows: matched.length };
+  }
+  if (matched.length && !bookkeeping.matched_instances.length) {
+    trace.push({ s: "bad", t: "取选中键", d: "matched_instances[0] → IndexError（命中行没有 incident）→ 500" });
+    return { kind: "error500", message: "映射发现失败（服务器内部错误）", trace, calls: 1, scanned: rows.length, matchedRows: matched.length };
+  }
+  const selected = matched.length ? bookkeeping.matched_instances[0] : null;
+  trace.push({ s: "warn", t: "选中键", d: `旧版用命中行的 incident 当选中键：${selected === null ? "null" : selected}` });
+  const obs = observe({ rows: matched, selected, aggregate: false, reportType: "default" });
+  trace.push({ s: obs.state === "matched" ? "ok" : "bad", t: "观测（候选过滤用 record_identity，formId 优先）",
+    d: `state=${obs.state}，候选 ${obs.candidateCount}，字段数 ${obs.fields.length}` });
+  return { kind: obs.state === "matched" ? "ok" : "notfound", obs, trace, calls: 1, scanned: rows.length, matchedRows: matched.length, selected };
+}
+
+/* ── 修复后的判定链（当前工作树 web/app.py） ── */
+function runNew(input) {
+  const trace = [], rows = input.rows, rawSerial = input.serial.trim();
+  const check = normalizeSingleSerial(rawSerial);
+  if (rawSerial && !check.ok) {
+    trace.push({ s: "bad", t: "输入校验（抓取前）", d: `400 ${check.message}` });
+    return { kind: "error400", message: check.message, trace, calls: 0, scanned: 0, matchedRows: 0 };
+  }
+  trace.push({ s: "ok", t: "输入校验（抓取前）",
+    d: rawSerial ? "单值、可见字符、NFKC 稳定 → 放行" : "未填单号 → 聚合模式" });
+  trace.push({ s: "info", t: "全量抓取", d: `上游返回 ${rows.length} 行（车型 ${input.model || "（空）"}）` });
+  if (!rawSerial) {
+    const obs = observe({ rows, selected: null, aggregate: true, reportType: "data_model" });
+    trace.push({ s: obs.state === "matched" ? "ok" : "bad", t: "聚合观测", d: `state=${obs.state}，候选 ${obs.candidateCount}` });
+    return { kind: obs.state === "matched" ? "ok" : "notfound", obs, trace, calls: 1, scanned: rows.length, matchedRows: 0 };
+  }
+  const { matched, bookkeeping } = matchSerial(rows, rawSerial);
+  trace.push({ s: matched.length ? "ok" : "bad", t: "本地精确匹配",
+    d: `整串相等：命中 ${matched.length} 行 / 扫描 ${bookkeeping.scanned} 行` });
+  const facts = identityFacts(matched, "data_model", []);
+  const auth = facts.authoritative;
+  const missingAuth = Boolean(auth) && matched.some((row) => row[auth] === null || row[auth] === undefined || row[auth] === "");
+  if (matched.length && (!facts.present.length || missingAuth)) {
+    trace.push({ s: "bad", t: "身份解析（权威字段）",
+      d: `命中行缺 ${auth || "身份字段"} → 422 IdentityMissing（诊断：present=[${facts.present}]）` });
+    return { kind: "error422", message: `流水单号命中了行，但命中行缺少权威业务单号字段（${auth}），无法建立单记录绑定；上游结构可能已变化，请重新进行映射发现`, trace, calls: 1, scanned: rows.length, matchedRows: matched.length, facts };
+  }
+  const identities = [...new Set(matched.map((row) => recordIdentity(row, "data_model")).filter(Boolean))].sort();
+  if (identities.length > 1) {
+    trace.push({ s: "bad", t: "身份解析", d: `命中行身份不唯一：${identities.join(" / ")} → 400 IdentityAmbiguous` });
+    return { kind: "error400", message: "该流水单号命中了多行且身份不唯一，请核对后重试", trace, calls: 1, scanned: rows.length, matchedRows: matched.length, facts };
+  }
+  if (matched.length > 1) {
+    trace.push({ s: "bad", t: "单记录绑定", d: "同一实例多行（多零件）→ 400 该流水单号命中多行，请核对后重试" });
+    return { kind: "error400", message: "该流水单号命中多行，请核对后重试", trace, calls: 1, scanned: rows.length, matchedRows: matched.length, facts };
+  }
+  const selected = identities.length ? identities[0] : null;
+  const used = matched.map((row) => identityPair(row, "data_model")).filter(Boolean).map((p) => p.field);
+  trace.push({ s: "ok", t: "身份解析（权威字段）",
+    d: `选中键与候选过滤同源：${selected === null ? "null" : selected}（字段 ${[...new Set(used)].join(",")}）` });
+  const obs = observe({ rows: matched, selected, aggregate: false, reportType: "data_model" });
+  trace.push({ s: obs.state === "matched" ? "ok" : "bad", t: "观测", d: `state=${obs.state}，候选 ${obs.candidateCount}，字段数 ${obs.fields.length}` });
+  if (obs.state === "not_found" && !obs.reason) {
+    obs.reason = "serial_no_match";
+    trace.push({ s: "warn", t: "归因", d: `reason=serial_no_match（已完整扫描 ${bookkeeping.scanned} 行）` });
+  }
+  return { kind: obs.state === "matched" ? "ok" : "notfound", obs, trace, calls: 1, scanned: rows.length, matchedRows: matched.length, selected, facts };
+}
+
+/* ── 向导会显示给用户的文案（policy-logic.js wizardNotMatchedMessage / policy.js） ── */
+function oldMessage(result) {
+  if (result.kind === "ok") return { cls: "ok", text: "配置并启用成功：映射发现已匹配，正在触发首次同步…" };
+  if (result.kind === "error400" || result.kind === "error500") return { cls: "bad", text: `配置启用失败：${result.message}` };
+  const obs = result.obs;
+  return { cls: "bad", text: `配置启用失败：映射发现未匹配（未找到，命中行数：${obs.candidateCount}，字段数：${obs.fields.length}），请核对车型与筛选条件后重试。` };
+}
+function newMessage(result) {
+  if (result.kind === "ok") return { cls: "ok", text: "配置并启用成功：映射发现已匹配，正在触发首次同步…" };
+  if (result.kind === "error400" || result.kind === "error422") return { cls: "bad", text: `配置启用失败：${result.message}` };
+  const obs = result.obs;
+  let detail = "";
+  if (obs.reason === "serial_no_match") detail = `：已完整扫描 ${result.scanned} 行，未找到该流水单号（单号须与报表第 2 列原文完全一致）`;
+  else if (obs.reason === "selected_not_in_candidates") detail = "：命中行的身份字段与选中键不一致（已记录诊断）";
+  else if (result.scanned === 0) detail = "：上游按当前车型/筛选条件返回 0 行，请核对车型项目取值";
+  return { cls: "bad", text: `配置启用失败：映射发现未匹配（未找到，命中行数：${obs.candidateCount}，字段数：${obs.fields.length}）${detail || "，请核对车型与筛选条件后重试"}。` };
+}
+</script>
+
+<script>
+/* ── 场景与 UI ─────────────────────────────────────────────────────────── */
+function padded(core, total) {
+  const row = Object.assign({}, core);
+  let i = 0;
+  while (Object.keys(row).length < total) { row["extraField" + String(i).padStart(2, "0")] = "v" + i; i++; }
+  return row;
+}
+const PRESETS = {
+  prod: { label: "生产现场（含 formId，60 列）", rows: [
+    padded({ formId: "FORM-9", incident: "50667733", documentNo: "3D-00001018", applicant: "张三", status: "2" }, 60),
+    padded({ formId: "FORM-8", incident: "50738964", documentNo: "3D-00001012", applicant: "李四", status: "2" }, 60),
+  ] },
+  chinese: { label: "导出风格（只有中文键）", rows: [
+    padded({ "流水单号": "3D-00001018", "零件号": "P-1", "项目车型": "Ar-N" }, 60),
+  ] },
+  noidentity: { label: "无身份字段", rows: [
+    padded({ newFlowKey: "X", documentNo: "3D-00001018" }, 60),
+  ] },
+  multipart: { label: "同实例多行（多零件）", rows: [
+    { incident: "50667733", documentNo: "3D-00001018", partNumber: "P-1" },
+    { incident: "50667733", documentNo: "3D-00001018", partNumber: "P-2" },
+  ] },
+  distinct: { label: "多行身份不同", rows: [
+    { incident: "FLOW-A", documentNo: "3D-00001018" },
+    { incident: "FLOW-B", documentNo: "3D-00001018" },
+  ] },
+  mixed: { label: "混合行（一行有身份一行无）", rows: [
+    { incident: "FLOW-A", documentNo: "3D-00001018" },
+    { documentNo: "3D-00001018", foo: "bar" },
+  ] },
+  none: { label: "单号不在范围内", rows: [
+    padded({ incident: "50667733", documentNo: "3D-00001018" }, 60),
+  ] },
+};
+
+const CHECKLIST = [
+  { name: "① 双值输入（你第一次那样填）", preset: "prod", serial: "3D-00001018 3D-00001012",
+    old: "抓取后 未匹配（字段 0）", now: "抓取前 400，抓取 0 次",
+    expectOld: (r) => r.kind === "notfound" && r.calls === 1,
+    expectNow: (r) => r.kind === "error400" && r.calls === 0 && r.message.includes("一次只能填一个") },
+  { name: "② 单值 + 行含 formId（你的现场）", preset: "prod", serial: "3D-00001018",
+    old: "未匹配（命中 0 行，字段 60）", now: "matched，externalKey=50667733",
+    expectOld: (r) => r.kind === "notfound" && r.obs.fields.length === 60 && r.obs.candidateCount === 0,
+    expectNow: (r) => r.kind === "ok" && r.obs.externalKey === "50667733" && r.obs.fields.length === 60 },
+  { name: "③ 行只有中文键「流水单号」", preset: "chinese", serial: "3D-00001018",
+    old: "500 崩溃", now: "422 IdentityMissing",
+    expectOld: (r) => r.kind === "error500",
+    expectNow: (r) => r.kind === "error422" && r.message.includes("权威业务单号字段") },
+  { name: "④ 单号不在范围内", preset: "none", serial: "3D-99999999",
+    old: "未匹配（无原因）", now: "未找到 + reason=serial_no_match + 覆盖范围",
+    expectOld: (r) => r.kind === "notfound" && !r.obs.reason,
+    expectNow: (r) => r.kind === "notfound" && r.obs.reason === "serial_no_match" && r.scanned === 1 },
+  { name: "⑤ 同实例多行（多零件）", preset: "multipart", serial: "3D-00001018",
+    old: "400 命中多行", now: "400 命中多行（保留）",
+    expectOld: (r) => r.kind === "error400" && r.message.includes("命中多行"),
+    expectNow: (r) => r.kind === "error400" && r.message.includes("命中多行") && !r.message.includes("身份不唯一") },
+  { name: "⑥ 多行身份不同", preset: "distinct", serial: "3D-00001018",
+    old: "400 命中多行", now: "400 IdentityAmbiguous",
+    expectOld: (r) => r.kind === "error400",
+    expectNow: (r) => r.kind === "error400" && r.message.includes("身份不唯一") },
+  { name: "⑦ 混合行（一行无身份）", preset: "mixed", serial: "3D-00001018",
+    old: "400 命中多行", now: "422 IdentityMissing（fail-closed）",
+    expectOld: (r) => r.kind === "error400",
+    expectNow: (r) => r.kind === "error422" },
+  { name: "⑧ 零宽字符", preset: "prod", serial: "3D-00001018\u200b",
+    old: "抓取后 未匹配", now: "抓取前 400（不可见字符）",
+    expectOld: (r) => r.kind === "notfound" && r.calls === 1,
+    expectNow: (r) => r.kind === "error400" && r.calls === 0 && r.message.includes("不可见字符") },
+  { name: "⑨ 全角数字", preset: "prod", serial: "３Ｄ-００００１０１８",
+    old: "抓取后 未匹配", now: "抓取前 400（全角）",
+    expectOld: (r) => r.kind === "notfound",
+    expectNow: (r) => r.kind === "error400" && r.calls === 0 && r.message.includes("一次只能填一个") },
+];
+
+/** 用各场景夹具跑一遍仿真，逐项判定 PASS/FAIL（在浏览器里可直接复核）。 */
+function selfCheck() {
+  return CHECKLIST.map((item) => {
+    const input = { serial: item.serial, model: "AR-N", rows: PRESETS[item.preset].rows };
+    const oldR = runOld(input), newR = runNew(input);
+    const oldOk = Boolean(item.expectOld(oldR)), newOk = Boolean(item.expectNow(newR));
+    return { item, oldR, newR, oldOk, newOk, pass: oldOk && newOk };
+  });
+}
+
+const $ = (id) => document.getElementById(id);
+const state = { preset: "prod" };
+
+function currentInput() {
+  let rows;
+  try { rows = JSON.parse($("rows").value); }
+  catch (err) { rows = null; }
+  return { serial: $("serial").value, model: $("model").value, rows };
+}
+
+function kindLabel(kind) {
+  return { ok: "已匹配 matched", notfound: "未找到 not_found", error400: "400 校验失败",
+           error422: "422 结构/身份失败", error500: "500 服务器错误" }[kind] || kind;
+}
+function kindClass(kind) {
+  return kind === "ok" ? "b-ok" : kind === "error500" ? "b-bad" : kind === "notfound" ? "b-warn" : "b-bad";
+}
+function renderCard(title, cls, result, message, extra) {
+  const obs = result.obs || {};
+  const kv = [
+    ["上游抓取调用", `${result.calls} 次`],
+    ["扫描行数", result.scanned],
+    ["命中行数（本地精确匹配）", result.matchedRows],
+    ["候选数 candidateCount", obs.candidateCount === undefined ? "-" : obs.candidateCount],
+    ["字段数 fieldReport.fields", obs.fields ? obs.fields.length : "-"],
+    ["state / reason", `${obs.state || "-"}${obs.reason ? " / " + obs.reason : ""}`],
+    ["externalKey", obs.externalKey === null || obs.externalKey === undefined ? "（空）" : obs.externalKey],
+  ];
+  return `<div class="card ${cls}">
+    <h4>${title} <span class="badge ${kindClass(result.kind)}">${kindLabel(result.kind)}</span></h4>
+    <div class="kv">${kv.map(([k, v]) => `<div class="k">${k}</div><div class="v">${v}</div>`).join("")}</div>
+    <div class="msg ${message.cls}">${message.text}</div>
+    ${extra.note ? `<div class="hint">${extra.note}</div>` : ""}
+  </div>`;
+}
+function renderTrace(title, result) {
+  return `<div class="card"><h4>${title}</h4><ul class="steps">${
+    result.trace.map((s) => `<li class="s-${s.s}"><b>${s.t}</b> <span class="d">${s.d}</span></li>`).join("")
+  }</ul></div>`;
+}
+
+function run() {
+  const input = currentInput();
+  if (!Array.isArray(input.rows)) {
+    $("cards").innerHTML = `<div class="card"><h4>上游行 JSON 解析失败</h4><div class="msg bad">请检查 JSON 格式（必须是对象数组）。</div></div>`;
+    $("traces").innerHTML = "";
+    return;
+  }
+  $("rowsHint").textContent = `当前 ${input.rows.length} 行，列数 ${input.rows.length ? Object.keys(input.rows[0]).length : 0}`;
+  const oldR = runOld(input), newR = runNew(input);
+  const oldMsg = oldMessage(oldR), newMsg = newMessage(newR);
+  $("cards").innerHTML =
+    renderCard("修复前（HEAD 版逻辑）", "old", oldR, oldMsg, { note: oldR.note }) +
+    renderCard("修复后（当前工作树）", "new", newR, newMsg, { note: newR.note });
+  $("traces").innerHTML = renderTrace("修复前", oldR) + renderTrace("修复后", newR);
+  renderChecklist();
+}
+
+function renderChecklist() {
+  const results = selfCheck();
+  const passed = results.filter((entry) => entry.pass).length;
+  const summary = $("selfCheckSummary");
+  if (summary) summary.textContent = `自检：${passed}/${results.length} 通过（每次打开/改动输入都会在浏览器里实时重算）`;
+  const tbody = $("checklist").querySelector("tbody");
+  tbody.innerHTML = results.map((entry, index) => {
+    const active = entry.item.preset === state.preset && entry.item.serial === $("serial").value;
+    const actual = entry.pass
+      ? `<span class="pass">PASS</span><br><span class="d">修复前 ${kindLabel(entry.oldR.kind)} / 修复后 ${kindLabel(entry.newR.kind)}</span>`
+      : `<span class="fail">FAIL</span><br><span class="d">修复前 ${kindLabel(entry.oldR.kind)}（${entry.oldOk ? "符合" : "不符"}）/ 修复后 ${kindLabel(entry.newR.kind)}（${entry.newOk ? "符合" : "不符"}）</span>`;
+    return `<tr>
+      <td>${entry.item.name}${active ? ' <span class="badge b-info">当前输入</span>' : ""}</td>
+      <td>${entry.item.old}</td>
+      <td>${entry.item.now}</td>
+      <td>${actual}</td>
+      <td><button data-scenario="${index}">代入并运行</button></td>
+    </tr>`;
+  }).join("");
+}
+
+function applyPreset(name, serial) {
+  state.preset = name;
+  const preset = PRESETS[name];
+  $("rows").value = JSON.stringify(preset.rows, null, 2);
+  if (serial !== undefined) $("serial").value = serial;
+  run();
+}
+
+document.addEventListener("click", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return;
+  if (target.dataset.serial !== undefined) { $("serial").value = target.dataset.serial; run(); return; }
+  if (target.dataset.preset) { applyPreset(target.dataset.preset, undefined); return; }
+  if (target.dataset.scenario !== undefined) {
+    const item = CHECKLIST[Number(target.dataset.scenario)];
+    applyPreset(item.preset, item.serial);
+    return;
+  }
+  if (target.id === "run") { run(); return; }
+  if (target.id === "reset") { applyPreset("prod", "3D-00001018"); return; }
+});
+$("serial").addEventListener("input", run);
+$("rows").addEventListener("input", run);
+$("model").addEventListener("input", run);
+
+applyPreset("prod", "3D-00001018");
+</script>
+</body>
+</html>

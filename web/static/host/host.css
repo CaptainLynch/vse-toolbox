@@ -174,3 +174,8 @@
   flex-direction: column;
   gap: 8px;
 }
+
+/* v2：工作台页面自带标题区，隐藏外壳通用标题；诊断录制只在专家模式显示。 */
+body[data-route-plugin="workbench"] .workspace-head { display: none; }
+body:not(.is-expert) .diagnostic-widget { display: none !important; }
+.hc-nav a.is-expert-entry { opacity: 0.75; font-style: italic; }

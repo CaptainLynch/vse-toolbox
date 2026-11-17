@@ -28,7 +28,6 @@ MAP_SCHEMA_VERSION = 1
 # production code and is intentionally outside the map.
 SOURCE_DIRS = ("core", "host", "plugins", "services", "web")
 SOURCE_FILES = (
-    "main.py",
     "webui.py",
     "excel_worker_entry.py",
     "tdc_probe_main.py",
@@ -138,7 +137,10 @@ ROLE_OVERRIDES = {
     "plugins/sign_daily/backend.py": "sign-daily plugin: 3D单签署日报 routes, config and daily baselines",
     "plugins/sign_daily/rules.py": "3D单签署日报 v2 rules: parsing, roster attribution, long-cycle, metrics (pure)",
     "plugins/sign_daily/mail.py": "3D单签署日报 email body (three charts + table), recipients and .eml (pure)",
-    "main.py": "Rich CLI adapter, menu routing and legacy operations",
+    "plugins/tir_report/backend.py": "tir-report plugin: FineReport TIR数据简表 export routes, tasks and downloads",
+    "plugins/tir_report/protocol.py": "FineReport TIR数据简表 protocol: parameters/cjkEncode, sessionID, content parsing (pure)",
+    "plugins/tir_report/client.py": "FineReport client: login, report session, parameters, original Excel export",
+    "plugins/tir_report/service.py": "tir-report export run: original xlsx on disk, same-day reuse, task view",
     "webui.py": "WebUI source/frozen launcher",
     "excel_worker_entry.py": "Frozen Excel Worker launcher",
     "tdc_probe_main.py": "Standalone TDC probe launcher",
@@ -248,8 +250,6 @@ def _test_hint(relative_path: str, root: Path) -> str:
         return f"tests/{exact.name}"
     if relative_path == "web/app.py":
         return "tests/*web*.py"
-    if relative_path == "main.py":
-        return "tests/*cli*.py"
     if relative_path.startswith("services/tdc_") or relative_path.startswith("tdc_probe"):
         return "tests/*tdc*.py"
     if relative_path.startswith("services/aras_"):
@@ -314,9 +314,9 @@ def _manual_sections() -> str:
         not a substitute for reading the target implementation.
 
         **Approved production scope:** `core/`, `host/`, `plugins/`, `services/`, `web/`,
-        `main.py`, `webui.py`, `excel_worker_entry.py`,
+        `webui.py`, `excel_worker_entry.py`,
         `tools/excel_worker_cli.py`, `tdc_probe_main.py`, and
-        `tdc_probe_cli.py`.
+        `tdc_probe_cli.py`. W15-01 起 `main.py`（Rich 交互式 CLI）已下线。
 
         ## Default-deny paths
 
@@ -331,8 +331,8 @@ def _manual_sections() -> str:
         | Product | Entry point | Main implementation | Packaging |
         | --- | --- | --- | --- |
         | WebUI | `webui.py` | `web/app.py`, `web/templates/`, `web/static/` | `VSE-WebUI.spec` |
-        | CLI | `main.py` | `main.py`, `services/` | `VSE-Toolbox.spec` |
-        | Excel Worker | `excel_worker_entry.py` | `tools/excel_worker_cli.py`, `core/excel_worker.py` | `VSE-ExcelWorker.spec` |
+        | ~~CLI~~ | 已随 W15-01 下线 | — | `VSE-Toolbox.spec` 已删除 |
+        | Excel Worker | `webui.py` (`--excel-worker` 哨兵) | `tools/excel_worker_cli.py`, `core/excel_worker.py` | `VSE-WebUI.spec`（单 exe；`VSE-ExcelWorker.spec` 仅开发机备用） |
         | TDC Probe | `tdc_probe_main.py` | `tdc_probe_cli.py`, `services/tdc_contract_probe.py` | `VSE-TDC-Probe.spec` |
 
         ## Task router
@@ -343,6 +343,7 @@ def _manual_sections() -> str:
         | 插件前端 Shell/UI Kit | `web/static/host/shell.js` | `web/static/host/kit.js`, `web/static/host/pages.js`, `web/static/host/api.js` | `tests/test_host_frontend.py` |
         | 交付物表单插件/表单定义 | `core/form_registry.py` | `plugins/deliverable_forms/backend.py`, `services/deliverable_form_analysis.py` | `tests/test_plugin_deliverable_forms.py` |
         | 3D单签署日报插件 | `plugins/sign_daily/rules.py` | `plugins/sign_daily/service.py`, `plugins/sign_daily/settings.py`, `plugins/sign_daily/mail.py`, `plugins/sign_daily/backend.py`, `plugins/sign_daily/static/report.js` | `tests/test_sign_daily_rules.py`, `tests/test_plugin_sign_daily.py` |
+        | TIR数据简表插件/帆软导出 | `plugins/tir_report/protocol.py` | `plugins/tir_report/client.py`, `plugins/tir_report/service.py`, `plugins/tir_report/backend.py`, `tools/tir_export_cli.py`, `tools/tir_probe.py` | `tests/test_plugin_tir_report.py` |
         | Web/API/UI | `web/app.py` | `web/static/host/shell.js`, `web/templates/dashboard.html` | `tests/*web*.py` |
         | Aras EWO/PAA/NCR | `web/app.py` | `services/aras_auth.py`, `services/aras_crawler.py`, `services/aras_export.py` | `tests/*aras*.py` |
         | TDC/SOR/数模/A 面 | `web/app.py` | `services/tdc_auth.py`, `services/tdc_crawler.py`, `services/tdc_export_cache.py` | `tests/*tdc*.py` |
@@ -360,7 +361,7 @@ def _manual_sections() -> str:
           archive storage and Excel task primitives.
         - `services/` owns Aras/TDC/Office integrations and orchestration.
         - Excel automation has a production out-of-process boundary through
-          `VSE-ExcelWorker.exe`.
+          `VSE-WebUI.exe --excel-worker`（同一个 exe 的独立子进程）。
 
         ## Key flows
 

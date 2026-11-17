@@ -26,6 +26,7 @@ from flask import Response, request
 
 from core.project_status_contracts import PROJECT_STATUS_SOURCE_CAPABILITIES
 from services import data_model_watchlist as W
+from services import data_model_vehicle_links as links_module
 from services import form_search
 
 FORM_KEY = "tdc_data_model"
@@ -122,9 +123,9 @@ def _binding_setting(deliverable_id: str, policy: Mapping[str, Any]) -> dict[str
         missing.append("筛选条件")
     aggregate = isinstance(match_rule, Mapping) and match_rule.get("aggregate") is True
     if not aggregate and not str(binding.get("external_key") or "").strip():
-        missing.append("外部稳定键（在明细页完成映射取证）")
+        missing.append("外部稳定键（在明细页完成映射核对）")
     if not automatic:
-        missing.append("自动更新的字段（在明细页完成映射取证）")
+        missing.append("自动更新的字段（在明细页完成映射核对）")
     return {
         "deliverableId": deliverable_id,
         "kind": "binding",
@@ -273,3 +274,52 @@ def register(host):
         response.headers["Content-Disposition"] = "attachment; filename=\"watchlist.csv\""
         response.headers["Cache-Control"] = "no-store"
         return response
+
+    # ── 车型 ↔ 架构件单：人工声明（方案 B）──────────────────────────────
+    # 只记录用户显式声明，不做任何推断；同一 (车型, 单号) 重复声明会新增
+    # revision 并把旧版置为 inactive（可追溯、可撤销）。
+
+    @bp.get("/vehicle-arch-links")
+    def vehicle_arch_links_view():
+        vehicle = (request.args.get("vehicle") or "").strip() or None
+        try:
+            rows = ctx.db.list_data_model_vehicle_links(vehicle)
+        except AttributeError:
+            return ctx.json_ok({"items": [], "vehicles": []})
+        vehicles = sorted({str(item["vehicle"]) for item in rows})
+        if not vehicle:
+            vehicles = sorted(
+                {str(item["vehicle"]) for item in ctx.db.list_data_model_vehicle_links()}
+            )
+        return ctx.json_ok(
+            {"items": [dict(item) for item in rows], "vehicles": vehicles}
+        )
+
+    @bp.post("/vehicle-arch-links")
+    def vehicle_arch_links_update():
+        guard = ctx.local_guard()
+        if guard is not None:
+            return guard
+        body = request.get_json(silent=True)
+        if not isinstance(body, Mapping):
+            return ctx.json_error(400, "ValidationError", "请求体必须是 JSON 对象")
+        action = str(body.get("action") or "replace").strip()
+        vehicle = str(body.get("vehicle") or "").strip()
+        if not vehicle:
+            return ctx.json_error(400, "ValidationError", "必须指定车型")
+        try:
+            if action == "clear":
+                removed = ctx.db.clear_data_model_vehicle_links(vehicle)
+                return ctx.json_ok({"vehicle": vehicle, "cleared": removed})
+            if action != "replace":
+                return ctx.json_error(400, "ValidationError", "不支持的操作")
+            serials = links_module.normalize_serials(body.get("serials"))
+            result = ctx.db.replace_data_model_vehicle_links(
+                vehicle,
+                serials,
+                operator=str(body.get("operator") or "")[:120],
+                basis=str(body.get("basis") or "")[:500],
+            )
+            return ctx.json_ok(result)
+        except links_module.LinkError as exc:
+            return ctx.json_error(409, "LinkInvalid", str(exc))

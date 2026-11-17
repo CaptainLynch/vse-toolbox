@@ -89,8 +89,8 @@ def test_names_split_on_all_separators_and_strip_marks():  # P3、P4、A1
 
 def test_any_row_unsigned_wins_and_inconsistency_is_reported():  # P2、§1 缺陷 11
     rows = [
-        _row("S1", 冲压="张三(未签)", 待审批人员="张三"),
-        _row("S1", 冲压="张三", 零件号="S1-P2", 待审批人员="张三"),
+        _row("S1", 冲压="张三(未签)", 待审批人员="张三", 应签人数=1, 已签人数=0, 未签人数=1),
+        _row("S1", 冲压="张三", 零件号="S1-P2", 待审批人员="张三", 应签人数=1, 已签人数=0, 未签人数=1),
     ]
     result = R.build_flows(rows)
     assert result.flows[0].unsigned() == [("冲压", "张三")]
@@ -114,10 +114,31 @@ def test_duplicate_part_numbers_count_once():  # P9
     assert len(flow.parts) == 2
 
 
-def test_add_sign_people_in_pending_are_recognized():  # P5，含「角色列已签又在加签列」
-    flow = _flow(冲压="张三", 加签人员="张三(未签)、王五(未签)", 待审批人员="张三、王五", 未签人数=2)
-    assert flow.add_sign_pending == ["张三", "王五"]
-    assert flow.stage == R.STAGE_ADD_SIGN
+def test_add_sign_people_in_pending_are_recognized():  # P5、A13：待审批人不在任何角色列的是加签人
+    flow = _flow(冲压="张三", 加签人员="张三", 待审批人员="张三、王五", 应签人数=3, 已签人数=2, 未签人数=0)
+    assert [(p.name, p.kind) for p in flow.placements()] == [("张三", R.KIND_ADD_SIGN), ("王五", R.KIND_ADD_SIGN)]
+    assert flow.stage == R.STAGE_APPROVAL
+
+
+def test_p7_counts_names_per_occurrence_without_dedup():  # P7：同格重名算两次
+    result = R.build_flows([_row("S1", 冲压="冲压丁(未签)、冲压丁", 待审批人员="冲压丁", 应签人数=2, 已签人数=1, 未签人数=1)])
+    flow = result.flows[0]
+    assert (flow.countersign_required, flow.countersign_signed) == (2, 1)
+    assert not result.anomalies
+    mismatch = R.build_flows([_row("S2", 冲压="冲压丁", 应签人数=3, 已签人数=1, 未签人数=0)])
+    assert [a["kind"] for a in mismatch.anomalies] == ["requiredCountDiffer"]
+
+
+def test_pending_names_may_repeat_and_use_ascii_commas():  # P3
+    flow = _flow(冲压="冲压丁(未签)", 待审批人员="冲压丁,冲压丁", 应签人数=1, 未签人数=1)
+    assert flow.pending == ["冲压丁"]
+    group = R.owed_charts([flow], ROSTER)["external"][0]
+    assert group["bars"][0]["count"] == 1  # 仍按「人 + 单」算 1 单
+
+
+def test_status_in_approval_is_known():  # P6：真实在途单的状态是「审批中」
+    result = R.build_flows([_row("S1", 状态="审批中", 冲压="冲压丁(未签)", 待审批人员="冲压丁")])
+    assert not any(a["kind"] == "unknownStatus" for a in result.anomalies)
 
 
 def test_days_since_application():  # P8
@@ -192,8 +213,8 @@ def test_only_current_todo_counts_as_owed():  # A10、验收 9
     charts = R.owed_charts([flow], ROSTER)
     assert charts["approval"] == []
     row = R.flow_rows([flow], DATA_DATE, ROSTER)[0]
-    assert row["notRouted"] == 1
-    assert R.todo_text(row).endswith("另 1 人未流转到")
+    assert row["notCurrent"] == 1 and flow.not_current == ["总监辛"]
+    assert R.todo_text(row).endswith("另 1 人未签、非当前待办")
 
 
 def test_bar_height_counts_flows():  # 验收 4、G1
@@ -211,13 +232,70 @@ def test_same_person_two_countersign_columns_counts_once():  # §3 边缘场景
     assert flow.countersign_required == 2
 
 
-def test_add_sign_not_in_charts_but_marked_in_table():  # 验收 10
+def test_add_sign_in_approval_phase_goes_to_chart3():  # A13、验收 10
     flow = _flow(冲压="冲压丁", 待审批人员="加签壬", 已签人数=1, 未签人数=0)
     charts = R.owed_charts([flow], ROSTER)
-    assert charts["external"] == charts["sections"] == charts["approval"] == []
+    assert charts["external"] == charts["sections"] == []
+    group = charts["approval"][0]
+    assert (group["group"], group["bars"][0]["label"]) == ("主任工程师", "加签壬（未在册·加签）")
     row = R.flow_rows([flow], DATA_DATE, ROSTER)[0]
-    assert row["stage"] == R.STAGE_ADD_SIGN and row["todo"][0]["addSign"]
+    assert row["stage"] == R.STAGE_APPROVAL and row["todo"][0]["addSign"]
     assert "加签" in R.todo_text(row)
+
+
+def test_add_sign_in_countersign_phase_uses_roster_then_frequency():  # A13
+    flows = R.build_flows([
+        _row("S1", 冲压="冲压丁(未签)", 待审批人员="冲压丁、梁海峰、潘炳洁、新人"),
+        _row("S2", 整车性能="潘炳洁", 总体工程="潘炳洁", CAE="潘炳洁", 待审批人员="", 状态="已完成"),
+        _row("S3", 总体工程="潘炳洁", 状态="已完成"),
+    ]).flows
+    rows = {r["serial"]: r for r in R.flow_rows(flows, DATA_DATE, ROSTER)}
+    todo = {item["name"]: item for item in rows["S1"]["todo"]}
+    assert rows["S1"]["stage"] == R.STAGE_COUNTERSIGN
+    assert todo["梁海峰"]["area"] == "内饰科" and todo["梁海峰"]["addSign"]  # 在册取花名册科室
+    assert todo["潘炳洁"]["area"] == "总体工程"  # 出现最多的会签列（3 次总体工程 vs 1 次其他）
+    assert todo["新人"]["area"] == R.GROUP_ADD_UNKNOWN
+    charts = R.owed_charts(flows, ROSTER)
+    assert [g["group"] for g in charts["external"]][-1] == R.GROUP_ADD_UNKNOWN  # 区域未知固定在最后
+
+
+def test_stage_rules_t1_to_t6():  # T1–T6
+    def stage(**values: object) -> str:
+        return _flow(**values).stage
+    assert stage(待审批人员="", 冲压="冲压丁", 未签人数=0) == R.STAGE_LOCK  # T1
+    assert stage(待审批人员="", 冲压="冲压丁(未签)") == R.STAGE_COUNTERSIGN  # T2
+    assert stage(待审批人员="", **{"首席/总监": "总监辛(未签)"}) == R.STAGE_APPROVAL  # T2
+    assert stage(待审批人员="冲压丁", 冲压="冲压丁(未签)") == R.STAGE_COUNTERSIGN  # T3
+    assert stage(待审批人员="总监辛", **{"首席/总监": "总监辛(未签)"}) == R.STAGE_APPROVAL  # T4
+    assert stage(待审批人员="起草甲", 设计工程师="起草甲(未签)") == R.STAGE_DRAFT  # T5
+    assert stage(待审批人员="起草甲", 设计工程师="起草甲") == R.STAGE_RETURNED  # T6
+
+
+def test_earliest_node_wins_for_a_person_unsigned_in_several_nodes():  # A12
+    flow = _flow(设计工程师="车身甲(未签)", 车身="车身甲(未签)", 待审批人员="车身甲", 未签人数=2)
+    charts = R.owed_charts([flow], ROSTER)
+    assert charts["sections"] == []  # 只算设计工程师这个节点，不进图2
+    assert [(g["group"], g["bars"][0]["label"]) for g in charts["approval"]] == [("设计工程师", "车身甲（车身科）")]
+    assert flow.stage == R.STAGE_DRAFT
+    both = _flow(冲压="车身甲(未签)", 车身="车身甲(未签)", **{"首席/总监": "车身甲(未签)"}, 待审批人员="车身甲", 未签人数=3)
+    assert len(R.current_todo(both, ROSTER)) == 2  # 会签比首席/总监靠前：他所在的每个会签列都算
+
+
+def test_returned_designer_is_marked_in_chart3_and_table():  # A13
+    flow = _flow(设计工程师="车身甲", 待审批人员="车身甲", 已签人数=2, 未签人数=0)
+    group = R.owed_charts([flow], ROSTER)["approval"][0]
+    assert (group["group"], group["bars"][0]["label"]) == ("设计工程师", "车身甲（车身科·退回修改）")
+    row = R.flow_rows([flow], DATA_DATE, ROSTER)[0]
+    assert row["stage"] == R.STAGE_RETURNED and "（退回修改）" in R.todo_text(row)
+
+
+def test_visual_engineering_is_a_history_department():  # A5、A9：视觉工程科是内饰科、外饰科的历史名称
+    roster = R.Roster([("历史丙", "视觉工程科"), ("丘昌州", "外饰科")])
+    assert roster.lookup("历史丙").status == "history"
+    flow = _flow(部门="视觉工程科", 申请人="未在册申请人")
+    assert R.flow_department(flow, roster) == ("视觉工程科（未拆分）", True)
+    split = _flow(部门="视觉工程科", 申请人="丘昌州")
+    assert R.flow_department(split, roster) == ("外饰科", False)  # 按申请人的花名册科室拆分
 
 
 def test_completed_flows_never_owe():  # §3 已完成但签署率不到 100%
@@ -363,7 +441,7 @@ def test_delta_uses_display_values():  # 验收 17、D4、D5
 
 
 def test_baseline_modes():  # 验收 14、15、18
-    assert R.baseline_mode(DATA_DATE, None) == {"show": False, "note": "首次生成，无日变化"}
+    assert R.baseline_mode(DATA_DATE, None) == {"show": False, "note": ""}
     assert R.baseline_mode(DATA_DATE, date(2026, 10, 2)) == {"show": True, "note": ""}
     monday = date(2026, 10, 5)
     assert R.baseline_mode(monday, date(2026, 10, 2))["note"] == "括号内为较 10-02 的变化"
@@ -466,3 +544,56 @@ def test_conclusion_key_is_idempotent(name):  # 审计：记忆键回传后台�
 def test_lh_rh_with_punctuation_still_hits():
     assert R.classify_part("前门外板L/H", RULES, VOCAB).result == R.RESULT_HIT
     assert R.classify_part("前门外板 R-H 总成", RULES, VOCAB).result == R.RESULT_HIT
+
+
+def test_unknown_area_add_sign_label_is_not_doubled():  # F620S 真实导出核对时发现的显示问题
+    flow = _flow(冲压="冲压丁(未签)", 待审批人员="冲压丁、新人")
+    row = R.flow_rows([flow], DATA_DATE, ROSTER)[0]
+    assert "新人（加签（区域未知））" in R.todo_text(row)
+    assert "加签·加签" not in R.todo_text(row)
+
+
+# ── 2026-11-16 手工导入的逐单日变化（daily_progress）──────────────────
+
+
+def _flows(*rows):
+    return R.build_flows(list(rows)).flows
+
+
+def test_daily_progress_kinds_and_totals():
+    base = _flows(
+        _row("P", 应签人数=4, 已签人数=1, 未签人数=3, 签署率="25%"),   # 有人签：3 → 1
+        _row("R", 应签人数=2, 已签人数=1, 未签人数=1),                 # 加签：1 → 2
+        _row("U", 应签人数=2, 已签人数=1, 未签人数=1),                 # 不变
+        _row("C", 应签人数=2, 已签人数=1, 未签人数=1),                 # 签完：1 → 0
+        _row("X", 应签人数=2, 已签人数=0, 未签人数=2, 签署率="0%"),    # 今天消失
+    )
+    today = _flows(
+        _row("P", 应签人数=4, 已签人数=3, 未签人数=1, 签署率="75%"),
+        _row("R", 应签人数=3, 已签人数=1, 未签人数=2, 签署率="33.33%"),
+        _row("U", 应签人数=2, 已签人数=1, 未签人数=1),
+        _row("C", 应签人数=2, 已签人数=2, 未签人数=0, 签署率="100%", 状态="已完成"),
+        _row("N", 应签人数=1, 已签人数=0, 未签人数=1, 签署率="0%"),    # 新增
+    )
+    result = R.daily_progress(today, base)
+    kinds = {item["serial"]: item["kind"] for item in result["flows"]}
+    assert kinds == {"P": "progress", "R": "regress", "U": "unchanged", "C": "completed", "N": "new"}
+    by = {item["serial"]: item for item in result["flows"]}
+    assert (by["P"]["remainingBefore"], by["P"]["remainingNow"], by["P"]["change"]) == (3, 1, -2)
+    assert by["R"]["change"] == 1 and by["C"]["completedNow"] is True
+    assert by["N"]["remainingBefore"] is None and by["N"]["change"] is None
+    totals = result["totals"]
+    # 待签 = 应签 − 已签（与 totalRate 同口径）：基线 3+1+1+1+2=8，今天 1+2+1+0+1=5
+    assert (totals["remainingBefore"], totals["remainingNow"]) == (8, 5)
+    assert totals["remainingChange"] == -2 + 1 + 0 - 1  # 只算两天都在的单
+    assert totals["newlyCompleted"] == ["C"] and totals["newFlows"] == ["N"] and totals["removedFlows"] == ["X"]
+    assert (totals["completeBefore"], totals["completeNow"]) == (0, 1)
+    assert (totals["openBefore"], totals["openNow"]) == (5, 4)
+    assert (totals["progress"], totals["unchanged"], totals["regress"]) == (1, 1, 1)
+    assert totals["rateBefore"] == str(R.display_pct(4, 12)) and totals["rateNow"] == str(R.display_pct(7, 12))
+
+
+def test_daily_progress_complete_in_both_is_not_newly_completed():
+    done = _row("D", 应签人数=1, 已签人数=1, 未签人数=0, 签署率="100%", 状态="已完成")
+    result = R.daily_progress(_flows(done), _flows(done))
+    assert result["flows"][0]["kind"] == "unchanged" and result["totals"]["newlyCompleted"] == []

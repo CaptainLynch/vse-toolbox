@@ -1,0 +1,55 @@
+{
+  "deliverable_empty_audits": {
+    "deliverableId": "VPI-T2-D1",
+    "total": 0,
+    "updates": []
+  },
+  "deliverable_non_existent": null,
+  "deliverable_with_audits": {
+    "deliverableId": "VPI-T2-D5",
+    "total": 2,
+    "updates": [
+      {
+        "appliedChanges": {
+          "note": "自动同步备注",
+          "owner": "同步负责人"
+        },
+        "createdAt": "<TIMESTAMP>",
+        "errorSummary": null,
+        "externalVersion": "v-sync-01",
+        "id": 2,
+        "proposedChanges": {
+          "note": "自动同步备注",
+          "owner": "同步负责人",
+          "plannedDate": null
+        },
+        "result": "applied",
+        "skippedFields": {},
+        "sourceType": "tdc",
+        "triggerType": "scheduled"
+      },
+      {
+        "appliedChanges": {
+          "note": "进展正常 password=[redacted] token=[redacted]",
+          "progress": 75
+        },
+        "createdAt": "<TIMESTAMP>",
+        "errorSummary": null,
+        "externalVersion": null,
+        "id": 1,
+        "proposedChanges": {
+          "actualDate": null,
+          "note": "进展正常 password=[redacted] token=[redacted]",
+          "owner": "赵岩",
+          "plannedDate": "2026-08-08",
+          "progress": 75,
+          "status": "进行中"
+        },
+        "result": "applied",
+        "skippedFields": {},
+        "sourceType": "none",
+        "triggerType": "manual"
+      }
+    ]
+  }
+}

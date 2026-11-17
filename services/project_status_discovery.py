@@ -42,6 +42,19 @@ _SCHEMA_KEY = "_schema"
 _STABILITY_IDS_KEY = "_stabilityIds"
 _UPSTREAM_TOTAL_KEY = "_upstreamTotal"
 _MISMATCH_KEY = "_mismatch"
+#: 稳定性基线口径标记：``member`` = 配置单号成员身份（多单号绑定）。
+#: 旧版本（本次修复前）多单号观测的 ``_stabilityIds`` 是行身份，不能当成员集合比，
+#: 缺这个标记时按「基线不可用」明确失败，绝不落一条假的 key_changed。
+_STABILITY_MODE_KEY = "_stabilityMode"
+
+#: 稳定性基线回看窗口：采样端取「最近一条 matched 观测」作基线，而不是最近一条
+#: 观测。一次失配会落 key_changed（对基线证据的否定），若把最新一条当基线，这条
+#: 否定会顶掉基线，之后每次重试都只能 stability_baseline_missing（绑定永久卡死）。
+_STABILITY_BASELINE_WINDOW = 50
+_STABILITY_MODE_MEMBER = "member"
+# 落库观测的归因（与 HTTP 响应里的 ``reason`` 同源）：多单号部分命中必须让
+# DB/历史读者也看得到 ``serial_set_partial``，而不是只看到一条裸的 not_found。
+_REASON_KEY = "_reason"
 _STATUS_HINT = re.compile(r"status|state|node|stage|approval|approve|状态|节点|审批", re.I)
 _SENSITIVE_FIELD = re.compile(r"authorization|cookie|token|secret|password|session|csrf", re.I)
 
@@ -53,9 +66,16 @@ def _scalar(value: Any) -> str | None:
     return text or None
 
 
-def _key(row: Mapping[str, Any]) -> str | None:
-    value = record_identity(row)
+def _key(row: Mapping[str, Any], report_type: str | None = None) -> str | None:
+    value = record_identity(row, report_type=report_type)
     return value or None
+
+
+def _report_type(deliverable_id: str) -> str | None:
+    """能力注册表的 reportType：身份字段顺序与聚合摘要口径的单一来源。"""
+    capabilities = PROJECT_STATUS_SOURCE_CAPABILITIES.get(str(deliverable_id), {})
+    report = str(capabilities.get("reportType") or "").strip()
+    return report or None
 
 
 def _aggregate_report(deliverable_id: str) -> str | None:
@@ -65,9 +85,7 @@ def _aggregate_report(deliverable_id: str) -> str | None:
     因此取证/预览端也必须传同一类型，否则预览仍显示旧「单号：状态」明细而执行
     写入「共 N 条；状态计数」摘要。
     """
-    capabilities = PROJECT_STATUS_SOURCE_CAPABILITIES.get(str(deliverable_id), {})
-    report = str(capabilities.get("reportType") or "").strip()
-    return report or None
+    return _report_type(deliverable_id)
 
 
 class MappingDiscoveryService:
@@ -84,7 +102,24 @@ class MappingDiscoveryService:
         aggregate: bool = False,
         match_rule: Mapping[str, Any] | None = None,
         upstream_total: int | None = None,
+        fingerprint_identities: Sequence[str] | None = None,
+        state_reason: str | None = None,
     ) -> dict[str, Any]:
+        """落一条映射发现观测（证据指纹 = 稳定性判定的唯一基线）。
+
+        ``fingerprint_identities``（多单号绑定专用，默认 None）：
+        聚合指纹默认口径是**行身份集合**（数模 = incident，见
+        ``aggregate_fingerprint``）。多单号场景下上游行集会随新增零件行/新增
+        实例变化，行身份口径会让「连续两次指纹一致」永不可达 ⇒ 绑定永远无法
+        启用。因此多单号绑定改传**配置单号成员身份**（``serial_match["found"]``）：
+        只对「这批单号是否都在」敏感，行内容与行数不参与。同一份成员身份也是
+        F10 稳定性基线（``_stabilityIds``），采样端按同一口径比对。
+        默认 None 时行为与传入前逐字一致（存量路径不得传值）；非聚合观测传值
+        直接 ValueError（单记录绑定没有成员身份语义）。
+
+        ``state_reason``（默认 None）：归因枚举（如 ``serial_set_partial``），
+        既进响应也随 ``_reason`` 落库，供历史/DB 读者区分「未匹配」的具体原因。
+        """
         if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes, bytearray)):
             raise ValueError("rows must be a sequence of objects")
         if any(not isinstance(row, Mapping) for row in rows):
@@ -95,6 +130,19 @@ class MappingDiscoveryService:
             )
         if not isinstance(aggregate, bool):
             raise ValueError("aggregate must be a boolean")
+        if fingerprint_identities is not None:
+            if not aggregate:
+                raise ValueError(
+                    "fingerprint_identities is only valid for aggregate observations"
+                )
+            if isinstance(fingerprint_identities, (str, bytes, bytearray)) or not isinstance(
+                fingerprint_identities, Sequence
+            ):
+                raise ValueError("fingerprint_identities must be a sequence of strings")
+            if any(not isinstance(item, str) for item in fingerprint_identities):
+                raise ValueError("fingerprint_identities must be a sequence of strings")
+        if state_reason is not None and not isinstance(state_reason, str):
+            raise ValueError("state_reason must be a string or null")
         if upstream_total is not None and (
             isinstance(upstream_total, bool)
             or not isinstance(upstream_total, int)
@@ -103,10 +151,11 @@ class MappingDiscoveryService:
             raise ValueError("upstream_total must be a non-negative integer or None")
         if selected_external_key is not None and not isinstance(selected_external_key, str):
             raise ValueError("selected_external_key must be a string or null")
+        report_type = _report_type(deliverable_id)
         safe_rows = [self._safe_row(row) for row in rows]
         full_rows = [self._candidate_row(row) for row in rows]
-        keyed = [(key, row) for row in safe_rows if (key := _key(row))]
-        full_keyed = [(key, row) for row in full_rows if (key := _key(row))]
+        keyed = [(key, row) for row in safe_rows if (key := _key(row, report_type))]
+        full_keyed = [(key, row) for row in full_rows if (key := _key(row, report_type))]
         selected = str(selected_external_key or "").strip() or None
 
         current_policy = self.db.get_project_status_update_policy(deliverable_id)
@@ -149,19 +198,34 @@ class MappingDiscoveryService:
 
         aggregated_candidate_values: dict[str, Any] | None = None
         cache_records: list[tuple[str, dict[str, Any]]] = []
+        reason: str | None = state_reason or None
         if aggregate:
             # 聚合观测（用户 2026-09-13 确认：按车型聚合全部匹配记录）：
             # 不做单记录筛选/歧义判定；指纹为全部记录单号的集合哈希，
             # 连续两次指纹一致即视为报表范围稳定。
-            records = full_keyed if versioned_ewo else identified_records(full_rows)
-            display_records = keyed if versioned_ewo else identified_records(safe_rows)
+            records = (
+                full_keyed if versioned_ewo
+                else identified_records(full_rows, report_type=report_type)
+            )
+            display_records = (
+                keyed if versioned_ewo
+                else identified_records(safe_rows, report_type=report_type)
+            )
             candidates = display_records
             cache_records = records
             if not records:
                 state, external_key, fingerprint = "not_found", None, None
             else:
                 state, external_key = "matched", None
-                fingerprint = aggregate_fingerprint(records)
+                if fingerprint_identities is None:
+                    # 默认口径（存量逐字不变）：行身份集合（数模 = incident）。
+                    fingerprint = aggregate_fingerprint(records)
+                else:
+                    # 多单号绑定：基线是「配置单号成员身份」，行内容/行数不参与
+                    # （上游新增零件行不会让连续两次观测永远不一致）。
+                    fingerprint = aggregate_fingerprint(
+                        [(identity, {}) for identity in fingerprint_identities]
+                    )
                 if versioned_ewo:
                     from services.ewo_binding_records import ewo_v2_candidate_values
                     aggregated_candidate_values = ewo_v2_candidate_values(records, current_mapping, effective_rule, report=_aggregate_report(deliverable_id))
@@ -177,6 +241,11 @@ class MappingDiscoveryService:
             cache_records = full_candidates
             if not candidates:
                 state, external_key, fingerprint = "not_found", selected, None
+                if selected is not None and keyed:
+                    # 不变量哨兵：选中键非空、行集非空，却没有候选 —— 只可能是
+                    # 「选中键」与「候选过滤键」来自不同身份字段（2026-10-10
+                    # 数模生产事故）。修复后不可达，保留作回归保护。
+                    reason = "selected_not_in_candidates"
             elif len(candidates) > 1:
                 state, external_key, fingerprint = "ambiguous", selected, None
             else:
@@ -195,7 +264,15 @@ class MappingDiscoveryService:
         # F10 稳定性基线：与采样同源的比对基准。基线 = 全量有单号记录的截断哈希
         # 集合（顺序无关，采样只需 ⊆ 基线）+ 上游声明总数（缺省回退为去重后行数，
         # 已知风险：分页漂移时可能误拒）。必须与指纹/config_signature 解耦。
-        stability_baseline_ids = sorted({identity_digest(key) for key, _ in full_keyed})
+        # 多单号绑定（``fingerprint_identities``）的基线必须是**配置单号成员身份**，
+        # 与证据指纹同一口径：多单号路径下 ``full_keyed`` 只是「已命中并集」，
+        # 拿它当基线会让全量采样必然落在基线之外 ⇒ 稳定校验必然误报 key_changed。
+        if fingerprint_identities is None:
+            stability_baseline_ids = sorted({identity_digest(key) for key, _ in full_keyed})
+        else:
+            stability_baseline_ids = sorted(
+                {identity_digest(identity) for identity in fingerprint_identities}
+            )
         resolved_upstream_total = upstream_total if upstream_total is not None else len(rows)
         aggregated_payload: dict[str, Any] = dict(aggregated_candidate_values or {})
         if candidate_cache is not None:
@@ -203,6 +280,12 @@ class MappingDiscoveryService:
         aggregated_payload[_SCHEMA_KEY] = _STABILITY_SCHEMA
         aggregated_payload[_UPSTREAM_TOTAL_KEY] = resolved_upstream_total
         aggregated_payload[_STABILITY_IDS_KEY] = stability_baseline_ids
+        if fingerprint_identities is not None:
+            # 口径标记：采样端据此区分「成员身份基线」与「行身份基线」。
+            aggregated_payload[_STABILITY_MODE_KEY] = _STABILITY_MODE_MEMBER
+        if reason is not None:
+            # 归因随观测落库：历史/DB 读者不能只看到一条裸的 not_found。
+            aggregated_payload[_REASON_KEY] = reason
         observation_id = self.db.record_mapping_observation(
             deliverable_id, source_type, state, external_key, fingerprint,
             len(candidates), json.dumps(summaries, ensure_ascii=False),
@@ -215,6 +298,7 @@ class MappingDiscoveryService:
             "observationId": observation_id, "state": state,
             "externalKey": external_key, "candidateCount": len(candidates),
             "candidates": summaries, "fieldReport": report,
+            "reason": reason,
             "stability": {"confirmed": progress, "required": 2, "ready": progress >= 2},
         }
 
@@ -227,6 +311,8 @@ class MappingDiscoveryService:
         *,
         aggregate: bool = False,
         match_rule: Mapping[str, Any] | None = None,
+        member_identities: Sequence[str] | None = None,
+        sample_empty_reason: str | None = None,
     ) -> dict[str, Any]:
         """F10: 对上游独立轻量签名核验，比对通过才确认为稳定。
 
@@ -234,9 +320,27 @@ class MappingDiscoveryService:
         同源比对）与 `_stabilityIds`（全量单号截断哈希集合，顺序无关——采样单号
         只需 ⊆ 基线，与上游排序解耦；零漂移时确定性通过，第 1 页出现新记录或
         总数变化时正确拒绝）。缺保留键的历史观测回退旧"摘要前 5 单号子集"逻辑。
+
+        ``member_identities``（多单号绑定专用，默认 None）：多单号绑定的基线是
+        **配置单号成员身份**，不是「全量第 1 页」。因此调用方必须先做与首次观测
+        同源的全量抓取 + ``match_serials``，再把本次命中的单号集合传进来：
+        比对方式是**集合相等**（不是子集——样本侧本身就是完整命中集合），
+        且不比对 ``_upstreamTotal``（上游多出一行零件行会让总体总数变化，
+        拿总数比对必然误报 key_changed）。成员集合变化时落 key_changed +
+        ``serial_set_changed``，而不是静默通过。
         """
-        previous = self.db.list_mapping_observations(deliverable_id, 1)
-        if not previous or previous[0]["result_state"] != "matched":
+        if member_identities is not None:
+            if not aggregate:
+                raise ValueError("member_identities is only valid for aggregate observations")
+            if isinstance(member_identities, (str, bytes, bytearray)) or not isinstance(
+                member_identities, Sequence
+            ):
+                raise ValueError("member_identities must be a sequence of strings")
+            if any(not isinstance(item, str) for item in member_identities):
+                raise ValueError("member_identities must be a sequence of strings")
+        if sample_empty_reason is not None:
+            # 空样本不能判稳定：空集是任何集合的子集，子集判定会空真通过 ⇒ 假 ready。
+            # 这里明确返回 inconclusive，且**不落观测**（不毒化基线）。
             return {
                 "observationId": None,
                 "state": "not_found",
@@ -244,40 +348,126 @@ class MappingDiscoveryService:
                 "candidateCount": total_count,
                 "candidates": [],
                 "fieldReport": {"fields": []},
+                "reason": sample_empty_reason,
+                "stability": {"confirmed": 0, "required": 2, "ready": False},
+                "mismatch": {"reason": "inconclusive", "expected": None, "actual": 0},
+            }
+        member_mode = member_identities is not None
+        # 基线 = 最近一条 matched 观测（见 _STABILITY_BASELINE_WINDOW）。
+        recent = self.db.list_mapping_observations(
+            deliverable_id, _STABILITY_BASELINE_WINDOW
+        )
+        current_signature = (
+            compute_config_signature(source_type, match_rule)
+            if match_rule is not None
+            else None
+        )
+        matched_observations = [
+            row for row in recent if row["result_state"] == "matched"
+        ]
+        obs1 = None
+        signature_conflict = False
+        if matched_observations:
+            if current_signature is None:
+                obs1 = matched_observations[0]
+            else:
+                # 优先「与当前 match_rule 同签名」或「旧版无签名」的基线。
+                obs1 = next(
+                    (
+                        row
+                        for row in matched_observations
+                        if not row.get("config_signature")
+                        or row.get("config_signature") == current_signature
+                    ),
+                    None,
+                )
+                if obs1 is None:
+                    # 只剩旧配置的基线：仍拿它做**否定性**比对（让用户看到明确的
+                    # 「基线不一致」并重新取证），但本次绝不返回 matched —— 否则新
+                    # 配置可能只凭一次样本就与旧基线吻合而达到 2/2，违反「连续两次
+                    # 一致证据」。换绑/改规则后的正确恢复路径是重新取证。
+                    obs1 = matched_observations[0]
+                    signature_conflict = True
+        if obs1 is None:
+            return {
+                "observationId": None,
+                "state": "not_found",
+                "externalKey": None,
+                "candidateCount": total_count,
+                "candidates": [],
+                "fieldReport": {"fields": []},
+                "reason": "stability_baseline_missing",
                 "stability": {"confirmed": 0, "required": 2, "ready": False},
                 "mismatch": None,
             }
-        obs1 = previous[0]
         config_signature = obs1.get("config_signature")
         if match_rule is not None:
-            rule_sig = compute_config_signature(source_type, match_rule)
-            if config_signature and rule_sig != config_signature:
-                config_signature = rule_sig
+            # 选中 obs1 时已保证「同签名或无签名」，这里直接采用当前规则签名：本次
+            # 观测才会被 mapping_stability_count 计入（旧观测缺签名时也能继续累计）。
+            config_signature = compute_config_signature(source_type, match_rule)
 
         baseline_payload = self._stability_baseline_payload(obs1)
         legacy_baseline = baseline_payload is None
         if legacy_baseline:
             baseline_payload = {}
 
+        if member_mode and (
+            legacy_baseline
+            or not isinstance(baseline_payload.get(_STABILITY_IDS_KEY), list)
+            or baseline_payload.get(_STABILITY_MODE_KEY) != _STABILITY_MODE_MEMBER
+        ):
+            # 成员身份比对需要「成员身份基线」：旧观测（缺 `_schema`）或修复前的
+            # 多单号观测（`_stabilityIds` 是行身份）都无法判定成员集合。这里明确
+            # 返回"基线不可用"，绝不落一条假的 key_changed（那会让绑定永远无法就绪）。
+            return {
+                "observationId": None,
+                "state": "not_found",
+                "externalKey": None,
+                "candidateCount": total_count,
+                "candidates": [],
+                "fieldReport": {"fields": []},
+                "reason": "stability_baseline_missing",
+                "stability": {"confirmed": 0, "required": 2, "ready": False},
+                "mismatch": None,
+            }
+
         safe_samples = [self._safe_row(r) for r in sample_rows]
-        sample_keys = {k for r in safe_samples if (k := _key(r))}
+        sample_report_type = _report_type(deliverable_id)
+        sample_keys = {
+            k for r in safe_samples if (k := _key(r, sample_report_type))
+        }
         mismatch: dict[str, Any] | None = None
 
         # 1. 总数：上游声明总数对声明总数（legacy 回退：去重后候选数，不同源但保底）。
-        expected_total = baseline_payload.get(_UPSTREAM_TOTAL_KEY)
-        if not isinstance(expected_total, int) or isinstance(expected_total, bool) or expected_total < 0:
-            expected_total = obs1["candidate_count"]
-        if expected_total != total_count:
-            mismatch = {
-                "reason": "total_mismatch",
-                "expected": expected_total,
-                "actual": total_count,
-            }
+        #    多单号成员身份比对不参与：总体行数会随零件行增长，成员集合才是唯一不变量。
+        if not member_mode:
+            expected_total = baseline_payload.get(_UPSTREAM_TOTAL_KEY)
+            if (
+                not isinstance(expected_total, int)
+                or isinstance(expected_total, bool)
+                or expected_total < 0
+            ):
+                expected_total = obs1["candidate_count"]
+            if expected_total != total_count:
+                mismatch = {
+                    "reason": "total_mismatch",
+                    "expected": expected_total,
+                    "actual": total_count,
+                }
 
-        # 2. 首页采样单号必须全部落在基线集合内（顺序无关）。
+        # 2. 采样单号必须全部落在基线集合内（顺序无关）。
+        #    多单号成员模式：本次命中集合必须与基线集合**相等**（集合本身就是全集）。
         if mismatch is None:
             baseline_ids = baseline_payload.get(_STABILITY_IDS_KEY)
-            if not legacy_baseline and isinstance(baseline_ids, list):
+            if member_mode:
+                sample_hashes = {identity_digest(key) for key in member_identities}
+                if sample_hashes != set(baseline_ids):
+                    mismatch = {
+                        "reason": "serial_set_changed",
+                        "expected": len(set(baseline_ids)),
+                        "actual": len(sample_hashes),
+                    }
+            elif not legacy_baseline and isinstance(baseline_ids, list):
                 sample_hashes = {identity_digest(key) for key in sample_keys}
                 if not sample_hashes.issubset(set(baseline_ids)):
                     mismatch = {
@@ -317,6 +507,14 @@ class MappingDiscoveryService:
                     "actual": len(sample_field_keys),
                 }
 
+        if mismatch is None and signature_conflict:
+            # 基线来自旧配置：即使样本恰好落在旧基线内，也必须判不一致。
+            mismatch = {
+                "reason": "baseline_signature_mismatch",
+                "expected": None,
+                "actual": None,
+            }
+
         if mismatch is None:
             state = "matched"
             fingerprint = obs1["candidate_fingerprint"]
@@ -324,6 +522,10 @@ class MappingDiscoveryService:
             summaries_json = obs1["candidate_summary_json"]
             report_json = obs1["field_report_json"]
             agg_json = obs1.get("aggregated_candidate_json")
+            # 成员模式复用的是基线那条观测的摘要与候选缓存，所以落库的
+            # candidate_count 必须与基线一致（否则预览侧「缓存条数 == 候选数」
+            # 门禁会判成 candidate_cache_unavailable，绑定看起来仍未就绪）。
+            candidate_count = obs1["candidate_count"] if member_mode else total_count
         else:
             state = "key_changed"
             fingerprint = hashlib.sha256(
@@ -336,6 +538,9 @@ class MappingDiscoveryService:
                 {_SCHEMA_KEY: _STABILITY_SCHEMA, _MISMATCH_KEY: mismatch},
                 ensure_ascii=False,
             )
+            # 成员模式同样沿用基线那条观测的候选数：这条 key_changed 观测是
+            # 「对基线证据的否定」，不是一次新的候选采集（摘要/报告都为空）。
+            candidate_count = obs1["candidate_count"] if member_mode else total_count
 
         observation_id = self.db.record_mapping_observation(
             deliverable_id,
@@ -343,7 +548,7 @@ class MappingDiscoveryService:
             state,
             external_key,
             fingerprint,
-            total_count,
+            candidate_count,
             summaries_json,
             report_json,
             config_signature=config_signature,
@@ -354,9 +559,10 @@ class MappingDiscoveryService:
             "observationId": observation_id,
             "state": state,
             "externalKey": external_key,
-            "candidateCount": total_count,
+            "candidateCount": candidate_count,
             "candidates": json.loads(summaries_json),
             "fieldReport": json.loads(report_json),
+            "reason": None,
             "stability": {"confirmed": progress, "required": 2, "ready": progress >= 2},
             "mismatch": mismatch,
         }
@@ -482,6 +688,13 @@ class MappingDiscoveryService:
                 field_report = {}
             if not isinstance(field_report, dict):
                 field_report = {}
+            try:
+                aggregated = json.loads(row.get("aggregated_candidate_json") or "{}")
+            except (TypeError, ValueError):
+                aggregated = {}
+            if not isinstance(aggregated, dict):
+                aggregated = {}
+            stored_reason = aggregated.get(_REASON_KEY)
             observations.append(
                 {
                     "id": row["id"], "sourceType": row["source_type"],
@@ -489,6 +702,9 @@ class MappingDiscoveryService:
                     "candidateCount": row["candidate_count"],
                     "candidates": candidates,
                     "fieldReport": field_report,
+                    # 归因随观测落库：历史读者能看到「未匹配」的具体原因
+                    # （例如多单号部分命中的 serial_set_partial）。
+                    "reason": stored_reason if isinstance(stored_reason, str) else None,
                     "createdAt": row["created_at"],
                 }
             )

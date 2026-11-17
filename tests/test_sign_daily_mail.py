@@ -7,6 +7,7 @@ import base64
 import email
 import importlib.util
 import sys
+import time
 from email import policy
 from pathlib import Path
 
@@ -31,7 +32,7 @@ TEXTS = {"greeting": "各位领导、同事：", "planText": "计划10-10发布"
 
 def _report(**overrides):
     report = {
-        "summaryLines": ["F610M-车体区域-3D单流程共4份", "长周期：…", "总：…", "首次生成，无日变化"],
+        "summaryLines": ["F610M-车体区域-3D单流程共4份", "长周期签单情况：…", "总签单情况：…"],
         "snapshotAt": "2026-10-03T08:00:00Z",
         "charts": {
             "external": [{"group": "冲压", "personTimes": 2, "flows": 2, "people": 1,
@@ -44,12 +45,13 @@ def _report(**overrides):
             {"serial": "S1", "partLabel": "【长周期】前门内板等2件", "department": "车身科", "applicant": "林锦辉",
              "stage": "会签中",
              "todo": [{"name": "冲压丁", "area": "冲压", "external": True, "addSign": False},
-                      {"name": "加签壬", "area": "", "external": False, "addSign": True}],
-             "notRouted": 1, "countersign": (1, 2), "total": (1, 2), "days": 15},
+                      {"name": "加签壬", "area": "", "external": False, "addSign": True},
+                      {"name": "起草甲", "area": "车身科", "external": False, "addSign": False, "returned": True}],
+             "notCurrent": 1, "countersign": (1, 2), "total": (1, 2), "days": 15},
             {"serial": "S2", "partLabel": "顶棚", "department": "车体科", "applicant": "蒋运飞", "stage": "审批中",
-             "todo": [], "notRouted": 0, "countersign": (2, 2), "total": (2, 3), "days": 8},
+             "todo": [], "notCurrent": 0, "countersign": (2, 2), "total": (2, 3), "days": 8},
             {"serial": "S3", "partLabel": "<b>x</b>", "department": "车身科", "applicant": "A", "stage": "待锁定",
-             "todo": [], "notRouted": 0, "countersign": (1, 1), "total": (1, 1), "days": 2},
+             "todo": [], "notCurrent": 0, "countersign": (1, 1), "total": (1, 1), "days": 2},
         ],
     }
     report.update(overrides)
@@ -58,14 +60,14 @@ def _report(**overrides):
 
 def test_html_order_images_and_table():
     body = M.render_html(_report(), TEXTS, THRESHOLDS)
-    order = [body.index(marker) for marker in ("首次生成", "计划10-10发布", "图1 外区域会签欠账", "图2 内部科室会签欠账",
-                                               "图3 审批欠账", "在途流程签署明细")]
+    order = [body.index(marker) for marker in ("F610M-车体区域", "计划10-10发布", "图1 外区域会签未签单情况", "图2 内部科室会签未签单情况",
+                                               "图3 审批未签单情况", "在途流程签署明细")]
     assert order == sorted(order)  # 汇总、文案、图1、图2、图3、明细表（§6）
     assert 'src="cid:sd-external"' in body and 'src="cid:sd-approval"' in body
     assert "cid:sd-sections" not in body and "本阶段无未签" in body  # G6
     assert "柱高 = 当前待办的在途 3D单份数" in body  # G7
     assert '<a href="https://x.feishu.cn/base/abc">' in body
-    assert "<b>冲压丁（冲压）</b>" in body and "加签壬（加签）" in body and "另 1 人未流转到" in body
+    assert "<b>冲压丁（冲压）</b>" in body and "加签壬（加签）" in body and "起草甲（退回修改）" in body and "另 1 人未签、非当前待办" in body
     assert 'bgcolor="#ffd6d6"' in body and "font-weight:bold;\">15<" in body  # 超期：浅红底红色粗体
     assert 'bgcolor="#fff3c4"' in body  # 预警：浅黄底
     assert "&lt;b&gt;x&lt;/b&gt;" in body  # 转义
@@ -83,7 +85,7 @@ def test_empty_report_and_plain_text():
     lines = text.splitlines()
     header = lines.index("\t".join(M._TABLE_HEADERS))
     assert lines[header + 1].split("\t")[:3] == ["1", "S1", "【长周期】前门内板等2件"]
-    assert "冲压丁（冲压）、加签壬（加签），另 1 人未流转到" in lines[header + 1]
+    assert "冲压丁（冲压）、加签壬（加签）、起草甲（退回修改），另 1 人未签、非当前待办" in lines[header + 1]
 
 
 def test_recipients_add_owed_people_and_list_gaps():
@@ -118,16 +120,95 @@ def test_png_validation():
             M.decode_png(bad)
 
 
-def test_links_keep_all_query_parameters_and_time_is_local(monkeypatch):  # 审计
+def test_links_keep_all_query_parameters():  # 审计
     body = M.render_html(_report(), {**TEXTS, "feishuLink": "反馈 https://x.feishu.cn/wiki/a?from=a&sheet=b 谢谢"},
                          THRESHOLDS)
     assert '<a href="https://x.feishu.cn/wiki/a?from=a&amp;sheet=b">' in body
+
+
+def test_data_time_falls_back_to_data_date():
+    assert M.format_data_time({"snapshotAt": "", "dataDate": "2026-10-03"}) == "2026-10-03"
+
+
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="time.tzset only exists on POSIX; Windows uses the system zone")
+def test_data_time_is_local(monkeypatch):  # 审计
     monkeypatch.setenv("TZ", "Asia/Shanghai")
-    import time
     time.tzset()
     try:
         assert M.format_data_time({"snapshotAt": "2026-10-03T01:23:45.123456Z"}) == "2026-10-03 09:23"
     finally:
         monkeypatch.delenv("TZ")
         time.tzset()
-    assert M.format_data_time({"snapshotAt": "", "dataDate": "2026-10-03"}) == "2026-10-03"
+
+
+def test_no_total_rate_owed_or_first_generation_text_and_column_count():
+    report = _report()
+    html_body = M.render_html(report, TEXTS, THRESHOLDS)
+    text_body = M.render_text(report, TEXTS)
+    for forbidden in ("总签单率", "欠账", "首次生成"):
+        assert forbidden not in html_body and forbidden not in text_body
+    assert "总签单率" not in M._TABLE_HEADERS
+    assert len(M._TABLE_HEADERS) == 10
+    lines = text_body.splitlines()
+    start = lines.index("\t".join(M._TABLE_HEADERS))
+    for row_line in lines[start + 1:start + 1 + len(report["flows"])]:
+        assert len(row_line.split("\t")) == len(M._TABLE_HEADERS)
+    first_row = html_body.split("<tr>")[2]
+    assert first_row.count("<td") == len(M._TABLE_HEADERS)
+
+
+# ── 2026-11-16 每日进展段（手工导入模式）────────────────────────────
+
+
+def _progress(flows, **totals):
+    base = {"remainingBefore": 10, "remainingNow": 7, "remainingChange": -3, "rateBefore": "50.0",
+            "rateNow": "65.0", "completeBefore": 1, "completeNow": 2, "newlyCompleted": ["C<1>"],
+            "openBefore": 4, "openNow": 3, "newFlows": [], "removedFlows": [], "progress": 1,
+            "unchanged": 1, "regress": 1}
+    base.update(totals)
+    return {"flows": flows, "totals": base, "baseDate": "2026-11-05"}
+
+
+def _item(serial, kind, before, now):
+    change = None if before is None else now - before
+    return {"serial": serial, "project": "F610M", "remainingBefore": before, "remainingNow": now,
+            "change": change, "completedNow": now == 0, "kind": kind}
+
+
+FLOWS = [
+    _item("U1", "unchanged", 2, 2),
+    _item("R1", "regress", 1, 2),
+    _item("P1", "progress", 3, 2),
+    _item("P2", "progress", 5, 1),
+    _item("N1", "new", None, 1),
+    _item("C<1>", "completed", 1, 0),
+]
+
+
+def test_progress_text_leads_with_headline_and_sorts_rows():
+    text = M.progress_text(_progress(FLOWS))
+    lines = text.splitlines()
+    assert lines[0] == "每日进展（较 11-05）"
+    assert lines[1] == "较 11-05：总签署率（已签/应签）50.0% → 65.0%（+15.0%）；待签人次减少 3；新签完 1 份；还有 3 份未签完。"
+    assert lines[2].startswith("待签人次 10→7（↓3）、签完 1→2 份、新签完 1 份、未签完 4→3 份")
+    serials = [line.split("\t")[0] for line in lines[4:]]
+    assert serials == ["C<1>", "P2", "P1", "R1", "N1"]  # 新签完 → 减少最多 → 变多 → 新增；不列无变化
+    assert "U1" not in text
+    assert "↓4" in text and "↑1" in text
+
+
+def test_progress_html_escapes_and_colors_with_text():
+    body = M.progress_html(_progress(FLOWS, removedFlows=["X&Y"]))
+    assert "C&lt;1&gt;" in body and "C<1>" not in body
+    assert "X&amp;Y" in body and "消失的单" in body
+    assert "U1" not in body
+    assert "color:#2e7d32;\">↓4</td>" in body and "↑1</td>" in body
+    assert "待签人次 10→7（两天都在的单 ↓3）" in body
+
+
+def test_progress_without_changes_says_so():
+    unchanged = _progress([_item("U1", "unchanged", 2, 2)], remainingChange=0, newlyCompleted=[])
+    assert "与 11-05 相比没有变化" in M.progress_html(unchanged)
+    assert "与 11-05 相比没有变化" in M.progress_text(unchanged)
+    assert "<table" not in M.progress_html(unchanged)
+    assert M.progress_html(None) == "" and M.progress_text(None) == ""

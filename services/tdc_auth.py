@@ -19,6 +19,7 @@ from html.parser import HTMLParser
 from typing import Any, Callable, Mapping
 from urllib.parse import parse_qs, urlencode, urljoin, urlsplit, urlunsplit
 
+from core.domain_identity import RECOVERY_ERROR_CODES
 from core.redaction import redact_sensitive_text
 from services.tdc_crawler import (
     DEFAULT_TDC_BASE_URL,
@@ -71,7 +72,12 @@ _SAFE_HEADER_NAMES = {
 
 
 class TDCAuthError(RuntimeError):
-    """Raised when the TDC OIDC login cannot be completed safely."""
+    """Raised when the TDC OIDC login cannot be completed safely.
+
+    ``recovery_code`` 是登录被拒时按契约 §4.2 登记到 §4.3 闭集的会话恢复码
+    （401 → ``credential_invalid``、403 → ``forbidden``）；未登记的码必须立刻
+    失败，绝不允许污染闭集。其余状态不标（交 ``SessionRenewalCoordinator.classify``）。
+    """
 
     def __init__(
         self,
@@ -80,11 +86,15 @@ class TDCAuthError(RuntimeError):
         stage: str | None = None,
         request_id: str | None = None,
         status_code: int | None = None,
+        recovery_code: str | None = None,
     ) -> None:
+        if recovery_code is not None and recovery_code not in RECOVERY_ERROR_CODES:
+            raise ValueError("unsupported recovery error code")
         super().__init__(redact_sensitive_text(message))
         self.stage = stage
         self.request_id = request_id
         self.status_code = status_code
+        self.recovery_code = recovery_code
 
 
 @dataclass(frozen=True)
@@ -253,11 +263,15 @@ class TDCPasswordAuthClient:
             # Drop references as soon as requests has encoded the body.
             payload["password"] = ""
             password_value = ""
-        if int(getattr(login_response.response, "status_code", 0) or 0) not in {301, 302, 303, 307, 308}:
+        login_status = int(getattr(login_response.response, "status_code", 0) or 0)
+        if login_status not in {301, 302, 303, 307, 308}:
+            # 契约 §4.2：登录被拒按 HTTP 状态登记闭集恢复码（401 → credential_invalid，
+            # 403 → forbidden）；其余状态不标，交 classify 按 stage/HTTP 归类。
             self._reject(
                 login_response,
                 "credentials-rejected",
                 "TDC username/password login failed or requires additional verification",
+                recovery_code=_login_rejection_code(login_status),
             )
         location = _header_value(getattr(login_response.response, "headers", {}), "Location")
         callback_url = urljoin(login_url, location)
@@ -559,7 +573,13 @@ class TDCPasswordAuthClient:
             message = f"TDC authentication HTTP {status}"
             if detail:
                 message = f"{message}: {detail}"
-            self._reject(trace, "rejected-status", message, json_fields=json_fields)
+            self._reject(
+                trace,
+                "rejected-status",
+                message,
+                json_fields=json_fields,
+                recovery_code=_login_rejection_code(status),
+            )
 
     def _require_origin(self, value: str, expected_origin: str, label: str) -> None:
         parsed = urlsplit(str(value))
@@ -584,6 +604,7 @@ class TDCPasswordAuthClient:
         *,
         exception_type: str | None = None,
         json_fields: tuple[str, ...] = (),
+        recovery_code: str | None = None,
     ) -> None:
         status = int(getattr(trace.response, "status_code", 0) or 0)
         self._emit(
@@ -595,7 +616,13 @@ class TDCPasswordAuthClient:
                 json_fields=json_fields,
             )
         )
-        raise TDCAuthError(message, stage=trace.stage, request_id=trace.request_id, status_code=status)
+        raise TDCAuthError(
+            message,
+            stage=trace.stage,
+            request_id=trace.request_id,
+            status_code=status,
+            recovery_code=recovery_code,
+        )
 
     def _url(self, path: str) -> str:
         return urljoin(self.base_url, path.lstrip("/"))
@@ -850,3 +877,19 @@ def _optional_positive_int(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return parsed if parsed > 0 else None
+
+
+def _login_rejection_code(status: int) -> str | None:
+    """登录被拒的闭集恢复码（契约 §4.2/§4.3，主控冻结口径）。
+
+    - 401 → ``credential_invalid``（口令被拒；禁止自动重试，锁定风险）；
+    - 403 → ``forbidden``（账号无 TDC 权限；不续期、不清凭据）；
+    - 其余状态（含登录表单被重渲染的 200、400/422、5xx/429）→ ``None``：
+      异常本身不标码，交 ``SessionRenewalCoordinator.classify`` 按 stage/HTTP
+      归类；既避免把网络故障记成一次失败登录，也不让未裁决的状态污染闭集。
+    """
+    if status == 401:
+        return "credential_invalid"
+    if status == 403:
+        return "forbidden"
+    return None

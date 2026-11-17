@@ -631,3 +631,65 @@ def test_finalize_sync_success_begin_immediate_prevents_concurrent_write_interle
     assert audit is not None
     assert audit["result"] == "applied"
     assert audit["external_version"] == snap.external_version
+
+def test_skipped_aggregate_run_refreshes_last_success_at(tmp_db) -> None:
+    """幂等 skipped = 已抓上游且内容未变，仍必须刷新 last_success_at（2026-10-28）。
+
+    否则界面「上次同步」永远停在首次内容变更那一刻（生产现象：点了"立即同步"、
+    提示"同步完成"，时间还是早上那次），调度器 _is_fresh 也会永远认为数据过期
+    而每轮重抓。进入该分支前 connector.collect 已成功返回，因此不会虚报新鲜度。
+    """
+    from services.project_status_updates import ProjectStatusUpdateService
+
+    service = ProjectStatusUpdateService(tmp_db)
+    deliverable_id = "VPI-T2-D5"
+    rule = json.dumps({"reportType": "data_model", "aggregate": True, "projectModel": "F610S"})
+    mapping = json.dumps({"note": "summaryNote"})
+    tmp_db.set_project_status_update_policy(
+        deliverable_id=deliverable_id,
+        mode="automatic",
+        enabled=True,
+        external_key=None,
+        match_rule_json=rule,
+        mapping_json=mapping,
+        field_authority={"remark": "automatic"},
+        credential_ref="domain",
+    )
+    rows = [{"incident": "F610S-01", "summaryNote": "内容长期不变"}]
+    _record_aggregate_evidence(tmp_db, deliverable_id, rule, rows)
+
+    def run_once():
+        lease = service.acquire_sync_lease(
+            deliverable_id, "scheduled", validate_runtime_prerequisites=False
+        )
+        context = _aggregate_context(
+            expected_deliverable_updated_at=_current_updated_at(tmp_db, deliverable_id),
+            mapping={"note": "summaryNote"},
+        )
+        snapshot = _snapshot(context, rows, [])
+        return service.apply_sync_update(
+            binding_id=int(lease["binding_id"]),
+            run_id=int(lease["run_id"]),
+            lease_token=lease["lease_token"],
+            snapshot=snapshot,
+            trigger_type="scheduled",
+        )
+
+    first = run_once()
+    assert first.final_state == "success"
+
+    # 人为把上次成功时间推到很早，模拟「内容长期未变」的生产状态。
+    with tmp_db.get_connection() as conn:
+        conn.execute(
+            "UPDATE project_status_update_bindings SET last_success_at = ? "
+            "WHERE deliverable_id = ?",
+            ("2020-01-01T00:00:00.000Z", deliverable_id),
+        )
+
+    second = run_once()
+    assert second.final_state == "success"
+    # 内容未变 → 幂等 skipped：不写业务行，但时间必须前进。
+    assert second.applied_fields == ()
+    binding = tmp_db.get_sync_binding_by_deliverable(deliverable_id)
+    assert binding["last_success_at"] > "2020-01-01T00:00:00.000Z"
+

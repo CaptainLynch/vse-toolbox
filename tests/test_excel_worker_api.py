@@ -77,6 +77,8 @@ def test_worker_unconfigured_returns_503(tmp_path: Path, monkeypatch: pytest.Mon
     assert response.headers["Cache-Control"] == "no-store"
 
 
+# 依赖真实 Popen 对空/目录 exe 抛错（不会真正拉起 Worker）。
+@pytest.mark.real_excel_worker
 def test_worker_start_missing_packaged_worker_returns_500(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -122,6 +124,8 @@ def test_worker_start_missing_packaged_worker_returns_500(
     assert str(tmp_path) not in response.get_data(as_text=True)
 
 
+# 依赖真实 Popen 对空/目录 exe 抛错（不会真正拉起 Worker）。
+@pytest.mark.real_excel_worker
 def test_worker_start_directory_packaged_worker_returns_500(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

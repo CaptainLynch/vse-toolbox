@@ -411,3 +411,145 @@ class ExcelToolbox:
             self._close_books(books)
             if app is not None:
                 self._close_app(app)
+
+
+# ── 只读取数（签署日报「Excel 代读」第 1 期，2026-11-12）────────────────
+#
+# 公司终端加密的 xlsx，本进程读到的是密文；Excel 是受信进程，能读到内容。
+# 这里只做一件事：用**独立的** Excel 实例只读打开工作簿，把第一张工作表的
+# 值一次取回内存。不保存、不另存、不落任何文件；不解密、不剥文件头。
+
+#: read_sheet_matrix 的失败原因闭集（调用方只按这些词映射文案，不看异常原文）。
+SHEET_REASON_EXCEL_UNAVAILABLE = "excel_unavailable"
+SHEET_REASON_CANNOT_OPEN = "excel_cannot_open"
+SHEET_REASON_HAS_FORMULA = "has_formula"
+SHEET_REASON_NOT_AT_A1 = "range_not_at_a1"
+SHEET_REASON_TOO_LARGE = "too_large"
+SHEET_REASON_CELL_ERROR = "cell_error"
+SHEET_REASONS = (
+    SHEET_REASON_EXCEL_UNAVAILABLE,
+    SHEET_REASON_CANNOT_OPEN,
+    SHEET_REASON_HAS_FORMULA,
+    SHEET_REASON_NOT_AT_A1,
+    SHEET_REASON_TOO_LARGE,
+    SHEET_REASON_CELL_ERROR,
+)
+#: msoAutomationSecurityForceDisable：打开时不执行任何宏。
+_AUTOMATION_SECURITY_FORCE_DISABLE = 3
+
+
+class SheetReadError(RuntimeError):
+    """只读取数失败；reason 是 SHEET_REASONS 之一，消息里不带任何单元格内容或路径。"""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(f"sheet read failed: {reason}")
+        self.reason = reason
+
+
+def _matrix_from_value2(raw: Any, rows: int, cols: int) -> list[list[Any]]:
+    """把 Range.Value2 统一成二维列表：单格返回标量、单行/单列可能返回一维。"""
+    if rows == 1 and cols == 1:
+        if isinstance(raw, (list, tuple)):
+            raw = raw[0]
+            if isinstance(raw, (list, tuple)):
+                raw = raw[0]
+        return [[raw]]
+    if not isinstance(raw, (list, tuple)):
+        raise SheetReadError(SHEET_REASON_CELL_ERROR)
+    if raw and not isinstance(raw[0], (list, tuple)):
+        # 一维：单行按行摆，单列按列摆。
+        matrix = [list(raw)] if rows == 1 else [[value] for value in raw]
+    else:
+        matrix = [list(row) for row in raw]
+    if len(matrix) != rows or any(len(row) != cols for row in matrix):
+        raise SheetReadError(SHEET_REASON_CELL_ERROR)
+    return matrix
+
+
+def read_sheet_matrix(
+    path: Path,
+    *,
+    max_rows: int,
+    max_cols: int,
+    on_app_started: Any = None,
+) -> list[list[Any]]:
+    """用独立 Excel 实例只读打开 ``path``，返回第一张工作表 A1 起的值矩阵（Value2）。
+
+    约束（任何一条不满足都抛 ``SheetReadError``，不返回部分结果）：
+
+    - 独立实例（不附着用户已开的 Excel）、``DisplayAlerts=False``、禁宏；
+      ``read_only=True``、不更新链接、不进最近使用列表、不弹通知；关闭时不保存；
+    - 工作表取第一张（与 zip 读取路一致），不用 ``ActiveSheet``；
+    - UsedRange 必须起于 A1；先读行列数，超过上限即拒，再一次取 ``Value2``；
+    - ``UsedRange.HasFormula`` 只有明确为 False 才放行；
+    - 单元格只接受 str / float / None；布尔、整数（错误码）等一律 ``cell_error``。
+
+    ``on_app_started(app)`` 在实例创建后立刻回调（调用方借此登记 Excel 的 PID）。
+    """
+    if max_rows <= 0 or max_cols <= 0:
+        raise ValueError("sheet limits must be positive")
+    try:
+        xw = _get_xlwings()
+        app = xw.App(visible=False, add_book=False)
+    except Exception:  # noqa: BLE001 - 没装 xlwings / 起不了 Excel 都是「本机不能代读」
+        raise SheetReadError(SHEET_REASON_EXCEL_UNAVAILABLE) from None
+
+    book = None
+    try:
+        if on_app_started is not None:
+            on_app_started(app)
+        try:
+            app.api.DisplayAlerts = False
+            app.api.AutomationSecurity = _AUTOMATION_SECURITY_FORCE_DISABLE
+            book = app.books.open(
+                str(path),
+                read_only=True,
+                update_links=False,
+                notify=False,
+                add_to_mru=False,
+            )
+            sheet = book.sheets[0]
+            used = sheet.api.UsedRange
+            first_row, first_col = int(used.Row), int(used.Column)
+            rows, cols = int(used.Rows.Count or 0), int(used.Columns.Count or 0)
+        except SheetReadError:
+            raise
+        except Exception:  # noqa: BLE001 - 只报枚举，不带 COM 异常原文
+            raise SheetReadError(SHEET_REASON_CANNOT_OPEN) from None
+        if first_row != 1 or first_col != 1:
+            raise SheetReadError(SHEET_REASON_NOT_AT_A1)
+        if rows <= 0 or cols <= 0 or rows > max_rows or cols > max_cols:
+            raise SheetReadError(SHEET_REASON_TOO_LARGE)
+        try:
+            has_formula = used.HasFormula
+            raw = sheet.range((1, 1), (rows, cols)).api.Value2
+        except Exception:  # noqa: BLE001
+            raise SheetReadError(SHEET_REASON_CANNOT_OPEN) from None
+        if has_formula is not False:
+            # True（全是公式）或 None（部分是公式）都拒：公式值不是导出件的原始内容。
+            raise SheetReadError(SHEET_REASON_HAS_FORMULA)
+        matrix = _matrix_from_value2(raw, rows, cols)
+        for row in matrix:
+            for value in row:
+                if value is None or isinstance(value, str):
+                    continue
+                if isinstance(value, bool) or not isinstance(value, float):
+                    raise SheetReadError(SHEET_REASON_CELL_ERROR)
+                if value != value or value in (float("inf"), float("-inf")):
+                    raise SheetReadError(SHEET_REASON_CELL_ERROR)
+        return matrix
+    finally:
+        if book is not None:
+            try:
+                book.api.Close(SaveChanges=False)
+            except Exception:  # noqa: BLE001 - 关闭失败不掩盖读取结论
+                pass
+        try:
+            app.quit()
+        except Exception:  # noqa: BLE001
+            kill = getattr(app, "kill", None)
+            if callable(kill):
+                try:
+                    kill()
+                except Exception:  # noqa: BLE001
+                    pass

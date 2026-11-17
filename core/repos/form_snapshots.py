@@ -120,6 +120,16 @@ class FormSnapshotRepo:
                 overdue_state = str(item.get("overdueState") or "unknown")
                 if overdue_state not in {"on_time", "overdue", "unknown", "not_applicable"}:
                     overdue_state = "unknown"
+                # 逐行官方列取得状态；缺省/未知取值统一落 ''（未知），读取侧
+                # 不会因此标注「本次未取得官方列」。
+                official_join = str(item.get("officialJoin") or "").strip()
+                if official_join not in {
+                    "joined",
+                    "ambiguous",
+                    "unmatched",
+                    "unavailable",
+                }:
+                    official_join = ""
                 form_rows.append(
                     (
                         snapshot_id,
@@ -139,6 +149,7 @@ class FormSnapshotRepo:
                         overdue_state,
                         1 if bool(item.get("isCompleted")) else 0,
                         _form_json(item.get("cost") or {}, limit=256 * 1024),
+                        official_join,
                     )
                 )
             if form_rows:
@@ -149,8 +160,8 @@ class FormSnapshotRepo:
                         values_json, dimensions_json, search_text, status_key,
                         department_key, section_key, model_key, stage_key,
                         submitted_date, planned_date, overdue_state,
-                        is_completed, cost_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        is_completed, cost_json, official_join
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     form_rows,
                 )
@@ -190,6 +201,10 @@ class FormSnapshotRepo:
         result["submittedDate"] = result.pop("submitted_date", None)
         result["plannedDate"] = result.pop("planned_date", None)
         result["overdueState"] = result.pop("overdue_state", "unknown")
+        # 逐行官方列取得状态；'' 表示未知（旧快照/未标注），读取侧不得据此
+        # 标注「本次未取得官方列」——只有 schema.officialColumns 存在时前端才
+        # 结合 ambiguous/unmatched/unavailable 展示。
+        result["officialJoin"] = str(result.pop("official_join", "") or "")
         result.pop("id", None)
         result.pop("snapshot_id", None)
         result.pop("search_text", None)
@@ -302,7 +317,7 @@ class FormSnapshotRepo:
                        r.search_text, r.status_key, r.department_key,
                        r.section_key, r.model_key, r.stage_key,
                        r.submitted_date, r.planned_date, r.overdue_state,
-                       r.is_completed, r.cost_json
+                       r.is_completed, r.cost_json, r.official_join
                 FROM deliverable_form_rows r
                 WHERE r.snapshot_id = (
                     SELECT id FROM deliverable_form_snapshots
@@ -340,7 +355,7 @@ class FormSnapshotRepo:
                        values_json, dimensions_json, search_text, status_key,
                        department_key, section_key, model_key, stage_key,
                        submitted_date, planned_date, overdue_state,
-                       is_completed, cost_json
+                       is_completed, cost_json, official_join
                 FROM deliverable_form_rows r
                 WHERE r.snapshot_id = ? AND {clause}
                 ORDER BY r.is_completed ASC, r.row_number ASC, r.id ASC

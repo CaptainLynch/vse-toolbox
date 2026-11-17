@@ -6,7 +6,9 @@
 // readiness, save, update history).
 import { html, useEffect, useRef, useState } from "/static/host/vendor/preact-htm.js";
 import { apiRequest, enc } from "./api.js";
-import { newWizardSessionId, postMappingDiscovery } from "./discovery.js";
+import { attachPolicyDigest } from "./policy-digest-logic.js";
+import { postMappingDiscovery } from "./discovery.js";
+import { runEnableFlow } from "./enable-flow.js";
 import { SearchMultiSelect } from "./multi-select.js";
 import { deliverableSyncDisplay, syncResultText } from "./display.js";
 import { redactSensitiveText, safeDisplayValue } from "./format.js";
@@ -16,32 +18,29 @@ import {
   EWO_POLICY_MODE_LABELS,
   EWO_POLICY_RECOMMENDED_MODE,
   INTERVAL_OPTIONS,
+  MATCH_FIELD_CONTRACT,
   POLICY_SYNC_HINTS,
+  SERIAL_SET_TEXT_MAX,
   applyBindingMode,
   bindingInitialValues,
   bindingModeView,
   bindingReadiness,
   buildEvidencePayload,
   buildPolicyPayload,
-  buildWizardDiscovery,
   capabilitiesOf,
   defaultMappingFor,
-  dropDepartment,
   ewoPolicyDiscoveryFields,
   ewoPolicyDiscoveryStateLabel,
   ewoPolicyErrorMessage,
   ewoPolicyString,
   mappingText,
-  stabilityGateFailureMessage,
+  parseSerialSet,
   stabilityText,
   wizardInitialValues,
   wizardKind,
-  wizardMapping,
-  wizardNotMatchedMessage,
-  wizardPolicyPatch,
+  wizardMultiSerialHint,
   wizardPrecheck,
   wizardPrimaryMatchField,
-  wizardRetryWithoutDepartment,
 } from "./policy-logic.js";
 
 // 终态文案待显示槽按交付物限定：向导可能在用户离开本交付物后才结束；若不限定
@@ -100,6 +99,10 @@ function SyncSummaryCard({ item, policy, capabilities, settings, advancedOpen, o
       // NCR 无部门维度：摘要卡展示科室范围声明（归集口径的预设多选）。
       const scopeList = Array.isArray(rule.sectionScope) ? rule.sectionScope : [];
       if (scopeList.length) facts.push(["科室", safeDisplayValue(scopeList.join("、"))]);
+    } else if (kind.isDataModel && Array.isArray(rule.sections) && rule.sections.length) {
+      // 数模：科室是实际筛选条件（本地收窄），部门只是选填的附加条件。
+      facts.push(["科室", safeDisplayValue(rule.sections.join("、"))]);
+      if (dept) facts.push(["责任部门", safeDisplayValue(dept)]);
     } else if (dept) {
       facts.push(["责任部门", safeDisplayValue(dept)]);
     }
@@ -129,43 +132,14 @@ function SyncSummaryCard({ item, policy, capabilities, settings, advancedOpen, o
     // 避免每秒级的 /api/diagnostics 请求与长请求争抢。
     window.__vseWizardBusy = true;
     try {
-      const plan = buildWizardDiscovery(values, capabilities);
-      // 同一次启用内的多次取证共享会话：服务端据此复用第 1 次的全量抓取并做第 2 次轻量核验。
-      plan.payload.wizardSessionId = newWizardSessionId();
-      // 统一域会话下该请求会转后台任务（202），postMappingDiscovery 内部轮询至完成；
-      // 密码/Cookie 模式仍同步执行。两次取证独立契约不变。
-      say("正在抓取映射证据（第 1/2 次，统一域会话下后台执行）...");
-      let result = (await postMappingDiscovery(item.id, plan.payload)) || {};
-      if (result.state === "ambiguous" && !plan.aggregate) {
-        say("候选不唯一，请选择一次目标记录。");
-        const selected = await pickCandidate(result.candidates);
-        setCandidates(null);
-        plan.payload.selectedExternalKey = selected;
-        result = (await postMappingDiscovery(item.id, plan.payload)) || {};
-      }
-      if (result.state !== "matched" && plan.kind.isTdc && plan.deptVal) {
-        say("指定部门未匹配，正在尝试不限部门自动重试...");
-        const retry = (await postMappingDiscovery(item.id, wizardRetryWithoutDepartment(plan.payload))) || {};
-        if (retry && (retry.state === "matched" || (retry.state === "ambiguous" && !plan.aggregate))) {
-          result = retry;
-          dropDepartment(plan);
-        }
-      }
-      if (result.state !== "matched") throw new Error(wizardNotMatchedMessage(result));
-      let confirmed = Number(result.stability && result.stability.confirmed);
-      if (!Number.isFinite(confirmed) || confirmed < 2) {
-        say("正在验证映射稳定性（第 2/2 次）...");
-        result = (await postMappingDiscovery(item.id, { ...plan.payload, stabilityCheck: true })) || {};
-        confirmed = Number(result.stability && result.stability.confirmed);
-        if (result.state !== "matched" || !Number.isFinite(confirmed) || confirmed < 2) {
-          throw new Error(stabilityGateFailureMessage(result));
-        }
-      }
-      const mappingResult = wizardMapping(plan, capabilities, result);
-      say("正在保存配置并启用自动同步...");
-      await apiRequest(policyPath(item.id), { method: "PATCH", body: wizardPolicyPatch(plan, values, result, mappingResult, vaultConfigured) });
-      say("配置已启用，正在触发首次同步...");
-      const syncData = await apiRequest(`/api/project-status/deliverables/${enc(item.id)}/sync-now`, { method: "POST" });
+      const syncData = await runEnableFlow({
+        item, capabilities, values, vaultConfigured, say,
+        pickCandidate: async (list) => {
+          const selected = await pickCandidate(list);
+          setCandidates(null);
+          return selected;
+        },
+      });
       say(`配置并启用成功！${syncResultText(syncData)}`);
       await onReloadOverview();
     } catch (err) {
@@ -194,13 +168,35 @@ function SyncSummaryCard({ item, policy, capabilities, settings, advancedOpen, o
     }
   };
 
-  // 科室预设与看板「科室归集规则」目标同源（sourceInfo.sectionScopePresets 下发）。
+  // 科室预设与看板「科室归集规则」目标同源：NCR 用 sectionScopePresets（声明式），
+  // 数模用 sectionPresets（筛选式，默认五科室）。
   const presetTargets = Array.isArray(capabilities && capabilities.sectionScopePresets) ? capabilities.sectionScopePresets : [];
+  const sectionPresets = Array.isArray(capabilities && capabilities.sectionPresets) ? capabilities.sectionPresets : [];
   const declaredHint = POLICY_SYNC_HINTS[syncDisplay.state];
+  // 后端下发了契约版本却与本前端不一致：多半是 onedir 包未重建、后端进程未重启
+  // 或浏览器留了旧 ES module。此时界面可能仍在渲染旧控件，必须显式告知。
+  const contractMismatch = Boolean(capabilities && capabilities.matchFieldContract)
+    && capabilities.matchFieldContract !== MATCH_FIELD_CONTRACT;
   const numberText = kind.isEwo ? "EWO 编号（选填，留空则整车聚合）"
     : kind.isPaa ? "PAA 编号（选填，留空则整车聚合）"
       : kind.isNcr ? "NCR 编号（选填，留空则整车聚合）"
-        : (primary ? `${primary.label}（选填）` : "外部编号（选填）");
+        : kind.isDataModel ? "实例号 incident（选填，纯数字；与单个流水单号/多单号三选一）"
+          : (primary ? `${primary.label}（选填）` : "外部编号（选填）");
+  // 多单号（documentNos）是独立输入：功能开关关闭时（缺省）默认不渲染、不引导——
+  // 后端保存/发现/运行期都会 fail-closed。单值框继续 fail-closed，绝不接受多值整串。
+  const multiSerialAvailable = kind.isDataModel && capabilities && capabilities.multiSerialSyncEnabled === true;
+  const storedSerialSet = kind.isDataModel ? parseSerialSet(values.documentNos) : [];
+  // 开关关闭但存量配置里仍有多单号时必须照常渲染输入框：否则这个隐藏值在向导里
+  // 清不掉，保存必然被后端以「三选一」拒绝，用户没有任何出路（wizardInitialValues
+  // 会把 matchRule.documentNos 回填进来，所以这条路径真实存在）。
+  const multiSerialStale = !multiSerialAvailable && storedSerialSet.length > 0;
+  const multiSerialVisible = multiSerialAvailable || multiSerialStale;
+  const multiSerialCount = multiSerialVisible ? storedSerialSet.length : 0;
+  const multiSerialHint = multiSerialVisible ? wizardMultiSerialHint(values) : "";
+  const multiSerialNote = multiSerialStale
+    ? "多单号合并统计功能当前未开启，但这份配置里仍存着多单号；请清空此框（改用单个流水单号或实例号），否则保存会被后端拒绝。"
+    : `${multiSerialHint ? `${multiSerialHint}。` : ""}多个单号按空格或逗号分隔，本地精确匹配后合并统计写入同一交付物；与单值流水单号、实例号三选一。多单号不走候选预览（预览暂不支持多单号），就绪以保存后的后端校验为准。`;
+  const singleSerialFilled = Boolean(ewoPolicyString(values.documentNo) || ewoPolicyString(values.number));
 
   return html`<section class="policy-sync-summary" aria-label=${`${item.name} 数据同步`}>
     <div class="policy-sync-summary-head">
@@ -208,6 +204,7 @@ function SyncSummaryCard({ item, policy, capabilities, settings, advancedOpen, o
       <span class="policy-sync-summary-state">${syncDisplay.label}</span>
     </div>
     ${declaredHint && html`<p class="policy-sync-summary-hint">${declaredHint}</p>`}
+    ${contractMismatch && html`<p class="policy-sync-summary-hint is-warning">前端与后端字段契约版本不一致（界面 ${MATCH_FIELD_CONTRACT} / 服务 ${safeDisplayValue(capabilities.matchFieldContract)}）：请重启 VSE-WebUI 并强制刷新（Ctrl+F5），否则看到的可能仍是旧控件。</p>`}
     ${capabilities && capabilities.completenessPolicy === "workbook_admission" && html`<p class="policy-sync-summary-hint">来源为官方工作簿导出：仅当表头契约成立且逐行归类核对无剩余时才写入快照；该类来源没有声明总数，因此不构成源端零丢失的证明。</p>`}
     <ul class="policy-sync-summary-facts">
       ${facts.map(([label, value]) => html`<li class="policy-sync-summary-fact" key=${label}>
@@ -260,13 +257,26 @@ function SyncSummaryCard({ item, policy, capabilities, settings, advancedOpen, o
               />
               <small class="policy-field-note">科室维度按预设归集统计，其他科室值计入「未归集」；历史科室名可在看板下方「科室归集规则」登记。选择随配置保存，便于核对同步范围。</small>
             </label>`
-    : html`<label class="policy-ewo-field policy-wizard-field">
-              <span>责任部门</span>
+    : html`${kind.isDataModel && html`<label class="policy-ewo-field policy-wizard-field" data-wizard-field="sections">
+              <span>科室（可多选，默认五个科室）</span>
+              <${SearchMultiSelect}
+                ariaLabel="科室筛选"
+                placeholder=${sectionPresets.length ? "留空=不限科室" : "输入科室名后回车添加"}
+                options=${sectionPresets.map((value) => String(value))}
+                values=${values.sections}
+                onChange=${(next) => setValues((prev) => ({ ...prev, sections: next }))}
+              />
+              <small class="policy-field-note">按科室筛选，默认车体科、车身科、内饰科、外饰科、车体架构集成科五个科室。科室值按看板「科室归集规则」归集后匹配（历史名如「结构工程科」「视觉工程科」可先在那里登记）；未登记的历史值计入「未归集」并被排除。清空 = 不限科室。</small>
+            </label>`}
+            <label class="policy-ewo-field policy-wizard-field">
+              <span>${kind.isDataModel ? "责任部门（选填）" : "责任部门"}</span>
               <input type="text" maxlength="200" value=${values.department} onInput=${set("department")}
-                placeholder=${kind.isTdc ? "TDC 部门（如 车体工程，支持留空）" : `默认：${values.defaultDept}`} />
-              <small class="policy-field-note">${kind.isTdc
-    ? "TDC 部门（如“车体工程”），支持留空查询全量数据。请勿填写 Aras 形式“技术中心_车体工程”。"
-    : `默认筛选“${values.defaultDept}”，支持按需修改。`}</small>
+                placeholder=${kind.isDataModel ? "建议留空；如填 车体工程，会作为 TDC 部门条件收窄" : (kind.isTdc ? "TDC 部门（如 车体工程，支持留空）" : `默认：${values.defaultDept}`)} />
+              <small class="policy-field-note">${kind.isDataModel
+    ? "部门口径不稳定：同一科室的人有挂在「技术中心」、有挂在「车体工程」，按部门筛会漏人。建议留空，用上面的科室筛选。请勿填写 Aras 形式「技术中心_车体工程」。"
+    : (kind.isTdc
+      ? "TDC 部门（如“车体工程”），支持留空查询全量数据。请勿填写 Aras 形式“技术中心_车体工程”。"
+      : `默认筛选“${values.defaultDept}”，支持按需修改。`)}</small>
             </label>`}
           ${(kind.isDataModel || kind.isSor) && html`<label class="policy-ewo-field policy-wizard-field">
             <span>${kind.isDataModel ? "状态（选填，实验性）" : "状态（选填）"}</span>
@@ -275,13 +285,25 @@ function SyncSummaryCard({ item, policy, capabilities, settings, advancedOpen, o
     ? "实验性：该值直接传给 TDC 状态筛选参数，上游对其取值格式未经验证；已废弃/已撤回的剔除由同步范围规则自动完成，不依赖本字段。"
     : "该值作为 TDC SOR 状态筛选；已废弃/已撤回的行会先按同步范围规则自动剔除，剔除优先于本筛选（所选状态统计不含这些行）。"} />
           </label>`}
+          ${kind.isDataModel && html`<label class="policy-ewo-field policy-wizard-field">
+            <span>流水单号（选填，与下方实例号二选一）</span>
+            <input type="text" data-wizard-field="documentNo" maxlength="200" placeholder="例如 3D-00001018；填写后走全量抓取+本地精确匹配，较慢" value=${values.documentNo} onInput=${set("documentNo")} disabled=${multiSerialCount > 0} />
+            <small class="policy-field-note">流水单号是 3D- 前缀的流程编号（报表第 2 列）。TDC 不支持按它直接查询，同步会先全量抓取再本地精确匹配，耗时较长；与实例号（纯数字）只能填其一。此框只接受单个单号，多个单号请用下方「流水单号（多个，合并统计）」。</small>
+          </label>`}
+          ${multiSerialVisible && html`<label class="policy-ewo-field policy-wizard-field">
+            <span>流水单号（多个，合并统计）${multiSerialStale ? "（功能已关闭，可清空）" : ""}</span>
+            <input type="text" data-wizard-field="documentNos" data-wizard-hint=${multiSerialHint} maxlength=${SERIAL_SET_TEXT_MAX}
+              placeholder="空格或逗号分隔，如 3D-00001018 3D-00001193；与单个流水单号/实例号三选一"
+              value=${values.documentNos} onInput=${set("documentNos")} disabled=${singleSerialFilled && !multiSerialStale} />
+            <small class="policy-field-note">${multiSerialNote}</small>
+          </label>`}
           <label class="policy-ewo-field policy-wizard-field">
             <span>定时自动同步周期</span>
             <${IntervalSelect} value=${values.interval} onChange=${(v) => setValues((prev) => ({ ...prev, interval: v }))} />
           </label>
           <label class="policy-ewo-field policy-wizard-field">
             <span>${numberText}</span>
-            <input type="text" maxlength="200" placeholder="选填，留空将对整车项目全部单据进行聚合统计" value=${values.number} onInput=${set("number")} />
+            <input type="text" data-wizard-field="number" maxlength="200" placeholder="选填，留空将对整车项目全部单据进行聚合统计" value=${values.number} onInput=${set("number")} disabled=${multiSerialCount > 0} />
           </label>
           <button type="button" class="policy-wizard-start-btn" disabled=${running} onClick=${start}>${current.enabled === true ? "保存配置并同步" : "开始配置并启用"}</button>`}
     </div>
@@ -403,7 +425,7 @@ function BindingEditor({ item, policy, capabilities, settings, discovery: initia
     setSaving(true);
     setStatus({ text: "正在保存...", error: false });
     try {
-      await apiRequest(policyPath(item.id), { method: "PATCH", body: payload });
+      await apiRequest(policyPath(item.id), { method: "PATCH", body: attachPolicyDigest(payload, current.configDigest) });
       const failure = await onSaved();
       if (failure) {
         setStatus({ text: failure, error: false });

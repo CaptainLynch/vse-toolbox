@@ -99,11 +99,14 @@ Use one lead per task. The user's current choice takes precedence over defaults.
   or supply two options. Also consult after two focused debugging passes leave
   conflicting evidence on a high-impact issue, or when the user explicitly
   requests an independent opinion.
-- Choose sol-high for ordinary nontrivial design, sol-xhigh for complex
-  multi-module public contracts, concurrency or rollback, and astra-medium
-  or astra-high for hard-to-reverse security, silent-data-loss or destructive
-  migration decisions. Use astra-high when evidence conflicts or several
-  high-risk boundaries are coupled. Do not upgrade after a failed call.
+- Prefer Astra (user preference, 2026-10-23). Ordinary nontrivial design →
+  `astra-medium`; any high-risk class (complex multi-module public contracts,
+  concurrency, rollback, security, silent data loss, destructive migration) →
+  `astra-high`, and use `astra-high` when evidence conflicts or several
+  high-risk boundaries are coupled. Omitting `--profile` already yields these
+  two tiers, so the default call needs no profile flag; `sol-high` /
+  `sol-xhigh` are explicit fallbacks only (`--profile sol-*`), never the
+  automatic path. Do not upgrade after a failed call.
 - Skip routine implementation, tests, documentation, settled decisions and
   questions a focused local check can answer. Do not re-consult the same
   decision without material new evidence. A keyword alone is not a trigger.
@@ -132,10 +135,11 @@ Use one lead per task. The user's current choice takes precedence over defaults.
 
 ## Main Controller Context Governance
 
-- Codex keeps its configured native context window; on this machine Astra's Codex client is configured with an effective `272000`-token window. The following values are orchestration watermarks within that window: soft reminder `150000`, Handoff trigger `180000`, hard guard `200000` input tokens.
-- Below `150000`, continue normally. From `150000` to `180000`, use bounded reads and summaries. At `180000`, finish only the current atomic operation and hand off. At `200000`, stop accumulating context and start a new micro-session.
-- A phase boundary above `150000`, an uncached input increment of `20000` or more, a tool return of `8192` or more characters, or any browser image/large AX payload requests a Handoff even when the token watermark is lower.
+- Codex keeps its configured native context window; on this machine Astra's Codex client is configured with an effective `272000`-token window. The following values are orchestration watermarks within that window: soft reminder `150000`, handoff **evaluation point** `180000`, hard guard `200000` input tokens.
+- Below `150000`, continue normally. From `150000` to `180000`, externalise bulky evidence to files, keep bounded reads and summaries. At `180000`, decide the handoff **on economics, not on the watermark alone**: hand off only when expected remaining calls × per-call latency saving exceeds the cost of packaging, rebuilding and re-verifying; otherwise finish the current atomic operation and keep the tail short. At `200000`, stop accumulating context, take no new task, and start a new micro-session.
+- A phase boundary above `150000`, an uncached input increment of `20000` or more, a tool return of `8192` or more characters, or any browser image/large AX payload requests a handoff **evaluation** even when the token watermark is lower.
 - Handoffs contain only the task ID, changed files, diff summary, verification commands/results, risks and next action. Keep full logs, full diffs, screenshots and raw tool output in local evidence files.
+- Measured 2026-10-23: producing a handoff package costs ~15s / 2.5KB and a brief-only rebuild answered 4/4 control questions for ~1k tokens, while restoring by reading `AGENTS.md` + `memory/CURRENT_STATE.md` + `PROJECT_MAP.md` costs ~49.5k tokens of context. Therefore `memory/CURRENT_STATE.md` is capped at 40KB with older entries archived under `memory/archive/`, and state restore reads its "当前前沿" section first instead of the whole memory tree.
 - The worker's separate `1000000` effective context cap remains unchanged. With the default `32768` output allowance and `16384` safety reserve, the normal Gemini 3.8 Flash route has `950848` input tokens available. A weekend model override is opt-in and must not change the normal Gemini 3.8 Flash route.
 - The ZCode gifted `GLM-5.3-Flash` weekend profile is `interactive-only`: a headless `-WorkerProfile weekend-5.3flash` invocation must stop with `interactive-required` because runtime headers/CAPTCHA come from the interactive host. Use the model in interactive ZCode and omit the option to restore the normal Gemini worker route.
 

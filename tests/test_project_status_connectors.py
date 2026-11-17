@@ -7,6 +7,8 @@ import pytest
 
 from core.archive_store import ArchiveStore
 from core.credential_provider import MemoryCredentialProvider
+from services import data_model_watchlist
+from services import project_status_connectors as connectors
 from services.aras_crawler import EWOReportFilters
 from services.aras_ncr_workbook import (
     NcrWorkbookError,
@@ -106,6 +108,138 @@ def test_tdc_connector_archives_and_returns_normalized_candidate(tmp_path: Path)
     assert snapshot.candidates[0].field_values == {"owner": "审批人"}
     assert {item["artifact_type"] for item in snapshot.artifacts} == {"xlsx", "csv", "json"}
     assert all((tmp_path / item["relative_path"]).is_file() for item in snapshot.artifacts)
+
+
+def test_tdc_connector_document_no_narrows_rows_locally(tmp_path: Path):
+    """运行期消费 matchRule.documentNo：全量抓取后本地精确收窄，不发给上游。
+
+    流水单号（documentNo）不是 TDC 查询参数：绑定带它时，连接器抓全量后按
+    documentNo 收窄行集，快照身份/候选匹配仍按 externalKey（incident）走既有机制。
+    """
+    class FullThenFilteredTDC(FakeTDC):
+        def crawl_data_model_all(self, filters, max_records):
+            assert filters.instance_no is None  # documentNo 绝不充当 incident 发上游
+            return SimpleNamespace(
+                rows=[
+                    {"incident": "900001", "documentNo": "3D-00001018", "currentApprover": "张三"},
+                    {"incident": "900002", "documentNo": "3D-00001193", "currentApprover": "李四"},
+                    {"incident": "900003", "documentNo": "3D-00001200", "currentApprover": "王五"},
+                ],
+                complete=True,
+                stop_reason="reported_pages",
+            )
+
+        def export_data_model(self, filters):
+            path = self.output_dir / "official.xlsx"
+            path.write_bytes(b"PK\x03\x04fake")
+            return SimpleNamespace(path=path, file_name="official.xlsx", byte_count=8)
+
+    archive = ArchiveStore({"default": tmp_path}, reserve_bytes=0)
+    connector = TDCProjectStatusConnector(
+        MemoryCredentialProvider({"ref": ("user", "pass")}), archive,
+        auth_factory=FakeAuth, crawler_factory=FullThenFilteredTDC,
+    )
+    ctx = SyncBindingContext(
+        binding_id=20, deliverable_id="VPI-T2-D5", phase_id="VPI-T2",
+        source_type="tdc", external_key="900002",
+        match_rule={"reportType": "data_model", "documentNo": "3D-00001193"},
+        mapping={"owner": "currentApprover"}, cursor={},
+        expected_deliverable_updated_at="v1", run_id=21, credential_ref="ref",
+    )
+    snapshot = connector.collect(ctx)
+    # 命中行只剩 documentNo 匹配的那一行；单记录身份仍按 externalKey（incident）。
+    assert len(snapshot.analysis_rows) == 1
+    assert snapshot.analysis_rows[0]["incident"] == "900002"
+    assert snapshot.match_state == "matched"
+    assert snapshot.candidates[0].field_values == {"owner": "李四"}
+
+
+def test_tdc_connector_document_no_no_match_is_not_found(tmp_path: Path):
+    """绑定流水单号在源端已消失：按 documentNo 收窄后 0 行 → not_found（不是全量误报 matched）。"""
+
+    class NoHitTDC(FakeTDC):
+        def crawl_data_model_all(self, filters, max_records):
+            return SimpleNamespace(
+                rows=[{"incident": "900001", "documentNo": "3D-00001018"}],
+                complete=True, stop_reason="reported_pages",
+            )
+
+        def export_data_model(self, filters):
+            path = self.output_dir / "official.xlsx"
+            path.write_bytes(b"PK\x03\x04fake")
+            return SimpleNamespace(path=path, file_name="official.xlsx", byte_count=8)
+
+    archive = ArchiveStore({"default": tmp_path}, reserve_bytes=0)
+    connector = TDCProjectStatusConnector(
+        MemoryCredentialProvider({"ref": ("user", "pass")}), archive,
+        auth_factory=FakeAuth, crawler_factory=NoHitTDC,
+    )
+    ctx = SyncBindingContext(
+        binding_id=21, deliverable_id="VPI-T2-D5", phase_id="VPI-T2",
+        source_type="tdc", external_key="900001",
+        match_rule={"reportType": "data_model", "documentNo": "3D-00009999"},
+        mapping={"owner": "currentApprover"}, cursor={},
+        expected_deliverable_updated_at="v1", run_id=22, credential_ref="ref",
+    )
+    snapshot = connector.collect(ctx)
+    assert snapshot.match_state == "not_found"
+
+
+def test_tdc_connector_document_no_missing_column_raises_not_not_found(tmp_path: Path):
+    """空集归因：行集完全没有流水单号列（结构漂移）→ 明确报错，不落 not_found。"""
+
+    class NoColumnTDC(FakeTDC):
+        def crawl_data_model_all(self, filters, max_records):
+            return SimpleNamespace(
+                rows=[{"incident": "900001", "currentApprover": "张三"}],
+                complete=True, stop_reason="reported_pages",
+            )
+
+        def export_data_model(self, filters):
+            path = self.output_dir / "official.xlsx"
+            path.write_bytes(b"PK\x03\x04fake")
+            return SimpleNamespace(path=path, file_name="official.xlsx", byte_count=8)
+
+    archive = ArchiveStore({"default": tmp_path}, reserve_bytes=0)
+    connector = TDCProjectStatusConnector(
+        MemoryCredentialProvider({"ref": ("user", "pass")}), archive,
+        auth_factory=FakeAuth, crawler_factory=NoColumnTDC,
+    )
+    ctx = SyncBindingContext(
+        binding_id=23, deliverable_id="VPI-T2-D5", phase_id="VPI-T2",
+        source_type="tdc", external_key="900001",
+        match_rule={"reportType": "data_model", "documentNo": "3D-00001018"},
+        mapping={"owner": "currentApprover"}, cursor={},
+        expected_deliverable_updated_at="v1", run_id=24, credential_ref="ref",
+    )
+    with pytest.raises(ValueError, match="流水单号列"):
+        connector.collect(ctx)
+
+
+def test_tdc_connector_document_no_incomplete_crawl_fails_closed(tmp_path: Path):
+    """运行期抓取不完整：fail-closed 报错，绝不把部分行当完整结果收窄。"""
+
+    class IncompleteTDC(FakeTDC):
+        def crawl_data_model_all(self, filters, max_records):
+            return SimpleNamespace(
+                rows=[{"incident": "900001", "documentNo": "3D-00001018"}],
+                complete=False, stop_reason="max_pages",
+            )
+
+    archive = ArchiveStore({"default": tmp_path}, reserve_bytes=0)
+    connector = TDCProjectStatusConnector(
+        MemoryCredentialProvider({"ref": ("user", "pass")}), archive,
+        auth_factory=FakeAuth, crawler_factory=IncompleteTDC,
+    )
+    ctx = SyncBindingContext(
+        binding_id=22, deliverable_id="VPI-T2-D5", phase_id="VPI-T2",
+        source_type="tdc", external_key="900001",
+        match_rule={"reportType": "data_model", "documentNo": "3D-00001018"},
+        mapping={"owner": "currentApprover"}, cursor={},
+        expected_deliverable_updated_at="v1", run_id=23, credential_ref="ref",
+    )
+    with pytest.raises(ValueError, match="incomplete"):
+        connector.collect(ctx)
 
 
 def test_tdc_connector_collect_tolerates_archive_export_failure(tmp_path: Path):
@@ -1242,3 +1376,437 @@ def test_aras_paa_collect_excludes_cancel_rows_and_keeps_raw_json(tmp_path: Path
     exclusion = [event["data"] for event in events if event["kind"] == "aras_scope_exclusion"]
     assert len(exclusion) == 1
     assert exclusion[0] == {"report_type": "paa", "kept_count": 3, "dropped_count": 3}
+
+
+# ── 运行期多单号收窄（Task 10）───────────────────────────────────
+
+
+def _multi_serial_rule(*serials: str) -> dict[str, object]:
+    return {
+        "reportType": "data_model",
+        "aggregate": True,
+        "documentNos": list(serials),
+    }
+
+
+@pytest.mark.parametrize("empty", [[], "", None])
+def test_multi_serial_empty_set_raises_instead_of_aggregating_all(monkeypatch, empty) -> None:
+    """R28：``documentNos`` 键存在即进入多号分支——空集绝不退化成不过滤、聚合全表。
+
+    正常保存路径会省略空集（R19），但手工改库可造出 ``[]``/``""``/``null``；
+    旧实现按真值判断直接跳过收窄，等于把单号静默丢掉、聚合全表。
+    """
+    rows = [
+        {"incident": "FLOW-A", "documentNo": "3D-1"},
+        {"incident": "FLOW-B", "documentNo": "3D-2"},
+    ]
+    monkeypatch.setattr(connectors, "emit", lambda kind, payload, **kw: None)
+    with pytest.raises(ValueError):
+        connectors.TDCProjectStatusConnector._narrow_by_document_no(
+            rows, {"reportType": "data_model", "aggregate": True, "documentNos": empty}
+        )
+
+
+def test_multi_serial_blank_set_raises_instead_of_aggregating_all(monkeypatch) -> None:
+    """空白单号集合（``[" "]``）同样不得退化为全量。"""
+    rows = [
+        {"incident": "FLOW-A", "documentNo": "3D-1"},
+        {"incident": "FLOW-B", "documentNo": "3D-2"},
+    ]
+    monkeypatch.setattr(connectors, "emit", lambda kind, payload, **kw: None)
+    with pytest.raises(ValueError):
+        connectors.TDCProjectStatusConnector._narrow_by_document_no(
+            rows, {"reportType": "data_model", "aggregate": True, "documentNos": [" "]}
+        )
+
+
+def test_multi_serial_partial_missing_raises_and_emits_diagnostic(monkeypatch) -> None:
+    rows = [{"incident": "FLOW-A", "documentNo": "3D-1"}, {"incident": "FLOW-B", "documentNo": "3D-3"}]
+    events = []
+    monkeypatch.setattr(connectors, "emit", lambda kind, payload, **kw: events.append(kind))
+    with pytest.raises(ValueError) as excinfo:
+        connectors.TDCProjectStatusConnector._narrow_by_document_no(
+            rows, {"reportType": "data_model", "aggregate": True, "documentNos": ["3D-1", "3D-2"]})
+    assert "3D-2" in str(excinfo.value)
+    assert "tdc_document_nos_partial_missing" in events
+
+
+def test_multi_serial_partial_missing_never_returns_partial_rows(monkeypatch) -> None:
+    """部分缺失必须停跑：绝不把已命中子集当作本次结果（少算比停跑更糟）。"""
+    rows = [
+        {"incident": "FLOW-A", "documentNo": "3D-1"},
+        {"incident": "FLOW-B", "documentNo": "3D-3"},
+    ]
+    monkeypatch.setattr(connectors, "emit", lambda kind, payload, **kw: None)
+    with pytest.raises(ValueError):
+        connectors.TDCProjectStatusConnector._narrow_by_document_no(
+            rows, _multi_serial_rule("3D-1", "3D-2", "3D-3")
+        )
+
+
+def test_multi_serial_partial_missing_message_is_bounded(monkeypatch) -> None:
+    """异常文案最多点名 5 个缺失单号（有界），其余用计数收口。"""
+    rows = [{"incident": "FLOW-A", "documentNo": "3D-1"}]
+    monkeypatch.setattr(connectors, "emit", lambda kind, payload, **kw: None)
+    with pytest.raises(ValueError) as excinfo:
+        connectors.TDCProjectStatusConnector._narrow_by_document_no(
+            rows, _multi_serial_rule("3D-1", "3D-2", "3D-3", "3D-4", "3D-5", "3D-6", "3D-7")
+        )
+    message = str(excinfo.value)
+    assert "3D-7" not in message  # 第 6 个缺失单号不再逐项点名
+    assert message.count("3D-") == 5
+    assert "不写入部分结果" in message
+
+
+def test_multi_serial_diagnostic_payload_is_bounded_counts(monkeypatch) -> None:
+    """诊断 payload 只放有界计数：无单号明文，且键在诊断白名单内（落库后可读）。"""
+    from core.diagnostic_recording import safe_metadata
+
+    rows = [
+        {"incident": "FLOW-A", "documentNo": "3D-1"},
+        {"incident": "FLOW-B", "documentNo": "3D-3"},
+    ]
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(connectors, "emit", lambda kind, payload, **kw: events.append((kind, payload)))
+    with pytest.raises(ValueError):
+        connectors.TDCProjectStatusConnector._narrow_by_document_no(
+            rows, _multi_serial_rule("3D-1", "3D-2", "3D-3")
+        )
+    kind, payload = events[-1]
+    assert kind == "tdc_document_nos_partial_missing"
+    assert "3D-" not in repr(payload)
+    assert payload["expected_count"] == 3
+    assert payload["actual_count"] == 2
+    assert payload["failed_count"] == 1
+    # 键必须在诊断白名单内，否则落库时会被整段丢弃（等于记录了但读不到）。
+    assert safe_metadata(payload, "salt") == payload
+
+
+def test_multi_serial_all_missing_raises_fail_closed_and_emits_zero_match(monkeypatch) -> None:
+    """全部缺失：有界诊断 + 停跑 raise（与部分缺失同一条 fail-closed 路径）。
+
+    零命中若只返回空行集，运行期会按「本次没有结果」继续走成功/needs_attention
+    路径并可能覆盖上次良好快照；因此必须显式停跑，保留上次结果。
+    """
+    from core.diagnostic_recording import safe_metadata
+
+    rows = [{"incident": "FLOW-A", "documentNo": "3D-1"}]
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(connectors, "emit", lambda kind, payload, **kw: events.append((kind, payload)))
+    with pytest.raises(ValueError) as excinfo:
+        connectors.TDCProjectStatusConnector._narrow_by_document_no(
+            rows, _multi_serial_rule("3D-8", "3D-9")
+        )
+    message = str(excinfo.value)
+    assert "全部未命中" in message
+    assert "保留上次结果" in message
+    assert [kind for kind, _ in events] == ["tdc_document_nos_zero_match"]
+    payload = events[0][1]
+    assert payload["record_count"] == 1
+    assert payload["expected_count"] == 2
+    assert "3D-" not in repr(payload)
+    assert safe_metadata(payload, "salt") == payload
+
+
+def test_single_serial_zero_match_still_returns_empty_rows(monkeypatch) -> None:
+    """单值路径零命中仍返回空行集（既有约定，不随多单号 fail-closed 改变）。"""
+    rows = [{"incident": "FLOW-A", "documentNo": "3D-1"}]
+    events: list[str] = []
+    monkeypatch.setattr(connectors, "emit", lambda kind, payload, **kw: events.append(kind))
+    matched = connectors.TDCProjectStatusConnector._narrow_by_document_no(
+        rows, {"reportType": "data_model", "documentNo": "3D-9"}
+    )
+    assert matched == []
+    assert events == ["tdc_document_no_zero_match"]
+
+
+def test_multi_serial_full_match_returns_union_in_target_order(monkeypatch) -> None:
+    rows = [
+        {"incident": "FLOW-A", "documentNo": "3D-2"},
+        {"incident": "FLOW-B", "documentNo": "3D-1"},
+        {"incident": "FLOW-C", "documentNo": "3D-3"},
+    ]
+    events: list[str] = []
+    monkeypatch.setattr(connectors, "emit", lambda kind, payload, **kw: events.append(kind))
+    matched = connectors.TDCProjectStatusConnector._narrow_by_document_no(
+        rows, _multi_serial_rule("3D-1", "3D-2")
+    )
+    # 规范化后按单号升序合并，集合外的行（3D-3）不收窄进来。
+    assert [row["incident"] for row in matched] == ["FLOW-B", "FLOW-A"]
+    assert events == []
+
+
+def test_multi_serial_rows_without_serial_column_raise_structure_drift(monkeypatch) -> None:
+    """行缺单号列沿用既有结构漂移归因（不落「未匹配」）。"""
+    rows = [{"incident": "FLOW-A", "currentApprover": "张三"}]
+    events: list[str] = []
+    monkeypatch.setattr(connectors, "emit", lambda kind, payload, **kw: events.append(kind))
+    with pytest.raises(ValueError, match="流水单号列"):
+        connectors.TDCProjectStatusConnector._narrow_by_document_no(
+            rows, _multi_serial_rule("3D-1")
+        )
+    assert events == ["tdc_document_no_structure_drift"]
+
+
+def test_multi_serial_switch_disabled_fails_closed_before_upstream(tmp_path: Path, monkeypatch):
+    """R26：运行期遇到 documentNos 而功能开关关闭 → 停跑，且绝不发上游请求。"""
+    monkeypatch.delenv(data_model_watchlist.MULTI_SERIAL_SYNC_ENV, raising=False)
+    crawled: list[object] = []
+
+    class CountingTDC(FakeTDC):
+        def crawl_data_model_all(self, filters, max_records):
+            crawled.append(filters)
+            return SimpleNamespace(
+                rows=[{"incident": "FLOW-A", "documentNo": "3D-1"}],
+                complete=True, stop_reason="reported_pages",
+            )
+
+    archive = ArchiveStore({"default": tmp_path}, reserve_bytes=0)
+    connector = TDCProjectStatusConnector(
+        MemoryCredentialProvider({"ref": ("user", "pass")}), archive,
+        auth_factory=FakeAuth, crawler_factory=CountingTDC,
+    )
+    ctx = SyncBindingContext(
+        binding_id=30, deliverable_id="VPI-T2-D5", phase_id="VPI-T2",
+        source_type="tdc", external_key="",
+        match_rule=_multi_serial_rule("3D-1", "3D-2"),
+        mapping={"owner": "currentApprover"}, cursor={},
+        expected_deliverable_updated_at="v1", run_id=31, credential_ref="ref",
+    )
+    with pytest.raises(ValueError) as excinfo:
+        connector.collect(ctx)
+    assert str(excinfo.value) == data_model_watchlist.MULTI_SERIAL_DISABLED_MESSAGE
+    assert crawled == []
+
+
+# ── 官方 47 列解析与状态分类（docs/PLAN_20261022_OFFICIAL_COLUMNS_SYNC.md 设计 v2） ──
+
+
+def _cell_ref(column: int, row: int) -> str:
+    result = ""
+    while column:
+        column, remainder = divmod(column - 1, 26)
+        result = chr(65 + remainder) + result
+    return f"{result}{row}"
+
+
+def _write_official_workbook(path: Path, rows: list[list[object]]) -> None:
+    """写一个最小 XLSX（zip + XML，无第三方依赖），供官方导出解析用例使用。"""
+    from xml.sax.saxutils import escape
+    from zipfile import ZipFile
+
+    def row_xml(values: list[object], row_number: int) -> str:
+        cells = []
+        for index, value in enumerate(values, 1):
+            if value in (None, ""):
+                continue
+            cells.append(
+                f'<c r="{_cell_ref(index, row_number)}" t="inlineStr">'
+                f"<is><t>{escape(str(value))}</t></is></c>"
+            )
+        return f'<row r="{row_number}">{"".join(cells)}</row>'
+
+    workbook = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>'
+    )
+    relationships = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+        'Target="worksheets/sheet1.xml"/></Relationships>'
+    )
+    sheet = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'
+        + "".join(row_xml(values, index) for index, values in enumerate(rows, 1))
+        + "</sheetData></worksheet>"
+    )
+    with ZipFile(path, "w") as archive:
+        archive.writestr("xl/workbook.xml", workbook)
+        archive.writestr("xl/_rels/workbook.xml.rels", relationships)
+        archive.writestr("xl/worksheets/sheet1.xml", sheet)
+
+
+def _official_headers() -> list[str]:
+    from services.tdc_official_rows import official_contract_headers
+
+    return official_contract_headers("data_model")
+
+
+def _official_data_row(
+    serial: str,
+    part: str,
+    values: dict[str, object] | None = None,
+) -> list[object]:
+    headers = _official_headers()
+    row: list[object] = [""] * len(headers)
+    row[headers.index("流水单号")] = serial
+    row[headers.index("零件号")] = part
+    for label, value in (values or {}).items():
+        row[headers.index(label)] = value
+    return row
+
+
+class OfficialExportTDC(FakeTDC):
+    """导出真实官方 XLSX 工作簿的 TDC 假体（表头/数据行可配置）。"""
+
+    headers_override: list[str] | None = None
+    data_rows: list[list[object]] = []
+
+    def export_data_model(self, filters):
+        path = self.output_dir / "official.xlsx"
+        headers = self.headers_override or _official_headers()
+        _write_official_workbook(path, [list(headers), *self.data_rows])
+        return SimpleNamespace(
+            path=path, file_name="official.xlsx", byte_count=path.stat().st_size
+        )
+
+
+def _collect(tmp_path: Path, crawler_factory, ctx=None):
+    archive = ArchiveStore({"default": tmp_path}, reserve_bytes=0)
+    connector = TDCProjectStatusConnector(
+        MemoryCredentialProvider({"ref": ("user", "pass")}),
+        archive,
+        auth_factory=FakeAuth,
+        crawler_factory=crawler_factory,
+    )
+    return connector.collect(ctx or context())
+
+
+def test_tdc_official_columns_ok_status_and_rows(tmp_path: Path):
+    """官方工作簿可读 → 47 列契约行随快照返回，同步与归档照旧成功。"""
+
+    class OkTDC(OfficialExportTDC):
+        data_rows = [
+            _official_data_row(
+                "3D-00001018",
+                "27000001",
+                {"实例号": "90000101", "数量": "3", "NVH": "通过"},
+            )
+        ]
+
+    snapshot = _collect(tmp_path, OkTDC)
+
+    assert snapshot.match_state == "matched"
+    assert snapshot.official_status == "ok"
+    assert len(snapshot.official_rows) == 1
+    assert list(snapshot.official_rows[0]) == _official_headers()
+    assert snapshot.official_rows[0]["实例号"] == "90000101"
+    assert snapshot.official_rows[0]["流水单号"] == "3D-00001018"
+    assert snapshot.official_rows[0]["NVH"] == "通过"
+    assert {item["artifact_type"] for item in snapshot.artifacts} == {"xlsx", "csv", "json"}
+
+
+def test_tdc_official_columns_truncated_status(tmp_path: Path, monkeypatch):
+    """超出行上限 → truncated：本次不补齐，绝不返回部分行。"""
+
+    class BigTDC(OfficialExportTDC):
+        data_rows = [
+            _official_data_row("3D-00001001", "27000001"),
+            _official_data_row("3D-00001002", "27000002"),
+            _official_data_row("3D-00001003", "27000003"),
+        ]
+
+    monkeypatch.setattr(connectors, "_MAX_ROWS", 2)
+
+    snapshot = _collect(tmp_path, BigTDC)
+
+    assert snapshot.official_status == "truncated"
+    assert snapshot.official_rows == ()
+    assert snapshot.match_state == "matched"
+
+
+def test_tdc_official_columns_contract_mismatch_drops_whole_batch(tmp_path: Path):
+    """表头与已批准契约不符 → contract_mismatch，官方行整批丢弃。"""
+
+    class WrongHeaderTDC(OfficialExportTDC):
+        headers_override = ["错误表头"] + _official_headers()[1:]
+        data_rows = [_official_data_row("3D-00001018", "27000001", {"数量": "3"})]
+
+    snapshot = _collect(tmp_path, WrongHeaderTDC)
+
+    assert snapshot.official_status == "contract_mismatch"
+    assert snapshot.official_rows == ()
+    assert snapshot.match_state == "matched"
+    assert {item["artifact_type"] for item in snapshot.artifacts} == {"xlsx", "csv", "json"}
+
+
+def test_tdc_official_columns_unavailable_when_workbook_unreadable(tmp_path: Path):
+    """工作簿读不出来（假字节）→ unavailable，不阻断同步。"""
+    snapshot = _collect(tmp_path, FakeTDC)
+
+    assert snapshot.official_status == "unavailable"
+    assert snapshot.official_rows == ()
+    assert snapshot.match_state == "matched"
+    assert snapshot.candidates[0].field_values == {"owner": "审批人"}
+
+
+def test_tdc_official_columns_export_failed_status(tmp_path: Path):
+    """官方导出本身失败 → export_failed（沿用既有 best-effort 归档降级）。"""
+
+    class ExportFailing(OfficialExportTDC):
+        def export_data_model(self, filters):
+            raise RuntimeError("TDC 导出服务瞬时不可用 (503)")
+
+    snapshot = _collect(tmp_path, ExportFailing)
+
+    assert snapshot.official_status == "export_failed"
+    assert snapshot.official_rows == ()
+    assert snapshot.match_state == "matched"
+
+
+def test_tdc_sor_collect_does_not_request_official_columns(tmp_path: Path):
+    """仅数模报表请求官方列；SOR 保持 not_requested（不解析、不新增上游请求）。"""
+
+    class SorTDC(FakeTDC):
+        def crawl_sor_all(self, filters, max_records):
+            return SimpleNamespace(
+                rows=[{"processNo": "SOR-1"}], complete=True, stop_reason="reported_pages"
+            )
+
+        def export_sor(self, filters):
+            path = self.output_dir / "official-sor.xlsx"
+            path.write_bytes(b"PK\x03\x04fake")
+            return SimpleNamespace(path=path, file_name="official-sor.xlsx", byte_count=8)
+
+    ctx = SyncBindingContext(
+        binding_id=41, deliverable_id="VPI-T2-D2", phase_id="VPI-T2",
+        source_type="tdc", external_key="SOR-1",
+        match_rule={"reportType": "sor"},
+        mapping={"owner": "processNo"}, cursor={},
+        expected_deliverable_updated_at="v1", run_id=42, credential_ref="ref",
+    )
+
+    snapshot = _collect(tmp_path, SorTDC, ctx)
+
+    assert snapshot.official_status == "not_requested"
+    assert snapshot.official_rows == ()
+
+
+def test_tdc_official_rows_diagnostics_are_bounded_counts(tmp_path: Path, monkeypatch):
+    """官方列诊断只落有界计数与报表名：无单号明文，键在诊断白名单内。"""
+    from core.diagnostic_recording import safe_metadata
+
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        connectors, "emit", lambda kind, payload, **kw: events.append((kind, payload))
+    )
+
+    class WrongHeaderTDC(OfficialExportTDC):
+        headers_override = ["错误表头"] + _official_headers()[1:]
+        data_rows = [_official_data_row("3D-00001018", "27000001")]
+
+    _collect(tmp_path, WrongHeaderTDC)
+
+    kinds = [kind for kind, _ in events]
+    assert "tdc_official_rows_contract_mismatch" in kinds
+    payload = next(p for kind, p in events if kind == "tdc_official_rows_contract_mismatch")
+    # 2026-11-11：契约不符要带原因枚举（加密容器/损坏/格式不符靠 reason 区分），
+    # 状态值不变；reason 必须在诊断白名单内，其它键仍然只有报表名。
+    assert payload == {"report_type": "data_model", "reason": "schema_mismatch"}
+    assert "3D-" not in repr(payload)
+    assert safe_metadata(payload, "salt") == payload
