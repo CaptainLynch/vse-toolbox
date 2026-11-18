@@ -4,6 +4,19 @@
 > 更早条目完整保存在 [归档文件](archive/CURRENT_STATE_ARCHIVE_20261023.md)。
 > 恢复状态时**不要**再通读全文；先读本节，再按需查归档。
 
+## 当前前沿补充（2026-11-18 · iBOM 切换影响评估：已修订，待阶段 0A 取证）
+
+- **产物**：`docs/IMPACT_20261118_IBOM_SWITCH.md`（DSH 初稿 + 独立评审修订，§10 为 14 条勘误）。证据在本地
+  `.runtime/ibom-impact/`（不入库；原始 HAR 含有效 usertoken，参数接口响应含集成配置值）。未改生产代码。
+- **关键结论**：D5 可迁——DMM 有零件数模列表与 26 行签署矩阵，18 个部门人员列与 `COUNTERSIGN_COLUMNS`
+  逐字一致；签署状态在「会签校对」节点任务上，不在签署栏。鉴权不是 SSO-only：平台默认 `NORMAL_LOGIN`，
+  无人值守走 iBOM 本地服务账号；**密码错 3 次锁号且不自动解锁，登录绝不重试**。iBOM 有 PAA（MBOM 模块）；
+  当前账号无 SOR。DMM 报表 xlsx 在 HAR 里已损坏，列未见。
+- **已否定的路线**：用 `relationProcId` 查 iBOM 流程（它是 PDM 侧 14 位 ID）；假设 HAR「0 Cookie」即无 Cookie
+  （Chrome 脱敏导出剥离了 Cookie）；从 HAR 恢复导出 xlsx（二进制被文本化，不可恢复）。
+- **下一步**：阶段 0A 取证（3 张不同状态 DMM 详情抓包、直接另存报表 xlsx、SSO 跳转链、两账号 totalCount、
+  iBOM 单号与 TDC 快照交集）；阶段 0B 向 IT 确认服务账号、SOR 去向、Aras 是否同期下线。
+
 ## 当前前沿补充（2026-11-16 · 签署日报 0.6.0：图表配色 + 本地导入每日进展）【真机待验】
 
 - **改了什么**（均在 `plugins/sign_daily/`，`refactor/ux-v2`）：
