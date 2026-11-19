@@ -24,12 +24,14 @@
 
 ## 1. 控制台脚本（A + B）
 
-**操作**
+**操作（书签方式，推荐）**
 
-1. 浏览器登录 `https://ibom.sgmw.com.cn`，停在任意页面。
-2. F12 → Console。首次粘贴先输入 `allow pasting` 回车。
-3. 粘贴 `tools/ibom_phase0_probe.js` 全文，回车，等约 1 分钟，直到控制台出现「完成」。
+1. 用浏览器打开 `tools/ibom_phase0_probe.html`，按页面提示把「iBOM 取证」按钮拖到书签栏（只需一次）。
+2. 登录 `https://ibom.sgmw.com.cn`，停在任意页面，点书签栏里的「iBOM 取证」。
+3. 等约 1 分钟。浏览器提示「此网站尝试下载多个文件」时点**允许**。
 4. 下载目录里取两个文件：JSON 与报表 xlsx。
+
+**备用（控制台方式）**：F12 → Console，首次粘贴先输入 `allow pasting` 回车，再粘贴 `tools/ibom_phase0_probe.js` 全文回车（安装页里有「复制脚本」按钮）。
 
 **脚本自动导出的信息**
 
