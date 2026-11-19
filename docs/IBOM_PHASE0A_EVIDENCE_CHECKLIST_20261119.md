@@ -7,12 +7,17 @@
 
 ---
 
-## 0A. 一键收集 C 之外的剩余信息（2026-11-19 起推荐）
+## 0A. 剩余信息怎么收（2026-11-19 起推荐，生产机无需 Python）
 
-在装有 VSE Toolbox 的电脑上运行 `python tools/ibom_collect_phase0b.py`，一次收集：
-Q5 实际使用的筛选条件（只读本机数据库）、TDC 快照与 iBOM 单号交集（代替 D）、
-iBOM 未登录状态下的登录跳转链（代替 F，**不发送任何账号密码**）。
-交回 `.runtime/ibom-impact/phase0/collect_<时间>/` 下的 `report.json` 与 `summary.md`。
+用浏览器打开 `tools/ibom_phase0_probe.html`，按页面四步操作：
+
+| 工具 | 在哪里运行 | 收集什么 | 产出 |
+|---|---|---|---|
+| 书签「VSE 取证」 | VSE Toolbox 网页（`http://127.0.0.1…`） | Q5 实际使用的筛选条件；最新数模快照的流水单号（与 iBOM 求交集，代替 D） | `vse_phase0b_*.json` |
+| 书签「iBOM 取证」 | iBOM 网页（已登录） | 同 §1 | `ibom_phase0_*.json` + 报表 xlsx |
+| `ibom_sso_chain.ps1`（页面上一键下载） | Windows PowerShell 5.1 | 未登录状态的登录跳转链（代替 F），**不发送账号密码、不用 Windows 身份认证** | `ibom_sso_chain_*.json` |
+
+有 Python 的开发机也可以直接运行 `python tools/ibom_collect_phase0b.py`（读本机数据库 + 跳转链，产出 `report.json`/`summary.md`），结果等价。
 
 ## 0. 总览：要交回的东西
 

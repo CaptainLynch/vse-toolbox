@@ -4,380 +4,106 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>iBOM 取证工具</title>
-<!-- 由 tools/ibom_phase0_probe.js（版本 2026-11-18.1）经 terser 压缩生成；改脚本后需重新生成本页。 -->
+<!-- 由 tools/ibom_phase0_probe.js（2026-11-18.1）、tools/vse_phase0b_probe.js（2026-11-19.1）、tools/ibom_sso_chain.ps1（2026-11-19.1）生成；改源文件后需重新生成本页。 -->
 <style>
-:root{--bg:#fbfaf7;--fg:#1f2328;--muted:#5d6470;--card:#fff;--line:#e3e0d8;--accent:#1f6feb;--accent-fg:#fff;--warn:#9a6700;--warn-bg:#fff8e1}
-@media (prefers-color-scheme:dark){:root{--bg:#16181c;--fg:#e6e8eb;--muted:#a0a7b1;--card:#1e2126;--line:#30343b;--accent:#4c8dff;--accent-fg:#0b0d10;--warn:#f0c46b;--warn-bg:#2b2412}}
+:root{--bg:#fbfaf7;--fg:#1f2328;--muted:#5d6470;--card:#fff;--line:#e3e0d8;--accent:#1f6feb;--accent-fg:#fff;--accent2:#1a7f37;--warn:#9a6700;--warn-bg:#fff8e1}
+@media (prefers-color-scheme:dark){:root{--bg:#16181c;--fg:#e6e8eb;--muted:#a0a7b1;--card:#1e2126;--line:#30343b;--accent:#4c8dff;--accent-fg:#0b0d10;--accent2:#3fb950;--warn:#f0c46b;--warn-bg:#2b2412}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.65 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
-main{max-width:760px;margin:0 auto;padding:32px 16px 48px}
+main{max-width:780px;margin:0 auto;padding:32px 16px 48px}
 h1{font-size:24px;margin:0 0 4px}
 .sub{color:var(--muted);margin:0 0 24px}
 section{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:20px;margin:0 0 16px}
 h2{font-size:17px;margin:0 0 12px}
 ol{margin:0;padding-left:22px}
 li{margin:4px 0}
-.bm{display:inline-block;margin:8px 0 4px;padding:10px 18px;border-radius:8px;background:var(--accent);color:var(--accent-fg);font-weight:600;text-decoration:none;cursor:grab}
+.bm{display:inline-block;margin:8px 8px 4px 0;padding:10px 18px;border-radius:8px;background:var(--accent);color:var(--accent-fg);font-weight:600;text-decoration:none;cursor:grab}
+.bm.alt{background:var(--accent2)}
 .note{background:var(--warn-bg);color:var(--warn);border-radius:8px;padding:10px 12px;margin-top:12px;font-size:14px}
 code{font-family:Consolas,"SFMono-Regular",monospace;font-size:13px;background:rgba(127,127,127,.12);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}
-textarea{width:100%;height:160px;margin-top:8px;font:12px/1.4 Consolas,monospace;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:8px}
-button{margin-top:8px;padding:8px 14px;border-radius:6px;border:1px solid var(--line);background:var(--card);color:var(--fg);cursor:pointer;font:inherit}
+pre{background:rgba(127,127,127,.12);border-radius:6px;padding:8px 10px;overflow-x:auto;font:12.5px/1.5 Consolas,monospace;margin:8px 0}
+button{margin:8px 8px 0 0;padding:8px 14px;border-radius:6px;border:1px solid var(--line);background:var(--card);color:var(--fg);cursor:pointer;font:inherit}
 .meta{color:var(--muted);font-size:13px}
+table{border-collapse:collapse;width:100%;font-size:14px}
+td,th{border-bottom:1px solid var(--line);padding:6px 4px;text-align:left;vertical-align:top}
 </style>
 </head>
 <body>
 <main>
 <h1>iBOM 取证工具</h1>
-<p class="sub">阶段 0A 只读取证：一次运行导出 DMM 列表、样本明细、审批流和报表原件。只调用查询与导出接口，不发起审批、不保存、不删除。</p>
+<p class="sub">生产机无需安装 Python。三样工具都只读：只调用查询与导出接口，不发起审批、不改配置、不发送账号密码。</p>
 
 <section>
-<h2>方式一：书签（推荐）</h2>
+<h2>第一步：把两个按钮拖到书签栏（只需一次）</h2>
 <ol>
 <li>按 <code>Ctrl+Shift+B</code> 显示书签栏。</li>
-<li>把下面这个蓝色按钮<strong>拖到书签栏</strong>（不要点击它）：<br>
-<a class="bm" href="javascript:void%20function()%7B(async()%3D%3E%7B%22use%20strict%22%3Bconst%20e%3D4e5%3Bif(%22undefined%22!%3Dtypeof%20location%26%26!%2F(%5E%7C%5C.)ibom%5C.sgmw%5C.com%5C.cn%24%2F.test(location.hostname))return%20void%20console.error(%22%5Bibom-probe%5D%20%E8%AF%B7%E5%9C%A8%20ibom.sgmw.com.cn%20%E7%9A%84%E9%A1%B5%E9%9D%A2%E9%87%8C%E8%BF%90%E8%A1%8C%22)%3Bconst%20t%3D%22undefined%22!%3Dtypeof%20location%3Flocation.origin%3A%22https%3A%2F%2Fibom.sgmw.com.cn%22%3Bfunction%20a(e)%7Bconst%20t%3D(new%20TextEncoder).encode(e)%2Ca%3Dt.length%2Co%3Dnew%20Array(16*(1%2B(a%2B8%3E%3E%3E6))).fill(0)%3Bfor(let%20e%3D0%3Be%3Ca%3Be%2B%2B)o%5Be%3E%3E2%5D%7C%3Dt%5Be%5D%3C%3Ce%254*8%3Bo%5Ba%3E%3E2%5D%7C%3D128%3C%3Ca%254*8%2Co%5Bo.length-2%5D%3D8*a%3E%3E%3E0%2Co%5Bo.length-1%5D%3DMath.floor(8*a%2F4294967296)%3E%3E%3E0%3Bconst%20n%3D%5B7%2C12%2C17%2C22%2C5%2C9%2C14%2C20%2C4%2C11%2C16%2C23%2C6%2C10%2C15%2C21%5D%2Ci%3D%5B%5D%3Bfor(let%20e%3D0%3Be%3C64%3Be%2B%2B)i%5Be%5D%3DMath.floor(4294967296*Math.abs(Math.sin(e%2B1)))%3E%3E%3E0%3Blet%20s%3D1732584193%2Cr%3D4023233417%2Cc%3D2562383102%2Cl%3D271733878%3Bfor(let%20e%3D0%3Be%3Co.length%3Be%2B%3D16)%7Blet%20t%3Ds%2Ca%3Dr%2Cd%3Dc%2Cg%3Dl%3Bfor(let%20s%3D0%3Bs%3C64%3Bs%2B%2B)%7Blet%20r%2Cc%3Bs%3C16%3F(r%3Da%26d%7C~a%26g%2Cc%3Ds)%3As%3C32%3F(r%3Dg%26a%7C~g%26d%2Cc%3D(5*s%2B1)%2516)%3As%3C48%3F(r%3Da%5Ed%5Eg%2Cc%3D(3*s%2B5)%2516)%3A(r%3Dd%5E(a%7C~g)%2Cc%3D7*s%2516)%3Bconst%20l%3Dn%5B4*(s%3E%3E4)%2Bs%254%5D%2Cp%3Dg%3Bg%3Dd%2Cd%3Da%3Bconst%20m%3Dt%2Br%2Bi%5Bs%5D%2Bo%5Be%2Bc%5D%3E%3E%3E0%3Ba%3Da%2B(m%3C%3Cl%7Cm%3E%3E%3E32-l)%3E%3E%3E0%2Ct%3Dp%7Ds%3Ds%2Bt%3E%3E%3E0%2Cr%3Dr%2Ba%3E%3E%3E0%2Cc%3Dc%2Bd%3E%3E%3E0%2Cl%3Dl%2Bg%3E%3E%3E0%7Dreturn%5Bs%2Cr%2Cc%2Cl%5D.map((e%3D%3E%7Blet%20t%3D%22%22%3Bfor(let%20a%3D0%3Ba%3C4%3Ba%2B%2B)t%2B%3D(e%3E%3E%3E8*a%26255).toString(16).padStart(2%2C%220%22)%3Breturn%20t%7D)).join(%22%22)%7Dconst%20o%3De%3D%3Enew%20Promise((t%3D%3EsetTimeout(t%2Ce)))%2Cn%3D%7BscriptVersion%3A%222026-11-18.1%22%2CstartedAt%3A(new%20Date).toISOString()%2Cpage%3A%22undefined%22!%3Dtypeof%20location%3Flocation.pathname%3A%22%22%2CcookieNamesVisibleToJs%3A%22undefined%22!%3Dtypeof%20document%3Fdocument.cookie.split(%22%3B%22).map((e%3D%3Ee.split(%22%3D%22)%5B0%5D.trim())).filter(Boolean)%3A%5B%5D%2Cauth%3A%7B%7D%2Ccalls%3A%5B%5D%2Csummary%3A%7B%7D%7D%3Blet%20i%3Dnull%3Basync%20function%20s(s%2Cr%2C%7Braw%3Ac%3D!1%2Cstep%3Al%3D%22%22%7D%3D%7B%7D)%7Bconst%20d%3Dvoid%200%3D%3D%3Dr%3F%22%22%3AJSON.stringify(r)%2Cg%3D%7Baccept%3A%22application%2Fjson%2C%20text%2Fplain%2C%20*%2F*%22%2Cneedhtmlescape%3A%22false%22%2Cuserlanguage%3A%22zh_CN%22%2C%22x-g-tenant-id%22%3A%22%22%2C%22x-g-trace-id%22%3AArray.from(%7Blength%3A32%7D%2C(()%3D%3EMath.floor(16*Math.random()).toString(16))).join(%22%22)%2C%22x-content-md5%22%3Aa(d)%7D%3Bd%26%26(g%5B%22content-type%22%5D%3D%22application%2Fjson%22)%2Ci%26%26(g.usertoken%3Di.token%2Cg.userloginname%3Di.login%2Cg.logintype%3Di.loginType%2Cg.locale%3D%22zh_CN%22)%3Bconst%20p%3D%7Bstep%3Al%2Cpath%3As%2Crequest%3Avoid%200%3D%3D%3Dr%3Fnull%3Ar%7D%3Btry%7Bconst%20a%3Dawait%20fetch(t%2Bs%2C%7Bmethod%3A%22POST%22%2Cheaders%3Ag%2Cbody%3Ad%7C%7Cvoid%200%2Ccredentials%3A%22include%22%7D)%3Bif(p.status%3Da.status%2Cp.processResult%3Da.headers.get(%22x-g-process-result%22)%2Cp.contentType%3Da.headers.get(%22content-type%22)%2Cp.contentDisposition%3Da.headers.get(%22content-disposition%22)%2Cc)%7Bconst%20e%3Dawait%20a.blob()%3Breturn%20p.bytes%3De.size%2Cn.calls.push(p)%2Cawait%20o(150)%2C%7Brec%3Ap%2Cblob%3Ae%7D%7Dconst%20i%3Dawait%20a.text()%3Blet%20r%3Dnull%3Btry%7Br%3Di%3FJSON.parse(i)%3Anull%7Dcatch(e)%7B%7Dp.state%3Dr%26%26r.state%2Cp.ok%3Da.ok%26%26%22error%22!%3D%3Dp.processResult%26%26%22success%22%3D%3D%3Dp.state%3Bconst%20l%3Dnull%3D%3D%3Dr%3Fi%3AJSON.stringify(r)%3Breturn%20p.response%3Dl.length%3Ee%3Fl.slice(0%2Ce)%3Anull%3D%3D%3Dr%3Fi%3Ar%2Cp.truncated%3Dl.length%3Ee%2Cn.calls.push(p)%2Cawait%20o(150)%2C%7Brec%3Ap%2Cjson%3Ar%2Cdata%3Ar%3Fr.data%3Avoid%200%7D%7Dcatch(e)%7Breturn%20p.error%3DString(e)%2Cn.calls.push(p)%2C%7Brec%3Ap%2Cjson%3Anull%2Cdata%3Avoid%200%7D%7D%7Dfunction%20r(e%2Ct)%7Bconst%20a%3DURL.createObjectURL(e)%2Co%3Ddocument.createElement(%22a%22)%3Bo.href%3Da%2Co.download%3Dt%2Cdocument.body.appendChild(o)%2Co.click()%2Co.remove()%2CsetTimeout((()%3D%3EURL.revokeObjectURL(a))%2C5e3)%7Dconst%20c%3D(...e)%3D%3Econsole.log(%22%5Bibom-probe%5D%22%2C...e)%3Blet%20l%3Dawait%20s(%22%2FfwSecurity%2Fauthentication%2FcheckToken.api%22%2Cvoid%200%2C%7Bstep%3A%22auth%22%7D)%3Bif(l.rec.ok%7C%7C(await%20o(3e3)%2Cl%3Dawait%20s(%22%2FfwSecurity%2Fauthentication%2FcheckToken.api%22%2Cvoid%200%2C%7Bstep%3A%22auth-retry%22%7D))%2C!l.rec.ok%7C%7C!l.data%7C%7C!l.data.userToken)return%20void%20console.error(%22%5Bibom-probe%5D%20checkToken%20%E5%A4%B1%E8%B4%A5%EF%BC%8C%E8%AF%B7%E7%A1%AE%E8%AE%A4%E5%B7%B2%E7%99%BB%E5%BD%95%20iBOM%20%E5%90%8E%E9%87%8D%E8%AF%95%22)%3Bi%3D%7Btoken%3Al.data.userToken%2Clogin%3Al.data.userLoginName%2CloginType%3Al.data.loginType%7C%7C%22DEFAULT_SSO%22%7D%2Cn.auth%3D%7BloginType%3Ai.loginType%2CdelegateMode%3Al.data.delegateMode%2ChasToken%3A!0%7D%3Bfor(const%20e%20of%20n.calls)e.response%26%26e.response.data%26%26e.response.data.userToken%26%26(e.response.data.userToken%3D%22%3Credacted%3E%22)%3Bc(%22%E4%BC%9A%E8%AF%9D%E5%B0%B1%E7%BB%AA%EF%BC%8CloginType%20%3D%22%2Ci.loginType)%3Bconst%20d%3Dawait%20s(%22%2FfwSecurity%2Fsecurity%2FfindUserAggregateInfo.api%22%2Cvoid%200%2C%7Bstep%3A%22account%22%7D)%3Bd.data%26%26(n.summary.roles%3D(d.data.roles%7C%7C%5B%5D).map((e%3D%3Ee.roleName))%2Cn.summary.dmmFunctions%3D(d.data.functions%7C%7C%5B%5D).filter((e%3D%3E%2F%E6%95%B0%E6%A8%A1%7C%E5%8F%91%E5%B8%83%E7%AE%A1%E7%90%86%7CPAA%7CSOR%2F.test(e))))%3Bconst%20g%3D%5B%7BfieldName%3A%22DISCRIMINATOR%22%2Coperator%3A%22EMPTY%22%2Cvalue%3A%22DMM%22%7D%5D%2Cp%3D%5B%5D%3Blet%20m%3Dnull%3Bfor(let%20e%3D0%3Be%3C5e3%3Be%2B%3D50)%7Bconst%20t%3Dawait%20s(%22%2Fbommgmt%2Fchange%2FsmartQuery.api%22%2C%7BwhereList%3Ag%2CfilterInfo%3A%7B%7D%2CpageInfo%3A%7BbeginIndex%3Ae%2CpageSize%3A50%7D%7D%2C%7Bstep%3A%22dmm-list%22%7D)%3Bif(!t.data%7C%7C!Array.isArray(t.data.content))break%3Bif(m%3Dt.data.totalCount%2Cp.push(...t.data.content)%2C0%3D%3D%3Dt.data.content.length%7C%7Cp.length%3E%3Dm)break%7Dconst%20f%3D%7B%7D%3Bfor(const%20e%20of%20p)f%5Be.changeStatus%5D%3D(f%5Be.changeStatus%5D%7C%7C0)%2B1%3Bn.summary.dmm%3D%7BtotalCount%3Am%2Cfetched%3Ap.length%2CstatusCount%3Af%2CchangeTypes%3A%5B...new%20Set(p.map((e%3D%3Ee.changeType)))%5D%2CprojectNames%3A%5B...new%20Set(p.map((e%3D%3Ee.projectName)))%5D.slice(0%2C200)%2CchangeCodeRange%3Ap.length%3F%5Bp.map((e%3D%3Ee.changeCode)).sort()%5B0%5D%2Cp.map((e%3D%3Ee.changeCode)).sort().slice(-1)%5B0%5D%5D%3Anull%2CallChangeCodes%3Ap.map((e%3D%3Ee.changeCode))%7D%2Cc(%22DMM%20%E5%88%97%E8%A1%A8%22%2Cm%2C%22%E6%9D%A1%EF%BC%8C%E7%8A%B6%E6%80%81%E5%88%86%E5%B8%83%22%2Cf)%3Bconst%20h%3Dawait%20s(%22%2Fbommgmt%2Fchange%2FsmartQuery.api%22%2C%7BwhereList%3A%5B%7BfieldName%3A%22DISCRIMINATOR%22%2Coperator%3A%22EMPTY%22%2Cvalue%3A%22ASUF%22%7D%5D%2CfilterInfo%3A%7B%7D%2CpageInfo%3A%7BbeginIndex%3A0%2CpageSize%3A5%7D%7D%2C%7Bstep%3A%22asuf-count%22%7D)%3Bif(n.summary.asufTotal%3Dh.data%3Fh.data.totalCount%3Anull%2Cp.length)%7Bconst%20e%3Dp%5B0%5D.changeCode%3Bfor(const%20t%20of%5B%22CHANGE_CODE%22%2C%22changeCode%22%5D)%7Bconst%20a%3Dawait%20s(%22%2Fbommgmt%2Fchange%2FsmartQuery.api%22%2C%7BwhereList%3A%5B%7BfieldName%3At%2Coperator%3A%22LIKE%22%2Cvalue%3Ae%7D%2C...g%5D%2CfilterInfo%3A%7B%7D%2CpageInfo%3A%7BbeginIndex%3A0%2CpageSize%3A5%7D%7D%2C%7Bstep%3A%22search-by-code%3A%22%2Bt%7D)%3Bn.summary%5B%22searchByCode_%22%2Bt%5D%3Da.data%3Fa.data.totalCount%3Anull%7D%7Dconst%20u%3D%5B%22com.gantang.prd.chgmgmt.model.PartDigitalModelChange%22%2C%22com.gantang.prd.chgmgmt.model.DigitalModelChange%22%2C%22com.gantang.prd.chgmgmt.model.PartDigitalModel%22%2C%22com.gantang.prd.chgmgmt.model.Dmm%22%2C%22com.gantang.prd.chgmgmt.model.EngineerChangeOrder%22%2C%22com.gantang.prd.chgmgmt.model.EngineerChangeRequest%22%5D%2Cy%3D%7B%7D%3Bfor(const%20e%20of%20u)%7Bconst%20t%3Dawait%20s(%22%2Fmstdata%2FrecordType%2FgetId.api%22%2C%7BclassName%3Ae%7D%2C%7Bstep%3A%22recordType%22%7D)%3Bt.data%26%26t.data.recTypeId%26%26(y%5Be%5D%3Dt.data.recTypeId)%7Dn.summary.recTypes%3Dy%3Bconst%20b%3D%5B...new%20Set(Object.entries(y).filter(((%5Be%5D)%3D%3E!%2FEngineerChange%2F.test(e))).map(((%5B%2Ce%5D)%3D%3Ee)))%5D%2Cw%3D%5B...new%20Set(Object.values(y))%5D%3Bc(%22recTypeId%22%2Cy)%3Bconst%20I%3D%5B%5D%3Bfor(const%20e%20of%5B%22APPROVAL%22%2C%22PUBLISH%22%2C%22RETURNED%22%2C%22DRAFT%22%2C%22CANCEL%22%5D)I.push(...p.filter((t%3D%3Et.changeStatus%3D%3D%3De)).slice(0%2C2))%3Bconst%20C%3D%5B%22partDesign%22%2C%22partDigitalModel%22%2C%22digitalModel%22%2C%22partModel%22%2C%22signOff%22%2C%22partDigitalModelSignOff%22%2C%22signOffContent%22%2C%22partAssembly%22%5D%2CS%3D%5B%5B%22%2Fbommgmt%2FpartDigitalModelChange%2FfindById.api%22%2Ce%3D%3E(%7Bid%3Ae.id%7D)%5D%2C%5B%22%2Fbommgmt%2FpartDigitalModelChange%2FfindPartList.api%22%2Ce%3D%3E(%7BfilterInfo%3A%7BchangeId%3Ae.id%7D%2CpageInfo%3A%7BbeginIndex%3A0%2CpageSize%3A200%7D%7D)%5D%2C%5B%22%2Fbommgmt%2FpartDigitalModelChange%2FfindModelList.api%22%2Ce%3D%3E(%7BfilterInfo%3A%7BchangeId%3Ae.id%7D%2CpageInfo%3A%7BbeginIndex%3A0%2CpageSize%3A200%7D%7D)%5D%2C%5B%22%2Fbommgmt%2FpartDigitalModelChange%2FfindSignOff.api%22%2Ce%3D%3E(%7BchangeId%3Ae.id%7D)%5D%2C%5B%22%2Fbommgmt%2FpartDigitalModelChange%2FfindSignOffList.api%22%2Ce%3D%3E(%7BfilterInfo%3A%7BchangeId%3Ae.id%7D%2CpageInfo%3A%7BbeginIndex%3A0%2CpageSize%3A200%7D%7D)%5D%2C%5B%22%2Fbommgmt%2FpartDigitalModelSignOff%2FfindByChangeId.api%22%2Ce%3D%3E(%7Bid%3Ae.id%7D)%5D%2C%5B%22%2Fbommgmt%2FpartDigitalModel%2FfindByChangeId.api%22%2Ce%3D%3E(%7Bid%3Ae.id%7D)%5D%5D%2CT%3D%5B%5D%3Bfor(const%20e%20of%20I)%7Bconst%20t%3D%7Bid%3Ae.id%2CchangeCode%3Ae.changeCode%2Cstatus%3Ae.changeStatus%2Chits%3A%7B%7D%7D%2Ca%3D(e%2Ca)%3D%3E%7Bvar%20o%3Bt.hits%5Be%5D%3Da.rec.ok%3F(o%3Da.data%2C(Array.isArray(o)%3Fo.length%3E0%3Ao%26%26%22object%22%3D%3Dtypeof%20o%3FArray.isArray(o.content)%3Fo.content.length%3E0%3AObject.keys(o).length%3E0%3Anull!%3Do)%3F%22data%22%3A%22empty%22)%3A%22fail%3A%22%2B(a.rec.status%7C%7Ca.rec.error)%7D%2Co%3D%22sample%3A%22%2Be.changeCode%3Ba(%22change%2FfindById%22%2Cawait%20s(%22%2Fbommgmt%2Fchange%2FfindById.api%22%2C%7Bid%3Ae.id%7D%2C%7Bstep%3Ao%7D))%2Ca(%22approvalNodes%22%2Cawait%20s(%22%2Fbommgmt%2FchangeNodeApproval%2FapprovalNodes.api%22%2C%7BchangeId%3Ae.id%7D%2C%7Bstep%3Ao%7D))%2Ca(%22findLogRecord%22%2Cawait%20s(%22%2Fbommgmt%2Fchange%2FfindLogRecord.api%22%2C%7BfilterInfo%3A%7BbizNo%3Ae.changeCode%2CdataSource%3A%5B%5D%2CsubTypes%3A%5B%5D%7D%2CpageInfo%3A%7BbeginIndex%3A0%2CpageSize%3A100%7D%2CsortInfo%3A%7BorderDirection%3A%22DESC%22%7D%7D%2C%7Bstep%3Ao%7D))%2Ca(%22isExistCount%22%2Cawait%20s(%22%2Fbommgmt%2FchangeOperation%2FisExistCount.api%22%2C%7BchangeId%3Ae.id%2CbusinessTypes%3AC%7D%2C%7Bstep%3Ao%7D))%3Bfor(const%20t%20of%20C)a(%22loadEntity%3A%22%2Bt%2Cawait%20s(%22%2Fbommgmt%2FchangeOperation%2FloadEntity.api%22%2C%7BfilterInfo%3A%7BchangeId%3Ae.id%2CbusinessType%3At%7D%2CpageInfo%3A%7BbeginIndex%3A0%2CpageSize%3A200%7D%7D%2C%7Bstep%3Ao%7D))%3Bfor(const%5Bt%2Cn%5Dof%20S)a(t.replace(%22%2Fbommgmt%2F%22%2C%22%22)%2Cawait%20s(t%2Cn(e)%2C%7Bstep%3Ao%7D))%3Ba(%22changeNoticeEmployee%22%2Cawait%20s(%22%2Fbommgmt%2FchangeNoticeEmployee%2Ffind.api%22%2C%7BfilterInfo%3A%7BformId%3Ae.id%2CformType%3A%22Change%22%7D%2CpageInfo%3A%7BbeginIndex%3A0%2CpageSize%3A50%7D%7D%2C%7Bstep%3Ao%7D))%3Bfor(const%20t%20of%20b.length%3Fb%3Aw)%7Bconst%20n%3Dawait%20s(%22%2FfwWorkflow%2FworkflowProcess%2FfindProcessesByResourcesUri.api%22%2C%7BrecId%3Ae.id%2CrecTypeId%3At%7D%2C%7Bstep%3Ao%7D)%3Ba(%22findProcesses%3A%22%2Bt%2Cn)%3Bconst%20i%3DArray.isArray(n.data)%3Fn.data%3A%5B%5D%3Bfor(const%20e%20of%20i.slice(0%2C2))a(%22findAllTasks%3A%22%2Bt%2Cawait%20s(%22%2FfwWorkflow%2FworkflowProcess%2FfindAllTasks.api%22%2C%7BprocessId%3Ae.id%2CshowFutureTasks%3A!0%7D%2C%7Bstep%3Ao%7D))%3Ba(%22formActions%3A%22%2Bt%2Cawait%20s(%22%2FfwWorkflow%2FworkflowProcess%2FfindFormProcessActions.api%22%2C%7BrecId%3Ae.id%2CrecTypeId%3At%7D%2C%7Bstep%3Ao%7D))%2Ca(%22fileFind%3A%22%2Bt%2Cawait%20s(%22%2FfwFile%2Ffile%2Ffind.api%22%2C%7BfilterInfo%3A%7BrecId%3Ae.id%2CrecTypeId%3At%7D%2CpageInfo%3A%7BbeginIndex%3A0%2CpageSize%3A50%7D%7D%2C%7Bstep%3Ao%7D))%7DT.push(t)%2Cc(%22%E6%A0%B7%E6%9C%AC%22%2Ce.changeCode%2Ce.changeStatus%2C%22%E5%AE%8C%E6%88%90%22)%7Dn.summary.samples%3DT%3Bconst%20k%3D%7B%7D%3Bfor(const%20e%20of%20w)%7Bconst%20t%3Dawait%20s(%22%2FfwSecurity%2Fsecurity%2FgetContextMenu.api%22%2C%7BcontextCategory%3AString(e)%7D%2C%7Bstep%3A%22contextMenu%22%7D)%3Bk%5Be%5D%3Dt.rec.ok%3FArray.isArray(t.data)%3Ft.data.map((e%3D%3Ee.path%7C%7Ce.name))%3A%22non-array%22%3A%22fail%22%7Dn.summary.contextMenus%3Dk%3Bconst%20M%3Dawait%20s(%22%2Fbommgmt%2FpartDigitalModelChange%2FexportReport.api%22%2C%7BwhereList%3Ag%2CfilterInfo%3A%7B%7D%7D%2C%7Braw%3A!0%2Cstep%3A%22export%22%7D)%3Blet%20A%3D%22%E6%95%B0%E6%A8%A1%E8%AE%BE%E8%AE%A1%E5%AE%A1%E6%A0%B8%E6%B5%81%E7%A8%8B%E6%8A%A5%E8%A1%A8.xlsx%22%3Bconst%20x%3DM.rec.contentDisposition%7C%7C%22%22%2CD%3D%2Ffilename%5C*%3F%3D(%3F%3AUTF-8'')%3F(%5B%5E%3B%5D%2B)%2Fi.exec(x)%3Bif(D)try%7BA%3DdecodeURIComponent(D%5B1%5D.replace(%2F%22%2Fg%2C%22%22).trim())%7Dcatch(e)%7B%7Dn.summary.export%3D%7Bstatus%3AM.rec.status%2Cbytes%3AM.rec.bytes%2CcontentType%3AM.rec.contentType%2Cfilename%3AA%7D%2CM.blob%26%26200%3D%3D%3DM.rec.status%26%26r(M.blob%2CA)%2Cn.finishedAt%3D(new%20Date).toISOString()%2Cn.summary.callCount%3Dn.calls.length%2Cn.summary.failedCalls%3Dn.calls.filter((e%3D%3E!1%3D%3D%3De.ok%7C%7Ce.error)).length%3Bconst%20O%3DJSON.stringify(n%2Cnull%2C1)%3Bif(i%26%26O.includes(i.token))return%20void%20console.error(%22%5Bibom-probe%5D%20%E7%BB%93%E6%9E%9C%E9%87%8C%E5%87%BA%E7%8E%B0%E4%BA%86%20usertoken%EF%BC%8C%E5%B7%B2%E4%B8%AD%E6%AD%A2%E4%B8%8B%E8%BD%BD%22)%3Bconst%20N%3Dn.startedAt.replace(%2F%5B-%3AT%5D%2Fg%2C%22%22).slice(0%2C14)%3Br(new%20Blob(%5BO%5D%2C%7Btype%3A%22application%2Fjson%22%7D)%2C%60ibom_phase0_%24%7BN%7D.json%60)%2Cconsole.table(T.map((e%3D%3E(%7BchangeCode%3Ae.changeCode%2Cstatus%3Ae.status%2C...e.hits%7D))))%2Cc(%22%E5%AE%8C%E6%88%90%EF%BC%9A%22%2Cn.calls.length%2C%22%E6%AC%A1%E8%B0%83%E7%94%A8%EF%BC%8C%E4%B8%8B%E8%BD%BD%E7%9B%AE%E5%BD%95%E9%87%8C%E6%9C%89%20JSON%20%E4%B8%8E%E6%8A%A5%E8%A1%A8%20xlsx%22)%2C%22undefined%22!%3Dtypeof%20window%26%26(window.__ibomPhase0%3Dn)%7D)()%3B%7D()%3B" title="拖到书签栏">iBOM 取证</a></li>
-<li>登录 <code>https://ibom.sgmw.com.cn</code>，停在任意页面，点书签栏里的「iBOM 取证」。</li>
-<li>等约 1 分钟。浏览器会下载两个文件：<code>ibom_phase0_&lt;时间&gt;.json</code> 和 <code>数模设计审核流程报表_&lt;日期&gt;.xlsx</code>。</li>
+<li>把下面两个按钮分别<strong>拖到书签栏</strong>（不要点击）：<br>
+<a class="bm" href="javascript:void%20function()%7B(async()%3D%3E%7B%22use%20strict%22%3Bconst%20e%3D4e5%3Bif(%22undefined%22!%3Dtypeof%20location%26%26!%2F(%5E%7C%5C.)ibom%5C.sgmw%5C.com%5C.cn%24%2F.test(location.hostname))return%20void%20console.error(%22%5Bibom-probe%5D%20%E8%AF%B7%E5%9C%A8%20ibom.sgmw.com.cn%20%E7%9A%84%E9%A1%B5%E9%9D%A2%E9%87%8C%E8%BF%90%E8%A1%8C%22)%3Bconst%20t%3D%22undefined%22!%3Dtypeof%20location%3Flocation.origin%3A%22https%3A%2F%2Fibom.sgmw.com.cn%22%3Bfunction%20a(e)%7Bconst%20t%3D(new%20TextEncoder).encode(e)%2Ca%3Dt.length%2Co%3Dnew%20Array(16*(1%2B(a%2B8%3E%3E%3E6))).fill(0)%3Bfor(let%20e%3D0%3Be%3Ca%3Be%2B%2B)o%5Be%3E%3E2%5D%7C%3Dt%5Be%5D%3C%3Ce%254*8%3Bo%5Ba%3E%3E2%5D%7C%3D128%3C%3Ca%254*8%2Co%5Bo.length-2%5D%3D8*a%3E%3E%3E0%2Co%5Bo.length-1%5D%3DMath.floor(8*a%2F4294967296)%3E%3E%3E0%3Bconst%20n%3D%5B7%2C12%2C17%2C22%2C5%2C9%2C14%2C20%2C4%2C11%2C16%2C23%2C6%2C10%2C15%2C21%5D%2Ci%3D%5B%5D%3Bfor(let%20e%3D0%3Be%3C64%3Be%2B%2B)i%5Be%5D%3DMath.floor(4294967296*Math.abs(Math.sin(e%2B1)))%3E%3E%3E0%3Blet%20s%3D1732584193%2Cr%3D4023233417%2Cc%3D2562383102%2Cl%3D271733878%3Bfor(let%20e%3D0%3Be%3Co.length%3Be%2B%3D16)%7Blet%20t%3Ds%2Ca%3Dr%2Cd%3Dc%2Cg%3Dl%3Bfor(let%20s%3D0%3Bs%3C64%3Bs%2B%2B)%7Blet%20r%2Cc%3Bs%3C16%3F(r%3Da%26d%7C~a%26g%2Cc%3Ds)%3As%3C32%3F(r%3Dg%26a%7C~g%26d%2Cc%3D(5*s%2B1)%2516)%3As%3C48%3F(r%3Da%5Ed%5Eg%2Cc%3D(3*s%2B5)%2516)%3A(r%3Dd%5E(a%7C~g)%2Cc%3D7*s%2516)%3Bconst%20l%3Dn%5B4*(s%3E%3E4)%2Bs%254%5D%2Cp%3Dg%3Bg%3Dd%2Cd%3Da%3Bconst%20m%3Dt%2Br%2Bi%5Bs%5D%2Bo%5Be%2Bc%5D%3E%3E%3E0%3Ba%3Da%2B(m%3C%3Cl%7Cm%3E%3E%3E32-l)%3E%3E%3E0%2Ct%3Dp%7Ds%3Ds%2Bt%3E%3E%3E0%2Cr%3Dr%2Ba%3E%3E%3E0%2Cc%3Dc%2Bd%3E%3E%3E0%2Cl%3Dl%2Bg%3E%3E%3E0%7Dreturn%5Bs%2Cr%2Cc%2Cl%5D.map((e%3D%3E%7Blet%20t%3D%22%22%3Bfor(let%20a%3D0%3Ba%3C4%3Ba%2B%2B)t%2B%3D(e%3E%3E%3E8*a%26255).toString(16).padStart(2%2C%220%22)%3Breturn%20t%7D)).join(%22%22)%7Dconst%20o%3De%3D%3Enew%20Promise((t%3D%3EsetTimeout(t%2Ce)))%2Cn%3D%7BscriptVersion%3A%222026-11-18.1%22%2CstartedAt%3A(new%20Date).toISOString()%2Cpage%3A%22undefined%22!%3Dtypeof%20location%3Flocation.pathname%3A%22%22%2CcookieNamesVisibleToJs%3A%22undefined%22!%3Dtypeof%20document%3Fdocument.cookie.split(%22%3B%22).map((e%3D%3Ee.split(%22%3D%22)%5B0%5D.trim())).filter(Boolean)%3A%5B%5D%2Cauth%3A%7B%7D%2Ccalls%3A%5B%5D%2Csummary%3A%7B%7D%7D%3Blet%20i%3Dnull%3Basync%20function%20s(s%2Cr%2C%7Braw%3Ac%3D!1%2Cstep%3Al%3D%22%22%7D%3D%7B%7D)%7Bconst%20d%3Dvoid%200%3D%3D%3Dr%3F%22%22%3AJSON.stringify(r)%2Cg%3D%7Baccept%3A%22application%2Fjson%2C%20text%2Fplain%2C%20*%2F*%22%2Cneedhtmlescape%3A%22false%22%2Cuserlanguage%3A%22zh_CN%22%2C%22x-g-tenant-id%22%3A%22%22%2C%22x-g-trace-id%22%3AArray.from(%7Blength%3A32%7D%2C(()%3D%3EMath.floor(16*Math.random()).toString(16))).join(%22%22)%2C%22x-content-md5%22%3Aa(d)%7D%3Bd%26%26(g%5B%22content-type%22%5D%3D%22application%2Fjson%22)%2Ci%26%26(g.usertoken%3Di.token%2Cg.userloginname%3Di.login%2Cg.logintype%3Di.loginType%2Cg.locale%3D%22zh_CN%22)%3Bconst%20p%3D%7Bstep%3Al%2Cpath%3As%2Crequest%3Avoid%200%3D%3D%3Dr%3Fnull%3Ar%7D%3Btry%7Bconst%20a%3Dawait%20fetch(t%2Bs%2C%7Bmethod%3A%22POST%22%2Cheaders%3Ag%2Cbody%3Ad%7C%7Cvoid%200%2Ccredentials%3A%22include%22%7D)%3Bif(p.status%3Da.status%2Cp.processResult%3Da.headers.get(%22x-g-process-result%22)%2Cp.contentType%3Da.headers.get(%22content-type%22)%2Cp.contentDisposition%3Da.headers.get(%22content-disposition%22)%2Cc)%7Bconst%20e%3Dawait%20a.blob()%3Breturn%20p.bytes%3De.size%2Cn.calls.push(p)%2Cawait%20o(150)%2C%7Brec%3Ap%2Cblob%3Ae%7D%7Dconst%20i%3Dawait%20a.text()%3Blet%20r%3Dnull%3Btry%7Br%3Di%3FJSON.parse(i)%3Anull%7Dcatch(e)%7B%7Dp.state%3Dr%26%26r.state%2Cp.ok%3Da.ok%26%26%22error%22!%3D%3Dp.processResult%26%26%22success%22%3D%3D%3Dp.state%3Bconst%20l%3Dnull%3D%3D%3Dr%3Fi%3AJSON.stringify(r)%3Breturn%20p.response%3Dl.length%3Ee%3Fl.slice(0%2Ce)%3Anull%3D%3D%3Dr%3Fi%3Ar%2Cp.truncated%3Dl.length%3Ee%2Cn.calls.push(p)%2Cawait%20o(150)%2C%7Brec%3Ap%2Cjson%3Ar%2Cdata%3Ar%3Fr.data%3Avoid%200%7D%7Dcatch(e)%7Breturn%20p.error%3DString(e)%2Cn.calls.push(p)%2C%7Brec%3Ap%2Cjson%3Anull%2Cdata%3Avoid%200%7D%7D%7Dfunction%20r(e%2Ct)%7Bconst%20a%3DURL.createObjectURL(e)%2Co%3Ddocument.createElement(%22a%22)%3Bo.href%3Da%2Co.download%3Dt%2Cdocument.body.appendChild(o)%2Co.click()%2Co.remove()%2CsetTimeout((()%3D%3EURL.revokeObjectURL(a))%2C5e3)%7Dconst%20c%3D(...e)%3D%3Econsole.log(%22%5Bibom-probe%5D%22%2C...e)%3Blet%20l%3Dawait%20s(%22%2FfwSecurity%2Fauthentication%2FcheckToken.api%22%2Cvoid%200%2C%7Bstep%3A%22auth%22%7D)%3Bif(l.rec.ok%7C%7C(await%20o(3e3)%2Cl%3Dawait%20s(%22%2FfwSecurity%2Fauthentication%2FcheckToken.api%22%2Cvoid%200%2C%7Bstep%3A%22auth-retry%22%7D))%2C!l.rec.ok%7C%7C!l.data%7C%7C!l.data.userToken)return%20void%20console.error(%22%5Bibom-probe%5D%20checkToken%20%E5%A4%B1%E8%B4%A5%EF%BC%8C%E8%AF%B7%E7%A1%AE%E8%AE%A4%E5%B7%B2%E7%99%BB%E5%BD%95%20iBOM%20%E5%90%8E%E9%87%8D%E8%AF%95%22)%3Bi%3D%7Btoken%3Al.data.userToken%2Clogin%3Al.data.userLoginName%2CloginType%3Al.data.loginType%7C%7C%22DEFAULT_SSO%22%7D%2Cn.auth%3D%7BloginType%3Ai.loginType%2CdelegateMode%3Al.data.delegateMode%2ChasToken%3A!0%7D%3Bfor(const%20e%20of%20n.calls)e.response%26%26e.response.data%26%26e.response.data.userToken%26%26(e.response.data.userToken%3D%22%3Credacted%3E%22)%3Bc(%22%E4%BC%9A%E8%AF%9D%E5%B0%B1%E7%BB%AA%EF%BC%8CloginType%20%3D%22%2Ci.loginType)%3Bconst%20d%3Dawait%20s(%22%2FfwSecurity%2Fsecurity%2FfindUserAggregateInfo.api%22%2Cvoid%200%2C%7Bstep%3A%22account%22%7D)%3Bd.data%26%26(n.summary.roles%3D(d.data.roles%7C%7C%5B%5D).map((e%3D%3Ee.roleName))%2Cn.summary.dmmFunctions%3D(d.data.functions%7C%7C%5B%5D).filter((e%3D%3E%2F%E6%95%B0%E6%A8%A1%7C%E5%8F%91%E5%B8%83%E7%AE%A1%E7%90%86%7CPAA%7CSOR%2F.test(e))))%3Bconst%20g%3D%5B%7BfieldName%3A%22DISCRIMINATOR%22%2Coperator%3A%22EMPTY%22%2Cvalue%3A%22DMM%22%7D%5D%2Cp%3D%5B%5D%3Blet%20m%3Dnull%3Bfor(let%20e%3D0%3Be%3C5e3%3Be%2B%3D50)%7Bconst%20t%3Dawait%20s(%22%2Fbommgmt%2Fchange%2FsmartQuery.api%22%2C%7BwhereList%3Ag%2CfilterInfo%3A%7B%7D%2CpageInfo%3A%7BbeginIndex%3Ae%2CpageSize%3A50%7D%7D%2C%7Bstep%3A%22dmm-list%22%7D)%3Bif(!t.data%7C%7C!Array.isArray(t.data.content))break%3Bif(m%3Dt.data.totalCount%2Cp.push(...t.data.content)%2C0%3D%3D%3Dt.data.content.length%7C%7Cp.length%3E%3Dm)break%7Dconst%20f%3D%7B%7D%3Bfor(const%20e%20of%20p)f%5Be.changeStatus%5D%3D(f%5Be.changeStatus%5D%7C%7C0)%2B1%3Bn.summary.dmm%3D%7BtotalCount%3Am%2Cfetched%3Ap.length%2CstatusCount%3Af%2CchangeTypes%3A%5B...new%20Set(p.map((e%3D%3Ee.changeType)))%5D%2CprojectNames%3A%5B...new%20Set(p.map((e%3D%3Ee.projectName)))%5D.slice(0%2C200)%2CchangeCodeRange%3Ap.length%3F%5Bp.map((e%3D%3Ee.changeCode)).sort()%5B0%5D%2Cp.map((e%3D%3Ee.changeCode)).sort().slice(-1)%5B0%5D%5D%3Anull%2CallChangeCodes%3Ap.map((e%3D%3Ee.changeCode))%7D%2Cc(%22DMM%20%E5%88%97%E8%A1%A8%22%2Cm%2C%22%E6%9D%A1%EF%BC%8C%E7%8A%B6%E6%80%81%E5%88%86%E5%B8%83%22%2Cf)%3Bconst%20h%3Dawait%20s(%22%2Fbommgmt%2Fchange%2FsmartQuery.api%22%2C%7BwhereList%3A%5B%7BfieldName%3A%22DISCRIMINATOR%22%2Coperator%3A%22EMPTY%22%2Cvalue%3A%22ASUF%22%7D%5D%2CfilterInfo%3A%7B%7D%2CpageInfo%3A%7BbeginIndex%3A0%2CpageSize%3A5%7D%7D%2C%7Bstep%3A%22asuf-count%22%7D)%3Bif(n.summary.asufTotal%3Dh.data%3Fh.data.totalCount%3Anull%2Cp.length)%7Bconst%20e%3Dp%5B0%5D.changeCode%3Bfor(const%20t%20of%5B%22CHANGE_CODE%22%2C%22changeCode%22%5D)%7Bconst%20a%3Dawait%20s(%22%2Fbommgmt%2Fchange%2FsmartQuery.api%22%2C%7BwhereList%3A%5B%7BfieldName%3At%2Coperator%3A%22LIKE%22%2Cvalue%3Ae%7D%2C...g%5D%2CfilterInfo%3A%7B%7D%2CpageInfo%3A%7BbeginIndex%3A0%2CpageSize%3A5%7D%7D%2C%7Bstep%3A%22search-by-code%3A%22%2Bt%7D)%3Bn.summary%5B%22searchByCode_%22%2Bt%5D%3Da.data%3Fa.data.totalCount%3Anull%7D%7Dconst%20u%3D%5B%22com.gantang.prd.chgmgmt.model.PartDigitalModelChange%22%2C%22com.gantang.prd.chgmgmt.model.DigitalModelChange%22%2C%22com.gantang.prd.chgmgmt.model.PartDigitalModel%22%2C%22com.gantang.prd.chgmgmt.model.Dmm%22%2C%22com.gantang.prd.chgmgmt.model.EngineerChangeOrder%22%2C%22com.gantang.prd.chgmgmt.model.EngineerChangeRequest%22%5D%2Cy%3D%7B%7D%3Bfor(const%20e%20of%20u)%7Bconst%20t%3Dawait%20s(%22%2Fmstdata%2FrecordType%2FgetId.api%22%2C%7BclassName%3Ae%7D%2C%7Bstep%3A%22recordType%22%7D)%3Bt.data%26%26t.data.recTypeId%26%26(y%5Be%5D%3Dt.data.recTypeId)%7Dn.summary.recTypes%3Dy%3Bconst%20b%3D%5B...new%20Set(Object.entries(y).filter(((%5Be%5D)%3D%3E!%2FEngineerChange%2F.test(e))).map(((%5B%2Ce%5D)%3D%3Ee)))%5D%2Cw%3D%5B...new%20Set(Object.values(y))%5D%3Bc(%22recTypeId%22%2Cy)%3Bconst%20I%3D%5B%5D%3Bfor(const%20e%20of%5B%22APPROVAL%22%2C%22PUBLISH%22%2C%22RETURNED%22%2C%22DRAFT%22%2C%22CANCEL%22%5D)I.push(...p.filter((t%3D%3Et.changeStatus%3D%3D%3De)).slice(0%2C2))%3Bconst%20C%3D%5B%22partDesign%22%2C%22partDigitalModel%22%2C%22digitalModel%22%2C%22partModel%22%2C%22signOff%22%2C%22partDigitalModelSignOff%22%2C%22signOffContent%22%2C%22partAssembly%22%5D%2CS%3D%5B%5B%22%2Fbommgmt%2FpartDigitalModelChange%2FfindById.api%22%2Ce%3D%3E(%7Bid%3Ae.id%7D)%5D%2C%5B%22%2Fbommgmt%2FpartDigitalModelChange%2FfindPartList.api%22%2Ce%3D%3E(%7BfilterInfo%3A%7BchangeId%3Ae.id%7D%2CpageInfo%3A%7BbeginIndex%3A0%2CpageSize%3A200%7D%7D)%5D%2C%5B%22%2Fbommgmt%2FpartDigitalModelChange%2FfindModelList.api%22%2Ce%3D%3E(%7BfilterInfo%3A%7BchangeId%3Ae.id%7D%2CpageInfo%3A%7BbeginIndex%3A0%2CpageSize%3A200%7D%7D)%5D%2C%5B%22%2Fbommgmt%2FpartDigitalModelChange%2FfindSignOff.api%22%2Ce%3D%3E(%7BchangeId%3Ae.id%7D)%5D%2C%5B%22%2Fbommgmt%2FpartDigitalModelChange%2FfindSignOffList.api%22%2Ce%3D%3E(%7BfilterInfo%3A%7BchangeId%3Ae.id%7D%2CpageInfo%3A%7BbeginIndex%3A0%2CpageSize%3A200%7D%7D)%5D%2C%5B%22%2Fbommgmt%2FpartDigitalModelSignOff%2FfindByChangeId.api%22%2Ce%3D%3E(%7Bid%3Ae.id%7D)%5D%2C%5B%22%2Fbommgmt%2FpartDigitalModel%2FfindByChangeId.api%22%2Ce%3D%3E(%7Bid%3Ae.id%7D)%5D%5D%2CT%3D%5B%5D%3Bfor(const%20e%20of%20I)%7Bconst%20t%3D%7Bid%3Ae.id%2CchangeCode%3Ae.changeCode%2Cstatus%3Ae.changeStatus%2Chits%3A%7B%7D%7D%2Ca%3D(e%2Ca)%3D%3E%7Bvar%20o%3Bt.hits%5Be%5D%3Da.rec.ok%3F(o%3Da.data%2C(Array.isArray(o)%3Fo.length%3E0%3Ao%26%26%22object%22%3D%3Dtypeof%20o%3FArray.isArray(o.content)%3Fo.content.length%3E0%3AObject.keys(o).length%3E0%3Anull!%3Do)%3F%22data%22%3A%22empty%22)%3A%22fail%3A%22%2B(a.rec.status%7C%7Ca.rec.error)%7D%2Co%3D%22sample%3A%22%2Be.changeCode%3Ba(%22change%2FfindById%22%2Cawait%20s(%22%2Fbommgmt%2Fchange%2FfindById.api%22%2C%7Bid%3Ae.id%7D%2C%7Bstep%3Ao%7D))%2Ca(%22approvalNodes%22%2Cawait%20s(%22%2Fbommgmt%2FchangeNodeApproval%2FapprovalNodes.api%22%2C%7BchangeId%3Ae.id%7D%2C%7Bstep%3Ao%7D))%2Ca(%22findLogRecord%22%2Cawait%20s(%22%2Fbommgmt%2Fchange%2FfindLogRecord.api%22%2C%7BfilterInfo%3A%7BbizNo%3Ae.changeCode%2CdataSource%3A%5B%5D%2CsubTypes%3A%5B%5D%7D%2CpageInfo%3A%7BbeginIndex%3A0%2CpageSize%3A100%7D%2CsortInfo%3A%7BorderDirection%3A%22DESC%22%7D%7D%2C%7Bstep%3Ao%7D))%2Ca(%22isExistCount%22%2Cawait%20s(%22%2Fbommgmt%2FchangeOperation%2FisExistCount.api%22%2C%7BchangeId%3Ae.id%2CbusinessTypes%3AC%7D%2C%7Bstep%3Ao%7D))%3Bfor(const%20t%20of%20C)a(%22loadEntity%3A%22%2Bt%2Cawait%20s(%22%2Fbommgmt%2FchangeOperation%2FloadEntity.api%22%2C%7BfilterInfo%3A%7BchangeId%3Ae.id%2CbusinessType%3At%7D%2CpageInfo%3A%7BbeginIndex%3A0%2CpageSize%3A200%7D%7D%2C%7Bstep%3Ao%7D))%3Bfor(const%5Bt%2Cn%5Dof%20S)a(t.replace(%22%2Fbommgmt%2F%22%2C%22%22)%2Cawait%20s(t%2Cn(e)%2C%7Bstep%3Ao%7D))%3Ba(%22changeNoticeEmployee%22%2Cawait%20s(%22%2Fbommgmt%2FchangeNoticeEmployee%2Ffind.api%22%2C%7BfilterInfo%3A%7BformId%3Ae.id%2CformType%3A%22Change%22%7D%2CpageInfo%3A%7BbeginIndex%3A0%2CpageSize%3A50%7D%7D%2C%7Bstep%3Ao%7D))%3Bfor(const%20t%20of%20b.length%3Fb%3Aw)%7Bconst%20n%3Dawait%20s(%22%2FfwWorkflow%2FworkflowProcess%2FfindProcessesByResourcesUri.api%22%2C%7BrecId%3Ae.id%2CrecTypeId%3At%7D%2C%7Bstep%3Ao%7D)%3Ba(%22findProcesses%3A%22%2Bt%2Cn)%3Bconst%20i%3DArray.isArray(n.data)%3Fn.data%3A%5B%5D%3Bfor(const%20e%20of%20i.slice(0%2C2))a(%22findAllTasks%3A%22%2Bt%2Cawait%20s(%22%2FfwWorkflow%2FworkflowProcess%2FfindAllTasks.api%22%2C%7BprocessId%3Ae.id%2CshowFutureTasks%3A!0%7D%2C%7Bstep%3Ao%7D))%3Ba(%22formActions%3A%22%2Bt%2Cawait%20s(%22%2FfwWorkflow%2FworkflowProcess%2FfindFormProcessActions.api%22%2C%7BrecId%3Ae.id%2CrecTypeId%3At%7D%2C%7Bstep%3Ao%7D))%2Ca(%22fileFind%3A%22%2Bt%2Cawait%20s(%22%2FfwFile%2Ffile%2Ffind.api%22%2C%7BfilterInfo%3A%7BrecId%3Ae.id%2CrecTypeId%3At%7D%2CpageInfo%3A%7BbeginIndex%3A0%2CpageSize%3A50%7D%7D%2C%7Bstep%3Ao%7D))%7DT.push(t)%2Cc(%22%E6%A0%B7%E6%9C%AC%22%2Ce.changeCode%2Ce.changeStatus%2C%22%E5%AE%8C%E6%88%90%22)%7Dn.summary.samples%3DT%3Bconst%20k%3D%7B%7D%3Bfor(const%20e%20of%20w)%7Bconst%20t%3Dawait%20s(%22%2FfwSecurity%2Fsecurity%2FgetContextMenu.api%22%2C%7BcontextCategory%3AString(e)%7D%2C%7Bstep%3A%22contextMenu%22%7D)%3Bk%5Be%5D%3Dt.rec.ok%3FArray.isArray(t.data)%3Ft.data.map((e%3D%3Ee.path%7C%7Ce.name))%3A%22non-array%22%3A%22fail%22%7Dn.summary.contextMenus%3Dk%3Bconst%20M%3Dawait%20s(%22%2Fbommgmt%2FpartDigitalModelChange%2FexportReport.api%22%2C%7BwhereList%3Ag%2CfilterInfo%3A%7B%7D%7D%2C%7Braw%3A!0%2Cstep%3A%22export%22%7D)%3Blet%20A%3D%22%E6%95%B0%E6%A8%A1%E8%AE%BE%E8%AE%A1%E5%AE%A1%E6%A0%B8%E6%B5%81%E7%A8%8B%E6%8A%A5%E8%A1%A8.xlsx%22%3Bconst%20x%3DM.rec.contentDisposition%7C%7C%22%22%2CD%3D%2Ffilename%5C*%3F%3D(%3F%3AUTF-8'')%3F(%5B%5E%3B%5D%2B)%2Fi.exec(x)%3Bif(D)try%7BA%3DdecodeURIComponent(D%5B1%5D.replace(%2F%22%2Fg%2C%22%22).trim())%7Dcatch(e)%7B%7Dn.summary.export%3D%7Bstatus%3AM.rec.status%2Cbytes%3AM.rec.bytes%2CcontentType%3AM.rec.contentType%2Cfilename%3AA%7D%2CM.blob%26%26200%3D%3D%3DM.rec.status%26%26r(M.blob%2CA)%2Cn.finishedAt%3D(new%20Date).toISOString()%2Cn.summary.callCount%3Dn.calls.length%2Cn.summary.failedCalls%3Dn.calls.filter((e%3D%3E!1%3D%3D%3De.ok%7C%7Ce.error)).length%3Bconst%20O%3DJSON.stringify(n%2Cnull%2C1)%3Bif(i%26%26O.includes(i.token))return%20void%20console.error(%22%5Bibom-probe%5D%20%E7%BB%93%E6%9E%9C%E9%87%8C%E5%87%BA%E7%8E%B0%E4%BA%86%20usertoken%EF%BC%8C%E5%B7%B2%E4%B8%AD%E6%AD%A2%E4%B8%8B%E8%BD%BD%22)%3Bconst%20N%3Dn.startedAt.replace(%2F%5B-%3AT%5D%2Fg%2C%22%22).slice(0%2C14)%3Br(new%20Blob(%5BO%5D%2C%7Btype%3A%22application%2Fjson%22%7D)%2C%60ibom_phase0_%24%7BN%7D.json%60)%2Cconsole.table(T.map((e%3D%3E(%7BchangeCode%3Ae.changeCode%2Cstatus%3Ae.status%2C...e.hits%7D))))%2Cc(%22%E5%AE%8C%E6%88%90%EF%BC%9A%22%2Cn.calls.length%2C%22%E6%AC%A1%E8%B0%83%E7%94%A8%EF%BC%8C%E4%B8%8B%E8%BD%BD%E7%9B%AE%E5%BD%95%E9%87%8C%E6%9C%89%20JSON%20%E4%B8%8E%E6%8A%A5%E8%A1%A8%20xlsx%22)%2C%22undefined%22!%3Dtypeof%20window%26%26(window.__ibomPhase0%3Dn)%7D)()%3B%7D()%3B" title="拖到书签栏">iBOM 取证</a>
+<a class="bm alt" href="javascript:void%20function()%7B(async()%3D%3E%7B%22use%20strict%22%3Bif(%22undefined%22!%3Dtypeof%20location%26%26!%2F%5E(127%5C.0%5C.0%5C.1%7Clocalhost%7C%5C%5B%3A%3A1%5C%5D)%24%2F.test(location.hostname))return%20void%20console.error(%22%5Bvse-probe%5D%20%E8%AF%B7%E5%9C%A8%20VSE%20Toolbox%20%E7%BD%91%E9%A1%B5%EF%BC%88127.0.0.1%EF%BC%89%E9%87%8C%E8%BF%90%E8%A1%8C%22)%3Bconst%20t%3D%22undefined%22!%3Dtypeof%20location%3Flocation.origin%3A%22http%3A%2F%2F127.0.0.1%3A5000%22%2Ce%3D%7BscriptVersion%3A%222026-11-19.1%22%2CstartedAt%3A(new%20Date).toISOString()%2Ccalls%3A%5B%5D%7D%3Basync%20function%20o(o)%7Bconst%20a%3D%7Bpath%3Ao%7D%3Btry%7Bconst%20e%3Dawait%20fetch(t%2Bo%2C%7Bcredentials%3A%22same-origin%22%2Cheaders%3A%7Baccept%3A%22application%2Fjson%22%7D%7D)%3Ba.status%3De.status%3Bconst%20s%3Dawait%20e.text()%3Btry%7Ba.body%3DJSON.parse(s)%7Dcatch(t)%7Ba.body%3Ds.slice(0%2C2e3)%7D%7Dcatch(t)%7Ba.error%3DString(t)%7Dreturn%20e.calls.push(a)%2Ca%7Dawait%20o(%22%2Fapi%2Fscheduled-archive%2Fjobs%22)%3Bfor(const%20t%20of%5B%22VPI-T2-D5%22%2C%22VPI-T2-D2%22%5D)await%20o(%60%2Fapi%2Fproject-status%2Fdeliverables%2F%24%7BencodeURIComponent(t)%7D%2Fupdate-policy%60)%3Bawait%20o(%22%2Fapi%2Fdeliverable-forms%2Ftdc_data_model%2Fview%22)%3Bconst%20a%3D%5B%5D%3Blet%20s%3Dnull%3Bfor(let%20t%3D0%3Bt%3C2e4%3Bt%2B%3D500)%7Bconst%20e%3Dawait%20o(%60%2Fapi%2Fdeliverable-forms%2Ftdc_data_model%2Frows%3Foffset%3D%24%7Bt%7D%26limit%3D500%60)%2Ci%3De.body%26%26e.body.data%3Bif(!i%7C%7C!Array.isArray(i.items))break%3Bs%3Di.total%3Bfor(const%20t%20of%20i.items)a.push(%7Bvalues%3At.values%2Cdimensions%3At.dimensions%7D)%3Bif(e.body%3D%7Bok%3Ae.body.ok%2Cdata%3A%7Btotal%3Ai.total%2Coffset%3Ai.offset%2Climit%3Ai.limit%2CitemCount%3Ai.items.length%7D%7D%2C0%3D%3D%3Di.items.length%7C%7Ca.length%3E%3Ds)break%7De.tdcRows%3D%7Btotal%3As%2Cfetched%3Aa.length%2Crows%3Aa%7D%2Ce.finishedAt%3D(new%20Date).toISOString()%2C((...t)%3D%3E%7Bconsole.log(%22%5Bvse-probe%5D%22%2C...t)%7D)(%22%E5%AE%8C%E6%88%90%EF%BC%9A%22%2Ce.calls.length%2C%22%E6%AC%A1%E8%AF%B7%E6%B1%82%EF%BC%8C%E6%95%B0%E6%A8%A1%E8%A1%8C%22%2Ca.length%2C%22%2F%22%2Cs)%3Bconst%20i%3DJSON.stringify(e)%3Bif(%22undefined%22!%3Dtypeof%20document)%7Bconst%20t%3De.startedAt.replace(%2F%5B-%3AT%5D%2Fg%2C%22%22).slice(0%2C14)%2Co%3DURL.createObjectURL(new%20Blob(%5Bi%5D%2C%7Btype%3A%22application%2Fjson%22%7D))%2Ca%3Ddocument.createElement(%22a%22)%3Ba.href%3Do%2Ca.download%3D%60vse_phase0b_%24%7Bt%7D.json%60%2Cdocument.body.appendChild(a)%2Ca.click()%2Ca.remove()%2CsetTimeout((()%3D%3EURL.revokeObjectURL(o))%2C5e3)%7D%22undefined%22!%3Dtypeof%20window%26%26(window.__vsePhase0b%3De)%7D)()%3B%7D()%3B" title="拖到书签栏">VSE 取证</a></li>
 </ol>
-<div class="note">若浏览器提示「此网站尝试下载多个文件」，请点<strong>允许</strong>，否则只会下载到第一个文件。<br>想看进度可按 F12 打开 Console，日志前缀为 <code>[ibom-probe]</code>。</div>
 </section>
 
 <section>
-<h2>方式二：控制台粘贴（书签被拦截时用）</h2>
+<h2>第二步：在 VSE Toolbox 页面点「VSE 取证」</h2>
 <ol>
-<li>登录 iBOM 后按 F12 → Console。首次粘贴先输入 <code>allow pasting</code> 并回车。</li>
-<li>点下面的「复制脚本」，粘贴到 Console，回车。</li>
+<li>打开 VSE Toolbox 网页（地址以 <code>http://127.0.0.1</code> 开头），停在任意页面。</li>
+<li>点书签栏里的「VSE 取证」，几秒后下载 <code>vse_phase0b_&lt;时间&gt;.json</code>。</li>
 </ol>
-<textarea id="src" readonly>/*
- * iBOM 阶段 0A 只读取证脚本（浏览器控制台运行）
- *
- * 用法：在已登录的 https://ibom.sgmw.com.cn 页面按 F12 → Console，粘贴本文件全部内容回车。
- *       （Chrome/Edge 首次粘贴会要求先输入 allow pasting。）
- * 产出：下载目录里两个文件
- *       ibom_phase0_&lt;时间&gt;.json        全部请求/响应（不含 usertoken）
- *       数模设计审核流程报表_&lt;日期&gt;.xlsx  DMM 报表原件（服务端给的文件名）
- *
- * 只调用查询类接口（find / query / count / export），不发起审批、不保存、不删除。
- * 猜测的接口名调不通时只会记一条失败，不影响其它步骤。
- */
-(async () =&gt; {
-  &quot;use strict&quot;;
-
-  const SCRIPT_VERSION = &quot;2026-11-18.1&quot;;
-  const MAX_RESP_CHARS = 400000;
-  const PAGE_SIZE = 50;
-  const MAX_LIST_ROWS = 5000;
-  const SAMPLES_PER_STATUS = 2;
-  const DELAY_MS = 150;
-
-  if (typeof location !== &quot;undefined&quot; &amp;&amp; !/(^|\.)ibom\.sgmw\.com\.cn$/.test(location.hostname)) {
-    console.error(&quot;[ibom-probe] 请在 ibom.sgmw.com.cn 的页面里运行&quot;);
-    return;
-  }
-  const BASE = typeof location !== &quot;undefined&quot; ? location.origin : &quot;https://ibom.sgmw.com.cn&quot;;
-
-  // ── MD5（x-content-md5 = 请求体原文 UTF-8 字节的 hex MD5）────────────────
-  function md5(text) {
-    const bytes = new TextEncoder().encode(text);
-    const n = bytes.length;
-    const words = new Array((((n + 8) &gt;&gt;&gt; 6) + 1) * 16).fill(0);
-    for (let i = 0; i &lt; n; i++) words[i &gt;&gt; 2] |= bytes[i] &lt;&lt; ((i % 4) * 8);
-    words[n &gt;&gt; 2] |= 0x80 &lt;&lt; ((n % 4) * 8);
-    words[words.length - 2] = (n * 8) &gt;&gt;&gt; 0;
-    words[words.length - 1] = Math.floor((n * 8) / 0x100000000) &gt;&gt;&gt; 0;
-    const S = [7, 12, 17, 22, 5, 9, 14, 20, 4, 11, 16, 23, 6, 10, 15, 21];
-    const K = [];
-    for (let i = 0; i &lt; 64; i++) K[i] = Math.floor(Math.abs(Math.sin(i + 1)) * 0x100000000) &gt;&gt;&gt; 0;
-    let a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;
-    for (let off = 0; off &lt; words.length; off += 16) {
-      let A = a0, B = b0, C = c0, D = d0;
-      for (let i = 0; i &lt; 64; i++) {
-        let F, g;
-        if (i &lt; 16) { F = (B &amp; C) | (~B &amp; D); g = i; }
-        else if (i &lt; 32) { F = (D &amp; B) | (~D &amp; C); g = (5 * i + 1) % 16; }
-        else if (i &lt; 48) { F = B ^ C ^ D; g = (3 * i + 5) % 16; }
-        else { F = C ^ (B | ~D); g = (7 * i) % 16; }
-        const s = S[(i &gt;&gt; 4) * 4 + (i % 4)];
-        const tmp = D; D = C; C = B;
-        const sum = (A + F + K[i] + words[off + g]) &gt;&gt;&gt; 0;
-        B = (B + ((sum &lt;&lt; s) | (sum &gt;&gt;&gt; (32 - s)))) &gt;&gt;&gt; 0;
-        A = tmp;
-      }
-      a0 = (a0 + A) &gt;&gt;&gt; 0; b0 = (b0 + B) &gt;&gt;&gt; 0; c0 = (c0 + C) &gt;&gt;&gt; 0; d0 = (d0 + D) &gt;&gt;&gt; 0;
-    }
-    return [a0, b0, c0, d0].map(v =&gt; {
-      let h = &quot;&quot;;
-      for (let j = 0; j &lt; 4; j++) h += ((v &gt;&gt;&gt; (j * 8)) &amp; 0xff).toString(16).padStart(2, &quot;0&quot;);
-      return h;
-    }).join(&quot;&quot;);
-  }
-
-  // ── 请求封装 ───────────────────────────────────────────────────────
-  const sleep = ms =&gt; new Promise(r =&gt; setTimeout(r, ms));
-  const traceId = () =&gt; Array.from({ length: 32 }, () =&gt; Math.floor(Math.random() * 16).toString(16)).join(&quot;&quot;);
-  const bundle = {
-    scriptVersion: SCRIPT_VERSION,
-    startedAt: new Date().toISOString(),
-    page: typeof location !== &quot;undefined&quot; ? location.pathname : &quot;&quot;,
-    cookieNamesVisibleToJs: typeof document !== &quot;undefined&quot;
-      ? document.cookie.split(&quot;;&quot;).map(c =&gt; c.split(&quot;=&quot;)[0].trim()).filter(Boolean) : [],
-    auth: {},
-    calls: [],
-    summary: {},
-  };
-  let auth = null;
-
-  async function call(path, body, { raw = false, step = &quot;&quot; } = {}) {
-    const text = body === undefined ? &quot;&quot; : JSON.stringify(body);
-    const headers = {
-      accept: &quot;application/json, text/plain, */*&quot;,
-      needhtmlescape: &quot;false&quot;,
-      userlanguage: &quot;zh_CN&quot;,
-      &quot;x-g-tenant-id&quot;: &quot;&quot;,
-      &quot;x-g-trace-id&quot;: traceId(),
-      &quot;x-content-md5&quot;: md5(text),
-    };
-    if (text) headers[&quot;content-type&quot;] = &quot;application/json&quot;;
-    if (auth) {
-      headers.usertoken = auth.token;
-      headers.userloginname = auth.login;
-      headers.logintype = auth.loginType;
-      headers.locale = &quot;zh_CN&quot;;
-    }
-    const rec = { step, path, request: body === undefined ? null : body };
-    try {
-      const resp = await fetch(BASE + path, {
-        method: &quot;POST&quot;, headers, body: text || undefined, credentials: &quot;include&quot;,
-      });
-      rec.status = resp.status;
-      rec.processResult = resp.headers.get(&quot;x-g-process-result&quot;);
-      rec.contentType = resp.headers.get(&quot;content-type&quot;);
-      rec.contentDisposition = resp.headers.get(&quot;content-disposition&quot;);
-      if (raw) {
-        const blob = await resp.blob();
-        rec.bytes = blob.size;
-        bundle.calls.push(rec);
-        await sleep(DELAY_MS);
-        return { rec, blob };
-      }
-      const bodyText = await resp.text();
-      let json = null;
-      try { json = bodyText ? JSON.parse(bodyText) : null; } catch (_) { /* 非 JSON */ }
-      rec.state = json &amp;&amp; json.state;
-      rec.ok = resp.ok &amp;&amp; rec.processResult !== &quot;error&quot; &amp;&amp; rec.state === &quot;success&quot;;
-      const kept = json === null ? bodyText : JSON.stringify(json);
-      rec.response = kept.length &gt; MAX_RESP_CHARS ? kept.slice(0, MAX_RESP_CHARS) : (json === null ? bodyText : json);
-      rec.truncated = kept.length &gt; MAX_RESP_CHARS;
-      bundle.calls.push(rec);
-      await sleep(DELAY_MS);
-      return { rec, json, data: json ? json.data : undefined };
-    } catch (err) {
-      rec.error = String(err);
-      bundle.calls.push(rec);
-      return { rec, json: null, data: undefined };
-    }
-  }
-
-  const hasData = d =&gt; Array.isArray(d) ? d.length &gt; 0
-    : d &amp;&amp; typeof d === &quot;object&quot; ? (Array.isArray(d.content) ? d.content.length &gt; 0 : Object.keys(d).length &gt; 0)
-    : d !== undefined &amp;&amp; d !== null;
-
-  function saveBlob(blob, filename) {
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement(&quot;a&quot;);
-    a.href = url; a.download = filename;
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() =&gt; URL.revokeObjectURL(url), 5000);
-  }
-
-  const log = (...args) =&gt; console.log(&quot;[ibom-probe]&quot;, ...args);
-
-  // ── 1. 会话：checkToken 换 usertoken（前端也这么做，失败重试一次）───────
-  let tok = await call(&quot;/fwSecurity/authentication/checkToken.api&quot;, undefined, { step: &quot;auth&quot; });
-  if (!tok.rec.ok) { await sleep(3000); tok = await call(&quot;/fwSecurity/authentication/checkToken.api&quot;, undefined, { step: &quot;auth-retry&quot; }); }
-  if (!tok.rec.ok || !tok.data || !tok.data.userToken) {
-    console.error(&quot;[ibom-probe] checkToken 失败，请确认已登录 iBOM 后重试&quot;);
-    return;
-  }
-  auth = { token: tok.data.userToken, login: tok.data.userLoginName, loginType: tok.data.loginType || &quot;DEFAULT_SSO&quot; };
-  bundle.auth = { loginType: auth.loginType, delegateMode: tok.data.delegateMode, hasToken: true };
-  for (const c of bundle.calls) if (c.response &amp;&amp; c.response.data &amp;&amp; c.response.data.userToken) c.response.data.userToken = &quot;&lt;redacted&gt;&quot;;
-  log(&quot;会话就绪，loginType =&quot;, auth.loginType);
-
-  const agg = await call(&quot;/fwSecurity/security/findUserAggregateInfo.api&quot;, undefined, { step: &quot;account&quot; });
-  if (agg.data) {
-    bundle.summary.roles = (agg.data.roles || []).map(r =&gt; r.roleName);
-    bundle.summary.dmmFunctions = (agg.data.functions || []).filter(f =&gt; /数模|发布管理|PAA|SOR/.test(f));
-    // 权限全量 functions 已在原始响应里，摘要只留相关项
-  }
-
-  // ── 2. DMM 全量列表 + A 面计数 ────────────────────────────────────
-  const dmmWhere = [{ fieldName: &quot;DISCRIMINATOR&quot;, operator: &quot;EMPTY&quot;, value: &quot;DMM&quot; }];
-  const rows = [];
-  let total = null;
-  for (let begin = 0; begin &lt; MAX_LIST_ROWS; begin += PAGE_SIZE) {
-    const r = await call(&quot;/bommgmt/change/smartQuery.api&quot;,
-      { whereList: dmmWhere, filterInfo: {}, pageInfo: { beginIndex: begin, pageSize: PAGE_SIZE } },
-      { step: &quot;dmm-list&quot; });
-    if (!r.data || !Array.isArray(r.data.content)) break;
-    total = r.data.totalCount;
-    rows.push(...r.data.content);
-    if (r.data.content.length === 0 || rows.length &gt;= total) break;
-  }
-  const statusCount = {};
-  for (const row of rows) statusCount[row.changeStatus] = (statusCount[row.changeStatus] || 0) + 1;
-  bundle.summary.dmm = {
-    totalCount: total, fetched: rows.length, statusCount,
-    changeTypes: [...new Set(rows.map(r =&gt; r.changeType))],
-    projectNames: [...new Set(rows.map(r =&gt; r.projectName))].slice(0, 200),
-    changeCodeRange: rows.length ? [rows.map(r =&gt; r.changeCode).sort()[0], rows.map(r =&gt; r.changeCode).sort().slice(-1)[0]] : null,
-    allChangeCodes: rows.map(r =&gt; r.changeCode),
-  };
-  log(&quot;DMM 列表&quot;, total, &quot;条，状态分布&quot;, statusCount);
-
-  const asuf = await call(&quot;/bommgmt/change/smartQuery.api&quot;,
-    { whereList: [{ fieldName: &quot;DISCRIMINATOR&quot;, operator: &quot;EMPTY&quot;, value: &quot;ASUF&quot; }], filterInfo: {}, pageInfo: { beginIndex: 0, pageSize: 5 } },
-    { step: &quot;asuf-count&quot; });
-  bundle.summary.asufTotal = asuf.data ? asuf.data.totalCount : null;
-
-  // 按单号搜索（模糊）：验证能否用单号直接查，替代全量抓取
-  if (rows.length) {
-    const code = rows[0].changeCode;
-    for (const fieldName of [&quot;CHANGE_CODE&quot;, &quot;changeCode&quot;]) {
-      const r = await call(&quot;/bommgmt/change/smartQuery.api&quot;,
-        { whereList: [{ fieldName, operator: &quot;LIKE&quot;, value: code }, ...dmmWhere], filterInfo: {}, pageInfo: { beginIndex: 0, pageSize: 5 } },
-        { step: &quot;search-by-code:&quot; + fieldName });
-      bundle.summary[&quot;searchByCode_&quot; + fieldName] = r.data ? r.data.totalCount : null;
-    }
-  }
-
-  // ── 3. DMM 的 recTypeId（工作流/附件/页签都要它）────────────────────
-  const classCandidates = [
-    &quot;com.gantang.prd.chgmgmt.model.PartDigitalModelChange&quot;,
-    &quot;com.gantang.prd.chgmgmt.model.DigitalModelChange&quot;,
-    &quot;com.gantang.prd.chgmgmt.model.PartDigitalModel&quot;,
-    &quot;com.gantang.prd.chgmgmt.model.Dmm&quot;,
-    &quot;com.gantang.prd.chgmgmt.model.EngineerChangeOrder&quot;,
-    &quot;com.gantang.prd.chgmgmt.model.EngineerChangeRequest&quot;,
-  ];
-  const recTypes = {};
-  for (const className of classCandidates) {
-    const r = await call(&quot;/mstdata/recordType/getId.api&quot;, { className }, { step: &quot;recordType&quot; });
-    if (r.data &amp;&amp; r.data.recTypeId) recTypes[className] = r.data.recTypeId;
-  }
-  bundle.summary.recTypes = recTypes;
-  const dmmRecTypeIds = [...new Set(Object.entries(recTypes)
-    .filter(([k]) =&gt; !/EngineerChange/.test(k)).map(([, v]) =&gt; v))];
-  const fallbackRecTypeIds = [...new Set(Object.values(recTypes))];
-  log(&quot;recTypeId&quot;, recTypes);
-
-  // ── 4. 每种状态取样，逐个探测详情/零件/签署栏/审批流 ─────────────────
-  const samples = [];
-  for (const st of [&quot;APPROVAL&quot;, &quot;PUBLISH&quot;, &quot;RETURNED&quot;, &quot;DRAFT&quot;, &quot;CANCEL&quot;]) {
-    samples.push(...rows.filter(r =&gt; r.changeStatus === st).slice(0, SAMPLES_PER_STATUS));
-  }
-  const bizTypes = [&quot;partDesign&quot;, &quot;partDigitalModel&quot;, &quot;digitalModel&quot;, &quot;partModel&quot;,
-    &quot;signOff&quot;, &quot;partDigitalModelSignOff&quot;, &quot;signOffContent&quot;, &quot;partAssembly&quot;];
-  const guessed = [
-    [&quot;/bommgmt/partDigitalModelChange/findById.api&quot;, s =&gt; ({ id: s.id })],
-    [&quot;/bommgmt/partDigitalModelChange/findPartList.api&quot;, s =&gt; ({ filterInfo: { changeId: s.id }, pageInfo: { beginIndex: 0, pageSize: 200 } })],
-    [&quot;/bommgmt/partDigitalModelChange/findModelList.api&quot;, s =&gt; ({ filterInfo: { changeId: s.id }, pageInfo: { beginIndex: 0, pageSize: 200 } })],
-    [&quot;/bommgmt/partDigitalModelChange/findSignOff.api&quot;, s =&gt; ({ changeId: s.id })],
-    [&quot;/bommgmt/partDigitalModelChange/findSignOffList.api&quot;, s =&gt; ({ filterInfo: { changeId: s.id }, pageInfo: { beginIndex: 0, pageSize: 200 } })],
-    [&quot;/bommgmt/partDigitalModelSignOff/findByChangeId.api&quot;, s =&gt; ({ id: s.id })],
-    [&quot;/bommgmt/partDigitalModel/findByChangeId.api&quot;, s =&gt; ({ id: s.id })],
-  ];
-  const sampleResults = [];
-  for (const s of samples) {
-    const res = { id: s.id, changeCode: s.changeCode, status: s.changeStatus, hits: {} };
-    const mark = (k, r) =&gt; { res.hits[k] = r.rec.ok ? (hasData(r.data) ? &quot;data&quot; : &quot;empty&quot;) : (&quot;fail:&quot; + (r.rec.status || r.rec.error)); };
-    const tag = &quot;sample:&quot; + s.changeCode;
-
-    mark(&quot;change/findById&quot;, await call(&quot;/bommgmt/change/findById.api&quot;, { id: s.id }, { step: tag }));
-    mark(&quot;approvalNodes&quot;, await call(&quot;/bommgmt/changeNodeApproval/approvalNodes.api&quot;, { changeId: s.id }, { step: tag }));
-    mark(&quot;findLogRecord&quot;, await call(&quot;/bommgmt/change/findLogRecord.api&quot;,
-      { filterInfo: { bizNo: s.changeCode, dataSource: [], subTypes: [] }, pageInfo: { beginIndex: 0, pageSize: 100 }, sortInfo: { orderDirection: &quot;DESC&quot; } },
-      { step: tag }));
-    mark(&quot;isExistCount&quot;, await call(&quot;/bommgmt/changeOperation/isExistCount.api&quot;, { changeId: s.id, businessTypes: bizTypes }, { step: tag }));
-    for (const bt of bizTypes) {
-      mark(&quot;loadEntity:&quot; + bt, await call(&quot;/bommgmt/changeOperation/loadEntity.api&quot;,
-        { filterInfo: { changeId: s.id, businessType: bt }, pageInfo: { beginIndex: 0, pageSize: 200 } }, { step: tag }));
-    }
-    for (const [path, mk] of guessed) mark(path.replace(&quot;/bommgmt/&quot;, &quot;&quot;), await call(path, mk(s), { step: tag }));
-    mark(&quot;changeNoticeEmployee&quot;, await call(&quot;/bommgmt/changeNoticeEmployee/find.api&quot;,
-      { filterInfo: { formId: s.id, formType: &quot;Change&quot; }, pageInfo: { beginIndex: 0, pageSize: 50 } }, { step: tag }));
-
-    for (const recTypeId of (dmmRecTypeIds.length ? dmmRecTypeIds : fallbackRecTypeIds)) {
-      const p = await call(&quot;/fwWorkflow/workflowProcess/findProcessesByResourcesUri.api&quot;, { recId: s.id, recTypeId }, { step: tag });
-      mark(&quot;findProcesses:&quot; + recTypeId, p);
-      const procs = Array.isArray(p.data) ? p.data : [];
-      for (const proc of procs.slice(0, 2)) {
-        mark(&quot;findAllTasks:&quot; + recTypeId, await call(&quot;/fwWorkflow/workflowProcess/findAllTasks.api&quot;,
-          { processId: proc.id, showFutureTasks: true }, { step: tag }));
-      }
-      mark(&quot;formActions:&quot; + recTypeId, await call(&quot;/fwWorkflow/workflowProcess/findFormProcessActions.api&quot;, { recId: s.id, recTypeId }, { step: tag }));
-      mark(&quot;fileFind:&quot; + recTypeId, await call(&quot;/fwFile/file/find.api&quot;,
-        { filterInfo: { recId: s.id, recTypeId }, pageInfo: { beginIndex: 0, pageSize: 50 } }, { step: tag }));
-    }
-    sampleResults.push(res);
-    log(&quot;样本&quot;, s.changeCode, s.changeStatus, &quot;完成&quot;);
-  }
-  bundle.summary.samples = sampleResults;
-
-  // 详情页页签清单（contextCategory 通常等于 recTypeId）
-  const ctx = {};
-  for (const recTypeId of fallbackRecTypeIds) {
-    const r = await call(&quot;/fwSecurity/security/getContextMenu.api&quot;, { contextCategory: String(recTypeId) }, { step: &quot;contextMenu&quot; });
-    ctx[recTypeId] = r.rec.ok ? (Array.isArray(r.data) ? r.data.map(m =&gt; m.path || m.name) : &quot;non-array&quot;) : &quot;fail&quot;;
-  }
-  bundle.summary.contextMenus = ctx;
-
-  // ── 5. DMM 报表导出（二进制直接存盘，不经文本通道）─────────────────────
-  const exp = await call(&quot;/bommgmt/partDigitalModelChange/exportReport.api&quot;,
-    { whereList: dmmWhere, filterInfo: {} }, { raw: true, step: &quot;export&quot; });
-  let fname = &quot;数模设计审核流程报表.xlsx&quot;;
-  const cd = exp.rec.contentDisposition || &quot;&quot;;
-  const m = /filename\*?=(?:UTF-8'')?([^;]+)/i.exec(cd);
-  if (m) { try { fname = decodeURIComponent(m[1].replace(/&quot;/g, &quot;&quot;).trim()); } catch (_) { /* 保留默认名 */ } }
-  bundle.summary.export = { status: exp.rec.status, bytes: exp.rec.bytes, contentType: exp.rec.contentType, filename: fname };
-  if (exp.blob &amp;&amp; exp.rec.status === 200) saveBlob(exp.blob, fname);
-
-  // ── 6. 汇总并下载 ──────────────────────────────────────────────────
-  bundle.finishedAt = new Date().toISOString();
-  bundle.summary.callCount = bundle.calls.length;
-  bundle.summary.failedCalls = bundle.calls.filter(c =&gt; c.ok === false || c.error).length;
-  const json = JSON.stringify(bundle, null, 1);
-  if (auth &amp;&amp; json.includes(auth.token)) {
-    console.error(&quot;[ibom-probe] 结果里出现了 usertoken，已中止下载&quot;);
-    return;
-  }
-  const stamp = bundle.startedAt.replace(/[-:T]/g, &quot;&quot;).slice(0, 14);
-  saveBlob(new Blob([json], { type: &quot;application/json&quot; }), `ibom_phase0_${stamp}.json`);
-  console.table(sampleResults.map(r =&gt; ({ changeCode: r.changeCode, status: r.status, ...r.hits })));
-  log(&quot;完成：&quot;, bundle.calls.length, &quot;次调用，下载目录里有 JSON 与报表 xlsx&quot;);
-  if (typeof window !== &quot;undefined&quot;) window.__ibomPhase0 = bundle;
-})();
-</textarea>
-<button id="copy" type="button">复制脚本</button> <span id="copied" class="meta"></span>
+<p class="meta">读取数模归档任务与 D5 绑定实际填写的筛选条件，以及最新一份数模快照的流水单号，用来和 iBOM 单号求交集。</p>
 </section>
 
 <section>
-<h2>跑完之后</h2>
+<h2>第三步：在 iBOM 页面点「iBOM 取证」（已经跑过可跳过）</h2>
 <ol>
-<li>把下载的 JSON 和 xlsx 交回（直接上传，或放进 <code>.runtime/ibom-impact/phase0/</code>）。</li>
-<li>请一位<strong>不同角色</strong>的同事也点一次书签，交回他的 JSON（对比可见范围）。</li>
-<li>附一份最近的 TDC 数模 47 列导出 xlsx（求单号交集）。</li>
+<li>登录 <code>https://ibom.sgmw.com.cn</code>，停在任意页面，点「iBOM 取证」。</li>
+<li>约 1 分钟后下载 <code>ibom_phase0_&lt;时间&gt;.json</code> 与报表 xlsx。浏览器提示「下载多个文件」时点<strong>允许</strong>。</li>
 </ol>
-<p class="meta">完整清单见仓库 <code>docs/IBOM_PHASE0A_EVIDENCE_CHECKLIST_20261119.md</code>。脚本版本 2026-11-18.1。</p>
+</section>
+
+<section>
+<h2>第四步：运行 PowerShell 脚本，记录 iBOM 登录跳转链</h2>
+<ol>
+<li>点「下载 PowerShell 脚本」，文件保存为 <code>ibom_sso_chain.ps1</code>（默认在下载目录）。</li>
+<li>按 <code>Win+R</code>，输入 <code>powershell</code> 回车，在窗口里运行：
+<pre>powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\Downloads\ibom_sso_chain.ps1"</pre></li>
+<li>结束后下载目录里多出 <code>ibom_sso_chain_&lt;时间&gt;.json</code>。</li>
+</ol>
+<button id="dl-ps1" type="button">下载 PowerShell 脚本</button><button id="cp-ps1" type="button">复制脚本内容</button> <span id="ps1-msg" class="meta"></span>
+<div class="note">如果公司策略不允许运行脚本文件：打开 PowerShell 窗口，点「复制脚本内容」，在窗口里右键粘贴并回车，效果相同。<br>脚本以<strong>未登录</strong>状态访问 iBOM，不使用 Windows 身份认证、不发送密码，只记录跳转经过的地址、参数名和 Cookie 名。</div>
+</section>
+
+<section>
+<h2>交回哪些文件</h2>
+<table>
+<tr><th>文件</th><th>来自</th></tr>
+<tr><td><code>vse_phase0b_*.json</code></td><td>第二步</td></tr>
+<tr><td><code>ibom_sso_chain_*.json</code></td><td>第四步</td></tr>
+<tr><td><code>ibom_phase0_*.json</code>、报表 xlsx（转成 TXT）</td><td>第三步（已交过则不用）</td></tr>
+</table>
+<p class="meta">书签被浏览器拦截时，可按 F12 → Console，输入 <code>allow pasting</code> 回车后粘贴对应脚本：
+<button id="cp-vse" type="button">复制 VSE 取证脚本</button><button id="cp-ibom" type="button">复制 iBOM 取证脚本</button> <span id="cp-msg"></span></p>
 </section>
 </main>
 <script>
-document.getElementById('copy').addEventListener('click', async () => {
-  const t = document.getElementById('src');
-  try { await navigator.clipboard.writeText(t.value); }
-  catch (_) { t.select(); document.execCommand('copy'); }
-  document.getElementById('copied').textContent = '已复制';
+const SOURCES = {"ibom":"/*\n * iBOM 阶段 0A 只读取证脚本（浏览器控制台运行）\n *\n * 用法：在已登录的 https://ibom.sgmw.com.cn 页面按 F12 → Console，粘贴本文件全部内容回车。\n *       （Chrome/Edge 首次粘贴会要求先输入 allow pasting。）\n * 产出：下载目录里两个文件\n *       ibom_phase0_\u003c时间>.json        全部请求/响应（不含 usertoken）\n *       数模设计审核流程报表_\u003c日期>.xlsx  DMM 报表原件（服务端给的文件名）\n *\n * 只调用查询类接口（find / query / count / export），不发起审批、不保存、不删除。\n * 猜测的接口名调不通时只会记一条失败，不影响其它步骤。\n */\n(async () => {\n  \"use strict\";\n\n  const SCRIPT_VERSION = \"2026-11-18.1\";\n  const MAX_RESP_CHARS = 400000;\n  const PAGE_SIZE = 50;\n  const MAX_LIST_ROWS = 5000;\n  const SAMPLES_PER_STATUS = 2;\n  const DELAY_MS = 150;\n\n  if (typeof location !== \"undefined\" && !/(^|\\.)ibom\\.sgmw\\.com\\.cn$/.test(location.hostname)) {\n    console.error(\"[ibom-probe] 请在 ibom.sgmw.com.cn 的页面里运行\");\n    return;\n  }\n  const BASE = typeof location !== \"undefined\" ? location.origin : \"https://ibom.sgmw.com.cn\";\n\n  // ── MD5（x-content-md5 = 请求体原文 UTF-8 字节的 hex MD5）────────────────\n  function md5(text) {\n    const bytes = new TextEncoder().encode(text);\n    const n = bytes.length;\n    const words = new Array((((n + 8) >>> 6) + 1) * 16).fill(0);\n    for (let i = 0; i \u003c n; i++) words[i >> 2] |= bytes[i] \u003c\u003c ((i % 4) * 8);\n    words[n >> 2] |= 0x80 \u003c\u003c ((n % 4) * 8);\n    words[words.length - 2] = (n * 8) >>> 0;\n    words[words.length - 1] = Math.floor((n * 8) / 0x100000000) >>> 0;\n    const S = [7, 12, 17, 22, 5, 9, 14, 20, 4, 11, 16, 23, 6, 10, 15, 21];\n    const K = [];\n    for (let i = 0; i \u003c 64; i++) K[i] = Math.floor(Math.abs(Math.sin(i + 1)) * 0x100000000) >>> 0;\n    let a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;\n    for (let off = 0; off \u003c words.length; off += 16) {\n      let A = a0, B = b0, C = c0, D = d0;\n      for (let i = 0; i \u003c 64; i++) {\n        let F, g;\n        if (i \u003c 16) { F = (B & C) | (~B & D); g = i; }\n        else if (i \u003c 32) { F = (D & B) | (~D & C); g = (5 * i + 1) % 16; }\n        else if (i \u003c 48) { F = B ^ C ^ D; g = (3 * i + 5) % 16; }\n        else { F = C ^ (B | ~D); g = (7 * i) % 16; }\n        const s = S[(i >> 4) * 4 + (i % 4)];\n        const tmp = D; D = C; C = B;\n        const sum = (A + F + K[i] + words[off + g]) >>> 0;\n        B = (B + ((sum \u003c\u003c s) | (sum >>> (32 - s)))) >>> 0;\n        A = tmp;\n      }\n      a0 = (a0 + A) >>> 0; b0 = (b0 + B) >>> 0; c0 = (c0 + C) >>> 0; d0 = (d0 + D) >>> 0;\n    }\n    return [a0, b0, c0, d0].map(v => {\n      let h = \"\";\n      for (let j = 0; j \u003c 4; j++) h += ((v >>> (j * 8)) & 0xff).toString(16).padStart(2, \"0\");\n      return h;\n    }).join(\"\");\n  }\n\n  // ── 请求封装 ───────────────────────────────────────────────────────\n  const sleep = ms => new Promise(r => setTimeout(r, ms));\n  const traceId = () => Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join(\"\");\n  const bundle = {\n    scriptVersion: SCRIPT_VERSION,\n    startedAt: new Date().toISOString(),\n    page: typeof location !== \"undefined\" ? location.pathname : \"\",\n    cookieNamesVisibleToJs: typeof document !== \"undefined\"\n      ? document.cookie.split(\";\").map(c => c.split(\"=\")[0].trim()).filter(Boolean) : [],\n    auth: {},\n    calls: [],\n    summary: {},\n  };\n  let auth = null;\n\n  async function call(path, body, { raw = false, step = \"\" } = {}) {\n    const text = body === undefined ? \"\" : JSON.stringify(body);\n    const headers = {\n      accept: \"application/json, text/plain, */*\",\n      needhtmlescape: \"false\",\n      userlanguage: \"zh_CN\",\n      \"x-g-tenant-id\": \"\",\n      \"x-g-trace-id\": traceId(),\n      \"x-content-md5\": md5(text),\n    };\n    if (text) headers[\"content-type\"] = \"application/json\";\n    if (auth) {\n      headers.usertoken = auth.token;\n      headers.userloginname = auth.login;\n      headers.logintype = auth.loginType;\n      headers.locale = \"zh_CN\";\n    }\n    const rec = { step, path, request: body === undefined ? null : body };\n    try {\n      const resp = await fetch(BASE + path, {\n        method: \"POST\", headers, body: text || undefined, credentials: \"include\",\n      });\n      rec.status = resp.status;\n      rec.processResult = resp.headers.get(\"x-g-process-result\");\n      rec.contentType = resp.headers.get(\"content-type\");\n      rec.contentDisposition = resp.headers.get(\"content-disposition\");\n      if (raw) {\n        const blob = await resp.blob();\n        rec.bytes = blob.size;\n        bundle.calls.push(rec);\n        await sleep(DELAY_MS);\n        return { rec, blob };\n      }\n      const bodyText = await resp.text();\n      let json = null;\n      try { json = bodyText ? JSON.parse(bodyText) : null; } catch (_) { /* 非 JSON */ }\n      rec.state = json && json.state;\n      rec.ok = resp.ok && rec.processResult !== \"error\" && rec.state === \"success\";\n      const kept = json === null ? bodyText : JSON.stringify(json);\n      rec.response = kept.length > MAX_RESP_CHARS ? kept.slice(0, MAX_RESP_CHARS) : (json === null ? bodyText : json);\n      rec.truncated = kept.length > MAX_RESP_CHARS;\n      bundle.calls.push(rec);\n      await sleep(DELAY_MS);\n      return { rec, json, data: json ? json.data : undefined };\n    } catch (err) {\n      rec.error = String(err);\n      bundle.calls.push(rec);\n      return { rec, json: null, data: undefined };\n    }\n  }\n\n  const hasData = d => Array.isArray(d) ? d.length > 0\n    : d && typeof d === \"object\" ? (Array.isArray(d.content) ? d.content.length > 0 : Object.keys(d).length > 0)\n    : d !== undefined && d !== null;\n\n  function saveBlob(blob, filename) {\n    const url = URL.createObjectURL(blob);\n    const a = document.createElement(\"a\");\n    a.href = url; a.download = filename;\n    document.body.appendChild(a); a.click(); a.remove();\n    setTimeout(() => URL.revokeObjectURL(url), 5000);\n  }\n\n  const log = (...args) => console.log(\"[ibom-probe]\", ...args);\n\n  // ── 1. 会话：checkToken 换 usertoken（前端也这么做，失败重试一次）───────\n  let tok = await call(\"/fwSecurity/authentication/checkToken.api\", undefined, { step: \"auth\" });\n  if (!tok.rec.ok) { await sleep(3000); tok = await call(\"/fwSecurity/authentication/checkToken.api\", undefined, { step: \"auth-retry\" }); }\n  if (!tok.rec.ok || !tok.data || !tok.data.userToken) {\n    console.error(\"[ibom-probe] checkToken 失败，请确认已登录 iBOM 后重试\");\n    return;\n  }\n  auth = { token: tok.data.userToken, login: tok.data.userLoginName, loginType: tok.data.loginType || \"DEFAULT_SSO\" };\n  bundle.auth = { loginType: auth.loginType, delegateMode: tok.data.delegateMode, hasToken: true };\n  for (const c of bundle.calls) if (c.response && c.response.data && c.response.data.userToken) c.response.data.userToken = \"\u003credacted>\";\n  log(\"会话就绪，loginType =\", auth.loginType);\n\n  const agg = await call(\"/fwSecurity/security/findUserAggregateInfo.api\", undefined, { step: \"account\" });\n  if (agg.data) {\n    bundle.summary.roles = (agg.data.roles || []).map(r => r.roleName);\n    bundle.summary.dmmFunctions = (agg.data.functions || []).filter(f => /数模|发布管理|PAA|SOR/.test(f));\n    // 权限全量 functions 已在原始响应里，摘要只留相关项\n  }\n\n  // ── 2. DMM 全量列表 + A 面计数 ────────────────────────────────────\n  const dmmWhere = [{ fieldName: \"DISCRIMINATOR\", operator: \"EMPTY\", value: \"DMM\" }];\n  const rows = [];\n  let total = null;\n  for (let begin = 0; begin \u003c MAX_LIST_ROWS; begin += PAGE_SIZE) {\n    const r = await call(\"/bommgmt/change/smartQuery.api\",\n      { whereList: dmmWhere, filterInfo: {}, pageInfo: { beginIndex: begin, pageSize: PAGE_SIZE } },\n      { step: \"dmm-list\" });\n    if (!r.data || !Array.isArray(r.data.content)) break;\n    total = r.data.totalCount;\n    rows.push(...r.data.content);\n    if (r.data.content.length === 0 || rows.length >= total) break;\n  }\n  const statusCount = {};\n  for (const row of rows) statusCount[row.changeStatus] = (statusCount[row.changeStatus] || 0) + 1;\n  bundle.summary.dmm = {\n    totalCount: total, fetched: rows.length, statusCount,\n    changeTypes: [...new Set(rows.map(r => r.changeType))],\n    projectNames: [...new Set(rows.map(r => r.projectName))].slice(0, 200),\n    changeCodeRange: rows.length ? [rows.map(r => r.changeCode).sort()[0], rows.map(r => r.changeCode).sort().slice(-1)[0]] : null,\n    allChangeCodes: rows.map(r => r.changeCode),\n  };\n  log(\"DMM 列表\", total, \"条，状态分布\", statusCount);\n\n  const asuf = await call(\"/bommgmt/change/smartQuery.api\",\n    { whereList: [{ fieldName: \"DISCRIMINATOR\", operator: \"EMPTY\", value: \"ASUF\" }], filterInfo: {}, pageInfo: { beginIndex: 0, pageSize: 5 } },\n    { step: \"asuf-count\" });\n  bundle.summary.asufTotal = asuf.data ? asuf.data.totalCount : null;\n\n  // 按单号搜索（模糊）：验证能否用单号直接查，替代全量抓取\n  if (rows.length) {\n    const code = rows[0].changeCode;\n    for (const fieldName of [\"CHANGE_CODE\", \"changeCode\"]) {\n      const r = await call(\"/bommgmt/change/smartQuery.api\",\n        { whereList: [{ fieldName, operator: \"LIKE\", value: code }, ...dmmWhere], filterInfo: {}, pageInfo: { beginIndex: 0, pageSize: 5 } },\n        { step: \"search-by-code:\" + fieldName });\n      bundle.summary[\"searchByCode_\" + fieldName] = r.data ? r.data.totalCount : null;\n    }\n  }\n\n  // ── 3. DMM 的 recTypeId（工作流/附件/页签都要它）────────────────────\n  const classCandidates = [\n    \"com.gantang.prd.chgmgmt.model.PartDigitalModelChange\",\n    \"com.gantang.prd.chgmgmt.model.DigitalModelChange\",\n    \"com.gantang.prd.chgmgmt.model.PartDigitalModel\",\n    \"com.gantang.prd.chgmgmt.model.Dmm\",\n    \"com.gantang.prd.chgmgmt.model.EngineerChangeOrder\",\n    \"com.gantang.prd.chgmgmt.model.EngineerChangeRequest\",\n  ];\n  const recTypes = {};\n  for (const className of classCandidates) {\n    const r = await call(\"/mstdata/recordType/getId.api\", { className }, { step: \"recordType\" });\n    if (r.data && r.data.recTypeId) recTypes[className] = r.data.recTypeId;\n  }\n  bundle.summary.recTypes = recTypes;\n  const dmmRecTypeIds = [...new Set(Object.entries(recTypes)\n    .filter(([k]) => !/EngineerChange/.test(k)).map(([, v]) => v))];\n  const fallbackRecTypeIds = [...new Set(Object.values(recTypes))];\n  log(\"recTypeId\", recTypes);\n\n  // ── 4. 每种状态取样，逐个探测详情/零件/签署栏/审批流 ─────────────────\n  const samples = [];\n  for (const st of [\"APPROVAL\", \"PUBLISH\", \"RETURNED\", \"DRAFT\", \"CANCEL\"]) {\n    samples.push(...rows.filter(r => r.changeStatus === st).slice(0, SAMPLES_PER_STATUS));\n  }\n  const bizTypes = [\"partDesign\", \"partDigitalModel\", \"digitalModel\", \"partModel\",\n    \"signOff\", \"partDigitalModelSignOff\", \"signOffContent\", \"partAssembly\"];\n  const guessed = [\n    [\"/bommgmt/partDigitalModelChange/findById.api\", s => ({ id: s.id })],\n    [\"/bommgmt/partDigitalModelChange/findPartList.api\", s => ({ filterInfo: { changeId: s.id }, pageInfo: { beginIndex: 0, pageSize: 200 } })],\n    [\"/bommgmt/partDigitalModelChange/findModelList.api\", s => ({ filterInfo: { changeId: s.id }, pageInfo: { beginIndex: 0, pageSize: 200 } })],\n    [\"/bommgmt/partDigitalModelChange/findSignOff.api\", s => ({ changeId: s.id })],\n    [\"/bommgmt/partDigitalModelChange/findSignOffList.api\", s => ({ filterInfo: { changeId: s.id }, pageInfo: { beginIndex: 0, pageSize: 200 } })],\n    [\"/bommgmt/partDigitalModelSignOff/findByChangeId.api\", s => ({ id: s.id })],\n    [\"/bommgmt/partDigitalModel/findByChangeId.api\", s => ({ id: s.id })],\n  ];\n  const sampleResults = [];\n  for (const s of samples) {\n    const res = { id: s.id, changeCode: s.changeCode, status: s.changeStatus, hits: {} };\n    const mark = (k, r) => { res.hits[k] = r.rec.ok ? (hasData(r.data) ? \"data\" : \"empty\") : (\"fail:\" + (r.rec.status || r.rec.error)); };\n    const tag = \"sample:\" + s.changeCode;\n\n    mark(\"change/findById\", await call(\"/bommgmt/change/findById.api\", { id: s.id }, { step: tag }));\n    mark(\"approvalNodes\", await call(\"/bommgmt/changeNodeApproval/approvalNodes.api\", { changeId: s.id }, { step: tag }));\n    mark(\"findLogRecord\", await call(\"/bommgmt/change/findLogRecord.api\",\n      { filterInfo: { bizNo: s.changeCode, dataSource: [], subTypes: [] }, pageInfo: { beginIndex: 0, pageSize: 100 }, sortInfo: { orderDirection: \"DESC\" } },\n      { step: tag }));\n    mark(\"isExistCount\", await call(\"/bommgmt/changeOperation/isExistCount.api\", { changeId: s.id, businessTypes: bizTypes }, { step: tag }));\n    for (const bt of bizTypes) {\n      mark(\"loadEntity:\" + bt, await call(\"/bommgmt/changeOperation/loadEntity.api\",\n        { filterInfo: { changeId: s.id, businessType: bt }, pageInfo: { beginIndex: 0, pageSize: 200 } }, { step: tag }));\n    }\n    for (const [path, mk] of guessed) mark(path.replace(\"/bommgmt/\", \"\"), await call(path, mk(s), { step: tag }));\n    mark(\"changeNoticeEmployee\", await call(\"/bommgmt/changeNoticeEmployee/find.api\",\n      { filterInfo: { formId: s.id, formType: \"Change\" }, pageInfo: { beginIndex: 0, pageSize: 50 } }, { step: tag }));\n\n    for (const recTypeId of (dmmRecTypeIds.length ? dmmRecTypeIds : fallbackRecTypeIds)) {\n      const p = await call(\"/fwWorkflow/workflowProcess/findProcessesByResourcesUri.api\", { recId: s.id, recTypeId }, { step: tag });\n      mark(\"findProcesses:\" + recTypeId, p);\n      const procs = Array.isArray(p.data) ? p.data : [];\n      for (const proc of procs.slice(0, 2)) {\n        mark(\"findAllTasks:\" + recTypeId, await call(\"/fwWorkflow/workflowProcess/findAllTasks.api\",\n          { processId: proc.id, showFutureTasks: true }, { step: tag }));\n      }\n      mark(\"formActions:\" + recTypeId, await call(\"/fwWorkflow/workflowProcess/findFormProcessActions.api\", { recId: s.id, recTypeId }, { step: tag }));\n      mark(\"fileFind:\" + recTypeId, await call(\"/fwFile/file/find.api\",\n        { filterInfo: { recId: s.id, recTypeId }, pageInfo: { beginIndex: 0, pageSize: 50 } }, { step: tag }));\n    }\n    sampleResults.push(res);\n    log(\"样本\", s.changeCode, s.changeStatus, \"完成\");\n  }\n  bundle.summary.samples = sampleResults;\n\n  // 详情页页签清单（contextCategory 通常等于 recTypeId）\n  const ctx = {};\n  for (const recTypeId of fallbackRecTypeIds) {\n    const r = await call(\"/fwSecurity/security/getContextMenu.api\", { contextCategory: String(recTypeId) }, { step: \"contextMenu\" });\n    ctx[recTypeId] = r.rec.ok ? (Array.isArray(r.data) ? r.data.map(m => m.path || m.name) : \"non-array\") : \"fail\";\n  }\n  bundle.summary.contextMenus = ctx;\n\n  // ── 5. DMM 报表导出（二进制直接存盘，不经文本通道）─────────────────────\n  const exp = await call(\"/bommgmt/partDigitalModelChange/exportReport.api\",\n    { whereList: dmmWhere, filterInfo: {} }, { raw: true, step: \"export\" });\n  let fname = \"数模设计审核流程报表.xlsx\";\n  const cd = exp.rec.contentDisposition || \"\";\n  const m = /filename\\*?=(?:UTF-8'')?([^;]+)/i.exec(cd);\n  if (m) { try { fname = decodeURIComponent(m[1].replace(/\"/g, \"\").trim()); } catch (_) { /* 保留默认名 */ } }\n  bundle.summary.export = { status: exp.rec.status, bytes: exp.rec.bytes, contentType: exp.rec.contentType, filename: fname };\n  if (exp.blob && exp.rec.status === 200) saveBlob(exp.blob, fname);\n\n  // ── 6. 汇总并下载 ──────────────────────────────────────────────────\n  bundle.finishedAt = new Date().toISOString();\n  bundle.summary.callCount = bundle.calls.length;\n  bundle.summary.failedCalls = bundle.calls.filter(c => c.ok === false || c.error).length;\n  const json = JSON.stringify(bundle, null, 1);\n  if (auth && json.includes(auth.token)) {\n    console.error(\"[ibom-probe] 结果里出现了 usertoken，已中止下载\");\n    return;\n  }\n  const stamp = bundle.startedAt.replace(/[-:T]/g, \"\").slice(0, 14);\n  saveBlob(new Blob([json], { type: \"application/json\" }), `ibom_phase0_${stamp}.json`);\n  console.table(sampleResults.map(r => ({ changeCode: r.changeCode, status: r.status, ...r.hits })));\n  log(\"完成：\", bundle.calls.length, \"次调用，下载目录里有 JSON 与报表 xlsx\");\n  if (typeof window !== \"undefined\") window.__ibomPhase0 = bundle;\n})();\n","vse":"/*\n * VSE Toolbox 阶段 0B 只读取证（在 VSE Toolbox 自己的页面里运行，生产机不需要 Python）\n *\n * 用法：打开 VSE Toolbox 网页（http://127.0.0.1:端口/），点书签「VSE 取证」，\n *       或 F12 → Console 粘贴本文件全文回车。\n * 产出：下载目录里的 vse_phase0b_\u003c时间>.json，交回即可。\n *\n * 只调用 GET 接口（归档任务列表、D5/D2 更新策略、数模表单视图与行），不改任何配置、不触发同步。\n */\n(async () => {\n  \"use strict\";\n\n  const SCRIPT_VERSION = \"2026-11-19.1\";\n  const PAGE_LIMIT = 500;\n  const MAX_ROWS = 20000;\n\n  if (typeof location !== \"undefined\" && !/^(127\\.0\\.0\\.1|localhost|\\[::1\\])$/.test(location.hostname)) {\n    console.error(\"[vse-probe] 请在 VSE Toolbox 网页（127.0.0.1）里运行\");\n    return;\n  }\n  const BASE = typeof location !== \"undefined\" ? location.origin : \"http://127.0.0.1:5000\";\n  const log = (...a) => console.log(\"[vse-probe]\", ...a);\n  const bundle = { scriptVersion: SCRIPT_VERSION, startedAt: new Date().toISOString(), calls: [] };\n\n  async function get(path) {\n    const rec = { path };\n    try {\n      const resp = await fetch(BASE + path, { credentials: \"same-origin\", headers: { accept: \"application/json\" } });\n      rec.status = resp.status;\n      const text = await resp.text();\n      try { rec.body = JSON.parse(text); } catch (_) { rec.body = text.slice(0, 2000); }\n    } catch (err) {\n      rec.error = String(err);\n    }\n    bundle.calls.push(rec);\n    return rec;\n  }\n\n  // 1. 归档任务（含筛选条件）\n  await get(\"/api/scheduled-archive/jobs\");\n  // 2. 数模 / SOR 交付物的更新策略（含绑定的 matchRule）\n  for (const id of [\"VPI-T2-D5\", \"VPI-T2-D2\"]) {\n    await get(`/api/project-status/deliverables/${encodeURIComponent(id)}/update-policy`);\n  }\n  // 3. 数模表单视图（快照时间、覆盖范围、表头）\n  await get(\"/api/deliverable-forms/tdc_data_model/view\");\n  // 4. 最新快照的全部行（只保留值与维度，丢掉其它字段以控制体积）\n  const rows = [];\n  let total = null;\n  for (let offset = 0; offset \u003c MAX_ROWS; offset += PAGE_LIMIT) {\n    const rec = await get(`/api/deliverable-forms/tdc_data_model/rows?offset=${offset}&limit=${PAGE_LIMIT}`);\n    const data = rec.body && rec.body.data;\n    if (!data || !Array.isArray(data.items)) break;\n    total = data.total;\n    for (const item of data.items) rows.push({ values: item.values, dimensions: item.dimensions });\n    rec.body = { ok: rec.body.ok, data: { total: data.total, offset: data.offset, limit: data.limit, itemCount: data.items.length } };\n    if (data.items.length === 0 || rows.length >= total) break;\n  }\n  bundle.tdcRows = { total, fetched: rows.length, rows };\n  bundle.finishedAt = new Date().toISOString();\n  log(\"完成：\", bundle.calls.length, \"次请求，数模行\", rows.length, \"/\", total);\n\n  const json = JSON.stringify(bundle);\n  if (typeof document !== \"undefined\") {\n    const stamp = bundle.startedAt.replace(/[-:T]/g, \"\").slice(0, 14);\n    const url = URL.createObjectURL(new Blob([json], { type: \"application/json\" }));\n    const a = document.createElement(\"a\");\n    a.href = url; a.download = `vse_phase0b_${stamp}.json`;\n    document.body.appendChild(a); a.click(); a.remove();\n    setTimeout(() => URL.revokeObjectURL(url), 5000);\n  }\n  if (typeof window !== \"undefined\") window.__vsePhase0b = bundle;\n})();\n","ps1":"# iBOM login redirect chain probe (phase 0B). Windows PowerShell 5.1, no install needed.\r\n#\r\n# Run:  powershell -NoProfile -ExecutionPolicy Bypass -File ibom_sso_chain.ps1\r\n#   or: open PowerShell, paste the whole file, press Enter.\r\n# Output: \u003cDownloads>\\ibom_sso_chain_\u003ctime>.json\r\n#\r\n# Visits iBOM WITHOUT logging in: no username/password is sent, Windows integrated\r\n# authentication is NOT used (UseDefaultCredentials stays false). Records each redirect\r\n# hop (host, path, query parameter names), cookie NAMES (never values), the login form\r\n# action and field names, and login-related API paths found in iBOM front-end scripts.\r\n# One-time values (state, code, nonce, session_code, ticket ...) are never recorded.\r\n\r\n$ErrorActionPreference = 'Stop'\r\n$ScriptVersion = '2026-11-19.1'\r\n$Origin = 'https://ibom.sgmw.com.cn'\r\n$MaxHops = 15\r\n$MaxScripts = 12\r\n$MaxScriptBytes = 6MB\r\n$TimeoutMs = 20000\r\n\r\n[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12\r\n\r\n$SafeKeys = @('client_id','response_type','scope','response_mode','kc_idp_hint','ui_locales','prompt','loginType','logintype','lang','locale')\r\n$RedirectKeys = @('redirect_uri','service','returnUrl','returnurl','redirect','target')\r\n\r\nfunction Get-QueryPairs([string]$query) {\r\n    $pairs = @()\r\n    if (-not $query) { return $pairs }\r\n    foreach ($part in $query.TrimStart('?').Split('&')) {\r\n        if (-not $part) { continue }\r\n        $kv = $part.Split('=', 2)\r\n        $name = [Uri]::UnescapeDataString($kv[0])\r\n        $value = if ($kv.Length -gt 1) { [Uri]::UnescapeDataString($kv[1].Replace('+', ' ')) } else { '' }\r\n        $pairs += [pscustomobject]@{ n = $name; v = $value }\r\n    }\r\n    return $pairs\r\n}\r\n\r\nfunction Format-RedirectValue([string]$value) {\r\n    try {\r\n        $u = [Uri]$value\r\n        $names = @(Get-QueryPairs $u.Query | ForEach-Object { $_.n + '=...' })\r\n        $tail = if ($names.Count -gt 0) { '?' + ($names -join '&') } else { '' }\r\n        return $u.Scheme + '://' + $u.Host + $u.AbsolutePath + $tail\r\n    } catch { return '\u003cunparsable>' }\r\n}\r\n\r\nfunction Get-SafeUrl([string]$url) {\r\n    $u = [Uri]$url\r\n    $query = @()\r\n    foreach ($p in @(Get-QueryPairs $u.Query)) {\r\n        $name = $p.n; $value = '\u003comitted>'\r\n        if ($SafeKeys -contains $name) { $value = $p.v }\r\n        if ($RedirectKeys -contains $name) { $value = Format-RedirectValue $p.v }\r\n        $query += [ordered]@{ name = $name; value = $value }\r\n    }\r\n    return [ordered]@{ scheme = $u.Scheme; host = $u.Host; port = $u.Port; path = $u.AbsolutePath; query = $query }\r\n}\r\n\r\nfunction Get-CookieNames($headers) {\r\n    $out = @()\r\n    $raw = $headers.GetValues('Set-Cookie')\r\n    if (-not $raw) { return $out }\r\n    foreach ($item in $raw) {\r\n        $name = $item.Split('=', 2)[0].Trim()\r\n        if (-not $name -or $name -match '\\s') { continue }  # fragments of Expires dates split on commas\r\n        $flags = @($item.Split(';') | Select-Object -Skip 1 | ForEach-Object { $_.Trim().Split('=')[0].ToLower() } |\r\n            Where-Object { @('httponly','secure','samesite','domain','path') -contains $_ } | Sort-Object -Unique)\r\n        $out += [ordered]@{ name = $name; flags = $flags }\r\n    }\r\n    return $out\r\n}\r\n\r\nfunction Invoke-Hop([string]$url, $cookies, [int]$maxBytes) {\r\n    $req = [Net.HttpWebRequest]::Create($url)\r\n    $req.Method = 'GET'\r\n    $req.AllowAutoRedirect = $false\r\n    $req.UseDefaultCredentials = $false\r\n    $req.CookieContainer = $cookies\r\n    $req.Timeout = $TimeoutMs\r\n    $req.ReadWriteTimeout = $TimeoutMs\r\n    $req.UserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) vse-toolbox-phase0b'\r\n    $req.Headers.Add('Accept-Language', 'zh-CN')\r\n    $proxy = [Net.WebRequest]::GetSystemWebProxy()\r\n    $proxy.Credentials = [Net.CredentialCache]::DefaultNetworkCredentials  # proxy only, never the target site\r\n    $req.Proxy = $proxy\r\n    $resp = $null\r\n    try { $resp = $req.GetResponse() }\r\n    catch [Net.WebException] {\r\n        if ($_.Exception.Response) { $resp = $_.Exception.Response } else { throw }\r\n    }\r\n    $body = ''\r\n    $ctype = [string]$resp.ContentType\r\n    if ($ctype -match 'html|json|javascript|text') {\r\n        $stream = $resp.GetResponseStream()\r\n        $buffer = New-Object byte[] $maxBytes\r\n        $total = 0\r\n        while ($total -lt $maxBytes) {\r\n            $n = $stream.Read($buffer, $total, [Math]::Min(65536, $maxBytes - $total))\r\n            if ($n -le 0) { break }\r\n            $total += $n\r\n        }\r\n        $body = [Text.Encoding]::UTF8.GetString($buffer, 0, $total)\r\n    }\r\n    $result = [ordered]@{\r\n        status = [int]$resp.StatusCode\r\n        contentType = $ctype\r\n        location = $resp.Headers['Location']\r\n        server = $resp.Headers['Server']\r\n        wwwAuthenticate = @($resp.Headers.GetValues('WWW-Authenticate') | ForEach-Object { $_.Split(' ')[0] })\r\n        setCookies = Get-CookieNames $resp.Headers\r\n        body = $body\r\n    }\r\n    $resp.Close()\r\n    return $result\r\n}\r\n\r\nfunction Get-PageInfo([string]$html, [string]$baseUrl) {\r\n    $base = [Uri]$baseUrl\r\n    $forms = @()\r\n    foreach ($m in [regex]::Matches($html, '(?is)\u003cform\\b([^>]*)>(.*?)\u003c/form>')) {\r\n        $attrs = $m.Groups[1].Value\r\n        $action = ''; $method = 'get'\r\n        $a = [regex]::Match($attrs, '(?i)action\\s*=\\s*[\"'']([^\"'']*)[\"'']'); if ($a.Success) { $action = [Net.WebUtility]::HtmlDecode($a.Groups[1].Value) }\r\n        $mm = [regex]::Match($attrs, '(?i)method\\s*=\\s*[\"'']?(\\w+)'); if ($mm.Success) { $method = $mm.Groups[1].Value.ToLower() }\r\n        $fields = @()\r\n        foreach ($f in [regex]::Matches($m.Groups[2].Value, '(?i)\u003c(input|select|button)\\b([^>]*)>')) {\r\n            $n = [regex]::Match($f.Groups[2].Value, '(?i)\\bname\\s*=\\s*[\"'']([^\"'']+)[\"'']')\r\n            $t = [regex]::Match($f.Groups[2].Value, '(?i)\\btype\\s*=\\s*[\"'']?(\\w+)')\r\n            if ($n.Success) { $fields += [ordered]@{ name = $n.Groups[1].Value; type = $(if ($t.Success) { $t.Groups[1].Value } else { $f.Groups[1].Value }) } }\r\n        }\r\n        $actionInfo = $null\r\n        if ($action) { $actionInfo = Get-SafeUrl ([Uri]::new($base, $action)).AbsoluteUri }\r\n        $forms += [ordered]@{ action = $actionInfo; method = $method; fields = $fields }\r\n    }\r\n    $scripts = @([regex]::Matches($html, '(?i)\u003cscript\\b[^>]*\\bsrc\\s*=\\s*[\"'']([^\"'']+)[\"'']') | ForEach-Object { ([Uri]::new($base, $_.Groups[1].Value)).AbsoluteUri } | Select-Object -First $MaxScripts)\r\n    $title = ''\r\n    $tm = [regex]::Match($html, '(?is)\u003ctitle>(.*?)\u003c/title>'); if ($tm.Success) { $title = $tm.Groups[1].Value.Trim() }\r\n    $jsRedirects = @([regex]::Matches($html, '(?i)(?:location\\.href|window\\.location)\\s*=\\s*[\"'']([^\"'']{1,200})') | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique -First 5)\r\n    return [ordered]@{ title = $title; forms = $forms; scripts = $scripts; jsRedirects = $jsRedirects }\r\n}\r\n\r\nfunction Trace-Chain([string]$start) {\r\n    $cookies = New-Object Net.CookieContainer\r\n    $hops = @()\r\n    $url = $start\r\n    $page = $null\r\n    for ($i = 0; $i -lt $MaxHops; $i++) {\r\n        try { $r = Invoke-Hop $url $cookies 2000000 }\r\n        catch { $hops += [ordered]@{ url = (Get-SafeUrl $url); error = $_.Exception.GetType().Name + ': ' + $_.Exception.Message }; break }\r\n        $hop = [ordered]@{ url = (Get-SafeUrl $url); status = $r.status; contentType = $r.contentType; server = $r.server; wwwAuthenticate = $r.wwwAuthenticate; setCookies = $r.setCookies }\r\n        if ($r.location) {\r\n            $next = ([Uri]::new([Uri]$url, $r.location)).AbsoluteUri\r\n            $hop.location = Get-SafeUrl $next\r\n            $hops += $hop\r\n            $url = $next\r\n            continue\r\n        }\r\n        if ($r.contentType -match 'json') { $hop.bodyHead = $r.body.Substring(0, [Math]::Min(300, $r.body.Length)) }\r\n        $hops += $hop\r\n        if ($r.contentType -match 'html') { $page = Get-PageInfo $r.body $url }\r\n        break\r\n    }\r\n    return [ordered]@{ start = $start; hops = $hops; finalPage = $page }\r\n}\r\n\r\n$patterns = @(\r\n    'ssoAuth[A-Za-z/._-]*',\r\n    '/fwSecurity/authentication/[A-Za-z]+\\.api',\r\n    '/fwPlatform/[A-Za-z]+/[A-Za-z]*[Ll]ogin[A-Za-z]*\\.api',\r\n    '[A-Za-z/]*login\\.api',\r\n    '/auth/realms/[A-Za-z0-9_-]+',\r\n    'openid-connect/[a-z]+',\r\n    'account\\.sgmw\\.com\\.cn[^\"''\\s]*',\r\n    'NORMAL_LOGIN|DEFAULT_SSO|CHOOSE_LOGIN_METHOD|SSO_CHECK_URL',\r\n    'client_id[\"'']?\\s*[:=]\\s*[\"''][^\"'']{1,60}[\"'']',\r\n    '/cas/[a-zA-Z]+'\r\n)\r\n\r\nWrite-Host '[1/3] Tracing iBOM home page (not logged in, no credentials sent)...'\r\n$root = Trace-Chain ($Origin + '/')\r\nWrite-Host '[2/3] Tracing ssoAuth/login.api ...'\r\n$sso = Trace-Chain ($Origin + '/fwPlatform/ssoAuth/login.api')\r\n\r\n$scriptUrls = @()\r\nforeach ($c in @($root, $sso)) { if ($c.finalPage) { $scriptUrls += $c.finalPage.scripts } }\r\nif (-not ($scriptUrls | Where-Object { ([Uri]$_).Host -eq ([Uri]$Origin).Host })) {\r\n    try {\r\n        $homePage = Invoke-Hop ($Origin + '/') (New-Object Net.CookieContainer) 2000000\r\n        if ($homePage.contentType -match 'html') { $scriptUrls += (Get-PageInfo $homePage.body ($Origin + '/')).scripts }\r\n    } catch { }\r\n}\r\n$scriptUrls = @($scriptUrls | Select-Object -Unique -First $MaxScripts)\r\n\r\nWrite-Host '[3/3] Searching iBOM front-end scripts for login endpoints...'\r\n$fetched = @()\r\n$hits = [ordered]@{}\r\nforeach ($s in $scriptUrls) {\r\n    if (([Uri]$s).Host -ne ([Uri]$Origin).Host) { $fetched += [ordered]@{ url = (Get-SafeUrl $s); skipped = 'not iBOM host' }; continue }\r\n    try { $r = Invoke-Hop $s (New-Object Net.CookieContainer) $MaxScriptBytes }\r\n    catch { $fetched += [ordered]@{ url = (Get-SafeUrl $s); error = $_.Exception.GetType().Name }; continue }\r\n    $fetched += [ordered]@{ url = (Get-SafeUrl $s); status = $r.status; chars = $r.body.Length }\r\n    foreach ($p in $patterns) {\r\n        $list = @(); if ($hits.Contains($p)) { $list = @($hits[$p]) }\r\n        foreach ($m in [regex]::Matches($r.body, $p)) {\r\n            if ($list.Count -ge 8) { break }\r\n            $st = [Math]::Max(0, $m.Index - 60)\r\n            $len = [Math]::Min($r.body.Length - $st, $m.Length + 120)\r\n            $snip = $r.body.Substring($st, $len).Replace(\"`n\", ' ').Replace(\"`r\", ' ')\r\n            if ($list -notcontains $snip) { $list += $snip }\r\n        }\r\n        if ($list.Count -gt 0) { $hits[$p] = $list }\r\n    }\r\n}\r\n\r\n$report = [ordered]@{\r\n    scriptVersion = $ScriptVersion\r\n    collectedAt = (Get-Date).ToUniversalTime().ToString('o')\r\n    powershell = $PSVersionTable.PSVersion.ToString()\r\n    os = [Environment]::OSVersion.VersionString\r\n    rootChain = $root\r\n    ssoAuthChain = $sso\r\n    frontendScripts = [ordered]@{ scripts = $fetched; hits = $hits }\r\n}\r\n\r\n$downloads = Join-Path $env:USERPROFILE 'Downloads'\r\nif (-not (Test-Path $downloads)) { $downloads = (Get-Location).Path }\r\n$outFile = Join-Path $downloads ('ibom_sso_chain_' + (Get-Date -Format 'yyyyMMdd_HHmmss') + '.json')\r\n$report | ConvertTo-Json -Depth 10 | Out-File -FilePath $outFile -Encoding UTF8\r\nWrite-Host ('Done: ' + $outFile)\r\nWrite-Host 'Please send this file back. It contains no password, token or cookie value.'\r\n"};
+async function copyText(text, msgId) {
+  try { await navigator.clipboard.writeText(text); }
+  catch (_) {
+    const t = document.createElement('textarea'); t.value = text; document.body.appendChild(t);
+    t.select(); document.execCommand('copy'); t.remove();
+  }
+  document.getElementById(msgId).textContent = '已复制';
+}
+document.getElementById('dl-ps1').addEventListener('click', () => {
+  const blob = new Blob(['\ufeff' + SOURCES.ps1], { type: 'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = 'ibom_sso_chain.ps1';
+  document.body.appendChild(a); a.click(); a.remove();
+  document.getElementById('ps1-msg').textContent = '已下载';
 });
+document.getElementById('cp-ps1').addEventListener('click', () => copyText(SOURCES.ps1, 'ps1-msg'));
+document.getElementById('cp-vse').addEventListener('click', () => copyText(SOURCES.vse, 'cp-msg'));
+document.getElementById('cp-ibom').addEventListener('click', () => copyText(SOURCES.ibom, 'cp-msg'));
 </script>
 </body>
 </html>
