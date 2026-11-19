@@ -14,8 +14,13 @@
   当前账号无 SOR。DMM 报表 xlsx 在 HAR 里已损坏，列未见。
 - **已否定的路线**：用 `relationProcId` 查 iBOM 流程（它是 PDM 侧 14 位 ID）；假设 HAR「0 Cookie」即无 Cookie
   （Chrome 脱敏导出剥离了 Cookie）；从 HAR 恢复导出 xlsx（二进制被文本化，不可恢复）。
-- **下一步**：阶段 0A 取证（3 张不同状态 DMM 详情抓包、直接另存报表 xlsx、SSO 跳转链、两账号 totalCount、
-  iBOM 单号与 TDC 快照交集）；阶段 0B 向 IT 确认服务账号、SOR 去向、Aras 是否同期下线。
+- **2026-11-19 阶段 0A 实测（评估 §11）**：DMM 报表（`partDigitalModelChange/exportReport.api`）与
+  `tdc_data_model` 47 列**只差第 0 列**（`实例号`→`序号`，值是行号），零件级、带「(未签)」与计数；签署日报改列名后
+  43/43 单可解析。零件列表 = `loadEntity` + `businessType:"partDigitalModel"`；DMM `recTypeId=585`，会签节点按人拆任务。
+  单号查询 `CHANGE_CODE LIKE` 可用。口径差异：iBOM 计数按「人」去重（TDC 按「人次」）、新状态词（草稿/退回/取消）、
+  架构件项目名 `TRA_2.0` 不带 `Ar-`。**不要把 `序号` 别名成 `实例号`**（会污染身份键）。
+- **下一步**：等第二账号 JSON 与一份 TDC 数模导出（单号交集）；业务确认计数口径（建议沿用人次）与 `TRA_` 架构件；
+  阶段 0B 向 IT 确认服务账号、SOR 去向、Aras 是否同期下线。之后实施：data_model 表头 iBOM 变体 + 签署日报状态/阶段规则。
 
 ## 当前前沿补充（2026-11-16 · 签署日报 0.6.0：图表配色 + 本地导入每日进展）【真机待验】
 
