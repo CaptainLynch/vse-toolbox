@@ -5,6 +5,20 @@ delete. Per-plan rulings stay in their SDD ledger (`.superpowers/sdd/…`, local
 and get promoted here once they prove durable. Newest first. Keep entries
 short: decision, why, cost if violated, source pointer.
 
+## 2026-11-19 — 数模设计审核流程 TDC + iBOM 双源并行（用户确认 C1–C6）
+
+- 决定：切换期 `tdc_data_model` 由 TDC 与 iBOM **两侧在一次运行内取数、按流水单号合并**成一份 47 列快照，
+  `form_key`/任务键/契约/路由不改名；同一单只取一侧全部行（两边都有时：非废弃优先，都有效取 iBOM 并记双系统单）。
+  **任一侧不完整就不发布快照**（运行「需关注」），下游继续用上一份全量快照。iBOM 用**域账号**，与 Aras/TDC
+  共用凭据，**TDC 登录成功后才登 iBOM、认证失败不重试**。签署人数沿用 TDC **人次**口径（iBOM 单由角色列自算）。
+  `TRA_` 前缀是架构件。保留 iBOM 手工导入（代替本次 iBOM 侧 / 签署日报本地导入）。
+- 为什么：业务上老单留 TDC 走完、新单进 iBOM；iBOM DMM 报表与 47 列契约只差第 0 列（`实例号`→`序号`），
+  在入口处适配即可让下游零感知；残缺快照若发布，十来处读最新快照的代码漏改一处就会误用。
+- 违反代价：把 `序号` 当 `实例号`（污染单记录身份与关注清单）；发布残缺快照（日报把缺失的单当签完/消失）；
+  向 iBOM 重试密码（域账号锁定）；按「人」计数（签署率历史断开）。
+- 来源：`docs/PLAN_20261119_IBOM_DMM_DUAL_SOURCE.md`（含 §12 开工前架构评审 R1–R11）、
+  `docs/IMPACT_20261118_IBOM_SWITCH.md` §11。
+
 ## 2026-10-23 — Codex 顾问默认走 Astra（用户选择"多用 astra"）
 
 - 决定：`codex-readonly` 未指定 `--profile` 时，普通决定默认 **`astra-medium`**，任一高风险类别

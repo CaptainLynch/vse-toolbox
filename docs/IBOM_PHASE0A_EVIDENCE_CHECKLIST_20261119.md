@@ -16,7 +16,7 @@
 | C | 同事账号的 `ibom_phase0_<时间>.json` | 请一位不同角色的同事跑同一个脚本（§2） | 3 分钟 | ✅ |
 | D | 最近一份 TDC 数模 47 列导出 xlsx | 本工具「系统查询 → TDC 数模 → 导出」，或签署日报用的那份（§3） | 2 分钟 | ✅ |
 | E | 详情页抓包 HAR | 仅当 A 显示签署栏/零件列表接口全部失败时才做（§4） | 15 分钟 | 视情况 |
-| F | SSO 跳转链 HAR | 可选，等 IT 答复服务账号后再定（§5） | 5 分钟 | 可选 |
+| F | SSO 跳转链 HAR | 按 §5 录一次（双源方案阶段 1 的前置） | 5 分钟 | ✅（2026-11-19 起必做） |
 | G | IT/业务答复 | 发 §6 的问题，答复回来再补 | — | ✅（不阻塞） |
 
 交付位置：直接上传给 Claude，或放进 `.runtime/ibom-impact/phase0/`（本地，不入库）。
@@ -95,9 +95,9 @@ usertoken 已打码；结果里若检出 token，脚本会中止下载。
 
 ---
 
-## 5. SSO 跳转链（F，可选）
+## 5. SSO 跳转链（F，必做）
 
-只在决定走「统一身份自动登录」路线时需要；若 IT 提供本地服务账号，可跳过。
+已确认 iBOM 用域账号（2026-11-19），自动登录需要知道域账号登录 iBOM 的完整跳转链，见 `PLAN_20261119_IBOM_DMM_DUAL_SOURCE.md` §3.3。
 
 1. DevTools 齿轮 → Preferences → Network，勾选 **Allow to generate HAR with sensitive data**（没有此项也可以继续）。
 2. 新开 InPrivate/无痕窗口，先 F12 打开 Network，勾选 **Preserve log**，类型选 **All**。
