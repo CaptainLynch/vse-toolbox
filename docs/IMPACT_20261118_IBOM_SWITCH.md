@@ -159,6 +159,8 @@
 
 ### 阶段 0A · 技术取证（1 天，**最高优先级**）
 
+> 操作清单与交付物：[`IBOM_PHASE0A_EVIDENCE_CHECKLIST_20261119.md`](IBOM_PHASE0A_EVIDENCE_CHECKLIST_20261119.md)；大部分信息可用控制台脚本 `tools/ibom_phase0_probe.js` 一次导出。
+
 1. 打开 3 张 DMM 详情页抓 HAR（Fetch/XHR + Preserve log）：分别取**草稿、审批中（会签进行到一半）、已发布**。覆盖顶部卡片、零件数模列表、内部签署栏、审批流程 Tab。
 2. 浏览器**直接另存** `数模设计审核流程报表_YYYYMMDD.xlsx`（不经 HAR 文本通道）。
 3. 录一次 SSO 跳转链（只记主机和路径）：打开 iBOM 前清会话，在「全部类型 + Preserve log」下抓到 `ssoAuth/login.api` 为止。
