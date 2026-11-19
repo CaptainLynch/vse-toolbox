@@ -7,6 +7,13 @@
 
 ---
 
+## 0A. 一键收集 C 之外的剩余信息（2026-11-19 起推荐）
+
+在装有 VSE Toolbox 的电脑上运行 `python tools/ibom_collect_phase0b.py`，一次收集：
+Q5 实际使用的筛选条件（只读本机数据库）、TDC 快照与 iBOM 单号交集（代替 D）、
+iBOM 未登录状态下的登录跳转链（代替 F，**不发送任何账号密码**）。
+交回 `.runtime/ibom-impact/phase0/collect_<时间>/` 下的 `report.json` 与 `summary.md`。
+
 ## 0. 总览：要交回的东西
 
 | # | 交付物 | 获取方式 | 用时 | 必需 |
