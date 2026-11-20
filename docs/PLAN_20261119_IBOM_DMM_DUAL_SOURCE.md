@@ -325,6 +325,13 @@ TDC 侧的筛选照旧发给 TDC 服务器；iBOM 侧拿到全量报表后，按
 - 方案 §7.1 的 `_TDC_KNOWN_DATA_MODEL_CODES` 扩展按 Q8 不做（项目状态同步本期不接 iBOM 行）。
 - 测试：`tests/test_sign_daily_ibom_source.py` 7 passed；回归 658 passed / 3 skipped / 1 failed，失败项 `test_import_scan_rejects_dir_outside_roots` 在撤掉本次改动后同样失败（既有环境问题，与本期无关）。
 
+### 阶段 4（2026-11-20）
+
+- **用途 B 签署日报本地导入**（`1113aed`）：xlsx/TXT 接受 TDC 或 iBOM 两套完整表头之一（仅 TDC 表头第 0 列不符时按 iBOM 整行逐字再比）；目录扫描预检同一规则；Excel 代读在第 0 列为「序号」时按 iBOM 表头读，「序号/数量/重量（单件）/零件合计」允许数字转文本；iBOM 行按人次重算，`importMeta.sourceVariant` 标注来源。
+- **用途 A 归档手工导入**：`services/ibom_manual_feed.py` 暂存（上传即按 iBOM 表头完整校验；受终端加密的 xlsx 提示另存为 Unicode 文本；30 分钟有效、只用一次、内容指纹防篡改）；暂存目录 = 数据库所在目录 `/ibom_manual_feed`，插件与 `create_production_archive_runner` 共用同一规则。`TDCArchiveConnector` 有待用暂存时用它代替 iBOM 自动抓取（不登录 iBOM），原件以 `ibom_manual_report` 归档，合并报告 `ibomExport.feed = "manual"` 与数据日期；筛选与 fail-closed 规则照旧。
+- 自动归档插件（0.2.0）新增 `GET/POST /api/p/scheduled-archive/ibom-manual-feed`（写入走 `local_guard`；开关未开启返回 409）；数模任务卡片新增「用本地 iBOM 报表同步」面板。
+- 测试：`tests/test_ibom_manual_feed.py` 13 passed；本地导入 6 个（`test_sign_daily_ibom_source.py` 共 13 passed）。归档/插件宿主/签署日报等相关回归 1043 passed；2 个失败均为既有问题（撤掉本期改动同样失败）：`test_import_scan_rejects_dir_outside_roots`、`test_glossary_terms_gate`（签署日报 `report-logic.js:230`、`report.js:286` 的盘符示例，来自 `d4aecc0`）。
+
 ## 12. 开工前架构评审（2026-11-19）
 
 对照代码逐条核对初版方案的假设，发现以下问题并已在上文修正：

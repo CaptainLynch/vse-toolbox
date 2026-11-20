@@ -840,6 +840,9 @@ def create_production_archive_runner(
     from core.archive_store import ArchiveStore
     from core.domain_identity import DPAPICredentialProvider, WindowsDPAPICredentialVault
     from core.runtime_paths import app_root
+    from pathlib import Path
+
+    from services.ibom_manual_feed import feed_dir_for
     from services.scheduled_archive_connectors import (
         create_production_archive_registry,
     )
@@ -855,5 +858,9 @@ def create_production_archive_runner(
         DPAPICredentialProvider(
             WindowsDPAPICredentialVault(app_root() / "data" / "domain-credential.dpapi")
         ),
-        create_production_archive_registry(archive),
+        create_production_archive_registry(
+            archive,
+            # 与自动归档插件的 iBOM 手工导入接口同一目录（数据库所在目录）。
+            manual_feed_dir=feed_dir_for(Path(db.db_path).parent),
+        ),
     )

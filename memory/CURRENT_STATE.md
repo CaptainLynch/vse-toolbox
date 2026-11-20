@@ -43,8 +43,11 @@
 - **2026-11-20 阶段 3 完成**：`取消` 入剔除集；签署日报认 iBOM 状态词（已发布/取消/草稿/退回）、阶段先看状态、
   iBOM 单按角色列人次自算计数；`load_source` 从 `dimensions.sourceSystem` 带来源。测试 7 passed，回归 658 passed，
   1 个既有失败（`test_import_scan_rejects_dir_outside_roots`，撤掉改动同样失败）。
-- **下一步**：阶段 4 手工导入（归档「用本地 iBOM 报表同步」+ 签署日报本地导入认 iBOM 表头）。
-  真实账号验证（`tools/ibom_login_check.py`）仍待用户运行，通过后再开 `VSE_IBOM_DUAL_SOURCE`。
+- **2026-11-20 阶段 4 完成**：签署日报本地导入认 iBOM 表头（`1113aed`）；归档手工导入（`services/ibom_manual_feed.py`
+  暂存 30 分钟单次、插件 `POST /api/p/scheduled-archive/ibom-manual-feed`、数模任务卡片面板、连接器优先用暂存）。
+  回归 1043 passed，2 个既有失败（`test_import_scan_rejects_dir_outside_roots`、`test_glossary_terms_gate`，均与本期无关）。
+- **下一步**：阶段 5 真机验收（用户侧）：① 内网跑 `tools/ibom_login_check.py`；② 通过后设 `VSE_IBOM_DUAL_SOURCE=1`
+  重启，观察连续 3 个工作日归档；③ 每天抽 3 张 iBOM 单与界面核对。需 Windows 打包（onedir zip + 插件 0.2.0）。
 - **改了什么**（均在 `plugins/sign_daily/`，`refactor/ux-v2`）：
   ① 图表配色：配置键 `chartColors`（三图各 `bar`/`special`，只认 `#rrggbb`，默认值与 `chart.js` 的 `PALETTES`
   由测试钉住一致），页面「图表配色」面板含四套预设与自定义取色，改色只在前端用已加载的 `result.charts` 重画；

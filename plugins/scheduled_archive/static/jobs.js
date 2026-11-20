@@ -418,8 +418,82 @@ function JobConfig({ job, vaultConfigured, planName, busy, setBusy, notice, setN
         <span class="sa-status" aria-live="polite">${status}</span>
       </div>
       ${jobNotice && html`<div class="is-wide"><${Notice} kind=${jobNotice.kind} message=${jobNotice.message} remedy=${jobNotice.remedy} auth=${jobNotice.auth} /></div>`}
+      ${job.jobKey === "tdc_data_model" && html`<${IbomManualFeed} job=${job} busy=${busy} setBusy=${setBusy} onSynced=${onSynced} />`}
     </form>
   </article>`;
+}
+
+const IBOM_FEED_API = "/api/p/scheduled-archive/ibom-manual-feed";
+
+function localToday() {
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
+/**
+ * iBOM 报表手工导入（数模 TDC + iBOM 双源方案 §6）：上传一份 iBOM「数模设计审核流程报表」，
+ * 立即触发一次数模归档，这次运行用它代替 iBOM 自动抓取。开关未开启时只显示说明。
+ */
+function IbomManualFeed({ job, busy, setBusy, onSynced }) {
+  const [info, setInfo] = useState(null);
+  const [file, setFile] = useState(null);
+  const [dataDate, setDataDate] = useState(localToday());
+  const [notice, setNotice] = useState(null);
+  const [running, setRunning] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    api(IBOM_FEED_API).then((data) => { if (alive) setInfo(data); }).catch(() => { if (alive) setInfo({ error: true }); });
+    return () => { alive = false; };
+  }, [job.jobKey]);
+
+  if (!info) return null;
+  if (info.error) return null;
+  if (!info.enabled) {
+    return html`<div class="sa-ibom is-wide"><p class="vk-muted">iBOM 双源未开启（环境变量 ${info.switch}=1 后可用）：当前只归档 TDC。</p></div>`;
+  }
+
+  const submit = async () => {
+    if (!file || busy) return;
+    setBusy(true);
+    setRunning(true);
+    setNotice(null);
+    const body = new FormData();
+    body.append("file", file);
+    body.append("dataDate", dataDate);
+    try {
+      const response = await fetch(IBOM_FEED_API, { method: "POST", body, headers: { Accept: "application/json" } });
+      const payload = await response.json().catch(() => null);
+      if (!payload || payload.ok !== true) {
+        const message = (payload && payload.error && payload.error.message) || `上传失败（HTTP ${response.status}）`;
+        setNotice({ kind: "error", message });
+        return;
+      }
+      const result = D.summarizeSyncResult(payload.data.sync, job.jobKey);
+      setNotice(result.ok
+        ? { kind: "success", message: `已用「${payload.data.feed.fileName}」（数据日期 ${payload.data.feed.dataDate}）完成一次 TDC + iBOM 同步` }
+        : { kind: "error", message: `报表已收下，但本次同步未完成：${result.message}`, remedy: result.remedy });
+      await onSynced();
+    } catch (err) {
+      setNotice({ kind: "error", message: `上传失败：${err.message}` });
+    } finally {
+      setRunning(false);
+      setBusy(false);
+    }
+  };
+
+  return html`<div class="sa-ibom is-wide">
+    <h4>用本地 iBOM 报表同步</h4>
+    <p class="vk-muted">iBOM 自动抓取不可用时使用：上传 iBOM「数模设计审核流程报表」（.xlsx，或受终端加密时在 Excel 里另存的 Unicode 文本 .txt），立即同步一次；TDC 部分照常在线抓取并合并。</p>
+    ${info.pending && html`<p class="vk-muted">有一份待用的报表「${info.pending.fileName}」（数据日期 ${info.pending.dataDate}），会在下一次同步时使用。</p>`}
+    <div class="sa-ibom-row">
+      <input type="file" accept=".xlsx,.txt" disabled=${busy} onChange=${(e) => setFile(e.target.files && e.target.files[0] ? e.target.files[0] : null)} />
+      <label>数据日期 <input type="date" value=${dataDate} max=${localToday()} disabled=${busy} onInput=${(e) => setDataDate(e.target.value)} /></label>
+      <button type="button" class="vk-btn" disabled=${busy || !file || !dataDate} onClick=${submit}>${running ? "同步中..." : "上传并同步"}</button>
+    </div>
+    ${notice && html`<${Notice} kind=${notice.kind} message=${notice.message} remedy=${notice.remedy} />`}
+  </div>`;
 }
 
 const ARTIFACT_COLUMNS = [

@@ -549,3 +549,9 @@
 .sa-page .vk-btn {
   white-space: nowrap;
 }
+
+/* iBOM 报表手工导入（数模任务） */
+.sa-ibom { border-top: 1px solid var(--vk-border, #e3e0d8); padding-top: 12px; margin-top: 4px; }
+.sa-ibom h4 { margin: 0 0 4px; font-size: 14px; }
+.sa-ibom-row { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin: 8px 0; }
+.sa-ibom-row input[type="file"] { max-width: 100%; }

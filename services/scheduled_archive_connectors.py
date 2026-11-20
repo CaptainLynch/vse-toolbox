@@ -32,6 +32,7 @@ from services.scheduled_archive_runner import (
 from services import data_model_watchlist
 from services.data_model_dual_source import (
     REASON_IBOM_AUTH,
+    REASON_IBOM_REPORT,
     REASON_IBOM_REQUEST,
     REASON_TDC_LOGIN_FIRST,
     DualSourceIncomplete,
@@ -41,6 +42,7 @@ from services.data_model_dual_source import (
     read_ibom_report,
 )
 from services.ibom_auth import IBOMAuthError, IBOMPasswordAuthClient
+from services.ibom_manual_feed import IBOMManualFeedStore, ManualFeedError, parse_feed_rows
 from services.ibom_client import IBOMClient, IBOMClientError, IBOMToken
 from services.scope_exclusion import exclude_paa_cancel_rows, exclude_tdc_scope_rows
 from services.tdc_auth import TDCPasswordAuthClient
@@ -356,6 +358,7 @@ class TDCArchiveConnector:
         ibom_auth_factory: Callable[..., Any] = IBOMPasswordAuthClient,
         ibom_client_factory: Callable[..., Any] = IBOMClient,
         dual_source_flag: Callable[[], bool] = dual_source_enabled,
+        manual_feed_store: IBOMManualFeedStore | None = None,
     ) -> None:
         self._archive = archive
         self._timeout = timeout
@@ -364,6 +367,7 @@ class TDCArchiveConnector:
         self._ibom_auth_factory = ibom_auth_factory
         self._ibom_client_factory = ibom_client_factory
         self._dual_source_flag = dual_source_flag
+        self._manual_feed_store = manual_feed_store
 
     @observed("archive_connector.TDCArchiveConnector.collect")
     def collect(
@@ -549,7 +553,11 @@ class TDCArchiveConnector:
         """iBOM 侧：登录 → DMM 总数 → 导出报表（原件归档）→ 读入 → 本地筛选。
 
         任何一步失败抛 ``DualSourceIncomplete``；登录失败绝不重试（同一份域账号凭据）。
+        有待用的手工报表（方案 §6 用途 A）时用它代替本次自动抓取，不登录 iBOM。
         """
+        feed = self._manual_feed_store.take() if self._manual_feed_store is not None else None
+        if feed is not None:
+            return self._ibom_manual_rows(context, feed, archive, artifacts)
         if credential is None:
             raise DualSourceIncomplete(REASON_TDC_LOGIN_FIRST)
         try:
@@ -584,10 +592,44 @@ class TDCArchiveConnector:
         report = read_ibom_report(export.content, total_count=total, max_rows=_TDC_MAX_RECORDS + 1)
         rows, filter_report = apply_ibom_filters(report.rows, context.filters)
         return rows, {
+            "feed": "auto",
             "totalCount": total,
             "documents": report.documents,
             "rows": len(report.rows),
             "fileName": export.file_name,
+            "filters": filter_report,
+        }
+
+    def _ibom_manual_rows(
+        self,
+        context: ArchiveJobContext,
+        feed: Any,
+        archive: ArchiveStore,
+        artifacts: list[ArchiveArtifact],
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        artifacts.append(
+            archive.write_bytes(
+                feed.content,
+                source="ibom",
+                report=context.report_type,
+                run_id=context.run_id,
+                output_subdir=context.output_subdir,
+                file_name=feed.file_name,
+                artifact_type="ibom_manual_report",
+            )
+        )
+        try:
+            rows = parse_feed_rows(feed.content, text=feed.text)
+        except ManualFeedError as exc:
+            raise DualSourceIncomplete(REASON_IBOM_REPORT, exc.code) from None
+        filtered, filter_report = apply_ibom_filters(rows, context.filters)
+        return filtered, {
+            "feed": "manual",
+            "fileName": feed.file_name,
+            "dataDate": feed.data_date,
+            "uploadedAt": feed.uploaded_at,
+            "documents": len({str(row.get("流水单号") or "").strip() for row in rows} - {""}),
+            "rows": len(rows),
             "filters": filter_report,
         }
 
@@ -857,10 +899,12 @@ class ArasArchiveConnector:
 
 def create_production_archive_registry(
     archive: ArchiveStore | None = None,
+    *,
+    manual_feed_dir: Path | None = None,
 ) -> ArchiveConnectorRegistry:
     """Build the fixed production registry; intentionally contains no A-face."""
     store = archive or ArchiveStore()
-    tdc = TDCArchiveConnector(store)
+    tdc = TDCArchiveConnector(store, manual_feed_store=IBOMManualFeedStore(manual_feed_dir))
     aras = ArasArchiveConnector(store)
     registry = ArchiveConnectorRegistry()
     for key in ("tdc_data_model", "tdc_sor"):
