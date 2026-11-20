@@ -103,7 +103,18 @@
 ### 3.3 鉴权（域账号）
 
 - **凭据**：与 Aras/TDC 共用现有域账号凭据（定时任务用的 `SYNC_CREDENTIAL_REF`），不新增凭据。
-- **登录链**：域账号登录 iBOM 的具体跳转方式**还没有取证**（0A 的 HAR 只录了 XHR，没有页面跳转）。阶段 1 的第一步是补录一次 SSO 跳转链（取证清单 F 项，改为必做），确认是走 `account.sgmw.com.cn` 统一身份、还是 iBOM 普通登录对接域账号，再实现 `services/ibom_auth.py`。
+- **登录链（2026-11-20 取证确认，`ibom_sso_chain` JSON）**：iBOM 与 TDC 用**同一个统一身份认证**（`account.sgmw.com.cn`，Keycloak 认证域 `common`），客户端不同：
+
+  | 步骤 | 请求 | 实测 |
+  |---|---|---|
+  | 1 | `GET https://ibom.sgmw.com.cn/fwPlatform/ssoAuth/login.api`（不自动跟随） | 302 → `account.sgmw.com.cn/auth/realms/common/protocol/openid-connect/auth`，`client_id=ibom-front`、`response_type=code`、`scope=openid email phone`、`state`（iBOM 生成）、`redirect_uri=https://ibom.sgmw.com.cn/fwSecurity/ssoAuth/login.api` |
+  | 2 | `GET` 上述认证地址 | 200，登录页「登录到 SGMW 认证中心」；表单 `POST /auth/realms/common/login-actions/authenticate`，字段 `username`、`password`、`newokey`、`eodpkey`、`feishukey`、`phoneNumber`、`code`、`credentialId`，与 TDC 登录页**完全相同** |
+  | 3 | `POST` 表单（带 2 中的 Cookie） | 未实测（需要真实登录）：预期 302 回 `/fwSecurity/ssoAuth/login.api?state=…&code=…` |
+  | 4 | `GET` 回调地址 | 未实测：预期 iBOM 服务端用 code 换会话、写 Cookie、再跳前端 |
+  | 5 | `POST /fwSecurity/authentication/checkToken.api` | 0A 已实测：凭会话换 `usertoken` |
+
+  与 TDC 的区别：TDC 由客户端自己拼认证地址、自己到 Keycloak 换 token；iBOM 由 **iBOM 服务端发起并在回调里换 code**，客户端只需跟随跳转、校验每一跳的主机属于 `ibom.sgmw.com.cn` 或 `account.sgmw.com.cn`。`services/tdc_auth.py` 的登录表单解析（`_parse_login_form`）与表单字段填充可以直接复用，令牌交换部分不复用。
+- 步骤 3–4 只能在阶段 1 用真实账号验证一次；阶段 1 第一项任务就是它。
 - **防锁号顺序**：同一次运行里，**只有 TDC 用同一份密码登录成功之后，才去登录 iBOM**；TDC 登录失败时本次 iBOM 侧直接判为不完整，不再发送密码。任何认证失败都**不重试**。这样一次错误的密码最多在域里多计一次失败。
 - **统一登录页**：加上 iBOM 一项，顺序放在 TDC 之后，沿用同一条规则。
 - 会话只在本次运行内使用，运行结束即丢弃；本方案不把 iBOM 接入续期协调器（`web/app.py` 的 `{"aras","tdc"}` 保持不变）。
@@ -238,13 +249,13 @@ TDC 侧的筛选照旧发给 TDC 服务器；iBOM 侧拿到全量报表后，按
 
 | 阶段 | 内容 | 预计 | 验收 |
 |---|---|---|---|
-| **1. 鉴权取证与客户端** | 补录 SSO 跳转链（必做，你在内网操作约 5 分钟）；实现 `ibom_client.py`、`ibom_auth.py`；统一登录页加 iBOM | 2 天 | 域账号无人值守跑通「TDC 登录 → iBOM 登录 → 计数 → 导出 → 内存解析」；TDC 登录失败时不向 iBOM 发送密码；认证失败只尝试一次；日志与诊断里不出现 token 和密码（`test_credential_safety.py` 覆盖） |
+| **1. 鉴权与客户端** | 实现 `ibom_auth.py`（复用 TDC 登录表单解析）与 `ibom_client.py`；真实账号验证 §3.3 步骤 3–4；统一登录页加 iBOM | 1.5 天 | 域账号无人值守跑通「TDC 登录 → iBOM 登录 → 计数 → 导出 → 内存解析」；TDC 登录失败时不向 iBOM 发送密码；认证失败只尝试一次；日志与诊断里不出现 token 和密码（`test_credential_safety.py` 覆盖） |
 | **2. 表头变体 + 合并 + 完整性 + 筛选** | §2、§3.4、§4、§5；两个发布者接入，含项目状态侧的形状转换 | 3 天 | 新增与改动的单元测试通过；用 0A 真实报表回放：43 张单 / 167 行全部进入合并结果，项目状态侧 167 行全部 `officialJoin=joined`；模拟一侧失败、fail-closed 筛选键时不发布快照 |
 | **3. 下游适配** | §5.4、§7 | 2.5 天 | 签署日报现有测试全部通过（按新规则更新的用例逐条说明）；真实报表生成日报：0 条 `unknownStatus`，草稿/退回/取消阶段正确，iBOM 单计数为人次；同一份 TDC 数据的历史日报结果不变；`TRA_2.0` 归为架构件 |
 | **4. 手工导入** | §6 用途 A、B | 1 天 | 上传 iBOM 报表能触发归档并发布；签署日报本地导入识别 iBOM 表头并标注来源 |
 | **5. 真机验收** | 内网真实环境 | 0.5 天 + 观察期 | 连续 3 个工作日自动同步成功；每天抽 3 张 iBOM 单与 iBOM 界面核对零件行、签署人和状态；iBOM `totalCount` 与业务确认的在途单总量一致 |
 
-合计约 9 个工作日（不含观察期）；若 Q8 按默认只做定时归档，约 8 个工作日。每阶段结束跑相关测试，全部完成后跑一次全量 `pytest`，输出放 `.runtime/`。
+合计约 8.5 个工作日（不含观察期）；若 Q8 按默认只做定时归档，约 7.5 个工作日（2026-11-20 SSO 取证后阶段 1 由 2 天减为 1.5 天）。每阶段结束跑相关测试，全部完成后跑一次全量 `pytest`，输出放 `.runtime/`。
 
 **涉及测试**：`test_tdc_official_rows.py`、`test_scheduled_archive_connectors.py`、`test_scheduled_archive_runner.py`、`test_project_status_connectors.py`、`test_project_status_sync_runner.py`、`test_deliverable_form_analysis.py`、`test_data_model_attribution*`、`test_sign_daily_*`、`test_credential_safety.py`、`test_diagnostic_recording.py`，新增 `test_ibom_client.py`、`test_ibom_auth.py`、`test_data_model_dual_source.py`。打包：新模块由 Web 入口间接导入；签署日报本地版 EXE 只用到已列入 spec 的 `services.tdc_official_rows`，阶段 3 结束时跑 `test_sign_daily_local_report.py` 确认。
 
@@ -291,7 +302,7 @@ TDC 侧的筛选照旧发给 TDC 服务器；iBOM 侧拿到全量报表后，按
 | R1 | 高 | 项目状态同步用的是**列表接口行**（英文键），官方 47 列只用于按 `(流水单号, 零件号)` 补齐；初版把两个发布者当成同一种行，iBOM 行直接放进去会被当作未对上的官方行丢弃 | `project_status_connectors.py` 数模分支；`_impl.py::_official_join_key`、`_merge_official_columns` | §5.3：iBOM 行一分为二（列表形状 + 官方行），0A 数据验证无重复复合键 |
 | R2 | 高 | 单记录绑定只认 `incident` 为权威身份且禁止回退，iBOM 单没有实例号 | `project_status_records.py::authoritative_record_identity` | §5.3：iBOM 单只能聚合绑定（D5 契约本就是 `aggregate: True`）；`incident` 筛选在 iBOM 侧取 0 行 |
 | R3 | 高 | TDC 的筛选在服务器端做，iBOM 报表是全量；初版没写 iBOM 侧怎么套用筛选，会导致两侧范围不一致而静默多算 | `TDCDataModelFilters` 与归档过滤白名单 | §3.4：逐键定义本地语义，未取证的键 fail-closed；新增 Q5 |
-| R4 | 高 | 域账号登录 iBOM 的跳转方式未取证；统一登录向三个系统发送同一密码，密码错误时加速域账号锁定 | 0A HAR 只含 XHR；`web/host_boot.py` 统一登录 | §3.3：SSO 跳转链改为必做；TDC 成功后才登 iBOM；不重试 |
+| R4 | 高 | 域账号登录 iBOM 的跳转方式未取证；统一登录向三个系统发送同一密码，密码错误时加速域账号锁定 | 0A HAR 只含 XHR；`web/host_boot.py` 统一登录 | §3.3：TDC 成功后才登 iBOM；不重试。**2026-11-20 已取证**：与 TDC 同一 Keycloak（`common`，客户端 `ibom-front`），登录页表单相同 |
 | R5 | 中 | 签署日报只读快照行的 `values`，读不到来源标记 | `plugins/sign_daily/service.py::load_source` | §5.4、§7.2：写入 `dimensions.sourceSystem`，`load_source` 带出 `dimensions` |
 | R6 | 中 | 来源标记如何从连接器行进入快照行没有设计 | `_impl.py` 行规范化只从值计算维度 | §5.4：保留键 `_sourceSystem` → `dimensions` |
 | R7 | 中 | 定时归档的 TDC 侧在官方工作簿不可读时会退回列表接口行（英文键），合并时两种键都可能出现 | `TDCArchiveConnector._collect_authenticated` | §4：流水单号与状态两组键都认 |

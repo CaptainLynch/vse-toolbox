@@ -29,7 +29,11 @@
   Q8 本期只做定时归档）与 §3.4（`projectModel` 忽略大小写精确、`section` 精确）。
   `ibom_sso_chain.ps1` 首跑在第一跳报「不能对 Null 值表达式调用方法」：`$null | ForEach-Object` 仍执行一次，
   已修（2026-11-20.1），待重跑。
-- **下一步**：用户答 Q7/Q8 + 重跑 PS1 拿到 SSO 跳转链 → 开工阶段 1。第二账号对比仍待补，不阻塞。
+- **2026-11-20 SSO 跳转链已取证**（PS1 2026-11-20.1 重跑成功）：iBOM `/fwPlatform/ssoAuth/login.api` 302 →
+  `account.sgmw.com.cn` Keycloak 认证域 `common`、`client_id=ibom-front`、回调 `/fwSecurity/ssoAuth/login.api`；
+  登录表单与 TDC 完全相同。iBOM 由服务端换 code，客户端只跟随跳转后调 `checkToken`。方案 §3.3 已更新。
+- **下一步**：用户答 Q7（Ar-C 在 iBOM 的项目名）/Q8（本期只做定时归档）→ 开工阶段 1，第一项用真实账号验证
+  §3.3 步骤 3–4。第二账号对比仍待补，不阻塞。
 
 ## 当前前沿补充（2026-11-16 · 签署日报 0.6.0：图表配色 + 本地导入每日进展）【真机待验】
 
