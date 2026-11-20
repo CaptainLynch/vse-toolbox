@@ -32,8 +32,13 @@
 - **2026-11-20 SSO 跳转链已取证**（PS1 2026-11-20.1 重跑成功）：iBOM `/fwPlatform/ssoAuth/login.api` 302 →
   `account.sgmw.com.cn` Keycloak 认证域 `common`、`client_id=ibom-front`、回调 `/fwSecurity/ssoAuth/login.api`；
   登录表单与 TDC 完全相同。iBOM 由服务端换 code，客户端只跟随跳转后调 `checkToken`。方案 §3.3 已更新。
-- **下一步**：用户答 Q7（Ar-C 在 iBOM 的项目名）/Q8（本期只做定时归档）→ 开工阶段 1，第一项用真实账号验证
-  §3.3 步骤 3–4。第二账号对比仍待补，不阻塞。
+- **2026-11-20 开工**：Q7 不做项目名对照（只认 `Ar-C`）、Q8 本期只做定时归档。阶段 1 代码完成：
+  `services/ibom_auth.py`（五步登录，复用 `tdc_auth._parse_login_form`，密码只发一次、失败不重试、逐跳校验主机）、
+  `services/ibom_client.py`（MD5 头、成功判定、`checkToken` 空体重试一次、DMM 计数、报表导出内存返回），
+  测试 `tests/test_ibom_auth.py`/`test_ibom_client.py` 29 passed；`tools/ibom_login_check.py` 供真实账号验证。
+  统一登录页不加 iBOM。
+- **下一步**：用户在有 Python 的内网电脑跑 `ibom_login_check.py` 验证步骤 3–4；同时开工阶段 2（表头变体、
+  合并、完整性、筛选本地套用、定时归档连接器接入）。
 
 ## 当前前沿补充（2026-11-16 · 签署日报 0.6.0：图表配色 + 本地导入每日进展）【真机待验】
 
