@@ -40,6 +40,7 @@ from services.data_model_dual_source import (
     dual_source_enabled,
     merge_sources,
     read_ibom_report,
+    tdc_side_retired,
 )
 from services.ibom_auth import IBOMAuthError, IBOMPasswordAuthClient
 from services.ibom_manual_feed import IBOMManualFeedStore, ManualFeedError, parse_feed_rows
@@ -359,6 +360,7 @@ class TDCArchiveConnector:
         ibom_client_factory: Callable[..., Any] = IBOMClient,
         dual_source_flag: Callable[[], bool] = dual_source_enabled,
         manual_feed_store: IBOMManualFeedStore | None = None,
+        tdc_retired_flag: Callable[[], bool] = tdc_side_retired,
     ) -> None:
         self._archive = archive
         self._timeout = timeout
@@ -368,6 +370,7 @@ class TDCArchiveConnector:
         self._ibom_client_factory = ibom_client_factory
         self._dual_source_flag = dual_source_flag
         self._manual_feed_store = manual_feed_store
+        self._tdc_retired_flag = tdc_retired_flag
 
     @observed("archive_connector.TDCArchiveConnector.collect")
     def collect(
@@ -377,6 +380,11 @@ class TDCArchiveConnector:
     ) -> ArchiveCollection:
         if context.job_key not in {"tdc_data_model", "tdc_sor"}:
             raise ValueError("TDC archive job is not supported")
+        if context.job_key == "tdc_data_model" and self._dual_source_flag() and self._tdc_retired_flag():
+            # 已退出 TDC（方案 §9）：不登录 TDC，只取 iBOM。
+            return self._collect_ibom_only(
+                context, credential, _archive_for_context(self._archive, context)
+            )
         login = self._auth_factory(timeout=self._timeout).login(
             credential.username,
             credential.password,
@@ -538,6 +546,62 @@ class TDCArchiveConnector:
         return ArchiveCollection(
             len(rows),
             (xlsx, *ibom_artifacts, *normalized),
+            form_rows=form_rows,
+            form_projection_error=projection_error,
+            form_coverage=coverage,
+        )
+
+    @observed("archive_connector.TDCArchiveConnector._collect_ibom_only")
+    def _collect_ibom_only(
+        self,
+        context: ArchiveJobContext,
+        credential: ResolvedCredential,
+        archive: ArchiveStore,
+    ) -> ArchiveCollection:
+        """退出 TDC 后的数模归档：只有 iBOM 一侧；剔除、关注清单、完整性规则与双源路径相同。"""
+        self._data_model_filters(context.filters)  # 与 TDC 路径同一套筛选白名单（未知键报错）
+        watch_scope, watch_serials = data_model_watchlist.watchlist_settings(context.filters)
+        artifacts: list[ArchiveArtifact] = []
+        ibom_rows: list[dict[str, Any]] = []
+        projection_error: str | None = None
+        form_rows: tuple[Mapping[str, Any], ...] | None = None
+        coverage: Mapping[str, Any] | None = None
+        try:
+            ibom_rows, ibom_info = self._collect_ibom(context, credential, archive, artifacts)
+            merged, merge_report = merge_sources((), ibom_rows)
+            merge_coverage = {"sources": {**merge_report, "ibomExport": ibom_info, "tdcRetired": True}}
+        except DualSourceIncomplete as exc:
+            projection_error = FORM_PROJECTION_DUAL_SOURCE_INCOMPLETE
+            emit(
+                "data_model_dual_source_incomplete",
+                {"report_type": context.report_type, "reason": exc.reason},
+                name="archive_connector.TDCArchiveConnector._collect_ibom_only",
+            )
+        if projection_error is None:
+            kept_rows, dropped_scope = exclude_tdc_scope_rows(context.report_type, merged)
+            kept_rows, coverage = data_model_watchlist.apply_watchlist(kept_rows, watch_scope, watch_serials)
+            coverage = {**(coverage or {"kind": data_model_watchlist.SCOPE_ALL}), **merge_coverage}
+            form_rows = tuple(kept_rows)
+            emit(
+                "data_model_dual_source_merge",
+                {
+                    "report_type": context.report_type,
+                    "kept_count": len(form_rows),
+                    "count": merge_report["ibom"]["kept"],
+                    "conflict_count": 0,
+                },
+                name="archive_connector.TDCArchiveConnector._collect_ibom_only",
+            )
+            if dropped_scope:
+                emit(
+                    "tdc_scope_exclusion",
+                    {"report_type": context.report_type, "kept_count": len(form_rows), "dropped_count": dropped_scope},
+                    name="archive_connector.TDCArchiveConnector._collect_ibom_only",
+                )
+        normalized = _normalized_artifacts(archive, context, ibom_rows)
+        return ArchiveCollection(
+            len(ibom_rows),
+            (*artifacts, *normalized),
             form_rows=form_rows,
             form_projection_error=projection_error,
             form_coverage=coverage,

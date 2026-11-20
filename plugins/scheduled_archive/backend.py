@@ -16,7 +16,7 @@ from typing import Any
 
 from flask import request
 
-from services.data_model_dual_source import IBOM_DUAL_SOURCE_ENV, dual_source_enabled
+from services.data_model_dual_source import IBOM_DUAL_SOURCE_ENV, dual_source_enabled, tdc_side_retired
 from services.ibom_manual_feed import MAX_FEED_BYTES, IBOMManualFeedStore, ManualFeedError, feed_dir_for
 
 DATA_MODEL_JOB_KEY = "tdc_data_model"
@@ -33,6 +33,7 @@ def register(host):
         return ctx.json_ok({
             "enabled": dual_source_enabled(),
             "switch": IBOM_DUAL_SOURCE_ENV,
+            "tdcRetired": tdc_side_retired(),
             "pending": store.pending(),
             "maxBytes": MAX_FEED_BYTES,
         })

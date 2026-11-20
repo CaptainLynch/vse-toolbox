@@ -485,7 +485,7 @@ function IbomManualFeed({ job, busy, setBusy, onSynced }) {
 
   return html`<div class="sa-ibom is-wide">
     <h4>用本地 iBOM 报表同步</h4>
-    <p class="vk-muted">iBOM 自动抓取不可用时使用：上传 iBOM「数模设计审核流程报表」（.xlsx，或受终端加密时在 Excel 里另存的 Unicode 文本 .txt），立即同步一次；TDC 部分照常在线抓取并合并。</p>
+    <p class="vk-muted">iBOM 自动抓取不可用时使用：上传 iBOM「数模设计审核流程报表」（.xlsx，或受终端加密时在 Excel 里另存的 Unicode 文本 .txt），立即同步一次；${info.tdcRetired ? "数模已退出 TDC，本次只用这份报表。" : "TDC 部分照常在线抓取并合并。"}</p>
     ${info.pending && html`<p class="vk-muted">有一份待用的报表「${info.pending.fileName}」（数据日期 ${info.pending.dataDate}），会在下一次同步时使用。</p>`}
     <div class="sa-ibom-row">
       <input type="file" accept=".xlsx,.txt" disabled=${busy} onChange=${(e) => setFile(e.target.files && e.target.files[0] ? e.target.files[0] : null)} />

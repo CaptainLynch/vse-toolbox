@@ -607,6 +607,11 @@ def compose(
         "selectedWithoutData": selected_without_data,
         "statusGate": status_gate(flows, enabled=status_gate_enabled),
         "coverage": source.coverage.get("kind", W.SCOPE_ALL),
+        # 数模 TDC + iBOM 双源：本次参与统计的单按来源计数（iBOM 单签署人数按人次重算）。
+        "sourceCounts": {
+            V.SOURCE_TDC: sum(1 for flow in flows if flow.source == V.SOURCE_TDC),
+            V.SOURCE_IBOM: sum(1 for flow in flows if flow.source == V.SOURCE_IBOM),
+        },
         "seedVersion": seed_version(),
         "snapshotSaved": bool(save_snapshot and not stale),
     }

@@ -833,6 +833,8 @@ export default function Page({ plugin, api }) {
           （同一份数据、同样的条件，换一种导入方式或有没有对比，指纹都应当相同）`}
       </div>`}
       ${result.stale && result.mode !== "manual" && html`<div class="sd-notice is-stale">用的是旧数据（数据时间 ${formatTime(result.snapshotAt)}），不写快照，不显示日变化。</div>`}
+      ${result.sourceCounts && result.sourceCounts.ibom > 0 && html`<div class="sd-notice">
+        数据来源：TDC ${result.sourceCounts.tdc} 张单，iBOM ${result.sourceCounts.ibom} 张单（iBOM 单的应签/已签/未签按角色列人次计算，与 TDC 口径一致）</div>`}
       ${result.notices.map((n) => html`<div key=${n.kind} class=${`sd-notice${n.blocking ? " is-blocking" : ""}`}>${n.text}</div>`)}
       ${gateText && html`<div class=${`sd-notice${gateBlocked ? " is-blocking" : ""}`}
         role=${gateBlocked ? "alert" : "status"}>${gateText}</div>`}

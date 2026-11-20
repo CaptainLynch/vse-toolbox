@@ -18,6 +18,7 @@ from tests.test_data_model_dual_source import (
     context,
     xlsx_bytes,
 )
+from tests.test_data_model_dual_source import reset_fakes  # noqa: F401 - autouse：清空 iBOM 替身的调用记录
 from tests.test_scheduled_archive_connectors import random_credential
 from tests.test_sign_daily_ibom_source import ibom_matrix, utf16_txt
 

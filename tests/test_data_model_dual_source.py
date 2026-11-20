@@ -374,3 +374,56 @@ def test_connector_never_contacts_ibom_when_tdc_login_fails(tmp_path):
         make_connector(tmp_path, tdc_login_exc=RuntimeError("tdc down")).collect(context(), random_credential()[0])
     assert FakeIBOMAuth.calls == []
     assert REASON_IBOM_FILTER  # 保持导入被使用
+
+
+# ── 退出 TDC（方案 §9）────────────────────────────────────────────────
+
+
+def test_tdc_retired_switch_requires_dual_source():
+    from services.data_model_dual_source import tdc_side_retired
+
+    assert tdc_side_retired({"VSE_TDC_DATA_MODEL_RETIRED": "1"}) is False
+    assert tdc_side_retired({"VSE_TDC_DATA_MODEL_RETIRED": "1", "VSE_IBOM_DUAL_SOURCE": "1"}) is True
+    assert tdc_side_retired({"VSE_IBOM_DUAL_SOURCE": "1"}) is False
+
+
+def retired_connector(tmp_path, *, retired=True, dual=True):
+    def tdc_auth(**kw):
+        return FakeAuthClient(login_exc=AssertionError("TDC must not be contacted"), **kw)
+
+    def crawler_factory(**kw):
+        raise AssertionError("TDC crawler must not be built")
+
+    return TDCArchiveConnector(make_store(tmp_path), auth_factory=tdc_auth, crawler_factory=crawler_factory,
+                               ibom_auth_factory=FakeIBOMAuth, ibom_client_factory=FakeIBOMClient,
+                               dual_source_flag=lambda: dual, tdc_retired_flag=lambda: retired)
+
+
+def test_retired_tdc_collects_ibom_only(tmp_path):
+    FakeIBOMClient.report_rows = [ibom_row("3D-90", "P1"), ibom_row("3D-91", "P2", status="取消")]
+    credential, user, password = random_credential()
+    collection = retired_connector(tmp_path).collect(context(), credential)
+    assert collection.form_projection_error is None
+    assert [row["流水单号"] for row in collection.form_rows] == ["3D-90"]  # 取消被范围剔除
+    assert {row["_sourceSystem"] for row in collection.form_rows} == {"ibom"}
+    assert collection.form_coverage["sources"]["tdcRetired"] is True
+    assert FakeIBOMAuth.calls == [(user, password)]
+    assert collection.record_count == 2
+
+
+def test_retired_tdc_ibom_failure_blocks_snapshot(tmp_path):
+    FakeIBOMAuth.login_exc = IBOMAuthError("x", stage="auth-credentials", credentials_sent=True)
+    collection = retired_connector(tmp_path).collect(context(), random_credential()[0])
+    assert collection.form_projection_error == FORM_PROJECTION_DUAL_SOURCE_INCOMPLETE
+    assert collection.form_rows is None
+    assert len(collection.artifacts) == 2  # 只剩规范化 CSV/JSON
+
+
+def test_retired_tdc_still_validates_filters_and_watchlist(tmp_path):
+    FakeIBOMClient.report_rows = [ibom_row("3D-90", "P1"), ibom_row("3D-91", "P2")]
+    with pytest.raises(ValueError):
+        retired_connector(tmp_path).collect(context({"unknownKey": "x"}), random_credential()[0])
+    collection = retired_connector(tmp_path).collect(
+        context({"syncScope": "watchlist", "watchlist": ["3D-91"]}), random_credential()[0])
+    assert [row["流水单号"] for row in collection.form_rows] == ["3D-91"]
+    assert collection.form_coverage["kind"] == "watchlist"

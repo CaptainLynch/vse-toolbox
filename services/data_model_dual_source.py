@@ -28,6 +28,8 @@ from services.tdc_official_rows import (
 )
 
 IBOM_DUAL_SOURCE_ENV = "VSE_IBOM_DUAL_SOURCE"
+#: 退出 TDC（方案 §9）：数模只取 iBOM。只在 iBOM 双源已开启时生效。
+TDC_RETIRED_ENV = "VSE_TDC_DATA_MODEL_RETIRED"
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 SOURCE_TDC = "tdc"
@@ -89,6 +91,16 @@ def _value(row: Mapping[str, Any], keys: Iterable[str]) -> str:
 
 def _status(row: Mapping[str, Any]) -> str:
     return str(_normalize_tdc_status(_value(row, _STATUS_KEYS)) or "").strip()
+
+
+def tdc_side_retired(env: Mapping[str, str] | None = None) -> bool:
+    """数模是否已退出 TDC：``VSE_TDC_DATA_MODEL_RETIRED`` 为真**且** iBOM 双源已开启。
+
+    退出条件（方案 §9）：TDC 不再接收新单，且 TDC 侧在途单全部到达已完成或已废弃。
+    """
+    source: Mapping[str, str] = os.environ if env is None else env
+    retired = str(source.get(TDC_RETIRED_ENV) or "").strip().lower() in _TRUTHY
+    return retired and dual_source_enabled(source)
 
 
 # ── iBOM 报表 ─────────────────────────────────────────────────────────

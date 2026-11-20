@@ -190,3 +190,26 @@ def test_excel_proxy_keeps_ibom_numeric_columns_as_text():
     assert out[1][0] == "1" and out[1][11] == "2" and out[1][12] == "0.83139307"
     with pytest.raises(excel_proxy.CanonicalError):
         excel_proxy.to_canonical([header, row], header)
+
+
+# ── 一键生成：快照里的 iBOM 单走人次口径并显示来源计数 ─────────────────
+
+from tests.test_plugin_sign_daily import API, HEADERS, SCOPE, _ok, _rows, client  # noqa: E402,F401
+from services.deliverable_form_analysis import build_form_snapshot  # noqa: E402
+
+
+def test_generate_reports_source_counts_for_dual_source_snapshot(client):  # noqa: F811
+    _, http, db, _today = client
+    rows = _rows()
+    positional = []
+    for index, row in enumerate(rows):
+        item = {"values": [row.get(h) for h in HEADERS], "sheetName": "Sheet1"}
+        if index == 0:
+            item["_sourceSystem"] = "ibom"
+        positional.append(item)
+    db.publish_deliverable_form_snapshot(build_form_snapshot(
+        "tdc_data_model", positional, snapshot_at="2026-10-02T08:00:00Z", source_run_id=1, source="test"))
+    report = _ok(http.post(f"{API}/generate", json=SCOPE))
+    counts = report["sourceCounts"]
+    assert counts["ibom"] == 1
+    assert counts["tdc"] >= 1
