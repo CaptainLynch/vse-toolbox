@@ -19,11 +19,20 @@
 | C5 | 签署人数沿用 TDC 的**人次**口径 | §7.2 |
 | C6 | `TRA_2.0` 这类项目名是**架构件** | §7.3 |
 
-### 0.2 开工前还需要你做的一件事
+### 0.2 阶段 0B 取证结论（2026-11-20，`vse_phase0b` JSON）
 
-| # | 事项 | 为什么 |
+| # | 结论 | 方案中的落点 |
 |---|---|---|
-| Q5 | 打开「自动归档 → 数模设计审核流程」任务和「项目状态 → D5」的各个绑定，告诉我**实际填了哪些筛选条件**（例如部门、科室、申请日期、项目车型、状态） | TDC 的筛选是在 TDC 服务器上做的；iBOM 报表是全量导出，只能在本地按同样含义再筛一遍。有几种筛选在 iBOM 报表里没有对应列（§3.4），如果你的任务正好用到，那一侧会判为不完整，快照就一直发不出来 |
+| Q5 | 生产上只有归档任务 `tdc_data_model` 在用，筛选为 `projectModel = "AR-C"`、`section = "车体科"`；D5 项目状态绑定**未配置**（`matchRule` 为空、未启用） | §3.4 补实现这两个键；§5.3 见 Q8 |
+| — | TDC 最新快照 9 张单（19 行）全是 `Ar-C`/车体科；与 iBOM 43 张单**无交集**；TDC 早期架构单编号为 `Ar-C-3D-0044` 形态，与 iBOM 不撞号 | 符合 C1；双系统单规则仍保留作兜底 |
+| — | iBOM 当前**没有项目名为 `Ar-C` 的单**；唯一的架构件 `TRA_2.0`（3D-00001799）属底盘科；iBOM 车体科的单全是项目件（CF810P、F620S、F710C） | 见 Q7 |
+
+### 0.3 还需要你定的两件事
+
+| # | 问题 | 方案默认值 | 影响 |
+|---|---|---|---|
+| Q7 | TDC 的 `Ar-C` 架构平台，在 iBOM 里项目名叫什么？（仍叫 `Ar-C`？还是 `TRA-C`、`TRA_xx` 之类？） | 归档任务新增可选配置「iBOM 项目名对照」，默认空，即只认 `Ar-C` 本身；同时每次运行把被项目名筛掉的「架构类项目名」（`TRA*`/`Ar*`）写进运行摘要 | 不配对照的话，车体科的 Ar-C 架构单在 iBOM 里一旦换了名字，iBOM 侧会一直是 0 行而且不报错；运行摘要里的提示能让你及时发现 |
+| Q8 | D5 项目状态绑定目前没在用，本期是否**只做定时归档这一个发布者**？ | **是**：项目状态同步的数模路径本期保持只看 TDC，界面提示「iBOM 单请看数模报表」；R1 的「一分为二」转换推迟到真要启用 D5 绑定时再做 | 省约 1 天；以后启用 D5 绑定前必须先补上，否则会漏算 iBOM 单 |
 
 ---
 
@@ -110,10 +119,12 @@ TDC 侧的筛选照旧发给 TDC 服务器；iBOM 侧拿到全量报表后，按
 | `incident`（实例号） | 实例号只存在于 TDC，**iBOM 侧取 0 行并视为完整** |
 | `applicationStart` / `applicationEnd` | 按 `申请日期` 的日期部分做闭区间比较 |
 | `status` | 按 `状态` 列精确匹配 |
-| `applicant`、`projectModel`、`partNumber`、`modelNumber`、`section` | TDC 服务器的匹配方式（精确还是包含）未取证；**先按 fail-closed 处理**：这些键有值时 iBOM 侧判为不完整，并在「需关注」原因里写明是哪个键 |
+| `projectModel` | 按 `项目/车型` 列**去首尾空白、忽略大小写精确匹配**（实测 TDC 用 `AR-C` 筛出 `Ar-C`）；另可配置「iBOM 项目名对照」（Q7），对照表里的名字视同匹配 |
+| `section`（单值科室，TDC 的 `department` 参数） | 按 `部门` 列去首尾空白精确匹配（实测 TDC 用 `车体科` 筛出 `部门 = 车体科`） |
+| `applicant`、`partNumber`、`modelNumber` | 生产未使用，TDC 匹配方式未取证：**fail-closed**，有值时 iBOM 侧判为不完整，并在「需关注」原因里写明是哪个键 |
 | `department`（TDC 的上级部门 `superDepartment`） | iBOM 报表没有上级部门列：**fail-closed**，同上 |
 
-Q5 确认实际用到哪些键之后，再决定 fail-closed 的那几项要不要补实现。
+每次运行在摘要里记录：iBOM 报表总单数、经各筛选键后剩余单数，以及被 `projectModel` 筛掉的架构类项目名（`TRA*`/`Ar*`）及其单数，便于发现 Q7 的命名变化。
 
 ---
 
@@ -233,7 +244,7 @@ Q5 确认实际用到哪些键之后，再决定 fail-closed 的那几项要不�
 | **4. 手工导入** | §6 用途 A、B | 1 天 | 上传 iBOM 报表能触发归档并发布；签署日报本地导入识别 iBOM 表头并标注来源 |
 | **5. 真机验收** | 内网真实环境 | 0.5 天 + 观察期 | 连续 3 个工作日自动同步成功；每天抽 3 张 iBOM 单与 iBOM 界面核对零件行、签署人和状态；iBOM `totalCount` 与业务确认的在途单总量一致 |
 
-合计约 9 个工作日（不含观察期）。每阶段结束跑相关测试，全部完成后跑一次全量 `pytest`，输出放 `.runtime/`。
+合计约 9 个工作日（不含观察期）；若 Q8 按默认只做定时归档，约 8 个工作日。每阶段结束跑相关测试，全部完成后跑一次全量 `pytest`，输出放 `.runtime/`。
 
 **涉及测试**：`test_tdc_official_rows.py`、`test_scheduled_archive_connectors.py`、`test_scheduled_archive_runner.py`、`test_project_status_connectors.py`、`test_project_status_sync_runner.py`、`test_deliverable_form_analysis.py`、`test_data_model_attribution*`、`test_sign_daily_*`、`test_credential_safety.py`、`test_diagnostic_recording.py`，新增 `test_ibom_client.py`、`test_ibom_auth.py`、`test_data_model_dual_source.py`。打包：新模块由 Web 入口间接导入；签署日报本地版 EXE 只用到已列入 spec 的 `services.tdc_official_rows`，阶段 3 结束时跑 `test_sign_daily_local_report.py` 确认。
 

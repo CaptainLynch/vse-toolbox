@@ -11,7 +11,7 @@
 # One-time values (state, code, nonce, session_code, ticket ...) are never recorded.
 
 $ErrorActionPreference = 'Stop'
-$ScriptVersion = '2026-11-19.1'
+$ScriptVersion = '2026-11-20.1'
 $Origin = 'https://ibom.sgmw.com.cn'
 $MaxHops = 15
 $MaxScripts = 12
@@ -102,12 +102,16 @@ function Invoke-Hop([string]$url, $cookies, [int]$maxBytes) {
         }
         $body = [Text.Encoding]::UTF8.GetString($buffer, 0, $total)
     }
+    # Note: piping $null into ForEach-Object still runs the block once, so guard explicitly.
+    $authSchemes = @()
+    $authRaw = $resp.Headers.GetValues('WWW-Authenticate')
+    if ($authRaw) { foreach ($x in $authRaw) { if ($x) { $authSchemes += $x.Split(' ')[0] } } }
     $result = [ordered]@{
         status = [int]$resp.StatusCode
         contentType = $ctype
         location = $resp.Headers['Location']
         server = $resp.Headers['Server']
-        wwwAuthenticate = @($resp.Headers.GetValues('WWW-Authenticate') | ForEach-Object { $_.Split(' ')[0] })
+        wwwAuthenticate = $authSchemes
         setCookies = Get-CookieNames $resp.Headers
         body = $body
     }
@@ -147,7 +151,7 @@ function Trace-Chain([string]$start) {
     $page = $null
     for ($i = 0; $i -lt $MaxHops; $i++) {
         try { $r = Invoke-Hop $url $cookies 2000000 }
-        catch { $hops += [ordered]@{ url = (Get-SafeUrl $url); error = $_.Exception.GetType().Name + ': ' + $_.Exception.Message }; break }
+        catch { $hops += [ordered]@{ url = (Get-SafeUrl $url); error = $_.Exception.GetType().Name + ': ' + $_.Exception.Message + ' (line ' + $_.InvocationInfo.ScriptLineNumber + ')' }; break }
         $hop = [ordered]@{ url = (Get-SafeUrl $url); status = $r.status; contentType = $r.contentType; server = $r.server; wwwAuthenticate = $r.wwwAuthenticate; setCookies = $r.setCookies }
         if ($r.location) {
             $next = ([Uri]::new([Uri]$url, $r.location)).AbsoluteUri
