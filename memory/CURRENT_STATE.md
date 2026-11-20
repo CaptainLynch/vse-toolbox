@@ -40,8 +40,11 @@
 - **2026-11-20 阶段 2 完成**：表头变体、`services/data_model_dual_source.py`（读入/筛选/合并）、归档连接器接入
   （TDC 完整后才登 iBOM；失败 → `dual_source_incomplete` 不发布快照）、`dimensions.sourceSystem`、诊断闭集登记。
   开关 `VSE_IBOM_DUAL_SOURCE`（缺省关闭）。测试 30 passed，相关回归 602 passed。方案 §13 有实施记录。
-- **下一步**：阶段 3 下游适配（取消入剔除集、`_TDC_KNOWN_DATA_MODEL_CODES`、签署日报状态/阶段/iBOM 人次计数、
-  文案）；阶段 4 手工导入。真实账号验证（`tools/ibom_login_check.py`）仍待用户运行，通过后再开开关。
+- **2026-11-20 阶段 3 完成**：`取消` 入剔除集；签署日报认 iBOM 状态词（已发布/取消/草稿/退回）、阶段先看状态、
+  iBOM 单按角色列人次自算计数；`load_source` 从 `dimensions.sourceSystem` 带来源。测试 7 passed，回归 658 passed，
+  1 个既有失败（`test_import_scan_rejects_dir_outside_roots`，撤掉改动同样失败）。
+- **下一步**：阶段 4 手工导入（归档「用本地 iBOM 报表同步」+ 签署日报本地导入认 iBOM 表头）。
+  真实账号验证（`tools/ibom_login_check.py`）仍待用户运行，通过后再开 `VSE_IBOM_DUAL_SOURCE`。
 - **改了什么**（均在 `plugins/sign_daily/`，`refactor/ux-v2`）：
   ① 图表配色：配置键 `chartColors`（三图各 `bar`/`special`，只认 `#rrggbb`，默认值与 `chart.js` 的 `PALETTES`
   由测试钉住一致），页面「图表配色」面板含四套预设与自定义取色，改色只在前端用已加载的 `result.charts` 重画；

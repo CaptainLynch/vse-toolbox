@@ -698,7 +698,7 @@ export default function Page({ plugin, api }) {
   return html`<div class="vk-page sd-page">
     <header class="vk-page-header">
       <div><h2>3D 单签署日报</h2>
-        <p class="vk-muted" style="margin:4px 0 0">选好车型和科室 → 一键生成（会先自动刷新 TDC 数据）→ 复制正文或生成邮件草稿</p></div>
+        <p class="vk-muted" style="margin:4px 0 0">选好车型和科室 → 一键生成（会先自动刷新数模审批数据）→ 复制正文或生成邮件草稿</p></div>
       <div class="vk-page-actions">
         ${toast && html`<span class="sd-toast" role="status">${toast}</span>`}
         <span class="vk-muted">数据时间：${dataTime}${state.data && state.data.coverage === "watchlist" ? "（仅关注清单）" : ""}</span>

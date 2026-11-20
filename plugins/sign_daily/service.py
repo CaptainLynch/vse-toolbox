@@ -245,10 +245,14 @@ def load_source(db: Any, headers_of: Callable[[Mapping[str, Any]], list[str]], t
     V.check_columns(headers)
     rows = db.list_deliverable_form_snapshot_rows(int(latest["id"]))
     keep = set(V.REQUIRED_COLUMNS)
-    records = [
-        {key: value for key, value in zip(headers, row.get("values") or []) if key in keep}
-        for row in rows
-    ]
+    records = []
+    for row in rows:
+        record = {key: value for key, value in zip(headers, row.get("values") or []) if key in keep}
+        # 双源快照：来源只在 dimensions 里（不是契约列），iBOM 单的计数口径与 TDC 不同。
+        dimensions = row.get("dimensions") if isinstance(row.get("dimensions"), Mapping) else {}
+        if dimensions.get("sourceSystem") == V.SOURCE_IBOM:
+            record[V.SOURCE_KEY] = V.SOURCE_IBOM
+        records.append(record)
     snapshot_at = latest.get("snapshot_at")
     data_date = data_date_of(snapshot_at, tz)
     if data_date is None:

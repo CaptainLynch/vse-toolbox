@@ -326,7 +326,8 @@ def _normalize_tdc_status(value: object) -> str:
     return {"2": "审批中", "4": "已完成"}.get(text, text)
 
 
-TDC_SYNC_EXCLUDED_STATUSES = frozenset({"已废弃", "已撤回"})
+#: 「取消」是 iBOM 数模设计审核流程的终态作废（APP_FORM_STATUS，2026-11-19 实测），与 TDC 的已废弃同义。
+TDC_SYNC_EXCLUDED_STATUSES = frozenset({"已废弃", "已撤回", "取消"})
 
 
 def normalize_tdc_report_status(report: str, value: object) -> str:

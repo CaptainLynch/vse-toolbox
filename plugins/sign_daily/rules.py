@@ -38,8 +38,22 @@ REQUIRED_COLUMNS = (
 
 STATUS_DONE = "已完成"
 STATUS_DISCARDED = "已废弃"
+#: iBOM「数模设计审核流程」的状态词（APP_FORM_STATUS，2026-11-19 实测）。
+STATUS_PUBLISHED = "已发布"
+STATUS_CANCELLED = "取消"
+STATUS_IBOM_DRAFT = "草稿"
+STATUS_IBOM_RETURNED = "退回"
+DONE_STATUSES = frozenset({STATUS_DONE, STATUS_PUBLISHED})
+DISCARDED_STATUSES = frozenset({STATUS_DISCARDED, STATUS_CANCELLED})
 #: 见过的在途状态值；其余取值也按在途处理，但记为异常（P6）。
-KNOWN_IN_FLIGHT_STATUSES = frozenset({"进行中", "审批中"})
+KNOWN_IN_FLIGHT_STATUSES = frozenset({"进行中", "审批中", STATUS_IBOM_DRAFT, STATUS_IBOM_RETURNED})
+
+#: 数据来源（快照行 dimensions.sourceSystem / 本地导入的表头变体）。iBOM 报表的应签/已签/未签
+#: 按「人」去重，与 TDC 的「人次」口径不同（2026-11-19 决策 C5：沿用人次）：iBOM 单的计数由
+#: 角色列按人次自算，报表计数字段只作参考。
+SOURCE_KEY = "_sourceSystem"
+SOURCE_TDC = "tdc"
+SOURCE_IBOM = "ibom"
 
 CURRENT_DEPARTMENTS = ("车身科", "车体科", "内饰科", "外饰科", "车体架构集成科")
 HISTORY_DEPARTMENTS = ("结构工程科", "视觉工程科")
@@ -217,14 +231,15 @@ class Flow:
     countersign_required: int = 0
     countersign_signed: int = 0
     add_sign_count: int = 0
+    source: str = SOURCE_TDC
 
     @property
     def is_done(self) -> bool:
-        return self.status == STATUS_DONE
+        return self.status in DONE_STATUSES
 
     @property
     def in_flight(self) -> bool:
-        return self.status not in (STATUS_DONE, STATUS_DISCARDED)
+        return self.status not in DONE_STATUSES and self.status not in DISCARDED_STATUSES
 
     @property
     def is_complete(self) -> bool:
@@ -276,7 +291,11 @@ class Flow:
 
     @property
     def stage(self) -> str:
-        """T1–T6，取第一条成立的。"""
+        """T1–T6，取第一条成立的。iBOM 的草稿/退回先按状态定阶段（还没进流程或已退回发起人）。"""
+        if self.status == STATUS_IBOM_DRAFT:
+            return STAGE_DRAFT
+        if self.status == STATUS_IBOM_RETURNED:
+            return STAGE_RETURNED
         if not self.pending:
             if not self.unsigned():
                 return STAGE_LOCK
@@ -295,6 +314,16 @@ class Flow:
 
 def column_phase(column: str) -> str:
     return PHASE_APPROVAL if column in APPROVAL_COLUMNS else PHASE_COUNTERSIGN
+
+
+def _recount_by_role_columns(flow: Flow) -> None:
+    """iBOM 单：应签/已签/未签/签署率按角色列人次自算（C5），不用报表里按人去重的字段。"""
+    required = flow.role_count + flow.add_sign_count
+    unsigned = flow.role_unsigned_count
+    flow.required = required
+    flow.unsigned_count = unsigned
+    flow.signed = required - unsigned
+    flow.rate = round(flow.signed * 100 / required, 2) if required else None
 
 
 @dataclass
@@ -328,6 +357,7 @@ def build_flows(rows: Iterable[Mapping[str, Any]]) -> ParseResult:
                 unsigned_count=_int(row.get("未签人数")),
                 rate=parse_rate(row.get("签署率")),
                 pending=[name for name, _ in parse_people(row.get("待审批人员"))],
+                source=SOURCE_IBOM if _text(row.get(SOURCE_KEY)) == SOURCE_IBOM else SOURCE_TDC,
             )
         elif (_int(row.get("应签人数")), _int(row.get("已签人数"))) != (flow.required, flow.signed):
             anomalies.append({"serial": serial, "kind": "rowCountsDiffer", "text": "各行签署人数不一致，取第一行"})
@@ -359,11 +389,13 @@ def build_flows(rows: Iterable[Mapping[str, Any]]) -> ParseResult:
         flow.parts.setdefault(part_no or f"#row{index}", _text(row.get("零件名称")))
     result = []
     for flow in flows.values():
-        if flow.status == STATUS_DISCARDED:
+        if flow.status in DISCARDED_STATUSES:
             continue
-        if flow.status != STATUS_DONE and flow.status not in KNOWN_IN_FLIGHT_STATUSES:
+        if flow.status not in DONE_STATUSES and flow.status not in KNOWN_IN_FLIGHT_STATUSES:
             anomalies.append({"serial": flow.serial, "kind": "unknownStatus", "text": f"没见过的状态「{flow.status}」，按在途处理"})
-        if flow.in_flight and flow.no_pending:
+        if flow.source == SOURCE_IBOM:
+            _recount_by_role_columns(flow)
+        if flow.in_flight and flow.no_pending and flow.status != STATUS_IBOM_DRAFT:
             anomalies.append({"serial": flow.serial, "kind": "pendingEmpty",
                               "text": "有人未签但待审批人员为空，当前待办人显示「—」"})
         if flow.role_count + flow.add_sign_count != flow.required:

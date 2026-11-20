@@ -316,6 +316,15 @@ TDC 侧的筛选照旧发给 TDC 服务器；iBOM 侧拿到全量报表后，按
 - **开关**：环境变量 `VSE_IBOM_DUAL_SOURCE=1` 启用 iBOM 侧，**缺省关闭**（与 `VSE_TDC_MULTI_SERIAL_SYNC` 同一模式）。缺省关闭时行为与改动前完全相同；在真实账号验证通过前不建议开启，否则每次归档都会因 iBOM 侧不完整而不发布快照。
 - 测试：`tests/test_data_model_dual_source.py` 30 passed；相关回归（官方行、归档连接器/运行器、表单分析、关注清单、范围剔除、诊断、凭据安全、签署日报全部）602 passed / 3 skipped。
 
+### 阶段 3（2026-11-20）
+
+- 范围剔除：`TDC_SYNC_EXCLUDED_STATUSES` 加 `取消`（iBOM 终态作废），合并模块的废弃集与项目状态诊断的已知码集随之覆盖。
+- 签署日报 `plugins/sign_daily/rules.py`：完成集 `{已完成, 已发布}`、废弃集 `{已废弃, 取消}`、在途集加 `草稿`/`退回`；阶段先看状态（草稿 → 待提交、退回 → 退回修改）；草稿单不报 `pendingEmpty`；iBOM 单（记录带 `_sourceSystem=ibom`）的应签/已签/未签/签署率按角色列人次自算，不报计数不一致；TDC 单不变。
+- `plugins/sign_daily/service.py::load_source`：从快照行 `dimensions.sourceSystem` 带出来源。
+- 文案：三处纯说明文字改为中性的「数模审批数据」（开关缺省关闭时写「TDC + iBOM」会误导）；后端报错「TDC 抓取未完成」保留（有测试断言，且失败确实先发生在 TDC 侧）。
+- 方案 §7.1 的 `_TDC_KNOWN_DATA_MODEL_CODES` 扩展按 Q8 不做（项目状态同步本期不接 iBOM 行）。
+- 测试：`tests/test_sign_daily_ibom_source.py` 7 passed；回归 658 passed / 3 skipped / 1 failed，失败项 `test_import_scan_rejects_dir_outside_roots` 在撤掉本次改动后同样失败（既有环境问题，与本期无关）。
+
 ## 12. 开工前架构评审（2026-11-19）
 
 对照代码逐条核对初版方案的假设，发现以下问题并已在上文修正：

@@ -127,7 +127,7 @@ export function ExportCard() {
 function progressText(run) {
   if (run.phase === "refresh") {
     const task = run.task;
-    if (!task) return "正在提交 TDC 抓取任务…";
+    if (!task) return "正在提交数模审批数据抓取任务…";
     const percent = Number.isFinite(task.percent) ? `（${task.percent}%）` : "";
     return `${task.stage || "排队中"}${percent}`;
   }
@@ -204,7 +204,7 @@ export function DailyReportCard({ state, fresh, onReload }) {
     : daily && daily.dataError ? html`<${Pill} tone="warn">还没有数据<//>` : null;
 
   return html`<${Entry} icon="📨" title="3D 单签署日报"
-    text="按保存的车型与科室一键生成：先刷新 TDC 数模审批数据，再出三图一表，可直接复制正文或下载邮件草稿。"
+    text="按保存的车型与科室一键生成：先刷新数模审批数据，再出三图一表，可直接复制正文或下载邮件草稿。"
     status=${status}
     actions=${[{ label: "调整条件", href: DAILY_PAGE }]}>
     <p class="wb-muted wb-small">生成范围（已保存）：${scopeText(form)}</p>
