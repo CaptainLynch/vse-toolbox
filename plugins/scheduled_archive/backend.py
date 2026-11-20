@@ -78,5 +78,5 @@ def register(host):
         # 先作废仍未被取走的这一份，再看它有没有被某次运行用掉（内容指纹标记）：
         # 触发的同步没用上（TDC 登录失败、租约被占、已过期）就作废，不留给之后的定时运行悄悄使用。
         store.void_if_pending(sha)
-        feed_used = store.was_consumed(sha)
+        feed_used = store.was_consumed(sha, str(meta["uploadedAt"]))
         return ctx.json_ok({"feed": meta, "sync": result, "feedUsed": feed_used, "pendingAfterSync": store.pending()})

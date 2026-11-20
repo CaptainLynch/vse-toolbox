@@ -154,6 +154,10 @@ class IBOMManualFeedStore:
         }
         directory = self.directory
         directory.mkdir(parents=True, exist_ok=True)
+        try:  # 新上传让旧的使用标记失效：同一份报表再传一次不能沿用上次「已使用」
+            (directory / _CONSUMED_FILE).unlink()
+        except FileNotFoundError:
+            pass
         payload = json.dumps(meta, ensure_ascii=False).encode("utf-8") + b"\n" + content
         self._atomic_write(directory / _FEED_FILE, payload)
         return meta
@@ -175,7 +179,11 @@ class IBOMManualFeedStore:
         if self._expired(meta) or not content or hashlib.sha256(content).hexdigest() != meta.get("sha256"):
             return None
         # 记下「哪一份被用掉了」，上传接口据此判断触发的同步是否真的用上了它（而不是从暂存为空倒推）。
-        marker = {"sha256": meta.get("sha256"), "takenAt": self._clock().astimezone(timezone.utc).isoformat()}
+        marker = {
+            "sha256": meta.get("sha256"),
+            "uploadedAt": meta.get("uploadedAt"),
+            "takenAt": self._clock().astimezone(timezone.utc).isoformat(),
+        }
         try:
             self._atomic_write(self.directory / _CONSUMED_FILE, json.dumps(marker).encode("utf-8"))
         except OSError:
@@ -196,13 +204,16 @@ class IBOMManualFeedStore:
             except FileNotFoundError:
                 pass
 
-    def was_consumed(self, sha256: str) -> bool:
-        """这一份（按内容指纹）是否已被某次归档运行取走使用。"""
+    def was_consumed(self, sha256: str, uploaded_at: str) -> bool:
+        """**这一次上传**（内容指纹 + 上传时间）是否已被某次归档运行取走使用。"""
         try:
             marker = json.loads((self.directory / _CONSUMED_FILE).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return False
-        return isinstance(marker, dict) and bool(sha256) and marker.get("sha256") == sha256
+        return (
+            isinstance(marker, dict) and bool(sha256) and bool(uploaded_at)
+            and marker.get("sha256") == sha256 and marker.get("uploadedAt") == uploaded_at
+        )
 
     def void_if_pending(self, sha256: str) -> bool:
         """若暂存仍是这一份（未被取走），作废它；返回是否作废了。不会删掉别人后来上传的另一份。"""

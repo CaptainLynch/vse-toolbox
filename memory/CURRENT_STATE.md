@@ -49,7 +49,8 @@
 - **2026-11-20 收尾与评审**：退出 TDC 开关 `VSE_TDC_DATA_MODEL_RETIRED`、签署日报 `sourceCounts`、运维指南 §8（`1b4828c`）；
   code-review high（`3fccb24..1b4828c`）10 条全部修复，见方案 §13「代码评审」。关键约束：退出 TDC 后 iBOM 拒绝密码按
   `credential_invalid` 上报；「取消」只对数模剔除（SOR 不变）；手工导入只收当天报表、未被使用即作废。
-  回归 1425 passed，2 个既有失败无关。
+  复核评审 8 条（`fe1b7fc`）与终审 1 条已修复：凭据被拒只认明确拒绝（`IBOMAuthError.rejected`）；手工导入「是否被用上」
+  按内容指纹 + 上传时间的使用标记判断。回归 1438 passed，2 个既有失败无关。评审已闭环。
 - **下一步**：阶段 5 真机验收（用户侧）：① 内网跑 `tools/ibom_login_check.py`；② 通过后 `setx VSE_IBOM_DUAL_SOURCE 1`
   重启，观察连续 3 个工作日归档；③ 每天抽 3 张 iBOM 单与界面核对；④ 满足 §9 条件后再设 `VSE_TDC_DATA_MODEL_RETIRED=1`。
   需 Windows 打包（onedir zip + 自动归档插件 0.2.0）。

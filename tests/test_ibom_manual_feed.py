@@ -237,15 +237,15 @@ def test_consumption_marker_and_void_only_own_feed(tmp_path):
     clock = Clock()
     feed_store = store(tmp_path, clock)
     first = feed_store.put(ibom_report_bytes([ibom_row("3D-1", "P1")]), file_name="a.xlsx", data_date=date(2026, 11, 20))
-    assert feed_store.was_consumed(first["sha256"]) is False
+    assert feed_store.was_consumed(first["sha256"], first["uploadedAt"]) is False
     assert feed_store.take() is not None
-    assert feed_store.was_consumed(first["sha256"]) is True
+    assert feed_store.was_consumed(first["sha256"], first["uploadedAt"]) is True
     second = feed_store.put(ibom_report_bytes([ibom_row("3D-2", "P2")]), file_name="b.xlsx", data_date=date(2026, 11, 20))
     assert feed_store.void_if_pending(first["sha256"]) is False  # 不删别人后来上传的另一份
     assert feed_store.pending()["sha256"] == second["sha256"]
     clock.now = NOW + timedelta(minutes=31)
     assert feed_store.take() is None  # 过期：不算被使用
-    assert feed_store.was_consumed(second["sha256"]) is False
+    assert feed_store.was_consumed(second["sha256"], second["uploadedAt"]) is False
 
 
 def test_clear_removes_legacy_files(tmp_path):
@@ -269,3 +269,17 @@ def test_plugin_voids_feed_when_sync_raises(plugin_client, monkeypatch):
     response = upload(client, ibom_report_bytes([ibom_row("3D-1", "P1")]), data_date=date.today().isoformat())
     assert response.status_code >= 500
     assert IBOMManualFeedStore(feed_dir_for(tmp_path)).pending() is None
+
+
+def test_reuploading_a_used_report_does_not_inherit_used_marker(tmp_path):
+    clock = Clock()
+    feed_store = store(tmp_path, clock)
+    payload = ibom_report_bytes([ibom_row("3D-1", "P1")])
+    first = feed_store.put(payload, file_name="a.xlsx", data_date=date(2026, 11, 20))
+    assert feed_store.take() is not None
+    clock.now = NOW + timedelta(minutes=1)
+    again = feed_store.put(payload, file_name="a.xlsx", data_date=date(2026, 11, 20))
+    assert again["sha256"] == first["sha256"]
+    assert feed_store.was_consumed(again["sha256"], again["uploadedAt"]) is False
+    assert feed_store.void_if_pending(again["sha256"]) is True
+    assert feed_store.was_consumed(again["sha256"], again["uploadedAt"]) is False
