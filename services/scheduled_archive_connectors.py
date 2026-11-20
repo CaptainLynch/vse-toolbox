@@ -30,6 +30,18 @@ from services.scheduled_archive_runner import (
     ArchiveJobContext,
 )
 from services import data_model_watchlist
+from services.data_model_dual_source import (
+    REASON_IBOM_AUTH,
+    REASON_IBOM_REQUEST,
+    REASON_TDC_LOGIN_FIRST,
+    DualSourceIncomplete,
+    apply_ibom_filters,
+    dual_source_enabled,
+    merge_sources,
+    read_ibom_report,
+)
+from services.ibom_auth import IBOMAuthError, IBOMPasswordAuthClient
+from services.ibom_client import IBOMClient, IBOMClientError, IBOMToken
 from services.scope_exclusion import exclude_paa_cancel_rows, exclude_tdc_scope_rows
 from services.tdc_auth import TDCPasswordAuthClient
 from services.tdc_crawler import (
@@ -49,6 +61,8 @@ _TDC_MAX_RECORDS = 10000
 _ARAS_EWO_MAX_RECORDS = 2000
 _ARAS_PAA_MAX_RECORDS = 12000
 
+#: 双源（TDC + iBOM）任一侧不完整：不发布表单快照（docs/PLAN_20261119_IBOM_DMM_DUAL_SOURCE.md §5）。
+FORM_PROJECTION_DUAL_SOURCE_INCOMPLETE = "dual_source_incomplete"
 #: 工作簿投影失败但不在既有三码内的补充码（runner 的闭集消息表对未知码
 #: 退化为 form_projection_failed，具体停机原因由 manifest 的簿记事实披露）。
 FORM_PROJECTION_ADMISSION_FAILED = "official_workbook_admission_failed"
@@ -339,11 +353,17 @@ class TDCArchiveConnector:
         timeout: float = 60.0,
         auth_factory: Callable[..., Any] = TDCPasswordAuthClient,
         crawler_factory: Callable[..., Any] = TDCCrawlerClient,
+        ibom_auth_factory: Callable[..., Any] = IBOMPasswordAuthClient,
+        ibom_client_factory: Callable[..., Any] = IBOMClient,
+        dual_source_flag: Callable[[], bool] = dual_source_enabled,
     ) -> None:
         self._archive = archive
         self._timeout = timeout
         self._auth_factory = auth_factory
         self._crawler_factory = crawler_factory
+        self._ibom_auth_factory = ibom_auth_factory
+        self._ibom_client_factory = ibom_client_factory
+        self._dual_source_flag = dual_source_flag
 
     @observed("archive_connector.TDCArchiveConnector.collect")
     def collect(
@@ -362,6 +382,8 @@ class TDCArchiveConnector:
                 context,
                 login.session,
                 _archive_for_context(self._archive, context),
+                # TDC 已用这份凭据登录成功，iBOM 侧才允许使用它（防锁号顺序，方案 §3.3）。
+                ibom_credential=credential,
             )
         finally:
             _close_session(login.session)
@@ -372,7 +394,10 @@ class TDCArchiveConnector:
         context: ArchiveJobContext,
         session: object,
         archive: ArchiveStore,
+        *,
+        ibom_credential: ResolvedCredential | None = None,
     ) -> ArchiveCollection:
+        ibom_artifacts: list[ArchiveArtifact] = []
         with tempfile.TemporaryDirectory() as temp_dir:
             crawler = self._crawler_factory(
                 session=session,
@@ -451,15 +476,47 @@ class TDCArchiveConnector:
         # 由官方工作簿本体承担。
         form_rows: tuple[Mapping[str, Any], ...] | None = None
         dropped_scope = 0
+        merge_coverage: dict[str, Any] | None = None
+        form_source_rows: Sequence[Mapping[str, Any]] = rows
+        if (
+            projection_error is None
+            and context.job_key == "tdc_data_model"
+            and self._dual_source_flag()
+        ):
+            try:
+                ibom_rows, ibom_info = self._collect_ibom(
+                    context, ibom_credential, archive, ibom_artifacts
+                )
+                form_source_rows, merge_report = merge_sources(rows, ibom_rows)
+                merge_coverage = {"sources": {**merge_report, "ibomExport": ibom_info}}
+                emit(
+                    "data_model_dual_source_merge",
+                    {
+                        "report_type": context.report_type,
+                        "kept_count": len(form_source_rows),
+                        "count": merge_report["ibom"]["kept"],
+                        "conflict_count": merge_report["conflictCount"],
+                    },
+                    name="archive_connector.TDCArchiveConnector._collect_authenticated",
+                )
+            except DualSourceIncomplete as exc:
+                projection_error = FORM_PROJECTION_DUAL_SOURCE_INCOMPLETE
+                emit(
+                    "data_model_dual_source_incomplete",
+                    {"report_type": context.report_type, "reason": exc.reason},
+                    name="archive_connector.TDCArchiveConnector._collect_authenticated",
+                )
         if projection_error is None:
             kept_rows, dropped_scope = exclude_tdc_scope_rows(
-                context.report_type, rows
+                context.report_type, form_source_rows
             )
             if context.job_key == "tdc_data_model":
                 # 关注清单范围：只把清单里的单号落进表单快照，并记录覆盖范围（§9 S1、S11）。
                 kept_rows, coverage = data_model_watchlist.apply_watchlist(
                     kept_rows, watch_scope, watch_serials
                 )
+                if merge_coverage is not None:
+                    coverage = {**(coverage or {"kind": data_model_watchlist.SCOPE_ALL}), **merge_coverage}
             form_rows = tuple(kept_rows)
         if dropped_scope:
             emit(
@@ -476,11 +533,63 @@ class TDCArchiveConnector:
         # 表单快照来源（官方表为位置行，JSON 兜底为字典行）。
         return ArchiveCollection(
             len(rows),
-            (xlsx, *normalized),
+            (xlsx, *ibom_artifacts, *normalized),
             form_rows=form_rows,
             form_projection_error=projection_error,
             form_coverage=coverage,
         )
+
+    def _collect_ibom(
+        self,
+        context: ArchiveJobContext,
+        credential: ResolvedCredential | None,
+        archive: ArchiveStore,
+        artifacts: list[ArchiveArtifact],
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """iBOM 侧：登录 → DMM 总数 → 导出报表（原件归档）→ 读入 → 本地筛选。
+
+        任何一步失败抛 ``DualSourceIncomplete``；登录失败绝不重试（同一份域账号凭据）。
+        """
+        if credential is None:
+            raise DualSourceIncomplete(REASON_TDC_LOGIN_FIRST)
+        try:
+            login = self._ibom_auth_factory(timeout=self._timeout).login(
+                credential.username, credential.password
+            )
+        except IBOMAuthError as exc:
+            raise DualSourceIncomplete(REASON_IBOM_AUTH, exc.stage) from None
+        try:
+            client = self._ibom_client_factory(
+                login.session,
+                IBOMToken(login.user_token, login.user_login_name, login.login_type),
+                timeout=self._timeout,
+            )
+            total = client.dmm_total_count()
+            export = client.export_dmm_report()
+        except IBOMClientError as exc:
+            raise DualSourceIncomplete(REASON_IBOM_REQUEST, exc.stage) from None
+        finally:
+            _close_session(login.session)
+        artifacts.append(
+            archive.write_bytes(
+                export.content,
+                source="ibom",
+                report=context.report_type,
+                run_id=context.run_id,
+                output_subdir=context.output_subdir,
+                file_name=export.file_name,
+                artifact_type="ibom_official_xlsx",
+            )
+        )
+        report = read_ibom_report(export.content, total_count=total, max_rows=_TDC_MAX_RECORDS + 1)
+        rows, filter_report = apply_ibom_filters(report.rows, context.filters)
+        return rows, {
+            "totalCount": total,
+            "documents": report.documents,
+            "rows": len(report.rows),
+            "fileName": export.file_name,
+            "filters": filter_report,
+        }
 
     @staticmethod
     def _data_model_filters(value: Mapping[str, object]) -> TDCDataModelFilters:

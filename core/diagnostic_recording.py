@@ -96,6 +96,13 @@ _VALUES.update({'total_mismatch', 'sample_not_in_baseline', 'fields_mismatch', '
 _NUMBER_FIELDS.update({'status_count', 'unknown_count'})
 _TEXT_FIELDS.add('tdc_status_code')
 _VALUES.update({str(i) for i in range(0, 13)} | {'(empty)', '(unprintable)'})
+# 数模 TDC + iBOM 双源（2026-11-20，docs/PLAN_20261119_IBOM_DMM_DUAL_SOURCE.md）：
+# 只放来源名与不完整原因闭集词，不落单号/项目名/账号。
+_NUMBER_FIELDS.add('conflict_count')
+_VALUES.update({
+    'ibom', 'ibom_disabled', 'ibom_auth_failed', 'ibom_request_failed', 'ibom_report_invalid',
+    'ibom_count_mismatch', 'ibom_filter_unsupported', 'tdc_login_not_confirmed',
+})
 
 
 def _dumps(value):

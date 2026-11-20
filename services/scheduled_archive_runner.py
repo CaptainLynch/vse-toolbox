@@ -304,6 +304,7 @@ _FORM_PROJECTION_ERROR_MESSAGES = {
     "official_workbook_truncated": "official workbook preview was truncated before form projection",
     "official_workbook_contract_invalid": "official workbook did not match the form contract",
     "api_result_truncated": "fallback API result reached its record limit before form projection",
+    "dual_source_incomplete": "iBOM side of the TDC + iBOM data model sync was incomplete; snapshot not published",
     "form_projection_failed": "form snapshot projection failed",
 }
 

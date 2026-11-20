@@ -136,7 +136,7 @@ TDC 侧的筛选照旧发给 TDC 服务器；iBOM 侧拿到全量报表后，按
 | `sections`（科室多选） | 按 `部门` 列科室归集（与现有 `_narrow_by_sections` 同一实现；0A 实测 iBOM 的 `部门` 列就是科室名） |
 | `incident`（实例号） | 实例号只存在于 TDC，**iBOM 侧取 0 行并视为完整** |
 | `applicationStart` / `applicationEnd` | 按 `申请日期` 的日期部分做闭区间比较 |
-| `status` | 按 `状态` 列精确匹配 |
+| `status` | **改为 fail-closed**（2026-11-20 实现时修订）：TDC 的状态筛选值可能是数字码（2/4），与 iBOM 中文状态含义对不上；生产未使用 |
 | `projectModel` | 按 `项目/车型` 列**去首尾空白、忽略大小写精确匹配**（实测 TDC 用 `AR-C` 筛出 `Ar-C`）；另可配置「iBOM 项目名对照」（Q7），对照表里的名字视同匹配 |
 | `section`（单值科室，TDC 的 `department` 参数） | 按 `部门` 列去首尾空白精确匹配（实测 TDC 用 `车体科` 筛出 `部门 = 车体科`） |
 | `applicant`、`partNumber`、`modelNumber` | 生产未使用，TDC 匹配方式未取证：**fail-closed**，有值时 iBOM 侧判为不完整，并在「需关注」原因里写明是哪个键 |
@@ -299,6 +299,22 @@ TDC 侧的筛选照旧发给 TDC 服务器；iBOM 侧拿到全量报表后，按
 - iBOM 接入续期协调器、用审批节点接口逐人校正待办、用接口替代报表取数。
 
 ---
+
+## 13. 实施记录
+
+### 阶段 1（2026-11-20，`1600f60`）
+
+`services/ibom_auth.py`、`services/ibom_client.py`、`tools/ibom_login_check.py`；测试 29 passed。真实账号验证待用户在内网运行 `ibom_login_check.py`。
+
+### 阶段 2（2026-11-20）
+
+- `services/tdc_official_rows.py`：表头变体 `variant="ibom"`（第 0 列 `序号`，读入后 `实例号` 置空），只由调用方显式指定。
+- `services/data_model_dual_source.py`：报表读入与单据数核对、本地筛选（`section` 精确、`projectModel` 忽略大小写精确、`incident` 取 0 行、申请日期闭区间；`applicant`/`department`/`partNumber`/`modelNumber`/`status` 与未知键 fail-closed）、按流水单号合并（中英文两组键都认）。
+- `TDCArchiveConnector`：`tdc_data_model` 在 TDC 侧完整后才登录 iBOM（同一份凭据、不重试）→ 计数 → 导出（原件以 `ibom_official_xlsx` 归档）→ 读入 → 筛选 → 合并 → 原有范围剔除与关注清单。任一步失败为投影错误 `dual_source_incomplete`：不发布快照、运行「需关注」。合并报告写入快照 `schema.coverage.sources`。
+- 行级来源：保留键 `_sourceSystem` → 快照行 `dimensions.sourceSystem`（仅出现时写入，单源与历史快照不变）。
+- 诊断：`data_model_dual_source_merge` / `data_model_dual_source_incomplete`，原因闭集已登记到 `core/diagnostic_recording.py`。
+- **开关**：环境变量 `VSE_IBOM_DUAL_SOURCE=1` 启用 iBOM 侧，**缺省关闭**（与 `VSE_TDC_MULTI_SERIAL_SYNC` 同一模式）。缺省关闭时行为与改动前完全相同；在真实账号验证通过前不建议开启，否则每次归档都会因 iBOM 侧不完整而不发布快照。
+- 测试：`tests/test_data_model_dual_source.py` 30 passed；相关回归（官方行、归档连接器/运行器、表单分析、关注清单、范围剔除、诊断、凭据安全、签署日报全部）602 passed / 3 skipped。
 
 ## 12. 开工前架构评审（2026-11-19）
 

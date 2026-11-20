@@ -101,6 +101,9 @@ _TDC_HIDDEN_COLUMN_INDEXES = {"tdc_data_model": frozenset({12, 13})}
 # 16 = 官方 47 列中去掉 12/13 后的前 16 列：默认可见列以「最新审批记录」(17) 收尾，
 # 与交付物工作台（官方导出）的业务列对齐（2026-09-29 生产反馈：状态/最新审批记录不可见）。
 _TDC_DEFAULT_VISIBLE_COUNT = 16
+#: 双源合并的行级来源标记（保留键，不是契约列）与取值闭集。
+SOURCE_SYSTEM_KEY = "_sourceSystem"
+SOURCE_SYSTEMS = frozenset({"tdc", "ibom"})
 _TDC_DEPRECATED_STATUS = "已废弃"
 _TDC_DATA_MODEL_COMPLETED_STATUSES = frozenset(
     {"4", "已完成", "完成", "审批完成", "审批通过", "已归档", "归档", "已发布", "流程结束", "已生效"}
@@ -1427,6 +1430,11 @@ def normalize_form_rows(
             " ".join(str(value or "") for value in values),
             2000,
         )
+        # TDC + iBOM 双源合并（services/data_model_dual_source）在行上留下保留键
+        # ``_sourceSystem``；只在出现时写入维度，单源与历史快照的维度保持不变。
+        source_system = source.get(SOURCE_SYSTEM_KEY)
+        if report == "tdc_data_model" and source_system in SOURCE_SYSTEMS:
+            dimensions = {**dimensions, "sourceSystem": source_system}
         normalized.append(
             {
                 "rowKey": row_key,

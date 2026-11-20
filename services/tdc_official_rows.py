@@ -62,6 +62,13 @@ class OfficialWorkbookContractError(OfficialWorkbookError):
 
 _SUPPORTED_REPORTS = ("data_model", "sor")
 
+#: 表头变体。``tdc`` 是 TDC 官方导出；``ibom`` 是 iBOM「数模设计审核流程报表」：
+#: 与 47 列契约只差第 0 列（``序号`` 是行号，不是实例号，读入后置空 ``实例号``）。
+#: 变体只由调用方显式指定，绝不按「哪个能过就用哪个」自动识别。
+VARIANT_TDC = "tdc"
+VARIANT_IBOM = "ibom"
+_VARIANT_FIRST_HEADER = {VARIANT_IBOM: ("data_model", "序号")}
+
 
 def official_contract_headers(report_type: str) -> list[str]:
     """官方工作簿的数据表头（= 契约列标签，按列序）。"""
@@ -71,6 +78,17 @@ def official_contract_headers(report_type: str) -> list[str]:
     header_rows = contract["headerRows"]
     data_header_row = int(contract.get("dataHeaderRow", 0))
     return [str(value or "").strip() for value in header_rows[data_header_row]]
+
+
+def variant_file_headers(report_type: str, variant: str = VARIANT_TDC) -> list[str]:
+    """某个变体的**文件表头**（用于逐字比对）；``tdc`` 变体即契约列标签。"""
+    labels = official_contract_headers(report_type)
+    if variant == VARIANT_TDC:
+        return labels
+    spec = _VARIANT_FIRST_HEADER.get(variant)
+    if spec is None or spec[0] != report_type:
+        raise OfficialWorkbookContractError(f"unsupported header variant {variant!r} for {report_type}")
+    return [spec[1], *labels[1:]]
 
 
 def _first_header_mismatch(raw_header: Sequence[str], expected: Sequence[str]) -> int | None:
@@ -97,8 +115,11 @@ def check_official_header(
     report_type: str,
     *,
     strict: bool = False,
+    variant: str = VARIANT_TDC,
 ) -> list[str]:
     """校验表头行并返回契约列标签；不一致抛 `OfficialWorkbookContractError`。
+
+    ``variant`` 只改变比对用的文件表头；返回值始终是契约列标签（第 0 列为 ``实例号``）。
 
     - `strict=False`（既有调用方的行为，保持不变）：每格 strip 后比对，契约列之后
       只要没有非空表头就放行。
@@ -106,7 +127,8 @@ def check_official_header(
       不做 Unicode 归一，值必须是字符串；缺列、多列、错位都拒绝。只有「行尾的空格子」
       （xlsx 里带格式的空单元格 / TXT 行尾多出的空字段）不算一列，因为它不带任何内容。
     """
-    expected = official_contract_headers(report_type)
+    labels = official_contract_headers(report_type)
+    expected = variant_file_headers(report_type, variant)
     raw_header: list[object]
     if strict:
         raw_header = list(header_row)
@@ -125,7 +147,7 @@ def check_official_header(
             reason=REASON_SCHEMA_MISMATCH,
             col_index=_first_header_mismatch(raw_header, expected),  # type: ignore[arg-type]
         )
-    return expected
+    return labels
 
 
 def official_rows_from_matrix(
@@ -133,16 +155,20 @@ def official_rows_from_matrix(
     report_type: str,
     *,
     strict: bool = False,
+    variant: str = VARIANT_TDC,
 ) -> tuple[dict[str, object], ...]:
     """行矩阵（第一行是表头）→「契约列标签 → 值」的行元组。
+
+    ``variant="ibom"`` 时第 0 列（行号）不进 ``实例号``：该列一律置空。
 
     全空行跳过；短行按空值补齐（Excel 的文本导出会省掉行尾空字段）。`strict=True`
     时，契约列之外出现任何非空值都拒绝——那说明列错位或被人加了列，不能悄悄丢掉。
     """
     if not matrix:
         return ()
-    expected = check_official_header(matrix[0], report_type, strict=strict)
+    expected = check_official_header(matrix[0], report_type, strict=strict, variant=variant)
     width = len(expected)
+    blank_first = variant != VARIANT_TDC
     rows: list[dict[str, object]] = []
     for row in matrix[1:]:
         if not row or not any(not _is_blank(value) for value in row):
@@ -156,6 +182,8 @@ def official_rows_from_matrix(
                         col_index=index,
                     )
         values = list(row) + [None] * max(0, width - len(row))
+        if blank_first:
+            values[0] = None
         rows.append({expected[index]: values[index] for index in range(width)})
     return tuple(rows)
 
@@ -216,6 +244,7 @@ def read_official_tdc_rows_from_bytes(
     max_rows: int,
     text: bool = False,
     strict: bool = True,
+    variant: str = VARIANT_TDC,
 ) -> tuple[dict[str, object], ...]:
     """同 `read_official_tdc_rows`，但读**内存里的字节**，并支持 Excel 导出的 TAB 文本。
 
@@ -226,7 +255,7 @@ def read_official_tdc_rows_from_bytes(
     matrix, truncated = read_official_tdc_matrix_from_bytes(data, max_rows=max_rows, text=text)
     if truncated:
         raise OfficialWorkbookTruncated("official export truncated at the row limit")
-    return official_rows_from_matrix(matrix, report_type, strict=strict)
+    return official_rows_from_matrix(matrix, report_type, strict=strict, variant=variant)
 
 
 def project_official_rows(
