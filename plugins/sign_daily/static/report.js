@@ -731,7 +731,7 @@ export default function Page({ plugin, api }) {
       </div>`}
       <details class="sd-import">
         <summary>用本地导出的报表生成（自动和上次导入比，看每日进展）</summary>
-        <p class="vk-muted sd-import-hint">文件必须是 TDC「数模设计审核流程」原样导出的 .xlsx（47 列表头）。数据日期请自己确认——程序不会用导入时间、文件修改时间或「申请日期」推断。</p>
+        <p class="vk-muted sd-import-hint">文件必须是 TDC 或 iBOM「数模设计审核流程」报表原样导出的 .xlsx（47 列表头；iBOM 报表第一列是「序号」）。数据日期请自己确认——程序不会用导入时间、文件修改时间或「申请日期」推断。</p>
         <p class="vk-muted sd-import-hint">如果 .xlsx 提示受终端加密保护：用 Excel 打开它，「另存为」选「Unicode 文本(*.txt)」，再选这份 .txt 导入（不要手工改内容）。</p>
         ${state.excelProxy && html`<p class="vk-muted sd-import-hint">
           <label><input type="checkbox"

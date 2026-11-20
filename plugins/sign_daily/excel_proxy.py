@@ -83,12 +83,29 @@ def ready(config: Mapping[str, Any]) -> bool:
     return status(config.get("excelProxyEnabled"))["status"] == STATUS_OK
 
 
-def to_canonical(matrix: Sequence[Sequence[Any]], headers: Sequence[str]) -> list[list[Any]]:
-    """把 Excel 取回的值矩阵规范成与 xlsx 读取路同形的矩阵（表头行原样留给契约校验）。"""
+#: iBOM「数模设计审核流程报表」里 Excel 存成数字的说明性列（行号、数量、重量）：只转成文本，不参与计算。
+IBOM_NUMERIC_TEXT_COLUMNS = frozenset({"序号", "数量", "重量（单件）", "零件合计"})
+
+
+def _numeric_text(value: float) -> str:
+    return str(int(value)) if value.is_integer() else repr(value)
+
+
+def to_canonical(
+    matrix: Sequence[Sequence[Any]],
+    headers: Sequence[str],
+    *,
+    numeric_text_columns: frozenset[str] = frozenset(),
+) -> list[list[Any]]:
+    """把 Excel 取回的值矩阵规范成与 xlsx 读取路同形的矩阵（表头行原样留给契约校验）。
+
+    ``numeric_text_columns``：允许为数字、按文本保留的列（iBOM 报表用）；其余列遇到数字照旧拒绝。
+    """
     if not matrix:
         return []
     counts = {index for index, name in enumerate(headers) if name in COUNT_COLUMNS}
     ratios = {index for index, name in enumerate(headers) if name in RATIO_COLUMNS}
+    texts = {index for index, name in enumerate(headers) if name in numeric_text_columns}
     out: list[list[Any]] = [list(matrix[0])]
     for row in matrix[1:]:
         clean: list[Any] = []
@@ -104,6 +121,8 @@ def to_canonical(matrix: Sequence[Sequence[Any]], headers: Sequence[str]) -> lis
                 clean.append(str(int(value)))
             elif index in ratios:
                 clean.append(repr(value))
+            elif index in texts:
+                clean.append(_numeric_text(value))
             else:
                 raise CanonicalError(REASON_UNEXPECTED_NUMERIC, col_index=index)
         out.append(clean)
@@ -113,6 +132,7 @@ def to_canonical(matrix: Sequence[Sequence[Any]], headers: Sequence[str]) -> lis
 __all__ = [
     "COUNT_COLUMNS",
     "CanonicalError",
+    "IBOM_NUMERIC_TEXT_COLUMNS",
     "RATIO_COLUMNS",
     "STATUS_DISABLED",
     "STATUS_EXCEL_UNAVAILABLE",

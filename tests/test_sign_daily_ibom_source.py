@@ -102,3 +102,91 @@ def test_load_source_carries_source_from_snapshot_dimensions(monkeypatch):
     source = S.load_source(DB(), lambda snap: headers)
     assert source.records[0][R.SOURCE_KEY] == R.SOURCE_IBOM
     assert R.SOURCE_KEY not in source.records[1]
+
+
+# ── 阶段 4：本地导入认 iBOM 报表表头 ───────────────────────────────────
+
+from datetime import date  # noqa: E402
+
+import pytest  # noqa: E402
+
+from services.tdc_official_rows import official_contract_headers, variant_file_headers  # noqa: E402
+from tests.test_data_model_dual_source import ibom_row, xlsx_bytes  # noqa: E402
+
+LABELS = official_contract_headers("data_model")
+
+
+def ibom_matrix(header=None):
+    header = header or variant_file_headers("data_model", "ibom")
+    row = ibom_row("3D-90", "P1")
+    row.update({"造型": "甲(未签)", "总体工程": "甲(未签)、乙", "设计工程师": "丙", "应签人数": "3",
+                "已签人数": "2", "未签人数": "1", "签署率": "66.67%", "待审批人员": "甲"})
+    return [header, ["1"] + [row[label] for label in LABELS[1:]]]
+
+
+def utf16_txt(matrix):
+    return ("\r\n".join("\t".join(str(v) for v in row) for row in matrix) + "\r\n").encode("utf-16")
+
+
+def importer():
+    from plugins.sign_daily import importer as module
+    return module
+
+
+@pytest.mark.parametrize("name,payload", [
+    ("ibom.xlsx", lambda: xlsx_bytes(ibom_matrix())),
+    ("ibom.txt", lambda: utf16_txt(ibom_matrix())),
+])
+def test_manual_import_accepts_ibom_report_and_recounts(name, payload):
+    module = importer()
+    source = module.source_from_bytes(payload(), date(2026, 11, 20), name=name)
+    assert all(record[R.SOURCE_KEY] == R.SOURCE_IBOM for record in source.records)
+    flow = R.build_flows(source.records).flows[0]
+    assert (flow.required, flow.signed, flow.unsigned_count) == (4, 2, 2)
+    meta = module.import_meta(__import__("pathlib").Path(name), source, name=name, digest="0" * 64)
+    assert meta["sourceVariant"] == "ibom"
+    assert "iBOM" in meta["note"]
+
+
+def test_manual_import_tdc_report_unchanged():
+    module = importer()
+    matrix = ibom_matrix(header=list(LABELS))
+    matrix[1][0] = "54110920"
+    source = module.source_from_bytes(xlsx_bytes(matrix), date(2026, 11, 20), name="tdc.xlsx")
+    assert R.SOURCE_KEY not in source.records[0]
+    meta = module.import_meta(__import__("pathlib").Path("tdc.xlsx"), source, name="tdc.xlsx", digest="0" * 64)
+    assert meta["sourceVariant"] == "tdc"
+
+
+def test_manual_import_rejects_ibom_header_with_other_differences():
+    module = importer()
+    header = variant_file_headers("data_model", "ibom")
+    header[20] = header[20] + "X"
+    with pytest.raises(module.ManualImportError) as info:
+        module.source_from_bytes(xlsx_bytes(ibom_matrix(header)), date(2026, 11, 20), name="bad.xlsx")
+    assert info.value.code == "E_HEADER_MISMATCH"
+    other = list(LABELS)
+    other[0] = "编号"
+    with pytest.raises(module.ManualImportError) as info:
+        module.source_from_bytes(xlsx_bytes(ibom_matrix(other)), date(2026, 11, 20), name="bad.xlsx")
+    assert info.value.code == "E_HEADER_MISMATCH"
+
+
+def test_directory_precheck_accepts_ibom_report(tmp_path):
+    module = importer()
+    path = tmp_path / "ibom.xlsx"
+    path.write_bytes(xlsx_bytes(ibom_matrix()))
+    assert module._header_ok(path) == (True, "")
+
+
+def test_excel_proxy_keeps_ibom_numeric_columns_as_text():
+    from plugins.sign_daily import excel_proxy
+
+    header = variant_file_headers("data_model", "ibom")
+    row = [None] * len(header)
+    row[0], row[11], row[12] = 1.0, 2.0, 0.83139307
+    out = excel_proxy.to_canonical([header, row], header,
+                                   numeric_text_columns=excel_proxy.IBOM_NUMERIC_TEXT_COLUMNS)
+    assert out[1][0] == "1" and out[1][11] == "2" and out[1][12] == "0.83139307"
+    with pytest.raises(excel_proxy.CanonicalError):
+        excel_proxy.to_canonical([header, row], header)

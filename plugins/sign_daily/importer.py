@@ -44,6 +44,8 @@ from services.tdc_official_rows import (
     official_rows_from_matrix,
     read_official_tdc_matrix_from_bytes,
     read_official_tdc_rows_from_bytes,
+    VARIANT_IBOM,
+    variant_file_headers,
 )
 from services.tdc_text_rows import ENCODING_GBK, text_encoding_label
 from services.xlsx_preview import (
@@ -261,13 +263,32 @@ def _read_bounded(path: Path) -> bytes:
     return data
 
 
+def _tag_ibom(rows: tuple[dict[str, object], ...]) -> tuple[dict[str, object], ...]:
+    return tuple({**row, V.SOURCE_KEY: V.SOURCE_IBOM} for row in rows)
+
+
 def _rows_from_bytes(data: bytes, name: str | os.PathLike[str]) -> tuple[dict[str, object], ...]:
-    """字节 → 契约行：xlsx 与 TXT 同一套严格表头校验，全程在内存里。"""
+    """字节 → 契约行：xlsx 与 TXT 同一套严格表头校验，全程在内存里。
+
+    接受两套**完整**表头之一：TDC 官方导出（第 0 列「实例号」），或 iBOM「数模设计审核流程报表」
+    （第 0 列「序号」，其余 46 列逐字相同）。只有 TDC 表头恰好在第 0 列不符时才按 iBOM 表头整行
+    逐字再比一次；两套都不符照旧报表头不符。iBOM 行带来源标记，计数按人次重算（rules.C5）。
+    """
     text = _is_text(name)
     try:
-        return read_official_tdc_rows_from_bytes(
-            data, _REPORT_TYPE, max_rows=MAX_ROWS, text=text, strict=True
-        )
+        try:
+            return read_official_tdc_rows_from_bytes(
+                data, _REPORT_TYPE, max_rows=MAX_ROWS, text=text, strict=True
+            )
+        except OfficialWorkbookContractError as exc:
+            if exc.col_index != 0:
+                raise
+            try:
+                return _tag_ibom(read_official_tdc_rows_from_bytes(
+                    data, _REPORT_TYPE, max_rows=MAX_ROWS, text=text, strict=True, variant=VARIANT_IBOM
+                ))
+            except OfficialWorkbookContractError:
+                raise exc from None
     except OfficialWorkbookError as exc:
         error = _translate(exc, text=text)
         if error.code in ("E_ENCRYPTED_WORKBOOK", "E_WORKBOOK_INVALID", "E_TEXT_INVALID"):
@@ -290,7 +311,7 @@ def _source(rows, data_date: date) -> S.SourceData:
         raise ManualImportError(
             "E_REQUIRED_COLUMNS", "缺少日报必需的列：" + "、".join(missing[:6])
         )
-    keep = set(V.REQUIRED_COLUMNS)
+    keep = set(V.REQUIRED_COLUMNS) | {V.SOURCE_KEY}
     records = [{key: value for key, value in row.items() if key in keep} for row in rows]
     return S.SourceData(
         records=records,
@@ -343,6 +364,7 @@ def source_from_excel(path: Path, data_date: date) -> S.SourceData:
     from . import excel_proxy
 
     expected = official_contract_headers(_REPORT_TYPE)
+    ibom_headers = variant_file_headers(_REPORT_TYPE, VARIANT_IBOM)
 
     def proxy_failed(reason: str, col_index: int | None = None) -> ManualImportError:
         diagnostic: dict[str, Any] = {"reason": reason}
@@ -357,9 +379,17 @@ def source_from_excel(path: Path, data_date: date) -> S.SourceData:
     except reader.ExcelReadError as exc:
         reason = exc.reason if exc.reason in reader.READ_REASONS else reader.REASON_PROTOCOL
         raise proxy_failed(reason) from None
+    # 第 0 列表头是「序号」才按 iBOM 报表读（整行表头仍逐字校验）；否则按 TDC 官方导出读。
+    is_ibom = bool(matrix) and bool(matrix[0]) and matrix[0][0] == ibom_headers[0]
     try:
-        canonical = excel_proxy.to_canonical(matrix, expected)
-        rows = official_rows_from_matrix(canonical, _REPORT_TYPE, strict=True)
+        if is_ibom:
+            canonical = excel_proxy.to_canonical(
+                matrix, ibom_headers, numeric_text_columns=excel_proxy.IBOM_NUMERIC_TEXT_COLUMNS
+            )
+            rows = _tag_ibom(official_rows_from_matrix(canonical, _REPORT_TYPE, strict=True, variant=VARIANT_IBOM))
+        else:
+            canonical = excel_proxy.to_canonical(matrix, expected)
+            rows = official_rows_from_matrix(canonical, _REPORT_TYPE, strict=True)
     except excel_proxy.CanonicalError as exc:
         raise proxy_failed(exc.reason, exc.col_index) from None
     except OfficialWorkbookError as exc:
@@ -489,6 +519,9 @@ def import_meta(
         note += _GBK_NOTE
     if source_format == FORMAT_EXCEL_PROXY:
         note += "；文件受终端加密，内容由本机 Excel 只读代读"
+    is_ibom = any(record.get(V.SOURCE_KEY) == V.SOURCE_IBOM for record in source.records)
+    if is_ibom:
+        note += "；来源是 iBOM「数模设计审核流程报表」，应签/已签/未签与签署率按角色列人次重算"
     meta = {
         "mode": "manual",
         "sourceName": name or Path(path).name,
@@ -514,6 +547,7 @@ def import_meta(
     }
     if source_format:
         meta["sourceFormat"] = source_format
+    meta["sourceVariant"] = V.SOURCE_IBOM if is_ibom else V.SOURCE_TDC
     return meta
 
 
@@ -630,7 +664,16 @@ def _header_ok(path: Path) -> tuple[bool, str]:
         )
         if not matrix:
             return False, "E_EMPTY_WORKBOOK"
-        check_official_header(matrix[0], _REPORT_TYPE, strict=True)
+        try:
+            check_official_header(matrix[0], _REPORT_TYPE, strict=True)
+        except OfficialWorkbookContractError as exc:
+            # 与 _rows_from_bytes 同一规则：仅第 0 列不符时按 iBOM 报表表头整行逐字再比一次。
+            if exc.col_index != 0:
+                raise
+            try:
+                check_official_header(matrix[0], _REPORT_TYPE, strict=True, variant=VARIANT_IBOM)
+            except OfficialWorkbookContractError:
+                raise exc from None
     except ManualImportError as exc:
         return False, exc.code
     except OfficialWorkbookError as exc:
