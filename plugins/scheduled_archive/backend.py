@@ -69,4 +69,8 @@ def register(host):
         except LookupError:
             store.clear()
             return ctx.json_error(503, "ServiceUnavailable", "归档服务不可用")
-        return ctx.json_ok({"feed": meta, "sync": result, "pendingAfterSync": store.pending()})
+        # 触发的这次同步没用上（例如 TDC 登录失败、已有运行占着租约）：立即作废，不留给之后的定时运行悄悄使用。
+        feed_used = store.pending() is None
+        if not feed_used:
+            store.clear()
+        return ctx.json_ok({"feed": meta, "sync": result, "feedUsed": feed_used, "pendingAfterSync": None})

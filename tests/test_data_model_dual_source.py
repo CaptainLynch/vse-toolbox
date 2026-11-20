@@ -411,8 +411,24 @@ def test_retired_tdc_collects_ibom_only(tmp_path):
     assert collection.record_count == 2
 
 
-def test_retired_tdc_ibom_failure_blocks_snapshot(tmp_path):
+def test_retired_tdc_rejected_password_is_a_credential_error(tmp_path):
+    from services.scheduled_archive_runner import _error_type
+
     FakeIBOMAuth.login_exc = IBOMAuthError("x", stage="auth-credentials", credentials_sent=True)
+    with pytest.raises(IBOMAuthError) as info:
+        retired_connector(tmp_path).collect(context(), random_credential()[0])
+    assert _error_type(info.value) == "credential_invalid"
+    assert len(FakeIBOMAuth.calls) == 1
+
+
+def test_dual_mode_ibom_password_rejection_stays_incomplete(tmp_path):
+    FakeIBOMAuth.login_exc = IBOMAuthError("x", stage="auth-credentials", credentials_sent=True)
+    collection = make_connector(tmp_path).collect(context(), random_credential()[0])
+    assert collection.form_projection_error == FORM_PROJECTION_DUAL_SOURCE_INCOMPLETE
+
+
+def test_retired_tdc_ibom_failure_blocks_snapshot(tmp_path):
+    FakeIBOMAuth.login_exc = IBOMAuthError("x", stage="sso-entry")
     collection = retired_connector(tmp_path).collect(context(), random_credential()[0])
     assert collection.form_projection_error == FORM_PROJECTION_DUAL_SOURCE_INCOMPLETE
     assert collection.form_rows is None
@@ -427,3 +443,23 @@ def test_retired_tdc_still_validates_filters_and_watchlist(tmp_path):
         context({"syncScope": "watchlist", "watchlist": ["3D-91"]}), random_credential()[0])
     assert [row["流水单号"] for row in collection.form_rows] == ["3D-91"]
     assert collection.form_coverage["kind"] == "watchlist"
+
+
+@pytest.mark.parametrize("applied", ["2026/11/18 10:00", "46344.42", ""])
+def test_date_filter_fails_closed_on_unparsable_dates(applied):
+    rows = [ibom_row("3D-1", "P1"), ibom_row("3D-2", "P2", applied=applied)]
+    with pytest.raises(DualSourceIncomplete) as info:
+        apply_ibom_filters(rows, {"applicationStart": "2026-11-01"})
+    assert info.value.reason == REASON_IBOM_REPORT
+
+
+def test_merge_refuses_ibom_rows_without_serial():
+    with pytest.raises(DualSourceIncomplete):
+        merge_sources([], [ibom_row("", "P1")])
+
+
+def test_cancelled_is_excluded_for_data_model_only():
+    from services.scope_exclusion import exclude_tdc_scope_rows
+
+    assert exclude_tdc_scope_rows("data_model", [{"状态": "取消"}])[1] == 1
+    assert exclude_tdc_scope_rows("sor", [{"审批状态": "取消"}])[1] == 0

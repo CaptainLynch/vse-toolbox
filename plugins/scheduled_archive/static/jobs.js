@@ -471,9 +471,14 @@ function IbomManualFeed({ job, busy, setBusy, onSynced }) {
         return;
       }
       const result = D.summarizeSyncResult(payload.data.sync, job.jobKey);
-      setNotice(result.ok
-        ? { kind: "success", message: `已用「${payload.data.feed.fileName}」（数据日期 ${payload.data.feed.dataDate}）完成一次 TDC + iBOM 同步` }
-        : { kind: "error", message: `报表已收下，但本次同步未完成：${result.message}`, remedy: result.remedy });
+      setInfo({ ...info, pending: payload.data.pendingAfterSync });
+      if (!payload.data.feedUsed) {
+        setNotice({ kind: "error", message: `本次同步没有用到这份报表（${result.message}），报表已作废，请处理后重新上传`, remedy: result.remedy });
+      } else {
+        setNotice(result.ok
+          ? { kind: "success", message: `已用「${payload.data.feed.fileName}」（数据日期 ${payload.data.feed.dataDate}）完成一次同步` }
+          : { kind: "error", message: `报表已使用，但本次同步未完成：${result.message}`, remedy: result.remedy });
+      }
       await onSynced();
     } catch (err) {
       setNotice({ kind: "error", message: `上传失败：${err.message}` });
@@ -489,7 +494,7 @@ function IbomManualFeed({ job, busy, setBusy, onSynced }) {
     ${info.pending && html`<p class="vk-muted">有一份待用的报表「${info.pending.fileName}」（数据日期 ${info.pending.dataDate}），会在下一次同步时使用。</p>`}
     <div class="sa-ibom-row">
       <input type="file" accept=".xlsx,.txt" disabled=${busy} onChange=${(e) => setFile(e.target.files && e.target.files[0] ? e.target.files[0] : null)} />
-      <label>数据日期 <input type="date" value=${dataDate} max=${localToday()} disabled=${busy} onInput=${(e) => setDataDate(e.target.value)} /></label>
+      <label>数据日期 <input type="date" value=${dataDate} min=${localToday()} max=${localToday()} disabled=${busy} onInput=${(e) => setDataDate(e.target.value)} /></label>
       <button type="button" class="vk-btn" disabled=${busy || !file || !dataDate} onClick=${submit}>${running ? "同步中..." : "上传并同步"}</button>
     </div>
     ${notice && html`<${Notice} kind=${notice.kind} message=${notice.message} remedy=${notice.remedy} />`}

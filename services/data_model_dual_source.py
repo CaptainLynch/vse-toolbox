@@ -16,10 +16,11 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
-from services.deliverable_form_analysis import TDC_SYNC_EXCLUDED_STATUSES, _normalize_tdc_status
+from services.deliverable_form_analysis import DATA_MODEL_SYNC_EXCLUDED_STATUSES, _normalize_tdc_status
 from services.deliverable_form_analysis._impl import SOURCE_SYSTEM_KEY
 from services.tdc_official_rows import (
     VARIANT_IBOM,
@@ -35,8 +36,8 @@ _TRUTHY = frozenset({"1", "true", "yes", "on"})
 SOURCE_TDC = "tdc"
 SOURCE_IBOM = "ibom"
 
-#: 终态废弃（合并取舍用）：TDC 的剔除集 + iBOM 的「取消」。
-DISCARDED_STATUSES = frozenset(TDC_SYNC_EXCLUDED_STATUSES) | {"取消"}
+#: 终态废弃（合并取舍用）：与数模范围剔除同一集合（TDC 已废弃/已撤回 + iBOM 取消）。
+DISCARDED_STATUSES = frozenset(DATA_MODEL_SYNC_EXCLUDED_STATUSES)
 
 _SERIAL_KEYS = ("流水单号", "documentNo")
 _STATUS_KEYS = ("状态", "status")
@@ -61,6 +62,7 @@ REASONS = frozenset({
 _IGNORED_FILTER_KEYS = frozenset({"syncScope", "watchlist", "documentNo"})  # 由关注清单/下游处理，与 TDC 侧一致
 _FAIL_CLOSED_FILTER_KEYS = frozenset({"applicant", "department", "partNumber", "modelNumber", "status"})
 _ARCH_PREFIXES = ("TRA", "AR")
+_ISO_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 class DualSourceIncomplete(ValueError):
@@ -180,12 +182,17 @@ def apply_ibom_filters(
     start = _filter_text(active.get("applicationStart"))[:10]
     end = _filter_text(active.get("applicationEnd"))[:10]
     if start or end:
-        def in_range(row: Mapping[str, Any]) -> bool:
+        for bound in (start, end):
+            if bound and not _ISO_DAY.match(bound):
+                raise DualSourceIncomplete(REASON_IBOM_FILTER, "applicationDate")
+        days = []
+        for row in kept:
             day = _value(row, ("申请日期",))[:10]
-            if len(day) != 10:
-                return False
-            return (not start or day >= start) and (not end or day <= end)
-        kept = [row for row in kept if in_range(row)]
+            if not _ISO_DAY.match(day):
+                # 日期认不出（斜杠格式、Excel 序列号、空值）：无法证明它在不在范围内，判不完整而不是丢行。
+                raise DualSourceIncomplete(REASON_IBOM_REPORT, "unparsable_application_date")
+            days.append((row, day))
+        kept = [row for row, day in days if (not start or day >= start) and (not end or day <= end)]
         steps.append({"step": "applicationDate", "rows": len(kept)})
     report = {"steps": steps, "excludedArchitectureProjects": dict(sorted(excluded_arch.items()))}
     return kept, report
@@ -228,6 +235,9 @@ def merge_sources(
     tdc_groups = _group(tdc_rows)
     ibom_groups = _group(ibom_rows)
     unkeyed_tdc = tdc_groups.pop("", [])
+    if "" in ibom_groups:
+        # iBOM 报表读入与手工导入都会先拒收无流水单号的行；走到这里说明调用方漏检，宁可停也不发布。
+        raise DualSourceIncomplete(REASON_IBOM_REPORT, "row_without_serial")
     dual: list[str] = []
     conflicts: list[str] = []
     take_tdc: set[str] = set(tdc_groups)

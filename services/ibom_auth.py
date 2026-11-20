@@ -129,6 +129,7 @@ class IBOMPasswordAuthClient:
         if not (0 < float(timeout) <= 300):
             raise ValueError("timeout must be in (0, 300]")
         self.timeout = float(timeout)
+        self._owns_session = session is None
         if session is None:
             if requests is None:
                 raise ImportError("IBOMPasswordAuthClient requires requests; install requirements.txt")
@@ -139,6 +140,20 @@ class IBOMPasswordAuthClient:
 
     # ── 公共入口 ────────────────────────────────────────────────────
     def login(self, username: str, password: str) -> IBOMLoginResult:
+        """登录；失败时关闭自己创建的会话（可能已带上认证 Cookie），再抛出 ``IBOMAuthError``。"""
+        try:
+            return self._login(username, password)
+        except IBOMAuthError:
+            if self._owns_session:
+                close = getattr(self.session, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:  # noqa: BLE001 - 关闭失败不掩盖登录失败
+                        pass
+            raise
+
+    def _login(self, username: str, password: str) -> IBOMLoginResult:
         username_value = str(username or "").strip()
         password_value = str(password or "")
         if not username_value or not password_value:

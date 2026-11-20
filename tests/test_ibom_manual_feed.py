@@ -51,7 +51,7 @@ def test_put_validates_and_take_is_single_use(tmp_path):
 
 
 def test_put_accepts_unicode_text(tmp_path):
-    meta = store(tmp_path).put(utf16_txt(ibom_matrix()), file_name="报表.txt", data_date=date(2026, 11, 19))
+    meta = store(tmp_path).put(utf16_txt(ibom_matrix()), file_name="报表.txt", data_date=date(2026, 11, 20))
     assert meta["text"] is True and meta["rows"] == 1
 
 
@@ -74,10 +74,10 @@ def test_put_rejects_tdc_header_and_future_date(tmp_path):
         store(tmp_path).put(xlsx_bytes([official_contract_headers("data_model"), ["1"]]),
                             file_name="tdc.xlsx", data_date=date(2026, 11, 20))
     assert info.value.code == "E_HEADER_MISMATCH"
-    with pytest.raises(ManualFeedError) as info:
-        store(tmp_path).put(ibom_report_bytes([ibom_row("3D-1", "P1")]), file_name="x.xlsx",
-                            data_date=date(2026, 11, 21))
-    assert info.value.code == "E_DATE_FUTURE"
+    for day in (date(2026, 11, 21), date(2026, 11, 10)):  # 只接受当天：旧报表会被当成此刻的进度
+        with pytest.raises(ManualFeedError) as info:
+            store(tmp_path).put(ibom_report_bytes([ibom_row("3D-1", "P1")]), file_name="x.xlsx", data_date=day)
+        assert info.value.code == "E_DATE_NOT_TODAY"
 
 
 def test_expired_or_tampered_feed_is_discarded(tmp_path):
@@ -88,9 +88,11 @@ def test_expired_or_tampered_feed_is_discarded(tmp_path):
     assert feed_store.pending() is None and feed_store.take() is None
     clock.now = NOW
     feed_store.put(ibom_report_bytes([ibom_row("3D-1", "P1")]), file_name="x.xlsx", data_date=date(2026, 11, 20))
-    (feed_dir_for(tmp_path) / "pending.bin").write_bytes(b"PK changed")
+    path = feed_dir_for(tmp_path) / "pending.feed"
+    head, _, _ = path.read_bytes().partition(b"\n")
+    path.write_bytes(head + b"\nPK changed")
     assert feed_store.take() is None
-    assert not (feed_dir_for(tmp_path) / "pending.json").exists()
+    assert not path.exists()
 
 
 # ── 连接器 ────────────────────────────────────────────────────────────
@@ -182,8 +184,9 @@ def test_plugin_upload_stores_feed_and_triggers_sync(plugin_client, monkeypatch)
     assert response.status_code == 200, payload
     assert calls == ["tdc_data_model"]
     assert payload["data"]["feed"]["documents"] == 1
-    # FakeArchive 没有取走暂存：它仍在数据库目录下，供真正的归档运行器使用。
-    assert (feed_dir_for(tmp_path) / "pending.json").exists()
+    # FakeArchive 没有取走暂存 = 这次同步没用上：立即作废，不留给之后的定时运行。
+    assert payload["data"]["feedUsed"] is False
+    assert not (feed_dir_for(tmp_path) / "pending.feed").exists()
 
 
 def test_plugin_rejects_bad_upload(plugin_client, monkeypatch):
@@ -193,3 +196,38 @@ def test_plugin_rejects_bad_upload(plugin_client, monkeypatch):
     bad = upload(client, b"garbage", data_date=date.today().isoformat())
     assert bad.status_code == 422 and bad.get_json()["error"]["type"] == "E_UNREADABLE"
     assert calls == []
+
+
+def test_plugin_upload_consumed_by_sync_reports_used(plugin_client, monkeypatch):
+    client, calls, tmp_path = plugin_client
+    monkeypatch.setenv("VSE_IBOM_DUAL_SOURCE", "1")
+    from web import app as web_app  # noqa: F401
+
+    class ConsumingArchive:
+        def sync_now(self, job_key):
+            assert IBOMManualFeedStore(feed_dir_for(tmp_path)).take() is not None
+            return {"exitCode": 0, "results": [{"jobKey": job_key, "outcome": "completed"}]}
+
+    client.application.extensions["scheduled_archive_admin"] = ConsumingArchive()
+    payload = upload(client, ibom_report_bytes([ibom_row("3D-1", "P1")]), data_date=date.today().isoformat()).get_json()
+    assert payload["data"]["feedUsed"] is True
+
+
+@pytest.mark.parametrize("raw,expected,text", [
+    ("C:\\Users\\x\\报表.xlsx", "报表.xlsx", False),
+    ("a" * 200 + ".txt", "a" * 116 + ".txt", True),
+    ("CON.xlsx", "ibom_report.xlsx", False),
+    ("报表:1.xlsx", "ibom_report.xlsx", False),
+    ("", "ibom_report.xlsx", False),
+])
+def test_safe_feed_name(raw, expected, text):
+    from services.ibom_manual_feed import safe_feed_name
+
+    assert safe_feed_name(raw) == (expected, text)
+
+
+def test_put_rejects_rows_without_serial(tmp_path):
+    with pytest.raises(ManualFeedError) as info:
+        store(tmp_path).put(ibom_report_bytes([ibom_row("3D-1", "P1"), ibom_row("", "P2")]),
+                            file_name="x.xlsx", data_date=date(2026, 11, 20))
+    assert info.value.code == "E_ROW_WITHOUT_SERIAL"

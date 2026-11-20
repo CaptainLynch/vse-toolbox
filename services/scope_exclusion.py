@@ -20,6 +20,7 @@ from __future__ import annotations
 from typing import Any, Mapping, Sequence
 
 from services.deliverable_form_analysis import (
+    DATA_MODEL_SYNC_EXCLUDED_STATUSES,
     TDC_SYNC_EXCLUDED_STATUSES,
     normalize_tdc_report_status,
 )
@@ -62,13 +63,14 @@ def exclude_tdc_scope_rows(
     keys = TDC_STATUS_KEYS_BY_REPORT.get(report)
     if keys is None:
         return list(rows), 0
+    excluded = DATA_MODEL_SYNC_EXCLUDED_STATUSES if report == "data_model" else TDC_SYNC_EXCLUDED_STATUSES
     kept: list[dict[str, Any]] = []
     dropped = 0
     for row in rows:
         status_text = normalize_tdc_report_status(
             report, _first_status_value(row, keys)
         )
-        if status_text in TDC_SYNC_EXCLUDED_STATUSES:
+        if status_text in excluded:
             dropped += 1
             continue
         kept.append(dict(row))

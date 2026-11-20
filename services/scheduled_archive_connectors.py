@@ -567,7 +567,11 @@ class TDCArchiveConnector:
         form_rows: tuple[Mapping[str, Any], ...] | None = None
         coverage: Mapping[str, Any] | None = None
         try:
-            ibom_rows, ibom_info = self._collect_ibom(context, credential, archive, artifacts)
+            # 没有 TDC 先行确认密码：iBOM 拒绝密码时必须按「凭据失效」上报（不重试、提示更新凭据），
+            # 不能当成普通的「iBOM 侧不完整」，否则每次定时运行都会再发一次旧密码直至锁号。
+            ibom_rows, ibom_info = self._collect_ibom(
+                context, credential, archive, artifacts, raise_credential_rejection=True
+            )
             merged, merge_report = merge_sources((), ibom_rows)
             merge_coverage = {"sources": {**merge_report, "ibomExport": ibom_info, "tdcRetired": True}}
         except DualSourceIncomplete as exc:
@@ -613,6 +617,8 @@ class TDCArchiveConnector:
         credential: ResolvedCredential | None,
         archive: ArchiveStore,
         artifacts: list[ArchiveArtifact],
+        *,
+        raise_credential_rejection: bool = False,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """iBOM 侧：登录 → DMM 总数 → 导出报表（原件归档）→ 读入 → 本地筛选。
 
@@ -629,6 +635,8 @@ class TDCArchiveConnector:
                 credential.username, credential.password
             )
         except IBOMAuthError as exc:
+            if raise_credential_rejection and exc.credentials_sent and exc.stage == "auth-credentials":
+                raise
             raise DualSourceIncomplete(REASON_IBOM_AUTH, exc.stage) from None
         try:
             client = self._ibom_client_factory(
@@ -686,6 +694,8 @@ class TDCArchiveConnector:
             rows = parse_feed_rows(feed.content, text=feed.text)
         except ManualFeedError as exc:
             raise DualSourceIncomplete(REASON_IBOM_REPORT, exc.code) from None
+        if any(not str(row.get("流水单号") or "").strip() for row in rows):
+            raise DualSourceIncomplete(REASON_IBOM_REPORT, "row_without_serial")
         filtered, filter_report = apply_ibom_filters(rows, context.filters)
         return filtered, {
             "feed": "manual",

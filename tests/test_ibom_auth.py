@@ -186,3 +186,23 @@ def test_blank_credentials_never_touch_network():
             client(session).login(username, password)
         assert info.value.stage == "credential-validation"
     assert session.log == []
+
+
+def test_owned_session_is_closed_when_login_fails(monkeypatch):
+    import services.ibom_auth as module
+
+    closed = []
+
+    class OwnSession(Session):
+        def close(self):
+            closed.append(True)
+
+    session = OwnSession(gets=[R(302, {"Location": auth_location()}), R(200, text=LOGIN_PAGE)],
+                         posts=[R(200, text=LOGIN_PAGE)])
+    monkeypatch.setattr(module.requests, "Session", lambda: session)
+    with pytest.raises(IBOMAuthError):
+        IBOMPasswordAuthClient(sleep=lambda _: None).login("u", PASSWORD)
+    assert closed == [True]
+    injected = Session(gets=[R(200, text="x")], posts=[])
+    with pytest.raises(IBOMAuthError):
+        client(injected).login("u", PASSWORD)  # 调用方注入的会话由调用方管理，不关闭

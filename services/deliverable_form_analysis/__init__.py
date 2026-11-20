@@ -44,6 +44,7 @@ from services.deliverable_form_analysis._impl import (  # noqa: F401
     _normalize_stage,
     _normalize_tdc_status,
     TDC_SYNC_EXCLUDED_STATUSES,
+    DATA_MODEL_SYNC_EXCLUDED_STATUSES,
     normalize_tdc_report_status,
     _add_months,
     _snapshot_date,

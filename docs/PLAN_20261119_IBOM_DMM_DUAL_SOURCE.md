@@ -332,6 +332,31 @@ TDC 侧的筛选照旧发给 TDC 服务器；iBOM 侧拿到全量报表后，按
 - 自动归档插件（0.2.0）新增 `GET/POST /api/p/scheduled-archive/ibom-manual-feed`（写入走 `local_guard`；开关未开启返回 409）；数模任务卡片新增「用本地 iBOM 报表同步」面板。
 - 测试：`tests/test_ibom_manual_feed.py` 13 passed；本地导入 6 个（`test_sign_daily_ibom_source.py` 共 13 passed）。归档/插件宿主/签署日报等相关回归 1043 passed；2 个失败均为既有问题（撤掉本期改动同样失败）：`test_import_scan_rejects_dir_outside_roots`、`test_glossary_terms_gate`（签署日报 `report-logic.js:230`、`report.js:286` 的盘符示例，来自 `d4aecc0`）。
 
+### 收尾（2026-11-20，`1b4828c`）
+
+- 退出 TDC 开关 `VSE_TDC_DATA_MODEL_RETIRED`（仅在 `VSE_IBOM_DUAL_SOURCE` 开启时生效）：数模归档不登录 TDC，只取 iBOM，其余规则同双源。
+- 签署日报 `sourceCounts`（本次参与统计的 TDC / iBOM 单数），有 iBOM 单时页面显示来源说明。
+- `docs/PRODUCTION_OPERATION_GUIDE.md` §8：开关、开启前验证、运行规则、手工导入。
+
+### 代码评审（2026-11-20，范围 `3fccb24..1b4828c`，high）
+
+10 条发现全部核实成立并已修复：
+
+| # | 级别 | 问题 | 修复 |
+|---|---|---|---|
+| 1 | 重要 | 退出 TDC 后 iBOM 拒绝密码只记为「iBOM 侧不完整」，不提示更新凭据，定时运行会反复发旧密码直至锁号 | 退出 TDC 模式下，提交密码被拒（`auth-credentials` 且已发送）直接抛 `IBOMAuthError`，运行器归类为 `credential_invalid`（提示更新域账号凭据、不重试）；双源模式下 TDC 已用同一密码成功，仍按不完整处理 |
+| 2 | 重要 | 手工导入不检查空流水单号，空号行会被合并成一张假单 | 上传与连接器都拒收空号行；合并时 iBOM 侧出现空号直接判不完整 |
+| 3 | 重要 | 「取消」进了 TDC 与 SOR 共用的剔除集，改变了 SOR 口径 | 共用集合恢复原样；新增 `DATA_MODEL_SYNC_EXCLUDED_STATUSES`，只对数模剔除「取消」 |
+| 4 | 重要 | 手工上传上限 32 MB 超过宿主 16 MB 请求上限 | 降到 15 MB |
+| 5 | 重要 | 手工报表的数据日期不校验，旧报表会被当成今天的进度；未被使用的暂存会被之后的定时运行悄悄使用 | 只接受当天；触发的同步没用上就立即作废并在页面说明 |
+| 6 | 重要 | 申请日期筛选遇到认不出的日期会静默丢行 | 有日期筛选时，认不出的日期判不完整 |
+| 7 | 次要 | 长 .txt 文件名截断后丢扩展名；含保留字符的文件名会让归档写入失败并丢失暂存 | 先判扩展名再截断（保留扩展名）；按归档目录命名规则校验，不合规退回默认名 |
+| 8 | 次要 | iBOM 登录失败时不关闭自建会话 | 登录失败关闭自建会话（注入的会话由调用方管理） |
+| 9 | 次要 | 暂存的内容与元数据分两个文件写，读写交错可能丢上传 | 合并为单文件、原子替换写入 |
+| 10 | 次要 | 上传后页面不刷新待用状态 | 上传后按接口返回刷新，并说明是否被使用 |
+
+修复后回归：1425 passed / 3 skipped，2 个既有失败与本期无关（`test_import_scan_rejects_dir_outside_roots`、`test_glossary_terms_gate`）。
+
 ## 12. 开工前架构评审（2026-11-19）
 
 对照代码逐条核对初版方案的假设，发现以下问题并已在上文修正：

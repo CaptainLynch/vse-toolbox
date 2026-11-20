@@ -37,6 +37,7 @@ from services.deliverable_form_analysis import build_form_snapshot
 from services.aras_auth import ArasAuthError
 from services.aras_crawler import ArasAuthenticationError, ArasCrawlerError
 from services.tdc_auth import TDCAuthError
+from services.ibom_auth import IBOMAuthError
 from services.tdc_crawler import TDCCrawlerError
 from services.windows_http import WinHTTPError, WinHTTPTimeoutError
 
@@ -76,7 +77,8 @@ def _error_type(exc: BaseException) -> str:
         return "job_not_ready"
     if isinstance(exc, CredentialProviderError):
         return "credential_unavailable"
-    if isinstance(exc, (ArasAuthError, TDCAuthError)):
+    if isinstance(exc, (ArasAuthError, TDCAuthError, IBOMAuthError)):
+        # IBOMAuthError 只在数模已退出 TDC 且统一身份认证拒绝密码时才会抛到这里。
         return "credential_invalid"
     if isinstance(exc, ArasAuthenticationError):
         return "authentication_error"
