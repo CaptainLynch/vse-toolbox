@@ -60,17 +60,23 @@ def register(host):
             meta = store.put(content, file_name=upload.filename, data_date=data_date)
         except ManualFeedError as exc:
             return ctx.json_error(422, exc.code, str(exc))
+        sha = str(meta["sha256"])
         try:
             archive: Any = ctx.service("scheduled_archive_admin")
             result = archive.sync_now(DATA_MODEL_JOB_KEY)
         except KeyError:
-            store.clear()
+            store.void_if_pending(sha)
             return ctx.json_error(404, "NotFound", "未找到数模设计审核流程归档任务")
         except LookupError:
-            store.clear()
+            store.void_if_pending(sha)
             return ctx.json_error(503, "ServiceUnavailable", "归档服务不可用")
-        # 触发的这次同步没用上（例如 TDC 登录失败、已有运行占着租约）：立即作废，不留给之后的定时运行悄悄使用。
-        feed_used = store.pending() is None
-        if not feed_used:
-            store.clear()
-        return ctx.json_ok({"feed": meta, "sync": result, "feedUsed": feed_used, "pendingAfterSync": None})
+        except Exception as exc:  # noqa: BLE001 - 任何失败都先作废这份报表，再如实报错
+            store.void_if_pending(sha)
+            return ctx.json_error(
+                500, "ServerError", f"触发同步失败，报表已作废，请稍后重新上传：{ctx.redact(type(exc).__name__)}"
+            )
+        # 先作废仍未被取走的这一份，再看它有没有被某次运行用掉（内容指纹标记）：
+        # 触发的同步没用上（TDC 登录失败、租约被占、已过期）就作废，不留给之后的定时运行悄悄使用。
+        store.void_if_pending(sha)
+        feed_used = store.was_consumed(sha)
+        return ctx.json_ok({"feed": meta, "sync": result, "feedUsed": feed_used, "pendingAfterSync": store.pending()})

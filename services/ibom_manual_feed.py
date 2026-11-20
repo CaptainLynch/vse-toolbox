@@ -34,6 +34,9 @@ MAX_FEED_BYTES = 15 * 1024 * 1024
 MAX_FEED_ROWS = 10001
 FEED_DIR_NAME = "ibom_manual_feed"
 _FEED_FILE = "pending.feed"
+_CONSUMED_FILE = "consumed.json"
+#: 本功能早期提交里的双文件格式（从未发布）；清理时一并删除，不留个人与零件数据。
+_LEGACY_FILES = ("pending.bin", "pending.json")
 _ENCRYPTED_REASONS = {"encrypted_container", "ole_container"}
 _NAME_LIMIT = 120
 _DEFAULT_NAMES = {True: "ibom_report.txt", False: "ibom_report.xlsx"}
@@ -171,6 +174,12 @@ class IBOMManualFeedStore:
         meta, content = loaded
         if self._expired(meta) or not content or hashlib.sha256(content).hexdigest() != meta.get("sha256"):
             return None
+        # 记下「哪一份被用掉了」，上传接口据此判断触发的同步是否真的用上了它（而不是从暂存为空倒推）。
+        marker = {"sha256": meta.get("sha256"), "takenAt": self._clock().astimezone(timezone.utc).isoformat()}
+        try:
+            self._atomic_write(self.directory / _CONSUMED_FILE, json.dumps(marker).encode("utf-8"))
+        except OSError:
+            pass
         return ManualFeed(
             content=content,
             file_name=str(meta.get("fileName") or ""),
@@ -181,10 +190,27 @@ class IBOMManualFeedStore:
         )
 
     def clear(self) -> None:
+        for name in (_FEED_FILE, *_LEGACY_FILES):
+            try:
+                (self.directory / name).unlink()
+            except FileNotFoundError:
+                pass
+
+    def was_consumed(self, sha256: str) -> bool:
+        """这一份（按内容指纹）是否已被某次归档运行取走使用。"""
         try:
-            (self.directory / _FEED_FILE).unlink()
-        except FileNotFoundError:
-            pass
+            marker = json.loads((self.directory / _CONSUMED_FILE).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        return isinstance(marker, dict) and bool(sha256) and marker.get("sha256") == sha256
+
+    def void_if_pending(self, sha256: str) -> bool:
+        """若暂存仍是这一份（未被取走），作废它；返回是否作废了。不会删掉别人后来上传的另一份。"""
+        loaded = self._load()
+        if loaded is None or loaded[0].get("sha256") != sha256:
+            return False
+        self.clear()
+        return True
 
     def _load(self) -> tuple[dict[str, object], bytes] | None:
         try:

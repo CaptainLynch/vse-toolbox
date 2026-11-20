@@ -231,3 +231,41 @@ def test_put_rejects_rows_without_serial(tmp_path):
         store(tmp_path).put(ibom_report_bytes([ibom_row("3D-1", "P1"), ibom_row("", "P2")]),
                             file_name="x.xlsx", data_date=date(2026, 11, 20))
     assert info.value.code == "E_ROW_WITHOUT_SERIAL"
+
+
+def test_consumption_marker_and_void_only_own_feed(tmp_path):
+    clock = Clock()
+    feed_store = store(tmp_path, clock)
+    first = feed_store.put(ibom_report_bytes([ibom_row("3D-1", "P1")]), file_name="a.xlsx", data_date=date(2026, 11, 20))
+    assert feed_store.was_consumed(first["sha256"]) is False
+    assert feed_store.take() is not None
+    assert feed_store.was_consumed(first["sha256"]) is True
+    second = feed_store.put(ibom_report_bytes([ibom_row("3D-2", "P2")]), file_name="b.xlsx", data_date=date(2026, 11, 20))
+    assert feed_store.void_if_pending(first["sha256"]) is False  # 不删别人后来上传的另一份
+    assert feed_store.pending()["sha256"] == second["sha256"]
+    clock.now = NOW + timedelta(minutes=31)
+    assert feed_store.take() is None  # 过期：不算被使用
+    assert feed_store.was_consumed(second["sha256"]) is False
+
+
+def test_clear_removes_legacy_files(tmp_path):
+    directory = feed_dir_for(tmp_path)
+    directory.mkdir(parents=True)
+    for name in ("pending.bin", "pending.json"):
+        (directory / name).write_bytes(b"old")
+    store(tmp_path).clear()
+    assert not any((directory / name).exists() for name in ("pending.bin", "pending.json"))
+
+
+def test_plugin_voids_feed_when_sync_raises(plugin_client, monkeypatch):
+    client, calls, tmp_path = plugin_client
+    monkeypatch.setenv("VSE_IBOM_DUAL_SOURCE", "1")
+
+    class BrokenArchive:
+        def sync_now(self, job_key):
+            raise RuntimeError("database locked")
+
+    client.application.extensions["scheduled_archive_admin"] = BrokenArchive()
+    response = upload(client, ibom_report_bytes([ibom_row("3D-1", "P1")]), data_date=date.today().isoformat())
+    assert response.status_code >= 500
+    assert IBOMManualFeedStore(feed_dir_for(tmp_path)).pending() is None

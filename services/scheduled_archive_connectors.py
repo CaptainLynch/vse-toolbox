@@ -635,7 +635,7 @@ class TDCArchiveConnector:
                 credential.username, credential.password
             )
         except IBOMAuthError as exc:
-            if raise_credential_rejection and exc.credentials_sent and exc.stage == "auth-credentials":
+            if raise_credential_rejection and exc.rejected:
                 raise
             raise DualSourceIncomplete(REASON_IBOM_AUTH, exc.stage) from None
         try:
@@ -692,17 +692,15 @@ class TDCArchiveConnector:
         )
         try:
             rows = parse_feed_rows(feed.content, text=feed.text)
-        except ManualFeedError as exc:
+        except ManualFeedError as exc:  # 含无流水单号的行（E_ROW_WITHOUT_SERIAL）
             raise DualSourceIncomplete(REASON_IBOM_REPORT, exc.code) from None
-        if any(not str(row.get("流水单号") or "").strip() for row in rows):
-            raise DualSourceIncomplete(REASON_IBOM_REPORT, "row_without_serial")
         filtered, filter_report = apply_ibom_filters(rows, context.filters)
         return filtered, {
             "feed": "manual",
             "fileName": feed.file_name,
             "dataDate": feed.data_date,
             "uploadedAt": feed.uploaded_at,
-            "documents": len({str(row.get("流水单号") or "").strip() for row in rows} - {""}),
+            "documents": len({str(row.get("流水单号") or "").strip() for row in rows}),
             "rows": len(rows),
             "filters": filter_report,
         }

@@ -206,3 +206,51 @@ def test_owned_session_is_closed_when_login_fails(monkeypatch):
     injected = Session(gets=[R(200, text="x")], posts=[])
     with pytest.raises(IBOMAuthError):
         client(injected).login("u", PASSWORD)  # 调用方注入的会话由调用方管理，不关闭
+
+
+@pytest.mark.parametrize("response,rejected", [
+    (R(200, text=LOGIN_PAGE), True),
+    (R(401), True),
+    (R(403), True),
+    (R(503), False),
+    (R(500), False),
+])
+def test_only_explicit_rejections_are_marked_rejected(response, rejected):
+    session = Session(gets=[R(302, {"Location": auth_location()}), R(200, text=LOGIN_PAGE)], posts=[response])
+    with pytest.raises(IBOMAuthError) as info:
+        client(session).login("u", PASSWORD)
+    assert info.value.stage == "auth-credentials" and info.value.rejected is rejected
+
+
+def test_transport_error_on_credentials_is_not_a_rejection():
+    class Boom(Session):
+        def post(self, *args, **kwargs):
+            raise ConnectionError("reset")
+
+    session = Boom(gets=[R(302, {"Location": auth_location()}), R(200, text=LOGIN_PAGE)], posts=[])
+    with pytest.raises(IBOMAuthError) as info:
+        client(session).login("u", PASSWORD)
+    assert info.value.credentials_sent is True and info.value.rejected is False
+
+
+def test_owned_session_cookies_cleared_on_unexpected_error(monkeypatch):
+    import services.ibom_auth as module
+
+    events = []
+
+    class Jar:
+        def clear(self):
+            events.append("cookies")
+
+    class Weird(Session):
+        cookies = Jar()
+
+        def close(self):
+            events.append("close")
+
+    session = Weird(gets=[R(302, {"Location": auth_location()}), R(200, text=None)], posts=[])
+    monkeypatch.setattr(module, "_parse_login_form", lambda text: (_ for _ in ()).throw(AttributeError("bad")))
+    monkeypatch.setattr(module.requests, "Session", lambda: session)
+    with pytest.raises(AttributeError):
+        IBOMPasswordAuthClient(sleep=lambda _: None).login("u", PASSWORD)
+    assert events == ["cookies", "close"]

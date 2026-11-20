@@ -459,9 +459,12 @@ function IbomManualFeed({ job, busy, setBusy, onSynced }) {
     setBusy(true);
     setRunning(true);
     setNotice(null);
+    // 只接受当天的报表：提交时按此刻重新取日期（页面跨过午夜也不会带上昨天）。
+    const today = localToday();
+    setDataDate(today);
     const body = new FormData();
     body.append("file", file);
-    body.append("dataDate", dataDate);
+    body.append("dataDate", today);
     try {
       const response = await fetch(IBOM_FEED_API, { method: "POST", body, headers: { Accept: "application/json" } });
       const payload = await response.json().catch(() => null);

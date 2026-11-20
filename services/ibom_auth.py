@@ -43,6 +43,8 @@ DEFAULT_IBOM_OIDC_CLIENT_ID = "ibom-front"
 IBOM_SSO_ENTRY_PATH = "/fwPlatform/ssoAuth/login.api"
 _OIDC_AUTH_PATH = "/auth/realms/common/protocol/openid-connect/auth"
 _REDIRECT_STATUSES = {301, 302, 303, 307, 308}
+#: 提交账号密码后表示「被拒」的状态：Keycloak 密码错时回登录页（200），或网关直接 401/403。
+_REJECTION_STATUSES = {200, 401, 403}
 _MAX_CALLBACK_REDIRECTS = 6
 _OPTIONAL_FORM_FIELDS = ("newokey", "eodpkey", "feishukey", "phoneNumber", "code", "credentialId")
 _USER_AGENT = (
@@ -66,11 +68,14 @@ class IBOMAuthError(RuntimeError):
         stage: str,
         status_code: int | None = None,
         credentials_sent: bool = False,
+        rejected: bool = False,
     ) -> None:
         super().__init__(redact_sensitive_text(message))
         self.stage = stage
         self.status_code = status_code
         self.credentials_sent = credentials_sent
+        #: 统一身份认证**明确拒绝**了账号密码（回登录页 200，或 401/403）；网络错误、5xx、跳转异常都不算。
+        self.rejected = rejected
 
 
 @dataclass(frozen=True)
@@ -143,15 +148,22 @@ class IBOMPasswordAuthClient:
         """登录；失败时关闭自己创建的会话（可能已带上认证 Cookie），再抛出 ``IBOMAuthError``。"""
         try:
             return self._login(username, password)
-        except IBOMAuthError:
+        except Exception:
             if self._owns_session:
-                close = getattr(self.session, "close", None)
-                if callable(close):
-                    try:
-                        close()
-                    except Exception:  # noqa: BLE001 - 关闭失败不掩盖登录失败
-                        pass
+                self._discard_session()
             raise
+
+    def _discard_session(self) -> None:
+        """丢弃自建会话：清掉可能已带上的认证 Cookie 并关闭连接。"""
+        cookies = getattr(self.session, "cookies", None)
+        clear = getattr(cookies, "clear", None)
+        close = getattr(self.session, "close", None)
+        for action in (clear, close):
+            if callable(action):
+                try:
+                    action()
+                except Exception:  # noqa: BLE001 - 清理失败不掩盖登录失败
+                    pass
 
     def _login(self, username: str, password: str) -> IBOMLoginResult:
         username_value = str(username or "").strip()
@@ -260,12 +272,14 @@ class IBOMPasswordAuthClient:
                 stage="auth-credentials",
                 credentials_sent=True,
             ) from None
-        if _status(response) not in _REDIRECT_STATUSES:
+        status = _status(response)
+        if status not in _REDIRECT_STATUSES:
             raise IBOMAuthError(
                 "identity provider rejected the credentials or requires additional verification",
                 stage="auth-credentials",
-                status_code=_status(response),
+                status_code=status,
                 credentials_sent=True,
+                rejected=status in _REJECTION_STATUSES,
             )
         callback = urljoin(login_url, _location(response))
         if _origin(callback) != self.base_url:

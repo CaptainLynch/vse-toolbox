@@ -414,11 +414,20 @@ def test_retired_tdc_collects_ibom_only(tmp_path):
 def test_retired_tdc_rejected_password_is_a_credential_error(tmp_path):
     from services.scheduled_archive_runner import _error_type
 
-    FakeIBOMAuth.login_exc = IBOMAuthError("x", stage="auth-credentials", credentials_sent=True)
+    FakeIBOMAuth.login_exc = IBOMAuthError("x", stage="auth-credentials", status_code=200,
+                                           credentials_sent=True, rejected=True)
     with pytest.raises(IBOMAuthError) as info:
         retired_connector(tmp_path).collect(context(), random_credential()[0])
     assert _error_type(info.value) == "credential_invalid"
     assert len(FakeIBOMAuth.calls) == 1
+
+
+@pytest.mark.parametrize("status", [503, 500, None])
+def test_retired_tdc_transient_identity_failure_is_not_a_credential_error(tmp_path, status):
+    FakeIBOMAuth.login_exc = IBOMAuthError("x", stage="auth-credentials", status_code=status,
+                                           credentials_sent=True, rejected=False)
+    collection = retired_connector(tmp_path).collect(context(), random_credential()[0])
+    assert collection.form_projection_error == FORM_PROJECTION_DUAL_SOURCE_INCOMPLETE
 
 
 def test_dual_mode_ibom_password_rejection_stays_incomplete(tmp_path):
