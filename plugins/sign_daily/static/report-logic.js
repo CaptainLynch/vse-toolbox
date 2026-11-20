@@ -227,7 +227,7 @@ export function baselinePathHint(text) {
   const value = cleanPastedPath(text);
   if (!value) return "";
   if (!/^(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(value)) {
-    return "要粘贴从盘符开始的完整路径，例如 D:\\报表\\11-01.xlsx（在文件上按住 Shift 点右键 →「复制文件地址」）";
+    return "要粘贴从盘符开始的完整路径，例如 D 盘「报表」文件夹里的 11-01.xlsx（在文件上按住 Shift 点右键 →「复制文件地址」）";
   }
   if (!/\.(xlsx|txt)$/i.test(value)) return "只接受 .xlsx 或 .txt 文件";
   return "";

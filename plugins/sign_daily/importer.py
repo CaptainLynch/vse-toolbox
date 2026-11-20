@@ -610,13 +610,14 @@ def resolve_scan_dir(raw: str | None, *, default_dir: Path) -> Path:
         resolved = target.resolve()
     except (OSError, ValueError) as exc:
         raise ManualImportError("E_DIR_INVALID", f"目录不可用：{type(exc).__name__}") from None
-    if not resolved.is_dir():
-        raise ManualImportError("E_DIR_MISSING", "目录不存在或不是文件夹")
+    # 先判允许范围、再判是否存在：对允许范围之外的路径不回答「存在 / 不存在」，避免成为探测本机目录的口子。
     if not any(resolved == root or root in resolved.parents for root in roots):
         raise ManualImportError(
             "E_DIR_NOT_ALLOWED",
             "只允许扫描程序数据目录下的专用文件夹（或部署方授权过的目录）",
         )
+    if not resolved.is_dir():
+        raise ManualImportError("E_DIR_MISSING", "目录不存在或不是文件夹")
     return resolved
 
 

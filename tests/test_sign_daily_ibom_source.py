@@ -213,3 +213,17 @@ def test_generate_reports_source_counts_for_dual_source_snapshot(client):  # noq
     counts = report["sourceCounts"]
     assert counts["ibom"] == 1
     assert counts["tdc"] >= 1
+
+
+def test_scan_dir_outside_roots_does_not_reveal_existence(tmp_path):
+    module = importer()
+    for outside in (tmp_path / "exists", tmp_path / "missing"):
+        if outside.name == "exists":
+            outside.mkdir()
+        with pytest.raises(module.ManualImportError) as info:
+            module.resolve_scan_dir(str(outside), default_dir=tmp_path / "allowed-root")
+        assert info.value.code == "E_DIR_NOT_ALLOWED"
+    allowed = tmp_path / "allowed-root"
+    with pytest.raises(module.ManualImportError) as info:
+        module.resolve_scan_dir(str(allowed / "nope"), default_dir=allowed)
+    assert info.value.code == "E_DIR_MISSING"

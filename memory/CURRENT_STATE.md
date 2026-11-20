@@ -50,7 +50,12 @@
   code-review high（`3fccb24..1b4828c`）10 条全部修复，见方案 §13「代码评审」。关键约束：退出 TDC 后 iBOM 拒绝密码按
   `credential_invalid` 上报；「取消」只对数模剔除（SOR 不变）；手工导入只收当天报表、未被使用即作废。
   复核评审 8 条（`fe1b7fc`）与终审 1 条已修复：凭据被拒只认明确拒绝（`IBOMAuthError.rejected`）；手工导入「是否被用上」
-  按内容指纹 + 上传时间的使用标记判断。回归 1438 passed，2 个既有失败无关。评审已闭环。
+  按内容指纹 + 上传时间的使用标记判断。评审已闭环。
+- **2026-11-20 既有失败清零**：`test_glossary_terms_gate`（签署日报路径示例改为文字描述，未扩大白名单）、
+  `test_import_scan_rejects_dir_outside_roots`（`resolve_scan_dir` 先判允许范围再判存在，顺带堵住目录存在性探测）；
+  路由契约快照登记 iBOM 手工导入 2 条与签署日报手工基线 7 条（后者为既有未登记路由）。
+  全量 pytest：4604 passed 级别；剩余失败 12 个在本次会话起点 `3fccb24` 上同样失败（Windows/打包/Excel 环境类），
+  `test_boot_exchange_ui` 为基线同样存在的偶发（5 次 2 败）。
 - **下一步**：阶段 5 真机验收（用户侧）：① 内网跑 `tools/ibom_login_check.py`；② 通过后 `setx VSE_IBOM_DUAL_SOURCE 1`
   重启，观察连续 3 个工作日归档；③ 每天抽 3 张 iBOM 单与界面核对；④ 满足 §9 条件后再设 `VSE_TDC_DATA_MODEL_RETIRED=1`。
   需 Windows 打包（onedir zip + 自动归档插件 0.2.0）。

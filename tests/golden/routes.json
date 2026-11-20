@@ -616,6 +616,28 @@
     "download": "download"
   },
   {
+    "rule": "/api/p/scheduled-archive/ibom-manual-feed",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_scheduled_archive.ibom_manual_feed_status",
+    "view_function": "ibom_manual_feed_status",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/scheduled-archive/ibom-manual-feed",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "plugin_scheduled_archive.ibom_manual_feed_upload",
+    "view_function": "ibom_manual_feed_upload",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
     "rule": "/api/p/settings/app-updates",
     "methods": [
       "GET"
@@ -776,6 +798,83 @@
     ],
     "endpoint": "plugin_sign_daily.long_cycle_clear",
     "view_function": "long_cycle_clear",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/sign-daily/manual-baseline-file",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_sign_daily.manual_baseline_file_get",
+    "view_function": "manual_baseline_file_get",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/sign-daily/manual-baseline-file",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "plugin_sign_daily.manual_baseline_file_set",
+    "view_function": "manual_baseline_file_set",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/sign-daily/manual-baseline-file/clear",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "plugin_sign_daily.manual_baseline_file_clear",
+    "view_function": "manual_baseline_file_clear",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/sign-daily/manual-baselines",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "plugin_sign_daily.manual_baselines_list",
+    "view_function": "manual_baselines_list",
+    "is_write": false,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/sign-daily/manual-baselines/delete",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "plugin_sign_daily.manual_baselines_delete",
+    "view_function": "manual_baselines_delete",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/sign-daily/manual-baselines/pin",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "plugin_sign_daily.manual_baselines_pin",
+    "view_function": "manual_baselines_pin",
+    "is_write": true,
+    "envelope": "envelope",
+    "download": "none"
+  },
+  {
+    "rule": "/api/p/sign-daily/manual-baselines/unpin",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "plugin_sign_daily.manual_baselines_unpin",
+    "view_function": "manual_baselines_unpin",
     "is_write": true,
     "envelope": "envelope",
     "download": "none"

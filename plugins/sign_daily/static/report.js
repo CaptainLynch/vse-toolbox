@@ -283,7 +283,7 @@ function BaselineFilePanel({ api, file, pinnedDate, disabled, onChanged, flash }
               onChange=${(e) => { setPicked((e.target.files && e.target.files[0]) || null); setProblem(null); }} /></label>
             <p class="vk-muted sd-import-hint">浏览器不会告诉程序文件原来放在哪：以后无法提醒原文件是否被改过，对比以备份为准。</p>`
         : html`<label class="sd-field"><span>完整路径</span>
-            <input value=${pathText} disabled=${lock} placeholder="例如 D:\\报表\\11-01.xlsx"
+            <input value=${pathText} disabled=${lock} placeholder="从盘符开始的完整路径，例如 D 盘「报表」文件夹里的 11-01.xlsx"
               onInput=${(e) => { setPathText(e.target.value); setProblem(null); }} /></label>
             <p class="vk-muted sd-import-hint">在文件上按住 Shift 点右键 →「复制文件地址」，粘贴到这里（带不带引号都行）。可以是电脑上任意位置的 .xlsx / .txt。</p>
             ${pathHint && html`<p class="sd-warn" role="status">${pathHint}</p>`}`}
